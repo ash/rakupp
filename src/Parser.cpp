@@ -517,6 +517,19 @@ static ExprPtr circumfixOperand(ExprPtr e) {
     return e;
 }
 
+// The word-shaped infixes — the ones spelled as a bare identifier, which is also
+// a spelling a sub can have. `startsListopArg` and `scanOpsIn` share this list:
+// the first vetoes a listop argument starting with one, the second learns when a
+// module declares a SUB by that name and lifts the veto for it.
+bool Parser::isWordInfixName(const std::string& n) {
+    static const std::set<std::string> kWordInfix = {
+        "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after",
+        "unicmp", "coll", "x", "xx", "and", "or", "andthen", "orelse", "div", "mod",
+        "gcd", "lcm", "but", "does", "min", "max", "minmax",
+    };
+    return kWordInfix.count(n) > 0;
+}
+
 void Parser::scanModuleOps(const std::string& module) {
     lastScanSlang_ = false;
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
@@ -624,6 +637,46 @@ void Parser::scanDeclaratorsIn(const std::string& src) {
 
 void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     opScanned_.push_back({srcPath, src});
+    // A module that declares `sub div` / `sub min` exports a name this file will
+    // otherwise read as the OPERATOR at term position, and `div "txt"` then binds
+    // to nothing. The name has to be known while this file is parsed, the same
+    // reason the operators just below are read off the source; a declaration is
+    // `sub NAME` with NAME word-infix-shaped, optionally behind multi/proto/only.
+    Lexer::scanDeclaredSubNames(src, [&](const std::string& n) {
+        if (isWordInfixName(n)) wordInfixSubs_.insert(n);
+    });
+    // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
+    // decided in the lexer, which ran before this file's `use` was reached, so the
+    // rest of the unit is re-lexed with them vetoed — the path a slang takes.
+    {
+        size_t before = quoteWordSubs_.size();
+        Lexer::scanQuoteWordSubs(src, quoteWordSubs_);
+        if (quoteWordSubs_.size() != before) relexForQuoteWords();
+    }
+    // A module that RE-EXPORTS another one's names — `use Monarch::HTML;` plus an
+    // `EXPORT` sub — passes on its operators and its `sub tr`/`sub div` too, so
+    // the scan has to follow the `use`. Without this, `use Monarch` left `tr { … }`
+    // reading as a transliteration: the block ran, built nothing, and the table
+    // came out empty with no error anywhere. `scannedMods_` stops the recursion.
+    for (size_t pos = 0; pos < src.size(); ) {
+        size_t eol = src.find('\n', pos);
+        std::string line = src.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+        pos = eol == std::string::npos ? src.size() : eol + 1;
+        size_t i = line.find_first_not_of(" \t");
+        if (i == std::string::npos || line.compare(i, 4, "use ") != 0) continue;
+        i += 4;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+        size_t b = i;
+        while (i < line.size() && (ascii::isalnum((unsigned char)line[i]) || line[i] == '_' || line[i] == '-' ||
+                                   (line[i] == ':' && i + 1 < line.size() && line[i + 1] == ':')))
+            i += line[i] == ':' ? 2 : 1;
+        std::string mod = line.substr(b, i - b);
+        if (mod.empty() || !ascii::isalpha((unsigned char)mod[0])) continue;
+        if (mod == "lib" || mod == "strict" || mod == "v6" || mod == "nqp" || mod == "JS" || mod == "Test") continue;
+        bool wasSlang = lastScanSlang_;
+        scanModuleOps(mod);
+        lastScanSlang_ = wasSlang;   // only the module the USER named may arm a slang
+    }
     // an operator spelled only in ASCII operator characters is almost certainly a
     // REDECLARATION of a built-in (`multi infix:<*>(Color, Real)`); registering it
     // as a user op would give it the default precedence and silently reshape every
@@ -980,6 +1033,12 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             if (alsoSubs.count(t.text) && !lhsName.empty() &&
                 ascii::islower((unsigned char)lhsName[0]))
                 return true;
+            // …and a word infix this unit or an imported module declares as a SUB
+            // is that sub here: `sub div($t) {…}; say div "x"` is say(div("x")),
+            // which is what Rakudo answers once `&div` is in scope. Without this
+            // `say` took no arguments and `div` was the operator between them —
+            // the reason a `<div>` tag builder could not be called.
+            if (wordInfix.count(t.text) && wordInfixSubs_.count(t.text)) return true;
             if (wordInfix.count(t.text)) return false;
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
             // keyword: `register('Anna', role => 'admin')`
@@ -5585,6 +5644,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.userCircumfix_ = userCircumfix_;
     p.userPostcircumfix_ = userPostcircumfix_;
     p.userDeclarators_ = userDeclarators_;
+    p.wordInfixSubs_ = wordInfixSubs_;   // `"{ div 3 }"` sees this unit's `sub div`
     Program prog = p.parseProgram();
     // a single bare expression interpolates directly
     if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt)
@@ -6935,7 +6995,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     if (isOp("^") && !peek().spaceBefore && peek().kind == Tok::Ident) {
         advance(); s->name = "^" + advance().text;
     }
-    else if (isKind(Tok::Ident)) s->name = advance().text;
+    else if (isKind(Tok::Ident)) {
+        s->name = advance().text;
+        // `sub div` / `sub min` in THIS file: the name is now a routine, so at
+        // term position it is a call and not the operator (startsListopArg).
+        if (!asMethod && isWordInfixName(s->name)) wordInfixSubs_.insert(s->name);
+    }
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
     else if (isOp("::") && peek().kind == Tok::LParen) {
         // INDIRECT name: `sub ::(EXPR) (…) {…}` / `method ::('name') {…}` —
@@ -9674,6 +9739,26 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
 // the pragma's own words are never read through the slang. Unit-scoped, as
 // L10N is here and as mutsu is: a `use` inside a block governs to the end
 // of the file, where Rakudo would stop at the block's brace.
+// An imported module declares `sub tr` / `sub q`: the quote form of that name has
+// to stop being one for the rest of THIS unit. The lexer already ran, so the tail
+// of the token stream is replaced by a fresh lex that knows the names — the same
+// splice activateSlang performs, and subject to the same limit: it needs the
+// unit's source, so a `use` inside an EVAL of a string this parser never saw
+// keeps the quote reading.
+void Parser::relexForQuoteWords() {
+    if (!src_ || quoteWordSubs_.empty()) return;
+    const size_t from = pos_ > 0 ? toks_[pos_ - 1].off : 0;   // just past the `use`
+    Lexer lx(*src_);
+    lx.slang_ = slang_;
+    lx.slangFrom_ = slang_ ? 0 : 0;
+    lx.notQuoteWords_ = quoteWordSubs_;
+    std::vector<Token> nt = lx.tokenize();
+    size_t i = 0;
+    while (i < nt.size() && nt[i].kind != Tok::End && nt[i].off <= from) i++;
+    toks_.erase(toks_.begin() + pos_, toks_.end());
+    toks_.insert(toks_.end(), nt.begin() + i, nt.end());
+}
+
 void Parser::activateSlang(const std::string& module) {
     if (!src_) error("`use " + module + "`: a slang cannot be applied here (the source is not available to re-read)");
     std::string err;

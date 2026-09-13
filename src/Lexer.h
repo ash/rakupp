@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdint>
 #include <map>
+#include <functional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -47,7 +48,22 @@ public:
     // End token carrying the error (flag set, ival = its index) instead of
     // throwing, so the parser can reach the `use` first. Parser::error rethrows.
     bool tolerant_ = false;
+    // Quote keywords this unit declares as SUBS — `sub tr`, `sub q`, `sub s`.
+    // A declared routine beats the quote construct, as it does on Rakudo, so
+    // `tr { td 'a' }` is a call and not a transliteration. Filled by a pre-scan
+    // of the source for the unit's own declarations; the Parser adds the ones an
+    // imported module declares and re-lexes what is left of the unit.
+    std::set<std::string> notQuoteWords_;
     static ParseError storedLexError(size_t idx);
+    // Is `w` a quote-form keyword a sub may also be named? (q, qq, Q, m, s, tr, …)
+    static bool isQuoteKeyword(const std::string& w);
+    // Add every `sub <quote-keyword>` declared in `src` to `into`.
+    static void scanQuoteWordSubs(const std::string& src, std::set<std::string>& into);
+    // Report every `sub NAME` declaration in `src`. Used before a lex, so it is
+    // textual; comments are skipped and the name must be followed by a signature,
+    // a body or a trait.
+    static void scanDeclaredSubNames(const std::string& src,
+                                     const std::function<void(const std::string&)>& cb);
 
 private:
     std::string src_;

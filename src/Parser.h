@@ -127,6 +127,21 @@ public:
 private:
     size_t pos_ = 0;
     std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)
+    // Word-infix names this unit, or a module it uses, declares as a plain SUB:
+    // `sub div(…)`, `sub min(…)`. At term position such a name is that sub's
+    // call, not the operator — `say div "x"` is `say(div("x"))` — which is the
+    // reading Rakudo gives once `&div` is in scope. Filled from this file's own
+    // declarations and from scanOpsIn's read of an imported module's source.
+    std::set<std::string> wordInfixSubs_;
+    // Quote-form keywords an imported module declares as subs (`sub tr`). The
+    // lexer decided those before this file's `use` was parsed, so learning one
+    // re-lexes what is left of the unit with the quote form vetoed.
+    std::set<std::string> quoteWordSubs_;
+    void relexForQuoteWords();
+public:
+    // Is `n` a word-shaped infix operator whose name a sub may also carry?
+    static bool isWordInfixName(const std::string& n);
+private:
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     // Package DECLARATORS a used module supplies through EXPORTHOW::DECLARE:

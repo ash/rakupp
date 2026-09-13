@@ -779,6 +779,15 @@ function smartmatchWith(v, f) {
     if (v instanceof RJunction) return junctionBool(new RJunction(v.kind, v.items.map(x => truthy(smartmatch(x, f(x))))));
     return smartmatch(v, f(v));
 }
+// `$x ~~ Type:D` / `:U`. A junction on the left collapses the way it does for a
+// plain type, which is what `@s.all ~~ Num:D` asks for.
+function smartmatchType(v, pat, def) {
+    if (v instanceof RJunction) return junctionBool(new RJunction(v.kind, v.items.map(x => smartmatchType(x, pat, def))));
+    if (pat && !smartmatch(v, pat)) return false;
+    if (def === 1) return defined(v);
+    if (def === 2) return !defined(v);
+    return true;
+}
 function smartmatch(v, pat) {
     if (typeof pat === 'boolean') return pat;
     if (v instanceof RJunction) {   // a Junction topic: a regex answers a Junction of matches, a type or range collapses
@@ -815,7 +824,7 @@ function smartmatch(v, pat) {
     return eqv(v, pat);
 }
 
-Object.assign(R, { item, decont, bindArray, iterTopic, smartmatchWith, minMaxAdv, withDefault,
+Object.assign(R, { item, decont, bindArray, iterTopic, smartmatchWith, smartmatchType, minMaxAdv, withDefault,
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
     hviv, aviv, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,

@@ -245,6 +245,12 @@ function strTrans(s, pairs, named) {
     const ps = pairs instanceof RList ? pairs.arr() : [pairs];
     const squash = named && truthy(named.get('s') ?? named.get('squash') ?? false), del = named && truthy(named.get('d') ?? named.get('delete') ?? false);
     if (ps.some(p => p instanceof RPair && p.k instanceof RRegex)) return transRegex(s, ps, squash);
+    // A LIST key may name whole strings, not characters — `.trans(['&', '<'] =>
+    // ['&amp;', '&lt;'])` is how HTML is escaped — and a multi-character key
+    // cannot live in the per-grapheme map below. Those go to the longest-match
+    // scan, which is the same one a regex key takes.
+    if (ps.some(p => p instanceof RPair && expandTrans(p.k).some(f => graphemes(f).length !== 1)))
+        return transRegex(s, ps, squash);
     for (const p of ps) {
         if (!(p instanceof RPair)) continue;
         const from = expandTrans(p.k), to = expandTrans(p.v);
@@ -274,7 +280,12 @@ function transRegex(s, ps, squash) {
     return out;
 }
 function expandTrans(v) {
-    if (v instanceof RList) return v.arr().flatMap(expandTrans);
+    // Inside a LIST an element is one whole search term: `['&amp;']` is the five
+    // characters, not five one-character terms. Splitting them into graphemes
+    // paired the two sides off by position — `"` mapped to the `p` of `&quot;` —
+    // and produced text that looked escaped and was not. A nested list or a
+    // Range inside the list still expands.
+    if (v instanceof RList) return v.arr().flatMap(x => (x instanceof RList || x instanceof RRange) ? expandTrans(x) : [str(x)]);
     if (v instanceof RRange) return arr(v).map(str);
     const s = str(v);
     if (!s.includes('..')) return graphemes(s);

@@ -276,12 +276,24 @@ struct JsGen {
     std::set<string> codeVars;           // `my &f` / `&f` params: calls by that name go through the variable
     // Lexical scopes: which sub names and sigilless variables are visible where.
     // `sub min` inside a block must not turn the builtin into u_min outside it.
-    struct Scope { std::set<string> subs, sigilless; };
+    struct Scope { std::set<string> subs, sigilless, codes; };
     std::vector<Scope> scopes;
     bool subVisible(const string& n) { for (int i = (int)scopes.size() - 1; i >= 0; i--) if (scopes[i].subs.count(n)) return true; return false; }
     bool sigillessVisible(const string& n) { for (int i = (int)scopes.size() - 1; i >= 0; i--) if (scopes[i].sigilless.count(n)) return true; return false; }
     void declareSigilless(const string& n) { if (!scopes.empty()) scopes.back().sigilless.insert(n); }
-    void declareSigillessParams(const std::vector<Param>& ps) { for (auto& p : ps) if (!p.name.empty() && p.name[0] != '$' && p.name[0] != '@' && p.name[0] != '%' && p.name[0] != '&') declareSigilless(p.name); }
+    // A `&`-sigil NAME in scope — `sub f(&body)`, `my &body = …`. It is nearer
+    // than a `sub body` at file scope, so `&body` as a value is the variable and
+    // not the sub. Without this, `sub page($p, &body) { … :&body … }` stored the
+    // global `sub body` in the route, and a page built one `<body>` element.
+    bool codeVisible(const string& n) { for (int i = (int)scopes.size() - 1; i >= 0; i--) { if (scopes[i].codes.count(n)) return true; if (scopes[i].subs.count(n)) return false; } return false; }
+    void declareCode(const string& n) { if (!scopes.empty()) scopes.back().codes.insert(n); }
+    void declareSigillessParams(const std::vector<Param>& ps) {
+        for (auto& p : ps) {
+            if (p.name.empty()) continue;
+            if (p.name[0] == '&') { declareCode(p.name.substr(1)); continue; }
+            if (p.name[0] != '$' && p.name[0] != '@' && p.name[0] != '%') declareSigilless(p.name);
+        }
+    }
     std::vector<string> prelude;         // literal consts, state slots (top of the program function)
     int litN = 0, labelN = 0, stateN = 0, fnCounter = 0, endSlotN = 0;
     std::vector<FnCtx> fns;
@@ -396,6 +408,7 @@ struct JsGen {
         if (n.size() > 2 && n[1] == ':') return mangleVar("$" + n.substr(2));   // :$named placeholder
         if (n[0] == '&') {
             string bare = n.substr(1);
+            if (codeVisible(bare)) return mangleVar(n);   // a `&`-variable in scope beats a sub of the name
             if (subVisible(bare)) return mangleSub(bare);
             if (kBuiltins.count(bare)) return rt(bare);
             if (bare.rfind("infix:<", 0) == 0) return "R.opFn(" + jsStr(bare.substr(7, bare.size() - 8)) + ")";
@@ -442,6 +455,11 @@ struct JsGen {
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary: return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
+            // `* => True` as an argument is a curry over the WHOLE pair, the way
+            // `* + 1` is: `@a.map(* => True)` pairs each element with True. Left
+            // out here, the pair kept a literal Whatever as its key and `map` was
+            // handed a Pair where it wanted a callable.
+            case NK::Pair: { auto* p = static_cast<PairExpr*>(e); return hasWhatever(p->keyExpr.get()) || hasWhatever(p->value.get()); }
             case NK::MethodCall: return hasWhatever(static_cast<MethodCall*>(e)->inv.get());
             case NK::Call: return hasWhatever(static_cast<Call*>(e)->callee.get());
             case NK::Index: return hasWhatever(static_cast<Index*>(e)->base.get());
@@ -964,6 +982,17 @@ struct JsGen {
             return op == "~~" ? m : "!R.truthy(" + m + ")";
         }
         if (op == "~~" && b->rhs->kind == NK::SubstLit) return substExpr(static_cast<SubstLit*>(b->rhs.get()), b->lhs.get());
+        // A TYPE SMILEY on the right: `$x ~~ Element:D`. The smiley lives on the
+        // NameTerm and was dropped here, so `Element` matched its own type object
+        // and a `:D` guard let an undefined value through — which is how a framework
+        // pushed a child into a parent that was not there.
+        if ((op == "~~" || op == "!~~") && b->rhs->kind == NK::NameTerm &&
+            static_cast<NameTerm*>(b->rhs.get())->defConstraint) {
+            auto* nt = static_cast<NameTerm*>(b->rhs.get());
+            string ty = (nt->name == "Any" || nt->name == "Mu") ? "null" : typeObj(nt->name, nt->line);
+            string m = "R.smartmatchType(" + exArg(b->lhs.get()) + ", " + ty + ", " + std::to_string(nt->defConstraint) + ")";
+            return op == "~~" ? m : "!" + m;
+        }
         if ((op == "~~" || op == "!~~") && b->rhs->kind != NK::NameTerm && b->rhs->kind != NK::StrLit && b->rhs->kind != NK::IntLit && b->rhs->kind != NK::NumLit) {
             // a Regex on the right (a variable, &name, a grammar) sets $/ like a literal does
             fn().usesSlash = true;
@@ -1277,6 +1306,10 @@ struct JsGen {
         if (name == "EVAL" || name == "EVALFILE" || name == "require") refuse("EVAL", c->line);
         if (name == "proceed" || name == "succeed") refuse(name, c->line);
         if (name == "sprintf" && !c->args.empty()) return "R.sprintf(" + args(c->args) + ")";
+        // A `&`-variable in scope is nearer than a sub of the same name, so
+        // `body()` inside `sub page($p, &body)` calls the parameter. Same rule as
+        // for `&body` as a value, and the same reason.
+        if (codeVisible(name)) return "R.callCode(" + mangleVar("&" + name) + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         auto si = subs.find(name);
         if (si != subs.end() && subVisible(name)) {
             SubInfo& info = si->second;
@@ -1429,9 +1462,15 @@ struct JsGen {
             if (!params.empty()) {
                 // a pointy block's / anonymous sub's params: the same binder subs use
                 if (simpleSig(params)) {
-                    for (size_t i = 0; i < params.size(); i++) paramList += (i ? ", " : "") + mangleVar(params[i].name);
-                    for (auto& p : params) if (p.sigil == '$' && (p.type.empty() ? isRoutine : (p.type == "Any" || p.type == "Any:D"))) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
-                    for (auto& p : params) if (itemParam(p)) line(2, mangleVar(p.name) + " = R.item(" + mangleVar(p.name) + ");");
+                    // Every ANONYMOUS parameter mangles to `_anon`, so a signature
+                    // with two of them — `-> $, Str $ { … }`, ordinary Raku —
+                    // emitted `(_anon, _anon) =>`, which is a JavaScript syntax
+                    // error and took the whole program with it. They are numbered
+                    // by position; nothing can name them, so nothing reads them.
+                    std::vector<string> pn = simpleParamNames(params);
+                    for (size_t i = 0; i < params.size(); i++) paramList += (i ? ", " : "") + pn[i];
+                    for (size_t i = 0; i < params.size(); i++) { auto& p = params[i]; if (p.sigil == '$' && (p.type.empty() ? isRoutine : (p.type == "Any" || p.type == "Any:D"))) line(2, "if (" + pn[i] + " === R.Mu) R.notAny(" + jsStr(p.name) + ");"); }
+                    for (size_t i = 0; i < params.size(); i++) if (itemParam(params[i])) line(2, pn[i] + " = R.item(" + pn[i] + ");");
                 }
                 else { paramList = "..._args"; bindParams(params, 2, "", false); }
                 for (auto& p : params) if (p.name == "$_") bindsTopic = true;
@@ -1487,6 +1526,23 @@ struct JsGen {
         bool hasWhen = false;
         scopes.emplace_back();
         struct ScopePop { std::vector<Scope>& v; ~ScopePop() { v.pop_back(); } } scopePop{ scopes };
+        // Sigilless names this statement list declares — `constant TAU = …`,
+        // `my \x = …` — have to be visible BEFORE the classes below are emitted,
+        // because classes are hoisted to the front of the list and a method that
+        // names one would otherwise be refused as an unknown term. The
+        // declaration still emits where it stands, so at run time the value is
+        // assigned before any method can be called.
+        for (auto& sp : ss) {
+            Stmt* s = sp.get();
+            if (s->kind != NK::ExprStmt) continue;
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            if (e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+            if (e->kind != NK::VarExpr) continue;
+            auto* v = static_cast<VarExpr*>(e);
+            if (!v->declare || v->name.empty()) continue;
+            char sig = v->name[0];
+            if (sig != '$' && sig != '@' && sig != '%' && sig != '&') declareSigilless(v->name);
+        }
         for (auto& sp : ss) {
             Stmt* s = sp.get();
             if (s->kind == NK::SubDecl) { auto* d = static_cast<SubDecl*>(s); if (!d->name.empty() && !d->isMethod && !d->isSubmethod) scopes.back().subs.insert(d->name); }
@@ -1707,7 +1763,8 @@ struct JsGen {
             auto* v = static_cast<VarExpr*>(e);
             if (v->declScope == "state") { string slot = stateSlot(v, ind); if (tail) line(ind, ret(slot)); return; }
             if (v->name.size() > 2 && v->name[1] == '*') { line(ind, "R.dynSet(" + jsStr(v->name) + ", " + declDefault(v) + ");"); return; }
-            if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&') declareSigilless(v->name);
+            if (v->name[0] == '&') declareCode(v->name.substr(1));
+            else if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%') declareSigilless(v->name);
             if (!v->declTypeExpr && !v->declShape) {
                 line(ind, declKw(mangleVar(v->name), v->declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + declDefault(v) + ";");
                 if (tail) line(ind, ret(mangleVar(v->name)));
@@ -1732,7 +1789,8 @@ struct JsGen {
                     return;
                 }
                 if (v->name.size() > 2 && v->name[1] == '*') { line(ind, "R.dynSet(" + jsStr(v->name) + ", " + (v->name[0] == '@' ? "R.newArray(" + listSource(a->value.get()) + ")" : v->name[0] == '%' ? "R.newHash(" + listSource(a->value.get()) + ")" : exArg(a->value.get())) + ");"); return; }
-                if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&') declareSigilless(v->name);
+                if (v->name[0] == '&') declareCode(v->name.substr(1));
+            else if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%') declareSigilless(v->name);
                 string init;
                 char sig = a->containerSigil ? a->containerSigil : v->name[0];   // `=@=` / `=%=`: the operator names the container
                 if ((sig == '@' || sig == '%') && a->op == ":=") init = exArg(a->value.get());   // binding: the object itself
@@ -1837,7 +1895,7 @@ struct JsGen {
     }
     // Emit a loop body inside the loop: handles redo, thrown control, FIRST/NEXT/LAST.
     // `head` is the loop header up to the opening brace; `pre` runs before the loop.
-    void loopBody(Stmt* loop, Block* body, int ind, const string& head, const std::function<void()>& bindVars, bool tailBody = false) {
+    void loopBody(Stmt* loop, Block* body, int ind, const string& head, const std::function<void()>& bindVars, bool tailBody = false, const string& lastPrelude = "") {
         LoopPhasers ph = loopPhasers(body);
         bool hasRedo = contains(body, [](Node* n) { return n->kind == NK::RedoStmt || (n->kind == NK::Unary && static_cast<Unary*>(n)->op == "redo"); }, true);
         string lbl = label("L");
@@ -1869,7 +1927,10 @@ struct JsGen {
         if (hasRedo) { line(bi, "break;"); bi--; line(bi, "}"); }
         line(ind, "}");
         loops.pop_back();
-        if (!ph.last.empty()) { line(ind, "if (" + enteredFlag + ") {"); for (auto* b : ph.last) emitStmts(static_cast<Block*>(b)->stmts, ind + 1, false); line(ind, "}"); }
+        // The LAST phaser runs after the loop and reads the loop variable, which
+        // the head declared per iteration — so the caller hands over a line that
+        // re-declares it here from the copy kept on the way round.
+        if (!ph.last.empty()) { line(ind, "if (" + enteredFlag + ") {"); if (!lastPrelude.empty()) line(ind + 1, lastPrelude); for (auto* b : ph.last) emitStmts(static_cast<Block*>(b)->stmts, ind + 1, false); line(ind, "}"); }
     }
     // a loop in value position (`do for`, a routine ending in a loop): its body's
     // values are collected into a Seq
@@ -1988,7 +2049,26 @@ struct JsGen {
         line(ind, "{");
         ind++;
         for (auto& v : f->vars) if (v[0] != '$' && v[0] != '@' && v[0] != '%' && v[0] != '&') declareSigilless(v);
-        line(ind, "let " + decl + ";");
+        // Raku gives each iteration its OWN loop variable, so a closure made in
+        // the body keeps the value it saw. Declaring the variable outside the
+        // loop — which is what a LAST phaser needs, since it runs after the loop
+        // — gave every closure the same binding, and the last value: three rows
+        // of a list all called the handler of the third. `for (let x of …)` is
+        // JavaScript's own per-iteration binding, so the head declares it unless
+        // a LAST phaser has to read it afterwards.
+        bool lastPhaser = !loopPhasers(f->body.get()).last.empty();
+        string lastPrelude, lastCopy;
+        if (lastPhaser) {
+            std::vector<string> names;
+            if (!nt.empty() && f->vars.empty()) names.push_back(nt);
+            for (auto& v : f->vars) names.push_back(v == "$_" ? nt : mangleVar(v));
+            for (auto& n : names) {
+                string keep = label("_last");
+                line(ind, "let " + keep + ";");
+                lastCopy += keep + " = " + n + "; ";
+                lastPrelude += "let " + n + " = " + keep + "; ";
+            }
+        }
         string iterExpr = f->vars.size() > 1 ? "R.iterN(" + src + ", " + std::to_string(f->vars.size()) + ")" : (f->vars.empty() || f->vars[0] == "$_") ? "R.iterTopic(" + src + ")" : "R.iter(" + src + ")";   // the bare topic: an Array's slots arrive as items
         // a range: the runtime's counted iterator (no generator on the hot path)
         if (f->vars.size() <= 1 && le->kind == NK::Range) {
@@ -1997,7 +2077,10 @@ struct JsGen {
                 iterExpr = "R.rangeIter(" + rangeEnd(r->from.get()) + ", " + rangeEnd(r->to.get()) + ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
         }
         if (!nt.empty()) topics.push_back(nt);
-        loopBody(f, f->body.get(), ind, "for (" + vars + " of " + iterExpr + ")", [&]() { for (auto& v : f->vars) if (v[0] == '$' && v != "$_") line(ind + 1, mangleVar(v) + " = R.item(" + mangleVar(v) + ");"); }, tb);   // a named $ loop variable itemizes
+        loopBody(f, f->body.get(), ind, "for (let " + vars + " of " + iterExpr + ")", [&]() {
+            for (auto& v : f->vars) if (v[0] == '$' && v != "$_") line(ind + 1, mangleVar(v) + " = R.item(" + mangleVar(v) + ");");   // a named $ loop variable itemizes
+            if (!lastCopy.empty()) line(ind + 1, lastCopy);
+        }, tb, lastPrelude);
         if (!nt.empty()) topics.pop_back();
         ind--;
         line(ind, "}");
@@ -2074,7 +2157,17 @@ struct JsGen {
         bool laxTail = false; for (auto it = ps.rbegin(); it != ps.rend(); ++it) { if (it->named || it->invocant) continue; laxTail = (it->sigil == '@' || it->sigil == '%') && !it->slurpy; break; }   // extras after a trailing @/% parameter are ignored, as the interpreter does
         if (!slurpy && !laxTail) line(ind, "if (_pos.length > " + std::to_string(req + opt) + ") R.tooMany(" + jsStr(who) + ", " + std::to_string(req + opt) + ", _pos.length);");
         int pi = 0;
+        // Every key an explicit named parameter answers to. A slurpy hash takes
+        // what is LEFT, so the set has to be complete before the first parameter
+        // is bound — accumulating it during the walk excluded only the keys
+        // declared ahead of the slurpy, and excluded the slurpy's own name.
         std::vector<string> usedNamed;
+        for (auto& p : ps) {
+            if (!p.named || p.slurpy) continue;
+            if (!p.namedKey.empty()) usedNamed.push_back(p.namedKey); else if (!p.name.empty()) usedNamed.push_back(p.name.substr(1));
+            if (p.aliasBoth && !p.name.empty()) usedNamed.push_back(p.name.substr(1));
+            for (auto& k : p.aliasKeys) usedNamed.push_back(k);
+        }
         for (auto& p : ps) {
             if (p.invocant) { if (!p.name.empty()) line(ind, "const " + mangleVar(p.name) + " = self;"); continue; }
             if (p.typeCapture) refuse("a type capture (::T)", 0);
@@ -2090,8 +2183,7 @@ struct JsGen {
                 if (!p.namedKey.empty()) keys.push_back(p.namedKey); else if (!p.name.empty()) keys.push_back(p.name.substr(1));
                 if (p.aliasBoth && !p.name.empty()) keys.push_back(p.name.substr(1));
                 for (auto& k : p.aliasKeys) keys.push_back(k);
-                for (auto& k : keys) usedNamed.push_back(k);
-                if (p.slurpy) { line(ind, "let " + name + " = R.namedHash(_named, new Set([" + joinStrs(usedNamed) + "]));"); continue; }
+                if (p.slurpy) { if (name.empty()) continue; line(ind, "let " + name + " = R.namedHash(_named, new Set([" + joinStrs(usedNamed) + "]));"); continue; }
                 string dflt = p.defaultVal ? exArg(p.defaultVal.get()) : sig == '@' ? "R.mkArray([])" : sig == '%' ? "R.mkHash()" : (p.required ? "undefined" : (p.type.empty() ? "R.Any" : typeObj(p.type, 0)));
                 if (name.empty()) continue;
                 line(ind, "let " + name + " = R.namedArg(_named, [" + joinStrs(keys) + "], " + dflt + ");");
@@ -2105,7 +2197,12 @@ struct JsGen {
             if (p.slurpy) {
                 string rest = "_pos.slice(" + std::to_string(pi) + ")";
                 if (name.empty()) continue;
-                if (sig == '%') line(ind, "let " + name + " = R.newHash(R.mkList(" + rest + "));");
+                // `*%a` is the slurpy NAMED hash: the parser marks it slurpy with
+                // `named` false (only the sigil says so), so it lands here rather
+                // than in the named branch above. It takes the named arguments no
+                // explicit parameter claimed — never the positionals, which used
+                // to be paired up into it and died on an odd count.
+                if (sig == '%') line(ind, "let " + name + " = R.namedHash(_named, new Set([" + joinStrs(usedNamed) + "]));");
                 else if (p.slurpyKind == 'n') line(ind, "let " + name + " = R.mkArray(" + rest + ");");
                 else if (p.slurpyKind == '1') line(ind, "let " + name + " = R.mkArray(_pos.length - " + std::to_string(pi) + " === 1 ? R.itemsOf(_pos[" + std::to_string(pi) + "]).slice() : " + rest + ");");
                 else line(ind, "let " + name + " = R.mkArray(R.slurpyFlat(" + rest + "));");
@@ -2153,6 +2250,14 @@ struct JsGen {
             i++;
         }
     }
+    // The emitted JS name of each parameter in a simple signature. Anonymous
+    // parameters all mangle to `_anon`, so they are numbered by position — two
+    // of them in one signature is a JavaScript syntax error otherwise.
+    std::vector<string> simpleParamNames(const std::vector<Param>& ps) {
+        std::vector<string> out; int anonN = 0;
+        for (auto& p : ps) { string n = mangleVar(p.name); out.push_back(n == "_anon" ? "_anon" + std::to_string(++anonN) : n); }
+        return out;
+    }
     void typeGuard(const Param& p, const string& name, int ind) {
         if (p.sigil != '$' || p.coerce) { if (p.coerce && p.sigil == '$') line(ind, name + " = R.coerce(" + typeObj(p.type, 0) + ", " + name + ");"); return; }
         if (p.type == "Any" || p.type == "Any:D") line(ind, "if (" + name + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
@@ -2174,7 +2279,12 @@ struct JsGen {
         bool simple = simpleSig(d->params) && !hasWhereOrType(d->params) && !usesArgs && placeholders.empty();
         string params;
         if (isMethod) params = "self";
-        if (simple) { for (auto& p : d->params) { if (!params.empty()) params += ", "; params += mangleVar(p.name); } }
+        // Anonymous parameters are numbered by position: two of them both mangle
+        // to `_anon`, and `function f(_anon, _anon)` is a JavaScript syntax error.
+        std::vector<string> pnames = simpleParamNames(d->params);
+        // `params` may already hold `self` for a method, so the separator is
+        // decided by whether anything is there — not by the index.
+        if (simple) { for (size_t i = 0; i < d->params.size(); i++) { if (!params.empty()) params += ", "; params += pnames[i]; } }
         else params += (params.empty() ? "" : ", ") + string("..._args");
         string savedSelf = selfName; if (isMethod) selfName = "self";
         bool isAsync = stmtsAwait(d->body);
@@ -2195,8 +2305,8 @@ struct JsGen {
             else if (!simple) bindParams(d->params, 2, who, isMethod);
             else if (!d->params.empty()) {
                 line(2, "if (arguments.length " + string(!d->params.empty() && (d->params.back().sigil == '@' || d->params.back().sigil == '%') ? "<" : "!==") + " " + std::to_string(d->params.size() + (isMethod ? 1 : 0)) + ") R.arityError(" + jsStr(who) + ", " + std::to_string(d->params.size()) + ", arguments.length" + (isMethod ? " - 1" : "") + ");");
-                for (auto& p : d->params) line(2, "if (" + mangleVar(p.name) + " === R.Mu) R.notAny(" + jsStr(p.name) + ");");
-                for (auto& p : d->params) if (itemParam(p)) line(2, mangleVar(p.name) + " = R.item(" + mangleVar(p.name) + ");");
+                for (size_t i = 0; i < d->params.size(); i++) line(2, "if (" + pnames[i] + " === R.Mu) R.notAny(" + jsStr(d->params[i].name) + ");");
+                for (size_t i = 0; i < d->params.size(); i++) if (itemParam(d->params[i])) line(2, pnames[i] + " = R.item(" + pnames[i] + ");");
             }
             bool bindsTopic = false; for (auto& p : d->params) if (p.name == "$_") bindsTopic = true;
             if (bindsTopic) topics.push_back(mangleVar("$_"));   // `method name($_)`: the parameter IS the topic

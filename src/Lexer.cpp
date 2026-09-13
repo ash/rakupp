@@ -1136,6 +1136,75 @@ static bool quoteFeatAdverbs(const std::string& adverbs, std::string& feats) {
     return anyFeat;
 }
 
+// The quote-form keywords, and the pre-scan that finds a unit declaring one as a
+// routine. Rakudo lets the declared `&tr` win over `tr///`; here the lexer runs
+// before any scope is known, so the source is read for the declarations once.
+bool Lexer::isQuoteKeyword(const std::string& w) {
+    static const std::set<std::string> kQuoteWords = {
+        "q", "qq", "Q", "rx", "m", "ms", "mm", "s", "S", "ss", "SS", "tr", "TR",
+        "qw", "Qw", "qqw", "qww", "qqww", "qx", "qqx",
+    };
+    return kQuoteWords.count(w) > 0;
+}
+
+// Every `sub NAME` DECLARATION in `src`, reported to `cb`. Textual, because it
+// runs before anything has been lexed, so it is deliberately narrow: a line
+// comment is skipped, and the name must be followed by what a declaration puts
+// there — a signature, a body, or a trait. Prose in a comment ("declare sub tr
+// to see it") therefore does not count, and neither does `subset` or `&sub`.
+void Lexer::scanDeclaredSubNames(const std::string& src,
+                                 const std::function<void(const std::string&)>& cb) {
+    size_t pos = 0;
+    while (pos < src.size()) {
+        if (src[pos] == '#') { pos = src.find('\n', pos); if (pos == std::string::npos) return; continue; }
+        // Quoted text is not code. A regression test carries the program
+        // `'sub q($x) { … }'` as a STRING to be EVAL'd, and reading that as this
+        // file's own declaration turned its `q:to/END/` heredoc into a call.
+        // A `'` that continues an identifier (`don't`) is not a quote; skipping
+        // from one of those only loses a declaration, which is the safe way to
+        // be wrong here.
+        if ((src[pos] == '\'' || src[pos] == '"') &&
+            !(pos && (rakuIdentCont(src[pos - 1]) && src[pos] == '\''))) {
+            char q = src[pos++];
+            while (pos < src.size() && src[pos] != q) pos += (src[pos] == '\\' && pos + 1 < src.size()) ? 2 : 1;
+            pos++;
+            continue;
+        }
+        if (src.compare(pos, 3, "sub") != 0) { pos++; continue; }
+        if (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
+                    src[pos - 1] == '-' || src[pos - 1] == '&')) { pos += 3; continue; }  // `subst`, `my-sub`, `&sub`
+        size_t i = pos + 3;
+        if (i >= src.size() || !ascii::isspace((unsigned char)src[i])) { pos += 3; continue; } // `subset`, `submethod`
+        while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
+        size_t b = i;
+        while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_' || src[i] == '-')) i++;
+        std::string name = src.substr(b, i - b);
+        size_t after = i;
+        while (after < src.size() && (src[after] == ' ' || src[after] == '\t')) after++;
+        // A signature, a body, or a NAMED trait. Accepting any word here was too
+        // loose by half: the prose "sub tr should not…" in a comment and the text
+        // "sub q in a string" both read as declarations, and the second one turned
+        // `q{…}` into a call to an undefined routine for the rest of the file.
+        bool declares = false;
+        if (after < src.size()) {
+            if (src[after] == '(' || src[after] == '{') declares = true;
+            else {
+                size_t tb = after;
+                while (after < src.size() && ascii::isalpha((unsigned char)src[after])) after++;
+                std::string trait = src.substr(tb, after - tb);
+                declares = trait == "is" || trait == "of" || trait == "returns" ||
+                           trait == "will" || trait == "where" || trait == "does" || trait == "handles";
+            }
+        }
+        if (!name.empty() && declares) cb(name);
+        pos = i ? i : pos + 3;
+    }
+}
+
+void Lexer::scanQuoteWordSubs(const std::string& src, std::set<std::string>& into) {
+    scanDeclaredSubNames(src, [&](const std::string& n) { if (isQuoteKeyword(n)) into.insert(n); });
+}
+
 bool Lexer::tryQuoteForm(Token& out) {
     size_t p = pos_;
     std::string w;
@@ -1160,6 +1229,20 @@ bool Lexer::tryQuoteForm(Token& out) {
         w = "Q";
     }
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
+    // A routine of this name is declared in the unit (or imported): the call wins
+    // over the quote construct, which is the reading Rakudo gives once the routine
+    // is in scope. `sub tr(&body)` then makes `tr { td 'a' }` a table row rather
+    // than a transliteration whose delimiters are braces.
+    //
+    // An ADVERB is where Rakudo draws the line, and so does this: `s:g/l/L/` and
+    // `q:to/END/` stay quotes even with `&s` and `&q` imported, while `s/l/L/`
+    // and `q{…}` become calls. Measured against Rakudo, both directions.
+    if (!notQuoteWords_.empty() && notQuoteWords_.count(w)) {
+        bool adverbFollows = p < src_.size() && src_[p] == ':' &&
+                             p + 1 < src_.size() && src_[p + 1] != ':' &&
+                             (ascii::isalpha((unsigned char)src_[p + 1]) || src_[p + 1] == '!');
+        if (!adverbFollows) return false;
+    }
     // A PAREN is never a quote delimiter: parens carry arguments, so `q(x)`,
     // `qq(x)`, `Q(x)`, `qw(a b)`, `m(a)` and `rx(a)` are CALLS, which is why
     // Rakudo answers `q("11000")` with "Undeclared routine q" and calls a
@@ -3021,6 +3104,10 @@ ParseError Lexer::storedLexError(size_t idx) {
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
+    // The unit's own `sub q` / `sub tr` / `sub s` beat the quote forms of those
+    // names. One pass over the source, and only when the source mentions `sub`
+    // at all; a name the Parser learns from an imported module is added by it.
+    if (src_.find("sub") != std::string::npos) scanQuoteWordSubs(src_, notQuoteWords_);
     if (!tolerant_) { tokenizeImpl(out); return out; }
     try { tokenizeImpl(out); }
     catch (ParseError& e) {
