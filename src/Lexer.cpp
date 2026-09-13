@@ -1152,10 +1152,31 @@ bool Lexer::isQuoteKeyword(const std::string& w) {
 // comment is skipped, and the name must be followed by what a declaration puts
 // there — a signature, a body, or a trait. Prose in a comment ("declare sub tr
 // to see it") therefore does not count, and neither does `subset` or `&sub`.
-void Lexer::scanDeclaredSubNames(const std::string& src,
-                                 const std::function<void(const std::string&)>& cb) {
+void Lexer::scanDeclaredSubNames(
+    const std::string& src,
+    const std::function<void(const std::string& name, size_t at, size_t scopeEnd)>& cb) {
+    // Declarations are buffered per BLOCK, because a block's end is not known
+    // until its `}` is reached. `open` is a stack of brace depths; level 0 is the
+    // unit itself and closes at end of source.
+    struct Pending { std::string name; size_t at; };
+    std::vector<std::vector<Pending>> open(1);
     size_t pos = 0;
     while (pos < src.size()) {
+        // Brace tracking rides along with the same skipping the scan already does
+        // for comments and quoted text. It can still be fooled by a brace inside a
+        // construct this textual pass does not understand (a regex, a heredoc); an
+        // underflow therefore falls back to unit level rather than guessing, and a
+        // scope that comes out too NARROW merely leaves the quote reading in place,
+        // which is where this wants to be wrong.
+        if (src[pos] == '{') { open.emplace_back(); pos++; continue; }
+        if (src[pos] == '}') {
+            if (open.size() > 1) {
+                for (auto& d : open.back()) cb(d.name, d.at, pos);
+                open.pop_back();
+            }
+            pos++;
+            continue;
+        }
         if (src[pos] == '#') { pos = src.find('\n', pos); if (pos == std::string::npos) return; continue; }
         // Quoted text is not code. A regression test carries the program
         // `'sub q($x) { … }'` as a STRING to be EVAL'd, and reading that as this
@@ -1196,13 +1217,33 @@ void Lexer::scanDeclaredSubNames(const std::string& src,
                            trait == "will" || trait == "where" || trait == "does" || trait == "handles";
             }
         }
-        if (!name.empty() && declares) cb(name);
+        if (!name.empty() && declares) open.back().push_back({name, pos});
         pos = i ? i : pos + 3;
     }
+    // whatever is still open — the unit, and any block whose `}` this textual
+    // pass never found — runs to the end of the source
+    for (auto& lvl : open)
+        for (auto& d : lvl) cb(d.name, d.at, src.size());
 }
 
-void Lexer::scanQuoteWordSubs(const std::string& src, std::set<std::string>& into) {
-    scanDeclaredSubNames(src, [&](const std::string& n) { if (isQuoteKeyword(n)) into.insert(n); });
+void Lexer::scanQuoteWordSubs(const std::string& src,
+                              std::map<std::string, std::vector<std::pair<size_t, size_t>>>& into) {
+    scanDeclaredSubNames(src, [&](const std::string& n, size_t at, size_t end) {
+        if (isQuoteKeyword(n) && at < end) into[n].push_back({at, end});
+    });
+}
+
+void Lexer::scanQuoteWordSubNames(const std::string& src, std::set<std::string>& into) {
+    scanDeclaredSubNames(src, [&](const std::string& n, size_t, size_t) {
+        if (isQuoteKeyword(n)) into.insert(n);
+    });
+}
+
+bool Lexer::quoteWordShadowedAt(const std::string& w, size_t at) const {
+    auto it = notQuoteWords_.find(w);
+    if (it == notQuoteWords_.end()) return false;
+    for (auto& r : it->second) if (at >= r.first && at < r.second) return true;
+    return false;
 }
 
 bool Lexer::tryQuoteForm(Token& out) {
@@ -1237,7 +1278,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     // An ADVERB is where Rakudo draws the line, and so does this: `s:g/l/L/` and
     // `q:to/END/` stay quotes even with `&s` and `&q` imported, while `s/l/L/`
     // and `q{…}` become calls. Measured against Rakudo, both directions.
-    if (!notQuoteWords_.empty() && notQuoteWords_.count(w)) {
+    if (!notQuoteWords_.empty() && quoteWordShadowedAt(w, pos_)) {
         bool adverbFollows = p < src_.size() && src_[p] == ':' &&
                              p + 1 < src_.size() && src_[p + 1] != ':' &&
                              (ascii::isalpha((unsigned char)src_[p + 1]) || src_[p + 1] == '!');

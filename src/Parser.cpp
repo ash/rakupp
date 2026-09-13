@@ -642,15 +642,18 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // to nothing. The name has to be known while this file is parsed, the same
     // reason the operators just below are read off the source; a declaration is
     // `sub NAME` with NAME word-infix-shaped, optionally behind multi/proto/only.
-    Lexer::scanDeclaredSubNames(src, [&](const std::string& n) {
+    Lexer::scanDeclaredSubNames(src, [&](const std::string& n, size_t, size_t) {
         if (isWordInfixName(n)) wordInfixSubs_.insert(n);
     });
     // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
     // decided in the lexer, which ran before this file's `use` was reached, so the
     // rest of the unit is re-lexed with them vetoed — the path a slang takes.
     {
+        // An IMPORTED name is in scope for the whole importing unit, so only the
+        // names matter here — where the module happened to declare them says
+        // nothing about where they are visible in THIS file.
         size_t before = quoteWordSubs_.size();
-        Lexer::scanQuoteWordSubs(src, quoteWordSubs_);
+        Lexer::scanQuoteWordSubNames(src, quoteWordSubs_);
         if (quoteWordSubs_.size() != before) relexForQuoteWords();
     }
     // A module that RE-EXPORTS another one's names — `use Monarch::HTML;` plus an
@@ -9751,7 +9754,9 @@ void Parser::relexForQuoteWords() {
     Lexer lx(*src_);
     lx.slang_ = slang_;
     lx.slangFrom_ = slang_ ? 0 : 0;
-    lx.notQuoteWords_ = quoteWordSubs_;
+    // imported names shadow the quote form everywhere in this unit; the unit's
+    // OWN declarations are re-scanned by the lexer, with their real scopes
+    for (auto& n : quoteWordSubs_) lx.notQuoteWords_[n].push_back({0, SIZE_MAX});
     std::vector<Token> nt = lx.tokenize();
     size_t i = 0;
     while (i < nt.size() && nt[i].kind != Tok::End && nt[i].off <= from) i++;

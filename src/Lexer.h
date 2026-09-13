@@ -48,22 +48,43 @@ public:
     // End token carrying the error (flag set, ival = its index) instead of
     // throwing, so the parser can reach the `use` first. Parser::error rethrows.
     bool tolerant_ = false;
-    // Quote keywords this unit declares as SUBS — `sub tr`, `sub q`, `sub s`.
-    // A declared routine beats the quote construct, as it does on Rakudo, so
-    // `tr { td 'a' }` is a call and not a transliteration. Filled by a pre-scan
-    // of the source for the unit's own declarations; the Parser adds the ones an
-    // imported module declares and re-lexes what is left of the unit.
-    std::set<std::string> notQuoteWords_;
+    // Where a quote keyword is shadowed by a SUB of the same name — `sub tr`,
+    // `sub q`, `sub s`. A declared routine beats the quote construct, as it does
+    // on Rakudo, so `tr { td 'a' }` is a call and not a transliteration.
+    //
+    // It is a set of source RANGES per name, not a bare set of names, because
+    // the routine only wins WHERE IT IS IN SCOPE — from its declaration onward,
+    // and only inside the block that declares it. Rakudo draws it exactly there:
+    // `{ sub s {…} }; s/a/b/` is a substitution, and so is an `s/a/b/` written
+    // ABOVE a unit-level `sub s`. A unit-wide veto broke every `s///` in any file
+    // that declared `sub s` anywhere at all — including roast's own
+    // S05-substitution/subst.t, which tests both readings in one file and lost
+    // 191 assertions to it.
+    //
+    // Filled by a pre-scan of the unit's own declarations; the Parser adds the
+    // ones an imported module declares (those apply unit-wide, and it re-lexes
+    // what is left of the unit).
+    std::map<std::string, std::vector<std::pair<size_t, size_t>>> notQuoteWords_;
+    // Does a sub of this name shadow the quote form at source offset `at`?
+    bool quoteWordShadowedAt(const std::string& w, size_t at) const;
     static ParseError storedLexError(size_t idx);
     // Is `w` a quote-form keyword a sub may also be named? (q, qq, Q, m, s, tr, …)
     static bool isQuoteKeyword(const std::string& w);
-    // Add every `sub <quote-keyword>` declared in `src` to `into`.
-    static void scanQuoteWordSubs(const std::string& src, std::set<std::string>& into);
-    // Report every `sub NAME` declaration in `src`. Used before a lex, so it is
-    // textual; comments are skipped and the name must be followed by a signature,
-    // a body or a trait.
-    static void scanDeclaredSubNames(const std::string& src,
-                                     const std::function<void(const std::string&)>& cb);
+    // Add every `sub <quote-keyword>` declared in `src` to `into`, each with the
+    // range over which it is in scope.
+    static void scanQuoteWordSubs(const std::string& src,
+                                  std::map<std::string, std::vector<std::pair<size_t, size_t>>>& into);
+    // …and the NAME-only form, for callers that want every declaration in a file
+    // regardless of where it is in scope (an imported module's names apply to the
+    // whole importing unit).
+    static void scanQuoteWordSubNames(const std::string& src, std::set<std::string>& into);
+    // Report every `sub NAME` declaration in `src` to `cb`, with the offset it is
+    // written at and the end of the block that declares it. Used before a lex, so
+    // it is textual; comments and quoted text are skipped and the name must be
+    // followed by a signature, a body or a trait.
+    static void scanDeclaredSubNames(
+        const std::string& src,
+        const std::function<void(const std::string& name, size_t at, size_t scopeEnd)>& cb);
 
 private:
     std::string src_;
