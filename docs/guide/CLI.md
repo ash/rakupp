@@ -420,6 +420,8 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column. The value is a comma list, like `--slim`'s: `tree` drops the source column, `attrs` adds each node's scalar attributes, `compunit` wraps it the way `.AST(:compunit)` does, and they combine (`--rakuast=tree,compunit`). `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff` |
 | `--target=parse` | Rakudo-compatible alias of `-c` |
+| `--target=cpp` | alias of `--cpp`; `--js` is an alias of `--target=js` |
+| `--target=raku` | alias of `--fmt` — emitting Raku is what the formatter does |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |

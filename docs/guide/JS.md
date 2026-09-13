@@ -229,7 +229,7 @@ const m = KV.parse('x=42');        // a grammar: parse/subparse → a Match or u
 m.k; m.v.Int(); m.made;            // captures are properties on the Match
 ```
 
-Values cross as in `use JS`: numbers, strings, booleans and arrays by copy,
+Values cross as in `use js`: numbers, strings, booleans and arrays by copy,
 hashes as plain objects. An object or a Match comes out as a proxy whose
 properties call its Raku methods (arguments marshalled the same way) and
 whose `.raku` is the underlying object; passed back into a Raku routine it
@@ -275,9 +275,9 @@ guard lines and the runtime call cost stack frames too. (`node
 --stack-size=65500` raises it.) The interpreter runs the same sub past 100,000.
 A program that overflows reports it as such and exits 1.
 
-## `use JS` — calling into JavaScript
+## `use js` — calling into JavaScript
 
-Under `use JS;` the term `JS` is the host's `globalThis`, and any JavaScript
+Under `use js;` the term `JS` is the host's `globalThis`, and any JavaScript
 object that reaches Raku is a `JS::Object`, an opaque handle: identity, the
 prototype chain and the DOM survive the crossing. Values cross by copy:
 
@@ -300,7 +300,7 @@ On a `JS::Object` (and on `JS` itself):
 - `EVAL 'code', :lang<JavaScript>` inlines a *literal* string verbatim.
 
 ```raku
-use JS;
+use js;
 my $doc = JS.document;
 my $div = $doc.createElement('div');
 $div<textContent> = 'hello';
@@ -310,9 +310,12 @@ say JS.JSON.stringify({ a => 1, b => [1, 2] });
 say EVAL '[1,2,3].map(x => x * 2)', :lang<JavaScript>;   # [2 4 6]
 ```
 
-Under the interpreter `use JS` loads a stub (`rakulib/JS.rakumod`) whose
-every call dies naming `--target=js`, so such a program fails at its first
-interop call, not at compile time. The interpreter therefore cannot be the
+`use js` is a PRAGMA, not a module: it is lowercase because it is compiler
+territory, like `strict` and `nqp`, and there is no distribution named `js` to
+find or to claim. It declares what the program targets, so the interpreter
+refuses it at that line and says which command to use instead, rather than
+running on and dying at the first `JS.` call. `use JS` is accepted as the older
+spelling. The term `JS` stays capitalised either way. The interpreter therefore cannot be the
 oracle for these programs: they have goldens instead, `t/js/interop/*.raku`
 with their `.out`, run by the gate under Node with the small DOM stand-in
 `t/js/interop/dom-stub.js` preloaded.
@@ -380,7 +383,7 @@ Output goes to `console.log`; a page can redirect it by replacing
 `R.host.writeOut` and `R.host.writeErr` before `R.main` runs (the runtime's
 host adapter is one object, `R.host`, chosen at load: Node/Bun, Deno, a Web
 Worker or the main thread). Files and `%*ENV` do not exist there and say so
-when used. DOM access from Raku (`use JS`) is P4 of the plan.
+when used. DOM access from Raku (`use js`) is P4 of the plan.
 
 Three worked examples of the whole path live in `showcase/`, each one engine
 driving both a terminal program and an interactive book in a browser:

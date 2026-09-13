@@ -1,6 +1,6 @@
 # --target=js interop golden: Raku closures handed to JavaScript and JS
 # functions handed back.
-use JS;
+use js;
 # a JS array crosses by copy: it comes back a Raku Array, with Raku's methods
 my $arr = JS.Array.from([1, 2, 3, 4, 5]);
 say $arr.WHAT.^name, " ", $arr.elems;

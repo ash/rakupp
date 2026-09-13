@@ -1,5 +1,5 @@
 # --target=js interop golden: values crossing both ways, and EVAL :lang<JavaScript>.
-use JS;
+use js;
 say JS.Math.sqrt(16);
 say JS.Math.max(3, 9, 2);
 say JS.Math.PI.round(0.001);

@@ -1626,7 +1626,7 @@ static const FlagDoc kFlagDocs[] = {
     {"-c", 0, nullptr, "compile-check only"},
     {"-q", 0, nullptr, "quiet, drop what a mode says about itself"},
     {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
-    {"-o", 2, "FILE", "output file (compile modes, --target=js)"},
+    {"-o", 2, "FILE", "output file (compile modes, --target=js, --cpp)"},
     {"-O", 0, nullptr, "optimize (compile modes)"},
     {"-h", 0, nullptr, "help"},
     {"--help", 0, nullptr, "help"},
@@ -1639,17 +1639,17 @@ static const FlagDoc kFlagDocs[] = {
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
-    {"--fmt", 0, nullptr, "format Raku source to stdout (--check lists files that would change, --diff shows what)"},
+    {"--fmt", 0, nullptr, "format Raku source to stdout (--target=raku; --check lists files that would change, --diff shows what)"},
     {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program, with the Raku each node renders back to (--rakuast=tree drops that column, =attrs adds attributes, =compunit wraps it)"},
     {"--dump-ast", 0, nullptr, "print the parsed AST"},
     {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
-    {"--cpp", 0, nullptr, "print the C++ --exe would compile"},
+    {"--cpp", 0, nullptr, "print the C++ --exe would compile (--target=cpp; -o writes it)"},
     {"--bundle", 0, nullptr, "compile, embedding source and interpreter"},
     {"--aot", 0, nullptr, "compile, embedding the parsed AST"},
     {"--exe", 0, nullptr, "compile natively to C++"},
     {"--slim", 1, "safe auto max none help list verify", "cut unused runtime subsystems from the binary"},
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
-    {"--target", 1, "parse ast js", "parse, ast, or transpile to JavaScript"},
+    {"--target", 1, "parse ast js cpp raku", "parse, ast, or emit JavaScript, C++ or Raku"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
     {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
     {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
@@ -2282,6 +2282,11 @@ int main(int argc, char** argv) {
             if (a == "-c")     { if (!setMode(Mode::Check, a)) return 4; continue; }
             if (a == "--lint") { if (!setMode(Mode::Lint, a)) return 4; continue; }
             if (a == "--cpp" || a == "--emit-cpp") { if (!setMode(Mode::Cpp, "--cpp")) return 4; continue; }
+            // Each backend answers to both spellings. `--cpp` and `--target=js`
+            // grew up separately — the second for Rakudo muscle memory, which is
+            // where `--target=` came from — and a reader had no way to guess that
+            // one took a key and the other did not.
+            if (a == "--js") { if (!setMode(Mode::Js, "--target=js")) return 4; continue; }
             if (a == "--bundle") { if (!setMode(Mode::Bundle, a)) return 4; continue; }
             if (a == "--aot")    { if (!setMode(Mode::Aot, a)) return 4; continue; }
             if (a == "--exe")    { if (!setMode(Mode::Exe, a)) return 4; continue; }
@@ -2290,7 +2295,12 @@ int main(int argc, char** argv) {
                 if (t == "parse") { if (!setMode(Mode::Check, a)) return 4; }
                 else if (t == "ast") { if (!setMode(Mode::Ast, a)) return 4; }
                 else if (t == "js") { if (!setMode(Mode::Js, a)) return 4; }
-                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, js)\n"; return 4; }
+                else if (t == "cpp" || t == "c++") { if (!setMode(Mode::Cpp, "--cpp")) return 4; }
+                // Raku out of Raku is the formatter: the same "emit source in
+                // language X" the other targets do, where X happens to be the
+                // language it came from.
+                else if (t == "raku") { if (!setMode(Mode::Fmt, "--fmt")) return 4; }
+                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, js, cpp, raku)\n"; return 4; }
                 continue;
             }
             // --target=js companions (TRANSPILE-PLAN): --verify runs the program under
@@ -2472,7 +2482,7 @@ int main(int argc, char** argv) {
                 return 4;
             }
         }
-        if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("-o");
+        if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js && mode != Mode::Cpp) return illegalOpt("-o");
         if (g_jsModule && mode != Mode::Js) return illegalOpt("--module");
         if ((g_jsVerify || g_jsRuntimeOnly || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : g_jsRuntimeOnly ? "--runtime" : "--fallback");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
@@ -2703,8 +2713,9 @@ int main(int argc, char** argv) {
 "  rakupp --precomp-modules=on|off   Cache the parse of `use`d modules (default off)\n"
 "  rakupp --precomp-files=on|off     Cache the main program's own parse (default off)\n"
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
-"                               (add -O to print the optimized codegen instead)\n"
-"  rakupp --target=js SRC       Transpile to JavaScript (to stdout; -o OUT.js writes\n"
+"                               (--target=cpp; -o OUT.cpp writes it; add -O to\n"
+"                               print the optimized codegen instead)\n"
+"  rakupp --target=js SRC       Transpile to JavaScript (--js; to stdout; -o OUT.js writes\n"
 "                               the program and its runtime rakupp-rt.js beside it;\n"
 "                               --standalone inlines the runtime; --module exports the\n"
 "                               subs, classes and MAIN instead of running). --verify runs the\n"
@@ -2722,6 +2733,7 @@ int main(int argc, char** argv) {
 "  rakupp --exe-info BINARY     A compiled binary's embedded build manifest\n"
 "                               (version, compile mode, --slim cuts)\n"
 "  rakupp --target=parse|ast    Rakudo-compatible aliases of -c / --ast\n"
+"  rakupp --target=raku SRC     Emit Raku: the formatter, spelled as a target (--fmt)\n"
 "  rakupp --lsp                 Run the Language Server (JSON-RPC on stdin/stdout)\n"
 "                               for editor integration: live parse/lint diagnostics\n"
 "  rakupp --help, -h            Show this help\n"
@@ -3225,7 +3237,13 @@ int main(int argc, char** argv) {
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;
             collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
-            std::cout << transpileToCpp(prog, optimize, absPath(fileName), moduleExports, src);
+            std::string cpp = transpileToCpp(prog, optimize, absPath(fileName), moduleExports, src);
+            if (outPath.empty()) std::cout << cpp;
+            else {
+                std::ofstream out(outPath, std::ios::binary);
+                if (!out) { std::cerr << "rakupp: cannot write " << outPath << "\n"; return 4; }
+                out << cpp;
+            }
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;

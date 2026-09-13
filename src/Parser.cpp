@@ -704,7 +704,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             i += line[i] == ':' ? 2 : 1;
         std::string mod = line.substr(b, i - b);
         if (mod.empty() || !ascii::isalpha((unsigned char)mod[0])) continue;
-        if (mod == "lib" || mod == "strict" || mod == "v6" || mod == "nqp" || mod == "JS" || mod == "Test") continue;
+        if (mod == "lib" || mod == "strict" || mod == "v6" || mod == "nqp" || mod == "js" || mod == "JS" || mod == "Test") continue;
         bool wasSlang = lastScanSlang_;
         scanModuleOps(mod);
         lastScanSlang_ = wasSlang;   // only the module the USER named may arm a slang

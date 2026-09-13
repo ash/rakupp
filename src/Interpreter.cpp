@@ -5632,6 +5632,11 @@ void rakuppRegisterModule(const std::string& name, const char* blob, size_t blob
 bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (module-vs-pragma)
     static const std::set<std::string> pragmas = {
         "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
+        // `use js` — the JavaScript target. Lowercase because it is compiler
+        // territory, like `strict` and `nqp`: there is no distribution named js
+        // and nothing to claim in the ecosystem's module namespace. `JS` stays
+        // capitalised as the TERM for the host's global object.
+        "js", "JS",
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
         "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
         "NativeCall",  // its `is native` FFI is handled natively by the compiler
@@ -7054,6 +7059,18 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // implement, which is right — they change compilation details, not semantics
     // it can observe — but ignoring them must be a deliberate entry here rather
     // than a side effect of the lookup failing.
+    // `use js` declares the program's TARGET, so the interpreter is the wrong way
+    // to run it and says so at the line that declares the intent — rather than
+    // letting it run on and die at the first `JS.` call, which is what the old
+    // rakulib/JS.rakumod stub did. There is no module behind the name and never
+    // was; the emitter recognises it and compiles `JS` to the host's global.
+    if (name == "js" || name == "JS")
+        throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}},
+                   "`use " + name + "` declares a program that targets JavaScript, "
+                   "so it cannot run under the interpreter.\n"
+                   "Compile it instead:  rakupp --target=js " +
+                   ((srcFile_.empty() || srcFile_ == "-e") ? std::string("PROGRAM.raku") : srcFile_) +
+                   " -o PROGRAM.js && node PROGRAM.js");
     if (isPragmaName(name) || quiet) return;
     std::string where = "Could not find " + name + " in:";
     for (auto& b : libPaths_) where += "\n    " + b;

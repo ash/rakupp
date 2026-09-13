@@ -633,8 +633,12 @@ Where the code decided differently from the draft:
   `JS.Math`, `JS.Array.from`, `JS.Event.new`; the plan's rule alone could
   not spell a constructor), `$o<k>` / `$o[i]` read and write, Raku closures
   cross as JS functions and back, `EVAL 'literal', :lang<JavaScript>`
-  inlines. The interpreter side is `rakulib/JS.rakumod`, a stub whose every
-  call dies naming the mode. Gate 6 exists: `t/js/interop/*.raku` with
+  inlines. The spelling is `use js`, a lowercase PRAGMA (compiler territory,
+  like `strict` and `nqp`, so there is no `js` distribution to find or claim);
+  `use JS` is kept as the older spelling and the term `JS` stays capitalised.
+  The interpreter refuses such a program at the `use` line and names the
+  command that runs it, which replaced an earlier `rakulib/JS.rakumod` stub
+  that let it run on and die at the first interop call. Gate 6 exists: `t/js/interop/*.raku` with
   goldens, run by `t/js/run.raku` under Node with `dom-stub.js` preloaded
   (three programs: DOM, values both ways, callbacks).
 - **P4, second slice (same day): `start`, `await`, Promise.** The colouring

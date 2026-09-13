@@ -1752,7 +1752,9 @@ struct JsGen {
         }
         if (m.rfind("v6", 0) == 0 || m == "v6" || m.rfind("v6.", 0) == 0) return;
         if (m == "Test") refuse("the Test module", u->line);
-        if (m == "JS") { jsInterop = true; return; }
+        // `use js` is the spelling; `use JS` is kept working because the
+        // showcases and the interop goldens were written with it.
+        if (m == "js" || m == "JS") { jsInterop = true; return; }
         refuse("use " + m, u->line);
     }
     void exprStmt(ExprStmt* es, int ind, bool tail) {

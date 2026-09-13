@@ -1,6 +1,6 @@
 # --target=js interop golden: the DOM through `use JS`. Runs under node with
 # t/js/interop/dom-stub.js preloaded; the .out beside it is the golden.
-use JS;
+use js;
 my $doc = JS.document;
 my $div = $doc.createElement('div');
 $div.setAttribute('id', 'greeting');
