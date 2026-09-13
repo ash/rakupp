@@ -13509,6 +13509,25 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             }
             return Value::nil();
         }
+        // nqp::repeat_while(cond, body) / repeat_until — the body runs ONCE
+        // before the test is ever taken, which is the whole difference from
+        // While/Until above. `are` drives its type-agreement scan with it.
+        case O::RepeatWhile:
+        case O::RepeatUntil: {
+            if (a.size() < 2) return Value::nil();
+            long long guard = 0;
+            do {
+                if (tctx_.returning) return Value::nil();
+                for (size_t i = 1; i < a.size(); i++) {
+                    eval(a[i].get());
+                    if (tctx_.returning) return Value::nil();
+                    if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; return Value::nil(); } // last
+                    if (tctx_.loopCtl == 1) { tctx_.loopCtl = 0; break; }               // next
+                }
+                if (++guard > 1000000000LL) break; // runaway backstop, as While has
+            } while (boolify(eval(a[0].get())) == (n->op == O::RepeatWhile));
+            return Value::nil();
+        }
         case O::IfNull: {
             Value v = eval(a[0].get());
             if (v.t == VT::Nil || v.t == VT::Any) return a.size() > 1 ? eval(a[1].get()) : Value::nil();
@@ -13539,6 +13558,17 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                     Value* lv = nullptr;
                     try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
                     Value buf = eval(a[3].get());
+                    // …but these are only the CONTAINER's backing store when the
+                    // target is a container. A user class may declare an
+                    // attribute of the same name and mean nothing of the kind —
+                    // `class ReverseIterator does Iterator { has $!reified }`
+                    // does, and reinterpreting the bind REPLACED the object with
+                    // a bare Array, so `new` handed back an Array and the first
+                    // `.pull-one` on it died. An object whose class really
+                    // declares the attribute takes the ordinary bind below.
+                    if (lv && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
+                        lv->obj()->cls->findAttr(an.size() > 2 ? an.substr(2) : an))
+                        break;
                     if (lv) {
                         if (buf.t == VT::Array || lv->t == VT::Array) {
                             if (lv->t != VT::Array) *lv = Value::array();
@@ -13854,6 +13884,31 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         try { r = methodCall(v[0], "can", ca); } catch (...) { return Value::integer(0); }
         return Value::integer(r.truthy() ? 1 : 0);
     }
+    // `nqp::box_i($n, SomeType)` — the TYPE argument is load-bearing when it
+    // names a user class deriving a built-in scalar. Array::Sorted::Util
+    // reports "not found" as `nqp::box_i($i, NotFound)`, where
+    // `class NotFound is Int { method defined(--> False) { } }` — the caller
+    // then asks `.defined`, so a plain Int is the wrong answer and every
+    // not-found test fails. Build the same boxed-object shape `.new` produces
+    // for such a class: the user class on the outside, the native value inside,
+    // so it numifies as the value and still answers its own methods.
+    if ((n->op == O::BoxI || n->op == O::BoxN || n->op == O::P6BoxS) &&
+        v.size() > 1 && v[1].t == VT::Type) {
+        std::string tn = v[1].s;
+        auto it = classes_.find(tn);
+        if (it == classes_.end()) it = classes_.find(resolveClassAlias(tn));
+        if (it != classes_.end() && it->second) {
+            auto od = std::make_shared<ObjectData>();
+            od->cls = it->second;
+            od->hasBoxed = true;
+            od->boxed = n->op == O::BoxI ? Value::integer(v[0].toInt())
+                      : n->op == O::BoxN ? Value::number(v[0].toNum())
+                                         : Value::str(v[0].toStr());
+            return Value::object(od);
+        }
+        // an unregistered name is a CORE type (Int/Num/Str): fall through to
+        // the plain leaf below, which is already the right representation
+    }
     return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
 }
 
@@ -13863,6 +13918,24 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
 // nqp::if/unless are Ternaries, so only these leaf ops need a runtime entry.
 Value rtNqpOp(NqpOpc op, ValueList& v) {
     using O = NqpOpc;
+    // An IterationBuffer is a tagged HASH here, not an Array, so the list ops
+    // below — every one of which tests for VT::Array — silently did nothing to
+    // one. `nqp::splice($buffer, nqp::list($value), $pos, 0)` is how
+    // Array::Sorted::Util inserts into a buffer, and the buffer never grew.
+    // Swap in the buffer's own `items` list, which SHARES its storage, so a
+    // mutation still lands in the buffer the caller holds.
+    {
+        static const std::set<NqpOpc> kListOps = {
+            O::Elems, O::Atpos, O::AtposI, O::AtposN, O::Bindpos, O::BindposI, O::BindposN,
+            O::Push, O::PushI, O::PushS, O::Pop, O::PopS, O::Shift, O::ShiftI,
+            O::Splice, O::SetElems, O::Slice, O::IsList, O::List };
+        if (kListOps.count(op))
+            for (auto& x : v)
+                if (x.t == VT::Hash && x.hashKind == "IterationBuffer" && x.hash()) {
+                    auto it = x.hash()->find("items");
+                    if (it != x.hash()->end() && it->second.arr()) x = it->second;
+                }
+    }
     // An argument may arrive as the CONTAINER a `:=`-bound attribute holds (the
     // argument loop keeps containers for the ops that ask about them); a
     // number or string read looks through it. paths' `nqp::iseq_i(
@@ -13873,6 +13946,19 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                ? g_deproxy(v[i]) : v[i];
     };
     auto I = [&](size_t i) -> long long { return i < v.size() ? held(i).toInt() : 0; };
+    // The bignum `_I` ops want the WHOLE argument, not a native-int view of it:
+    // reading a 10^25 operand through I() would silently truncate it.
+    auto A0 = [&]() -> Value { return v.empty() ? Value::integer(0) : held(0); };
+    auto A1 = [&]() -> Value { return v.size() > 1 ? held(1) : Value::integer(0); };
+    auto bigCmp = [](const Value& x, const Value& y) -> int {
+        if (x.big() || y.big()) {
+            BigInt a = x.big() ? *x.big() : BigInt(x.toInt());
+            BigInt b = y.big() ? *y.big() : BigInt(y.toInt());
+            return BigInt::cmp(a, b);
+        }
+        long long a = x.toInt(), b = y.toInt();
+        return a < b ? -1 : a > b ? 1 : 0;
+    };
     // By reference: a Str argument is returned as-is, so the scanning ops below
     // don't copy the whole haystack once per character examined.
     static const CowStr kEmptyStr;
@@ -13923,6 +14009,31 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::BitxorI: return Value::integer(I(0) ^ I(1));
         case O::BitshiftlI: return Value::integer(I(0) << I(1));
         case O::BitshiftrI: return Value::integer(I(0) >> I(1)); // arithmetic (signed)
+        // nqp::div_i FLOORS: -7 div 2 is -4, not -3. (mod_i beside it truncates
+        // — MoarVM is not uniform, and the probe is the authority.) Dividing by
+        // zero THROWS, where mod_i answers 0.
+        case O::DivI: {
+            long long x = I(0), y = I(1);
+            if (!y) throw RakuError{Value::typeObj("X::AdHoc"), "Division by zero"};
+            long long q = x / y, r = x % y;
+            if (r && ((r ^ y) < 0)) q--;          // C truncates; step down to the floor
+            return Value::integer(q);
+        }
+        case O::IsFalse: return Value::integer(!v.empty() && v[0].truthy() ? 0 : 1);
+        // nqp::print / nqp::say write a native str to the VM's OWN stdout, with
+        // no stringification and — this is the part worth pinning — WITHOUT
+        // consulting `$*OUT`. Rakudo does the same: a block that rebinds $*OUT
+        // captures `say` and does not capture `nqp::say`. Routing these through
+        // ioEmit instead would have been more useful and less true.
+        case O::Print:
+        case O::SayOp: {
+            std::string out = v.empty() ? std::string() : v[0].toStr();
+            if (op == O::SayOp) out += "\n";
+            std::lock_guard<std::mutex> lk(rtOutMutex());
+            std::cout << out;
+            if (rtStdOutBuffer(false) == 0) std::cout.flush();
+            return Value::nil();
+        }
         // The string-scanning ops below each take an ASCII fast path first.
         // They are what a tokenizer written in Raku calls once per character,
         // always handing over the WHOLE text, so decoding that text per call
@@ -14508,12 +14619,19 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::IsneS: return Value::integer(S(0).str() != S(1).str() ? 1 : 0);
         case O::NotI:  return Value::integer(I(0) ? 0 : 1);
-        case O::ModI: { // floored, as MoarVM's mod_i (and Raku's `%`) is
+        // nqp::mod_i TRUNCATES — the remainder takes the sign of the DIVIDEND,
+        // as C's `%` does. It is NOT Raku's `%`, and it is not consistent with
+        // nqp::div_i beside it, which floors; MoarVM is simply not uniform
+        // here and the cross-engine probe is the authority (Rakudo 2026.08:
+        // mod_i(-7,2) is -1, div_i(-7,2) is -4). Pinned in
+        // t/regression/lizmat-nqp-ops.raku, which passes under Rakudo too.
+        case O::ModI: {
             long long x = I(0), y = I(1);
-            if (!y) return Value::integer(0);
-            long long r = x % y;
-            if (r && ((r ^ y) < 0)) r += y;
-            return Value::integer(r);
+            // by zero it THROWS, and with its own wording — div_i says
+            // "Division by zero", mod_i says this. Answering 0 here was the
+            // earlier behaviour and no engine does it.
+            if (!y) throw RakuError{Value::typeObj("X::AdHoc"), "Modulation by zero"};
+            return Value::integer(x % y);
         }
         // nqp::findcclass(class, str, start, count) — the FIRST position in the
         // window whose character IS of the class, or the window's end (the
@@ -14579,6 +14697,92 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 return r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r);
             }
             return Value::integer(I(0) + I(1));
+        }
+        // ---- the bignum `_I` family -------------------------------------
+        // Each of these is the bignum-safe spelling of arithmetic rakupp
+        // already performs correctly, so they DELEGATE to applyArith instead
+        // of re-deriving overflow, sign and two's-complement behaviour that is
+        // already written and tested once. The trailing type argument NQP
+        // passes (`nqp::mul_I($a, $b, Int)`) says which box to put the answer
+        // in; there is only one Int here, so it is ignored.
+        //
+        // The mapping is exact, and the cross-engine probe is why it is
+        // trusted rather than assumed: div_I FLOORS, which is Raku's `div`
+        // (-7 div 2 is -4), and mod_I FLOORS TOO, which is Raku's `%`
+        // (-7 % 2 is 1) — unlike the native mod_i above, which truncates.
+        case O::DivBigI: {
+            Value d = v.size() > 1 ? v[1] : Value::integer(0);
+            if (!d.big() && d.toInt() == 0)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Division by zero"};
+            return applyArith("div", v[0], d);
+        }
+        // …and the BIGNUM spelling by zero answers the DIVIDEND rather than
+        // throwing, where Raku's own `%` throws. libtommath's mp_mod does
+        // that, so a program reaching this edge through nqp sees it.
+        case O::ModBigI: {
+            Value d = A1();
+            if (!d.big() && d.toInt() == 0) return A0();
+            return applyArith("%", A0(), d);
+        }
+        case O::MulBigI: return applyArith("*", A0(), A1());
+        case O::SubBigI: return applyArith("-", A0(), A1());
+        case O::PowBigI: return applyArith("**", A0(), A1());
+        case O::GcdBigI: return applyArith("gcd", A0(), A1());
+        case O::LcmBigI: return applyArith("lcm", A0(), A1());
+        case O::BitandBigI: return applyArith("+&", A0(), A1());
+        case O::BitorBigI:  return applyArith("+|", A0(), A1());
+        case O::BitxorBigI: return applyArith("+^", A0(), A1());
+        case O::BitshiftlBigI: return applyArith("+<", A0(), A1());
+        case O::BitshiftrBigI: return applyArith("+>", A0(), A1());
+        case O::NegBigI: return applyArith("-", Value::integer(0), A0());
+        case O::AbsBigI: {
+            Value x = A0();
+            bool neg = x.big() ? (x.big()->sign < 0) : (x.toInt() < 0);
+            return neg ? applyArith("-", Value::integer(0), x) : x;
+        }
+        // the comparison spellings answer a native 0/1, not a Bool
+        case O::IseqBigI: return Value::integer(bigCmp(A0(), A1()) == 0 ? 1 : 0);
+        case O::IsneBigI: return Value::integer(bigCmp(A0(), A1()) != 0 ? 1 : 0);
+        case O::IsltBigI: return Value::integer(bigCmp(A0(), A1()) <  0 ? 1 : 0);
+        case O::IsleBigI: return Value::integer(bigCmp(A0(), A1()) <= 0 ? 1 : 0);
+        case O::IsgeBigI: return Value::integer(bigCmp(A0(), A1()) >= 0 ? 1 : 0);
+        case O::IsgtBigI: return Value::integer(bigCmp(A0(), A1()) >  0 ? 1 : 0);
+        case O::CmpBigI:  return Value::integer(bigCmp(A0(), A1()));
+        // `isbig_I` asks whether the value needs more than a native int
+        case O::IsBigI: return Value::integer(!v.empty() && v[0].big() ? 1 : 0);
+        case O::ToStrBigI: return Value::str(v.empty() ? std::string("0") : v[0].toStr());
+        case O::FromStrBigI: {
+            BigInt b = BigInt::fromString(v.empty() ? std::string("0") : v[0].toStr());
+            return b.fitsLL() ? Value::integer(b.toLL()) : Value::bigint(b);
+        }
+        // boxing leaves: rakupp's Int and Num ARE the boxed forms, so the box
+        // op is the value itself in the right representation (box_s is P6BoxS).
+        case O::BoxI: return Value::integer(I(0));
+        case O::BoxN: return Value::number(v.empty() ? 0.0 : v[0].toNum());
+        case O::SqrtN: return Value::number(std::sqrt(v.empty() ? 0.0 : v[0].toNum()));
+        // nqp::pop — the generic tail take (PopS is the string-typed spelling,
+        // and the _i/_n forms are the same op on the same storage here).
+        case O::Pop: {
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr() && !v[0].arr()->empty()) {
+                Value r = v[0].arr()->back(); v[0].arr()->pop_back(); return r;
+            }
+            return Value::nil();
+        }
+        // nqp::time answers NANOSECONDS since the epoch as an Int. (Older NQP
+        // spelled the seconds form `time_i`; the modern op is the nanosecond
+        // one, which is what `nano` reads.)
+        case O::TimeOp: {
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            return Value::integer(
+                (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+        }
+        case O::ReadLink: {
+            const std::string path = v.empty() ? std::string() : v[0].toStr();
+            char buf[4096];
+            ssize_t k = ::readlink(path.c_str(), buf, sizeof(buf) - 1);
+            if (k < 0) throw RakuError{Value::typeObj("X::AdHoc"),
+                                       "Failed to readlink " + path + ": " + std::strerror(errno)};
+            return Value::str(std::string(buf, (size_t)k));
         }
         case O::Decont: return v.empty() ? Value::nil() : v[0];        // container strip = identity
         case O::P6BoxS: return Value::str(v.empty() ? std::string() : v[0].toStr());

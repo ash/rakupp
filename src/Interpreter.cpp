@@ -8309,8 +8309,30 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
+    applyRoleTypeParamsToAttrs(pun.get());
     classes_[pun->name] = pun;
     return Value::typeObj(pun->name);
+}
+
+// A PUN of a parameterized role owns its own copy of the role's attributes, so
+// a type-capture parameter can be substituted into them directly. (A class that
+// merely composes the role does NOT own a copy — the first `does` role sits in
+// the parent slot and its ClassInfo is shared by every composer — so that path
+// resolves the name per OBJECT instead, in runAttrDefaults.)
+//
+// Only type captures count: a VALUE parameter that happens to share a name with
+// a type must not rename anything.
+void Interpreter::applyRoleTypeParamsToAttrs(ClassInfo* dest) {
+    if (!dest || dest->roleParamBindings.empty() || dest->attrs.empty()) return;
+    for (auto& a : dest->attrs) {
+        if (a.type.empty()) continue;
+        for (auto& b : dest->roleParamBindings) {
+            if (b.first != a.type || b.second.t != VT::Type) continue;
+            const std::string& bound = b.second.s;
+            if (!bound.empty() && bound != a.type) a.type = bound;
+            break;
+        }
+    }
 }
 
 // Bind ONE composed role's `[...]` parameters into `dest->roleParamBindings` —
@@ -8339,6 +8361,17 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
                 Value tv = argv[ai].t == VT::Type ? argv[ai]
                                                   : Value::typeObj(argv[ai].typeName());
                 dest->roleParamBindings.push_back({p.type, tv});
+            }
+            // …and a bare `does R` takes the capture's DEFAULT (`role R[::T = Any]`),
+            // which is as load-bearing as an explicit argument: an attribute
+            // declared `has T @!items` is unusable while T names nothing.
+            else if (p.defaultVal) {
+                Value dv;
+                bool got = true;
+                try { dv = eval(p.defaultVal.get()); } catch (...) { got = false; }
+                if (got)
+                    dest->roleParamBindings.push_back(
+                        {p.type, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName())});
             }
         }
         if (!p.named && !p.slurpy) posIdx++;
@@ -8831,6 +8864,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code()->retType = sd->retType;
                 c.code()->retRw = sd->retRw;
                 c.code()->declFile = declFileNow();
+                c.code()->declLine = sd->line;
                 c.code()->pod = sd->pod;
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
@@ -9130,6 +9164,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code()->closure = tctx_.cur;
                     code.code()->isMethod = true;
                     code.code()->declFile = declFileNow();
+                    code.code()->declLine = md->line;
                     if (md->params.empty()) code.code()->placeholders = computePlaceholders(md->body);
                     return code;
                 };
@@ -9817,6 +9852,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code()->closure = bodyEnv;
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
                 code.code()->declFile = declFileNow();
+                code.code()->declLine = md->line;
                 code.code()->isStub = stmtIsStub(md->body);
                 // an undeclared `$!attr` reference in a method body is a compile
                 // error in a CLASS (roles get their attrs from consumers)
@@ -11133,7 +11169,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (!tn.empty() && tn[0] == '$' && tn != "$_") topic.itemized = true;
             }
             // with/without definedness guard
-            bool skip = (g->defGuard == 1 && !isDefined(topic)) || (g->defGuard == 2 && isDefined(topic));
+            bool skip = (g->defGuard == 1 && !topicDefined(topic)) || (g->defGuard == 2 && topicDefined(topic));
             if (g->modifier) { // `EXPR with X`: no implicit block — a `my` in EXPR leaks out
                 auto env = tctx_.cur;
                 bool hadTopic = env->vars.count("$_");
@@ -12488,6 +12524,16 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // when one of the two names is not a type we know — an unregistered user
         // type must not be dispatched away on our ignorance.
         case VT::Type: {
+            // A NATIVE parameter holds no type object — there is no undefined
+            // `str` or `int`, only "" and 0 — so a type-object argument cannot
+            // bind one, and Rakudo refuses it. Here the lenient tail of this arm
+            // accepted it, because a native name is not an ordinary known TYPE
+            // name: `say Int` under `unprint` (which replaces say with
+            // `multi sub say(str $s) { nqp::say($s) }` and friends) picked the
+            // native candidate and printed an empty line instead of "(Int)".
+            // `void` is NativeCall's parameterizing name, not storage, and is
+            // deliberately left out.
+            if (type != "void" && isNativeTypeName(type)) return false;
             // Rakudo's UInt is `subset UInt of Int where { not .defined or $_ >= 0 }`:
             // the where clause ADMITS the undefined, so the Int type object (and
             // every Int-derived one) conforms — `Int ~~ UInt` is True there
@@ -17137,6 +17183,31 @@ static bool argIsNeverContainer(const Expr* e) {
 //
 // Only the first dispatch of a call is judged: a callwith/nextwith replaces the
 // argument VALUES, and the expressions no longer describe them.
+// Definedness as the LANGUAGE asks it, which is not always the representation.
+// `with`, `without`, `//` and `orelse` all go through `.defined`, and a class
+// may declare its own: Array::Sorted::Util reports "not found" as an
+// `Int`-derived object whose `method defined(--> False)` is the entire signal,
+// and `without finds(@a, $x) { … }` is how a caller reads it.
+//
+// Only a DECLARED method counts. Asking every object would put a dispatch on
+// the hot path of every `//` in every program, so the class table is consulted
+// first and the call happens only for the rare class that overrides it.
+// `DEFINITE` and `so` are NOT routed here — Rakudo keeps both on the
+// representation, and the probe in t/regression/lizmat-nqp-ops.raku pins that.
+bool Interpreter::topicDefined(const Value& v) {
+    if (v.t == VT::Object && v.obj() && v.obj()->cls) {
+        for (ClassInfo* c = v.obj()->cls.get(); c; c = c->parent.get()) {
+            auto it = c->methods.find("defined");
+            if (it != c->methods.end()) {
+                ValueList noArgs;
+                try { return methodCall(v, "defined", noArgs).truthy(); }
+                catch (...) { break; }   // a throwing override falls back to the representation
+            }
+        }
+    }
+    return rtIsDefined(v);
+}
+
 bool Interpreter::methodMayYieldContainer(const std::string& name) {
     // the engine's own container accessors
     if (name == "AT-POS" || name == "AT-KEY" || name == "VAR" ||
@@ -18933,7 +19004,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         auto* b = static_cast<Binary*>(e);
         if (b->op == "||" || b->op == "or")   return lvalue(boolify(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
         if (b->op == "&&" || b->op == "and")  return lvalue(boolify(eval(b->lhs.get())) ? b->rhs.get() : b->lhs.get());
-        if (b->op == "//")                    return lvalue(isDefined(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
+        if (b->op == "//")                    return lvalue(topicDefined(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
     }
     // `++$x` / `--$x` as a target is the container through the increment (the
     // increment itself ran when the expression was EVALUATED; re-running it here
@@ -21731,7 +21802,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!deferLv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
             Value cur = lv ? *lv : eval(a->target.get());
             bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
-                      : scAt ? !isDefined(cur) : isDefined(cur);
+                      : scAt ? !topicDefined(cur) : topicDefined(cur);
             if (keep) return sink ? Value::any() : cur;
             Value rhs = eval(a->value.get());
             if (!lv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
@@ -25304,8 +25375,14 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     for (auto& a : args)
         if (a.t == VT::Pair) setAdverb(a.s, a.pairVal() ? *a.pairVal() : Value::boolean(true));
     // leading `:name` / `:name(arg)` adverbs baked into the pattern (s///, ss///)
+    //
+    // A LITERAL needle has none: `.subst(':ver<1.2>')` is asking for that text,
+    // and reading its leading colon as an adverb either threw
+    // ("Unrecognized regex adverb: :ver" — Identity::Utils' `without-ver`) or,
+    // worse, silently consumed it — `.subst(':x')` stripped `:x` as the count
+    // adverb, left an empty needle and substituted nothing at all.
     std::string realPat = pat;
-    { size_t i = 0;
+    if (!literal) { size_t i = 0;
       while (i < realPat.size() && realPat[i] == ':') {
           size_t j = i + 1; std::string name;
           while (j < realPat.size() && ascii::isalnum((unsigned char)realPat[j])) name += realPat[j++];
@@ -26787,11 +26864,11 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
                               r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
-    if (op == "//") return isDefined(l) ? l : r;
+    if (op == "//") return topicDefined(l) ? l : r;
     if (op == "||" || op == "or") return l.truthy() ? l : r;
     if (op == "&&" || op == "and") return l.truthy() ? r : l;
-    if (op == "andthen") return isDefined(l) ? r : l;
-    if (op == "orelse") return isDefined(l) ? l : r;
+    if (op == "andthen") return topicDefined(l) ? r : l;
+    if (op == "orelse") return topicDefined(l) ? l : r;
     if (op == "xor" || op == "^^")
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
     if (op == "=>") { // `.key <<=>>> .value` — hyper over the pair op; a non-Str key is kept, as `[=>]` keeps it
@@ -27925,7 +28002,7 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op == "andthen" || op == "orelse" || op == "notandthen") {
         Value l = eval(b->lhs.get());
-        bool def = isDefined(l);
+        bool def = topicDefined(l);
         bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
         if (!run) { // skip the RHS: orelse/andthen yield the LHS, notandthen yields Empty
             if (op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; } // Empty
@@ -27939,7 +28016,7 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op == "//") {
         Value l = eval(b->lhs.get());
-        if (isDefined(l)) return l;
+        if (topicDefined(l)) return l;
         return eval(b->rhs.get());
     }
     if (op == "^^" || op == "xor") {
@@ -31177,6 +31254,38 @@ Value Interpreter::evalIndex(Index* idx) {
     // `$obj.AT-POS(i)` (zef's config: `class :: { has %.hash handles <AT-KEY …> }`).
     // …but a user-written `postcircumfix:<[ ]>` outranks AT-POS, as its
     // narrower candidate does in Rakudo (see userPostcircumfix above).
+    // `$buf[1]` on an IterationBuffer. The buffer answers `.AT-POS` already,
+    // but it is a tagged HASH here rather than an object, so the AT-POS routing
+    // below never saw it and a positional subscript read Any. Array::Sorted::Util
+    // indexes one directly (`nexts($buf, $buf[1])`), and reading Any there made
+    // the test compare two undefined things and call it a pass elsewhere.
+    if (base.t == VT::Hash && base.hashKind == "IterationBuffer" && base.hash() &&
+        !idx->isHash && !idx->multiDim && idx->adverb.empty() && idx->index) {
+        auto it = base.hash()->find("items");
+        if (it != base.hash()->end() && it->second.arr()) {
+            const ValueList& items = *it->second.arr();
+            auto at = [&](long long i) -> Value {
+                if (i < 0) i += (long long)items.size();      // negative indices count from the end
+                return (i >= 0 && i < (long long)items.size()) ? items[(size_t)i] : Value::typeObj("Mu");
+            };
+            Value k = eval(idx->index.get());
+            // `$buf[*-1]` — a Whatever index is a closure over the element
+            // count, exactly as it is for an Array.
+            if (k.t == VT::Code && k.code() && k.code()->isWhateverCode)
+                k = callCallable(k, ValueList{Value::integer((long long)items.size())});
+            if (k.t == VT::Array || k.t == VT::Range) {        // a slice answers a list
+                Value out = Value::array(); out.isList = true;
+                for (auto& kk : k.flatten()) out.arr()->push_back(at(kk.toInt()));
+                return out;
+            }
+            if (k.t == VT::Whatever) {                          // `$buf[*]` — the whole buffer
+                Value out = Value::array(); out.isList = true;
+                *out.arr() = items;
+                return out;
+            }
+            return at(k.toInt());
+        }
+    }
     if (base.t == VT::Object && !idx->multiDim) {
         Value r;
         if (userPostcircumfix(base, r)) return r;

@@ -454,6 +454,23 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
         }
         return nameSigils[nm].size();
     };
+    // A role's TYPE-CAPTURE parameter is a NAME until the composition binds it:
+    // `role R[::TYPE] { has TYPE @!items }` leaves the attribute's declared type
+    // reading "TYPE", and the role's ClassInfo is SHARED by every class that
+    // composes it, so the name cannot be rewritten there — R[Int] and R[Str]
+    // would fight over it. Resolve it per OBJECT instead, against the class's
+    // own bindings, which is where the composition recorded what TYPE is.
+    // Without this the typed container refused EVERY value put into it, in
+    // R[Int] and R[Str] alike, and `.of` answered the literal "TYPE"
+    // (Concurrent::PriorityQueue is built on exactly that shape).
+    auto resolveRoleType = [&](const std::string& t) -> const std::string& {
+        if (t.empty()) return t;
+        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+            for (auto& b : c->roleParamBindings)
+                if (b.first == t && b.second.t == VT::Type && !b.second.s.empty())
+                    return b.second.s;
+        return t;
+    };
     // A value the CALLER passed for a typed container attribute keeps the
     // attribute's element type — the coercion below builds a fresh Array/Hash
     // that knows nothing of the declaration — and every element it brings has
@@ -462,7 +479,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
         if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
         if (v.t != VT::Array && v.t != VT::Hash) return v;
         if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
-        if (v.ofType().empty()) v.ofTypeM() = at.type;
+        if (v.ofType().empty()) v.ofTypeM() = resolveRoleType(at.type);
         std::string want = elemTypeOf(v);
         if (!want.empty()) {
             std::string sym = std::string(1, at.sigil) + "!" + at.name;
@@ -527,7 +544,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // slot, or `.of` answers (Mu) and nothing checks what enters it —
             // `has Str @.data` silently took Ints (issue #63).
             Value seed = at.sigil == '@' || at.sigil == '%'
-                       ? rtTypedDefault(at.type.c_str(), at.sigil)
+                       ? rtTypedDefault(resolveRoleType(at.type).c_str(), at.sigil)
                        : Value::any();
             if (at.objKeyed && seed.t == VT::Hash) seed.objKeyed = true;
             if (at.sigil == '$' && !at.type.empty()) {
@@ -2838,8 +2855,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
         if (m == "mro" && !classes_.count(inv.s)) {
+            // `.^mro(:roles)` asks for the linearisation WITH the roles in it —
+            // `Int.^mro(:roles)` is (Int Real Numeric Cool Any Mu). typeAncestry
+            // already carries them; the plain form is that list with the roles
+            // filtered out, so the adverb simply stops filtering. `are` walks
+            // this list to find the common type of a list of values, and without
+            // the roles it answered Cool where Real was due.
+            bool withRoles = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "roles" && (!a.pairVal() || a.pairVal()->truthy()))
+                    withRoles = true;
             Value out = Value::array(); out.isList = true;
-            for (auto& a : typeAncestry(inv.s)) if (!isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a));
+            for (auto& a : typeAncestry(inv.s)) if (withRoles || !isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a));
             if (out.arr()->empty()) { out.arr()->push_back(Value::typeObj(inv.s)); out.arr()->push_back(Value::typeObj("Any")); out.arr()->push_back(Value::typeObj("Mu")); }
             return out;
         }
@@ -3991,6 +4018,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.code()->mixins.p && !inv.code()->mixins.p->attrs.empty() && args.empty()) {
             auto ma = inv.code()->mixins.p->attrs.find(m.s);
             if (ma != inv.code()->mixins.p->attrs.end()) return ma->second;
+        }
+        // `&foo.file` / `&foo.line` — where the routine was DECLARED. Rakudo
+        // answers these on every Code object, and a module's EXPORT routine is
+        // the common caller: Identity::Utils decides what to export by asking
+        // each candidate whether its `.file` ends with the module's own path,
+        // so without them the module exported nothing at all.
+        if ((m == "file" || m == "line") && args.empty()) {
+            if (m == "line") return Value::integer(inv.code()->declLine);
+            const std::string& f = inv.code()->declFile;
+            // a routine the runtime made up has no declaration site of its own;
+            // Rakudo names the setting for those, and so do we
+            return Value::str(f.empty() ? std::string("SETTING::src/core.c/") : f);
         }
         if (m == "assuming") { // partial application: &f.assuming(a,b)(c) == f(a,b,c)
             Value orig = inv; ValueList pre = args;

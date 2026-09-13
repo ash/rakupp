@@ -5112,10 +5112,22 @@ ExprPtr Parser::parsePrimary() {
                     // 'exists'" — while the same thing in an `if` condition or in
                     // parens was an outright parse error. Test::Output's EXPORT is
                     // written that way and went 2/2 -> 0/2 on it.
+                    // …and the NEGATED spelling, `:!exists`, which asks the same
+                    // question the other way round. Identity::Utils checks its
+                    // export list with `OUTER::MY::{"&$_"}:!exists` — without
+                    // this the `:` ended the term and `!exists` was read as a
+                    // routine call ("Undefined routine 'exists'"), or, inside
+                    // parentheses, was an outright parse error.
+                    bool negAdv = isOp(":") && !cur().spaceBefore &&
+                                  peek().kind == Tok::Op && peek().text == "!" &&
+                                  peek(2).kind == Tok::Ident &&
+                                  (peek(2).text == "exists" || peek(2).text == "p");
                     if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL" || pseudoPkg == "UNIT") &&
-                        isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
-                        (peek().text == "exists" || peek().text == "p")) {
+                        isOp(":") && !cur().spaceBefore &&
+                        (negAdv || (peek().kind == Tok::Ident &&
+                                    (peek().text == "exists" || peek().text == "p")))) {
                         advance();                              // ':'
+                        if (negAdv) advance();                  // '!'
                         const std::string adv = advance().text; // exists | p
                         auto c = std::make_unique<Call>();
                         c->name = adv == "p" ? "__sym-pair" : "__sym-exists";
@@ -5127,6 +5139,12 @@ ExprPtr Parser::parsePrimary() {
                             if (name.compare(k, 7, "OUTER::") == 0) hops++;
                         c->args.push_back(std::make_unique<IntLit>(hops));
                         c->args.push_back(std::make_unique<StrLit>(pseudoPkg));
+                        if (negAdv) {
+                            auto no = std::make_unique<Unary>();
+                            no->op = "!";
+                            no->operand = std::move(c);
+                            return no;
+                        }
                         return c;
                     }
                     long long outerHops = 0;
@@ -9615,6 +9633,30 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"bindattr_i", NqpOpc::Bindattr}, {"bindattr_s", NqpOpc::Bindattr},
         {"rindex", NqpOpc::Rindex}, {"flip", NqpOpc::Flip}, {"split", NqpOpc::Split},
         {"x", NqpOpc::X},
+        // The integer/list/system leaves lizmat's modules reach for. `div_i` is
+        // the binary-search midpoint in Array::Sorted::Util and the eleven
+        // dists around it; the `_I` pair is its bignum spelling.
+        {"div_i", NqpOpc::DivI}, {"div_I", NqpOpc::DivBigI},
+        {"isne_I", NqpOpc::IsneBigI}, {"isfalse", NqpOpc::IsFalse},
+        {"pop", NqpOpc::Pop}, {"pop_i", NqpOpc::Pop}, {"pop_n", NqpOpc::Pop},
+        {"print", NqpOpc::Print}, {"say", NqpOpc::SayOp},
+        {"time", NqpOpc::TimeOp},
+        {"readlink", NqpOpc::ReadLink},
+        {"repeat_while", NqpOpc::RepeatWhile}, {"repeat_until", NqpOpc::RepeatUntil},
+        // the rest of the bignum `_I` family, and the boxing leaves beside it
+        {"box_i", NqpOpc::BoxI}, {"box_n", NqpOpc::BoxN},
+        {"iseq_I", NqpOpc::IseqBigI}, {"islt_I", NqpOpc::IsltBigI},
+        {"isle_I", NqpOpc::IsleBigI}, {"isge_I", NqpOpc::IsgeBigI},
+        {"isgt_I", NqpOpc::IsgtBigI}, {"cmp_I", NqpOpc::CmpBigI},
+        {"mul_I", NqpOpc::MulBigI},   {"sub_I", NqpOpc::SubBigI},
+        {"mod_I", NqpOpc::ModBigI},   {"neg_I", NqpOpc::NegBigI},
+        {"abs_I", NqpOpc::AbsBigI},   {"pow_I", NqpOpc::PowBigI},
+        {"gcd_I", NqpOpc::GcdBigI},   {"lcm_I", NqpOpc::LcmBigI},
+        {"bitand_I", NqpOpc::BitandBigI}, {"bitor_I", NqpOpc::BitorBigI},
+        {"bitxor_I", NqpOpc::BitxorBigI},
+        {"bitshiftl_I", NqpOpc::BitshiftlBigI}, {"bitshiftr_I", NqpOpc::BitshiftrBigI},
+        {"isbig_I", NqpOpc::IsBigI}, {"tostr_I", NqpOpc::ToStrBigI},
+        {"fromstr_I", NqpOpc::FromStrBigI}, {"sqrt_n", NqpOpc::SqrtN},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

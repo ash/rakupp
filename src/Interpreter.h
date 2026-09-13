@@ -1254,6 +1254,14 @@ public:
     // name returns `is rw`/`is raw`, or the engine itself answers a container
     // there. Used only when an `is rw` candidate is being judged.
     bool methodMayYieldContainer(const std::string& name);
+    // `with` / `without` / `//` / `orelse` ask a value whether it is DEFINED,
+    // and a class may answer that question itself. rtIsDefined is a pure
+    // representation test with no interpreter to call a method from, so the
+    // override is honoured here instead.
+    bool topicDefined(const Value& v);
+    // Rewrite a PUN's attributes declared with a role's TYPE-CAPTURE parameter
+    // to the type actually bound (`role R[::TYPE] { has TYPE @!a }`).
+    void applyRoleTypeParamsToAttrs(ClassInfo* dest);
     // The string a regex matches AGAINST. An object matches on its Str form:
     // `$path ~~ /…/` where $path is a URI::Path must see "/a/b", as in Rakudo.
     std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }

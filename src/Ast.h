@@ -470,6 +470,24 @@ enum class NqpOpc : uint16_t {
     Rindex, Flip, Split,                       // string leaves paths / String::Utils reach for
     IsNullS,                                   // nqp::isnull_s — a native str holds no null, so "" stands in
     X,                                         // nqp::x(str, count) — string repetition
+    // appended: the integer/list/system leaves lizmat's modules are written
+    // against. MoarVM is NOT self-consistent here and the probe is the
+    // authority: div_i and div_I FLOOR (-7 div 2 is -4) while mod_i TRUNCATES
+    // (-7 mod 2 is -1) — see t/regression/lizmat-nqp-ops.raku.
+    DivI, DivBigI, IsneBigI,                   // nqp::div_i / div_I / isne_I
+    IsFalse,                                   // nqp::isfalse — the negation of istrue
+    Pop, Print, SayOp, TimeOp, ReadLink,       // nqp::pop / print / say / time / readlink
+    RepeatWhile, RepeatUntil,                  // lazy: body runs before the test
+    // appended: the rest of the bignum `_I` family and the boxing leaves. Every
+    // one of these is the bignum-safe spelling of arithmetic rakupp already
+    // does correctly, so they delegate to applyArith rather than re-deriving
+    // it. NOTE the asymmetry the probe found: mod_I FLOORS (Raku's `%`) while
+    // the native mod_i beside it TRUNCATES.
+    BoxI, BoxN,
+    IseqBigI, IsltBigI, IsleBigI, IsgeBigI, IsgtBigI, CmpBigI,
+    MulBigI, SubBigI, ModBigI, NegBigI, AbsBigI, PowBigI, GcdBigI, LcmBigI,
+    BitandBigI, BitorBigI, BitxorBigI, BitshiftlBigI, BitshiftrBigI,
+    IsBigI, ToStrBigI, FromStrBigI, SqrtN,
 };
 struct NqpOp : Expr {
     NqpOpc op;

@@ -63,8 +63,10 @@ flags and normalization modes are handled this way.
 **Control forms become native or lazy nodes,** because their arguments must not
 all evaluate eagerly. `nqp::if` and `nqp::unless` compile to Raku++'s own
 ternary node, so the untaken branch never runs. `nqp::while`, `nqp::until`,
-`nqp::stmts` and `nqp::ifnull` become `NqpOp` nodes whose evaluator drives its
-own argument evaluation.
+`nqp::repeat_while`, `nqp::repeat_until`, `nqp::stmts` and `nqp::ifnull` become
+`NqpOp` nodes whose evaluator drives its own argument evaluation. The two
+`repeat_` forms differ from their plain counterparts in one way that matters:
+the body runs once before the test is ever taken.
 
 **Leaf ops become eager `NqpOp` nodes** — integer maths, string and list
 primitives — which evaluate their arguments normally and then do the low-level

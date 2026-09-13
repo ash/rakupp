@@ -348,6 +348,7 @@ struct Callable {
     std::shared_ptr<const std::vector<Block*>> endsWithin;
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
+    int declLine = 0;                              // …and the line, for `&foo.line`
     // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),
     // or -1 for callables the runtime makes up (WhateverCode, wrappers,
     // builtins), which simply run under whatever their caller is. Declared

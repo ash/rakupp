@@ -2678,3 +2678,153 @@ other timeouts, out of the denominator as well as the numerator.
 `CodeUnit`, the other dist the sweep reported against `nqp::getcomp`, now gets
 past it and stops on `nqp::eqaddr` — a different op, shared with `Tuple` and
 `are`, and not taken here.
+
+## 2026-09-13 — lizmat's 262 distributions, and the nqp floor beneath them
+
+Elizabeth Mattijsen is the ecosystem's largest author: **262 distinct
+distributions** under `auth<zef:lizmat>` and `auth<cpan:ELIZABETH>` together,
+against the next author's 111. This is the per-author sweep over all of them,
+in the shape [Anton Antonov's](#antons-ecosystem) took.
+
+Build the list from the REA index by the **`dist` field's** auth, not the whole
+line: the loose test matched 27 dists by OTHER authors that merely pin a lizmat
+dependency, and swept them as hers.
+
+### The board
+
+Measured with `tools/eco-fresh/sweep-fresh.raku`, one shard under `nice -n 10`,
+150 s budget, on a codesigned snapshot of the engine.
+
+| verdict | before | after |
+|---|---:|---:|
+| pass | 99 | **114** |
+| self-fail | 104 | 101 |
+| dep-fail | 56 | 44 |
+| timeout | 2 | 2 |
+| other | 1 | 1 |
+
+Fifteen conversions, **no regressions**. The stale full-sweep snapshot said 84,
+so 15 of the starting gap was work that had already landed and gone unmeasured
+— **re-measure before costing a blocker.** The budget matters at the tail:
+`snip` and `span` need ~115 s each and read as timeouts under 120.
+
+Timeline (the raku.online dashboard mines these dated lines verbatim):
+
+- 2026-09-13: 114 of 262 (lizmat)
+
+### What the sweep found first: a missing nqp floor
+
+Eleven dists could not execute a line because **`nqp::div_i` did not exist**,
+and the blocker they sit behind (`Array::Sorted::Util`, whose binary search is
+written on it) gates ten more. Fixing it exposed `nqp::box_i`, then the whole
+bignum `_I` family, then `nqp::getrusage` and `nqp::gethllsym` — the ops arrive
+in layers, and each layer is one rebuild.
+
+**MoarVM is not self-consistent about division, and the cross-engine probe is
+the authority for every row.** `nqp::div_i` FLOORS (`-7 div 2` is `-4`) while
+`nqp::mod_i` beside it TRUNCATES (`-7 mod 2` is `-1`) — and `nqp::mod_I`, the
+bignum spelling, floors again. Dividing by zero throws from `div_i` and from
+`mod_i` (with its own wording, "Modulation by zero"), while the bignum
+`mod_I` answers the DIVIDEND rather than throwing. rakupp's existing `mod_i`
+was floored and answered 0 on zero — wrong twice, and nothing had noticed
+because no Roast file calls an nqp op.
+
+Added: `div_i`, `div_I`, `mul_I`, `sub_I`, `mod_I`, the six `is*_I`
+comparisons, `cmp_I`, `neg_I`, `abs_I`, `pow_I`, `gcd_I`, `lcm_I`, the five
+bitwise `_I` forms, `isbig_I`, `tostr_I`, `fromstr_I`, `box_i`, `box_n`,
+`sqrt_n`, `isfalse`, `pop`, `print`, `say`, `time`, `readlink`, `repeat_while`
+and `repeat_until`. `nqp::print`/`nqp::say` write to the VM's OWN stdout and do
+NOT consult `$*OUT` — routing them through it was the first version here, and
+more useful than true: on Rakudo a block that rebinds `$*OUT` captures `say`
+and does not capture `nqp::say`. The `_I` family DELEGATES to `applyArith` rather than
+re-deriving overflow and sign behaviour that is written and tested once
+already; only the by-zero edges are spelled out.
+
+### The type argument of `box_i` is load-bearing
+
+`nqp::box_i($i, NotFound)` where
+`class NotFound is Int { method defined(--> False) { } }` is how
+Array::Sorted::Util reports "not found": the value is the position and the
+UNDEFINEDNESS is the answer. Ignoring the type argument gave a plain Int, so
+every not-found test failed — and then `with` / `without` / `//` / `orelse`
+had to honour the user's `.defined` as well, which they did not. Rakudo routes
+all four through the METHOD; `so` and `.DEFINITE` stay on the representation,
+and that half matters as much.
+
+### An IterationBuffer was invisible to every nqp list op
+
+It is a tagged Hash here rather than an Array, and every list op tests for
+`VT::Array`, so `nqp::splice($buffer, nqp::list($v), $pos, 0)` silently did
+nothing — Array::Sorted::Util's insert never grew the buffer. A positional
+subscript on one read `Any` for the same reason. Both now see through to the
+buffer's own `items` list, which SHARES its storage.
+
+### Five more, each general
+
+- **`.BIND-KEY($k, $v)` left the element writable.** Only the `%h<k> := v`
+  spelling marked it read-only. Hash::Agnostic is written entirely in the
+  method spelling, and **seven dists sit behind it**. Binding something that
+  NAMES a container still aliases it, which is the whole point of that form.
+- **An attribute named `$!reified` was read as the engine's own backing-store
+  name**, so `nqp::bindattr($obj, T, '$!reified', $buf)` REPLACED the object
+  with a bare Array. ReverseIterables' `new` handed back an Array and the first
+  `.pull-one` on it died.
+- **`.subst('LITERAL')` read a leading `:` in the needle as a regex ADVERB.**
+  `.subst(':ver')` threw "Unrecognized regex adverb"; worse, `.subst(':x')`
+  consumed the needle as the count adverb, left it empty and substituted
+  NOTHING. Identity::Utils' `without-ver` is exactly that call.
+- **A TYPE OBJECT bound a native `str`/`int` parameter.** There is no undefined
+  `str`, only `""`, so Rakudo refuses it. `say Int` under `unprint` (which
+  replaces say with native-typed candidates) printed an empty line.
+- **A role's TYPE-CAPTURE parameter never reached its attributes.**
+  `role R[::TYPE] { has TYPE @!items }` left the declared type reading the
+  literal name, so the container refused EVERY value — in an `R[Int]` exactly
+  as in an `R[Str]` — and `.of` answered "TYPE". The role's ClassInfo is SHARED
+  by every class composing it (the first `does` sits in the parent slot), so
+  the name is resolved per OBJECT against the class's own bindings rather than
+  rewritten in place. A bare `does R` now binds the capture's DEFAULT too.
+- **`.^mro(:roles)` ignored its adverb**, so `are` answered `Cool` where `Real`
+  was due. `typeAncestry` already carries the roles; the plain form is that
+  list with them filtered out.
+
+### Converted
+
+Array::Sorted::Util, Array::Sorted::Map, Bits, Hash::Agnostic, Hash::Ordered,
+IRC::Log, IRC::Log::Perlgeek, P5readlink, ReverseIterables, String::Color,
+`are`, nano, snip, span, unprint. Fifteen, and nothing lost.
+
+### What is left, and why
+
+- **Identity::Utils (gates 5)** now runs its EXPORT and stops on
+  `CompUnit::DependencySpecification` and `CompUnit.repo` — the module-loading
+  introspection surface, a feature rather than a bug.
+- **Rakudo::CORE::META (gates 4)** wants
+  `nqp::gethllsym('default','SysConfig').rakudo-build-config<version>`. It is
+  asking for Rakudo's build config by name; answering it is a decision, not a
+  fix.
+- **DirHandle** assigns to `CALLER::LEXICAL::<$_>` — writing a caller's lexical
+  through the pseudo-package. Reads work; the write does not.
+- **Interval** declares `my role Intervaller[\seconds]` and reads `seconds` in
+  a `my` at ROLE-BODY level; the bindings reach method bodies only.
+- **P5times** needs `nqp::getrusage` filling a native int array, and the
+  `RUSAGE_*` constants beside it.
+- **mod-div-specs** expects `div`/`mod` to fail dispatch on a non-Int.
+- The remaining `dep-fail` cohort is led by **Cro::HTTP**, which is the
+  async-socket wall recorded in THOUSAND-PLAN, not a lizmat problem.
+
+### The gates
+
+`t/run.raku` **889/889**. Full Roast, `--workers=1 ROAST_TIMEOUT=30`, run
+alone: **no removals** from the fully-passing file list against the v3.28.0
+baseline, and **no per-file assertion change** across four gates during the
+batch (673 files, 200,619 assertions). The three files the runs gained (`S17-scheduler/{at,every,in}.t`) are
+the known timing flippers. Five files timed out in one gate and not another
+(`S02-literals/pod.t`, the S16 filehandle trio, `S16-io/prompt.t`); each
+reproduces identically on the PRE-change binary and passes when run alone, so
+they are load flutter.
+
+Pins: `t/regression/lizmat-nqp-ops.raku` and
+`t/regression/lizmat-containers-and-dispatch.raku`. **Both pass under Rakudo
+too**, which is the only thing that makes their expectations worth anything —
+three of them (the `mod_i` sign, the `mod_I` by-zero answer, `.^mro(:roles)`)
+were written the wrong way round first and the Rakudo run is what said so.

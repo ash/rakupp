@@ -339,7 +339,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value stored = args[0]; stored.itemized = false;   // as the subscript path does
                 inv.hash()->setObjKey(k, stored);
             }
-            (*inv.hash())[k] = args[1]; return args[1];
+            Value& slot = (*inv.hash())[k];
+            slot = args[1];
+            // BIND-KEY puts the value in the slot with NO Scalar container around
+            // it, so the element is immutable afterwards — exactly as `%h<k> := v`
+            // is. Binding something that NAMES a container (the argument arrives
+            // as a Proxy, taken raw by the eval arm) aliases it instead, and
+            // writing through that alias is the whole point of it.
+            //
+            // Only the METHOD spelling was missing this; the subscript spelling
+            // has marked it all along. Hash::Agnostic is written entirely in the
+            // method spelling — `method BIND-KEY($key,\value) is raw { %!hash.BIND-KEY($key,value) }`
+            // — so a bound key stayed writable there, and seven dists sit behind it.
+            if (m == "BIND-KEY" && !(args[1].t == VT::Hash && args[1].hashKind == "Proxy"))
+                slot.readonly = true;
+            return args[1];
         }
     }
     // `@a.BIND-POS($i, $container)` — the positional twin of BIND-KEY. The value
