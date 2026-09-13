@@ -2729,6 +2729,11 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
 // Per-thread execution registers. One instance per real thread; the GIL still
 // serialises who runs. See the declaration in Interpreter.h.
 static Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
+// The two live-target pointers above are FILE statics the constructor points at
+// the newest Interpreter — a SCRATCH one (a slang's host, an L10N table read)
+// would leave them dangling once it is gone. Whoever builds a short-lived
+// Interpreter saves the target first and puts it back.
+Interpreter* Interpreter::liveTarget() { return g_revInterp; }
 thread_local ExecContext Interpreter::tctx_;
 thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
@@ -2824,7 +2829,12 @@ std::vector<std::string> splitSearchPath(const std::string& spec) {
     return out;
 }
 
-Interpreter::Interpreter() {
+// The process-wide statics the type matchers, the NativeCall trampolines and
+// the revision probe dispatch through all point at ONE Interpreter — the one
+// that adopted them last. The constructor adopts; a short-lived scratch
+// Interpreter (a slang's host, see rakuppActivateSlang) hands them back to
+// the one it was built beside, or they dangle once it is gone.
+void Interpreter::adoptProcessStatics() {
     g_cbInterp = this; // NativeCall callback trampolines dispatch through here
     g_revInterp = this; // divide-by-zero shape consults the live language revision
     g_matchClasses = &classes_;
@@ -2838,6 +2848,10 @@ Interpreter::Interpreter() {
         out = subsetMatches(name, v);
         return true;
     };
+}
+
+Interpreter::Interpreter() {
+    adoptProcessStatics();
     // On the `now` clock, NOT raw POSIX. epochNowSecs() carries the Instant
     // epoch offset that `now` and every timer compare against, so reading the
     // system clock directly here put $*INIT-INSTANT exactly that offset behind
@@ -5806,7 +5820,7 @@ static void collectUseNamesStmt(const Stmt* st, std::vector<std::string>& out) {
     switch (st->kind) {
         case NK::UseStmt: {
             auto* u = static_cast<const UseStmt*>(st);
-            if (!u->isNo && !u->module.empty()) out.push_back(u->module);
+            if (!u->isNo && !u->module.empty() && u->fromLang.empty()) out.push_back(u->module); // `:from<NQP>`: nothing to bundle
             break;
         }
         case NK::Block: collectUseNames(static_cast<const Block*>(st)->stmts, out); break;
@@ -6450,7 +6464,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 // `$*LANG`. When the token rewrite has already done that job
                 // (`applyL10NSlang`), its failure here is expected and silent —
                 // but only for a language we really did handle.
-                if (name != "if" && !l10nApplied_.count(name))
+                if (name != "if" && !l10nApplied_.count(name) && !slangModules_.count(name))
                     std::cerr << "===WARNING=== Module " << name
                               << " EXPORT failed: " << e.message << "\n";
             }
@@ -6792,7 +6806,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                       : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
                             ? e.payload.obj()->cls->name : std::string();
                     if (name != "if" && !quiet && !requireForm && exType == "X::AdHoc") throw;
-                    if (name != "if" && !l10nApplied_.count(name))   // see the site above
+                    if (name != "if" && !l10nApplied_.count(name) && !slangModules_.count(name))   // see the site above
                         std::cerr << "===WARNING=== Module " << name
                                   << " EXPORT failed: " << e.message << "\n";
                 }
@@ -6815,8 +6829,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 catch (AstSerialError&) { prog->stmts.clear(); finish.clear(); } // corrupt: parse instead
             }
         }
+        // A module that registers a slang runs its EXPORT for real only in the
+        // scratch host (rakuppActivateSlang); here it fails to find `$*LANG`, and
+        // that failure is expected, not news.
+        if (name != "Slangify" && rakuppIsSlangSource(src)) slangModules_.insert(name);
         if (!cached) try {
             Lexer lx(src);
+            lx.tolerant_ = true;   // a slang below a `use` may own syntax this first lex cannot read
             auto mtoks = lx.tokenize();
             applyL10NSlang(src, mtoks);   // a MODULE may be written in a localized Raku too
             Parser parser(std::move(mtoks));
@@ -6825,6 +6844,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // parses (Text::Utils reads SPACE from Text::Utils::Vars).
             parser.libPaths_ = libPaths_;
             parser.srcFile_ = srcPath;
+            parser.src_ = &src;   // a `use Slang::X` inside re-reads the rest of the module through the slang
             *prog = parser.parseProgram();
             finish = lx.finishData();
             if (!cpath.empty())
@@ -6835,10 +6855,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             // blocks and exports never happen, so continuing past it runs the rest
             // of the program against a state nobody designed.
             //
-            // Grammar slangs stay exempt: Slang::* are compile-time grammar mutators
-            // that rakupp cannot apply at all, so failing on them would reject
-            // programs it can otherwise run perfectly well.
-            if (name.rfind("Slang::", 0) == 0) return;
+            // (A `Slang::*` module used to be exempt here — "a compile-time grammar
+            // mutator rakupp cannot apply" — so its failure surfaced as a baffling
+            // parse error in the DIST that used it. Slangs are applied now, and a
+            // slang module that will not parse fails like any other.)
             throw ParseError("Error while compiling module " + name + " (line " +
                              std::to_string(e.line) + "): " + e.what(), e.line);
         }
@@ -7049,9 +7069,12 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
+        lexer.tolerant_ = true;
         auto etoks = lexer.tokenize();
         applyL10NSlang(src, etoks);   // `EVAL 'use L10N::AF; …'` reads Afrikaans too
         Parser parser(std::move(etoks));
+        parser.src_ = &src;         // `EVAL 'use Slang::Date; 2023-01-99'` reads the slang too
+        parser.libPaths_ = libPaths_;  // …and resolves it (and any operator scan) on the interpreter's own search path
         parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
         // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
         for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
@@ -8736,6 +8759,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                     break;
                 }
+                // `use NQPHLL:from<NQP>` / `use QAST:from<NQP>`: Rakudo's own compiler
+                // guts, which a slang's legacy role imports. Nothing to load here.
+                if (u->fromLang == "NQP") return Value::any();
                 loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
@@ -25730,7 +25756,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
 
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
-                                const ValueList* ruleArgs) {
+                                const ValueList* ruleArgs, long startPos, long* consumedEnd) {
     bool haveActions = (actions.t == VT::Object || actions.t == VT::Type);
     ClassInfo* actCls = nullptr;
     if (actions.t == VT::Object && actions.obj()) actCls = actions.obj()->cls.get();
@@ -26311,8 +26337,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx_.cur = matchScope;
         // a grammar method may `die` mid-parse (issue #64): the exception is the
         // caller's, the match scope is not
-        try { matched = gm.parse(input, startRule, subparse, tree, endPos); }
+        try { matched = gm.parse(input, startRule, subparse, tree, endPos, startPos); }
         catch (...) { tctx_.cur = savedScope; throw; }
+        if (consumedEnd) *consumedEnd = matched ? endPos : -1;
         // G1: publish the highwater for rakupp-parse-diagnosis — byte offset
         // to CHARACTER position here, where the input is at hand. A success
         // clears it; a stale diagnosis must not outlive the parse it names.

@@ -174,6 +174,9 @@ void Parser::expectKind(Tok k, const char* what) {
     advance();
 }
 void Parser::error(const std::string& msg) {
+    // A tolerant lex (see Lexer::tokenize) stopped at a construct it could not
+    // read and left its error on the End token; it is THE error to report.
+    if (cur().kind == Tok::End && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
     // Dying ON the end token means the source simply ran out — an unclosed block,
     // paren or signature. The REPL turns that into a continuation prompt instead
     // of an error; every other caller ignores the flag.
@@ -515,9 +518,11 @@ static ExprPtr circumfixOperand(ExprPtr e) {
 }
 
 void Parser::scanModuleOps(const std::string& module) {
+    lastScanSlang_ = false;
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
     // A module compiled into this binary answers before the disk is consulted.
     if (const std::string* emb = rakuppEmbeddedModuleSource(module)) {
+        lastScanSlang_ = module != "Slangify" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
         scanOpsIn(*emb, "<embedded:" + module + ">");
         return;
     }
@@ -538,6 +543,10 @@ void Parser::scanModuleOps(const std::string& module) {
     std::string src, srcPath;
     if (!rakuppFindModuleSource(module, libPaths_, srcPath, src, langRev_ >= 2)) return;
     if (src.empty()) return;
+    // Slangify is the interface, never a slang; an L10N dist registers one too,
+    // but what it carries is a keyword table, applied by the token rewrite
+    // (Interpreter::applyL10NSlang) before this parser ever ran
+    lastScanSlang_ = module != "Slangify" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
     scanOpsIn(src, srcPath);
 }
 
@@ -1368,7 +1377,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                                  cur().line, "X::Syntax::InfixInTermPosition", {{"infix", "=>"}});
             advance();
             auto p = std::make_unique<PairExpr>();
-            if (lhs->kind == NK::NameTerm) p->key = static_cast<NameTerm*>(lhs.get())->name;
+            if (lhs->kind == NK::NameTerm && !static_cast<NameTerm*>(lhs.get())->noAutoQuote) p->key = static_cast<NameTerm*>(lhs.get())->name;
             else if (lhs->kind == NK::StrLit) { p->key = static_cast<StrLit*>(lhs.get())->v; p->quotedKey = true; } // 'a' => 1 stays a POSITIONAL arg
             else p->keyExpr = std::move(lhs); // $var / "interp" / (expr) keys evaluated at runtime
             p->value = parseExpr(BP_ASSIGN);
@@ -2482,7 +2491,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
-            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
+            if (isKind(Tok::LParen) && (!cur().spaceBefore || (slang_ && slang_->spacedMethodop))) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace) — unless Slang::Tuxic's methodop is in force
             // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
             // after the colon) is the call's named argument. It must be decided
             // BEFORE the colon-args form below, which was swallowing
@@ -2703,6 +2712,21 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (indirectType && isOp(":") && peek().kind == Tok::Ident &&
         (peek().text == "D" || peek().text == "U" || peek().text == "_"))
     { advance(); advance(); }
+    // SLANG-PLAN §B: `my 👍 = 42` (Slang::Emoji), `my a = 42` (Slang::Nogil) — the
+    // slang's `sigilless-variable` claims the bare identifier, exactly as `my \x`
+    // would. Not when what follows makes it a TYPE (`my Int $x`).
+    if (slang_ && slang_->sigilless && isKind(Tok::Ident) &&
+        !(peek().kind == Tok::Var || peek().kind == Tok::Ident || (peek().kind == Tok::Op && peek().text == "\\")) &&
+        slangSigillessHere()) {
+        std::string nm = advance().text;
+        sigilless_.insert(nm);
+        auto ve = std::make_unique<VarExpr>(nm);
+        ve->declare = true; ve->declScope = scope;
+        lastIsExport_ = false;
+        skipTraits(scope != "has", &ve->declDefault);
+        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
+        return ve;
+    }
     if (isKind(Tok::Ident)) {
         bool looksType = peek().kind == Tok::Var || peek().kind == Tok::LParen ||
                          peek().kind == Tok::LBracket ||
@@ -4589,6 +4613,9 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Ident: {
             std::string name = t.text;
+            // A slang's sigilless variable (Slang::Emoji's 👍, flagged by the lexer's
+            // seam): a TERM — never a call, and never auto-quoted before `=>`.
+            if (t.flag) { advance(); auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = true; return nt; }
             // A fat arrow AUTO-QUOTES the identifier on its left, so EVERY identifier
             // is a valid key — keywords and term-words included. This has to come
             // before all of them: without it the parser committed to `method`, `sub`,
@@ -4597,7 +4624,8 @@ ExprPtr Parser::parsePrimary() {
             // the offending one, which made it expensive to find. It also settles
             // `True => 1` / `False => 1`, whose keys are the strings "True"/"False"
             // in Rakudo, not Bools. The `=>` infix turns a NameTerm into the key.
-            if (peek().kind == Tok::FatArrow) { advance(); return std::make_unique<NameTerm>(name); }
+            // (…but not a slang's sigilless variable — `👍 => 666` under Slang::Emoji keys on its VALUE)
+            if (peek().kind == Tok::FatArrow && !t.flag) { advance(); return std::make_unique<NameTerm>(name); }
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
             // `Nil` is a TERM, never a routine. Falling through to the general
@@ -5271,7 +5299,7 @@ ExprPtr Parser::parsePrimary() {
                     if (ExprPtr n = makeNqpOp(name.substr(5), none)) return n;
                 }
             }
-            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            if (isKind(Tok::LParen) && (!cur().spaceBefore || slangSpacedCall(name))) {
                 advance();
                 ExprPtr invocant;
                 auto callArgs = parseCallArgs(&invocant);
@@ -5314,7 +5342,7 @@ ExprPtr Parser::parsePrimary() {
             // listop: `x2 < 0 || 1 > 7` is two comparisons, never `x2(< 0 || 1 >) 7`.
             // (A tight `name(...)` call was already handled above, so invoking a
             // Callable held in a sigilless var still works.)
-            if (sigilless_.count(name)) return std::make_unique<NameTerm>(name);
+            if (sigilless_.count(name)) { auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = t.flag; return nt; }
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur(), name);
@@ -8861,6 +8889,7 @@ StmtPtr Parser::parseStatementImpl() {
                     if (!literalish) val.clear();
                 }
                 if (adv == "ver") u->verReq = val;
+                else if (adv == "from") u->fromLang = val;   // `use NQPHLL:from<NQP>`: a foreign load, never searched for here
                 // `use experimental:rakuast` — the TIGHT spelling of a pragma
                 // argument lands in THIS loop (the spaced `use experimental
                 // :rakuast` is caught by the `:tag` capture further down), and
@@ -8870,7 +8899,7 @@ StmtPtr Parser::parseStatementImpl() {
                 else if (u->module == "experimental" && val.empty())
                     u->importArgs.push_back(adv);
             }
-            if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
+            if (!u->isNo && u->fromLang.empty()) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
             // `use lib` takes an expression unless it is the plain one-string form,
@@ -8951,6 +8980,14 @@ StmtPtr Parser::parseStatementImpl() {
             if (u->module == "experimental" && !u->isNo)
                 for (auto& tag : u->importArgs)
                     if (tag == "rakuast") usesRakuAst_ = true;
+            // SLANG-PLAN §A: the module registers a slang. Run it now, and read the
+            // rest of this unit through what it registered. (`need` and `require`
+            // run no EXPORT, so they activate nothing — as in Rakudo.)
+            if (lastScanSlang_ && !u->isNo && !u->isNeed && !u->isRequire && !u->isImport) {
+                matchKind(Tok::Semicolon);
+                activateSlang(u->module);
+                return u;
+            }
             matchKind(Tok::Semicolon);
             return u;
         }
@@ -9387,13 +9424,25 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
 
 Program Parser::parseProgram() {
     Program prog;
-    while (!isKind(Tok::End)) {
-        if (matchKind(Tok::Semicolon)) continue;
-        prog.stmts.push_back(parseStatement());
-        for (auto& ps : pendingStmts_) prog.stmts.push_back(std::move(ps)); // `will leave` desugars
-        pendingStmts_.clear();
-        if (!matchKind(Tok::Semicolon)) enforceStmtSep();
+    try {
+        while (!isKind(Tok::End)) {
+            if (matchKind(Tok::Semicolon)) continue;
+            prog.stmts.push_back(parseStatement());
+            for (auto& ps : pendingStmts_) prog.stmts.push_back(std::move(ps)); // `will leave` desugars
+            pendingStmts_.clear();
+            if (!matchKind(Tok::Semicolon)) enforceStmtSep();
+        }
+    } catch (ParseError&) {
+        // A tolerant lex (Lexer::tokenize) stopped at a construct it could not
+        // read; whatever the parser then tripped over AT that end is a symptom
+        // (`say "abc` reads as a bare `say` before End). The lex error is the
+        // unit's. An error raised BEFORE the end is the parser's own.
+        if (isKind(Tok::End) && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
+        throw;
     }
+    // the lex stopped early (Lexer::tokenize, tolerant): no slang re-read the
+    // rest, so the error it stopped on is the unit's
+    if (isKind(Tok::End) && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
     checkRedeclarations(prog.stmts, /*unitScope=*/true);
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
@@ -9572,6 +9621,98 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
     auto n = std::make_unique<NqpOp>(it->second);
     n->args = std::move(args);
     return n;
+}
+
+// ---- SLANG-PLAN §A: `use Slang::X` --------------------------------------
+// scanModuleOps read the module's source for its operators and saw that it
+// registers a slang. The module runs verbatim in a scratch Interpreter
+// (rakuppActivateSlang), and what it registered comes back as seams the lexer
+// runs and modes the parser honours. Then the REST of this unit is lexed
+// again with those armed — from the byte just past the `use` statement, so
+// the pragma's own words are never read through the slang. Unit-scoped, as
+// L10N is here and as mutsu is: a `use` inside a block governs to the end
+// of the file, where Rakudo would stop at the block's brace.
+void Parser::activateSlang(const std::string& module) {
+    if (!src_) error("`use " + module + "`: a slang cannot be applied here (the source is not available to re-read)");
+    std::string err;
+    std::shared_ptr<SlangSeams> seams = rakuppActivateSlang(module, libPaths_, err);
+    if (!seams) error(err);
+    if (slang_) {
+        // a second slang in the same unit: both sets of seams, the newer tried first
+        std::shared_ptr<SlangSeams> older = slang_;
+        auto merged = std::make_shared<SlangSeams>(*seams);
+        merged->number |= older->number;         merged->value |= older->value;
+        merged->identifier |= older->identifier; merged->sigilless |= older->sigilless;
+        merged->pointy |= older->pointy;         merged->declarator |= older->declarator;
+        merged->spacedCall |= older->spacedCall; merged->spacedMethodop |= older->spacedMethodop;
+        auto tryNew = seams->tryMatch, tryOld = older->tryMatch;
+        merged->tryMatch = [tryNew, tryOld, seams, older](const std::string& which, const std::string& src, size_t pos,
+                                                          size_t& end, std::string& repl) -> bool {
+            return (tryNew && tryNew(which, src, pos, end, repl)) || (tryOld && tryOld(which, src, pos, end, repl));
+        };
+        slang_ = merged;
+    }
+    else slang_ = seams;
+    const size_t from = pos_ > 0 ? toks_[pos_ - 1].off : 0;   // just past the `use` statement
+    Lexer lx(*src_);
+    lx.slang_ = slang_;
+    lx.slangFrom_ = from;
+    std::vector<Token> nt = lx.tokenize();
+    size_t i = 0;
+    while (i < nt.size() && nt[i].kind != Tok::End && nt[i].off <= from) i++;
+    toks_.erase(toks_.begin() + pos_, toks_.end());
+    toks_.insert(toks_.end(), nt.begin() + i, nt.end());
+    // declarator pod after the pragma comes from the second lexer — same text, same lines
+    for (auto& kv : lx.declPod_) declPod_[kv.first] = kv.second;
+    for (auto& kv : lx.leadPod_) leadPod_[kv.first] = kv.second;
+}
+
+// Tuxic's `term:sym<identifier>`: `name (args)` is a call with those args —
+// except for the control keywords its own token excludes, and a type name.
+// This is a MODE, not the token run: the token's body calls Rakudo's <args>
+// and $*R, which no seam can supply (SLANG-PLAN tier 3).
+bool Parser::slangSpacedCall(const std::string& name) const {
+    if (!slang_ || !slang_->spacedCall) return false;
+    static const std::set<std::string> kw = {"sub", "if", "elsif", "while", "until", "for"};
+    if (kw.count(name)) return false;
+    if (!name.empty() && ascii::isupper((unsigned char)name[0]) && knownTypeName(name)) return false;
+    return true;
+}
+
+// The identifier at cur() is a sigilless variable under the armed slang: the
+// lexer already said so (a codepoint no bareword covers, Slang::Emoji's 👍),
+// or the slang's token claims the whole bareword (Slang::Nogil's `my a`).
+bool Parser::slangSigillessHere() {
+    if (cur().flag) return true;
+    if (!src_ || !slang_->tryMatch) return false;
+    const Token& t = cur();
+    if (t.off < t.text.size()) return false;
+    const size_t start = t.off - t.text.size();
+    size_t end = 0;
+    std::string repl;
+    try {
+        if (!slang_->tryMatch("sigilless-variable", *src_, start, end, repl)) return false;
+    } catch (ParseError& e) {
+        if (e.line == 0) throw ParseError(e.what(), t.line);
+        throw;
+    }
+    return end == t.off;
+}
+
+
+// A name that is a TYPE here: one of the core types, or a class/role/grammar
+// this unit declared. Tuxic's spaced-call exclusion list is its only user.
+bool Parser::knownTypeName(const std::string& name) const {
+    static const std::set<std::string> core = {
+        "Int", "Str", "Num", "Rat", "FatRat", "Complex", "Bool", "Array", "Hash", "List", "Map", "Any", "Mu",
+        "Cool", "Numeric", "Real", "Positional", "Associative", "Callable", "Iterable", "Date", "DateTime",
+        "Instant", "Duration", "IO", "Buf", "Blob", "Pair", "Set", "Bag", "Mix", "SetHash", "BagHash", "MixHash",
+        "Range", "Seq", "Supply", "Promise", "Channel", "Proc", "Lock", "Thread", "Nil", "Version", "Junction",
+        "Code", "Sub", "Method", "Block", "Routine", "Regex", "Grammar", "Match", "Capture", "Signature",
+        "Parameter", "Attribute", "Exception", "Failure", "Order", "Whatever", "Slip", "Scalar", "Stash",
+        "Enumeration", "UInt", "Nat", "IntStr", "NumStr", "RatStr", "Uni", "NFC", "NFD", "Encoding",
+    };
+    return core.count(name) > 0 || declTypeNames_.count(name) > 0;
 }
 
 } // namespace rakupp

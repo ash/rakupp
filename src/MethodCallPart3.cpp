@@ -4177,4 +4177,240 @@ TokenXform Interpreter::l10nTokenXform(const std::string& lang) {
     };
 }
 
+// ---- SLANG-PLAN §A: activating a slang -----------------------------------
+// `use Slang::X` inside a unit being parsed. The parser met it, saw the module
+// registers a slang (rakuppIsSlangSource), and asks here what that registration
+// amounts to. The module runs VERBATIM — its mainline, Slangify's inner
+// `&EXPORT`, `$*LANG.define_slang` — in a scratch Interpreter that is thrown
+// away with the seams. Nothing is keyed on the module's name: what comes back
+// is the set of grammar productions its roles declared, and each is either a
+// SEAM (the lexer runs the slang's own token there) or a MODE (Tuxic's
+// `term:sym<identifier>` and `methodop`, whose bodies call Rakudo's grammar
+// and are re-stated as parser switches), or an error naming the production
+// rakupp cannot apply. mutsu (ADR-0026) chose the same shape; the difference
+// is that the self-contained tokens run here instead of being re-stated.
+
+namespace {
+
+// The compile-time language object the registration talks to. `.^name` starts
+// with `Raku::` on purpose: Slangify hands over the MODERN role on that test,
+// and a modern action makes a RakuAST node — which rakupp can deparse — where
+// the legacy one makes QAST and reads `$*W`. The grammar carries the closed set
+// of HOST productions the sixteen published slangs' tokens call: `ident`,
+// `apostrophe`, `morename` (Piersing, Subscripts, Slangify's own fixture) and
+// the declarator scaffolding (Mosdef, Tuxic). `key-origin` matches empty on
+// purpose — it marks where the parser's own routine parse takes over.
+const char* const kSlangPrelude = R"raku(
+grammar Raku::Grammar {
+    token ident          { <.alpha> \w* }
+    token apostrophe     { <[ ' \- ]> }
+    token identifier     { <.ident> [ <.apostrophe> <.ident> ]* }
+    token morename       { '::' <.identifier>? }
+    token name           { <.identifier> <.morename>* }
+    token routine-sub    { 'sub' }
+    token routine-method { 'method' }
+    token end-keyword    { <!before \w> }
+    token key-origin($name, $sym?) { <?> }
+}
+class Raku::Actions { }
+class Raku::Lang {
+    has %!grammars;
+    has %!actions;
+    method slang_grammar(Str:D $name) { %!grammars{$name} // Raku::Grammar }
+    method slang_actions(Str:D $name) { %!actions{$name}  // Raku::Actions }
+    method actions() { self.slang_actions('MAIN') }
+    method slangs()  { %( MAIN => self.slang_grammar('MAIN'), 'MAIN-actions' => self.slang_actions('MAIN') ) }
+    method define_slang(Str:D $name, Mu $grammar, Mu $actions = Mu) {
+        %!grammars{$name} = $grammar;
+        %!actions{$name}  = $actions;
+        self
+    }
+    method registered-grammar(Str:D $name) { %!grammars{$name} }
+    method registered-actions(Str:D $name) { %!actions{$name} }
+}
+)raku";
+
+// A production of Rakudo's grammar that a slang may override and rakupp does
+// not apply. The test is deliberately by NAME: any `x:sym<y>` candidate not
+// claimed above, and the bare productions a slang has been seen to replace.
+// A bare name that is none of these is a HELPER token the slang's own seam
+// tokens call (Slang::SQL's `token sql`), and it stays in the grammar.
+bool slangHostProduction(const std::string& rule) {
+    if (rule.find(":sym<") != std::string::npos || rule.find(":<") != std::string::npos) return true;
+    static const std::set<std::string> known = {
+        "statement", "statementlist", "EXPR", "term", "termish", "variable", "longname",
+        "desigilname", "postfix", "comp-unit", "comp_unit", "block", "pointy-block", "pblock",
+        "blockoid", "signature", "parameter", "param-var", "param_var", "type-declarator",
+        "package-declarator", "scope-declarator", "quote", "nibbler", "ws", "vws", "unv",
+        "comment", "pod-block", "sigilless_variable", "infixish", "prefixish", "postfixish",
+    };
+    return known.count(rule) > 0;
+}
+
+} // namespace
+
+// The interpreter's execution context is THREAD-local, shared by every
+// Interpreter on the thread: constructing the host, and running anything in it,
+// would leave the caller's current scope pointing into the host — and an EVAL
+// that activates a slang at run time then lost every symbol of the program
+// around it. Save and restore around every use of the host.
+struct SlangTctxGuard {
+    ExecContext saved;
+    Interpreter* prevLive;
+    explicit SlangTctxGuard(Interpreter* host = nullptr) : saved(Interpreter::tctx_), prevLive(Interpreter::liveTarget()) {
+        if (host) host->adoptProcessStatics();   // the host's own classes answer its type matches while it runs
+    }
+    ~SlangTctxGuard() {
+        if (prevLive) prevLive->adoptProcessStatics();
+        Interpreter::tctx_ = std::move(saved);
+    }
+};
+
+std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
+                                                const std::vector<std::string>& libPaths,
+                                                std::string& err) {
+    SlangTctxGuard tctx;
+    // A slang module that itself `use`s a slang would recurse into a second
+    // host from inside the first; nothing published does, and one level is the
+    // whole design.
+    static thread_local int depth = 0;
+    if (depth > 0) { err = "`use " + module + "`: a slang inside a slang module is not supported"; return nullptr; }
+    struct Depth { Depth() { depth++; } ~Depth() { depth--; } } guard;
+
+    // …and the constructor also points two process-wide statics at the newest
+    // Interpreter; put them back, or they dangle once the host is gone (an
+    // intermittent SIGSEGV in Text::CSV's 10_base.t, 2 runs in 3).
+    auto host = std::make_shared<Interpreter>();   // adopts the process statics; the guard above hands them back on exit
+    host->slangHost_ = true;
+    host->libPaths_.insert(host->libPaths_.begin(), libPaths.begin(), libPaths.end());
+    Value lang;
+    try {
+        host->evalString(kSlangPrelude);
+        lang = host->evalString("Raku::Lang.new");
+        host->global_->define("$*LANG", lang);
+        host->loadModule(module, {}, /*doImport=*/true, /*quiet=*/false);
+    }
+    catch (RakuError& e) { err = "`use " + module + "`: the slang failed to activate: " + e.message; return nullptr; }
+    catch (ParseError& e) { err = "`use " + module + "`: the slang module did not compile (line " + std::to_string(e.line) + "): " + e.what(); return nullptr; }
+
+    auto classOf = [&](const Value& v) -> ClassInfo* {
+        if (v.t == VT::Type) { auto it = host->classes_.find(v.s); return it != host->classes_.end() ? it->second.get() : nullptr; }
+        if (v.t == VT::Object && v.obj()) return v.obj()->cls.get();
+        return nullptr;
+    };
+    Value g, a;
+    try {
+        g = host->methodCall(lang, "registered-grammar", ValueList{Value::str("MAIN")});
+        a = host->methodCall(lang, "registered-actions", ValueList{Value::str("MAIN")});
+    }
+    catch (RakuError& e) { err = "`use " + module + "`: " + e.message; return nullptr; }
+    ClassInfo* gcls = classOf(g);
+    ClassInfo* acls = classOf(a);
+    if (!gcls && !acls) { err = "`use " + module + "`: the module registered no slang"; return nullptr; }
+
+    // The productions the slang's roles declare, most derived first, the base
+    // language object's own scaffolding excluded.
+    std::vector<std::string> declared;
+    std::set<std::string> seen;
+    std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+        if (!c) return;
+        if (c->name != "Raku::Grammar")
+            for (auto& r : c->ruleOrder) if (seen.insert(r).second) declared.push_back(r);
+        walk(c->parent.get());
+        for (auto& p : c->extraParents) walk(p.get());
+    };
+    walk(gcls);
+
+    auto seams = std::make_shared<SlangSeams>();
+    seams->module = module;
+    seams->host = host;
+    std::map<std::string, std::vector<std::string>> cands; // production -> the slang's candidates, declaration order
+    for (const std::string& rule : declared) {
+        std::string proto = rule;
+        size_t c = rule.find(":sym<");
+        if (c != std::string::npos) proto = rule.substr(0, c);
+        if (proto == "number")                         { seams->number = true;     cands["number"].push_back(rule); }
+        else if (proto == "value")                     { seams->value = true;      cands["value"].push_back(rule); }
+        else if (rule == "identifier" || rule == "name") { seams->identifier = true; cands["identifier"] = {"identifier"}; }
+        else if (rule == "sigilless-variable")         { seams->sigilless = true;  cands["sigilless-variable"] = {rule}; }
+        else if (rule == "pointy-block-starter" || rule == "lambda") { seams->pointy = true; cands["pointy-block-starter"] = {rule}; }
+        else if (rule == "routine-declarator:sym<sub>" || rule == "routine-declarator:sym<method>") {
+            seams->declarator = true; cands["routine-declarator"].push_back(rule);
+        }
+        else if (rule == "term:sym<identifier>")       seams->spacedCall = true;
+        else if (rule == "methodop")                   seams->spacedMethodop = true;
+        else if (slangHostProduction(rule)) {
+            err = "`use " + module + "`: it overrides `" + rule +
+                  "`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md)";
+            return nullptr;
+        }
+        // anything else is a helper token the seam tokens call; it stays in the grammar
+    }
+    // An actions-only slang (Slang::Comments, Dawa) rewrites the host's own
+    // AST nodes from an action; there is no seam that could carry that.
+    if (declared.empty() && acls) {
+        std::string first;
+        std::function<void(ClassInfo*)> walkA = [&](ClassInfo* c) {
+            if (!c || !first.empty()) return;
+            if (c->name != "Raku::Actions")
+                for (auto& m : c->methods) { first = m.first; break; }
+            walkA(c->parent.get());
+            for (auto& p : c->extraParents) walkA(p.get());
+        };
+        walkA(acls);
+        if (!first.empty()) {
+            err = "`use " + module + "`: it changes only the actions (`" + first +
+                  "`), which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md)";
+            return nullptr;
+        }
+    }
+    if (declared.empty()) { err = "`use " + module + "`: the module registered no slang"; return nullptr; }
+
+    // Run production `which` at a byte offset: every candidate the slang
+    // declared for it, longest match wins (LTM), the action's result deparsed.
+    Interpreter* H = host.get();
+    Value actions = a;
+    seams->tryMatch = [H, gcls, actions, cands, module](const std::string& which, const std::string& src,
+                                                       size_t pos, size_t& endOut, std::string& replOut) -> bool {
+        SlangTctxGuard tctx(H);
+        Interpreter::tctx_.cur = H->global_;   // the slang's code resolves in the host's world, not the program's
+        auto it = cands.find(which);
+        if (it == cands.end()) return false;
+        // Slang::Nogil's `sigilless-variable` gates on `$*IN-DECL`, the dynamic
+        // Rakudo sets while a declarator is being parsed; that is where this seam runs.
+        if (which == "sigilless-variable") H->global_->define("$*IN-DECL", Value::boolean(true));
+        long bestEnd = -1;
+        std::string bestRule;
+        Value best;
+        for (const std::string& rule : it->second) {
+            Value m;
+            long to = -1;   // where matching STOPPED — `.to` is the capture end, which `)>` may pull back
+            try { m = H->grammarParse(gcls, src, /*subparse=*/true, rule, actions, nullptr, (long)pos, &to); }
+            catch (RakuError& e) { throw ParseError(module + ": " + e.message, 0); }
+            if (m.t != VT::Match || to < 0) continue;
+            if (to > bestEnd) { bestEnd = to; bestRule = rule; best = m; }
+        }
+        if (bestEnd <= (long)pos) return false;
+        endOut = (size_t)bestEnd;
+        if (which == "routine-declarator") {          // the keyword the parser's own routine parse expects
+            size_t s = bestRule.find(":sym<");
+            replOut = bestRule.substr(s + 5, bestRule.size() - s - 6);
+            return true;
+        }
+        if (Value* made = best.pairVal()) {
+            if (made->t != VT::Any && made->t != VT::Nil) {
+                bool rakuAst = made->t == VT::Object && made->obj() && made->obj()->cls &&
+                               made->obj()->cls->name.rfind("RakuAST::", 0) == 0;
+                Value r;
+                try { r = H->methodCall(*made, rakuAst ? "DEPARSE" : "raku", ValueList{}); }
+                catch (RakuError& e) { throw ParseError(module + ": " + e.message, 0); }
+                if (r.t == VT::Str && !r.s.empty()) { replOut = r.s; return true; }
+            }
+        }
+        replOut = src.substr(pos, endOut - pos);
+        return true;
+    };
+    return seams;
+}
+
 } // namespace rakupp

@@ -6888,7 +6888,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // exactly this to pick which compiler guts to patch (neither of which
     // exists here — rakupp honors `:if` natively instead, see UseStmt).
     if (inv.t == VT::Type && inv.s == "Raku" && m == "legacy")
-        return Value::boolean(true);
+        return Value::boolean(!slangHost_); // False inside a slang's scratch host: its actions take the RakuAST branch
     // IO::String / Text::IO::String: an in-memory read handle over a string.
     // $*RAKU / $?RAKU and their .compiler — the runtime/implementation introspection object
     if (inv.t == VT::Hash && (inv.hashKind == "Raku" || inv.hashKind == "Compiler")) {

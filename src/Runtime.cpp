@@ -276,6 +276,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
             if (fileName != "-e" && !fileName.empty()) stage.lap("precomp (miss)");
         }
         Lexer lexer(src);
+        lexer.tolerant_ = true;   // a slang below a `use` may own syntax this first lex cannot read
         auto tokens = lexer.tokenize();
         stage.lap("lex");
         // `use L10N::XX;` — a whole program written in that language. The
@@ -306,6 +307,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         // operator declarations are found while this file is still being parsed
         parser.libPaths_.insert(parser.libPaths_.begin(), libPaths.begin(), libPaths.end());
         parser.srcFile_ = fileName;   // `use lib $*PROGRAM.sibling('lib')` resolves here too
+        parser.src_ = &src;          // a `use Slang::X` re-reads the rest of the file through the slang
         if (const char* rl = std::getenv("RAKULIB"))
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
         Program prog = parser.parseProgram();

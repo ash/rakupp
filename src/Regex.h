@@ -510,7 +510,8 @@ public:
 
     // Parse `input` from rule `top`. On success fills `out` (the tree) and returns
     // the end offset in `endOut`; requires a full match unless `subparse`.
-    bool parse(const std::string& input, const std::string& top, bool subparse, ParseNode& out, long& endOut);
+    bool parse(const std::string& input, const std::string& top, bool subparse, ParseNode& out, long& endOut,
+               long startPos = 0); // startPos: match from this byte offset (a slang seam runs a token mid-source)
 
     // Called by Regex::matchNode for a `<name(args)>` subrule; threads `k` through
     // the callee. `capKey` (empty for <.name>) is the parent-frame capture key.

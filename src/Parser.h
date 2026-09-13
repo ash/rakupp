@@ -2,6 +2,7 @@
 #include "Ast.h"
 #include <memory>
 #include "Token.h"
+#include "Slang.h"
 #include <stdexcept>
 #include <vector>
 #include <set>
@@ -51,6 +52,14 @@ bool moduleFileOnPath(const std::string& module,
 bool rakuppFindModuleSource(const std::string& name,
                             const std::vector<std::string>& searchPath,
                             std::string& pathOut, std::string& srcOut, bool sixE);
+// SLANG-PLAN §A: run the slang module `module` verbatim in a scratch Interpreter
+// with a compile-time `$*LANG`, and answer what it registered as seams and
+// modes. Null with `err` set when the module registered a production rakupp
+// cannot apply, or failed to load. Defined beside the L10N slang in
+// MethodCallPart3.cpp.
+std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
+                                                const std::vector<std::string>& libPaths,
+                                                std::string& err);
 
 class Parser {
 public:
@@ -67,6 +76,10 @@ public:
     // Path of the file being parsed, so `use lib $?FILE.IO.parent.add('lib')`
     // can name a directory while the parse is still running. "" / "-e" = none.
     std::string srcFile_;
+    // SLANG-PLAN §A: the unit's source, so a `use Slang::X` can re-lex the rest
+    // of it through the slang's seams; and the seams, once one is armed.
+    const std::string* src_ = nullptr;
+    std::shared_ptr<SlangSeams> slang_;
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
@@ -235,6 +248,11 @@ private:
     void scanModuleOps(const std::string& module);
     void scanOpsIn(const std::string& src, const std::string& srcPath); // the scan itself, shared by the disk and embedded paths
     std::set<std::string> scannedMods_;            // modules already scanned for operators
+    bool lastScanSlang_ = false;                   // …and whether the one just scanned registers a slang
+    void activateSlang(const std::string& module); // run it, arm its seams, re-lex the rest of the unit
+    bool slangSpacedCall(const std::string& name) const; // Tuxic: `name (args)` is a call with those args
+    bool slangSigillessHere();                      // Emoji/Nogil: the identifier at cur() declares a sigilless variable
+    bool knownTypeName(const std::string& name) const; // a core type, or one this unit declared
 public:
     // Every module SOURCE scanModuleOps read, as (path, content). A cached parse
     // of this file is only valid while those still say what they said: an

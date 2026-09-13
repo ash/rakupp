@@ -247,7 +247,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       F(io, n.viaPseudoPkg); F(io, n.pseudoPkg);
                                                       ioExpr(io, n.declTypeExpr);
                                                       n.syncAttrCache(); }  // derived from `name`, not stored
-template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); }
+template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);
                                                          F(io, n.pkg); F(io, n.sigil); }
@@ -385,7 +385,7 @@ template <class IO> void visit(IO& io, ReturnStmt& n) { ioExpr(io, n.value); F(i
 template <class IO> void visit(IO& io, LastStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, NextStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, RedoStmt& n) { F(io, n.target); }
-template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.arg); ioVec(io, n.importArgs);
+template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.arg); F(io, n.fromLang); ioVec(io, n.importArgs);
                                                       ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed);
                                                       F(io, n.verReq);   // dropping the :ver<…> constraint from the
                                                                          // cache made run 2 load ANY version

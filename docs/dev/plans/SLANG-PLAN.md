@@ -1,6 +1,8 @@
 # Plan: slangs — running the ecosystem's grammar mixins, not emulating them
 
-**Status: plan only, no code. Revised 2026-09-12; the first draft was
+**Status: phases 0–3 BUILT, 2026-09-13 — the eight self-contained slangs run
+their own tokens, Tuxic runs as modes, Text::CSV's suite is 31 of 33 files;
+see "What building it taught" below. Design revised 2026-09-12; first draft
 2026-09-09.** User-set direction, 2026-09-09: "we do not need to apply slangs
 natively. Lets instead prepare a plan to implement slangs." That replaced a
 Slang::Tuxic emulation (the parser recognised the module's NAME and flipped
@@ -52,7 +54,7 @@ module is loaded in a **scratch `Interpreter`** before the program is parsed
 (`main.cpp`, `applyL10N`), and the effect is **unit-scoped** — from the `use`
 to the end of the file — rather than lexical.
 
-## What is already in place (measured 2026-09-12)
+## What was already in place (measured 2026-09-12, before the build)
 
 | piece | state |
 |---|---|
@@ -190,14 +192,18 @@ right answer for and which can do better.
 
 ### A. Activation (shared by everything)
 
-A pre-pass over the token stream, exactly where `applyL10NSlang` runs today
-(`main.cpp`, `Interpreter.cpp` for modules and EVAL):
+Detection happens where the parser already has the module in hand, not in a
+separate pre-pass: `scanModuleOps` reads every used module's source when the
+parser meets the `use` statement, and that is the only place a slang is
+recognised.
 
-1. For each `use <Module>` statement, decide whether the module is a slang.
-   `scanModuleOps` already reads every used module's source at parse time; a
-   slang is one whose source contains `Slangify` or `define_slang` (a text test
-   on a string already in hand — no extra I/O; a module can have any name:
-   `Qwiratry::Mold::Slang`, `Dawa`).
+1. A slang is a used module whose source contains `Slangify` or
+   `define_slang` — a substring test on a string already read for the operator
+   scan. No extra I/O, and nothing at all for a program with no `use`, for a
+   pragma, or for a module compiled into the binary. A slang module can have
+   any name (`Qwiratry::Mold::Slang`, `Dawa`), so the test is on its source,
+   never on its name. On a hit the parser stops, activates (steps 2–5), and
+   resumes at step 6 from the `use` statement's own byte offset.
 2. Load it in a **scratch `Interpreter`** (as `applyL10N` does) with `$*LANG`
    defined in that interpreter's globals. The inner EXPORT runs for real.
 3. `$*LANG` is an object with `.slang_grammar($name)`, `.slang_actions($name)`,
@@ -310,15 +316,127 @@ Out of scope, stated: Forgiven, SQL, AltTernary (legacy NQP/QAST throughout);
 Comments and Dawa (actions over the host's own AST nodes, no grammar change);
 Predicate (source not located).
 
+## What building it taught (2026-09-13)
+
+Phases 0–3 were built in one sitting; the design above held, with these
+corrections. Each is in the code with the same wording.
+
+* **The up-front lex had to become tolerant.** The whole unit is lexed before
+  the parser starts, so `₃₆123` (Slang::NumberBase) or 十二 (Slang::Kazu)
+  ended the lex — and the parse — before the `use` that would have armed the
+  seam was reached. A parse site sets `Lexer::tolerant_`; a lex that dies then
+  ends the stream with an End token carrying the error (kept whole, type and
+  attributes included), the parser reaches the `use`, re-lexes through the
+  slang, and the error is never reported. `Parser::error` and the end of
+  `parseProgram` rethrow it for a unit with no slang. The draft's "restart
+  mid-file" worry was the wrong half of this: restarting is easy, it is the
+  FIRST lex that had to survive.
+* **A second Interpreter in the process is not free.** The constructor adopts
+  nine process-wide statics (the type matchers' class and alias views, the
+  NativeCall trampoline target, the revision probe, four `[this]` lambdas) and
+  sets the THREAD-local `ExecContext`. The scratch host left them dangling once
+  it was freed: an intermittent SIGSEGV in Text::CSV's `t/10_base.t` (2 runs in
+  3, inside `aliasType`), and an EVAL that activated a slang at run time lost
+  every outer symbol. `Interpreter::adoptProcessStatics()` is now the one place
+  the adoption lives; `SlangTctxGuard` (MethodCallPart3.cpp) saves the context,
+  lets the host adopt while it runs, and hands everything back. This is why
+  mutsu ran its host on a fresh thread.
+* **`.^name` = `Raku::Grammar`, `Raku.legacy` False in the host** — validated:
+  every action took its RakuAST branch and deparsed. Slangify's inner-`&EXPORT`
+  protocol needed nothing; the module's own runtime `use` in the program still
+  runs that EXPORT against no `$*LANG`, and its failure is silenced by name
+  (`slangModules_`, both catch sites).
+* **`use NQPHLL:from<NQP>` is a no-op — in the AST cache too.** The adverb is
+  read (`UseStmt::fromLang`), the loader skips it, the bundler skips it, and it
+  is SERIALIZED: a cached module AST without it loaded NQPHLL again on the
+  second run.
+* **Detection is `use Slangify` or `define_slang`, Slangify itself excluded by
+  name.** The draft's `$*LANG.define_slang` missed the idiom `my $LANG :=
+  $*LANG; $LANG.define_slang(…)`; the wider test then matched Slangify's own
+  source, and a slang module's `use Slangify` would have activated the
+  interface as a slang from inside the host.
+* **The longest-token rule, as implemented.** The slang's token runs at the
+  token start; it wins when it is at least as long as what the built-in lexer
+  would take — except `identifier`, which must be STRICTLY longer, or every
+  ordinary identifier would be re-emitted by the slang path and skip the
+  built-in lexer's own post-processing. A CJK numeral (十) is a letter with a
+  numeric value and the built-in lexer sends it down the number path; the
+  literal seam does the same, or Kazu's token was never tried.
+* **`$x?` under Slang::Piersing is a variable named `x?`.** The draft followed
+  mutsu in protecting a signature's `?`/`!`; Rakudo (2026.08, run as the
+  oracle on the regression fixture) reads `sub opt($x?) { $x }` as an
+  undeclared `$x`. The protection was removed and the test asserts Rakudo's
+  reading.
+* **A slang's sigilless variable that is no identifier (Slang::Emoji's 👍) is
+  flagged by the lexer** and parsed as a TERM — never a call, never
+  auto-quoted before `=>` (`👍 => v` keys on the value; `NameTerm::noAutoQuote`,
+  serialized). Slang::Nogil's `my a` stays an identifier, so `a => 1` still
+  auto-quotes, as in Rakudo. The built-in lexer reads 👍 as an identifier
+  start, so the word path checks Unicode's category before the seam.
+* **An engine bug the spike found, fixed for everyone:** `<( … )>` in a
+  grammar's ENTRY rule did not trim the capture (`token TOP { "0r" <( \w+ }`
+  answered "0rXIV"; subrules were right). `GrammarMatcher::parse` now honours
+  it, and `grammarParse` reports where matching STOPPED separately from `.to`,
+  which `)>` pulls back.
+* **Tier 3 as built.** Tuxic's `term:sym<identifier>` and `methodop` are two
+  `bool`s tested at the parser's existing `spaceBefore` checks; the private
+  `self!m (args)` site already accepted a space. The exclusion list is Tuxic's
+  own six keywords plus a type name (core types and the unit's declared ones).
+  `routine-declarator:sym<sub>` did not need a mode: the seam runs the token
+  with the host productions `routine-sub`, `end-keyword` and `key-origin`
+  from `Raku::Grammar`, which is also what makes Slang::Mosdef's `def` and
+  `lambda` work with no shim at all — tier 4's first item came free.
+
+### Where each slang stands
+
+Own suites, `build-arm64/rakupp`, 2026-09-13:
+
+| slang | result | what is left |
+|---|---|---|
+| Slangify (own test, Piersing fixture) | 1/1 | — |
+| Slang::Roman | 7/7 | — |
+| Slang::NumberBase | 4/4 | — |
+| Slang::Date | 2/2 | the first lex prints `Leading 0 does not indicate octal` for `2023-01-13` before the slang claims it (cosmetic; Rakudo prints nothing) |
+| Slang::Piersing | 3/3 | — |
+| Slang::Subscripts | 6/6 | — |
+| Slang::Lambda | 1/1 | — |
+| Slang::Mosdef | 6/6 (two files) | — |
+| Slang::Tuxic | 8/8 | — |
+| Slang::Emoji | 4/4 | — |
+| Slang::Nogil | 27/27 | its `<?{ check-keywords($/) if $*IN-DECL }>` runs (`$*IN-DECL` is set at the declarator site) |
+| Slang::Kazu | 8/25 | not a slang problem: a subrule inside a POSITIONAL capture group loses its children and its `.made` (`$1<single-kazu>.made` is Nil; Rakudo 2); its `十二` reads as 10. A regex-engine bug, filed under open findings |
+| Text::CSV | 31 of 33 files run to the end, 22,522 assertions, none failing | `91_csv_cb.t`: a `;` inside `[ … ]` (a semicolon list, not a slang matter); `90_csv.t`: dies after 377 assertions on `.tap` of a Bool |
+
+Out of scope stays as stated above: Forgiven, SQL, AltTernary (legacy
+NQP/QAST), Comments and Dawa (actions only), Otherwise and Qwiratry (tier 4).
+`use Slang::Otherwise` now says so, by name: "it overrides
+`statement-control:sym<for>`, which rakupp cannot apply".
+
+The regression case is `t/regression/slang-seams.raku` with the fixture
+`t/fixtures/slang-lib/Slang/Seams.rakumod` — a slang registered through
+`$*LANG.define_slang` directly, carrying both role flavours, so the same file
+passes under Rakudo (legacy grammar) and rakupp (`Raku::Grammar`); and
+`Slang/Refused.rakumod`, which must be refused by name.
+
+### Gates, 2026-09-13, `build-arm64/rakupp` built from this tree
+
+| gate | result |
+|---|---|
+| full Roast, `--workers=1 ROAST_TIMEOUT=30` | 673 of 1,464 files fully passing (v3.28.0 list: 670; none lost, S17-scheduler `at`/`every`/`in` gained), 200,613 of 219,735 declared assertions (v3.28.0: 200,504), 5 timeouts |
+| `t/run.raku` (examples, showcases, t/regression) | 885 of 886; the one failure is `showcase/forth` and it fails identically on an untouched build of HEAD 9b6f6f4 — not this work |
+| `perf-guard --check` | **inconclusive**: run twice under a load average of 5.4 from another process (a Python job at 340% CPU); the guard itself refused to judge. To be re-run on an idle machine before this ships — the design puts one predicted branch per token start on the unarmed path, and that claim is unmeasured until then |
+| `--slim` size gate | not run: `make` cannot get past cmake's glob check on this machine today (see below), and the slim build needs it |
+
+
 ## Phasing
 
 | phase | deliverable | gate |
 |---|---|---|
-| 0 | spike: `use Slang::Roman; say 0rXIV` prints 14 through the real token, the real action and `.DEPARSE`, in a scratch interpreter | the one-liner, then Roman's `t/01-basic.rakutest` (7 subtests) |
-| 1 | activation (§A) + `$*LANG` + `:from<NQP>` no-op + the unknown-rule error; no seams beyond the spike's | all 16 dists either activate or name the unsupported rule; `rakupp -e 'use Slang::Tuxic'` says which rule; Roast unchanged; `perf-guard --check` |
-| 2 | tier 1: Roman, NumberBase, Kazu, Date, Piersing, Subscripts, Emoji, Lambda; tier 2 if Nogil's assertion runs | each dist's own suite; Slangify's own test (Piersing fixture); App::Crag re-measured |
-| 3 | tier 3: Tuxic's three modes | Slang::Tuxic 8/8; Text::CSV's suite (32 files); then Data::Reshapers and the seven others behind Text::CSV, re-measured the ECOSWEEP way |
-| 4 | tier 4 shim, Mosdef first | Mosdef's suite; then a decision per remaining dist |
+| 0 | spike: `use Slang::Roman; say 0rXIV` prints 14 through the real token, the real action and `.DEPARSE`, in a scratch interpreter | **done** — the one-liner, then Roman's `t/01-basic.rakutest` (7 subtests) |
+| 1 | activation (§A) + `$*LANG` + `:from<NQP>` no-op + the unknown-rule error; no seams beyond the spike's | **done** — all 16 dists either activate or name the unsupported rule; Roast and `perf-guard --check` as recorded below |
+| 2 | tier 1: Roman, NumberBase, Kazu, Date, Piersing, Subscripts, Emoji, Lambda; tier 2 if Nogil's assertion runs | **done but Kazu** (an engine bug, see above); Nogil runs; App::Crag not yet re-measured |
+| 3 | tier 3: Tuxic's three modes | **done** — Slang::Tuxic 8/8; Text::CSV 31 of 33 files; Data::Reshapers and the seven others behind it not yet re-measured |
+| 4 | tier 4 shim, Mosdef first | Mosdef came free with the declarator seam (6/6); Otherwise and Qwiratry open |
 
 Phases 2 and 3 each end with a re-measured ecosystem count, not a claim.
 
@@ -328,8 +446,8 @@ Phases 2 and 3 each end with a re-measured ecosystem count, not a claim.
   rest of the file here. L10N and mutsu accept the same; noted, not hidden.
 * **The re-lex.** Re-lexing from the `use` statement's offset restarts the
   lexer in its default state; a `use` inside a heredoc, `q:to` or POD is not a
-  position the lexer can restart from, and the pre-pass skips those (they are
-  not statements). Mid-file restart for any other reason is not needed.
+  position the lexer can restart from, and the parser never meets a `use`
+  there (it is text, not a statement). Mid-file restart for any other reason is not needed.
 * **Arbitrary Raku at parse time.** A tier-1 action runs user code inside the
   parse, in the scratch interpreter. It wants the guard rails `BEGIN` has here
   (no `--exe` surprises, errors reported with the slang's name).

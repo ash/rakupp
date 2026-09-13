@@ -1,6 +1,8 @@
 #pragma once
 #include "AsciiCtype.h"
 #include "Token.h"
+#include "Slang.h"
+#include <memory>
 #include <cctype>
 #include <cstdint>
 #include <map>
@@ -10,6 +12,8 @@
 #include <vector>
 
 namespace rakupp {
+
+struct ParseError; // Parser.h; only the definition and the callers need it whole
 
 // What may appear in an identifier, and the ONE rule about `-`/`'` inside a
 // name: they continue the name only when a LETTER or `_` follows — never a
@@ -33,6 +37,17 @@ public:
     std::vector<Token> tokenize();
     const std::string& finishData() const { return finishData_; } // text after =finish ($=finish)
     const std::string& podData() const { return podData_; } // rendered =pod content (for --doc)
+    // SLANG-PLAN §B: the seams a `use Slang::X` armed, in force from byte offset
+    // slangFrom_ on. The Parser re-lexes the unit with these set; an ordinary
+    // lex has slang_ null and pays one test per token start.
+    std::shared_ptr<SlangSeams> slang_;
+    size_t slangFrom_ = 0;
+    // A parse site sets this: a lex that dies mid-file (a construct only a slang
+    // below a `use` can read — `₃₆123`, 十二) then ends the token stream with an
+    // End token carrying the error (flag set, ival = its index) instead of
+    // throwing, so the parser can reach the `use` first. Parser::error rethrows.
+    bool tolerant_ = false;
+    static ParseError storedLexError(size_t idx);
 
 private:
     std::string src_;
@@ -50,6 +65,17 @@ public:
     std::map<int, std::string> declPod_; // `#= text` trailing declarator pod, by line
     std::map<int, std::string> leadPod_; // `#| text` leading declarator pod, by line
 private:
+    bool slangArmed() const { return slang_ && pos_ >= slangFrom_ && angleWords_ == 0; }
+    void tokenizeImpl(std::vector<Token>& out);
+    bool probing_ = false;   // inside slangNumberExtent: lexing to MEASURE, not to report
+    bool trySlangLiteral(std::vector<Token>& out, bool spaced); // number/value/sigilless/pointy where no bareword starts
+    bool trySlangWord(std::vector<Token>& out, bool spaced);    // number/value/pointy/declarator/identifier where a bareword starts
+    bool slangTry(std::vector<Token>& out, bool spaced, const char* which, size_t builtinEnd);
+    void slangExtendVarName(std::string& name, size_t nameStart); // `$x₁`: the identifier seam inside a variable name
+    size_t slangIdentExtent();  // where the built-in bareword would end (no side effects; 0 = none)
+    size_t slangNumberExtent(); // where lexNumber would end (0 = it would not lex one)
+    void slangEmitSource(std::vector<Token>& out, bool spaced, size_t end, const std::string& repl);
+    void slangEmitToken(std::vector<Token>& out, bool spaced, size_t end, Tok kind, const std::string& text, bool flag);
     int col_ = 1;
 
     char peek(size_t off = 0) const;

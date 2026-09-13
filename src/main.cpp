@@ -988,11 +988,13 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
     Program prog;
     try {
         Lexer lexer(src);
+        lexer.tolerant_ = true;
         auto toks = lexer.tokenize();
         applyL10N(src, toks, searchPath);
         Parser parser(std::move(toks));
         parser.libPaths_ = searchPath;
         parser.srcFile_ = fileName;
+        parser.src_ = &src;
         prog = parser.parseProgram();
     } catch (const ParseError&) { return -1; }
     auto us = findUndeclaredVars(prog, src, searchPath);
@@ -1069,7 +1071,9 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
     if (!outPath.empty()) { std::string base = outPath; size_t sl = base.find_last_of("/\\"); if (sl != std::string::npos) base = base.substr(sl + 1); jo.mapUrl = base + ".map"; }
     try {
         Lexer lexer(src);
+        lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths);
         parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
@@ -1095,7 +1099,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         std::string vpath = (outPath.empty() ? std::string(".rakupp-verify-") + std::to_string((long long)getpid()) : outPath) + ".verify.js";
         std::string runnable = js;
         if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true; so.mapUrl.clear();
-            Lexer lexer(src); Parser parser(lexer.tokenize()); parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
+            Lexer lexer(src); lexer.tolerant_ = true; Parser parser(lexer.tokenize()); parser.src_ = &src; parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
             Program prog = parser.parseProgram(); runnable = transpileToJs(prog, so); }
         { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
         std::string why;
@@ -1139,7 +1143,9 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string cpp;
     try {
         Lexer lexer(src);
+        lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
@@ -1228,7 +1234,9 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     std::string cpp, finish;
     try {
         Lexer lexer(src);
+        lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         parser.srcFile_ = srcName;
         finish = lexer.finishData();
@@ -1370,7 +1378,9 @@ static int slimExplain(const std::string& src, const std::string& srcName,
     std::vector<BundledModule> mods;
     try {
         Lexer lexer(src);
+        lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths);
         parser.srcFile_ = srcName;
         prog = parser.parseProgram();
@@ -2953,9 +2963,12 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --ast FILE | --ast -e CODE\n"; return 4; }
         try {
             Lexer lexer(src);
+            lexer.tolerant_ = true;
             auto toks = lexer.tokenize();
             applyL10N(src, toks, effectiveSearchPath(libPaths));
             Parser parser(std::move(toks));
+            parser.src_ = &src;
+            parser.libPaths_ = effectiveSearchPath(libPaths);
             Program prog = parser.parseProgram();
             dumpAst(prog, std::cout);
         } catch (const ParseError& e) {
@@ -2978,7 +2991,10 @@ int main(int argc, char** argv) {
         Program prog;
         try {
             Lexer lexer(src);
+            lexer.tolerant_ = true;
             Parser parser(lexer.tokenize());
+            parser.src_ = &src;
+            parser.libPaths_ = effectiveSearchPath(libPaths);
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             std::cerr << "PARSE " << fileName << ": " << e.what() << "\n";
@@ -3089,11 +3105,13 @@ int main(int argc, char** argv) {
         Program prog;
         try {
             Lexer lexer(src);
+            lexer.tolerant_ = true;
             auto toks = lexer.tokenize();
             applyL10N(src, toks, effectiveSearchPath(libPaths));
             Parser parser(std::move(toks));
             parser.libPaths_ = effectiveSearchPath(libPaths);
             parser.srcFile_ = fileName;
+            parser.src_ = &src;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
@@ -3129,11 +3147,13 @@ int main(int argc, char** argv) {
         Program prog;
         try {
             Lexer lexer(src);
+            lexer.tolerant_ = true;
             auto toks = lexer.tokenize();
             applyL10N(src, toks, effectiveSearchPath(libPaths));
             Parser parser(std::move(toks));
             parser.libPaths_ = effectiveSearchPath(libPaths);
             parser.srcFile_ = fileName;
+            parser.src_ = &src;
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
@@ -3195,9 +3215,12 @@ int main(int argc, char** argv) {
         if (int rc = declCheckGate(src, fileName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
         try {
             Lexer lexer(src);
+            lexer.tolerant_ = true;
             Parser parser(lexer.tokenize());
+            parser.src_ = &src;
             parser.libPaths_ = effectiveSearchPath(libPaths);
             parser.srcFile_ = fileName;
+            parser.src_ = &src;
             Program prog = parser.parseProgram();
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;

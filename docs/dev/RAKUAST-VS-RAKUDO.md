@@ -114,10 +114,18 @@ read that as an engine feature. It is not, on either engine: Rakudo does not
 populate it inside `visit-children` (measured). It is an ordinary dynamic the
 visitor re-declares as it descends.
 
-### Macros and slangs are still out
+### Macros are still out; slangs run
 
-They need the parser to run user code mid-parse and rewrite its own grammar,
-which a view cannot offer. See [plans/SLANG-PLAN.md](plans/SLANG-PLAN.md).
+A macro needs the parser to run user code mid-parse and splice what it made,
+which a view cannot offer. A slang is different, and runs here since
+2026-09-13: `use Slang::X` loads the module for real in a scratch Interpreter
+with a compile-time `$*LANG`, and the productions its roles override become
+SEAMS — the lexer runs the slang's own token where the built-in lexer would
+start one, and the action's RakuAST node, deparsed, is what parses — or, for
+Tuxic's `term:sym<identifier>` and `methodop`, parser modes. A slang that
+overrides a production with neither (`statement-control:sym<for>`) is refused
+by name. See [plans/SLANG-PLAN.md](plans/SLANG-PLAN.md) for the tiers and
+where each published slang stands.
 
 **The exception, and it is a real one:** `use L10N::XX;` writes a whole program
 in German, Japanese or Afrikaans, and works here. Upstream that is a slang mixed
@@ -161,7 +169,7 @@ Two traps in measuring this, both of which cost real time:
 | renders with `.DEPARSE` | works — but see the rendering note below |
 | reads `.rakudoc` for documentation blocks | works |
 | declares a `macro` | no |
-| installs a slang, other than an L10N keyword table | no |
+| installs a slang | works for a self-contained token (Roman, NumberBase, Date, Piersing, Subscripts, Emoji, Lambda, Mosdef, Nogil) and for Tuxic's two productions; a slang replacing `for` or `EXPR` is refused by name — plans/SLANG-PLAN.md |
 | needs `$*R` / to *be* the front end (e.g. FINALIZER) | no — this is the structural limit, not a gap to fill |
 
 **Rendering is not byte-identical.** Both engines deparse to the same *program*,

@@ -901,6 +901,7 @@ Token Lexer::lexNumber() {
         bool allOctal = true;
         for (char c : bare) if (c < '0' || c > '7') { allOctal = false; break; }
         std::string suggest = allOctal ? ("0o" + bare.substr(1)) : "0o";
+        if (!probing_ && !(slang_ && pos_ < slangFrom_)) // not while measuring, nor a second time in a re-lex
         std::cerr << "Potential difficulties:\n    Leading 0 does not indicate octal in Raku; "
                   << "please use " << suggest << " if you meant that.\n";
     }
@@ -1763,12 +1764,16 @@ Token Lexer::lexIdentOrVar() {
         if (ascii::isdigit((unsigned char)peek())) {
             while (ascii::isdigit((unsigned char)peek())) name += advance();
         } else if (isIdentStart(peek()) || unicodeLetterHere()) {
+            const size_t nameStart = pos_;
             consumeIdentChars(name);
             // allow embedded - or ' between identifier chars
             while (rakuIdentJoins(peek(), peek(1))) {
                 name += advance();
                 consumeIdentChars(name);
             }
+            // `$x₁` under Slang::Subscripts: the slang's `identifier` reaches the
+            // variable name too (Rakudo: variable → desigilname → name → identifier)
+            if (slangArmed() && slang_->identifier) slangExtendVarName(name, nameStart);
             // package-qualified variable: $Foo::Bar::baz
             while (peek() == ':' && peek(1) == ':' && (isIdentStart(peek(2)) || (unsigned char)peek(2) >= 0x80)) {
                 name += advance(); name += advance();
@@ -2550,8 +2555,7 @@ static bool angleTermContext(const std::vector<Token>& out) {
     }
 }
 
-std::vector<Token> Lexer::tokenize() {
-    std::vector<Token> out;
+void Lexer::tokenizeImpl(std::vector<Token>& out) {
     for (;;) {
         // fill pending heredoc bodies once we reach the end of the current line
         if (!pendingHeredocs_.empty() && peek() == '\n') processHeredocs(out);
@@ -2566,6 +2570,10 @@ std::vector<Token> Lexer::tokenize() {
         if (eof()) break;
         char c = peek();
         Token t;
+        // SLANG-PLAN §B: where no bareword starts, a slang literal may — `0rXIV`,
+        // `₈123`, `2023-01-13`, 👍, λ. Barewords are tried further down, after
+        // the quote forms, so `q{…}` stays a quote.
+        if (slangArmed() && trySlangLiteral(out, spaced)) continue;
         // ⚛ (U+269B), the atomic-op marker — REAL operators now. The lexer used
         // to drop it ("under the GIL, atomic ops are plain ops"), which compiled
         // $x⚛++ to a plain, racy ++ in parallel mode — the stress suite measured
@@ -2811,6 +2819,9 @@ std::vector<Token> Lexer::tokenize() {
             } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
                 // t set by tryQuoteForm
             } else {
+                // …and a slang may claim the bareword: 三千 is a number under Slang::Kazu,
+                // `pass?` an identifier under Slang::Piersing, λ a `sub` under Slang::Mosdef
+                if (slangArmed() && c != '$' && c != '@' && c != '%' && c != '&' && trySlangWord(out, spaced)) continue;
                 t = lexIdentOrVar();
             }
         // `(cont)`/`(elem)`/`(|)`… are INFIX set operators. Glued to a NAME, `(…)`
@@ -2987,6 +2998,39 @@ std::vector<Token> Lexer::tokenize() {
         throw ParseError("Ending delimiter " + hm + " not found for heredoc", line_, true);
     }
     out.push_back(make(Tok::End, ""));
+}
+
+// ---- tolerant lexing (SLANG-PLAN §A) ---------------------------------------
+// The whole unit is lexed before the parser starts, so a construct only a slang
+// can read — `₃₆123` under Slang::NumberBase, 十二 under Slang::Kazu — used to
+// end the lex, and with it the parse, before the `use` that would have armed
+// the seam was ever reached. With tolerant_ set the lex stops at the construct
+// instead and ends the stream with an End token that carries the error: the
+// parser reaches the `use`, re-lexes the rest through the slang, and the error
+// is never reported. A unit with no slang reports it from Parser::error,
+// exactly as before. The errors are kept whole (type and attributes included),
+// indexed from the token.
+namespace {
+thread_local std::vector<ParseError> g_storedLexErrors;
+}
+
+ParseError Lexer::storedLexError(size_t idx) {
+    if (idx < g_storedLexErrors.size()) return g_storedLexErrors[idx];
+    return ParseError("lexer error", 0);
+}
+
+std::vector<Token> Lexer::tokenize() {
+    std::vector<Token> out;
+    if (!tolerant_) { tokenizeImpl(out); return out; }
+    try { tokenizeImpl(out); }
+    catch (ParseError& e) {
+        g_storedLexErrors.push_back(e);
+        Token end = make(Tok::End, "");
+        end.line = e.line;
+        end.flag = true;
+        end.ival = (long long)(g_storedLexErrors.size() - 1);
+        out.push_back(end);
+    }
     return out;
 }
 
@@ -3052,6 +3096,146 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
     }
     pendingHeredocFeats_.clear();
     pendingHeredocs_.clear();
+}
+
+// ---- SLANG-PLAN §B: the seams ---------------------------------------------
+// A `use Slang::X` armed these (Parser::activateSlang re-lexes the unit with
+// slang_ set). At a token start the slang's own token is RUN at pos_, and the
+// longer of it and the built-in token wins — Rakudo's longest-token rule, a tie
+// going to the slang as the more-derived declaration. What replaces the span
+// is what the slang's action made, deparsed: `0rXIV` becomes `14`,
+// `2023-01-13` becomes `"2023-01-13".Date`. Nothing about roman numerals or
+// dates is known here; the slang defines both the syntax and the value.
+
+bool Lexer::slangTry(std::vector<Token>& out, bool spaced, const char* which, size_t builtinEnd) {
+    size_t end = 0;
+    std::string repl;
+    try {
+        if (!slang_->tryMatch(which, src_, pos_, end, repl)) return false;
+    } catch (ParseError& e) {
+        if (e.line == 0) throw ParseError(e.what(), line_); // the slang's own code died mid-match: say where
+        throw;
+    }
+    const std::string w = which;
+    // An `identifier` that merely ties the built-in bareword would re-emit the
+    // same text and skip the built-in path's own post-processing; only a longer
+    // one (`pass?`, `x₁`) is the slang's to claim.
+    if (end <= pos_ || end < builtinEnd || (w == "identifier" && end == builtinEnd)) return false;
+    if (w == "number" || w == "value") slangEmitSource(out, spaced, end, repl);
+    else if (w == "identifier" || w == "routine-declarator") slangEmitToken(out, spaced, end, Tok::Ident, repl, false);
+    else if (w == "sigilless-variable") slangEmitToken(out, spaced, end, Tok::Ident, repl, /*flag=*/true);
+    else if (w == "pointy-block-starter")
+        slangEmitToken(out, spaced, end, Tok::Op, (repl == "<->" || repl == "\xE2\x86\x94") ? "<->" : "->", false);
+    else return false;
+    return true;
+}
+
+bool Lexer::trySlangLiteral(std::vector<Token>& out, bool spaced) {
+    const SlangSeams& s = *slang_;
+    const unsigned char uc = (unsigned char)peek();
+    long long nvN, nvD;
+    const bool digit = ascii::isdigit(uc);
+    // What the built-in lexer would do here decides which seams apply. A CJK
+    // numeral (十, Slang::Kazu) is a LETTER that carries a numeric value, and the
+    // built-in lexer sends it down the number path — so must this.
+    const bool numeral = !digit && uc >= 0x80 &&
+        (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD));
+    if (!digit && !numeral && (isIdentStart((char)uc) || unicodeLetterHere())) return false; // a bareword: trySlangWord, after the quote forms
+    const bool other = uc >= 0x80 && !numeral;   // a codepoint the built-in lexer has no token for (👍, →)
+    if (!(digit || numeral || other)) return false;
+    const size_t builtin = (digit || numeral) ? slangNumberExtent() : 0;
+    if (s.number && slangTry(out, spaced, "number", builtin)) return true;
+    if (s.value && slangTry(out, spaced, "value", builtin)) return true;
+    if (other && s.sigilless && slangTry(out, spaced, "sigilless-variable", 0)) return true;
+    if (other && s.pointy && slangTry(out, spaced, "pointy-block-starter", 0)) return true;
+    return false;
+}
+
+bool Lexer::trySlangWord(std::vector<Token>& out, bool spaced) {
+    const SlangSeams& s = *slang_;
+    if (!(s.number || s.value || s.identifier || s.pointy || s.declarator || s.sigilless)) return false;
+    const size_t builtin = slangIdentExtent();
+    if (s.number && slangTry(out, spaced, "number", builtin)) return true;               // 三千 (Slang::Kazu), FF₁₆
+    if (s.value && slangTry(out, spaced, "value", builtin)) return true;
+    // Slang::Emoji's 👍: the built-in lexer reads some symbol codepoints as an
+    // identifier start. When Unicode says the first codepoint is no letter, the
+    // slang's sigilless-variable claims it — flagged, so the parser reads a TERM
+    // (never a call, never auto-quoted before `=>`). A real identifier (Slang::
+    // Nogil's `my a`) is not flagged: `a => 1` still auto-quotes, as in Rakudo.
+    if (s.sigilless && (unsigned char)peek() >= 0x80 && uniGeneralCategory(codepointHere())[0] != 'L' &&
+        slangTry(out, spaced, "sigilless-variable", builtin)) return true;
+    if (s.pointy && slangTry(out, spaced, "pointy-block-starter", builtin)) return true;  // λ (Slang::Lambda)
+    if (s.declarator && slangTry(out, spaced, "routine-declarator", builtin)) return true; // lambda, def (Slang::Mosdef)
+    if (s.identifier && slangTry(out, spaced, "identifier", builtin)) return true;        // pass?, foo₄
+    return false;
+}
+
+void Lexer::slangExtendVarName(std::string& name, size_t nameStart) {
+    size_t end = 0;
+    std::string repl;
+    try {
+        if (!slang_->tryMatch("identifier", src_, nameStart, end, repl)) return;
+    } catch (ParseError& e) {
+        if (e.line == 0) throw ParseError(e.what(), line_);
+        throw;
+    }
+    if (end <= pos_) return;   // no longer than what the built-in read
+    const size_t prefix = name.size() - (pos_ - nameStart);   // the sigil, and a twigil
+    name = name.substr(0, prefix) + src_.substr(nameStart, end - nameStart);
+    while (pos_ < end) advance();
+}
+
+size_t Lexer::slangIdentExtent() {
+    const size_t sp = pos_;
+    const int sl = line_, sc = col_;
+    if (unicodeLetterHere()) { for (int n = utf8Len((unsigned char)peek()); n > 0 && !eof(); n--) advance(); }
+    else if (isIdentStart(peek())) advance();
+    else return 0;
+    std::string scratch;
+    consumeIdentChars(scratch);
+    while (rakuIdentJoins(peek(), peek(1))) { advance(); consumeIdentChars(scratch); }
+    while (peek() == ':' && peek(1) == ':' && (isIdentStart(peek(2)) || unicodeLetterAt(2))) {
+        advance(); advance(); consumeIdentChars(scratch);
+    }
+    const size_t end = pos_;
+    pos_ = sp; line_ = sl; col_ = sc;
+    return end;
+}
+
+size_t Lexer::slangNumberExtent() {
+    const size_t sp = pos_;
+    const int sl = line_, sc = col_;
+    size_t end = 0;
+    probing_ = true;
+    try { lexNumber(); end = pos_; } catch (ParseError&) { end = 0; }
+    probing_ = false;
+    pos_ = sp; line_ = sl; col_ = sc;
+    return end;
+}
+
+void Lexer::slangEmitSource(std::vector<Token>& out, bool spaced, size_t end, const std::string& repl) {
+    const int ln = line_, cl = col_;
+    Lexer sub(repl);
+    std::vector<Token> ts = sub.tokenize();
+    while (pos_ < end) advance();
+    bool first = true;
+    for (Token& t : ts) {
+        if (t.kind == Tok::End) break;
+        t.line = ln; t.col = cl; t.off = pos_;   // every replacement token ends where the span does
+        if (first) { t.spaceBefore = spaced; first = false; }
+        out.push_back(t);
+    }
+}
+
+void Lexer::slangEmitToken(std::vector<Token>& out, bool spaced, size_t end, Tok kind,
+                           const std::string& text, bool flag) {
+    const int ln = line_, cl = col_;
+    while (pos_ < end) advance();
+    Token t = make(kind, text);
+    t.line = ln; t.col = cl;
+    t.spaceBefore = spaced;
+    t.flag = flag;
+    out.push_back(t);
 }
 
 } // namespace rakupp

@@ -243,6 +243,7 @@ struct NameTerm : Expr {
     std::string name;
     std::string ofType; // type parameters for `Array[Int]` / `Hash[Int,Str]` (comma-joined)
     int defConstraint = 0; // type smiley: 1 = `:D` (defined), 2 = `:U` (type object)
+    bool noAutoQuote = false; // a slang's sigilless variable (Slang::Emoji's 👍): `👍 => v` keys on its VALUE
     // set only on the throwaway NameTerm a ::($name) lookup builds: an unknown
     // name must throw X::NoSuchSymbol there, never mint a stub type object.
     // Parsed and serialized nodes keep the default.
@@ -865,6 +866,7 @@ struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} }
 struct UseStmt : Stmt {
     std::string module;
     std::string verReq; // `use Foo:ver<0.0.14+>` — version constraint ('' = any)
+    std::string fromLang; // `use NQPHLL:from<NQP>` — a foreign-language load; NQP is a no-op here (see exec)
     ExprPtr ifCond; // `use Foo:if(EXPR)` — load only when EXPR is true (the ecosystem `if` dist's adverb)
     std::string arg; // first string argument, e.g. `use lib 'lib'`
     std::vector<std::string> importArgs; // `use Mod <tag !flag>` — passed to sub EXPORT

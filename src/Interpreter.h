@@ -1534,6 +1534,13 @@ public:
     // the L10N modules whose slang the rewrite above has already applied, so
     // their `sub EXPORT` failing to find `$*LANG` is expected, not news
     std::set<std::string> l10nApplied_;
+    // SLANG-PLAN: this Interpreter is the scratch HOST a slang module runs in —
+    // `Raku.legacy` answers False there, so a slang's actions take their RakuAST
+    // branch (the legacy one wants $*W and QAST, which nothing here has).
+    bool slangHost_ = false;
+    // modules whose source registers a slang; their EXPORT runs for real only in
+    // the host, so its failing to find `$*LANG` in THIS interpreter is expected
+    std::set<std::string> slangModules_;
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
@@ -1591,7 +1598,8 @@ public:
     // interpreted form returns (Match/List for s///, count for tr///, Str for S///).
     Value substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut);
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions,
-                       const ValueList* ruleArgs = nullptr);
+                       const ValueList* ruleArgs = nullptr, long startPos = 0,
+                       long* consumedEnd = nullptr); // consumedEnd: where matching stopped (differs from .to under `<( )>`)
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
     // Package-relative SHORT names: registering a qualified class `URI::Path`
@@ -1966,6 +1974,10 @@ public:
     // moved fields live in ExecContext. NB one Interpreter is live per thread, so a
     // static thread_local is safe. Access via the tctx_.<field> members below.
     static thread_local ExecContext tctx_;
+    // the process-wide "live" Interpreter the NativeCall trampolines and the
+    // language-revision probe dispatch through (set by the constructor)
+    static Interpreter* liveTarget();
+    void adoptProcessStatics();   // point them at THIS Interpreter (the constructor does; a scratch host hands them back)
     // Which packages were declared with `module` / `package` rather than
     // `class` — 1 = module, 2 = package. They are NOT in `classes_` (a module
     // is a namespace here, not a type), so `.HOW` has nowhere else to learn it,

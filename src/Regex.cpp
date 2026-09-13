@@ -4087,17 +4087,17 @@ void GrammarMatcher::reapMemo() {
 }
 
 bool GrammarMatcher::parse(const std::string& input, const std::string& top, bool subparse,
-                           ParseNode& out, long& endOut) {
+                           ParseNode& out, long& endOut, long startPos) {
     clearMemo(); // packrat memo is valid only within a single input parse
     hwPos = -1; hwRule.clear(); // fresh highwater per parse (G1 diagnostics)
     // A proto rule used as the entry point (`.parse(:rule('lit'))`) dispatches to its
     // candidates with LTM, exactly as a `<lit>` subrule call would.
     if (protos.count(top)) {
         Regex::MState st{input, {}, {}, {}, nullptr, this};
-        st.startPos = 0; st.hooks = &hooks;
+        st.startPos = startPos; st.hooks = &hooks;
         long endPos = -1;
         scope_.push_back({});
-        bool ok = matchSubMeta(nameMeta(top), top, "", "\x01proto", st, 0, [&](long e) {
+        bool ok = matchSubMeta(nameMeta(top), top, "", "\x01proto", st, startPos, [&](long e) {
             if (!subparse && e != (long)input.size()) return false;
             endPos = e; return true;
         });
@@ -4106,7 +4106,7 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
         if (!ok || it == st.children.end() || it->second.empty()) return false;
         out = it->second.back();
         out.actualRule = out.name; // preserve the winning candidate for actions/makes
-        out.name = top; out.from = 0; out.to = endPos;
+        out.name = top; // the candidate node keeps its own span: a rule-body `<( … )>` trimmed it already
         endOut = endPos;
         return true;
     }
@@ -4114,16 +4114,18 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     Regex* re = compiled(top, "", bound);
     if (!re || !re->ok()) return false;
     Regex::MState st{input, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
-    st.startPos = 0; st.hooks = &hooks; // top-level match starts at 0; wire the interpreter hooks
+    st.startPos = startPos; st.hooks = &hooks; // the match starts at startPos (0 for .parse; a slang seam hands in a byte offset); wire the interpreter hooks
     long endPos = -1;
     scope_.push_back(std::move(bound)); // entry rule's params (defaults included) visible to its code blocks
-    bool ok = re->matchNode(re->root(), st, 0, [&](long e) {
+    bool ok = re->matchNode(re->root(), st, startPos, [&](long e) {
         if (!subparse && e != (long)input.size()) return false; // require a full match
         endPos = e; return true;
     });
     scope_.pop_back();
     if (!ok) return false;
-    out.name = top; out.from = 0; out.to = endPos;
+    // `<( … )>` in the entry rule trims the capture, as it does for every subrule
+    // (`.Str` of `token TOP { "0r" <( \w+ }` is "XIV"); matching still ends at endPos.
+    out.name = top; out.from = st.capFrom >= 0 ? st.capFrom : startPos; out.to = st.capTo >= 0 ? st.capTo : endPos;
     out.caps = st.caps; out.named = st.named;
     out.kids = st.children.empty() ? nullptr : std::make_shared<const ChildMap>(std::move(st.children));
     out.listNames = re->listNamesPtr();
