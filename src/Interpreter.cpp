@@ -8157,6 +8157,19 @@ bool isKnownTypeName(const std::string& n) {
 // ssl/crypto try versioned names FIRST and leave the stub as the last resort
 // (some dists' basic use of the stub does work; banning it outright cost
 // OpenSSL 7/7 → 1/7).
+// The Homebrew FORMULA directory a library file belongs to. Keg-only formulae —
+// the ones whose library would shadow a system copy — are never symlinked into
+// the prefix's own lib/, so `/opt/homebrew/lib/libarchive.13.dylib` does not
+// exist while `/opt/homebrew/opt/libarchive/lib/libarchive.13.dylib` does. The
+// stem is the file name without its `lib` prefix and without any version or
+// extension: libarchive.13.dylib -> libarchive, libmagic.1.dylib -> libmagic.
+static std::string brewKegStem(const std::string& base) {
+    std::string stem = base;
+    size_t dot = stem.find('.');
+    if (dot != std::string::npos) stem = stem.substr(0, dot);
+    return stem;
+}
+
 static std::vector<std::string> libCandidates(const std::string& l) {
     std::vector<std::string> cands;
     // A name that is already a FILE name — `libcairo.2.dylib`, what the
@@ -8201,6 +8214,15 @@ static std::vector<std::string> libCandidates(const std::string& l) {
         cands.push_back("/opt/homebrew/lib/" + base);
         cands.push_back("/usr/local/lib/" + base);
         cands.push_back("/opt/local/lib/" + base);
+        // …and the KEG-ONLY location, which is the only place a formula like
+        // libarchive, libmagic or libidn puts its library at all.
+        {
+            const std::string keg = brewKegStem(base);
+            if (!keg.empty()) {
+                cands.push_back("/opt/homebrew/opt/" + keg + "/lib/" + base);
+                cands.push_back("/usr/local/opt/" + keg + "/lib/" + base);
+            }
+        }
 #else
         cands.push_back("/usr/local/lib/" + base);
 #endif
@@ -8223,6 +8245,13 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     // (Compress::Zstd). Last, so a system or rpath copy still wins.
     cands.push_back("/opt/homebrew/lib/lib" + l + ".dylib");
     cands.push_back("/usr/local/lib/lib" + l + ".dylib");
+    // …and the KEG-ONLY directory for a BARE name: `is native('magic')` wants
+    // /opt/homebrew/opt/libmagic/lib/libmagic.dylib, which is the only copy
+    // Homebrew keeps of a formula whose library would shadow a system one.
+    cands.push_back("/opt/homebrew/opt/lib" + l + "/lib/lib" + l + ".dylib");
+    cands.push_back("/opt/homebrew/opt/" + l + "/lib/lib" + l + ".dylib");
+    cands.push_back("/usr/local/opt/lib" + l + "/lib/lib" + l + ".dylib");
+    cands.push_back("/usr/local/opt/" + l + "/lib/lib" + l + ".dylib");
     // A handful of libraries that stand on their own everywhere else are FOLDED
     // INTO libSystem on macOS: there is no libuuid.dylib to open, on disk or in
     // the dyld cache, yet uuid_generate is in every process. A dist written on
