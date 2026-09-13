@@ -5793,7 +5793,42 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "gist" || m == "Str") return Value::str(ncPointerText("Pointer", of, addr));
         if (m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") +
                                            ".new(" + std::to_string(addr) + ")");
-        if (m == "deref") return ncReadElem(addr, of, 0);
+        // `.deref` on a Pointer[T] where T is a NativeCall CLASS (CPointer or
+        // CStruct) hands back a T sitting at the pointed-to address, not the raw
+        // machine word. `Font::FreeType`'s BUILD is `$!raw = $p.deref` with
+        // `$p` a Pointer[FT_Library], and an Int there failed the attribute's
+        // type check — the last thing between that dist (and thirteen behind it)
+        // and its test suite. A scalar element type keeps reading a scalar.
+        if (m == "deref") {
+            if (!of.empty() && ascii::isupper((unsigned char)of[0])) {
+                auto cit = classes_.find(of);
+                if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(of));
+                auto ci = cit != classes_.end() ? cit->second : nullptr;
+                if (ci && (ci->repr == "CPointer" || ci->repr == "CStruct" || ci->repr == "CUnion")) {
+                    // NULL derefs to a FAILURE, as upstream's does — not to the
+                    // type object, which would read as a perfectly good T.
+                    if (!addr) {
+                        Value f = rakuppNewFailure();
+                        (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                        (*f.hash())["message"]   = Value::str("Can not dereference a NULL Pointer");
+                        return f;
+                    }
+                    // The ADDRESS is the handle, not a slot holding one. An
+                    // `is rw` out-parameter here already collapses a level: the
+                    // callee writes through `&slot` and the copy-back stores what
+                    // it wrote, so after `FT_Init_FreeType($p)` the Pointer holds
+                    // the FT_Library itself. Reading 8 more bytes through it gave
+                    // a garbage handle that answered a garbage version. This is
+                    // the same value `nativecast(FT_Library, $p)` produces, which
+                    // is how the level was settled.
+                    Value o = Value::object(std::make_shared<ObjectData>());
+                    o.obj()->cls = ci;
+                    o.obj()->attrs["__native_ptr"] = Value::integer(addr);
+                    return o;
+                }
+            }
+            return ncReadElem(addr, of, 0);
+        }
         // pointer arithmetic in ELEMENTS, as NativeHelpers::Pointer grafts onto
         // Pointer: `.succ`/`.pred` step one element, `.add($n)` steps n. A
         // `void *` has no element size and dies, as in C.

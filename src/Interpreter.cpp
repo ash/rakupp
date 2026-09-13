@@ -10169,6 +10169,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 stubOverCompleted = ex != classes_.end() && ex->second &&
                                     !(ex->second->decl && ex->second->decl->isStubDecl);
             }
+            // A FORWARD DECLARATION carries the REPRESENTATION, and the body
+            // that follows does not repeat it: `class FT_Library is
+            // repr('CPointer') {...}` up top, then `class FT_Library { … }` with
+            // the methods. The body installs a fresh ClassInfo over the stub, so
+            // the repr was simply lost and the class became P6opaque — every
+            // `Pointer[FT_Library].deref` then answered a raw Int and
+            // Font::FreeType could not build its handle at all. C types that
+            // reference each other are declared this way as a matter of course.
+            if (ci->repr.empty()) {
+                auto prev = classes_.find(clsName);
+                if (prev != classes_.end() && prev->second && prev->second->decl &&
+                    prev->second->decl->isStubDecl && !prev->second->repr.empty())
+                    ci->repr = prev->second->repr;
+            }
             if (!stubOverCompleted) classes_[clsName] = ci;
             // now the type resolves, dispatch the collected non-type `is` names to a
             // user trait_mod:<is>. Only NO-CANDIDATE means "not a trait"; a trait
@@ -15321,7 +15335,12 @@ std::string Interpreter::ncLibNameOf(const Value& r) {
 }
 
 std::string Interpreter::ncResolveTypeAlias(ClassInfo* ci, const std::string& t) {
-    if (t.empty() || !ascii::islower((unsigned char)t[0])) return t;
+    // An UPPERCASE alias is the normal spelling in NativeCall code — Font::FreeType
+    // declares `constant FT_Int is export = int32` and writes `FT_Int` in every
+    // signature — so the name's case cannot decide this. What keeps a real class
+    // out is the check below: the alias is accepted only when it resolves to a
+    // native SCALAR name, which no class ever does.
+    if (t.empty()) return t;
     bool sgn, isF;
     if (ncScalarWidth(t, sgn, isF)) return t;   // already a native name
     // The DECLARING scope is where the alias lives, and its parent chain ends at
@@ -15905,6 +15924,19 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         NcSlot& s = slots[i];
         const Param* p = (prm && i >= pOff && i - pOff < prm->size()) ? &(*prm)[i - pOff] : nullptr;
         std::string pt = p ? p->type : "";
+        // …through any `constant` alias standing for a native type. Without this
+        // `FT_Int is rw` was not a native scalar at all, so the out-parameter was
+        // never written back and Font::FreeType read an empty version string.
+        if (!pt.empty()) {
+            bool asgn, aflt;
+            if (!ncScalarWidth(pt, asgn, aflt)) {
+                Value* av = c.closure ? c.closure->find(pt) : nullptr;
+                if (av && av->t == VT::Type && av->s != pt) {
+                    bool bsgn, bflt;
+                    if (ncScalarWidth(av->s.str(), bsgn, bflt)) pt = av->s.str();
+                }
+            }
+        }
         bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
         bool fp = isFlt || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
         bool rwPtr = p && p->isRw && (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0);
@@ -15930,7 +15962,21 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr"))
                 cur = (NcWord)v.obj()->attrs["__native_ptr"].toInt();
             rwI.push_back(cur); putPtr(s, &rwI.back());
-            rwbacks.push_back({i, &rwI.back(), nullptr, rwCls ? std::string() : pt, rwCls});
+            // The ARGUMENT's own element type outlives the call. A signature
+            // says `Pointer is rw` — bare, because the C side only wants somewhere
+            // to put a pointer — while the caller passed a `Pointer[FT_Library]`,
+            // and it is the caller who knows what is on the other end. Rebuilding
+            // from the DECLARED type handed back a plain Pointer, so the very
+            // next `.deref` read raw machine words and answered an Int: that is
+            // where Font::FreeType (and the thirteen dists behind it) stopped.
+            std::string backType = rwCls ? std::string() : pt;
+            if (!rwCls && (backType.empty() || backType == "Pointer") &&
+                v.t == VT::Hash && v.hash() && v.hashKind == "Pointer") {
+                auto ofIt = v.hash()->find("of");
+                if (ofIt != v.hash()->end() && !ofIt->second.toStr().empty())
+                    backType = "Pointer[" + ofIt->second.toStr() + "]";
+            }
+            rwbacks.push_back({i, &rwI.back(), nullptr, backType, rwCls});
         }
         else if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
             if (isFlt) { rwD.push_back(v.toNum()); putPtr(s, &rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), "", nullptr}); }
