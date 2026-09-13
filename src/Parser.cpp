@@ -6688,8 +6688,25 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             for (; aliasDepth > 0; aliasDepth--)
                 if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
+            // `List :size($ss)(Int $sw, Int $sh)` — a SUB-SIGNATURE written
+            // directly against the alias's closing paren. The spaced spelling
+            // (`:size($ss) ($sw, $sh)`) already parsed; this one did not, and the
+            // error pointed at the second `(` with "expected )". Imlib2 destructures
+            // every one of its geometry arguments this way.
+            if (isKind(Tok::LParen)) {
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter sub-signature");
+            }
             if (matchOp("?")) p.optional = true;
             else if (matchOp("!")) p.required = true;
+            // `:size($ss)!(Int $sw, Int $sh)` — the marker may sit between the
+            // alias and its sub-signature, so look again once it is consumed
+            if (!p.subSig && isKind(Tok::LParen)) {
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter sub-signature");
+            }
             parseParamTraits(p); // the same ladder as a plain parameter's (`is required`, `is encoded(…)`)
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
@@ -6836,6 +6853,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             }
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
+            // …and the SUB-SIGNATURE that may follow it with no space between,
+            // which is the typed half of the same shape handled on the untyped
+            // path above: `List :size($ss)(Int $sw, Int $sh)`. Imlib2 writes
+            // every geometry argument that way and could not be compiled at all.
+            if (!p.subSig && isKind(Tok::LParen)) {
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter sub-signature");
+            }
             p.named = true; named = true; aliasBound = true;
         }
         // `Type :$named` — the colon is TIGHT against the var; an invocant colon
@@ -6901,6 +6927,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::RBracket)) error("expected ']' in sub-signature");
         }
         // paren sub-signature after the variable:  Pair $p (Int :key($k), :value($v))
+        //
+        // The space is what tells a sub-signature from a coercion or a callable's
+        // own signature, and a BARE named variable keeps that rule: Rakudo
+        // rejects `List :$c($x, $y)` outright. It is only once a `?`/`!` marker
+        // has settled the parameter that the tight spelling becomes unambiguous
+        // — see the second check, below the markers.
         if (!p.subSig && isKind(Tok::LParen) && cur().spaceBefore) {
             advance(); // '('
             p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
@@ -6920,7 +6952,13 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // never matched and the `(` fell through as a syntax error. META6 declares
         // its trait_mod that way, which took Test::META (and any suite that uses
         // it) down at parse time.
-        if (!p.subSig && isKind(Tok::LParen) && cur().spaceBefore) {
+        // …and once a marker has been consumed the paren is unambiguous, so the
+        // TIGHT spelling counts here: `List :$source!($x, $y)` is what Imlib2
+        // writes, and Rakudo takes `:$c!(…)` and `:$c?(…)` while rejecting the
+        // unmarked `:$c(…)`. `&` keeps the space rule either way — `&cb:(Int)`
+        // is the callable's own signature, a different thing.
+        if (!p.subSig && isKind(Tok::LParen) &&
+            (cur().spaceBefore || ((p.optional || p.required) && p.named && p.sigil != '&'))) {
             advance(); // '('
             p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
             if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
