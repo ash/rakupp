@@ -21454,7 +21454,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 !static_cast<VarExpr*>(a->target.get())->name.empty() &&
                 static_cast<VarExpr*>(a->target.get())->name[0] == '$';
             if (!scalarTarget) {
-                Value r = methodCall(*lv, "STORE", ValueList{rhs});
+                ValueList sargs{rhs};
+                // `my %m is MyMap = @pairs` — the DECLARATION's initialiser is
+                // told it is one: Rakudo passes `:INITIALIZE` on that first
+                // assignment and on no later one, which is how a container knows
+                // to build itself rather than to replace its contents. Map::Agnostic
+                // and Array::Agnostic make the parameter REQUIRED, so without it
+                // the very first line of their suites died "Required named
+                // parameter 'INITIALIZE' not passed".
+                if (a->target->kind == NK::VarExpr &&
+                    static_cast<VarExpr*>(a->target.get())->declare) {
+                    Value init = Value::pair("INITIALIZE", Value::boolean(true));
+                    init.namedArg = true;
+                    sargs.push_back(std::move(init));
+                }
+                Value r = methodCall(*lv, "STORE", sargs);
                 return sink ? Value::any() : r;
             }
         }
