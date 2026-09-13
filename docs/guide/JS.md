@@ -5,7 +5,8 @@ interpreter would run `prog.raku`, for the part of the language the JavaScript
 runtime covers (the *core*). It is the second transpiler in rakupp, next to
 `--exe` (C++). The design and its measurements are in
 [TRANSPILE-PLAN.md](../dev/plans/TRANSPILE-PLAN.md); this page is the user's
-side.
+side, and [JS-TUTORIAL.md](JS-TUTORIAL.md) walks three programs through it from
+the first command to a running `.js`.
 
 ## The command
 
@@ -125,6 +126,10 @@ Known divergences today:
   sorts as its surrogate pair.
 - `say` of an unhandled `Failure` prints `(HANDLED) …` and carries on, where
   the interpreter throws and exits 1.
+- `.raku` of a one-element Array omits the trailing comma that keeps it a list
+  (`[{…}]`, not `[{…},]`), and a `True` pair value is rendered in its short form
+  (`:a`, not `:a(Bool::True)`). The interpreter and Rakudo agree with each other
+  on both.
 
 ### Containers
 
