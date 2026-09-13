@@ -573,6 +573,35 @@ void Parser::scanModuleOps(const std::string& module) {
 // off the module's source the same way its operators are — see scanOpsIn, whose
 // `sub infix:<…>` scan this sits beside. The alternative spelling assigns the
 // stash slot directly (`EXPORTHOW::DECLARE::<model> = …`), and both are read.
+// `my &infix:<plus> = sub ($a, $b) {…}` and its siblings. The operator table is
+// a PARSE-time thing, and the name is right here in the declarator, so this
+// registers it exactly as the `sub infix:<plus>` path does a few thousand lines
+// below — same categories, same default precedence, same two-word handling for
+// circumfixes. Only the spelling differs, and a module that builds its operators
+// inside `sub EXPORT` can use no other.
+void Parser::registerOperatorVarName(const std::string& vname) {
+    if (vname.size() < 4 || vname[0] != '&') return;
+    for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
+        const std::string head = std::string("&") + cat + ":<";
+        if (vname.compare(0, head.size(), head) != 0) continue;
+        if (vname.back() != '>') return;
+        const std::string name = vname.substr(head.size(), vname.size() - head.size() - 1);
+        if (name.empty()) return;
+        const std::string c1 = cat;
+        if (c1 == "circumfix" || c1 == "postcircumfix") {
+            // two bracket words, `circumfix:<⟦ ⟧>` — open and close
+            size_t sp = name.find(' ');
+            if (sp == std::string::npos) return;
+            if (c1 == "circumfix") regMap('c', userCircumfix_, name.substr(0, sp), name.substr(sp + 1));
+            else regMap('C', userPostcircumfix_, name.substr(0, sp), name.substr(sp + 1));
+        }
+        else if (c1 == "infix")   regInfix(name, BP_ADD);   // traits may adjust, as for `sub`
+        else if (c1 == "prefix")  regSet('p', userPrefix_, name);
+        else                      regSet('P', userPostfix_, name);
+        return;
+    }
+}
+
 void Parser::scanDeclaratorsIn(const std::string& src) {
     auto ident = [&](size_t& i) {
         size_t b = i;
@@ -703,8 +732,21 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
              pos = src.find(needle, pos + 1)) {
             size_t b = pos;
             while (b > 0 && ascii::isspace((unsigned char)src[b - 1])) b--;
+            // `my &infix:<加> = sub ($a, $b) {…}` — the operator declared by
+            // ASSIGNMENT to a code variable rather than by `sub`. A module that
+            // builds its operators inside `sub EXPORT` can spell it no other way,
+            // and every one of the natural-language modules does (Chinese, French,
+            // Japanese, Korean, Spanish, ClassicalChinese). Step back over the `&`
+            // and take the scope keyword in place of the routine keyword; the
+            // importing file then knows the operator, which is the whole job of
+            // this scan.
+            if (b > 0 && src[b - 1] == '&') {
+                b--;
+                while (b > 0 && ascii::isspace((unsigned char)src[b - 1])) b--;
+            }
             bool isDecl = false;
-            for (const char* kw : {"sub", "multi", "proto", "only"}) {
+            for (const char* kw : {"sub", "multi", "proto", "only",
+                                   "my", "our", "state", "has"}) {
                 size_t kl = std::strlen(kw);
                 if (b >= kl && src.compare(b - kl, kl, kw) == 0 &&
                     (b == kl || !ascii::isalnum((unsigned char)src[b - kl - 1]))) { isDecl = true; break; }
@@ -3022,6 +3064,18 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "X::Syntax::Variable::Match", {});
         }
         std::string vname = advance().text;
+        // `my &infix:<plus> = sub ($a, $b) {…}` — an OPERATOR declared by
+        // assigning to a code variable. It is the spelling a module reaches for
+        // when it builds its operators inside `sub EXPORT` (every one of the
+        // natural-language modules does: `my &infix:<加>`, `&infix:<plus>`,
+        // `&infix:<más>`), and it has to reach the operator table exactly as
+        // `sub infix:<plus>` does — the name is known HERE, at the declaration,
+        // even though the routine behind it only exists at run time.
+        //
+        // Without it the operator was never registered, so `2 plus 3` parsed as
+        // two statements — `2`, then a call to `plus(3)` — and the expression
+        // silently answered its LEFT operand instead of failing.
+        registerOperatorVarName(vname);
         // A BARE sigil lands here too when the lexer Var-lexed it (`my $`, `my @`,
         // and `my %`/`my &` where a `=` follows tight). Named by the sigil alone
         // the anonymous variable was NAMEABLE: after `my @ = 1, 2` a later bare

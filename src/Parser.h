@@ -203,6 +203,13 @@ private:
     // a block doesn't leak out (and eat every later ternary's `!!`).
     struct OpUndo { char table; std::string name; bool existed; int oldBp; std::string oldClose; };
     std::vector<OpUndo> opUndo_;
+    // `&infix:<x>` / `&prefix:<x>` / `&circumfix:<a b>` used as a VARIABLE name —
+    // `my &infix:<plus> = …`. Registers the operator the same way the routine
+    // declaration `sub infix:<plus>` does, which is the point: the two spellings
+    // mean the same thing and only one of them used to be parseable at the call
+    // site. A name that is not operator-shaped is ignored, so ordinary `my &cb`
+    // costs one starts-with test.
+    void registerOperatorVarName(const std::string& vname);
     void regInfix(const std::string& n, int bp) {
         auto it = userInfix_.find(n);
         opUndo_.push_back({'i', n, it != userInfix_.end(), it != userInfix_.end() ? it->second : 0, ""});
