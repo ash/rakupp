@@ -419,9 +419,7 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--fmt` | format source in the house style — whitespace only, gated on parse, same-program and idempotence. `-i` rewrites in place (`-i.bak` keeps backups), `--check` names files that would change (exit 1), `--diff` shows what (see [FMT.md](FMT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
 | `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column. The value is a comma list, like `--slim`'s: `tree` drops the source column, `attrs` adds each node's scalar attributes, `compunit` wraps it the way `.AST(:compunit)` does, and they combine (`--rakuast=tree,compunit`). `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff` |
-| `--target=parse` | Rakudo-compatible alias of `-c` |
-| `--target=cpp` | alias of `--cpp`; `--js` is an alias of `--target=js` |
-| `--target=raku` | alias of `--fmt` — emitting Raku is what the formatter does |
+| `--target=parse\|ast\|js\|cpp\|raku` | one spelling for every backend — see [Choosing a backend](#choosing-a-backend) |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
@@ -606,8 +604,9 @@ which is how you check an edit to `REFERENCE.md` before rebuilding.
 shell, generated from the binary's own flag table — so it travels with the
 binary rather than with a copy in this page. That table is maintained beside
 the option parser rather than derived from it, so an accepted alias can be
-missing from it: `-m`, `--colour`, `--terminal` and `--emit-cpp` all work and
-are deliberately not offered. Flags complete with their descriptions (zsh,
+missing from it: `-m`, `--colour`, `--terminal`, `--emit-cpp` and `--js` all
+work and are deliberately not offered. The `--target=` *values* are offered,
+so `--target=` completes to `parse ast js cpp raku`. Flags complete with their descriptions (zsh,
 fish), a `=` option completes its values (`--color=` offers `auto`, `always`,
 `never`), the first word completes to a file or a subcommand (`install`,
 `uninstall`, `reinstall`, `test`, `doc`), and everything else completes to
@@ -636,17 +635,53 @@ build, `--prefix=DIR` for another location). `-M` preloads modules into the
 notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
 itself. The whole story is [JUPYTER.md](JUPYTER.md).
 
+## Choosing a backend
+
+Four things rakupp can emit instead of running your program: an analysis, C++,
+JavaScript, or Raku. Each answers to two spellings — a bare flag and a
+`--target=` key — because the two grew up apart and there was no way to guess
+which was which:
+
+| emits | bare flag | target key |
+|---|---|---|
+| the parse, checked | `-c` | `--target=parse` |
+| the parsed AST | `--ast` | `--target=ast` |
+| C++, what `--exe` compiles | `--cpp` | `--target=cpp` |
+| JavaScript | `--js` | `--target=js` |
+| Raku, formatted | `--fmt` | `--target=raku` |
+
+The `--target=` spellings of `parse` and `ast` are there for Rakudo muscle
+memory, which is where the key came from. `cpp` and `raku` are rakupp's own, and
+`raku` is the one worth a second look: emitting Raku out of Raku *is* the
+formatter, so `--target=raku` is `--fmt`, and `-i`, `--check` and `--diff` reach
+it through that spelling too.
+
+Both source backends write to stdout, or to a file with `-o`:
+
+```bash
+rakupp --cpp prog.raku -o prog.cpp      # or --target=cpp
+rakupp --js  prog.raku -o prog.js       # or --target=js
+```
+
+An unknown target is refused and lists the five that exist.
+
 ## Transpiling to JavaScript
 
-`--target=js` emits a JavaScript program (to stdout, or `-o prog.js` with the
+`--target=js` (or `--js`) emits a JavaScript program (to stdout, or `-o prog.js` with the
 runtime `rakupp-rt.js` written beside it; `--standalone` inlines it) that
-runs under Node, Bun, Deno or a browser. `--verify` runs the program under
-the interpreter and under the JavaScript host and emits only when they agree
-byte for byte; a program outside the JavaScript core is refused with the
+runs under Bun, Node, Deno or a browser — **bun** by default, because it runs
+an ES module `.js` without consulting a `package.json`, which is the one thing
+that makes node's answer depend on where the file sits. `--verify` runs the
+program under the interpreter and under the JavaScript host and emits only when
+they agree byte for byte; a program outside the JavaScript core is refused with the
 construct and line, or accepted with `--fallback=wasm` as a wrapper around
 the WebAssembly engine. See [JS.md](JS.md).
 
 ## Compiling
+
+`--cpp` prints the C++ that `--exe` would compile, so you can read it before
+committing to a binary; `-O` prints the optimized codegen instead, and `-o`
+writes it to a file.
 
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see
 [COMPILERS.md](COMPILERS.md) and [NATIVE.md](NATIVE.md). Their flags

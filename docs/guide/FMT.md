@@ -5,7 +5,13 @@ rakupp --fmt prog.raku            # formatted source to stdout
 rakupp --fmt -i prog.raku …       # rewrite in place (-i.bak keeps backups)
 rakupp --fmt --check prog.raku …  # name files that would change; exit 1 if any
 rakupp --fmt --diff prog.raku …   # …and show what would change
+rakupp --target=raku prog.raku    # the same thing, spelled as a target
 ```
+
+`--target=raku` is `--fmt`. Emitting Raku out of Raku is what a formatter does,
+so it sits beside `--target=cpp` and `--target=js` in the list of things this
+compiler can emit ([CLI.md](CLI.md#choosing-a-backend)); `-i`, `--check` and
+`--diff` work through either spelling.
 
 The promise is gofmt's: a tool you run on every save without reading its
 output. **Zero configuration** — no indent width, no rule toggles, no config

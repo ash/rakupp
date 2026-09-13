@@ -1009,7 +1009,13 @@ static std::string g_jsFallback;
 
 static std::string jsHostCommand() {
     if (const char* h = std::getenv("RAKUPP_JS")) if (*h) return h;
-    for (const char* c : { "node", "bun", "deno" }) {
+    // Bun first. It runs an ES module `.js` unconditionally, where node decides
+    // by walking up to the nearest package.json: one without a `"type"` field
+    // anywhere above the output — a stray `~/package.json` will do — makes node
+    // either refuse the `import` outright or, from 24 on, print four lines of
+    // warning around the program's own output. Bun has no such rule, and it is
+    // the runtime the docs and examples use.
+    for (const char* c : { "bun", "node", "deno" }) {
         std::string probe = std::string("command -v ") + c + " >/dev/null 2>&1";
 #ifdef _WIN32
         probe = std::string("where ") + c + " >NUL 2>&1";
@@ -1025,7 +1031,7 @@ static std::string jsHostCommand() {
 static bool jsVerify(const std::string& src, const std::string& srcName, const std::string& jsPath,
                      const std::string& selfExe, const std::vector<std::string>& libPaths, std::string& why) {
     std::string host = jsHostCommand();
-    if (host.empty()) { why = "no JavaScript host found (set RAKUPP_JS, or put node/bun on PATH)"; return false; }
+    if (host.empty()) { why = "no JavaScript host found (set RAKUPP_JS, or put bun/node on PATH)"; return false; }
     std::string base = jsPath + ".verify";
     std::string rakuFile = srcName == "-e" ? base + ".raku" : srcName;
     if (srcName == "-e") { std::ofstream f = openOut(rakuFile); f << src; }

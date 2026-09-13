@@ -172,7 +172,7 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--exe SRC -o OUT` | Native-compile to C++ (fastest; falls back to bundling) |
 | `--ast SRC` | Print the parsed AST as an indented tree |
 | `--ast-roundtrip SRC` | Check that file's AST survives the cache format — see [below](#checking-the-ast-serializer) |
-| `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to; with `-O`, the *optimized* codegen |
+| `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to; with `-O`, the *optimized* codegen. `-o` writes it to a file; `--target=cpp` is the same flag |
 | `--precomp-modules=on\|off` | Cache the parse of `use`d modules (**off** by default) |
 | `--precomp-files=on\|off` | Cache the main program's own parse (**off** by default) |
 | `--precomp-info` | What is cached, where, and what it holds — see [CACHING.md](CACHING.md) |
@@ -256,6 +256,7 @@ work:
 ```sh
 build/rakupp --cpp    program.raku    # generic codegen (every value boxed)
 build/rakupp --cpp -O program.raku    # optimized codegen
+build/rakupp --cpp program.raku -o program.cpp   # …to a file rather than stdout
 ```
 
 For `sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }`, the default emits a

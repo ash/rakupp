@@ -19,14 +19,20 @@
 #
 #   rakupp t/js/run.raku                 # the whole corpus
 #   rakupp t/js/run.raku examples        # one directory (or files)
-#   RAKUPP_JS=bun rakupp t/js/run.raku   # another host
+#   RAKUPP_JS=node rakupp t/js/run.raku  # another host
+#
+# The host is bun by default, as it is everywhere else: it runs an ES module
+# `.js` unconditionally, where node decides by walking up to the nearest
+# package.json and a stray one without a `"type"` field changes the answer.
+# Measured 2026-09-13: the two hosts produce the IDENTICAL disagreeing set over
+# this corpus, so the choice costs no coverage.
 #
 # Exit 1 when anything disagrees, the embedded runtime is stale, or the
 # builtin tables drift.
 
 my $ROOT = $*PROGRAM.parent.parent.parent;
 my $rakupp = $*EXECUTABLE;
-my $host = %*ENV<RAKUPP_JS> // 'node';
+my $host = %*ENV<RAKUPP_JS> // 'bun';
 my $tmp = $*TMPDIR.add("rakupp-js-gate-$*PID");
 $tmp.mkdir;
 END { for $tmp.dir { .unlink }; $tmp.rmdir if $tmp.e }

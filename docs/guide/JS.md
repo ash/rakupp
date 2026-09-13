@@ -11,35 +11,48 @@ side.
 
 ```
 rakupp --target=js prog.raku                  # the JavaScript, to stdout
+rakupp --js prog.raku                         # the same flag, spelled short
 rakupp --target=js prog.raku -o prog.js       # prog.js + rakupp-rt.js beside it
 rakupp --target=js prog.raku -o prog.js --standalone   # one self-contained file
 rakupp --target=js prog.raku -o prog.js --verify       # emit only if it agrees
 rakupp --target=js prog.raku -o prog.js --fallback=wasm   # accept anything, via WebAssembly
-node prog.js                                  # run it (bun, deno too)
+bun prog.js                                   # run it (node, deno too)
 ```
 
+- **`--js` is `--target=js`.** Every backend answers to both spellings —
+  `--cpp` is `--target=cpp`, `--fmt` is `--target=raku` — and an unknown target
+  lists the five that exist. See [CLI.md](CLI.md#choosing-a-backend).
 - **Without `-o`** the program goes to stdout, as `--cpp` does; it still
   imports `./rakupp-rt.js`, which `rakupp --target=js --runtime -o rakupp-rt.js`
   writes on its own.
 - **With `-o prog.js`** the program is written as an ES module that imports the
   runtime from `./rakupp-rt.js`, which is written next to it from the copy
   embedded in the `rakupp` binary — the program always gets the runtime it was
-  compiled against. Node 22.7 and later, Bun, Deno and browsers run an ES
-  module `.js` as is; an older Node needs `--experimental-default-type=module`
-  or a `package.json` with `"type": "module"` — or `--standalone`.
+  compiled against. **Run it with `bun`**: bun, Deno and browsers run an ES
+  module `.js` unconditionally, and node does not — node walks up to the
+  nearest `package.json` and believes it, so one without a `"type"` field
+  anywhere above the output makes node either refuse the `import` or, from 24
+  on, wrap the program's output in four lines of warning. A stray
+  `~/package.json` is enough. If node is what you have, give it
+  `"type": "module"`, or use `--standalone`, which has no imports to argue
+  about.
 - **`-o` also writes `prog.js.map`**, a source map from every generated line
   to the Raku line of its statement, named on the program's last line.
-  `node --enable-source-maps prog.js` reports JavaScript-level errors and
+  `bun prog.js` uses the map by itself; `node --enable-source-maps prog.js`
+  reports JavaScript-level errors and
   `Internal error` stacks at `prog.raku` lines, and a debugger steps by Raku
   line. A `die` prints the Raku message as the interpreter does, map or not.
 - **`--standalone`** inlines the runtime: one plain script, no module system
-  needed, runs anywhere (`node`, `bun`, `deno run`, `<script src>`). The
+  needed, runs anywhere (`bun`, `node`, `deno run`, `<script src>`) with no
+  `package.json` to satisfy. The
   program is at the top of the file, the runtime below it.
 - **`--verify`** runs the program under the interpreter and under the
   JavaScript host, compares stdout, stderr and the exit status byte for byte,
   and emits nothing on disagreement (exit 6) — the `--slim=verify` protocol.
-  The host is `$RAKUPP_JS` if set, else `node`, then `bun`, from `PATH`. A
-  nondeterministic program cannot be judged this way.
+  The host is `$RAKUPP_JS` if set, else `bun`, then `node`, then `deno`, from
+  `PATH`. A nondeterministic program cannot be judged this way, and neither can
+  a `use js` program: the interpreter refuses those by design, so it cannot be
+  their oracle — they have goldens instead.
 - **`--fallback=wasm`**: a program outside the core is refused by default,
   with the construct and its line in the `--cpp` message shape (exit 5). With
   this flag it is accepted, as a small program that loads Raku.js — the
@@ -250,8 +263,8 @@ The npm shape is three files and a manifest:
   "exports": "./greet.js", "types": "./greet.d.ts", "files": ["greet.js", "greet.d.ts", "rakupp-rt.js"] }
 ```
 
-`"type": "module"` is what lets Node 20 load the `.js` as an ES module
-(`-o greet.mjs` works without it). The runtime is the same `rakupp-rt.js`
+`"type": "module"` is what lets node load the `.js` as an ES module
+(`-o greet.mjs` works without it, and bun needs neither). The runtime is the same `rakupp-rt.js`
 as for a program, so several modules built by the same rakupp can share
 one copy. `--module` excludes `--standalone` (a plain script cannot export)
 and `--verify` (a module has nothing to run); `END` blocks do not run.
