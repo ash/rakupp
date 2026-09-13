@@ -17240,30 +17240,40 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             if (!p.isRw && argIsNeverContainer(ae)) {
                 if (Value* vp = env->local(p.name)) vp->readonly = true;
             }
-            // A CHAIN of `is rw` parameters must alias the ORIGINAL container,
-            // not the intermediate frame's copy. `outer($x is rw)` handing $x on
-            // to `inner($y is rw)` linked $y to `$x` in OUTER's scope — fine
-            // while outer is running, useless afterwards: outer's own copy-back
-            // had already gone to the caller, so a closure returned from inner
-            // wrote into a frame nobody reads. IO::Capture::Simple is exactly
-            // that shape (capture_on($out is rw) passes $out to
-            // capture_stdout_on, which installs a $*OUT closing over it), and
-            // 70 dists sit behind it. Collapse the hop at BIND time, while the
-            // link is still there to read.
-            Expr* linkExpr = ae;
-            std::shared_ptr<Env> linkScope = tctx_.cur;
+            env->x().rwLinks[p.name] = { ae, tctx_.cur };
+            // A CHAIN of `is rw` parameters must ALSO reach the ORIGINAL
+            // container. `outer($x is rw)` handing $x on to `inner($y is rw)`
+            // links $y one hop, to `$x` in OUTER's scope — right while outer is
+            // running, useless afterwards: outer's own copy-back had already
+            // gone to the caller, so a closure returned from inner wrote into a
+            // frame nobody reads. IO::Capture::Simple is exactly that shape
+            // (capture_on($out is rw) passes $out to capture_stdout_on, which
+            // installs a $*OUT closing over it), and 70 dists sit behind it.
+            //
+            // The root is recorded BESIDE the hop, not instead of it. Pointing
+            // the link itself at the root left the intermediate frame's copy
+            // stale — `c1($ip is rw) { c2($ip); $ip++ }` incremented the caller's
+            // variable once, not twice, because c1 never saw c2's write — and
+            // that is how the Forth showcase's recursive parser lost its place
+            // after every `: … ;` definition. Resolved here, once, from the
+            // owning frame's own entry: no chain walk on any later write.
             if (ae && ae->kind == NK::VarExpr) {
                 const std::string& an = static_cast<VarExpr*>(ae)->name;
                 for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
                     if (!e->local(an)) continue;          // not this frame's variable
-                    auto li = e->xr().rwLinks.find(an);
-                    if (li != e->xr().rwLinks.end() && li->second.first) {
-                        linkExpr = li->second.first; linkScope = li->second.second;
+                    if (e->ex) {                           // the owning frame decides
+                        auto ri = e->ex->rwRoots.find(an);
+                        if (ri != e->ex->rwRoots.end() && ri->second.first)
+                            env->x().rwRoots[p.name] = ri->second;
+                        else {
+                            auto li = e->ex->rwLinks.find(an);
+                            if (li != e->ex->rwLinks.end() && li->second.first)
+                                env->x().rwRoots[p.name] = li->second;
+                        }
                     }
-                    break;                                 // the owning frame decides
+                    break;
                 }
             }
-            env->x().rwLinks[p.name] = { linkExpr, linkScope };
             Value* ip = env->local(p.name);
             env->x().rwSynced[p.name] = ip ? *ip : Value::any();
             anyRwLinks_ = true;
@@ -17347,6 +17357,19 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // it needs the container model, big-area #2, and stays open.)
     try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
     tctx_.cur = savedCur;
+    // …and the ORIGINAL container behind the chain, when the hop above is not
+    // it. While the frames are live the hop suffices — the intermediate frame
+    // reads a fresh value, and its return-time copyOutRw carries the write on —
+    // but a closure that writes AFTER they returned has only this: IO::Capture::
+    // Simple's captured `$*OUT` prints into a parameter two `is rw` hops away
+    // long after capture_on and capture_stdout_on are gone. One more write, not
+    // a chain walk: setupRwLinks resolved the root once, at bind time.
+    auto rt = e->ex->rwRoots.find(name);
+    if (rt != e->ex->rwRoots.end()) {
+        tctx_.cur = rt->second.second;
+        try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) *lv = v; } catch (...) {}
+        tctx_.cur = savedCur;
+    }
     e->x().rwSynced[name] = v;
 }
 

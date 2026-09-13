@@ -272,6 +272,15 @@ struct EnvExtras {
     // (a late copy-out would re-apply stale values after the callee's own edits).
     std::map<std::string, std::pair<Expr*, std::shared_ptr<Env>>> rwLinks;
     std::map<std::string, Value> rwSynced;
+    // The ORIGINAL container behind a CHAIN of `is rw` parameters. `outer($x is
+    // rw)` handing $x on to `inner($y is rw)` links $y ONE hop, to outer's `$x`
+    // (rwLinks), and here to whatever `$x` itself was bound to — resolved once,
+    // at bind time, from the owning frame's own entry. Present only when the two
+    // differ. A write goes to both: the hop keeps the intermediate frame reading
+    // fresh values while it is live (`c2($ip); $ip++` must see c2's increment),
+    // the root reaches the caller once the frames have returned (a closure over
+    // the parameter, IO::Capture::Simple's captured `$*OUT`).
+    std::map<std::string, std::pair<Expr*, std::shared_ptr<Env>>> rwRoots;
     // hyper element write-through: paramName → the caller's container slot
     // directly (no expr to re-evaluate); rwDead marks a raw/rw param bound to
     // an immutable (literal) — assigning it dies like Rakudo's X::Assignment::RO.
