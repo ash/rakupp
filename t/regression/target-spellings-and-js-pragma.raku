@@ -3,8 +3,10 @@
 # `--cpp` and `--target=js` grew up separately — the second for Rakudo muscle
 # memory, which is where `--target=` came from — so a reader had no way to guess
 # that one took a key and the other did not, and `-o` worked for exactly one of
-# them. Each backend now answers to both spellings, and `--target=raku` names
-# the formatter, because emitting Raku is what a Raku target emits.
+# them. Each of the six now answers to both spellings. Two are rakupp's own
+# reading of what a target is: `--target=raku` names the formatter, because
+# emitting Raku is what a Raku target emits, and `--target=rakuast` names the
+# RakuAST view.
 #
 # `use js` is lowercase because it is COMPILER territory, like `strict` and
 # `nqp`: there is no distribution named `js` to find, to install, or to claim in
@@ -59,6 +61,18 @@ sub out(*@args) {
     check $rc2, 0, '--target=raku exits 0';
     check $a, $b, '--fmt and --target=raku emit the same Raku';
 }
+{
+    my ($rc1, $a) = out($rakupp, '--rakuast', $src.Str);
+    my ($rc2, $b) = out($rakupp, '--target=rakuast', $src.Str);
+    check $rc1, 0, '--rakuast exits 0';
+    check $rc2, 0, '--target=rakuast exits 0';
+    check $a, $b, '--rakuast and --target=rakuast emit the same view';
+    contains $a, 'StatementList', 'and it is the RakuAST view';
+    # the comma list stays on `--rakuast`, because `--target=` has its own
+    my ($rc3, $c) = out($rakupp, '--rakuast=tree', $src.Str);
+    check $rc3, 0, '--rakuast=tree still takes its values';
+    check ($c ne $a), True, '…and they change the view';
+}
 
 # ---------- -o writes, for both source backends ----------
 {
@@ -79,7 +93,7 @@ sub out(*@args) {
 {
     my ($rc, $o, $e) = out($rakupp, '--target=bogus', $src.Str);
     check $rc, 4, 'an unknown target exits 4';
-    for <parse ast js cpp raku> -> $t {
+    for <parse ast rakuast js cpp raku> -> $t {
         contains $e, $t, "the refusal lists '$t'";
     }
 }

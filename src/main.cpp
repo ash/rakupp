@@ -1646,7 +1646,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
     {"--fmt", 0, nullptr, "format Raku source to stdout (--target=raku; --check lists files that would change, --diff shows what)"},
-    {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program, with the Raku each node renders back to (--rakuast=tree drops that column, =attrs adds attributes, =compunit wraps it)"},
+    {"--rakuast", 0, nullptr, "print the RakuAST VIEW of the program, with the Raku each node renders back to (--target=rakuast; --rakuast=tree drops that column, =attrs adds attributes, =compunit wraps it)"},
     {"--dump-ast", 0, nullptr, "print the parsed AST"},
     {"--ast-roundtrip", 0, nullptr, "check the AST survives the precomp cache"},
     {"--cpp", 0, nullptr, "print the C++ --exe would compile (--target=cpp; -o writes it)"},
@@ -1655,7 +1655,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--exe", 0, nullptr, "compile natively to C++"},
     {"--slim", 1, "safe auto max none help list verify", "cut unused runtime subsystems from the binary"},
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
-    {"--target", 1, "parse ast js cpp raku", "parse, ast, or emit JavaScript, C++ or Raku"},
+    {"--target", 1, "parse ast rakuast js cpp raku", "parse, ast, rakuast, or emit JavaScript, C++ or Raku"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
     {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
     {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
@@ -2306,7 +2306,11 @@ int main(int argc, char** argv) {
                 // language X" the other targets do, where X happens to be the
                 // language it came from.
                 else if (t == "raku") { if (!setMode(Mode::Fmt, "--fmt")) return 4; }
-                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, js, cpp, raku)\n"; return 4; }
+                // The RakuAST view. Its comma list (`tree`, `attrs`, `compunit`)
+                // stays on `--rakuast=`, since `--target=` has a comma meaning of
+                // its own to protect; this spelling gives the default view.
+                else if (t == "rakuast") { if (!setMode(Mode::RakuAst, "--rakuast")) return 4; }
+                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, rakuast, js, cpp, raku)\n"; return 4; }
                 continue;
             }
             // --target=js companions (TRANSPILE-PLAN): --verify runs the program under
@@ -2740,6 +2744,7 @@ int main(int argc, char** argv) {
 "                               (version, compile mode, --slim cuts)\n"
 "  rakupp --target=parse|ast    Rakudo-compatible aliases of -c / --ast\n"
 "  rakupp --target=raku SRC     Emit Raku: the formatter, spelled as a target (--fmt)\n"
+"  rakupp --target=rakuast SRC  The RakuAST view (--rakuast; =tree/attrs/compunit tune it)\n"
 "  rakupp --lsp                 Run the Language Server (JSON-RPC on stdin/stdout)\n"
 "                               for editor integration: live parse/lint diagnostics\n"
 "  rakupp --help, -h            Show this help\n"

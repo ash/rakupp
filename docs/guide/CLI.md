@@ -418,8 +418,8 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--fmt` | format source in the house style — whitespace only, gated on parse, same-program and idempotence. `-i` rewrites in place (`-i.bak` keeps backups), `--check` names files that would change (exit 1), `--diff` shows what (see [FMT.md](FMT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
-| `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column. The value is a comma list, like `--slim`'s: `tree` drops the source column, `attrs` adds each node's scalar attributes, `compunit` wraps it the way `.AST(:compunit)` does, and they combine (`--rakuast=tree,compunit`). `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff` |
-| `--target=parse\|ast\|js\|cpp\|raku` | one spelling for every backend — see [Choosing a backend](#choosing-a-backend) |
+| `--rakuast` | print the **RakuAST view** of the program — the same tree `.AST` builds, as an indented class-name tree, with the Raku each node renders back to in a second column. The value is a comma list, like `--slim`'s: `tree` drops the source column, `attrs` adds each node's scalar attributes, `compunit` wraps it the way `.AST(:compunit)` does, and they combine (`--rakuast=tree,compunit`). `tools/rakuast-oracle-dump.raku` prints the bare tree from Rakudo, so comparing the two engines is a `diff`. `--target=rakuast` is the same flag, without the comma list |
+| `--target=parse\|ast\|rakuast\|js\|cpp\|raku` | one spelling for every backend — see [Choosing a backend](#choosing-a-backend) |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
@@ -646,15 +646,18 @@ which was which:
 |---|---|---|
 | the parse, checked | `-c` | `--target=parse` |
 | the parsed AST | `--ast` | `--target=ast` |
+| the RakuAST view | `--rakuast` | `--target=rakuast` |
 | C++, what `--exe` compiles | `--cpp` | `--target=cpp` |
 | JavaScript | `--js` | `--target=js` |
 | Raku, formatted | `--fmt` | `--target=raku` |
 
 The `--target=` spellings of `parse` and `ast` are there for Rakudo muscle
-memory, which is where the key came from. `cpp` and `raku` are rakupp's own, and
-`raku` is the one worth a second look: emitting Raku out of Raku *is* the
-formatter, so `--target=raku` is `--fmt`, and `-i`, `--check` and `--diff` reach
-it through that spelling too.
+memory, which is where the key came from. The rest are rakupp's own, and two are
+worth a second look. Emitting Raku out of Raku *is* the formatter, so
+`--target=raku` is `--fmt`, and `-i`, `--check` and `--diff` reach it through
+that spelling too. And `--rakuast` takes a comma list of its own
+(`--rakuast=tree,attrs,compunit`), which stays on that flag, because `--target=`
+has a comma meaning to protect; `--target=rakuast` gives the default view.
 
 Both source backends write to stdout, or to a file with `-o`:
 
