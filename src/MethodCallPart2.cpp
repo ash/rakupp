@@ -508,6 +508,17 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             denv->parent = lvl->declEnv ? lvl->declEnv : savedDenv;
             if (!selfEarlyMade) { selfEarly = Value::object(od); selfEarlyMade = true; }
             denv->define("self", selfEarly);
+            // A role's parameters are in scope for its attribute DEFAULTS, not
+            // only for its method bodies: `role Instruction[$ins] { has $.instruction = $ins }`
+            // is how Docker::File gives each of its dozen instruction classes
+            // its own name, and the default evaluates HERE, at construction.
+            // The bindings sit on the COMPOSING class (the role's own ClassInfo
+            // is shared by every composer), so they are read off the object's
+            // class chain rather than off `lvl`.
+            for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                for (auto& b : c->roleParamBindings)
+                    if (!b.first.empty() && !denv->local(b.first))
+                        denv->define(b.first, b.second);
             tctx_.cur = denv;
         };
         for (auto& at : lvl->attrs) {

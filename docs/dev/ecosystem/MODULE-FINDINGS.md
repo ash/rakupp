@@ -2828,3 +2828,103 @@ Pins: `t/regression/lizmat-nqp-ops.raku` and
 too**, which is the only thing that makes their expectations worth anything —
 three of them (the `mod_i` sign, the `mod_I` by-zero answer, `.^mro(:roles)`)
 were written the wrong way round first and the Rakudo run is what said so.
+
+## 2026-09-13 (later) — clustering by ERROR, and the role NativeCall never had
+
+A second round over the same sweep data, this time grouping every non-green
+dist by its recorded first error rather than by author. That re-orders the work
+completely: the largest actionable cluster was **22 distributions dying on a
+variable that was genuinely declared**, which turned out to be four distinct
+scope bugs, not a check that was too strict.
+
+- **A role's parameter is in scope for its attribute DEFAULTS**, not only for
+  its method bodies. `role Instruction[$ins] { has $.instruction = $ins }` is
+  how Docker::File names a dozen instruction classes. The bindings live on the
+  COMPOSING class, so the default's scope reads them off the object's class
+  chain.
+- **A twigil-less attribute (`has @items`, read as a bare `@items`) resolved
+  only on the WRITE path.** Assigning to one worked and reading it died —
+  Dependency::Sort and Log::D both fail on exactly that, and both are now green.
+- **…and neither path walked the class chain**, so an inherited bare attribute
+  was unreachable from a subclass's methods. This one was caught by the new
+  regression file rather than by the sweep, which is the whole argument for
+  writing the negative rows.
+- **A role now binds its OWN parameter defaults**, so PUNNING it — using the
+  role directly, as Acme::Cow does with `Acme::Cow.new(…)` — sees them. Reached
+  through `does`, the same methods already worked.
+
+Beside them, **an `is rw` accessor of a role mixed into a ROUTINE was readable
+but not assignable** (`$method does MethodWrapped; $method.hidden = True` —
+hide-methods wraps every method of a class that way), and **`IO::Handle` had no
+`.native-descriptor`**, which is the first thing every terminal module asks for.
+
+`native-descriptor` also produced the round's one near-miss, and it is worth
+recording. The standard handles have real descriptors (0/1/2); a handle opened
+on a PATH has none here, because this IO layer is path-and-buffer based rather
+than holding an fd open. Answering **Nil** for that case looked harmless and was
+not: `Nil >= 0` is TRUE, so Roast's own `S32-io/native-descriptor.t` went from
+absent to a **false [PASS] 4/4** — a file counted as passing while one of its
+rows was asking something the engine cannot answer. It now answers C's `-1`,
+the file reads an honest 3 of 4, and the three real rows still count. **A gate
+file that starts passing is a claim to check, not a prize**: the addition was
+the only one in the run and it was wrong.
+
+### LibraryCheck, and the thirty dists that were not there
+
+`library-exists` is built on one trick: mix `NativeCall::Native[$sub, $soname]`
+into an EMPTY closure, call it, and read the exception — "Cannot locate native
+library" means absent, anything else means present. **The FFI is native to this
+compiler, so no `NativeCall.rakumod` declares that role and the name resolved
+nowhere.** Nothing threw, so LibraryCheck answered True for every library,
+including a deliberately bogus one, and failed its own suite on that assertion.
+
+The role is now recognised where mixins are applied: it marks the routine
+native and records the library, and calling it goes down the same `dlopenLib`
+path `is native` uses. Two details are load-bearing and both were got wrong
+first:
+
+- the mixin marks **the routine, not a copy of it** — `does` on a Code mixes
+  into the routine object, so a second reference sees it too. Cloning read more
+  safely and matched upstream less.
+- `setup-nativecall` is what makes the upstream version look the library up
+  before it fails on the (empty) symbol name. A probe that skips it reports
+  every library as present ON RAKUDO, which is how the first version of the
+  regression file managed to disagree with the engine it was written against.
+
+**Measured yield: two, not thirty.** The reverse-dependency graph puts ~30
+dists behind LibraryCheck, and that number is what made it worth doing — but
+sweeping them showed most were already green or blocked elsewhere first. Only
+Crypt::SodiumPasswordHash converted with it. Four more (App::snippet,
+App::termie, App::tmeta, Dawa) now wait on Readline, which needs a libreadline
+this box does not have — environmental, not an engine gap. **Count leverage by
+sweeping the downstream set, never by the graph.**
+
+### The three line editors
+
+Asked after the modules Rakudo's own REPL suggests installing:
+
+| module | verdict |
+|---|---|
+| Linenoise | passes |
+| Readline | runs its suite now; needs libreadline 7 installed |
+| Terminal::LineEditor | waits on Terminal-API |
+
+Terminal-API needed `.native-descriptor` and now reaches a real `tcgetattr`,
+which fails only because the sweep harness gives it no terminal.
+
+### The gates, and a shared tree
+
+`t/run.raku` **891/891**. Pins: `t/regression/role-params-and-bare-attributes.raku`,
+`t/regression/librarycheck-native-role.raku` and
+`t/regression/io-native-descriptor.raku`, all three green under Rakudo too.
+Roast: **673 files**, no removals of our own against the last clean run.
+
+**A concurrent session was editing this tree throughout this round** — the
+lexer, the parser and the JS backend — implementing "a declared `sub s` beats
+the `s///` quote construct". Its pre-scan is unit-wide and textual, so the one
+`sub s` at line 398 of Roast's `S05-substitution/subst.t` disables `s///` for
+that whole file, 354 lines earlier, and the file drops out of the passing list.
+That is their work in progress, not this batch: removing every change made here
+does not fix it, and a binary built before their edits parses the file. It does
+mean **the Roast gate for this round cannot be read straight** — subst.t's
+removal is theirs. Everything else in the list is unchanged.

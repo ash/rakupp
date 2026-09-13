@@ -8703,7 +8703,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 static const char* ncNames[] = {
                     "&nativecast", "&nativesizeof", "&cglobal", "&explicitly-manage",
                     "&refresh", "&trait_mod:<is>", "&postcircumfix:<[ ]>",
-                    "Pointer", "CArray", "OpaquePointer", "NativeCall",
+                    "Pointer", "CArray", "OpaquePointer", "NativeCall", "Native",
                     "bool", "void", "long", "longlong", "ulong", "ulonglong",
                     "size_t", "ssize_t",
                 };
@@ -8714,6 +8714,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                         "NativeCall::EXPORT::DEFAULT", "NativeCall::EXPORT::ALL",
                                         "NativeCall::Types"})
                     global_->define(pkg, Value::typeObj(pkg));
+                // `NativeCall::Native` is the role NativeCall mixes into a sub to
+                // make it native. It has no declaration here — the FFI is built
+                // in — so the NAME is defined and the `does` form is recognised
+                // where mixins are applied. Without the name, `$f does
+                // NativeCall::Native[$f, $so]` died "Undeclared name".
+                global_->define("NativeCall::Native", Value::typeObj("NativeCall::Native"));
                 for (const char* n : ncNames)
                     for (const char* which : {"NativeCall::EXPORT::DEFAULT::",
                                               "NativeCall::EXPORT::ALL::"})
@@ -9774,6 +9780,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         argv.push_back(std::move(v));
                     }
                     bindRoleParamsInto(ci.get(), role, argv, ci->declEnv);
+                }
+                // A ROLE binds its OWN parameter defaults too, so that using it
+                // directly — punning it, `Acme::Cow.new(...)` — sees them. A
+                // composing class binds its own arguments over the top and is
+                // found first on the MRO walk, so this only ever answers for the
+                // pun. Without it a punned role's methods died on their own
+                // parameter ("Variable '$cow' is not declared") while the same
+                // methods reached through `does` worked.
+                if (cd->isRole && ci->decl && !ci->decl->roleParams.empty() &&
+                    ci->roleParamBindings.empty()) {
+                    ValueList none;
+                    bindRoleParamsInto(ci.get(), ci.get(), none, ci->declEnv);
                 }
             }
             {   // a class body takes no arguments — placeholders are compile errors
@@ -18358,10 +18376,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ve->name.size() > 1) {
             if (Value* selfp = tcx.cur->findSelf()) {
                 if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls) {
-                    std::string an = ve->name.substr(1);
-                    for (auto& at : selfp->obj()->cls->attrs)
-                        if (at.name == an && at.sigil == ve->name[0])
-                            return &selfp->obj()->attrs[an];
+                    const std::string an = ve->name.substr(1);
+                    // the whole class CHAIN, not just the invocant's own class:
+                    // an inherited `has @items` is reached by the bare name from
+                    // a subclass's methods too, and the read path beside this one
+                    // walks it the same way
+                    for (ClassInfo* c = selfp->obj()->cls.get(); c; c = c->parent.get())
+                        for (auto& at : c->attrs)
+                            if (at.name == an && at.sigil == ve->name[0])
+                                return &selfp->obj()->attrs[an];
                 }
             }
         }
@@ -18847,6 +18870,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 proxyInvHold = std::move(fetched);
                 base = &proxyInvHold;
             }
+        }
+        // `$method.hidden = True` — an `is rw` accessor of a role mixed into a
+        // ROUTINE in place (`$method does MethodWrapped`). Reading one already
+        // worked; writing had no arm at all and died "Target is not assignable".
+        // hide-methods wraps every method of a class this way and marks each
+        // one as it goes.
+        if (base->t == VT::Code && base->code() && base->code()->mixins.p &&
+            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
+            auto& mx = *base->code()->mixins.p;
+            auto it = mx.attrs.find(mc->method);
+            if (it != mx.attrs.end()) return &it->second;
         }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
@@ -27407,6 +27441,48 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op == "does" || op == "but") {
         Value base = eval(b->lhs.get());
+        // `$f does NativeCall::Native[$f, $soname]` — NativeCall's own way of
+        // turning a plain sub into a native call. The FFI is native to this
+        // compiler, so there is no NativeCall.rakumod declaring the role; the
+        // form is recognised here and the library name is recorded on the
+        // Callable. Calling it then loads the library, which is the whole point:
+        // LibraryCheck decides whether a library exists by mixing this into an
+        // empty closure, calling it and catching "Cannot locate native library".
+        // Without it nothing threw and EVERY library — including a deliberately
+        // bogus one — reported as present. Roughly thirty dists wait on it.
+        if (b->rhs->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(b->rhs.get());
+            if (!ix->isHash && ix->base && ix->base->kind == NK::NameTerm &&
+                static_cast<NameTerm*>(ix->base.get())->name == "NativeCall::Native" &&
+                base.t == VT::Code && base.code()) {
+                // the second argument is the library; the first is the routine
+                // itself, which NativeCall passes so the role can read its name
+                std::string soname;
+                if (ix->index) {
+                    Value a = eval(ix->index.get());
+                    if (a.t == VT::Array && a.arr() && a.arr()->size() > 1) soname = (*a.arr())[1].toStr();
+                    else if (a.t == VT::Array && a.arr() && a.arr()->size() == 1) soname = (*a.arr())[0].toStr();
+                    else soname = a.toStr();
+                }
+                // the ROUTINE itself is marked, not a copy of it: `does` on a
+                // Code mixes into the routine object, so every reference to the
+                // same sub sees it. (Cloning here read better and matched
+                // Rakudo worse — a second reference went on being a plain sub.)
+                Value r = base;
+                r.code()->isNative  = true;
+                r.code()->nativeLib = soname;
+                // the C symbol is the routine's own name — empty for the
+                // anonymous closure LibraryCheck hands it, which is why a
+                // library that DOES load then fails at the symbol instead. That
+                // is Rakudo's behaviour too, and the caller reads it as "the
+                // library is there".
+                if (r.code()->nativeSym.empty()) r.code()->nativeSym = r.code()->name;
+                r.code()->mixinsRW().roles.push_back("NativeCall::Native");
+                if (op == "does" && b->lhs->kind == NK::VarExpr)
+                    try { if (Value* lv = lvalue(b->lhs.get())) *lv = r; } catch (...) {}
+                return r;
+            }
+        }
         // `$obj does R($v)` — a role with exactly ONE attribute is "instantiated"
         // with a positional that presets it (Rakudo refuses the form for any other
         // arity, and for a role with no attributes at all). Evaluating `R($v)`
@@ -32829,6 +32905,27 @@ Value Interpreter::eval(Expr* e) {
             // value, the way `%Foo::Bar` already does — asking a package what it
             // holds is a question, not a declaration.
             if (ve->pkgSymbol) return rtTypedDefault("", ve->name[0]);
+            // Inside a method, a bare `@something` may be the TWIGIL-LESS
+            // attribute `has @something` — the same fallback the lvalue path
+            // has had all along. Only writes resolved it, so a class whose
+            // methods READ such an attribute died where assigning to it worked
+            // (Dependency::Sort declares `has @Depthis` and reads it in every
+            // method). The lookup walks the invocant's class chain, since an
+            // inherited attribute is reached the same way.
+            if (ve->name.size() > 1 && !ve->viaPseudoPkg) {
+                if (Value* selfp = tctx_.cur->findSelf()) {
+                    if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls) {
+                        const std::string an = ve->name.substr(1);
+                        for (ClassInfo* c = selfp->obj()->cls.get(); c; c = c->parent.get())
+                            for (auto& at : c->attrs)
+                                if (at.name == an && at.sigil == ve->name[0]) {
+                                    auto it = selfp->obj()->attrs.find(an);
+                                    return it != selfp->obj()->attrs.end()
+                                         ? it->second : rtTypedDefault("", ve->name[0]);
+                                }
+                    }
+                }
+            }
             if (!isSpecialVar(ve->name) && !noStrictHere())
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");

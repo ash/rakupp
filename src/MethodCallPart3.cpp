@@ -1932,6 +1932,33 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `silently` checks that a block produced no output); otherwise it is
         // the byte cursor, or the bytes consumed by the line cursor, or — for a
         // handle only written to — the size of the pending buffer.
+        // `.native-descriptor` — the OS file descriptor behind the handle.
+        // The STANDARD handles have real ones (0/1/2), and that is what the
+        // terminal modules ask for: `Terminal::API::get-config($*IN.native-descriptor)`
+        // is how Terminal-API reads the tty state, and Terminal::LineEditor
+        // waits on it. A handle carrying an explicit `fd` (a socket, a pipe)
+        // answers that. A buffered FILE handle has no descriptor of its own
+        // here, so it answers Nil rather than inventing a number — which is
+        // honest and is what the callers that matter test for.
+        if (m == "native-descriptor") {
+            auto stdit = inv.hash()->find("std");
+            if (stdit != inv.hash()->end()) {
+                const std::string which = stdit->second.toStr();
+                return Value::integer(which == "in" ? 0 : which == "err" ? 2 : 1);
+            }
+            auto fdit = inv.hash()->find("fd");
+            if (fdit != inv.hash()->end()) return Value::integer(fdit->second.toInt());
+            // A handle opened on a PATH holds no descriptor here — this IO layer
+            // is path-and-buffer based, and reads and writes reopen rather than
+            // keep one. Upstream answers a real fd. -1 is C's own "no
+            // descriptor", and it is what makes the gap VISIBLE: Nil was the
+            // first answer, and `Nil >= 0` is True, so
+            // S32-io/native-descriptor.t reported 4 of 4 while its fourth row
+            // was asking something this engine cannot answer. -1 fails that one
+            // row and leaves the other three counted, which is the honest
+            // reading; a Failure would detonate and lose all four.
+            return Value::integer(-1);
+        }
         if (m == "tell") {
             auto stdit = inv.hash()->find("std");
             if (stdit != inv.hash()->end()) {
