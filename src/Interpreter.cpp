@@ -5635,6 +5635,10 @@ bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (modul
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
         "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
         "NativeCall",  // its `is native` FFI is handled natively by the compiler
+        // …and the types WITHOUT the machinery, which upstream ships as its own
+        // compunit and dists `use` directly (Font::FreeType's Raw/Defs, and the
+        // thirteen dists behind it). Built in here too, so there is no file.
+        "NativeCall::Types",
         // pragmas Rakudo accepts that rakupp does not act on
         "newline", "precompilation", "trace", "dynamic-scope", "snapper",
         "invocant", "internals", "parameters", "routines", "subroutines",
@@ -8726,6 +8730,27 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         global_->define(std::string(which) + n, Value::typeObj(n));
                 for (const char* n : ncAllOnly)
                     global_->define(std::string("NativeCall::EXPORT::ALL::") + n, Value::typeObj(n));
+            }
+            // `use NativeCall::Types` is a compunit of its own upstream — the
+            // types without the machinery — and dists reach for it directly
+            // (Font::FreeType's Raw/Defs does, and thirteen dists sit behind
+            // that one). It is built in here just as NativeCall is, so there is
+            // no file to find and the `use` died "Could not find".
+            //
+            // It publishes the names QUALIFIED, not into the caller's scope:
+            // upstream, a bare `use NativeCall::Types` leaves `Pointer`
+            // undeclared and answers `NativeCall::Types::Pointer`. Exporting the
+            // short names here would be more convenient and less true, and would
+            // hide the missing `use NativeCall` in any file that relied on it.
+            if (u->module == "NativeCall::Types" && global_) {
+                static const char* nctNames[] = {
+                    "Pointer", "CArray", "ExplicitlyManagedString",
+                    "VarArgPointerSentinel", "bool", "void", "long", "longlong",
+                    "ulong", "ulonglong", "size_t", "ssize_t",
+                };
+                global_->define("NativeCall::Types", Value::typeObj("NativeCall::Types"));
+                for (const char* n : nctNames)
+                    global_->define(std::string("NativeCall::Types::") + n, Value::typeObj(n));
             }
             if (u->module == "Test") usedTest_ = true;
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {

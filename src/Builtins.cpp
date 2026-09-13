@@ -13150,6 +13150,25 @@ void Interpreter::registerBuiltins() {
             // NAME for it sent dlopen looking for a library called "Str".
             else if (a[0].t == VT::Type &&
                      (a[0].s == "Str" || a[0].s == "Any" || a[0].s == "Mu" || a[0].s == "Nil")) lib = "";
+            // …and a (NAME, VERSION) list, which is what `is native` already
+            // takes and what a dist writes when it needs a specific soname:
+            // Font::FreeType's `our $FT-LIB = ('freetype', v6)` resolves to
+            // libfreetype.6.dylib. Stringifying the list handed dlopen the
+            // literal "freetype 6" — a name no file has ever had — so every
+            // dist using the versioned form failed at its first symbol, with
+            // thirteen more behind that one. The same guess `is native` uses.
+            else if (a[0].t == VT::Array && a[0].arr() && !a[0].arr()->empty()) {
+                const std::string nm = (*a[0].arr())[0].toStr();
+                const std::string ver = a[0].arr()->size() > 1 ? (*a[0].arr())[1].toStr() : "";
+                std::string got = I.ncGuessLibraryName(nm);
+                if (!ver.empty() && got.find(ver) == std::string::npos)
+#if defined(__APPLE__)
+                    got = "lib" + nm + "." + ver + ".dylib";
+#else
+                    got = "lib" + nm + ".so." + ver;
+#endif
+                lib = got;
+            }
             else lib = a[0].t == VT::Type ? a[0].s.str() : a[0].toStr();
         }
         std::string sym  = a.size() > 1 ? a[1].toStr() : "";
