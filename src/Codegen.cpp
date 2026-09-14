@@ -2064,6 +2064,7 @@ struct Codegen {
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
                            : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : binop == "~"  ? "applyArith(\"~\", __r, " + rhs + ")"
+                           : binop == ","  ? "([&]{ Value __c = __r; rtCommaAssign(__c, " + rhs + "); return __c; }())"
                            : !fb.empty()   ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
             return "([&]()->Value{ Value& __b = " + lvalueExpr(ix->base.get()) + ";"
@@ -2077,6 +2078,8 @@ struct Codegen {
             std::string ref = lvalueExpr(tgt);
             if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
                 return "([&]()->Value{ Value& __r = " + ref + "; rtCatAssign(__r, " + rhs + "); return __r; }())";
+            if (binop == ",")   // the metaop over `infix:<,>` — see rtCommaAssign
+                return "([&]()->Value{ Value& __r = " + ref + "; rtCommaAssign(__r, " + rhs + "); return __r; }())";
             std::string fb = binop == "*" ? std::string() : fastBin(binop); // see `*=` note below
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
@@ -2094,6 +2097,11 @@ struct Codegen {
         if (binop == "//") return lhs + " = !rtIsDefined(" + lhs + ") ? (" + rhs + ") : " + lhs;
         if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
             return "([&]()->Value&{ rtCatAssign(" + lhs + ", " + rhs + "); return " + lhs + "; }())";
+        // `,=` is the metaop over `infix:<,>`: the same rtCommaAssign the
+        // interpreter calls, so a compiled binary cannot mean something else by it
+        // (it used to reach applyArith and die "Unsupported operator ','").
+        if (binop == ",")
+            return "([&]()->Value&{ rtCommaAssign(" + lhs + ", " + rhs + "); return " + lhs + "; }())";
         // `*=` skips the -O shortcut on purpose: `lhs = rtMul(lhs, rhs)` names the
         // destination twice and so can never multiply over it, and rtMul's inline
         // small-Int case is the first thing applyArith tests anyway, so

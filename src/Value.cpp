@@ -1,5 +1,6 @@
 #include "CNumeric.h"
 #include "Value.h"
+#include <set>
 
 #include <cstring>
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
@@ -59,6 +60,19 @@ struct ReprDepthGuard {
     ReprDepthGuard() { ++g_reprDepth; }
     ~ReprDepthGuard() { --g_reprDepth; }
     bool tooDeep() const { return g_reprDepth > 512; }
+};
+// …and the POINTER-based one beside it, because the depth backstop alone turns a
+// cycle into 512 levels of rendered nesting before it gives up: `say @a` on a
+// self-referential array printed two kilobytes of brackets. `.raku` has detected
+// this all along (rakuRepr in Builtins.cpp) and prints `[...]`; the gist and Str
+// renderers now stop at the same place. `@a ,= 3` builds exactly such an array
+// — on Rakudo too, which names the cycle instead of nesting it — which is how
+// this was found (issue #85).
+static thread_local std::set<const void*> g_reprSeen;
+struct ReprCycleGuard {
+    const void* p; bool cyc;
+    explicit ReprCycleGuard(const void* q) : p(q), cyc(q && !g_reprSeen.insert(q).second) {}
+    ~ReprCycleGuard() { if (p && !cyc) g_reprSeen.erase(p); }   // a cycle's entry belongs to the frame that made it
 };
 
 std::string dateGist(const ValueMap& h, bool isDate) {
@@ -480,6 +494,7 @@ std::string Value::toStr() const {
         }
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return "...";
+            ReprCycleGuard cg(arr()); if (cg.cyc) return "...";
             // a Uni / NFC / NFD / NFKC / NFKD stringifies back to its TEXT, not to
             // the codepoint numbers — `"$u"` is Ḍ, not "68 803"
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") {
@@ -544,6 +559,7 @@ std::string Value::toStr() const {
                 return out;
             }
             ReprDepthGuard g; if (g.tooDeep()) return "...";
+            ReprCycleGuard cg(hash()); if (cg.cyc) return "...";
             std::string out;
             if (hash()) {
                 std::vector<const std::pair<const std::string, Value>*> ents;
@@ -648,6 +664,7 @@ std::string Value::gist() const {
         case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
+            ReprCycleGuard cg(arr()); if (cg.cyc) return isList ? "(...)" : "[...]";
             // a Capture gists as the literal that makes it, `\(1, :a(2))`
             if (hashKind == "Capture" && g_rakuRepr) return g_rakuRepr(*this);
             // A Uni / NFC / NFD / NFKC / NFKD is an array of codepoints tagged in
@@ -802,6 +819,7 @@ std::string Value::gist() const {
             }
             if (hashKind.empty() || hashKind == "Map" || hashKind == "Stash") {
                 ReprDepthGuard g; if (g.tooDeep()) return "{...}";
+                ReprCycleGuard cg(hash()); if (cg.cyc) return "{...}";
                 // Sorted by key — the payload iterates in insertion order, but
                 // Hash.gist prints sorted (Rakudo does the same sort here).
                 std::vector<const std::pair<const std::string, Value>*> ents;

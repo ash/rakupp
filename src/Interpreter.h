@@ -2660,6 +2660,11 @@ inline void rtCatAssign(Value& l, const Value& r) {
     if (l.t == VT::Str && r.t == VT::Str) { l.s += r.s; return; }
     l = applyArith("~", l, r);
 }
+// In-place `,=`: `A = A, B`, stored into the container A already holds. One
+// definition for the interpreter and both compiling backends — see the
+// comment on it in Interpreter.cpp. (Not inline: it needs the coerceArray/
+// coerceHash statics that live there.)
+void rtCommaAssign(Value& l, const Value& r);
 inline Value rtMod(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("%", l, r); }
 inline Value rtDivides(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) return Value::boolean(l.i % r.i == 0); return applyArith("%%", l, r); }
 // Fast integer power by squaring, with overflow → bignum fallback (matches applyArith).

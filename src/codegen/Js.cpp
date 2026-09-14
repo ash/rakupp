@@ -819,7 +819,26 @@ struct JsGen {
         if (bop == "//") { string x = tmp(); return lvExpr(lv, "R.defined(" + x + " = " + lv.get + ") ? " + x + " : " + lv.set(exArg(a->value.get()))); }
         if (bop == "||") { string x = tmp(); return lvExpr(lv, "R.truthy(" + x + " = " + lv.get + ") ? " + x + " : " + lv.set(exArg(a->value.get()))); }
         if (bop == "&&") { string x = tmp(); return lvExpr(lv, "R.truthy(" + x + " = " + lv.get + ") ? " + lv.set(exArg(a->value.get())) + " : " + x); }
-        if (bop == ",") return lvExpr(lv, lv.set("R.listAppendAssign(" + lv.get + ", " + exArg(a->value.get()) + ")"));
+        // `A ,= B` is `A = A, B` — the very list `R.list` builds for the written-out
+        // spelling, stored the way that spelling stores it, so the two cannot
+        // disagree. Both halves were wrong before: it called listAppendAssign,
+        // which FLATTENED the two sides (`%h ,= 5 => 4` spread the pair into loose
+        // elements and lost the key, `@a ,= 3` appended instead of nesting), and a
+        // plain `=` on an `@`/`%` variable would then have left a two-element List
+        // where the container was. Issue #85.
+        if (bop == ",") {
+            string src = "R.list(" + lv.get + ", " + exArg(a->value.get()) + ")";
+            if (t->kind == NK::VarExpr) {
+                auto* v = static_cast<VarExpr*>(t);
+                char sig = v->name[0];
+                if ((sig == '@' || sig == '%') && v->name.size() > 1 && v->name[1] != '!' && v->name[1] != '.')
+                    return (sig == '@' ? "R.assignArray(" : "R.assignHash(") + varRef(v) + ", " + src + ")";
+                if ((sig == '@' || sig == '%') && v->name.size() > 2 && v->name[1] == '!')
+                    return (sig == '@' ? "R.assignArray(" : "R.assignHash(")
+                         + selfName + ".a_" + mangleBody(v->attrBare) + ", " + src + ")";
+            }
+            return lvExpr(lv, lv.set(src));
+        }
         if (bop == "xx") return lvExpr(lv, lv.set("R.listRepeat(" + lv.get + ", " + exArg(a->value.get()) + ")"));
         if (bop == "Z" || bop == "X") return lvExpr(lv, lv.set("R.OPS[" + jsStr(bop) + "](" + lv.get + ", " + exArg(a->value.get()) + ")"));
         if (bop == "~~") refuse("~~= assignment", a->line);

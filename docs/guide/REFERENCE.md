@@ -352,11 +352,13 @@ say Nil // 42;  # → 42
 | `+=` `-=` `*=` `/=` `**=` `%=` | compound arithmetic |
 | `~=` | compound concat |
 | `x=` `xx=` | compound repeat |
+| `,=` | compound comma: `A ,= B` is `A = A, B` |
 | `\|\|=` `&&=` `//=` | compound logical |
 
 ```raku
 my $n = 10; $n += 5;  say $n;   # → 15
 my $s = 'a'; $s ~= 'b'; say $s; # → ab
+my %h = 1 => 2; %h ,= 5 => 4; say %h; # → {1 => 2, 5 => 4}
 ```
 
 ### 3.15 List infix & loose logic

@@ -345,7 +345,7 @@ transpiles every program in `t/regression/` and `examples/` and compares each
 in-core one against the same binary interpreting it:
 
 ```
-js gate (bun): 162 in-core and agreeing of 579 programs; 342 refused; 75 disagreeing
+js gate (bun): 164 in-core and agreeing of 586 programs; 347 refused; 75 disagreeing
 ```
 
 Three numbers. The last one is the count of open bugs: programs that transpile

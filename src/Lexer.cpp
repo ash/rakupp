@@ -3046,6 +3046,16 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         else if (c == '[') { advance(); t = make(Tok::LBracket, "["); }
         else if (c == ']') { advance(); t = make(Tok::RBracket, "]"); }
         else if (c == ';') { advance(); t = make(Tok::Semicolon, ";"); }
+        // `,=` is the assignment metaoperator over `infix:<,>`: `%h ,= 5 => 4`
+        // is `%h = %h, 5 => 4`. It has to be ONE token — a `,` followed by an
+        // `=` can be nothing else (Rakudo refuses the spaced `, =` outright:
+        // "Preceding context expects a term, but found infix ="), and lexing
+        // the two apart made `%h ,= …` a trailing-comma list assignment that
+        // silently REPLACED the hash. Issue #85. `,==` and `,=>` are left to
+        // split, so neither is swallowed by the two-character match.
+        else if (c == ',' && peek(1) == '=' && peek(2) != '=' && peek(2) != '>') {
+            advance(); advance(); t = make(Tok::Op, ",=");
+        }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
         else if (c == '/' && !inAngle && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
                  pos_ < slashPrefixAt_ && // a `sub prefix:</>` above this point owns the slash

@@ -63,6 +63,7 @@ static const std::unordered_set<std::string> kAssignOps = {
     // exported constant `my constant \COLORS is export(:colors) =%= %( … )`)
     "=$=", "=@=", "=%=",
     "div=", "mod=", "gcd=", "lcm=", // (x= xx= min= max= arrive as Ident + `=` — the wordAssign path — never as one token)
+    ",=",   // the metaop over `infix:<,>`: `%h ,= 5 => 4` is `%h = %h, 5 => 4`
     "\xE2\x9A\x9B=", "\xE2\x9A\x9B+=", "\xE2\x9A\x9B-=", // atomic assigns, lowered to atomic-* calls below
 };
 static const std::unordered_set<std::string> kBlockKeywords = {
@@ -1469,6 +1470,21 @@ ExprPtr Parser::parseExpr(int minbp) {
                  cur().text == "without" || cur().text == "for" || cur().text == "while" ||
                  cur().text == "until" || cur().text == "given") &&
                 peek().kind != Tok::FatArrow; // `if => 2` is a pair
+            // A trailing comma may close a list — `(1, 2,)`, `f(1,)` — but only
+            // before something that ENDS it. An infix cannot: `%h, = 5 => 4` has
+            // no term for the `=` to take, and it is a syntax error for the same
+            // reason `1, => 2` is (the throw just below). We used to close the
+            // list and assign to it, so `%h, = 5 => 4` silently REPLACED the hash
+            // — which is also the wrong answer `,=` gave before it had a token of
+            // its own, and is what makes the spaced spelling worth refusing rather
+            // than quietly accepting. Issue #85.
+            if (!modNext && !startsTermToken(cur())) {
+                InfixInfo nx = classifyInfix(cur());
+                if (nx.valid && nx.isAssign)
+                    throw ParseError("Preceding context expects a term, but found infix "
+                                     + nx.op + " instead",
+                                     cur().line, "X::Syntax::InfixInTermPosition", {{"infix", nx.op}});
+            }
             if (!modNext && startsTermToken(cur())) {
                 list->items.push_back(parseExpr(BP_COMMA + 1));
             }
@@ -1549,7 +1565,10 @@ ExprPtr Parser::parseExpr(int minbp) {
         // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma
         // list; binding does too (`my @r := &min, &max, &minmax` is a 3-element bind)
         bool listAssign = false;
-        if (in.isAssign && (in.op == "=" || in.op == ":=")) {
+        // `,=` is in here because it reaches as far right as the `=` it is built
+        // on would: `%h ,= 5 => 4, 6 => 7` is `%h = %h, (5 => 4, 6 => 7)`, not
+        // `(%h ,= 5 => 4), 6 => 7`.
+        if (in.isAssign && (in.op == "=" || in.op == ":=" || in.op == ",=")) {
             // `$/ = "x"` (a bare string-literal rhs) is the P5 input-record-separator
             // idiom — a compile error in Raku. `$/ = ('x')` and non-string rhs are fine.
             if (in.op == "=" && lhs->kind == NK::VarExpr &&

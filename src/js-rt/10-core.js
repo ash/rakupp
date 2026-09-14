@@ -700,6 +700,24 @@ function strLit(s) {              // .raku of a Str
     return '"' + s.replace(/[\\"$@{]/g, m => '\\' + m).replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\0/g, '\\0') + '"';
 }
 // .gist
+// A self-referential container renders as a CYCLE, not as nested copies of
+// itself. Without this `say @a` on `@a[0] = @a` recursed until the JavaScript
+// host blew its call stack — the C++ renderers have the same guard (ReprCycleGuard
+// in Value.cpp) and print the same markers. `@a ,= 3` builds exactly such an
+// array, which is how it was found (issue #85).
+const reprSeen = new Set();
+// Keyed on the STORAGE (an RList's .a, an RHash's .m), not on the wrapper: two
+// RList objects can share one backing array, and `@a[0] = @a` makes exactly that
+// pair — keying on the wrapper let the cycle render one level deep before it was
+// noticed.
+function reprKey(v) { return v.a || v.m || v; }
+function reprCycle(v, mark, render) {
+    const k = reprKey(v);
+    if (reprSeen.has(k)) return mark;
+    reprSeen.add(k);
+    try { return render(); } finally { reprSeen.delete(k); }
+}
+function listMark(v) { return v.ty === T.Array ? '[...]' : '(...)'; }
 function gist(v) {
     if (v instanceof RAllo) return v.s;
     if (v instanceof RRegex) return 'rx/' + (v.src === undefined ? '…' : v.src) + '/';
@@ -711,9 +729,9 @@ function gist(v) {
             if (v === null) return 'Nil';
             if (v instanceof RType) return v === Nil ? 'Nil' : '(' + v.name + ')';
             if (v instanceof RNum || v instanceof RRat) return str(v);
-            if (v instanceof RList) return v.gist();
-            if (v instanceof RSeq) return v.gist();
-            if (v instanceof RHash) return v.gist();
+            if (v instanceof RList) return reprCycle(v, listMark(v), () => v.gist());
+            if (v instanceof RSeq) return reprCycle(v, '(...)', () => v.gist());
+            if (v instanceof RHash) return reprCycle(v, '{...}', () => v.gist());
             if (v instanceof RPair) return pairGist(v);
             if (v instanceof RRange) return v.gist();
             if (v instanceof REnum) return v.key;
@@ -769,9 +787,9 @@ function raku(v) {
             if (v instanceof RType) return v === Nil ? 'Nil' : v.name;
             if (v instanceof RNum) return numRaku(v.v);
             if (v instanceof RRat) return ratRaku(v);
-            if (v instanceof RList) return v.raku();
-            if (v instanceof RSeq) return v.raku();
-            if (v instanceof RHash) return v.raku();
+            if (v instanceof RList) return reprCycle(v, listMark(v), () => v.raku());
+            if (v instanceof RSeq) return reprCycle(v, '(...)', () => v.raku());
+            if (v instanceof RHash) return reprCycle(v, '{...}', () => v.raku());
             if (v instanceof RPair) return pairRaku(v);
             if (v instanceof RRange) return v.raku();
             if (v instanceof REnum) return v.ty.name + '::' + v.key;

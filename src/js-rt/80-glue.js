@@ -26,7 +26,6 @@ function xxThunk(thunk, n) {
 function namedFromHash(h, extra) { const m = new Map(); if (h instanceof RHash) for (const [k, v] of h.m) m.set(k, v); if (extra) for (const [k, v] of extra) m.set(k, v); return new RNamed(m); }
 function kvAdverb(c, k, isHash) { const ex = isHash ? hexists(c, k) : aexists(c, k); return ex ? mkList([k, isHash ? hget(c, k) : aget(c, k)]) : mkSlip([]); }
 function pAdverb(c, k, isHash) { const ex = isHash ? hexists(c, k) : aexists(c, k); return ex ? pair(k, isHash ? hget(c, k) : aget(c, k)) : mkSlip([]); }
-function listAppendAssign(cur, v) { const items = itemsOf(cur).slice(); items.push(...itemsOf(v)); return mkList(items); }
 // $obj.attr = v through an `is rw` accessor
 function mcSet(inv, name, v) {
     if (inv instanceof RObj) { const m = inv.ty.findUser(name); if (m && m.lvKey) { inv[m.lvKey] = v; return v; } if (m) { const r = m(inv); if (r instanceof RScalar) { r.v = v; return v; } } }
@@ -98,4 +97,4 @@ T.Signature.methods.params = s => mkList([]);
 T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
-Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, listAppendAssign, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
+Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });

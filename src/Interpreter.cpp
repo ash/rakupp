@@ -2754,6 +2754,32 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
     return h;
 }
 
+// `A ,= B` — the assignment metaoperator over `infix:<,>`, and it is ALWAYS
+// `A = A, B`: the comma applied to the two operands, then assigned, with
+// whatever that assignment already means for A's container. So a hash flattens
+// `(%h, 5 => 4)` back into one hash (issue #85, where `,=` had no token at all
+// and `%h ,= 5 => 4` lexed as a trailing-comma list assignment that REPLACED
+// the hash), an array takes the list as `my @b = @a, 3` does, and a scalar
+// holds it as one item. The store goes INTO the container A already holds, so
+// A keeps its identity — which is also what makes `@a ,= 3` answer the same
+// self-referential list `@a = (@a, 3)` does here and on Rakudo: the list's
+// first element IS that container.
+// One definition, called by the interpreter and by both compiling backends,
+// so a `,=` cannot mean three things.
+void rtCommaAssign(Value& l, const Value& r) {
+    Value lst = listToArray({l, r});   // the engine's own comma: only a Slip splices
+    lst.isList = true;
+    if (l.t == VT::Hash && l.hashKind.empty() && l.hash()) {
+        Value h = coerceHash(lst, /*store=*/true);
+        *l.hash() = *h.hash();
+    }
+    else if (l.t == VT::Array && !l.itemized && l.arr()) {
+        Value arr = coerceArray(lst);
+        *l.arr() = *arr.arr();
+    }
+    else { lst.itemized = true; l = std::move(lst); }  // a scalar holds the List as one item
+}
+
 // Per-thread execution registers. One instance per real thread; the GIL still
 // serialises who runs. See the declaration in Interpreter.h.
 static Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
@@ -15334,17 +15360,21 @@ Value rtSlurpyNamed(const ValueList& a) {
     for (auto& v : a) if (isNamedArg(v)) (*o.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();
     return o;
 }
-Value rtCoerceHash(const Value& v) {
-    if (v.t == VT::Hash) return v;
-    Value h = Value::makeHash();
-    ValueList items = (v.t == VT::Array && v.arr()) ? *v.arr() : v.flatten();
-    for (size_t i = 0; i < items.size(); ) {
-        if (items[i].t == VT::Pair) { (*h.hash())[items[i].s] = items[i].pairVal() ? *items[i].pairVal() : Value::any(); i++; }
-        else if (i + 1 < items.size()) { (*h.hash())[items[i].toStr()] = items[i + 1]; i += 2; } // flat key,value,…
-        else i++;
-    }
-    return h;
-}
+// `my %h = …` / `%( … )` / `{ … }` for native codegen. ONE definition of what a
+// list means as a hash — the interpreter's coerceHash, with the `store` flag an
+// assignment to a `%` container uses. This was a second, thinner implementation
+// of the same idea, and every place it fell short was a SILENT wrong answer in a
+// compiled binary and nowhere else:
+//   * `my %c = %b` handed back %b's own map instead of copying the entries, so
+//     a later write through %c changed %b;
+//   * a Hash INSIDE the list was not flattened — it went to the flat key/value
+//     branch and became a KEY, its gist stringified, so `%h = (%h, 5 => 4)`
+//     answered a one-element hash. That is the written-out spelling of `%h ,=
+//     5 => 4`, which is how it was found (issue #85);
+//   * a flat key/value list mixed with pairs went out of step by one.
+// It also never knew about object-hash keys or junction keys, which coerceHash
+// has handled all along.
+Value rtCoerceHash(const Value& v) { return coerceHash(v, /*store=*/true); }
 
 // Writable element reference for native codegen (autovivifies base and slot).
 Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
@@ -22664,6 +22694,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
+        return sink ? Value::any() : *lv;
+    }
+    // `A ,= B` is `A = A, B` — see rtCommaAssign, which the compiling backends
+    // call too. The target is read ONCE here (lvalue() above), so a subscript's
+    // index cannot run twice. Issue #85.
+    if (binop == ",") {
+        rtCommaAssign(*lv, rhs);
         return sink ? Value::any() : *lv;
     }
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
