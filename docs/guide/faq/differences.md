@@ -117,7 +117,19 @@ say $*RAKU.compiler.version;    # → v2026.08    (the era tracked, not our rele
 say $*RAKU.compiler.release;    # → 3.6.0       (Rakudo leaves this empty)
 say $*RAKU.compiler.id;         # → 3.6.0       (Rakudo: a commit SHA)
 say $*RAKU.compiler.backend;    # → cpp         (Rakudo: moar)
+say $*VM.name;                  # → cpp         (Rakudo: moar)
+say $*RAKU.VMnames;             # → (cpp js)    (Rakudo: (moar jvm js))
 ```
+
+`$*VM.name` names the BACKEND, as Rakudo's does: `cpp` for the interpreter and
+`--exe`, `js` for `--target=js`. The one place Raku++ still answers `moar` is
+inside a build hook run by `rakupp install` — the ecosystem's build recipes gate
+on that name and have no other branch — and that dialect is scoped to the hook.
+
+Raku++ keeps `$*VM`, `$*KERNEL` and `$*DISTRO` in a Hash, so it also accepts
+`$*VM<name>`, where Rakudo dies with `Type VM does not support associative
+indexing`. Raku++ is the permissive one here; `$*VM.name` is the spelling that
+works on both.
 
 Because `.id` is our release rather than Rakudo's per-build hash, two different
 builds of the same release are indistinguishable there. Raku++ adds the missing

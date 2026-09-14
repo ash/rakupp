@@ -1000,10 +1000,12 @@ class InstallableDist {
 # this plan just installed) and any `use JSON::Fast` resolve.
 # The ecosystem's build recipes (MakeFromJSON, LibraryMake and their kin) read
 # their toolchain out of `$*VM.config`, behind a `$*VM.name eq 'moar'` gate —
-# no branch exists for anything else. For the DURATION OF A HOOK the child
-# answers in that dialect, with this platform's honest toolchain values;
-# nothing outside the hook sees it, and the engine's own identity is
-# untouched. Prepended to both hook children (builder class, Build.rakumod).
+# no branch exists for anything else, and LibraryMake's get-vars ends
+# `else { die "Unknown VM; don't know how to build" }`. For the DURATION OF A
+# HOOK the child answers in that dialect, with this platform's honest toolchain
+# values; nothing outside the hook sees it, and the engine's own identity is
+# untouched — `$*VM.name` is `cpp` everywhere else, and `js` under
+# `--target=js`. Prepended to both hook children (builder class, Build.rakumod).
 sub vm-toolchain-shim(--> Str) {
     q:to/SHIM/
         my %tc = do {

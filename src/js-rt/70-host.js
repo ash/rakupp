@@ -112,6 +112,60 @@ if (IS_NODE && nodeRequire) {
     host.name = typeof importScripts === 'function' ? 'worker' : typeof document !== 'undefined' ? 'browser' : 'unknown';
     if (typeof console !== 'undefined') { host.writeOut = s => console.log(s.replace(/\n$/, '')); host.writeErr = s => console.error(s.replace(/\n$/, '')); }
 }
+// $*VM / $*KERNEL / $*DISTRO. The fields live in a Hash, as they do in the
+// interpreter; `sysKind` is what lets a METHOD call on one resolve (mc in
+// 60-methods.js), so `$*VM.name` works and not only `$*VM<name>`.
+function systemic(kind, pairs) { const h = hashFrom(pairs); h.sysKind = kind; return h; }
+// The kernel under a JavaScript host is still the operating system's — `js` was
+// this engine's own name leaking into a field that answers darwin/linux/win32.
+// The VM here IS the JavaScript engine, so its version is the host's.
+function hostVersion() {
+    if (typeof process !== 'undefined' && process.versions) return process.versions.bun || process.versions.node || '0';
+    if (typeof Deno !== 'undefined' && Deno.version) return Deno.version.deno || '0';
+    return '0';
+}
+function hostKernel() {
+    const p = typeof process !== 'undefined' && process.platform;
+    if (!p) return 'unknown';
+    return p === 'win32' ? 'mswin32' : p;   // node's darwin/linux/freebsd already match
+}
+// …and the DISTRO is the operating system's flavour, which is what Rakudo's
+// `macos`/`debian`/`mswin32` name — not the kernel and not the JS host.
+function hostDistro() {
+    const k = hostKernel();
+    return k === 'darwin' ? 'macos' : k;
+}
+function systemicMethod(h, name, args) {
+    const self = k => h.m.get(k);
+    const nm = str(self('name'));
+    switch (name) {
+        case 'name': case 'Str': return nm;
+        case 'gist': { const v = self('version'); return h.sysKind === 'VM' ? nm + ' (' + str(v) + ')' : nm; }
+        case 'version': return self('version') === undefined ? new RVersion('0') : self('version');
+        case 'is-win': return nm === 'mswin32' || nm === 'mingw' || nm === 'msys' || nm === 'cygwin';
+        case 'path-sep': return (nm === 'mswin32' || nm === 'mingw' || nm === 'msys' || nm === 'cygwin') ? ';' : ':';
+        case 'cpu-cores': { try { return nodeRequire('os').cpus().length || 1; } catch (e) { return 1; } }
+        case 'archname': case 'cpu-arch': {
+            const a = typeof process !== 'undefined' ? process.arch : 'unknown';
+            return name === 'archname' ? a + '-' + nm : a;
+        }
+    }
+    if (h.sysKind !== 'VM') return undefined;
+    switch (name) {
+        // The VM here is the JavaScript host, which is what `js` names — the same
+        // spelling Rakudo's own JS backend uses, and a member of $*RAKU.VMnames.
+        case 'auth': return 'Andrew Shitov';
+        case 'desc': return 'Raku++ transpiled to JavaScript: the program runs on the host engine (' +
+                            host.name + ' ' + hostVersion() + ').';
+        // There is no precompilation store on this backend: the program was
+        // compiled ahead of time and carries no cache.
+        case 'precomp-ext': case 'precomp-target': return '';
+        case 'prefix': return '';
+        case 'request-garbage-collection': return Nil;   // the host's collector is not ours to drive
+        case 'config': return hashFrom([['osname', hostKernel()]]);
+    }
+    return undefined;
+}
 function concatBytes(chunks) { let n = 0; for (const c of chunks) n += c.length; const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; }
 const ProcT = mkType('Proc', [T.Any], { isUser: true, attrs: [{ name: 'exitcode', sigil: '$', pub: true }, { name: 'out', sigil: '$', pub: true }, { name: 'err', sigil: '$', pub: true }] });
 ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
@@ -142,9 +196,9 @@ function dynVar(name) {
         case '$*USER': return host.env.get('USER') || '';
         case '$*RAKU': return hashFrom([['name', 'Raku'], ['version', new RVersion('6.d')]]);
         case '$*PERL': return hashFrom([['name', 'Raku']]);
-        case '$*VM': return hashFrom([['name', 'js'], ['version', new RVersion('1')]]);
-        case '$*KERNEL': return hashFrom([['name', 'js']]);
-        case '$*DISTRO': return hashFrom([['name', host.name]]);
+        case '$*VM': return systemic('VM', [['name', 'js'], ['version', new RVersion(hostVersion())]]);
+        case '$*KERNEL': return systemic('Kernel', [['name', hostKernel()]]);
+        case '$*DISTRO': return systemic('Distro', [['name', hostDistro()]]);
         case '$*COLLATION': return Nil;
         case '$*RAKUDO_MODULE_DEBUG': return false;
         case '$*USAGE': return usageText || '';
@@ -161,30 +215,47 @@ let ARGS = null, ENV = null, usageText = '', startTime = 0;
 let endBlocks = [];
 function atEnd(f) { endBlocks.push(f); }
 
-// The MAIN protocol: pos/named from @*ARGS, then dispatch. `sig` describes
-// the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
-function runMain(cands, argv, sinkResult) {
+// Splitting @*ARGS into positionals and named args — the port of the
+// interpreter's rtMainArgs, whose CHECK ORDER is observable:
+//   1. a bare `--` is consumed and the whole rest is positional;
+//   2. otherwise, once a positional has been taken, the current token AND the
+//      whole rest are positional VERBATIM — `prog a --x=1` passes the literal
+//      string "--x=1", which is Rakudo's rule and not a common one;
+//   3. option spellings: `--foo`, and the single-dash/colon short forms (`-v`,
+//      `-n=3`, `:n=3`); `--/k`, `-/k`, `:/k` negate. A lone `-` or `:` is
+//      positional. `-5` is therefore the named `:5` — as in Rakudo.
+// A repeated option collects EVERY value into one named arg, in order.
+function mainArgs(argv) {
     const pos = [], named = new Map();
-    let onlyPos = false;
-    for (const a of argv) {
-        if (!onlyPos && a === '--') { onlyPos = true; continue; }
-        if (!onlyPos && a.startsWith('--') && a.length > 2) {
-            const eq = a.indexOf('=');
-            if (eq > 0) named.set(a.slice(2, eq), argValue(a.slice(eq + 1)));
-            else if (a.startsWith('--/')) named.set(a.slice(3), false);
-            else if (a.startsWith('--no-')) named.set(a.slice(5), false);
-            else named.set(a.slice(2), true);
-            continue;
-        }
-        if (!onlyPos && a.startsWith('-') && a.length > 1 && !/^-\d/.test(a)) {
-            const eq = a.indexOf('=');
-            if (eq > 0) named.set(a.slice(1, eq), argValue(a.slice(eq + 1)));
-            else if (a.startsWith('-/')) named.set(a.slice(2), false);
-            else named.set(a.slice(1), true);
-            continue;
+    const addNamed = (k, v) => { const cur = named.get(k); if (cur === undefined) named.set(k, [v]); else cur.push(v); };
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === '--') { for (i++; i < argv.length; i++) pos.push(argValue(argv[i])); break; }
+        if (pos.length) { for (; i < argv.length; i++) pos.push(argValue(argv[i])); break; }
+        if (a.length > 1 && (a[0] === '-' || a[0] === ':')) {
+            const rest = a[0] === ':' ? a.slice(1) : a[1] === '-' ? a.slice(2) : a.slice(1);
+            if (rest.length) {
+                if (rest[0] === '/') { addNamed(rest.slice(1), false); continue; }
+                const eq = rest.indexOf('=');
+                if (eq >= 0) { addNamed(rest.slice(0, eq), argValue(rest.slice(eq + 1))); continue; }
+                addNamed(rest, true);
+                continue;
+            }
         }
         pos.push(argValue(a));
     }
+    const one = new Map();
+    for (const [k, vs] of named) one.set(k, vs.length === 1 ? vs[0] : mkArray(vs));
+    return { pos, named: one };
+}
+
+// The MAIN protocol: pos/named from @*ARGS, then dispatch. `sig` describes
+// the candidates: [{fn, params:[{name, named, slurpy, optional, hasDefault, type, isBool}]}]
+function runMain(cands, argv, sinkResult) {
+    const { pos, named } = mainArgs(argv);
+    // `$*USAGE` is readable INSIDE MAIN, not just printed when nothing binds —
+    // a program that wants to refuse its own argument list does `note $*USAGE`.
+    usageText = usage(cands);
     for (const c of cands) {
         const r = bindMain(c, pos, named);
         if (!r) continue;
@@ -204,19 +275,32 @@ function runMain(cands, argv, sinkResult) {
     host.stderr(usage(cands) + '\n');
     return 2;
 }
+// A string default is shown QUOTED, so `[default: '.']` cannot be read as
+// punctuation of the sentence around it — as the interpreter renders it.
+function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
 function argValue(s) { return val(s); }   // the IntStr-like allomorph Rakudo hands MAIN: `Int $n` accepts it, `say $n` prints the spelling
 function bindMain(c, pos, named) {
     const args = [];
     let pi = 0;
     const usedNamed = new Set();
+    const nmap = new Map();
     for (const p of c.params) {
         if (p.named) {
-            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v === 'string') v = truthy(v); if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } args.push(pair(p.name, v)); usedNamed.add(p.name); }
-            else if (p.slurpy) { const h = new RHash(); for (const [k, v] of named) if (!usedNamed.has(k)) { h.m.set(k, v); usedNamed.add(k); } args.push(pair(p.name, h)); }
+            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v === 'string') v = truthy(v); if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
+            // `*%opts` takes the leftover options ONE BY ONE: it is the slurpy
+            // that collects them, so they arrive as the named arguments they
+            // are, not as a single `:opts(%h)`.
+            else if (p.slurpy) { for (const [k, v] of named) if (!usedNamed.has(k)) { nmap.set(k, v); usedNamed.add(k); } }
             else if (!p.optional && !p.hasDefault) return null;
             continue;
         }
-        if (p.slurpy) { args.push(mkList(pos.slice(pi))); pi = pos.length; continue; }
+        // An EMPTY positional slurpy contributes no argument: the emitted body
+        // reads it as `_pos.slice(n)`, which is empty either way, and pushing
+        // one would fill the slot of an optional positional that took no
+        // argument — `prog` with no arguments handed `$file?` an empty list
+        // (defined!) instead of leaving it Any. A non-empty slurpy can only
+        // follow filled positionals, so no hole is ever needed.
+        if (p.slurpy) { const rest = pos.slice(pi); pi = pos.length; if (rest.length) args.push(mkList(rest)); continue; }
         if (pi >= pos.length) { if (p.optional || p.hasDefault) continue; return null; }
         let v = pos[pi++];
         if (p.type && (p.type === 'Int' || p.type === 'Num' || p.type === 'Numeric' || p.type === 'Real' || p.type === 'Rat')) { let n; try { n = strToNumeric(str(v)); } catch (e) { return null; } if (p.type === 'Int' && !isIntVal(n)) return null; if (!(v instanceof RAllo)) v = n; }   // the allomorph stays: `Int $n` sees an IntStr
@@ -226,25 +310,43 @@ function bindMain(c, pos, named) {
     }
     if (pi < pos.length) return null;
     for (const k of named.keys()) if (!usedNamed.has(k)) return null;
-    // named args are passed as Pairs → convert to RNamed
-    const posArgs2 = args.filter(a => !(a instanceof RPair && c.params.some(p => p.named && p.name === a.k)));
-    const nmap = new Map(); for (const a of args) if (a instanceof RPair && c.params.some(p => p.named && p.name === a.k)) nmap.set(a.k, a.v);
-    return { fn: c.fn, args: nmap.size ? [...posArgs2, new RNamed(nmap)] : posArgs2 };
+    return { fn: c.fn, args: nmap.size ? [...args, new RNamed(nmap)] : args };
 }
 function usage(cands) {
     const prog = host.program.split('/').pop() || 'prog';
     const lines = ['Usage:'];
+    const opts = [];          // the `#=` option list, in declaration order
     for (const c of cands) {
         const named = [], pos = [];
         for (const p of c.params) {
-            if (p.named) { const t = p.isBool ? '' : '[=' + (p.type || 'Any') + ']'; named.push('[--' + p.name + t + ']'); continue; }
-            if (p.slurpy) { pos.push('[<' + p.name + '> ...]'); continue; }
+            const doc = (label) => { if (p.pod) opts.push({ label, desc: p.pod, def: p.dflt ? defaultGist(p.dflt) : '' }); };
             if (p.lit !== undefined) { pos.push(p.lit); continue; }
+            if (p.named && !p.slurpy) {
+                // A one-character name is a SHORT option: `-x`, not `--x`. An
+                // untyped one takes `[=Any]`, a typed one `=<Type>`, and a Bool
+                // takes nothing at all because its presence is the value. A
+                // required named (`:$x!`) prints without the outer brackets.
+                let label = (p.name.length === 1 ? '-' : '--') + p.name;
+                if (p.type === 'Bool') { }
+                else if (!p.type) label += '[=Any]';
+                else label += '=<' + p.type + '>';
+                named.push(p.optional ? '[' + label + ']' : label);
+                doc(label);
+                continue;
+            }
+            if (p.slurpy) { const label = '[<' + p.name + '> ...]'; pos.push(label); doc(label); continue; }
             const n = '<' + p.name + '>';
-            pos.push(p.optional || p.hasDefault ? '[' + n + ']' : n);
+            const label = p.optional || p.hasDefault ? '[' + n + ']' : n;
+            pos.push(label); doc(label);
         }
         const parts = named.concat(pos);
-        lines.push('  ' + prog + (parts.length ? ' ' + parts.join(' ') : ''));
+        lines.push('  ' + prog + (parts.length ? ' ' + parts.join(' ') : '') + (c.pod ? ' -- ' + c.pod : ''));
+    }
+    if (opts.length) {
+        // …then the documented parameters, aligned, as the interpreter lays them out
+        lines.push('  ');
+        const w = opts.reduce((m, o) => Math.max(m, o.label.length), 0);
+        for (const o of opts) lines.push('    ' + o.label + ' '.repeat(w - o.label.length + 4) + o.desc + (o.def === '' ? '' : ' [default: ' + o.def + ']'));
     }
     return lines.join('\n');
 }

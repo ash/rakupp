@@ -1079,6 +1079,8 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         Lexer lexer(src);
         lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.declPod_ = lexer.declPod_;  // `#=` param descriptions — the usage option list
+        parser.leadPod_ = lexer.leadPod_;  // `#|` leading declarator pod (.WHY, MAIN's description)
         parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths);
         parser.srcFile_ = srcName;
@@ -1105,7 +1107,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         std::string vpath = (outPath.empty() ? std::string(".rakupp-verify-") + std::to_string((long long)getpid()) : outPath) + ".verify.js";
         std::string runnable = js;
         if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true; so.mapUrl.clear();
-            Lexer lexer(src); lexer.tolerant_ = true; Parser parser(lexer.tokenize()); parser.src_ = &src; parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
+            Lexer lexer(src); lexer.tolerant_ = true; Parser parser(lexer.tokenize()); parser.declPod_ = lexer.declPod_; parser.leadPod_ = lexer.leadPod_; parser.src_ = &src; parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
             Program prog = parser.parseProgram(); runnable = transpileToJs(prog, so); }
         { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
         std::string why;
@@ -1151,6 +1153,8 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         Lexer lexer(src);
         lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.declPod_ = lexer.declPod_;  // `#=` param descriptions — the usage option list
+        parser.leadPod_ = lexer.leadPod_;  // `#|` leading declarator pod (.WHY, MAIN's description)
         parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         parser.srcFile_ = srcName;
@@ -1242,6 +1246,8 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         Lexer lexer(src);
         lexer.tolerant_ = true;
         Parser parser(lexer.tokenize());
+        parser.declPod_ = lexer.declPod_;  // `#=` param descriptions — the usage option list
+        parser.leadPod_ = lexer.leadPod_;  // `#|` leading declarator pod (.WHY, MAIN's description)
         parser.src_ = &src;
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         parser.srcFile_ = srcName;

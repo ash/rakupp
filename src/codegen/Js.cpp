@@ -2144,7 +2144,7 @@ struct JsGen {
     }
 
     // ------------------------------------------------------------- routines --
-    struct MainCand { string fn; std::vector<Param>* params; };
+    struct MainCand { string fn; std::vector<Param>* params; string pod; };
     std::vector<MainCand> mainCands;
     std::set<string> emittedMulti;
 
@@ -2335,7 +2335,7 @@ struct JsGen {
         string who = d->name;
         string text = routineFn(mangleSub(d->name), d, false, who);
         emitFnText(text, ind);
-        if (d->name == "MAIN") { hasMain = true; mainCands.push_back({ mangleSub("MAIN"), &d->params }); }
+        if (d->name == "MAIN") { hasMain = true; mainCands.push_back({ mangleSub("MAIN"), &d->params, d->pod }); }
     }
     void emitFnText(const string& text, int ind) {
         // fnBody produced lines at indent 2; re-indent to `ind`
@@ -2379,7 +2379,7 @@ struct JsGen {
             if (d->isProto) continue;
             string jsName = base + "__" + std::to_string(k);
             emitFnText(routineFn(jsName, d, isMethod, name), ind);
-            if (name == "MAIN" && !isMethod) { hasMain = true; mainCands.push_back({ jsName, &d->params }); }
+            if (name == "MAIN" && !isMethod) { hasMain = true; mainCands.push_back({ jsName, &d->params, d->pod }); }
         }
         bool anyAsync = false; for (auto* d : info.cands) if (stmtsAwait(d->body)) anyAsync = true;
         string disp = string(anyAsync ? "async " : "") + "function " + base + "(" + (isMethod ? "self, " : "") + "..._args) {\n";
@@ -2665,14 +2665,14 @@ struct JsGen {
                 for (auto& e : exportTable) table += (table.empty() ? "" : ", ") + jsStr(e.name) + ": " + e.js;
                 if (hasMain) {
                     string cands;
-                    for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "] }";
+                    for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "]" + (mc.pod.empty() ? "" : ", pod: " + jsStr(mc.pod)) + " }";
                     table += (table.empty() ? "" : ", ") + string("MAIN: R.exportMain([") + cands + "])";
                     exportTable.push_back({ "MAIN", "" });
                 }
                 line(1, "return { " + table + " };");
             } else if (hasMain) {
                 string cands;
-                for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "] }";
+                for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "]" + (mc.pod.empty() ? "" : ", pod: " + jsStr(mc.pod)) + " }";
                 line(1, "return R.runMain([" + cands + "], R.host.argv, true);"); // true: sink MAIN's own value (#73)
             }
         });
@@ -2698,10 +2698,23 @@ struct JsGen {
             if (!p.namedKey.empty()) name = p.namedKey;
             string ty = p.type;
             if (ty.size() > 2 && ty.compare(ty.size() - 2, 2, ":D") == 0) ty = ty.substr(0, ty.size() - 2);
-            s += (s.empty() ? "" : ", ") + string("{ name: ") + jsStr(name) + ", named: " + (p.named ? "true" : "false") + ", slurpy: " + (p.slurpy ? "true" : "false") +
-                 ", optional: " + (p.optional ? "true" : "false") + ", hasDefault: " + (p.defaultVal ? "true" : "false") + ", type: " + (ty.empty() ? "null" : jsStr(ty)) +
-                 ", isBool: " + string((ty == "Bool" || (p.named && ty.empty() && p.sigil == '$' && !p.defaultVal)) ? "true" : "false") +
-                 (p.litVal && p.litVal->kind == NK::StrLit ? ", lit: " + jsStr(static_cast<StrLit*>(p.litVal.get())->v) : "") + " }";
+            // `*%opts` is the slurpy NAMED param — it carries no `named` flag of
+            // its own, the `%` sigil on a slurpy is what says so. And a named
+            // param is OPTIONAL unless it was written `:$x!`: reading `optional`
+            // straight off the Param made every `:$x` a required one, so a MAIN
+            // with any named parameter printed its usage instead of running.
+            bool isNamed = p.named || (p.slurpy && p.sigil == '%');
+            bool isOptional = isNamed ? !p.required : p.optional;
+            s += (s.empty() ? "" : ", ") + string("{ name: ") + jsStr(name) + ", named: " + (isNamed ? "true" : "false") + ", slurpy: " + (p.slurpy ? "true" : "false") +
+                 ", optional: " + (isOptional ? "true" : "false") + ", hasDefault: " + (p.defaultVal ? "true" : "false") + ", type: " + (ty.empty() ? "null" : jsStr(ty)) +
+                 ", isBool: " + string(ty == "Bool" ? "true" : "false") +
+                 (p.litVal && p.litVal->kind == NK::StrLit ? ", lit: " + jsStr(static_cast<StrLit*>(p.litVal.get())->v) : "") +
+                 // `#=` trailing declarator pod: the aligned option list under the
+                 // usage line, with `[default: X]` from the default expression —
+                 // which only a DOCUMENTED parameter ever shows, so the thunk is
+                 // emitted only there.
+                 (p.pod.empty() ? "" : ", pod: " + jsStr(p.pod)) +
+                 (p.pod.empty() || !p.defaultVal ? "" : ", dflt: () => (" + exArg(p.defaultVal.get()) + ")") + " }";
         }
         return s;
     }

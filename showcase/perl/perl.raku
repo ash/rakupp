@@ -186,7 +186,7 @@ grammar PerlGrammar {
     rule add      { <mul> [ $<op>=[ '+' | '-' | '.' <!before <[.=]>> ] <mul> ]* }
     rule mul      { <bind> [ $<op>=[ '*' | '/' | '%' | 'x'<!bw> ] <bind> ]* }
     rule bind     { <unary> [ $<op>=[ '=~' | '!~' ] <bindarg> ]? }
-    rule bindarg  { <barerx> | <unary> }
+    rule bindarg  { <unary> }
     rule unary    { $<op>=[ '!' | '-' <!before '-'> | '+' <!before '+'> | '\\' ]* <pow> }
     rule pow      { <incdec> [ '**' <unary> ]? }
     rule incdec   { $<pre>=[ '++' | '--' ]? <postfix> $<post>=[ '++' | '--' ]? }
@@ -369,7 +369,7 @@ class Actions {
         }
         else { make $<unary>.made }
     }
-    method bindarg($/) { make ($<barerx> ?? $<barerx>.made !! $<unary>.made) }
+    method bindarg($/) { make $<unary>.made }
     method primary:sym<match>($/) {
         make %( t => 'rx', kind => 'm', pat => ~$<relit_m><repat>, flags => ~$<relit_m><reflags> )
     }
@@ -1471,7 +1471,7 @@ sub rx-search($compiled, $str, $start, $flags) {
 
 sub set-captures(%m, $env) {
     $env.set('$&', %m<match>);
-    my @caps = %m<caps>;
+    my @caps = @(%m<caps>);   # the hash element is ONE itemized array: @() spreads it
     for 1 .. 9 -> $i {
         $env.set('$' ~ $i, ($i < @caps.elems && @caps[$i].defined) ?? @caps[$i] !! UNDEF);
     }

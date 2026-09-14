@@ -141,7 +141,7 @@ function radix(base, sv) {
 }
 function radixList(base, ...digits) { const bb = BigInt(Number(toInt(base))); let v = 0n; for (const d of digits) { if (d instanceof RNamed) continue; for (const x of itemsOf(d)) v = v * bb + BigInt(toInt(x)); } return normBig(v); }
 // val(Str): an allomorph when the string spells a number, else the string; MAIN's arguments come this way
-function val(s) { s = str(s); try { if (s.trim() === '') return s; const n = strToNumeric(s); return new RAllo(n, s); } catch (e) { return s; } }
+function val(s) { s = str(s); try { if (s === '') return new RAllo(0, '');   /* val("") is IntStr(0, "") — an empty `--opt=` value, an empty %*ENV entry */ if (s.trim() === '') return s; const n = strToNumeric(s); return new RAllo(n, s); } catch (e) { return s; } }
 function pick(v, n) { return countFirst(v, n) ? pickFrom(n, v) : pickFrom(v, n); }
 function roll(v, n) { return countFirst(v, n) ? rollFrom(n, v) : rollFrom(v, n); }
 function categorize(f, v, ...a) { return categorizeList(v, f, nm(a).get("as")); }

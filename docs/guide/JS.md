@@ -53,7 +53,9 @@ bun prog.js                                   # run it (node, deno too)
   The host is `$RAKUPP_JS` if set, else `bun`, then `node`, then `deno`, from
   `PATH`. A nondeterministic program cannot be judged this way, and neither can
   a `use js` program: the interpreter refuses those by design, so it cannot be
-  their oracle — they have goldens instead.
+  their oracle — they have goldens instead. Nor can a program that prints its
+  own FILENAME — a `sub MAIN` printing usage does — since the two runs are
+  `prog.raku` and `prog.js`; the disagreement is the name, not the behaviour.
 - **`--fallback=wasm`**: a program outside the core is refused by default,
   with the construct and its line in the `--cpp` message shape (exit 5). With
   this flag it is accepted, as a small program that loads Raku.js — the

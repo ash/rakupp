@@ -1438,6 +1438,41 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "gist")    return Value::str(name + " (" + ver + ")"); // Systemic.gist: "$name ($version)"
         }
 #endif
+        // $*VM describes THIS engine's runtime. Everything below used to fall
+        // through to the lenient accessor at the end of this block, so `.auth`,
+        // `.desc`, `.precomp-ext`, `.precomp-target` and `.prefix` all answered
+        // the literal VM NAME — the same failure `.config` had, and none of
+        // them load-bearing enough for anyone to notice.
+        //
+        // The name is `cpp` (and `js` under --target=js), the shape Rakudo uses
+        // for moar/jvm/js; `$*RAKU.VMnames` lists both, which is Roast's only
+        // check on it. The ecosystem's build recipes — LibraryMake and its kin —
+        // gate on `moar` and have no other branch, so `rakupp install` hands its
+        // BUILD HOOKS a $*VM answering `moar` for the duration of the hook
+        // (tools/install.raku): a dialect scoped to the hook, not this identity.
+        if (inv.hashKind == "VM") {
+            if (m == "auth") return Value::str("Andrew Shitov");   // as $*RAKU.compiler.auth
+            if (m == "desc")
+                return Value::str("Raku++'s own runtime: a C++ tree-walking interpreter, "
+                                  "with a native backend (--exe) and a JavaScript one (--target=js).");
+            // The VM's version is THIS binary's release. (The COMPILER's version
+            // deliberately answers the Rakudo era instead — see rakuIntrospection
+            // in Builtins.cpp for why that one cannot be ours.)
+            if (m == "version") { Value v = Value::str(RAKUPP_VERSION); v.hashKind = "Version"; return v; }
+            if (m == "gist") return Value::str(name + " (" + RAKUPP_VERSION + ")"); // Systemic.gist: "$name ($version)"
+            // The precompilation store keeps SERIALISED ASTs, not bytecode:
+            // ~/.cache/rakupp/precomp/XX/<hash>.ast (see docs/guide/CACHING.md).
+            if (m == "precomp-ext" || m == "precomp-target") return Value::str("ast");
+            // Rakudo answers MoarVM's install prefix; ours is where THIS binary
+            // lives — $RAKUPP_HOME when set, else the directory above bin/.
+            if (m == "prefix") {
+                if (const char* home = std::getenv("RAKUPP_HOME")) return Value::str(home);
+                size_t sl = execPath_.find_last_of("/\\");
+                std::string dir = sl == std::string::npos ? std::string(".") : execPath_.substr(0, sl);
+                size_t up = dir.find_last_of("/\\");
+                return Value::str(up == std::string::npos ? dir : dir.substr(0, up));
+            }
+        }
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
         // Rakudo's rule, verbatim (Distro.rakumod TWEAK): the NAME decides.
         // This was a hard-coded False, so on Windows every `$*DISTRO.is-win`
@@ -2653,7 +2688,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (t == "Compiler") return rakuIntrospection(true);
         // …and `VM.new`, the same object `$*VM` answers, for the same reason:
         // META::constants reads both in its EXPORT sub.
-        if (t == "VM") { Value h = Value::makeHash(); h.hashKind = "VM"; (*h.hash())["name"] = Value::str("moar"); return h; }
+        if (t == "VM") { Value h = Value::makeHash(); h.hashKind = "VM"; (*h.hash())["name"] = Value::str("cpp"); return h; }
     }
     // `List.from-iterator($it)` — and the Array/Seq/Slip spellings. Drains the
     // iterator into the named container, whether it is a user object doing

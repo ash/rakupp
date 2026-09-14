@@ -23,7 +23,7 @@ Every number and every transcript on this page was produced on one machine
 ## The shortest path
 
 ```bash
-echo 'say "hello from ", $*VM<name>' > hello.raku
+echo 'say "hello from ", $*VM.name' > hello.raku
 rakupp --target=js hello.raku -o hello.js
 bun hello.js
 ```
@@ -46,8 +46,9 @@ use `--standalone` to get one file with the runtime inlined.
 
 Without `-o`, the JavaScript goes to stdout instead.
 
-(`$*VM<name>` is `js` there and `moar` under the interpreter, which is a quick
-way to tell which one you are looking at.)
+(`$*VM.name` is `js` there and `cpp` under the interpreter — this engine's two
+backends, the way Rakudo's are `moar`, `jvm` and `js`. `$*RAKU.compiler.name` is
+`Raku++` either way.)
 
 ---
 
@@ -61,22 +62,32 @@ Save this as `factorial.raku`:
 
 sub fact(Int $n --> Int) { [*] 1 .. $n }
 
-#| Print n! for each n given, or for each line of standard input.
+#| Print n! for each number given, or for each line of standard input.
 sub MAIN(
     *@numbers,                   #= the numbers to take the factorial of
+    Bool :$stdin,                #= read the numbers from standard input instead
     Bool :$digits,               #= print how many digits the answer has
 ) {
-    my @in = @numbers ?? @numbers !! lines();
-    for @in -> $n {
+    unless @numbers || $stdin {
+        note $*USAGE;
+        exit 2;
+    }
+    for ($stdin ?? lines() !! @numbers) -> $n {
         my $f = fact(+$n);
         say $digits ?? "$n! has {$f.chars} digits" !! "$n! = $f";
     }
 }
 ```
 
-Twelve lines that exercise most of what a command-line program needs: a typed
-sub, a slurpy positional, a `Bool` option, declarator pod, arbitrary-precision
-integers, and a fallback to standard input.
+Sixteen lines that exercise most of what a command-line program needs: a typed
+sub, a slurpy positional, two `Bool` options, declarator pod,
+arbitrary-precision integers, `$*USAGE`, and standard input.
+
+Reading standard input is behind `--stdin` on purpose. A slurpy positional
+binds happily to nothing, so a program that falls through to `lines()` when it
+has no arguments will sit and block when someone runs it bare to see what it
+does — with no prompt to say why. `note $*USAGE; exit 2` is the two lines that
+turn that into an answer.
 
 ```bash
 rakupp --target=js factorial.raku -o factorial.js
@@ -123,11 +134,15 @@ bun factorial.js --help
 
 ```
 Usage:
-  factorial.js [--digits] [<numbers> ...] -- Print n! for each n given, or for each line of standard input.
+  factorial.js [--stdin] [--digits] [<numbers> ...] -- Print n! for each number given, or for each line of standard input.
   
     [<numbers> ...]    the numbers to take the factorial of
+    --stdin            read the numbers from standard input instead
     --digits           print how many digits the answer has
 ```
+
+That text is also what `$*USAGE` hands the program, which is what the two-line
+guard above prints when there is nothing to do.
 
 Only a parameter with a `#=` gets a line in the table; a parameter with a
 default shows it, and a one-character option name is spelled with one dash:
@@ -166,10 +181,8 @@ first, or use `--` to force the boundary.
 
 ### Standard input
 
-With no arguments the program falls through to `lines()`:
-
 ```bash
-printf '10\n20\n' | bun factorial.js
+printf '10\n20\n' | bun factorial.js --stdin
 ```
 
 ```
@@ -184,16 +197,24 @@ host, compares stdout, stderr and the exit status byte for byte, and refuses to
 write the output on disagreement:
 
 ```bash
-rakupp --target=js factorial.raku -o factorial.js --verify
+rakupp --target=js examples/mandel.raku -o mandel.js --verify
 ```
 
 ```
-verified: interpreter and JavaScript agree — emitting factorial.js
+verified: interpreter and JavaScript agree — emitting mandel.js
 ```
 
-It cannot judge a program whose output is not deterministic, and it cannot judge
-a `use js` program (the interpreter refuses those by design, so it cannot be
-their oracle — those have goldens instead).
+Three kinds of program it cannot judge, all for the same reason — the two runs
+have to be byte-identical:
+
+- one whose output is not deterministic;
+- a `use js` program, since the interpreter refuses those by design and so
+  cannot be their oracle (they have goldens instead);
+- **one that prints its own name.** `factorial.raku` above is one: the usage
+  line starts with the program's filename, which is `factorial.raku` under the
+  interpreter and `factorial.js` under the host. That is not a disagreement
+  about behaviour, but `--verify` cannot tell the difference, so it reports one.
+  Any `sub MAIN` that prints usage is in this class.
 
 ---
 
@@ -378,7 +399,39 @@ Two different questions hide under one word.
 
 ### Can a program that `use`s a module be transpiled?
 
-Not today.
+Not today. Two files — an ordinary module and an ordinary program that uses it:
+
+```raku
+# lib/Stats.rakumod
+unit module Stats;
+
+sub mean(@xs) is export { @xs.sum / @xs.elems }
+
+sub median(@xs) is export {
+    my @s = @xs.sort;
+    @s.elems %% 2 ?? (@s[@s.elems div 2 - 1] + @s[@s.elems div 2]) / 2
+                  !! @s[@s.elems div 2]
+}
+```
+
+```raku
+# report.raku
+use lib 'lib';
+use Stats;
+
+sub MAIN(*@n) {
+    my @x = @n.map(+*);
+    say "mean=", mean(@x), " median=", median(@x);
+}
+```
+
+It runs under the interpreter:
+
+```bash
+rakupp report.raku 3 1 4 1 5 9 2 6     # mean=3.875 median=3.5
+```
+
+…and is refused by the JavaScript backend:
 
 ```bash
 rakupp --target=js report.raku -o report.js
@@ -407,7 +460,23 @@ bundle, transpile, inline into a page — and `showcase/fourier` and
 
 Yes, and this is the direction that works cleanly. `--module` emits an ES module
 that runs the file's mainline at import time and exports its subs, classes,
-grammars and enums instead of running `MAIN`:
+grammars and enums instead of running `MAIN`. Take a module with one of each:
+
+```raku
+# lib/Fact.rakumod
+unit module Fact;
+
+sub fact(Int $n --> Int) is export { $n <= 1 ?? 1 !! $n * fact($n - 1) }
+
+sub choose(Int $n, Int $k --> Int) is export {
+    fact($n) div (fact($k) * fact($n - $k))
+}
+
+class Counter is export {
+    has $.n is rw = 0;
+    method bump($by = 1) { $!n += $by; self }
+}
+```
 
 ```bash
 rakupp --target=js --module lib/Fact.rakumod -o fact.js

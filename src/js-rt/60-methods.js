@@ -187,6 +187,13 @@ function mc(inv, name, ...args) {
     if (inv instanceof REnum) { const em = ENUM_METHODS[name]; if (em) return em(inv, ...args); const um = ty.findUser(name); if (um) return um(inv, ...args); return mc(inv.val, name, ...args); }
     if (inv instanceof RObj && (name === 'parse' || name === 'subparse') && inv.ty.mro.some(t => t.rules)) return grammarParse(inv.ty, args[0], args, name === 'subparse');   // Grammar.new.parse
     if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
+    // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
+    // the interpreter, so a method call on one had nothing to resolve against and
+    // `$*VM.name` — the spelling every program uses, and the only one Rakudo
+    // accepts — died with "No such method 'name' for invocant of type 'Hash'".
+    // BEFORE the Hash table: `.gist` and `.Str` belong to the systemic object,
+    // not to the hash it keeps its fields in.
+    if (inv instanceof RHash && inv.sysKind) { const sm = systemicMethod(inv, name, args); if (sm !== undefined) return sm; }
     const m = ty.find(name);
     if (m) return m(inv, ...args);
     if (inv instanceof RMatch && inv.ctx) { const r = cursorCall(inv, name, args); if (r !== undefined) return r; }   // self.rule inside a grammar method

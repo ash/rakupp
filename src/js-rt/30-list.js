@@ -293,7 +293,12 @@ function item(v) {
 }
 function decont(v) { return v !== null && typeof v === 'object' && v.item === true ? v.__t : v; }
 // a bound `@` parameter: a List stays a List (its slots are bare), a Seq or Range binds as the List it is
-function bindArray(v) { return v instanceof RList ? (v.ty === T.Seq ? mkList(v.arr()) : v) : (v instanceof RSeq || v instanceof RRange) ? mkList(arr(v)) : newArray(v); }
+// Binding to a `@` parameter DE-ITEMIZES: `sub f(@a)` binds the Positional
+// itself, so an itemized argument — `%h<stmts>`, `$[1,2]` — arrives as a plain
+// array. Keeping the item flag made `for @a { }` inside the sub run ONCE over
+// the whole array, which is how the Perl showcase's evaluator came to ask an
+// Array for its `<t>` key.
+function bindArray(v) { v = decont(v); return v instanceof RList ? (v.ty === T.Seq ? mkList(v.arr()) : v) : (v instanceof RSeq || v instanceof RRange) ? mkList(arr(v)) : newArray(v); }
 // `for @a { … }`: an Array's slots are scalar containers, so a list or hash
 // element reaches the bare topic as an item; a List's elements arrive bare
 function iterTopic(v) {
