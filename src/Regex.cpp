@@ -1627,11 +1627,40 @@ Regex::NodePtr Regex::parseAtom() {
             look->kids.push_back(std::move(child));
             return look;
         }
-        else if (peek() == '&' || peek() == '{') {
-            // <&code> dynamic subrule / <{ code }> — unsupported: zero-width no-op
-            int depth = 1; pos_++;
-            while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '<') depth++; else if (d == '>') depth--; }
-            auto nop = std::make_unique<Node>(); nop->k = K::Nop; return nop;
+        else if (peek() == '{') {
+            // `<{ code }>` — the block runs at MATCH TIME and its result is the
+            // pattern (GrammarHooks::dynRule). Balanced on braces, not angles:
+            // the code may well contain a `>` (`<{ $n > 1 ?? 'x' !! 'y' }>`).
+            // This was a zero-width no-op that never ran the block, so a header
+            // check like `/^ 'SPOZ2 ' <{FORMAT-VERSION}> \n/` passed against any
+            // version at all (issue #81).
+            pos_++;                                   // the '{'
+            std::string code; int depth = 1;
+            while (!eof()) {
+                char d = pat_[pos_++];
+                if (d == '{') depth++;
+                else if (d == '}' && --depth == 0) break;
+                code += d;
+            }
+            skipWs();
+            if (peek() == '>') pos_++;
+            auto n = std::make_unique<Node>();
+            n->k = K::Subrule; n->dynCode = code; n->ruleCapture = false;
+            n->icase = curIcase_; n->imark = curImark_;
+            return n;
+        }
+        else if (peek() == '&') {
+            // `<&name>` / `<&name(args)>` — a call to the lexical regex `&name`
+            // that records nothing (the `&` spelling never captures). Read as the
+            // non-capturing subrule call it is; it too used to be a no-op.
+            pos_++;                                   // the '&'
+            std::string nm; while (!eof() && peek() != '>' && peek() != '(') nm += pat_[pos_++];
+            std::string args;
+            if (peek() == '(') { int d = 1; pos_++; while (!eof() && d > 0) { char x = pat_[pos_++]; if (x == '(') d++; else if (x == ')') { d--; if (!d) break; } args += x; } }
+            if (peek() == '>') pos_++;
+            auto sr = std::make_unique<Node>();
+            sr->k = K::Subrule; sr->ruleName = nm; sr->ruleArgs = args; sr->ruleCapture = false; sr->icase = curIcase_;
+            return sr;
         } else {
             // `<name=[…]>` — a NAMED CAPTURE of an inline character class, not an
             // alias for a rule called "[…]". DateTime::Grammar writes a numeric
@@ -2512,6 +2541,7 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
         case K::Nop: case K::Code: case K::Look: case K::CapStart: case K::CapEnd:
             return {0, 0};
         case K::Subrule:
+            if (n->inlineRx || !n->dynCode.empty()) return {0, UNB}; // a CALLED pattern: any width
             if (st.grammar) {
                 if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
                 // one CHARACTER, whose UTF-8 encoding is 1..n bytes — this is only
@@ -2567,7 +2597,21 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         case K::Subrule: {
             // `<$var>` / `<alias=$var>` — an interpolated pattern, compiled with its
             // own front-end and CALLED here (its captures are its own).
-            if (n->inlineRx) return matchInlineSub(n, st, pos, k);
+            if (n->inlineRx) return matchInlineSub(n, n->inlineRx, st, pos, k);
+            // `<{ code }>` — the block decides the pattern NOW, with the match so
+            // far as its cursor, and the answer is called exactly like `<$var>`.
+            // With no hook wired (a bare Regex nobody armed) the assertion FAILS
+            // rather than passing: a pattern that depends on it must not match by
+            // accident, which is what the issue-#81 header check did.
+            if (!n->dynCode.empty()) {
+                if (!st.hooks || !st.hooks->dynRule) return false;
+                std::string flags;
+                if (n->icase) flags += 'i';
+                if (n->imark) flags += 'm';
+                const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
+                const Regex* re = st.hooks->dynRule(n->dynCode, st.startPos, pos, st.named, st.caps, params, flags);
+                return re ? matchInlineSub(n, re, st, pos, k) : false;
+            }
             // Grammar path: backtrackable — thread `k` through the callee. The name→meta
             // resolution is cached on the node (compiled Regexes live in the matcher's cache,
             // so node and matcher share a lifetime).
@@ -3339,8 +3383,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
 // nested sub-match under the alias before running the caller's continuation. The
 // same shape as GrammarMatcher::matchSubMeta's non-ratchet path, minus the rule
 // table: `k` is threaded through, so the caller can still backtrack into the callee.
-bool Regex::matchInlineSub(const Node* n, MState& st, long pos, const FnRef& k) const {
-    const Regex* re = n->inlineRx;
+bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k) const {
     MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, st.resolver, st.grammar};
     sub.hooks = st.hooks; sub.lexNames = st.lexNames; sub.curSym = st.curSym;
     sub.startPos = pos; sub.probing = st.probing; sub.steps = st.steps;
@@ -4244,6 +4287,7 @@ std::string Regex::toJsTree(const std::function<std::string(const std::string&, 
                 if (!n->ruleAlias.empty()) o += ",alias:" + jsQ(n->ruleAlias);
                 flag("aliasDotted", n->aliasDotted); flag("noCapture", !n->ruleCapture);
                 if (n->inlineRx) o += ",inline:" + n->inlineRx->toJsTree(embed);
+                if (!n->dynCode.empty()) o += ",dyn:1,fn:" + embed("dyn", n->dynCode);   // <{ code }>: the block's value is the pattern
                 if (n->recTarget) o += ",rec:1";
                 break;
             case K::Look: flag("negate", n->negate); flag("behind", n->behind); break;

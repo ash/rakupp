@@ -189,7 +189,8 @@ atoms are plain closures over the surrounding code. Captures, named and
 list-valued, `$/`, `$0`, `$<name>`, `make`/`made`, action classes, protos
 with `:sym<…>`, `s///`, `.subst`, `.match(:g)`, `.comb`, `.split` and
 `.trans` behave as in the interpreter. `<$var>` and `<name=$var>` with a
-string in the variable parse that string as a pattern at run time (the
+string in the variable, and `<{ … }>` whose block answers a string, parse
+that string as a pattern at run time (the
 subset a pattern string carries: literals, quotes, `\d\w\s`, classes,
 groups, quantifiers, alternation, `:i`); a bare `@array` is an alternation
 of its strings, longest first; `~~` with a Regex in a variable sets `$/`,

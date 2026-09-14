@@ -1027,7 +1027,6 @@ while writing this sheet:
   runs here; Rakudo dies with "Unexpected named argument 'nope' passed".
 - **An unknown subrule matches the empty string.** `<nosuchrule>` and `<same>`
   succeed here without consuming anything; Rakudo raises "No such method".
-  `<{ code }>` and `<&name>` are likewise zero-width no-ops here.
 - **`\cA` inside a regex is refused** — "Unrecognized backslash sequence" —
   where Rakudo matches. The bracket forms `\c[1]` and `\c[NAME]` work here, and
   `"\cA"` in a string literal works too; it is only the short form in a regex.

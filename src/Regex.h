@@ -132,6 +132,17 @@ struct GrammarHooks {
     std::function<int(const std::string& name, const std::string& args, long pos,
                       const NamedMap&, const std::vector<std::pair<long, long>>&, const ParamMap&,
                       struct RxCursorCall& cursor, long& endOut, ParseNode& nodeOut)> callMethod;
+    // `<{ code }>` — the block runs at match time, with the cursor as `$/`, and
+    // its RESULT is the pattern: a Regex value is called as itself (its own
+    // adverbs kept), anything else is its Str read as regex SOURCE, a List is
+    // an alternation of its elements. `flags` carries the character adverbs
+    // in force at the assertion (`i`, `m`), which reach into the callee as
+    // they do for `<$var>`. Answers the compiled callee — owned and cached by
+    // the interpreter, so the pointer outlives the match — and throws for a
+    // result that is no pattern at all (undefined, or the null regex).
+    std::function<const class Regex*(const std::string& code, long from, long to,
+                                     const NamedMap&, const std::vector<std::pair<long, long>>&,
+                                     const ParamMap&, const std::string& flags)> dynRule;
 };
 
 // A node of the parse tree recorded by the backtracking GrammarMatcher: which rule
@@ -310,6 +321,9 @@ private:
         // front-end and CALLED here rather than pasted in. Owned by the host regex
         // (inlineSubs_), so the pointer lives exactly as long as this node does.
         const Regex* inlineRx = nullptr;
+        // `<{ code }>`: the block whose RESULT is the pattern, decided at match
+        // time (GrammarHooks::dynRule) — so there is no callee to own here.
+        std::string dynCode;
         mutable const GrammarRuleMeta* metaCache = nullptr; // per-node name resolution (grammar path)
         // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
         // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
@@ -489,9 +503,11 @@ public:
     std::string toJsTree(const std::function<std::string(const std::string&, const std::string&)>& embed) const;
     NodePtr parseSplice(); // compile a \x01-marked sub-pattern with its own front-end
     NodePtr parseSubSplice(); // …and the KIND 'S' form, which is CALLED, not pasted
-    // Match an inline sub-pattern (`<$var>`) as a subrule: fresh capture frame,
-    // recorded under `n->ruleName` when the assertion is aliased.
-    bool matchInlineSub(const Node* n, MState& st, long pos, const FnRef& k) const;
+    // Match an inline sub-pattern as a subrule: fresh capture frame, recorded
+    // under `n->ruleName` when the assertion is aliased. `re` is the callee —
+    // the node's own `inlineRx` for `<$var>`, or whatever a `<{ code }>` block
+    // answered at match time.
+    bool matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k) const;
     // If rootIsSingleChar(), test it at `pos`: returns pos+1 on match, -1 on no match.
     long trySingleChar(const std::string& s, long pos) const;
 private:

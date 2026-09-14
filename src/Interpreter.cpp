@@ -25134,6 +25134,51 @@ static std::string rxSourceOf(const Value& v, bool& p5) {
     return src;
 }
 
+// What a `<{ … }>` block answered, as the PATTERN it stands for. The value is
+// read exactly as `<$var>` reads a variable: a Regex is its own source (flavour
+// peeled off and carried as a flag), a Str is regex source, a List is an
+// alternation of its elements read the same way, longest first as `<@arr>`
+// orders its members. An undefined value and the null regex are ERRORS, as in
+// Rakudo: `<{ %h{$k} }>` with no such key must not quietly turn into a
+// zero-width match — that accident is what issue #81 reports.
+// Compiled once per distinct (flags, source) and kept for the interpreter's
+// life: the matcher holds the pointer for the rest of the match, possibly on
+// another thread, so nothing is ever dropped. The map grows with the distinct
+// sources a program produces (`(\w+) <{ $0 }>` compiles one per capture), the
+// way an EVAL cache does.
+const Regex* Interpreter::dynRegexFor(const Value& v, const std::string& flags) {
+    auto undefined = [](const Value& x) { return x.t == VT::Nil || x.t == VT::Any || x.t == VT::Type; };
+    if (undefined(v))
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "<{ … }> in a regex produced an undefined value, not a pattern"};
+    std::string src;
+    bool p5 = false;
+    if (v.t == VT::Array && v.arr()) {
+        std::vector<std::string> els;
+        for (auto& e : *v.arr()) {
+            if (undefined(e)) continue;
+            bool ep5 = false;
+            std::string es = rxSourceOf(e, ep5);
+            if (es.empty()) continue;
+            els.push_back(ep5 ? Regex::spliceOf(es, true) : "[ " + es + " ]");
+        }
+        std::stable_sort(els.begin(), els.end(),
+            [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+        for (size_t k = 0; k < els.size(); k++) { if (k) src += " | "; src += els[k]; }
+    }
+    else src = rxSourceOf(v, p5);
+    if (src.find_first_not_of(" \t\r\n") == std::string::npos)
+        throw RakuError{Value::typeObj("X::Syntax::Regex::NullRegex"), "Null regex not allowed"};
+    std::string f = flags;
+    if (p5) f += '5';
+    std::string key = f + '\x01' + src;
+    std::lock_guard<std::mutex> lock(dynRxMutex_);
+    auto it = dynRxCache_.find(key);
+    if (it == dynRxCache_.end()) it = dynRxCache_.emplace(key, std::make_shared<Regex>(src, f)).first;
+    const Regex* re = it->second.get();
+    return re->ok() && re->root() ? re : nullptr;
+}
+
 // :P5 interpolation — Perl semantics: `$var` splices its value as raw regex
 // SOURCE (`my $r = '\d+'; m:P5/$r/` compiles the \d+). No quotemeta, no code
 // braces, no single-quote spans; `\$`, `$` anchors and `$1` digits pass through.
@@ -25671,10 +25716,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // whatever `$/` the outer scope happened to hold made every such assertion
     // read an unrelated (usually empty) match — `m:ov/ \d ** {2} <?{ $n %% $/ }>/`
     // found nothing at all. Same cursor the `{…}` block hook builds.
-    auto assertCaps = [this, &build](const std::string& code, long from, long to,
-                                     const GrammarHooks::NamedMap& named,
-                                     const std::vector<std::pair<long, long>>& caps,
-                                     const GrammarHooks::ParamMap&) -> bool {
+    // Run `code` with that cursor as `$/` — `$0` and `$<name>` bound beside it —
+    // and answer its value, every slot restored after. Shared by the assertion
+    // and by the `<{ … }>` pattern hook, which differ only in what they do with
+    // the answer. A quiet error answers Nil.
+    auto evalInCursor = [this, &build](const std::string& code, long from, long to,
+                                       const GrammarHooks::NamedMap& named,
+                                       const std::vector<std::pair<long, long>>& caps) -> Value {
         RxMatch cur; cur.matched = true; cur.from = from; cur.to = to;
         cur.caps = caps; cur.named = named;
         Value cursor = build(cur);
@@ -25690,17 +25738,23 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             bindCap("$" + std::to_string(k), (*cursor.arr())[k]);
         if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
         setMatchVar(cursor);
-        bool ok = false, featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
-        try { ok = evalString(code).truthy(); }
+        Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
+        try { out = evalString(code); }
         catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
         catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) rakuErr = std::current_exception(); } // `<?{ die }>` leaves the parse (Rakudo) — re-raised after the restores
-        catch (...) { ok = false; }
+        catch (...) {}
         for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
             tctx_.cur->define(it->first, it->second);
         if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
         if (featThrow) throw fe;
         if (rakuErr) std::rethrow_exception(rakuErr);
-        return ok;
+        return out;
+    };
+    auto assertCaps = [evalInCursor](const std::string& code, long from, long to,
+                                     const GrammarHooks::NamedMap& named,
+                                     const std::vector<std::pair<long, long>>& caps,
+                                     const GrammarHooks::ParamMap&) -> bool {
+        return evalInCursor(code, from, to, named, caps).truthy();
     };
     // The hook gates scan the pattern TEXT — but a `my regex` body referenced as
     // a subrule carries its own `{…}`/`**{…}`, so the visible bodies scan too
@@ -25785,6 +25839,19 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                                        const RxCursorCaps& cc,
                                        const GrammarHooks::ParamMap&) {
             runBlock(code, from, to, named, caps, &cc);
+        };
+        wantHooks = true;
+    }
+    // `<{ … }>` — the block's VALUE is the pattern, decided at match time with
+    // the cursor a code assertion sees. This assertion used to be a no-op that
+    // matched the empty string whatever the block said (issue #81).
+    if (hookScan.find("<{") != std::string::npos) {
+        rmHooks.dynRule = [this, evalInCursor](const std::string& code, long from, long to,
+                                               const GrammarHooks::NamedMap& named,
+                                               const std::vector<std::pair<long, long>>& caps,
+                                               const GrammarHooks::ParamMap&,
+                                               const std::string& flags) -> const Regex* {
+            return dynRegexFor(evalInCursor(code, from, to, named, caps), flags);
         };
         wantHooks = true;
     }
@@ -26095,10 +26162,20 @@ GrammarHooks Interpreter::codeAssertHooks() {
         catch (FeatureNotBuilt&) { throw; }   // a SLIM stub fired: loud, never a silent pass
         catch (...) { return false; }
     };
+    // …and `<{ … }>` evaluates the same way: no cursor, since these callers
+    // never had one for the assertion either. A `die` inside leaves the match.
+    h.dynRule = [this](const std::string& code, long, long, const GrammarHooks::NamedMap&,
+                       const std::vector<std::pair<long, long>>&, const GrammarHooks::ParamMap&,
+                       const std::string& flags) -> const Regex* {
+        return dynRegexFor(evalString(code), flags);
+    };
     return h;
 }
+// …and a `<{ … }>` pattern block arms the same hook set (codeAssertHooks
+// carries dynRule beside assertPass), so every site that gates on this sees it.
 bool Interpreter::patHasCodeAssert(const std::string& pat) {
-    return pat.find("?{") != std::string::npos || pat.find("!{") != std::string::npos;
+    return pat.find("?{") != std::string::npos || pat.find("!{") != std::string::npos ||
+           pat.find("<{") != std::string::npos;
 }
 
 // One capture's Match, WITH its own capture tree under it. A capture that
@@ -26306,7 +26383,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // where both should find none. The same regex answered one way to `~~` and
     // another to every repeated-match consumer built on this function.
     bool needAssertHook = !literal && patHasCodeAssert(realPat);
-    if (needAssertHook) ssHooks.assertPass = codeAssertHooks().assertPass;
+    if (needAssertHook) {
+        GrammarHooks ch = codeAssertHooks();
+        ssHooks.assertPass = ch.assertPass;
+        ssHooks.dynRule = ch.dynRule;      // `<{ … }>` decides its pattern here too
+    }
     const bool wantSsHooks = needRangeHook || needAssertHook;
     std::vector<RxMatch> matches;
     if (literal) {
@@ -26936,6 +27017,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto it = pm.find(expr);
         if (it != pm.end()) return it->second;
         return runCode(expr, 0, 0, nm, pm).toStr();
+    };
+    // `<{ … }>` — the block's value is the pattern, read with the cursor's
+    // captures beside it (a token may well write `(\w) <{ $0 }>`).
+    gm.hooks.dynRule = [this, runCode](const std::string& code, long from, long to, const NamedMap& nm,
+                                       const std::vector<std::pair<long, long>>& caps, const ParamMap& pm,
+                                       const std::string& flags) -> const Regex* {
+        return dynRegexFor(runCode(code, from, to, nm, pm, &caps), flags);
     };
     gm.hooks.range = [runCode](const std::string& code, const NamedMap& nm, const ParamMap& pm) -> std::pair<long, long> {
         // `** { N..* }` / `..Inf` / `..∞` is an unbounded quantifier — detect it from the

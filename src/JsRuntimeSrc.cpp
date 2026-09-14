@@ -4921,13 +4921,13 @@ function subrule(n, st, pos, k) {
         undo(); if (undo2) undo2();
         return false;
     };
-    if (name[0] === '$' || name[0] === '@') {   // <$var> / <@var>: the value is the pattern — a Regex, or a string parsed as one
-        const v = n.fn ? n.fn() : Nil;
+    if (n.dyn || name[0] === '$' || name[0] === '@') {   // <$var> / <@var> / <{ code }>: the value is the pattern — a Regex, or a string parsed as one
+        const v = n.dyn ? n.fn(cursorMatch(st, pos)) : n.fn ? n.fn() : Nil;   // a `<{ … }>` block runs NOW and sees the match so far as `$/`
         const rec = n.alias ? record : (sub, q) => k(q);
-        const one = (x, cont) => { const rx = x instanceof RRegex ? x : rxFromString(str(x), !!(n.icase || st.rx.tree.icase)); return callRule({ rx, kind: rx.tree.ratchet ? 'token' : 'regex' }, capKey, { k: 'Subrule', name: capKey }, st, pos, cont); };
-        if (n.lit) {   // a bare @array: its strings, literally, longest first
 )RKJS",
-R"RKJS(            const xs = (v instanceof RList || v instanceof RSeq) ? arr(v) : [v];
+R"RKJS(        const one = (x, cont) => { const rx = x instanceof RRegex ? x : rxFromString(str(x), !!(n.icase || st.rx.tree.icase)); return callRule({ rx, kind: rx.tree.ratchet ? 'token' : 'regex' }, capKey, { k: 'Subrule', name: capKey }, st, pos, cont); };
+        if (n.lit) {   // a bare @array: its strings, literally, longest first
+            const xs = (v instanceof RList || v instanceof RSeq) ? arr(v) : [v];
             const alts = xs.map(str).sort((a, b) => b.length - a.length);
             for (const a of alts) if (s.startsWith(a, pos) && rec(new RMatch(s, pos, pos + a.length), pos + a.length)) return true;
             return false;
@@ -5162,14 +5162,14 @@ function parseRxString(src, ic) {
         if (!node) return a;
         if (src[i] === '?') { i++; node.frugal = 1; } else if (src[i] === ':') { i++; node.possessive = 1; } else if (src[i] === '!') i++;
         ws();
-        if (src[i] === '%') { i++; if (src[i] === '%') { i++; node.sepTrail = 1; } ws(); node.sep = atom(); }
+)RKJS",
+R"RKJS(        if (src[i] === '%') { i++; if (src[i] === '%') { i++; node.sepTrail = 1; } ws(); node.sep = atom(); }
         return node;
     };
     const seq = () => {
         const kids = [];
         for (;;) { ws(); if (i >= src.length || src[i] === '|' || src[i] === ')' || src[i] === ']' || src[i] === '&') break; kids.push(quant(atom())); }
-)RKJS",
-R"RKJS(        return kids.length === 1 ? kids[0] : { k: 'Seq', kids };
+        return kids.length === 1 ? kids[0] : { k: 'Seq', kids };
     };
     const alt = () => {
         const kids = [seq()];

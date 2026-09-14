@@ -299,6 +299,9 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         case K::VarMatch: // a back-reference IS the spec's prefix end
             return accept(from);
         case K::Subrule: { // phase 3: inline the callee's declarative prefix
+            // `<{ code }>` — the pattern is decided at match time, so like a
+            // back-reference it IS the prefix end
+            if (!n->dynCode.empty()) return accept(from);
             // <sym> is the candidate's literal token (proto dispatch)
             if (n->ruleName == "sym" && !curSym_.empty()) {
                 int cur = from;

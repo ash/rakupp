@@ -454,8 +454,8 @@ function subrule(n, st, pos, k) {
         undo(); if (undo2) undo2();
         return false;
     };
-    if (name[0] === '$' || name[0] === '@') {   // <$var> / <@var>: the value is the pattern — a Regex, or a string parsed as one
-        const v = n.fn ? n.fn() : Nil;
+    if (n.dyn || name[0] === '$' || name[0] === '@') {   // <$var> / <@var> / <{ code }>: the value is the pattern — a Regex, or a string parsed as one
+        const v = n.dyn ? n.fn(cursorMatch(st, pos)) : n.fn ? n.fn() : Nil;   // a `<{ … }>` block runs NOW and sees the match so far as `$/`
         const rec = n.alias ? record : (sub, q) => k(q);
         const one = (x, cont) => { const rx = x instanceof RRegex ? x : rxFromString(str(x), !!(n.icase || st.rx.tree.icase)); return callRule({ rx, kind: rx.tree.ratchet ? 'token' : 'regex' }, capKey, { k: 'Subrule', name: capKey }, st, pos, cont); };
         if (n.lit) {   // a bare @array: its strings, literally, longest first

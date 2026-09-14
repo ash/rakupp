@@ -30,6 +30,7 @@ namespace rakupp {
 struct RxMatch;
 struct GrammarHooks;
 struct ParseNode;
+class Regex;
 struct RxCursorCall;
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj,
                                        long pos, RxMatch& out)>;
@@ -1201,6 +1202,11 @@ public:
     // own Regex needs this, or one pattern answers differently in each of them.
     struct GrammarHooks codeAssertHooks();
     static bool patHasCodeAssert(const std::string& pat);
+    // The pattern a `<{ … }>` block's value stands for, compiled once per
+    // distinct source and owned here — the matcher holds the pointer for the
+    // rest of the match, so the entries are never dropped. Throws for a value
+    // that is no pattern (undefined, or the null regex).
+    const Regex* dynRegexFor(const Value& v, const std::string& flags);
     // skipOwn: `self.Mu::meth` — bypass the invocant's own methods for THIS
     // dispatch only, so a built-in qualifier reaches the built-in behaviour.
     Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
@@ -2111,6 +2117,11 @@ public:
     // export (a tag the `use` did not ask for) is simply the program's own.
     std::set<std::string> mainlineSubNames_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
+    // `<{ … }>` patterns by (flags, source) — see dynRegexFor. shared_ptr, not
+    // unique_ptr: Regex is incomplete in this header and the map dies with the
+    // interpreter. Guarded: matches run on worker threads too.
+    std::unordered_map<std::string, std::shared_ptr<Regex>> dynRxCache_;
+    std::mutex dynRxMutex_;
     std::vector<std::string> argv_;
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)
     static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
