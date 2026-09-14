@@ -813,6 +813,12 @@ struct ExecContext {
     // depth fills lvalueOut with lvalue(operand) — its target lives in the
     // object's shared containers, so the pointer survives the frame.
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
+    // A `:=` whose right side is a BLOCK (`my $v := do with … { … } else { … }`)
+    // binds whatever container the block's TAIL expression names. The tail nodes
+    // are worked out from the source before the RHS runs and listed here, so a
+    // `.value` read hands back the Pair's cell only when it IS the block's
+    // value — never when it merely happens to run while the RHS is evaluating.
+    const std::vector<const void*>* bindRawTails = nullptr;
     // Slots that must receive whatever is written through the lvalue a
     // `return-rw` just handed out: the rw-linked parameter copies the write
     // travelled PAST on its way to the caller's container. Filled by
@@ -1305,6 +1311,7 @@ public:
     // applies unchanged. take-rw hands these out; := uses the Env one.
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
     Value makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx);
+    Value makePairCellProxy(std::shared_ptr<Value> cell);   // a Pair's value container, as a Proxy
     ValueList* slotProxyTarget(const Value& proxy, size_t& idxOut); // compact array slot, or null
     Value slotProxyRead(const Value& proxy);
     Value slotProxyWrite(const Value& proxy, const Value& nv);
@@ -1327,6 +1334,7 @@ public:
     // (PDF's `with self<ID> { } else { $_ = … }`). Only the LAZY write-back asks
     // for it — taking that lvalue eagerly would run the object's own store.
     Value* topicAliasSlot(Expr* topic, bool skip, bool allowObject = false);  // the slot a given/with topic aliases
+    bool topicWriteThroughObject(Expr* topic, const Value& v); // …or through its object's own ASSIGN-KEY/ASSIGN-POS
     // peel a `.grep(PRED)` off a loop source, so the alias sources above still
     // recognise `for %h.values.grep(…) { $_ = … }` (Rakudo's grep is `is raw`)
     Expr* peelGrepFilter(Expr* listExpr, Expr*& pred);

@@ -9225,6 +9225,17 @@ StmtPtr Parser::parseStatementImpl() {
                     // `use Mod :tag` — a colonpair selects an export tag; capture the
                     // NAME as an import argument (`use Prompt :prompt`). `:!tag` and a
                     // valued `:tag<v>` are consumed but not treated as a plain request.
+                    // …and the SYMBOL spelling `:&name` / `:$name`, where the sigil
+                    // is part of the request rather than of the tag. PDF::COS::Dict
+                    // imports its AST helpers as `use PDF::COS::Util :&from-ast,
+                    // :&ast-coerce` — neither looked like a tag here, so both fell
+                    // to the expression branch and never arrived.
+                    if (isOp(":") && peek().kind == Tok::Var && peek().text.size() > 1 &&
+                        std::strchr("&$@%", peek().text[0])) {
+                        advance();                       // :
+                        u->importArgs.push_back(advance().text);   // &name
+                        continue;
+                    }
                     if (isOp(":") && peek().kind == Tok::Ident) {
                         advance();                       // :
                         std::string tag = advance().text;

@@ -6415,11 +6415,27 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (doImport) {
             auto sit = moduleSelectiveExports_.find(name);
             if (sit != moduleSelectiveExports_.end()) {
-                std::set<std::string> reqTags(importArgs.begin(), importArgs.end());
+                // `:&name` names the SYMBOL, not a tag — strip the sigil here as
+                // the first-load path does, and take a direct name request as a
+                // reason to import. Without it a module already loaded by
+                // somebody else's narrower `use` could never be widened:
+                // PDF::COS::Dict gets in first with `:&from-ast, :&ast-coerce`,
+                // so PDF::IO::Serializer's `use PDF::COS::Util :&to-ast` imported
+                // nothing at all and every object it serialized came out `null`.
+                std::set<std::string> reqTags, reqNames;
+                for (auto& a : importArgs) {
+                    if (!a.empty() && std::strchr("&$@%", a[0])) {
+                        reqTags.insert(a.substr(1));
+                        reqNames.insert(a.substr(1));
+                    }
+                    else reqTags.insert(a);
+                }
                 bool reqAll = reqTags.count("ALL") != 0; // `:ALL` imports every export
                 const bool reqDefault = reqTags.empty() || reqTags.count("DEFAULT") != 0; // a selective `use Mod :tag` does not imply DEFAULT
                 for (auto& se : sit->second) {
-                    bool want = reqAll;
+                    std::string bare = (!se.key.empty() && std::strchr("&$@%", se.key[0]))
+                                     ? se.key.substr(1) : se.key;
+                    bool want = reqAll || reqNames.count(bare) != 0;
                     for (const std::string& tag : se.tags)
                         if ((tag == "DEFAULT" && reqDefault) || tag == "MANDATORY" || reqTags.count(tag)) { want = true; break; }
                     if (want && !mainlineSubNames_.count(se.key)) tctx_.cur->define(se.key, se.value);
@@ -6541,7 +6557,21 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // set; a tag named DEFAULT or MANDATORY always publishes.
         std::map<std::string, std::vector<std::string>> exportTagsByName;
         collectExportTagsByName(prog->stmts, exportTagsByName);
-        std::set<std::string> requestedTags(importArgs.begin(), importArgs.end());
+        std::set<std::string> requestedTags;
+        // `use Mod :&name` names the SYMBOL, not a tag. A module publishes such a
+        // routine under the bare tag (`is export(:ast-coerce)`), so the sigil is
+        // stripped here — and the bare name is accepted as a DIRECT request too,
+        // so a plainly-exported sub still arrives. PDF::COS::Dict imports its AST
+        // helpers as `use PDF::COS::Util :&from-ast, :&ast-coerce`, and neither
+        // name reached it.
+        std::set<std::string> requestedNames;
+        for (auto& a : importArgs) {
+            if (!a.empty() && std::strchr("&$@%", a[0])) {
+                requestedTags.insert(a.substr(1));
+                requestedNames.insert(a.substr(1));
+            }
+            else requestedTags.insert(a);
+        }
         // `use Mod :ALL` is the catch-all: it imports EVERY exported sub whatever
         // its tag (Text::Utils, Abbreviations test with `:ALL`).
         bool wantAll = requestedTags.count("ALL") != 0;
@@ -6552,6 +6582,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         const bool selectiveOnly = !requestedTags.empty() && !wantAll && !requestedTags.count("DEFAULT");
         auto tagWithheld = [&](const std::string& bare) -> bool {
             if (wantAll) return false;
+            if (requestedNames.count(bare)) return false;   // `:&name` asked for it by name
             auto it = exportTagsByName.find(bare);
             if (it == exportTagsByName.end()) return selectiveOnly && exported.count(bare) != 0; // plain `is export` = :DEFAULT; not exported = untouched
             for (const std::string& tag : it->second) {
@@ -11387,9 +11418,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // there — the value is undefined, and asking for its lvalue would
                 // autovivify the key whether or not the block assigns — so take it
                 // now, only because something did.
-                else if (skip && g->defGuard && topicChanged(env->vars["$_"], topic))
-                    if (Value* s = topicAliasSlot(g->topic.get(), /*skip=*/false, /*allowObject=*/true))
-                        *s = env->vars["$_"];
+                else if (skip && g->defGuard && topicChanged(env->vars["$_"], topic)) {
+                    if (!topicWriteThroughObject(g->topic.get(), env->vars["$_"]))
+                        if (Value* s = topicAliasSlot(g->topic.get(), /*skip=*/false, /*allowObject=*/true))
+                            *s = env->vars["$_"];
+                }
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return r;
             }
@@ -11439,6 +11472,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                     } ltw{g->defGuard ? scope.get() : nullptr, topic,
                           [this, g](const Value& v) {
+                              if (topicWriteThroughObject(g->topic.get(), v)) return;
                               if (Value* sl = topicAliasSlot(g->topic.get(), /*skip=*/false,
                                                              /*allowObject=*/true)) *sl = v;
                           }};
@@ -13156,14 +13190,40 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // count matches the sub-signature's positional arity (so `foo([1,2])` picks
         // the two-element candidate over the one-element one).
         if (p->subSig) {
-            if (pos[i].t != VT::Array || !pos[i].arr()) return -1;
-            size_t reqd = 0, tot = 0; bool sslurpy = false;
+            size_t reqd = 0, tot = 0; bool sslurpy = false, innerNamed = false;
             for (auto& sp : *p->subSig) {
-                if (sp.named) continue;
+                if (sp.named) { innerNamed = true; continue; }
                 if (sp.slurpy) { sslurpy = true; continue; }
                 tot++;
                 if (!sp.optional && !sp.defaultVal) reqd++;
             }
+            // A sub-signature made of NAMED params unpacks by KEY, not by
+            // position: `% (:$header!, :$body!)` wants an Associative and
+            // `$ (:$key!)` an object to ask. bindParams has always bound both
+            // (the hash branch of destructure()); only the SCORE did not know
+            // them, so every such candidate scored -1 and a multi that used one
+            // to tell its arms apart reported "no matching candidate" —
+            // PDF::IO::Writer.stream-cos, whose one-argument arm calls the
+            // two-argument one.
+            if (innerNamed && tot == 0) {
+                const Value& av = pos[i];
+                bool assoc = typeMatchesArg(av, "Associative");
+                if (p->sigil == '%' ? !assoc : (!assoc && av.t != VT::Object)) return -1;
+                // a required inner key that the hash does not carry cannot bind
+                if (const ValueMap* h = av.hash())
+                    for (auto& sp : *p->subSig) {
+                        if (!sp.named || sp.slurpy || sp.optional || sp.defaultVal) continue;
+                        std::string key = sp.namedKey.empty()
+                            ? (sp.name.size() > 1 ? sp.name.substr(1) : sp.name) : sp.namedKey;
+                        if (h->count(key)) continue;
+                        bool alias = false;
+                        for (auto& ak : sp.aliasKeys) if (h->count(ak)) { alias = true; break; }
+                        if (!alias) return -1;
+                    }
+                score += 6; // as specific as an arity-matched positional destructure
+                continue;
+            }
+            if (pos[i].t != VT::Array || !pos[i].arr()) return -1;
             size_t got = pos[i].arr()->size();
             if (got < reqd) return -1;
             if (!sslurpy && got > tot) return -1;
@@ -13337,7 +13397,14 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         if (!p.namedKey.empty()) keys.push_back(p.namedKey);
         for (auto& ak : p.aliasKeys) keys.push_back(ak);
         if (p.namedKey.empty() || p.aliasBoth)
-            keys.push_back(p.name.size() > 1 ? p.name.substr(1) : p.name); // strip the sigil
+            // strip the sigil AND any twigil: an ATTRIBUTIVE named (`:$!object`)
+            // answers `object => …`, which is what the binder already knew — the
+            // dispatch did not, so the candidate could never be chosen.
+            // PDF::IO::IndObj declares `multi submethod TWEAK(PDF::COS :$!object!, …)`
+            // and every `.new(:$object, …)` reported no matching candidate.
+            keys.push_back(p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
+                           ? p.name.substr(2)
+                           : (p.name.size() > 1 ? p.name.substr(1) : p.name));
         bool supplied = false; Value sval;
         for (auto& a : args) {
             if (!isNamedArg(a)) continue;
@@ -18259,8 +18326,19 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     captureBodyEnds(c);   // …and a method's, which phaserScan does not cover
     if (hasPhasers && c.body) runEnterPhasers(*c.body);
     bool phasersDone = false;
+    // …and `temp`/`let` in a method body must be undone on the way out, which is
+    // the other half of what runLeavePhasers does. It ran only for a body with
+    // PHASERS, so a method whose body had neither — `method !set-trailer { temp
+    // $.auto-deref = False; … }`, how PDF reads a document's trailer — left the
+    // attribute switched for the rest of the program, and every indirect
+    // reference in the file stayed unresolved. (The sub path always drained.)
+    const size_t tempMark0 = tcx.cur && tcx.cur->ex ? tcx.cur->ex->tempRestores.size() : 0;
     auto runLeaves = [&](bool ok) {
-        if (hasPhasers && c.body && !phasersDone) { phasersDone = true; runLeavePhasers(*c.body, ok); }
+        if (phasersDone || !c.body) return;
+        const bool temps = tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0;
+        if (!hasPhasers && !temps) return;
+        phasersDone = true;
+        runLeavePhasers(*c.body, ok, tempMark0);
     };
     try {
         if (c.body) {
@@ -19670,6 +19748,33 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
     try { return lvalue(topic); } catch (...) { return nullptr; }
 }
 
+// A `with`/`given` topic that is an ELEMENT of an object writes back the way
+// `$obj<k> = v` does — through the object's own ASSIGN-KEY / ASSIGN-POS. The raw
+// slot topicAliasSlot() hands back reaches the object's underlying store
+// directly, which for a class that keeps its real container behind those methods
+// lands beside the one the next read consults: PDF::COS::Tie::Hash ties every
+// entry in ASSIGN-KEY, so `with self<ID> { } else { $_ = [$.id xx 2] }` — how a
+// PDF document gets its ID — assigned into nothing at all.
+bool Interpreter::topicWriteThroughObject(Expr* topic, const Value& v) {
+    if (!topic || topic->kind != NK::Index) return false;
+    auto* ix = static_cast<Index*>(topic);
+    if (!ix->index || ix->multiDim || !ix->adverb.empty() || !ix->base) return false;
+    Value base;
+    try { base = eval(ix->base.get()); } catch (...) { return false; }
+    if (base.t != VT::Object || !base.obj() || !base.obj()->cls) return false;
+    const char* meth = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
+    bool has = base.obj()->cls->findMethod(meth) != nullptr;
+    for (ClassInfo* c = base.obj()->cls.get(); c && !has; c = c->parent.get())
+        for (auto& at : c->attrs)          // …or delegated: `has %!s handles <ASSIGN-KEY>`
+            for (auto& h : at.handles)
+                if (h == meth || h == "*") { has = true; break; }
+    if (!has) return false;
+    Value k;
+    try { k = eval(ix->index.get()); } catch (...) { return false; }
+    try { methodCall(base, meth, ValueList{k, v}); } catch (...) { return false; }
+    return true;
+}
+
 bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
     auto* le = static_cast<ListExpr*>(listExpr);
@@ -19867,6 +19972,78 @@ static const char* kSlotIdx = "\x01idx";
 // otherwise answered the NEXT element's value.
 static const char* kSlotSize = "\x01siz";
 static const char* kSlotLast = "\x01lst";
+
+// The expressions a bind's right-hand side can END on — what `my $v := do with
+// … { … } else { … }` actually binds. A `do`/block yields its last statement's
+// value and a conditional either branch's, so the walk follows exactly those
+// and stops at the first thing that is not a block.
+static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
+    if (!e || out.size() > 8) return;
+    switch (e->kind) {
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            if (u->op == "do") collectBindTails(u->operand.get(), out);
+            return;
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            collectBindTails(t->then.get(), out);
+            collectBindTails(t->els.get(), out);
+            return;
+        }
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            if (be->isSub || be->body.empty()) return;
+            const Stmt* last = be->body.back().get();
+            if (last->kind == NK::ExprStmt)
+                collectBindTails(static_cast<const ExprStmt*>(last)->e.get(), out);
+            else if (last->kind == NK::GivenStmt) {
+                auto* g = static_cast<const GivenStmt*>(last);
+                auto tailOf = [&](const Block* b) {
+                    if (!b || b->stmts.empty()) return;
+                    const Stmt* ls = b->stmts.back().get();
+                    if (ls->kind == NK::ExprStmt)
+                        collectBindTails(static_cast<const ExprStmt*>(ls)->e.get(), out);
+                };
+                tailOf(g->body.get());
+                tailOf(g->elseBody.get());
+            }
+            else if (last->kind == NK::IfStmt) {
+                auto* f = static_cast<const IfStmt*>(last);
+                auto tailOf = [&](const Block* b) {
+                    if (!b || b->stmts.empty()) return;
+                    const Stmt* ls = b->stmts.back().get();
+                    if (ls->kind == NK::ExprStmt)
+                        collectBindTails(static_cast<const ExprStmt*>(ls)->e.get(), out);
+                };
+                for (auto& br : f->branches) tailOf(br.second.get());
+                tailOf(f->elseBlock.get());
+            }
+            return;
+        }
+        case NK::MethodCall: out.push_back(e); return;
+        default: return;
+    }
+}
+
+// The container a Pair's value lives in, as a Proxy. `pairVal` is shared by
+// every copy of the pair, so a write through this reaches the pair wherever it
+// is held — which is what `$p.value = v` and `my $v := $p.value` both mean.
+Value Interpreter::makePairCellProxy(std::shared_ptr<Value> cell) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    fetch.code()->builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
+    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    static const std::vector<Param> kTwoPair(2);
+    store.code()->params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
+    store.code()->builtin = [cell](Interpreter&, ValueList& sa) -> Value {
+        if (sa.size() >= 2) *cell = sa[1];
+        return *cell;
+    };
+    (*proxy.hash())["FETCH"] = fetch;
+    (*proxy.hash())["STORE"] = store;
+    return proxy;
+}
 
 Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
@@ -21222,6 +21399,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     try { held = eval(ix->base.get()); bp = &held; } catch (RakuError&) { bp = nullptr; }
                 }
                 else try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                // A Proxy is a CONTAINER: subscripting it means subscripting what
+                // it HOLDS. PDF's reader reaches its trailer through an `is rw`
+                // method that hands one back (`my Hash $trailer = self.trailer`),
+                // and every `$trailer{k} = …` after that wrote into the proxy
+                // rather than the document — a reopened file came back empty.
+                Value deproxiedBase;
+                if (bp && bp->t == VT::Hash && bp->hashKind == "Proxy" && bp->hash() &&
+                    bp->hash()->count("FETCH")) {
+                    deproxiedBase = deproxy(*bp);
+                    if (!(deproxiedBase.t == VT::Hash && deproxiedBase.hashKind == "Proxy"))
+                        bp = &deproxiedBase;
+                }
                 // A LIVE CArray/Pointer is only a handle carrying an address, so
                 // the write lands in native memory whether the base is an lvalue
                 // or the temporary an accessor just returned. That is what lets a
@@ -21269,7 +21458,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value k = eval(ix->index.get());
                         Value v = evalValueOf(a->value.get());
                         methodCall(*bp, meth, ValueList{k, v});
-                        return v;
+                        if (sink) return Value::any();
+                        // The value of an assignment is what the CONTAINER now
+                        // holds, not the right-hand side: a class whose
+                        // ASSIGN-KEY transforms what it stores has to hand that
+                        // back. PDF ties every entry to its declared type, so
+                        // `my $pages = $root<Pages> = { … }` kept the raw hash
+                        // while the document held a PDF::COS::Dict built from
+                        // it, and every later `$pages<Kids>.push` went into an
+                        // object the file never saw.
+                        try {
+                            return methodCall(*bp, ix->isHash ? "AT-KEY" : "AT-POS",
+                                              ValueList{k});
+                        } catch (RakuError&) { return v; }
                     }
                 }
             }
@@ -21640,6 +21841,28 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `my $v := $p.value` binds the Pair's VALUE CONTAINER, not a copy of
+        // what it holds — the same alias `$p.value = …` already writes through.
+        // PDF's serializer builds every dictionary this way: it makes an empty
+        // `:$dict` node, binds its value, registers the node against cyclic
+        // references, and only then fills the binding in. Without the alias the
+        // node stayed empty and every object in the file was written as `null`.
+        if (bindsSlot && slotTarget && a->value->kind == NK::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(a->value.get());
+            if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper &&
+                !mc->methodExpr) {
+                Value* base = nullptr;
+                try { base = lvalue(mc->inv.get(), /*asInvocant=*/true); }
+                catch (RakuError&) { base = nullptr; }
+                if (base && base->t == VT::Pair && base->pairValS()) {
+                    std::shared_ptr<Value> cell = base->pairValS();  // shared by every copy of the pair
+                    Value proxy = makePairCellProxy(cell);
+                    Value* blv = lvalue(a->target.get());
+                    *blv = proxy;
+                    return sink ? Value::any() : *cell;
+                }
+            }
+        }
         // `$node := parent`, where `parent` is a sigilless term ALREADY bound to
         // a slot: a bind copies the ALIAS, so it reads the raw slot instead of
         // the value the NameTerm eval fetches for rvalue use. This is how
@@ -21654,6 +21877,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return sink ? Value::any() : deproxy(slot);
                 }
         }
+        // …and when the right side is a BLOCK, the container it names is whatever
+        // its last expression names: `my $node-value := do with $stream { … }
+        // else { $node.value }`. Mark the frame so a `.value` read at exactly
+        // this depth hands back the Pair's cell (PDF's serializer fills every
+        // dictionary node through such a binding, long after it was registered).
+        std::vector<const void*> bindTails;
+        if (bindsSlot && slotTarget) collectBindTails(a->value.get(), bindTails);
+        struct BindRawG {
+            ExecContext* t; const std::vector<const void*>* saved;
+            ~BindRawG() { t->bindRawTails = saved; }
+        } brg{&tctx_, tctx_.bindRawTails};
+        tctx_.bindRawTails = bindTails.empty() ? nullptr : &bindTails;
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -29567,6 +29802,46 @@ Value Interpreter::evalUnary(Unary* u) {
             };
             return code;
         }
+        // `$obj<k>++` on a class that implements the container protocol reads
+        // through its AT-KEY and writes back through its ASSIGN-KEY, exactly as
+        // `$obj<k> = v` does. Resolving an lvalue instead handed back whatever
+        // the accessor returned, so the step landed in a temporary: PDF counts
+        // its pages with `$pages<Count>++` and every document it wrote said 0.
+        if (u->operand->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(u->operand.get());
+            if (ix->index && !ix->multiDim && ix->adverb.empty() && ix->base) {
+                Value* bp = nullptr;
+                try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                Value deproxiedBase;              // a Proxy stands for what it holds
+                if (bp && bp->t == VT::Hash && bp->hashKind == "Proxy" && bp->hash() &&
+                    bp->hash()->count("FETCH")) {
+                    deproxiedBase = deproxy(*bp);
+                    if (!(deproxiedBase.t == VT::Hash && deproxiedBase.hashKind == "Proxy"))
+                        bp = &deproxiedBase;
+                }
+                if (bp && bp->t == VT::Object && bp->obj() && bp->obj()->cls) {
+                    const char* sm = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
+                    const char* gm = ix->isHash ? "AT-KEY" : "AT-POS";
+                    bool has = bp->obj()->cls->findMethod(sm) != nullptr;
+                    for (ClassInfo* c = bp->obj()->cls.get(); c && !has; c = c->parent.get())
+                        for (auto& at : c->attrs)       // …or delegated through `handles`
+                            for (auto& h : at.handles)
+                                if (h == sm || h == "*") { has = true; break; }
+                    if (has) {
+                        Value bv = *bp;                 // methodCall may invalidate bp
+                        Value k = eval(ix->index.get());
+                        Value old = methodCall(bv, gm, ValueList{k});
+                        Value nv = old.t == VT::Bool ? Value::boolean(u->op == "++")
+                                 : old.t == VT::Str  ? (u->op == "++" ? Value::str(strSucc(old.s)) : old)
+                                 : applyArith(u->op == "++" ? "+" : "-",
+                                              old.t == VT::Any ? Value::integer(0) : old,
+                                              Value::integer(1));
+                        methodCall(bv, sm, ValueList{k, nv});
+                        return u->postfix ? (old.t == VT::Any ? Value::integer(0) : old) : nv;
+                    }
+                }
+            }
+        }
         Value* lv = lvalue(u->operand.get());
         // a NativeCall Pointer steps by ELEMENTS through `.succ`/`.pred`, as
         // Rakudo's `++` does for any object that answers them (NativeHelpers::
@@ -31695,8 +31970,6 @@ Value Interpreter::evalIndex(Index* idx) {
             return ty;
         }
     }
-    // a native-container subclass / `but`/`does` mixin instance indexes through its box
-    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) base = base.obj()->boxed;
     // An object that implements or delegates (`handles`) AT-KEY/AT-POS is
     // subscripted through it: `$obj<k>` == `$obj.AT-KEY("k")`, `$obj[i]` ==
     // `$obj.AT-POS(i)` (zef's config: `class :: { has %.hash handles <AT-KEY …> }`).
@@ -31763,6 +32036,12 @@ Value Interpreter::evalIndex(Index* idx) {
             return methodCall(base, method, ValueList{k});
         }
     }
+    // …and only THEN does a native-container subclass / `but`/`does` mixin
+    // instance index through its box. Unboxing first read the container straight
+    // and skipped the class's own AT-KEY: `class Tied is Hash { method AT-KEY …}`
+    // answered from the empty box, and PDF's dictionaries — which resolve
+    // indirect references in AT-KEY — read nothing at all through `self<Key>`.
+    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) base = base.obj()->boxed;
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
     //
@@ -33898,6 +34177,20 @@ Value Interpreter::eval(Expr* e) {
         case NK::Index: return evalIndex(static_cast<Index*>(e));
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
+            // This call is the TAIL of a binding's right-hand side, so `.value`
+            // names the Pair's CONTAINER rather than a copy of what it holds —
+            // `my $node-value := do with $stream { … } else { $node.value }` is
+            // how PDF's serializer registers an empty dictionary node and fills
+            // it in afterwards. Without the alias every object it wrote was `null`.
+            if (tctx_.bindRawTails && mc->method == "value" && mc->args.empty() &&
+                !mc->meta && !mc->hyper && !mc->methodExpr && mc->inv &&
+                std::find(tctx_.bindRawTails->begin(), tctx_.bindRawTails->end(),
+                          (const void*)e) != tctx_.bindRawTails->end()) {
+                Value* pb = nullptr;
+                try { pb = lvalue(mc->inv.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                if (pb && pb->t == VT::Pair && pb->pairValS())
+                    return makePairCellProxy(pb->pairValS());
+            }
             // `state $x .= new` INITIALIZES ONCE, exactly as `state $x = …` does —
             // every later evaluation is a no-op that answers the slot. Re-running it
             // called the method on the value the previous run left behind, so

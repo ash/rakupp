@@ -48,7 +48,23 @@
 #   * the ELSE branch of `with`/`without` aliases the topic
 #   * a user class built on Attribute/Parameter is backed by a real meta-object
 #
+# …and the third sitting, from PDF's writer through a reopened document:
+#   * a sub-signature made of NAMED params (`% (:$header!, :$body!)`) takes part
+#     in multi dispatch
+#   * `.new`/`.bless`/`.CREATE` on an INSTANCE construct another of its type
+#   * a second `use Mod :&name` widens what an earlier, narrower one imported
+#   * `my $v := $p.value` binds the Pair's CONTAINER — through a `do` block too
+#   * `class T is Str { has $.value }` is the string it was built with
+#   * `$obj<k> = v` is worth what the container HOLDS, not the right-hand side
+#   * `$obj<k>++` goes through ASSIGN-KEY
+#   * subscripting a Proxy an `is rw` method handed back reaches what it holds
+#   * `temp` in a METHOD body is undone on the way out
+#
 # Runs clean under Rakudo too.
+
+use lib $?FILE.IO.parent.add('../fixtures/pdf-util-lib').Str;
+use PdfProbe::First;                                   # asks for two of three…
+use PdfProbe::Util :&to-ast, :&ast-coerce, :&from-ast; # …and this one for all three
 
 my $fails = 0;
 sub ck($got, $want, $desc) {
@@ -274,6 +290,100 @@ my class MyAttr is Attribute does Described { }
 my $myattr = MyAttr.new: :name('@!ID'), :type(Str), :package<?>;
 ck $myattr.name, '@!ID', 'a class built on Attribute keeps its name';
 ck $myattr.type.^name, 'Str', '…and its type';
+
+# ---- a NAMED sub-signature takes part in multi dispatch ------------------
+# PDF::IO::Writer tells its two `stream-cos` arms apart with `% (:$header!,
+# :$body!)`, and the one-argument arm calls the two-argument one.
+class Writer {
+    has %.ast = :cos{ :header{:type<PDF>}, :body[1] };
+    multi method cos($fh, % (:$header!, :$body!)) { "two:{$header<type>}" }
+    multi method cos($fh) { 'one -> ' ~ $.cos($fh, %!ast<cos>) }
+}
+ck Writer.new.cos('fh'), 'one -> two:PDF', 'a named sub-signature scores as a candidate';
+
+# ---- `.new` on an INSTANCE constructs another of its type ----------------
+# `self.new!open-file: $spec` is how a PDF reopens a document from one of its
+# own instances; the invocant is a Hash-backed object, not the type.
+class Trailer is Hash { method kind { 'trailer' } }
+ck Trailer.new.new.kind,    'trailer', '.new on an instance builds its own type';
+ck Trailer.new.bless.kind,  'trailer', '…and so does .bless';
+ck Trailer.new.CREATE.kind, 'trailer', '…and .CREATE';
+
+# ---- a later `use` widens what an earlier one imported -------------------
+ck PdfProbe::First.go, 'from:1 coerce:2', 'the first importer gets its two names';
+ck to-ast(3),     'to:3',     'a later, wider `use` imports the name it asks for';
+ck ast-coerce(4), 'coerce:4', '…alongside the ones already imported';
+ck from-ast(5),   'from:5',   '…and the rest of them';
+
+# ---- `:=` binds a Pair's value CONTAINER --------------------------------
+# PDF's serializer registers an empty dictionary node against cyclic references
+# and fills it in afterwards, through a binding taken inside a `do` block.
+my Hash $dict1;
+my $node1 = :dict($dict1);
+my $nv1 := $node1.value;
+$nv1 = %( :A(1) );
+ck $node1.value<A>, 1, 'a bound Pair value writes through to the pair';
+
+my Hash $dict2;
+my $node2;
+my $nv2 := do with Nil { 0 } else { $node2 = :dict($dict2); $node2.value };
+$nv2 = %( :B(2) );
+ck $node2.value<B>, 2, '…and so does one bound through a do/else block';
+
+# ---- a Str subclass IS the string it was built with ----------------------
+class TextString is Str { has $.value; has Str $.type is rw = 'literal' }
+my $ts = TextString.new: :value<probe>;
+ck ($ts eq 'probe'), True, 'a `is Str` class with its own $.value IS that string';
+ck $ts.chars,   5,       '…and measures as it';
+ck $ts.value,   'probe', '…while keeping the attribute';
+
+# ---- the container protocol on a class that ties what it stores ----------
+class Tied is Hash {
+    method AT-KEY($k) is rw { callsame }
+    method ASSIGN-KEY($k, $v) { self.BIND-KEY($k, 'tied:' ~ $v) }
+}
+my $tied = Tied.new;
+my $stored = ($tied<K> = 'v');
+ck $stored,   'tied:v', 'an assignment is worth what the container holds';
+ck $tied<K>,  'tied:v', '…which is what a read answers too';
+
+class Counter is Hash {
+    method AT-KEY($k) is rw { callsame }
+    # binds a CONTAINER, as PDF's `$.lvalue($val)` hands one to its own BIND-KEY
+    method ASSIGN-KEY($k, $v) { my $cell = $v; self.BIND-KEY($k, $cell) }
+}
+my $count = Counter.new;
+$count<n> = 0;
+$count<n>++;
+ck $count<n>, 1, '`$obj<k>++` steps the value the container holds';
+
+# ---- the ELSE branch writes through an object's own ASSIGN-KEY ----------
+my $idobj = Counter.new;
+with $idobj<ID> { .[1] = 'upd' } else { $_ = [ 'x' xx 2 ] }
+ck $idobj<ID>, ['x', 'x'], 'a `with`/`else` topic write reaches ASSIGN-KEY';
+
+# ---- a Proxy an `is rw` method hands back is a CONTAINER ----------------
+class Holder {
+    has Counter $!store = Counter.new;
+    method store is rw {
+        sub FETCH($)     { $!store }
+        sub STORE($, \o) { $!store = o }
+        Proxy.new: :&FETCH, :&STORE;
+    }
+}
+my $holder = Holder.new;
+my Hash $reached = $holder.store;
+$reached<probe> = 'X';
+ck $holder.store<probe>, 'X', 'a subscript reaches through a method-returned Proxy';
+
+# ---- `temp` in a METHOD body is undone on the way out -------------------
+class Deref {
+    has Bool $.auto is rw = True;
+    method quietly { temp $!auto = False; $!auto }
+}
+my $deref = Deref.new;
+ck $deref.quietly, False, 'a method`s `temp` holds inside the body';
+ck $deref.auto,    True,  '…and is restored when the method returns';
 
 # ---- `sub prefix:</>` owns the slash ------------------------------------
 # LAST in the file on purpose: from the declaration on, a bare `/` is that

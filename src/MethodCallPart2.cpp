@@ -3601,7 +3601,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // every arm inside still sees exactly what it saw before.
                 if (!nb.empty()) {
                     if (nb == "Set" || nb == "SetHash" || nb == "Bag" || nb == "BagHash" ||
-                        nb == "Mix" || nb == "MixHash") {
+                        nb == "Mix" || nb == "MixHash" ||
+                        // …and the BYTE-BUFFER family, which a class reaches by
+                        // COMPOSING it: `unit class PDF::IO::Blob does Blob[uint8]`
+                        // is how PDF carries every encoded stream, and with nothing
+                        // backing the instance none of `.bytes`, `.decode` or
+                        // `.subbuf` existed on it.
+                        nb == "Blob" || nb == "Buf" ||
+                        nb == "blob8" || nb == "blob16" || nb == "blob32" || nb == "blob64" ||
+                        nb == "buf8" || nb == "buf16" || nb == "buf32" || nb == "buf64") {
                         // `class MySet is Set`: back the instance with a real quanthash
                         // built from the args, so .elems/.keys/{k} dispatch to it
                         auto od = std::make_shared<ObjectData>();
@@ -3773,7 +3781,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // A class declaring its OWN `value` keeps it (roast's
                 // `class DifferentReal is Real { has $.value }`), and with no
                 // `value` argument nothing changes.
-                if (!nb.empty() && !ci->findAttr("value") &&
+                //
+                // …with one exception, measured against Rakudo: deriving `Str`,
+                // the argument fills BOTH — the subclass's attribute and the
+                // string the instance IS. (`Real` is a role with no storage, so
+                // the roast case above still keeps the box empty.) PDF's
+                // TextString is `class … is Str { has $.value }` and passes
+                // itself to a `Str $str` routine to encode; without the string
+                // behind it every author, title and date in a document was
+                // written out as the object's own gist.
+                if (!nb.empty() && (!ci->findAttr("value") || nb == "Str") &&
                     (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
                      nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
                      nb == "Complex" || nb == "Bool"))

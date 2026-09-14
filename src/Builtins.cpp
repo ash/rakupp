@@ -5660,6 +5660,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // from inside a `slurp` override, or from a role mixed in over it —
     // IO::Path::AutoDecompress's Proccer) goes to the box whatever the class
     // defines: skipOwn is exactly "not mine, the built-in's".
+    // …but `.new` — and its two other spellings — on an INSTANCE means "another
+    // one of these". Rakudo inherits them from Mu, so the invocant's TYPE does
+    // the constructing. Forwarding them to the box instead asked a Hash VALUE
+    // for a `new` only the Hash TYPE has, and `self.new!open-file: $spec` — how
+    // a PDF re-opens a document from one of its own instances — died with "No
+    // such method 'new' for invocant of type 'Hash'".
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
+        !m.skipOwn && (m == "new" || m == "bless" || m == "CREATE") &&
+        !inv.obj()->cls->findMethod(m) && classes_.count(inv.obj()->cls->name))
+        return methodCall(Value::typeObj(inv.obj()->cls->name), m, args, rwArgs);
     if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
         (m.skipOwn || (!inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m)))) {
         static const std::set<std::string> keepOnObj = {
