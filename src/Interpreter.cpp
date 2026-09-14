@@ -16668,8 +16668,16 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     if (!addr) throw RakuError{Value::typeObj("X::AdHoc"),   // Rakudo's wording — modules match it
         "Cannot locate symbol '" + sym + "' in native library '" + lib + "'"};
     if (type == "Pointer" || type.rfind("Pointer[", 0) == 0) {
-        void* p = *(void**)addr; // the global holds a pointer
-        return ncMakePointer(type, p);
+        // The SYMBOL'S ADDRESS, not what is stored there. That is Rakudo's
+        // answer, and it is what makes the documented function-pointer idiom
+        // work: `nativecast($signature, cglobal($lib, 'f', Pointer))` is how a
+        // program reaches a C function whose signature is only known at run time
+        // (issue #84). We used to dereference on the assumption that a global
+        // asked for as a Pointer holds one — which read the first eight bytes of
+        // `f`'s own code as an address, and a module written against Rakudo that
+        // reads a `void **` global got a value one level too deep. `.deref` is
+        // how to read what the pointer points AT, there and here.
+        return ncMakePointer(type, addr);
     }
     if (type == "Str") {
         // a `char *` global: the variable holds a pointer, the string lives

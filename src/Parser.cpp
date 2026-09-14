@@ -3786,7 +3786,13 @@ ExprPtr Parser::parsePrimary() {
         advance(); advance(); // : (
         try {
             auto be = std::make_unique<BlockExpr>();
+            sigRetType_.clear();
             be->params = parseSignature();
+            // `:(Int --> Str)` — the return type belongs to the SIGNATURE here,
+            // and it was parsed and then dropped, so `.returns` answered Mu and
+            // `.gist` left the `-->` out. A `sub (--> Int) {…}` two hundred lines
+            // below already read it back the same way.
+            be->retType = sigRetType_;
             expectKind(Tok::RParen, ")");
             auto u = std::make_unique<Unary>();
             u->op = "siglit";

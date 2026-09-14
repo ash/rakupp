@@ -2947,7 +2947,12 @@ static std::string renderDefault(const Param& p) {
 }
 
 // One parameter, Rakudo-style: `Int:D $x`, `:$a!`, `:b($a) = 2`, `*@r`, `|c`.
-static std::string renderParam(const Param& p) {
+// `inSignature` is the same distinction ctorParamStr draws: a NAMELESS parameter
+// that has a type renders as the type alone inside a signature — `(Int, $, Str
+// $s)` — and as `Int $` on its own, which is what Parameter.gist answers. We
+// rendered the sigil in both places, so a signature carrying an anonymous typed
+// parameter read `(Int $, …)` where every other implementation writes `(Int, …)`.
+static std::string renderParam(const Param& p, bool inSignature = false) {
     std::string o;
     if (!p.type.empty()) {
         o += p.type;
@@ -2959,6 +2964,14 @@ static std::string renderParam(const Param& p) {
     bool capture = p.slurpy && p.slurpyKind == 0 && (p.sigil == '|' || p.sigil == '\\');
     if (capture) return o + "|" + p.name;
     if (p.slurpy) o += p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+" : "*";
+    // the anonymous-but-typed case: `Int` in a signature, `Int $` alone. An
+    // anonymous UNTYPED one is `$` either way — there would be nothing left.
+    if (inSignature && p.name.empty() && !p.type.empty() && !p.named && !p.slurpy &&
+        !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
+        renderDefault(p).empty()) {
+        o.pop_back();   // the space renderParam put after the type name
+        return o;
+    }
     std::string var = p.name.empty() ? std::string(1, p.sigil) : p.name;
     if (p.named) {
         std::string bare = p.name.size() > 1 ? p.name.substr(1) : p.name;
@@ -3058,7 +3071,7 @@ Value makeSignature(const Callable* c) {
         if (p.invocant) { count++; arity++; continue; }
         if (!first) sig += ", ";
         first = false;
-        sig += renderParam(p);
+        sig += renderParam(p, /*inSignature=*/true);
         // `*%opts` slurps NAMED arguments and takes no positional at all, so it
         // does not make the count Inf — only *@ / **@ / +@ do. Every method
         // carries an implicit one, which is how this reached signatures that never
@@ -4158,6 +4171,31 @@ Value* Interpreter::builtinExtMethod(const Value& inv, const std::string& m) {
     for (const std::string& anc : typeAncestry(tn))
         if (anc != tn) if (Value* f = lookup(anc)) return f;
     return nullptr;
+}
+
+// How a constructed Parameter renders. A nameless one is its TYPE inside a
+// signature — `(uint32, Str --> Int)` — and `Type $` on its own, which is the
+// difference between Signature.gist and Parameter.gist; both spellings are what
+// a reader sees, so both are produced from the one place.
+static std::string ctorParamStr(const Value& p, bool inSignature) {
+    if (!p.hash()) return "$";
+    auto S = [&](const char* k) {
+        auto it = p.hash()->find(k); return it == p.hash()->end() ? std::string() : it->second.toStr();
+    };
+    auto B = [&](const char* k) {
+        auto it = p.hash()->find(k); return it != p.hash()->end() && it->second.truthy();
+    };
+    std::string type = S("type"), name = S("name"), out;
+    if (name.empty()) {
+        if (inSignature) return type.empty() ? "Any" : type;
+        return (type.empty() || type == "Any" ? "" : type + " ") + "$";
+    }
+    if (!type.empty() && type != "Any") out = type + " ";
+    if (B("slurpy")) out += "*";
+    if (B("named")) out += ":";
+    out += name;
+    if (B("optional") && !B("named")) out += "?";
+    return out;
 }
 
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
@@ -5529,6 +5567,96 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (a.s == "package") (*at.hash())["package"] = *a.pairVal();
         }
         return at;
+    }
+    // Parameter.new / Signature.new — a signature composed at RUNTIME out of type
+    // objects instead of parsed from a signature literal. Issue #84: a program
+    // that builds one this way could not start, because neither constructor
+    // existed. Both build the SAME hash shape the introspection path builds for a
+    // parsed signature, so every accessor already written reads a constructed one
+    // without knowing the difference — and `nativecast($signature, $ptr)` below
+    // takes either.
+    if (inv.t == VT::Type && inv.s == "Parameter" && m == "new") {
+        Value pv = Value::makeHash(); pv.hashKind = "Parameter";
+        auto& h = *pv.hash();
+        h["name"] = Value::str("");            h["usage-name"] = Value::str("");
+        h["type"] = Value::str("Any");         h["type-obj"] = Value::typeObj("Any");
+        h["named"] = Value::boolean(false);    h["optional"] = Value::boolean(false);
+        h["slurpy"] = Value::boolean(false);   h["raw"] = Value::boolean(false);
+        h["readonly"] = Value::boolean(true);  h["rw"] = Value::boolean(false);
+        h["copy"] = Value::boolean(false);     h["capture"] = Value::boolean(false);
+        h["invocant"] = Value::boolean(false); h["multi-invocant"] = Value::boolean(true);
+        h["prefix"] = Value::str("");          h["suffix"] = Value::str("");
+        h["modifier"] = Value::str("");        h["default"] = Value::typeObj("Code");
+        h["constraints"] = Value::typeObj("Mu");
+        Value nn = Value::array(); nn.isList = true; h["named_names"] = nn;
+        bool sawOptional = false;
+        for (auto& a : args) {
+            if (a.t != VT::Pair || !a.pairVal()) continue;
+            const Value& v = *a.pairVal();
+            if (a.s == "type" || a.s == "of") {
+                h["type-obj"] = v;
+                h["type"] = Value::str(v.t == VT::Type ? std::string(v.s.str()) : std::string("Any"));
+            }
+            else if (a.s == "name") {
+                std::string n = v.toStr();
+                h["name"] = Value::str(n);
+                h["usage-name"] = Value::str(n.size() > 1 ? n.substr(1) : n);
+            }
+            else if (a.s == "named")    h["named"] = Value::boolean(v.truthy());
+            else if (a.s == "optional") { h["optional"] = Value::boolean(v.truthy()); sawOptional = true; }
+            else if (a.s == "slurpy")   h["slurpy"] = Value::boolean(v.truthy());
+            else if (a.s == "is-rw" || a.s == "rw")     h["rw"] = Value::boolean(v.truthy());
+            else if (a.s == "is-copy" || a.s == "copy") h["copy"] = Value::boolean(v.truthy());
+            else if (a.s == "is-raw" || a.s == "raw")   h["raw"] = Value::boolean(v.truthy());
+            else if (a.s == "default")  h["default"] = v;
+            else if (a.s == "invocant") h["invocant"] = Value::boolean(v.truthy());
+            else if (a.s == "multi-invocant") h["multi-invocant"] = Value::boolean(v.truthy());
+            else h[a.s] = v;   // anything else is kept, as a mixed-in trait already is
+        }
+        // a NAMED parameter is optional unless it was asked to be required — `:$x`
+        // binds or does not, where `$x` must
+        if (h["named"].truthy() && !sawOptional) h["optional"] = Value::boolean(true);
+        h["str"] = Value::str(ctorParamStr(pv, /*inSignature=*/false));
+        return pv;
+    }
+    if (inv.t == VT::Type && inv.s == "Signature" && m == "new") {
+        Value sv = Value::makeHash(); sv.hashKind = "Signature";
+        Value params = Value::array(); params.isList = true;
+        Value returns = Value::typeObj("Mu");
+        for (auto& a : args) {
+            if (a.t != VT::Pair || !a.pairVal()) continue;
+            const Value& v = *a.pairVal();
+            if (a.s == "params" || a.s == "parameters") {
+                // `:params(|@list)` slips a list; `:params($p)` is one parameter.
+                if (v.t == VT::Array && v.arr() && v.hashKind != "Parameter")
+                    for (auto& e : *v.arr()) params.arr()->push_back(e);
+                else params.arr()->push_back(v);
+            }
+            else if (a.s == "returns" || a.s == "of") returns = v;
+        }
+        // arity counts the REQUIRED positionals, count every positional — a
+        // slurpy takes as many as it is given, so it makes the count Inf
+        long long arity = 0, count = 0; bool slurpy = false;
+        std::string body; bool first = true;
+        for (auto& e : *params.arr()) {
+            if (e.t != VT::Hash || !e.hash()) continue;
+            if (!first) body += ", ";
+            first = false;
+            body += ctorParamStr(e, /*inSignature=*/true);
+            bool nm = (*e.hash())["named"].truthy(), sl = (*e.hash())["slurpy"].truthy();
+            if (nm) continue;
+            if (sl) { slurpy = true; continue; }
+            count++;
+            if (!(*e.hash())["optional"].truthy()) arity++;
+        }
+        std::string retName = returns.t == VT::Type ? std::string(returns.s.str()) : std::string("Mu");
+        (*sv.hash())["str"] = Value::str("(" + body + " --> " + retName + ")");
+        (*sv.hash())["arity"] = Value::integer(arity);
+        (*sv.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity())
+                                       : Value::integer(count);
+        (*sv.hash())["params"] = std::move(params);
+        (*sv.hash())["returns"] = std::move(returns);
+        return sv;
     }
     // Junction.new("any", (1, 2)) — the constructor spelling of any(1, 2)
     if (inv.t == VT::Type && inv.s == "Junction" && m == "new") {
@@ -13237,6 +13365,50 @@ void Interpreter::registerBuiltins() {
     // native type (Pointer, CArray[T], or a CStruct/CPointer class).
     B["nativecast"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
+        // `nativecast($signature, $ptr)` — the address becomes a CALLABLE with that
+        // signature. This is the spelling a VARIADIC C function needs: its argument
+        // list is only known at run time, so there is no `is native` sub to declare
+        // and the signature is composed out of type objects instead (issue #84,
+        // where `g_error_new` is reached this way). What comes back is the same
+        // kind of Callable `is native` makes, with its symbol already resolved —
+        // callNative marshals through libffi from `params`/`retType` and never has
+        // to dlopen anything. It used to fall through to the plain-Int return at
+        // the bottom, so the cast answered an address and calling it died
+        // "Cannot invoke non-Callable value of type Int".
+        if (a[0].t == VT::Hash && a[0].hashKind == "Signature" && a[0].hash()) {
+            auto owned = std::make_shared<std::vector<Param>>();
+            auto pit = a[0].hash()->find("params");
+            if (pit != a[0].hash()->end() && pit->second.arr())
+                for (auto& e : *pit->second.arr()) {
+                    if (e.t != VT::Hash || !e.hash()) continue;
+                    auto get = [&](const char* k) -> const Value* {
+                        auto it = e.hash()->find(k); return it == e.hash()->end() ? nullptr : &it->second;
+                    };
+                    Param p;
+                    if (const Value* v = get("name")) p.name = v->toStr();
+                    if (!p.name.empty()) p.sigil = p.name[0];
+                    const Value* tobj = get("type-obj");
+                    p.type = tobj && tobj->t == VT::Type ? std::string(tobj->s.str())
+                           : (get("type") ? get("type")->toStr() : std::string());
+                    // an untyped parameter is unconstrained, which is what "" means here
+                    if (p.type == "Any" || p.type == "Mu") p.type.clear();
+                    if (const Value* v = get("named"))    p.named    = v->truthy();
+                    if (const Value* v = get("slurpy"))   p.slurpy   = v->truthy();
+                    if (const Value* v = get("optional")) p.optional = v->truthy();
+                    if (const Value* v = get("rw"))       p.isRw     = v->truthy();
+                    owned->push_back(std::move(p));
+                }
+            Value f = Value::closure([](ValueList&) { return Value::any(); }); // never reached: isNative wins
+            f.code()->name = "nativecast";
+            f.code()->isNative = true;
+            f.code()->nativeSymCache = (void*)(intptr_t)Interpreter::ncRawAddr(a[1]);
+            f.code()->params = owned.get();
+            auto rit = a[0].hash()->find("returns");
+            if (rit != a[0].hash()->end() && rit->second.t == VT::Type && rit->second.s != "Mu")
+                f.code()->retType = std::string(rit->second.s.str());
+            I.runtimeParams_.push_back(std::move(owned));
+            return f;
+        }
         std::string t = ncTypeName(a[0]);
         // A Callable has no address to take. This used to fall through to the
         // generic "nothing else matched" 0, so `nativecast(Pointer, &wndproc)`

@@ -2128,6 +2128,13 @@ public:
     // before emitTest.
     int testLine() const { return curLine_; }
     void restoreTestLine(int l) { curLine_ = l; }
+    // Parameter lists for signatures built at RUNTIME — Signature.new, and the
+    // Callable `nativecast($signature, …)` makes from one. A Callable BORROWS its
+    // params from the AST (Callable::params is a pointer into it), and a signature
+    // composed out of type objects has no AST at all; these live as long as the
+    // interpreter, and the shared_ptr per entry keeps each vector's address stable
+    // however the holder grows.
+    std::vector<std::shared_ptr<std::vector<Param>>> runtimeParams_;
     std::string srcFile_;             // source file path as invoked
     // $*PROGRAM-NAME when it is not the source file: a COMPILED binary IS the
     // program, so it is named by the command that ran it (argv[0]), not by the
