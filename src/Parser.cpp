@@ -6845,9 +6845,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
             // no invocant colon: `(::?CLASS:U)` is an anonymous POSITIONAL of the
             // enclosing type (verified against Rakudo — its signature reads
-            // `(D $:: D:U, *%_)`); type it Mu and let the anonymous-typed-param
-            // branch below push it with the smiley kept
-            p.type = "Mu";
+            // `(D $:: D:U, *%_)`), so it is CONSTRAINED to that type. Left as Mu
+            // it bound anything, and `multi method COERCE(::?CLASS:D $_) { $_ }`
+            // — the "already one of these" arm every PDF::COS class opens with —
+            // swallowed the Str its sibling was written to convert.
+            // Inside a ROLE the name means the CONSUMING class, which is not
+            // known here; that case keeps binding anything, as before.
+            p.type = (typeStack_.empty() ||
+                      (!typeIsRole_.empty() && typeIsRole_.back()))
+                   ? std::string("Mu") : typeStack_.back();
         }
         // indirect/symbolic type constraint:  ::(EXPR) $p  (XML::Node uses
         // `method reparent(::(q<XML::Element>) $parent)`). The type is computed at

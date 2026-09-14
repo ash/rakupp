@@ -13066,6 +13066,16 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                 std::vector<int>* perParam, const Value* selfForWhere) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code()->params;
+    // A `where` is evaluated in the candidate's OWN declaration scope — the names
+    // it reads are the ones visible where the signature was written, not the ones
+    // at the call. A `my`/`our constant` in a class body is exactly that:
+    // PDF::COS::DateString writes `multi method COERCE(Str:D $obj where
+    // DateRegex, |c)` beside the `constant DateRegex` it names, and scored
+    // against the caller's scope the name was undefined, the constraint failed,
+    // and every date fell through to the catch-all COERCE its role supplies —
+    // which hands the string straight back uncoerced.
+    const std::shared_ptr<Env>& whereScope =
+        cand.code()->closure ? cand.code()->closure : tctx_.cur;
     ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
     // A candidate that does not DECLARE a named parameter cannot take one. Raku
     // rejects `f(1, :nope)` when f has no `:$nope` and no `*%` slurpy; accepting
@@ -13121,7 +13131,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     if (slurpyParam && slurpyParam->whereExpr) {
         Value lst = Value::array();
         for (size_t i = total; i < pos.size(); i++) lst.arr()->push_back(pos[i]);
-        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        auto env = std::make_shared<Env>(); env->parent = whereScope;
         if (!slurpyParam->name.empty()) env->define(slurpyParam->name, lst);
         env->define("$_", lst);
         auto saved = tctx_.cur; tctx_.cur = env;
@@ -13155,7 +13165,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     { claimed = true; break; } // renames and aliases claim too, as bindParams knows
             if (!claimed) (*h.hash())[a.s] = a.pairVal() ? *a.pairVal() : Value::boolean(true);
         }
-        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        auto env = std::make_shared<Env>(); env->parent = whereScope;
         if (!p.name.empty()) env->define(p.name, h);
         env->define("$_", h);
         auto saved = tctx_.cur; tctx_.cur = env;
@@ -13368,7 +13378,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (p->coerce && !p->type.empty() && wv.typeName() != p->type) {
                 try { wv = coerceToType(wv, p->type); } catch (...) { return -1; }
             }
-            auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            auto env = std::make_shared<Env>(); env->parent = whereScope;
             // A method's `where` may read the INVOCANT's own state:
             // `multi method tie($lval where $lval ~~ $!type)` is how PDF::COS::Tie
             // picks the candidate for an entry that is already of its declared
@@ -13502,7 +13512,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 catch (...) { tctx_.cur = dsaved; return -1; }
                 tctx_.cur = dsaved;
             }
-            auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            auto env = std::make_shared<Env>(); env->parent = whereScope;
             // a named's `where` may read the invocant's state too (PDF's reads
             // `$!flush` and calls `self!is-indexed`)
             if (selfForWhere) env->define("self", *selfForWhere);
@@ -17900,6 +17910,12 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
         rc.next = [this, name, nb, selfCopy, clsName](ValueList na) -> Value {
             Value binv = selfCopy;
             if (binv.t == VT::Type) binv = Value::typeObj(nb); // AttrProxy.new → Proxy.new
+            // …and a CONSTRUCTOR redispatches on the built-in TYPE however it was
+            // invoked: `$date .= new("1999")` calls `new` on an instance, and the
+            // `nextwith` inside PDF::COS::DateString::new then asked a DateTime
+            // VALUE for a `new` only the type has.
+            else if (name == "new" || name == "bless" || name == "CREATE")
+                binv = Value::typeObj(nb);
             else if (binv.t == VT::Object && binv.obj() && binv.obj()->hasBoxed)
                 binv = binv.obj()->boxed;                        // instance → its builtin box
             // A user object with no builtin box is redispatched ON ITSELF, so the
@@ -17913,6 +17929,22 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
             // callwith in AttrProxy.new makes an AttrProxy, not a bare Proxy
             if (name == "new" && r.t == VT::Hash && r.hash() && r.hashKind == nb && !clsName.empty())
                 (*r.hash())["\x01cls"] = Value::str(clsName);
+            // …and every OTHER built-in-backed class does the same, through the
+            // shape its own `.new` would have produced: an object of the class
+            // holding the built-in value. PDF::COS::DateString parses a PDF date
+            // and hands the ISO spelling on with `nextwith(iso-date, :&formatter)`;
+            // the DateTime that came back was a DateTime, so the entry it was
+            // built for then refused it as "not of type".
+            if (name == "new" && !clsName.empty() && !nb.empty() && nb != "Proxy" &&
+                r.t != VT::Object && classes_.count(clsName)) {
+                auto od = std::make_shared<ObjectData>();
+                od->cls = classes_[clsName];
+                od->hasBoxed = true;
+                od->boxed = r;
+                Value wrapped = Value::object(od);
+                runAttrDefaults(od, od->cls, na);
+                return wrapped;
+            }
             return r;
         };
     }

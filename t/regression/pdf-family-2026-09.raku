@@ -78,6 +78,12 @@
 # `eqv` no longer follows a cycle forever, which Rakudo itself does not
 # survive, so the comparison has nowhere to run.)
 #
+# …and the sixth sitting, from a PDF date to the class it has to become:
+#   * `::?CLASS` in a PARAMETER is the enclosing class, not Mu
+#   * a `where` is evaluated in the scope its SIGNATURE was written in
+#   * `nextwith` from a built-in-backed class's `.new` answers that class
+#   * a constructor redispatches on the built-in TYPE, however it was invoked
+#
 # Runs clean under Rakudo too.
 
 use lib $?FILE.IO.parent.add('../fixtures/pdf-util-lib').Str;
@@ -488,6 +494,38 @@ sub native-bytes { my uint8 @a = 1, 2, 3; @a }
 my uint8 @bound := native-bytes();
 ck @bound.elems,    3,       'a native-typed array is a container and binds';
 ck @bound.of.^name, 'uint8', '…keeping its element type';
+
+# ---- `::?CLASS` in a parameter is the enclosing CLASS --------------------
+role CoerceFallback { multi method COERCE($v is raw) { 'fallback' } }
+class Stamp does CoerceFallback {
+    my constant StampRx = rx/^ 'D:' \d+ /;
+    multi method COERCE(::?CLASS:D $_) { 'self' }
+    multi method COERCE(Str:D $s where StampRx, |c) { 'parsed' }
+}
+ck Stamp.COERCE(Stamp.new), 'self',     '`::?CLASS:D` takes an instance of its own class';
+ck Stamp.COERCE(42),        'fallback', '…and nothing else — the role`s catch-all gets it';
+
+# ---- a `where` reads the scope its SIGNATURE was written in --------------
+ck Stamp.COERCE('D:1998'), 'parsed',
+   'a `where` naming a class-body constant decides the dispatch';
+
+class Scoped {
+    my $limit = 10;
+    multi method pick(Int:D $n where * > $limit) { 'big' }
+    multi method pick($n) { 'small' }
+}
+ck Scoped.pick(11), 'big',   '…and one naming a class-body variable';
+ck Scoped.pick(3),  'small', '…and still loses when it does not hold';
+
+# ---- a built-in-backed constructor keeps its SUBCLASS identity ----------
+class Stamped is DateTime {
+    multi method new(Str:D $y where /^ \d**4 $/) { nextwith("{$y}-01-01T00:00:00Z") }
+}
+ck Stamped.new('1998').^name, 'Stamped', '`nextwith` from a subclass`s .new answers that subclass';
+ck Stamped.new('1998').year,  1998,      '…built from what the built-in made';
+my Stamped $stamp .= new('1998');
+$stamp .= new('1999');
+ck $stamp.year, 1999, 'a constructor called on an INSTANCE redispatches on the type';
 
 # ---- `sub prefix:</>` owns the slash ------------------------------------
 # LAST in the file on purpose: from the declaration on, a bare `/` is that
