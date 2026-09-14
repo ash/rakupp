@@ -279,10 +279,15 @@ Buzz
 
 Perl, running on a Raku interpreter, running in a JavaScript engine.
 
-It is not alone: `showcase/js/js.raku` (2,167 lines, a JavaScript/TypeScript
-interpreter) and `showcase/lisp/lisp.raku` both transpile and match the
-interpreter on their own examples too. `showcase/python/python.raku` transpiles
-but does not yet agree.
+It is not alone. Every language showcase in the repository transpiles, and
+this is how far each one agrees with the interpreter on its own examples:
+
+| showcase | lines | examples byte-identical |
+|---|---:|---|
+| `showcase/perl` | 1,644 | 6 / 6 |
+| `showcase/python` | 1,487 | 5 / 5 |
+| `showcase/js` | 2,167 | 11 / 11 |
+| `showcase/lisp` | 432 | 2 / 2 |
 
 All six example programs — `fizzbuzz`, `histogram`, `quicksort`, `regex`,
 `sieve`, `wordfreq` — produce byte-identical stdout, stderr and exit status

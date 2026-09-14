@@ -3909,7 +3909,15 @@ function reportUncaught(e) {
     if (e instanceof LastCtl) { host.stderr('last without loop construct\n'); return 1; }
     if (e instanceof NextCtl) { host.stderr('next without loop construct\n'); return 1; }
     if (e instanceof RedoCtl) { host.stderr('redo without loop construct\n'); return 1; }
-    if (e instanceof RetCtl) { return 0; }
+    // A `return` whose routine is no longer on the stack — a block holding a
+    // `return` that is stored and called after the routine that made it has
+    // gone. The emitter tags the RetCtl with that routine's token and the
+    // routine's own `try` catches it while it is live; reaching HERE means
+    // nothing did. This used to answer 0, so the program stopped silently and
+    // reported success — which is how six `return`s inside the JavaScript
+    // showcase's Array methods went unnoticed. Both the interpreter and Rakudo
+    // say this, and exit non-zero.
+    if (e instanceof RetCtl) { host.stderr('Attempt to return outside of any Routine\n'); return 1; }
     if (e instanceof RakuError) { host.stderr(e.message + '\n'); return 1; }
     if (e instanceof RObj) { host.stderr(excMessage(e) + '\n'); return 1; }
     if (e instanceof RFailure) { host.stderr(e.err.message + '\n'); return 1; }
@@ -4011,15 +4019,15 @@ function isaSubset(v, t) {
 }
 // *@args flattening: one level of iterables
 function slurpyFlat(items) { const out = []; for (const x of items) { if (x !== null && typeof x === 'object' && x.item === true) out.push(x); else if (x instanceof RList && x.ty !== T.Array || x instanceof RSeq || x instanceof RRange || x instanceof RSlip) out.push(...listItems(x)); else if (x instanceof RList) out.push(...x.a); else out.push(x); } return out; }
-function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
+)RKJS",
+R"RKJS(function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
 function withOf(c, ty) { c.of = ty; if (c instanceof RList) c.a = c.a.map(x => x === Any ? ty : checkOf(c, x)); else if (c instanceof RHash) for (const [k, v] of c.m) c.m.set(k, v === Any ? ty : checkOf(c, v)); return c; }   // what is already inside must fit too; an empty slot is the element type
 function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
 // a minimal Signature object: what .signature.count / .arity / .params answer
 class RSig { constructor(f) { this.f = f; } }
 
 T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
-)RKJS",
-R"RKJS(T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
+T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
 T.Signature.methods.params = s => mkList([]);
 T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
@@ -4223,15 +4231,15 @@ class RSupply {
         if (this.producer) { runProducer(this, this.producer, t); return rt; }
         if (this.derive) { this.derive(t); return rt; }
         this.taps.push(t);
-        if (this.replay && this.replay.length) { const r = this.replay; this.replay = null; for (const v of r) { if (t.closed) break; safeEmit(t, v); } }
+)RKJS",
+R"RKJS(        if (this.replay && this.replay.length) { const r = this.replay; this.replay = null; for (const v of r) { if (t.closed) break; safeEmit(t, v); } }
         if (this.doneFlag && !t.closed) { if (t.done) t.done(); rt.close(); }
         else if (this.quitErr && !t.closed) { if (t.quit) t.quit(this.quitErr); rt.close(); }
         return rt;
     }
     emit(v) { if (this.preserving && !this.taps.length) { (this.replay || (this.replay = [])).push(v); return; } for (const t of this.taps.slice()) if (!t.closed) safeEmit(t, v); }
     done() { this.doneFlag = true; for (const t of this.taps.slice()) if (!t.closed) { if (t.done) t.done(); t.tap.close(); } }
-)RKJS",
-R"RKJS(    quit(e) { this.quitErr = e; for (const t of this.taps.slice()) if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }
+    quit(e) { this.quitErr = e; for (const t of this.taps.slice()) if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }
 }
 function safeEmit(t, v) { const r = t.emit(v); if (r && typeof r.then === 'function') r.catch(e => { if (!(e instanceof DoneCtl)) reportUncaught(e); }); }
 class RSupplier { constructor(preserving) { this.supply = new RSupply(); this.supply.preserving = !!preserving; } }
@@ -4421,13 +4429,13 @@ M(SupplyT, {
     list: (s) => supplyList(s), List: (s) => supplyList(s), Promise: (s) => supplyPromise(s), wait: (s) => supplyPromise(s), Channel: (s) => supplyChannel(s), Supply: (s) => s,
     gist: (s) => 'Supply.new', Str: (s) => 'Supply', raku: (s) => 'Supply.new', WHAT: (s) => SupplyT, defined: (s) => true, Bool: (s) => true, live: (s) => !s.producer && !s.derive,
 });
-M(SupplierT, { emit: (s, v) => { s.supply.emit(v); return v; }, done: (s) => { s.supply.done(); return true; }, quit: (s, e) => { s.supply.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; }, Supply: (s) => s.supply, gist: (s) => 'Supplier.new', Str: (s) => 'Supplier', raku: (s) => 'Supplier.new', WHAT: (s) => s.supply.preserving ? SupplierPreservingT : SupplierT, defined: (s) => true });
+)RKJS",
+R"RKJS(M(SupplierT, { emit: (s, v) => { s.supply.emit(v); return v; }, done: (s) => { s.supply.done(); return true; }, quit: (s, e) => { s.supply.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; }, Supply: (s) => s.supply, gist: (s) => 'Supplier.new', Str: (s) => 'Supplier', raku: (s) => 'Supplier.new', WHAT: (s) => s.supply.preserving ? SupplierPreservingT : SupplierT, defined: (s) => true });
 M(ChannelT, {
     send: (s, v) => s.send(v), receive: (s) => s.receive(), poll: (s) => s.poll(), close: (s) => s.close(), closed: (s) => s.closedP, fail: (s, e) => { s.fail(e); return true; },
     list: (s) => s.list(), Supply: (s) => s.Supply(), gist: (s) => 'Channel.new', Str: (s) => 'Channel', raku: (s) => 'Channel.new', WHAT: (s) => ChannelT, defined: (s) => true, Bool: (s) => true,
 });
-)RKJS",
-R"RKJS(M(TapT, { close: (s) => s.close(), WHAT: (s) => TapT, gist: (s) => 'Tap.new', defined: (s) => true });
+M(TapT, { close: (s) => s.close(), WHAT: (s) => TapT, gist: (s) => 'Tap.new', defined: (s) => true });
 M(VowT, { keep: (s, v) => s.p.keep(v === undefined ? true : v), 'break': (s, e) => s.p.break_(e === undefined ? new RakuError('Died') : e), WHAT: (s) => VowT });
 M(T.Promise, { vow: (s) => new RVow(s) });
 M(T.Any, { emit: (s) => emitVal(s) });
@@ -4623,7 +4631,8 @@ function ltmReach(n, from, ctx, depth) {
             if (rule && !rule.proto) { if (rule.mk) return gapAt(); return ltmReach(rule.rx.root, from, ctx, depth + 1); }
             if (ctx.grammar) {
                 const cands = protoCandidates(ctx.grammar, name);
-                if (cands.length) { let gap = false; for (const c of cands) { if (c.rule.mk) { gap = true; continue; } const r = ltmReach(c.rule.rx.root, from, { ...ctx, sym: c.sym }, depth + 1); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+)RKJS",
+R"RKJS(                if (cands.length) { let gap = false; for (const c of cands) { if (c.rule.mk) { gap = true; continue; } const r = ltmReach(c.rule.rx.root, from, { ...ctx, sym: c.sym }, depth + 1); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
             }
             const lex = namedRegexes.get(name);
             if (lex) return ltmReach(lex.root, from, ctx, depth + 1);
@@ -4639,8 +4648,7 @@ function ltmRank(kids, st, pos, syms) {
     if (kids.length < 2) return kids.map((_, i) => i);
     const base = { s: st.s, grammar: st.ctx.grammar, sym: st.curSym };
     const ranked = [];
-)RKJS",
-R"RKJS(    kids.forEach((kid, i) => {
+    kids.forEach((kid, i) => {
         const r = ltmReach(kid, new Map([[pos, 0]]), syms ? { ...base, sym: syms[i] } : base, 0);
         let end = -1, lit = 0;
         for (const [p, l] of r.pos) if (p > end || (p === end && l > lit)) { end = p; lit = l; }
@@ -4909,7 +4917,8 @@ function subrule(n, st, pos, k) {
         if (v instanceof RList || v instanceof RSeq) { const xs = arr(v); const ordered = xs.every(x => !(x instanceof RRegex)) ? xs.map(str).sort((a, b) => b.length - a.length) : xs; for (const x of ordered) if (one(x, rec)) return true; return false; }   // longest alternative first
         return one(v, rec);
     }
-    if (name === 'sym') { const sym = st.curSym; if (sym == null || !s.startsWith(sym, pos)) return false; const sub = new RMatch(s, pos, pos + sym.length); return record(sub, pos + sym.length); }
+)RKJS",
+R"RKJS(    if (name === 'sym') { const sym = st.curSym; if (sym == null || !s.startsWith(sym, pos)) return false; const sub = new RMatch(s, pos, pos + sym.length); return record(sub, pos + sym.length); }
     if (n.rec) return callRule({ rx: st.rx, kind: st.rx.tree.ratchet ? 'token' : 'regex' }, name, n, st, pos, record);
     if (n.inline) return callRule({ rx: new RRegex(n.inline), kind: 'regex' }, name, n, st, pos, record);
     // lexical `my regex NAME`, then the grammar's own rules, then a method, then the builtins
@@ -4921,8 +4930,7 @@ function subrule(n, st, pos, k) {
         if (cands.length) {
             const roots = cands.map(c => c.rule.mk ? { k: 'Code' } : c.rule.rx.root);   // a parameterized candidate has no static prefix
             for (const i of ltmRank(roots, st, pos, cands.map(c => c.sym))) {
-)RKJS",
-R"RKJS(                const c = cands[i];
+                const c = cands[i];
                 const ok = callRule(c.rule, c.name, n, st, pos, (sub, q) => { sub.rule = c.name; sub.actualRule = c.name; return record(sub, q); }, c.sym);
                 if (ok) return true;
             }
@@ -5156,7 +5164,8 @@ function parseRxString(src, ic) {
     ws();
     for (;;) {   // leading adverbs
         if (src.startsWith(':i', i) && !/\w/.test(src[i + 2] || '')) { icase = true; i += 2; ws(); continue; }
-        if (src.startsWith(':ignorecase', i)) { icase = true; i += 11; ws(); continue; }
+)RKJS",
+R"RKJS(        if (src.startsWith(':ignorecase', i)) { icase = true; i += 11; ws(); continue; }
         if (src[i] === ':') bad('an adverb'); break;
     }
     const root = alt();
@@ -5180,8 +5189,7 @@ function runSearch(s, rxo, ctx, startPos) {
         }
         if (start < s.length) { const cp = s.codePointAt(start); if (cp > 0xFFFF) start++; }
     }
-)RKJS",
-R"RKJS(    return null;
+    return null;
 }
 function allMatches(s, rxo, ctx, overlap) {
     const out = [];

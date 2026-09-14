@@ -444,7 +444,15 @@ function reportUncaught(e) {
     if (e instanceof LastCtl) { host.stderr('last without loop construct\n'); return 1; }
     if (e instanceof NextCtl) { host.stderr('next without loop construct\n'); return 1; }
     if (e instanceof RedoCtl) { host.stderr('redo without loop construct\n'); return 1; }
-    if (e instanceof RetCtl) { return 0; }
+    // A `return` whose routine is no longer on the stack — a block holding a
+    // `return` that is stored and called after the routine that made it has
+    // gone. The emitter tags the RetCtl with that routine's token and the
+    // routine's own `try` catches it while it is live; reaching HERE means
+    // nothing did. This used to answer 0, so the program stopped silently and
+    // reported success — which is how six `return`s inside the JavaScript
+    // showcase's Array methods went unnoticed. Both the interpreter and Rakudo
+    // say this, and exit non-zero.
+    if (e instanceof RetCtl) { host.stderr('Attempt to return outside of any Routine\n'); return 1; }
     if (e instanceof RakuError) { host.stderr(e.message + '\n'); return 1; }
     if (e instanceof RObj) { host.stderr(excMessage(e) + '\n'); return 1; }
     if (e instanceof RFailure) { host.stderr(e.err.message + '\n'); return 1; }

@@ -358,7 +358,7 @@ class Actions {
     method TOP($/) { make %( t => 'module', body => nlist($<stmt>) ) }
 
     method stmt:sym<if>($/) {
-        my @clauses = [ %( test => $<test>.made, body => $<suite>.made ) ];
+        my @clauses = [ $( %( test => $<test>.made, body => $<suite>.made ) ) ];
         for @($<elifc>) -> $e { @clauses.push($e.made) }
         make %( t => 'if', clauses => @clauses, orelse => ($<elsec> ?? $<elsec>.made !! []) );
     }
@@ -392,7 +392,7 @@ class Actions {
         if $<stmt> {
             for @($<stmt>) -> $s {
                 my $m = $s.made;
-                $m<t> eq 'seq' ?? (@body.append($m<body>)) !! @body.push($m);
+                $m<t> eq 'seq' ?? (@body.append(@($m<body>))) !! @body.push($m);
             }
         }
         else { @body = nlist($<small>) }   # inline suite: `if x: stmt`
@@ -544,7 +544,7 @@ class Actions {
             my $cl = $<clist>.made;
             my @items;
             @items.push($<test>.made);
-            @items.append($cl<items>);
+            @items.append(@($cl<items>));
             make %( comp => False, items => @items, trailing => $cl<trailing> );
         }
     }
@@ -557,7 +557,7 @@ class Actions {
         }
         else {
             if $<comp> { make %( t => 'comp', kind => 'set', elt => $<test>.made, gens => $<comp>.made ) }
-            else { my $cl = $<clist>.made; my @items; @items.push($<test>.made); @items.append($cl<items>); make %( t => 'set', items => @items ) }
+            else { my $cl = $<clist>.made; my @items; @items.push($<test>.made); @items.append(@($cl<items>)); make %( t => 'set', items => @items ) }
         }
     }
     method dtail($/) { make nlist($<dpair>) }
@@ -719,7 +719,7 @@ sub pyeval($n, $env) {
         when 'call'   { return eval-call($n, $env) }
         when 'subscript' { return eval-subscript($n, $env) }
         when 'attr'   { return eval-attr(pyeval($n<obj>, $env), $n<name>) }
-        when 'lambda' { return PyFunc.new(name => '<lambda>', params => $n<params>, star => $n<star>, body => [ %( t => 'return', value => $n<body> ) ], env => $env) }
+        when 'lambda' { return PyFunc.new(name => '<lambda>', params => $n<params>, star => $n<star>, body => [ $( %( t => 'return', value => $n<body> ) ) ], env => $env) }
         when 'comp'   { return eval-comp($n, $env) }
         when 'dictcomp' { return eval-dictcomp($n, $env) }
         default { py-raise("SyntaxError", "cannot eval $n<t>") }

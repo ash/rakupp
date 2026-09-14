@@ -1297,7 +1297,7 @@ sub rx-parse-atom($st) {
             my $e = $st.i < $st.n ?? $st.c[$st.i] !! '';
             $st.i = $st.i + 1;
             given $e {
-                when 'd' | 'w' | 's' | 'D' | 'W' | 'S' { return %( k => 'class', neg => False, set => [ %( cls => $e ) ] ) }
+                when 'd' | 'w' | 's' | 'D' | 'W' | 'S' { return %( k => 'class', neg => False, set => [ $( %( cls => $e ) ) ] ) }
                 when 'b' { return %( k => 'wordb' ) }
                 when 'B' { return %( k => 'nwordb' ) }
                 when 'n' { return %( k => 'lit', c => "\n" ) }

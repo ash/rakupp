@@ -1385,13 +1385,15 @@ sub arr-prop($arr, Str $name) {
         }) }
         when 'indexOf' { native($name, -> @a, $ {
             my $needle = @a[0] // UNDEF;
-            for ^$arr.elems -> $i { return $i.Num if js-strict-eq($arr[$i] // UNDEF, $needle) }
-            -1e0
+            my $idx = -1e0;
+            for ^$arr.elems -> $i { if js-strict-eq($arr[$i] // UNDEF, $needle) { $idx = $i.Num; last } }
+            $idx
         }) }
         when 'includes' { native($name, -> @a, $ {
             my $needle = @a[0] // UNDEF;
-            for ^$arr.elems -> $i { return True if js-strict-eq($arr[$i] // UNDEF, $needle) }
-            False
+            my $hit = False;
+            for ^$arr.elems -> $i { if js-strict-eq($arr[$i] // UNDEF, $needle) { $hit = True; last } }
+            $hit
         }) }
         when 'join'    { native($name, -> @a, $ {
             my $sep = @a.elems ?? to-str(@a[0]) !! ',';
@@ -1423,20 +1425,24 @@ sub arr-prop($arr, Str $name) {
             $acc
         }) }
         when 'find'    { native($name, -> @a, $ {
-            for ^$arr.elems -> $i { return $arr[$i] if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) }
-            UNDEF
+            my $found = UNDEF;
+            for ^$arr.elems -> $i { if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) { $found = $arr[$i]; last } }
+            $found
         }) }
         when 'findIndex' { native($name, -> @a, $ {
-            for ^$arr.elems -> $i { return $i.Num if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) }
-            -1e0
+            my $at = -1e0;
+            for ^$arr.elems -> $i { if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) { $at = $i.Num; last } }
+            $at
         }) }
         when 'some'    { native($name, -> @a, $ {
-            for ^$arr.elems -> $i { return True if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) }
-            False
+            my $any = False;
+            for ^$arr.elems -> $i { if truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) { $any = True; last } }
+            $any
         }) }
         when 'every'   { native($name, -> @a, $ {
-            for ^$arr.elems -> $i { return False unless truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) }
-            True
+            my $all = True;
+            for ^$arr.elems -> $i { unless truthy(cb(@a[0], $arr[$i] // UNDEF, $i.Num)) { $all = False; last } }
+            $all
         }) }
         when 'concat'  { native($name, -> @a, $ {
             my @out;
