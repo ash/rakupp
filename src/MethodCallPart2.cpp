@@ -2676,6 +2676,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             { if (a.s == "FETCH" || a.s == "STORE") (*p.hash())[a.s] = *a.pairVal(); }
         return p;
     }
+    // `IO::Handle.new` — an UNOPENED handle. Rakudo gives one for `.new` with no
+    // arguments and for `.new(:$path)`; every read or write on it then fails the
+    // way an unopened handle should. IO::MiddleMan's error suite opens with
+    // `my $fh = IO::Handle.new`, and there was no constructor at all.
+    if (inv.t == VT::Type && inv.s == "IO::Handle" && m == "new") {
+        Value h = Value::makeHash(); h.hashKind = "FileHandle";
+        (*h.hash())["mode"] = Value::str("r");
+        (*h.hash())["buffer"] = Value::str("");
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.pairVal() && a.s == "path" && a.pairVal()->t != VT::Any)
+                (*h.hash())["path"] = Value::str(a.pairVal()->toStr());
+        return h;
+    }
     if (inv.t == VT::Type && m == "new") {
         const std::string& t = inv.s;
         // `Int.new(5)` / `Str.new(value => 'x')` — the constructors Rakudo gives

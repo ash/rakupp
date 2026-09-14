@@ -5186,9 +5186,15 @@ ExprPtr Parser::parsePrimary() {
                 // not a declaration — a `=>` after the keyword means pair
                 peek().kind != Tok::FatArrow) {
                 advance();
-                // `my class Foo {…}` / `my role …` as an expression — evaluates to the type
-                if (isIdent("class") || isIdent("role") || isIdent("grammar") ||
-                    isIdent("enum") || isIdent("subset")) {
+                // `my class Foo {…}` / `my role …` as an expression — evaluates to the type.
+                // …but only when a DECLARATION follows: `constant class = Foo` names
+                // the constant `class`, which is a perfectly good identifier
+                // (InterceptAllMethods opens with exactly that line). The
+                // declarator needs a name, a body or a qualified name after it.
+                if ((isIdent("class") || isIdent("role") || isIdent("grammar") ||
+                     isIdent("enum") || isIdent("subset")) &&
+                    (peek().kind == Tok::Ident || peek().kind == Tok::LBrace ||
+                     (peek().kind == Tok::Op && peek().text == "::"))) {
                     auto u = std::make_unique<Unary>(); u->op = "do";
                     auto be = std::make_unique<BlockExpr>();
                     be->body.push_back(parseStatement());
@@ -7710,7 +7716,35 @@ StmtPtr Parser::parseEnum() {
         }
     }
     if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace))
-        ed->values = parseExpr(BP_ASSIGN);
+        // TIGHTER than an ordinary expression: the value list is one TERM, and a
+        // trait may follow it. `enum Level <Off Fatal Error> does role { … }`
+        // parsed the whole thing as `<…> does role{…}`, an infix expression whose
+        // value is a single string — so the enum had ONE member named
+        // "Off Fatal Error" and every use of `Error` was an undeclared name.
+        // Lumberjack declares its levels exactly that way.
+        ed->values = parseExpr(BP_MUL + 1);
+    // …and the traits that follow the value list. `does role { … }` composes a
+    // role into the enum's values in Rakudo; the members are what matters here,
+    // and the role is consumed rather than composed (noted as a gap).
+    while (isIdent("is") || isIdent("does")) {
+        advance();
+        if (isIdent("role") && peek().kind == Tok::LBrace) {   // `does role { … }`
+            advance();                                        // role
+            int d = 0;
+            do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); }
+            while (d > 0 && !isKind(Tok::End));
+            continue;
+        }
+        if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+            if (cur().text == "export") ed->isExport = true;
+            advance();
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                while (d > 0 && !isKind(Tok::End));
+            }
+        }
+    }
     if (!ed->name.empty()) declTypeNames_.insert(ed->name);
     // enum MEMBERS are bare-name terms too. A word-list (`<Red Green>`) is
     // statically visible; anything computed makes the whole unit opaque —

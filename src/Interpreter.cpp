@@ -27704,6 +27704,18 @@ static Value bridgeReal(Interpreter& I, const Value& v) {
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
         if (Value* br = v.obj()->cls->findMethod("Bridge"))  { ValueList none; return I.invokeMethod(*br, v, none); }
         if (Value* nu = v.obj()->cls->findMethod("Numeric")) { ValueList none; return I.invokeMethod(*nu, v, none); }
+        // …or a DELEGATED one. `has FatRat $.fatrat handles <Numeric …>` gives
+        // the object the method without putting it in the class's table, so the
+        // lookups above missed it and every numeric comparison against such an
+        // object fell back to comparing addresses — FatRatStr is written exactly
+        // that way and `$x.FatRatStr == $x` was False for every value.
+        for (ClassInfo* c = v.obj()->cls.get(); c; c = c->parent.get())
+            for (auto& at : c->attrs)
+                for (auto& h : at.handles)
+                    if (h == "Bridge" || h == "Numeric" || h == "*") {
+                        ValueList none;
+                        return I.methodCall(v, h == "Bridge" ? "Bridge" : "Numeric", none);
+                    }
     }
     return v;
 }

@@ -920,6 +920,11 @@ std::string Value::typeName() const {
                         // the one signature a server naturally writes — pass me
                         // a listener — could not be written at all.
                         if (hashKind == "Socket") return "IO::Socket::INET";
+                        // a backtrace frame is Rakudo's `Backtrace::Frame`; the
+                        // internal tag has no colons and could not be named in a
+                        // signature — Lumberjack declares `has Backtrace::Frame
+                        // @.backtrace` and every message failed its element check
+                        if (hashKind == "BacktraceFrame") return "Backtrace::Frame";
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
         case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
                              : code() && code()->isRegexRoutine ? "Regex"

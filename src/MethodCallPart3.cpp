@@ -1464,6 +1464,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 return p;
             }
+            // an UNOPENED handle (`IO::Handle.new`) has no path at all — the
+            // fall-through below stringifies the HANDLE, which is not a path
+            return Value::typeObj("IO::Path");
         }
         return Value::str(inv.toStr());
     }
@@ -2048,12 +2051,22 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // with "No such method 'unlink' for invocant of type 'Str'", taking
             // the dist from 3/3 to 1/3. `.Str` on the handle is unaffected — it
             // reads the stored field directly and still answers the path.
+            // an UNOPENED handle (`IO::Handle.new`) has no path at all
+            if (!inv.hash()->count("path")) return Value::typeObj("IO::Path");
             Value p = (*inv.hash())["path"];
             if (p.t == VT::Str && p.hashKind.empty()) {
                 p.hashKind = "IO";
                 p.ofTypeM() = cwdName(); // :CWD captured, as `.IO` does above
             }
             return p;
+        }
+        // `.print-nl` writes the handle's OUTPUT separator and nothing else —
+        // what `.say` appends. IO::MiddleMan's suite calls it on the handle it
+        // wraps to check the wrapper passes writes through.
+        if (m == "print-nl") {
+            auto it = inv.hash()->find("nl-out");
+            fhWrite(inv, it != inv.hash()->end() ? it->second.toStr() : std::string("\n"));
+            return Value::boolean(true);
         }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;
@@ -2062,7 +2075,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 ValueList rest(args.begin() + (args.empty() ? 0 : 1), args.end());
                 s = doSprintf(fmt, rest, langRev_);
             } else {
-                for (auto& a : args) s += (m == "say" ? a.gist() : a.toStr());
+                // `.say` renders with `.gist`, and a class's OWN `method gist`
+                // is what that means — `Value::gist()` only knows the built-in
+                // rendering, so an object went to the file as its default
+                // `Class<address>` while the same `say` to $*OUT read the
+                // method. (IO::MiddleMan's suite writes one through a wrapped
+                // handle and compares the two.)
+                for (auto& a : args)
+                    s += (m == "say" ? methodCall(a, "gist", ValueList{}, nullptr).toStr()
+                                     : a.toStr());
                 if (m != "print") s += "\n";
             }
             s = encodeTextEnc(s, handleEnc(inv)); // the handle's `:enc` names the BYTES on disk
