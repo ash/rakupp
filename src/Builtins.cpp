@@ -11079,6 +11079,10 @@ void Interpreter::registerBuiltins() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        // :bin — the handle reads BYTES, so `seek`/`tell` are byte offsets
+        // rather than the line-boundary emulation a text handle gets
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "bin" && x.pairVal() && x.pairVal()->truthy())
+            (*h.hash())["bin"] = Value::boolean(true);
         // :enc(...) — the handle's text encoding; every read through it decodes
         // with this instead of assuming the bytes are already UTF-8
         for (auto& x : a) if (x.t == VT::Pair && x.s == "enc" && x.pairVal() && x.pairVal()->t != VT::Any)

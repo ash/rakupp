@@ -734,6 +734,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (inv.t == VT::Array && inv.arr() &&
         (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS")) {
+        // A NAMED argument is not an index. Counting it as one sent
+        // `@a.AT-POS(0, :check)` — the spelling an overriding accessor's
+        // `callsame` forwards — down the multi-dimensional path, which descended
+        // into element 0 and threw "Index out of range" on a one-element array.
+        // PDF::COS::Tie::Array reads every tied element that way.
+        ValueList posArgs;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) posArgs.push_back(a);
+        const ValueList& args = posArgs;    // indices only, from here down
         // multi-dim access on a shaped array (`@a.AT-POS(i, j)`): walk each index
         // level. ASSIGN-POS takes a trailing value, so its last arg is the value.
         size_t nidx = (m == "ASSIGN-POS") ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
@@ -2268,6 +2276,39 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // reading: lazily load the file into lines, track a cursor in "pos"
         bool isStdin = inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in";
+        // A BINARY handle's cursor is a BYTE offset, and `seek`/`tell` speak in
+        // bytes — Rakudo's do for every handle. The emulation below measures in
+        // whole LINES, which is close enough for a text handle stepping through
+        // `.get` but nowhere near a `:bin` one: `$fh.seek(644, SeekFromBeginning)`
+        // landed on the first line boundary at or past 644 (usually the start of
+        // the file), and `.tell` after `seek(0, SeekFromEnd)` counted a line
+        // terminator the file did not have. PDF reads every cross-reference
+        // table by seeking to a byte offset recorded inside the document, so it
+        // read the header back each time and reported the xref unparsable.
+        if ((m == "seek" || m == "tell" || m == "eof") &&
+            ((*inv.hash()).count("bin") || (*inv.hash()).count("bytes")) &&
+            !(inv.hash()->count("std"))) {
+            if (inv.hash()->find("bytes") == inv.hash()->end()) {
+                std::ifstream bin((*inv.hash())["path"].toStr(), std::ios::binary);
+                std::ostringstream bs; bs << bin.rdbuf();
+                (*inv.hash())["bytes"] = Value::str(bs.str());
+                (*inv.hash())["bpos"] = Value::integer(0);
+            }
+            const long long total = (long long)(*inv.hash())["bytes"].s.size();
+            long long pos = (*inv.hash())["bpos"].toInt();
+            if (m == "tell") return Value::integer(pos);
+            if (m == "eof") return Value::boolean(pos >= total);
+            long long want = args.empty() ? 0 : args[0].toInt();
+            long long whence = 0;                       // SeekFromBeginning
+            for (size_t i = 1; i < args.size(); i++)
+                if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
+            if (whence == 1) want += pos;               // SeekFromCurrent
+            else if (whence == 2) want += total;        // SeekFromEnd
+            if (want < 0) want = 0;
+            if (want > total) want = total;
+            (*inv.hash())["bpos"] = Value::integer(want);
+            return Value::boolean(true);
+        }
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
             m == "slurp-rest" || m == "seek" || m == "tell") {
             if (inv.hash()->find("lines") == inv.hash()->end()) {

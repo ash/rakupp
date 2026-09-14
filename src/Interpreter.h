@@ -1654,6 +1654,14 @@ public:
         // special-case downstream just works
         if (n == "OpaquePointer") { static const std::string P = "Pointer"; return P; }
         if (classes_.count(n)) return n;
+        // …and a SUBSET of that exact name beats the package-relative alias, for
+        // the same reason a class of that name does: Rakudo looks lexically
+        // first and only then in the enclosing package's stash. Inside `unit
+        // class PDF::IO::IndObj`, the imported subset `IndObj` (a Pair whose key
+        // is 'ind-obj') is what `method ast returns IndObj` names — resolving it
+        // to the surrounding class instead made every `.ast` die on its own
+        // return value.
+        if (subsets_.count(n)) return n;
         // NativeCall's types under their QUALIFIED spelling. A module that does
         // not import them still names them in full — `NativeCall::Types::void`
         // is how a signature says "void *" without `use NativeCall` in scope —

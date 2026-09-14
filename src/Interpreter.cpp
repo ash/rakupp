@@ -18585,11 +18585,24 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
         // still reaches the real container. Only a Proxy is treated this way —
         // every other slot keeps handing back its pointer, which is what an
         // outer lexical and an attribute need.
+        // …and so does ANY local of this routine's OWN scope, Proxy or not. The
+        // slot is in the frame that is about to be popped, so handing its
+        // address out is a dangling write: `method AT-POS($p) is rw { my $val :=
+        // callsame; $val }` — how PDF::COS::Tie::Array reads every element —
+        // gave `$cs[0] = 'Lab'` a pointer into the dying frame, and the array
+        // stayed empty. An outer lexical, an attribute and an rw-LINKED
+        // parameter all still hand back their real pointer; only this call's own
+        // declarations are copied out.
+        bool ownScope = true;
         for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
             Value* slot = en->local(nm);
-            if (!slot) continue;
-            if (slot->t == VT::Hash && slot->hashKind == "Proxy" &&
-                (!en->ex || !en->ex->rwLinks.count(nm)))
+            if (!slot) {
+                if (en->routineFrame) ownScope = false;   // past this call's scopes
+                continue;
+            }
+            const bool linked = en->ex && en->ex->rwLinks.count(nm);
+            if (!linked &&
+                (ownScope || (slot->t == VT::Hash && slot->hashKind == "Proxy")))
                 tctx_.lvalueOutLocal = true;
             break;
         }
@@ -18930,7 +18943,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
                 tcx.lvalueOut = nullptr;
                 atKeyHold = methodCall(*base, "AT-KEY", ValueList{k});
-                if (Value* out = tcx.lvalueOut) return out;
+                if (Value* out = tcx.lvalueOut; out && !tcx.lvalueOutLocal) return out;
+                // …and a class whose elements live in the BUILT-IN container it
+                // derives — `class D is Hash { method AT-KEY($k) is rw { callsame } }`
+                // — has no container of its own to hand back: what came out is a
+                // copy, and a write into it is a no-op the program never hears
+                // about. Aim at the box the built-in accessor reads through,
+                // which is where `callsame` just found it. (A Proxy still routes
+                // through the held copy, as the comment above says.)
+                if (!(atKeyHold.t == VT::Hash && atKeyHold.hashKind == "Proxy") &&
+                    base->obj()->hasBoxed && base->obj()->boxed.t == VT::Hash &&
+                    base->obj()->boxed.hash())
+                    return &(*base->obj()->boxed.hash())[hashSubKey(k, &base->obj()->boxed)];
                 return &atKeyHold;
             }
             // …or a DELEGATED one: `has Callable %!Conversions{Mu:U} handles
@@ -19013,7 +19037,24 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
                 tcx.lvalueOut = nullptr;
                 atPosHold = methodCall(*base, "AT-POS", ValueList{k});
-                if (Value* out = tcx.lvalueOut) return out;
+                if (Value* out = tcx.lvalueOut; out && !tcx.lvalueOutLocal) return out;
+                // …or the built-in container the class derives, as the AT-KEY
+                // arm above explains. PDF::COS::Tie::Array reads every element
+                // with `my $val := callsame`, so an assignment to `$cs[0]` on
+                // one of its classes stored into a temporary and the tied
+                // accessor beside it then read past the end.
+                if (!(atPosHold.t == VT::Hash && atPosHold.hashKind == "Proxy") &&
+                    base->obj()->hasBoxed && base->obj()->boxed.t == VT::Array &&
+                    base->obj()->boxed.arr()) {
+                    auto arr = base->obj()->boxed.arrS();
+                    Value kv = k;
+                    if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
+                        kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
+                    long long j = kv.toInt();
+                    if (j < 0) negIndexThrow(j);
+                    while ((long long)arr->size() <= j) arr->push_back(Value::any());
+                    return &(*arr)[(size_t)j];
+                }
                 return &atPosHold;
             }
             // …or a DELEGATED AT-POS: `has @!cache handles <AT-POS elems>`
@@ -28955,6 +28996,55 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
             }
             obj->attrs[a.name] = dv;
         }
+    }
+    // …and the roles THOSE roles compose. Only the directly-named ones were
+    // copied, so a role declared `role Leaf does Base` brought Base's NAME —
+    // `.does(Base)` answered True — and none of what Base declares. PDF wraps
+    // every scalar it reads that way (`unit role PDF::COS::Bool; also does
+    // PDF::COS;`), so a coerced value could not answer the `.obj-num` its
+    // serializer asks every object for. A directly-named role's own methods win,
+    // which is why this is a second pass rather than part of the loop above.
+    {
+        std::set<ClassInfo*> composedRoles(roleInfos.begin(), roleInfos.end());
+        std::function<void(ClassInfo*)> composeChain = [&](ClassInfo* role) {
+            for (auto& sub : role->doneRoles) {
+                nc->doneRoles.insert(sub);
+                auto sit = classes_.find(sub);
+                if (sit == classes_.end() || !sit->second) continue;
+                ClassInfo* sr = sit->second.get();
+                if (!composedRoles.insert(sr).second) continue;
+                for (auto& kv : sr->methods) nc->methods.emplace(kv.first, kv.second);
+                for (auto& kv : sr->rules) {
+                    if (nc->rules.count(kv.first)) continue;
+                    nc->rules[kv.first] = kv.second;
+                    auto ki = sr->ruleKind.find(kv.first);
+                    if (ki != sr->ruleKind.end()) nc->ruleKind[kv.first] = ki->second;
+                    auto pi = sr->ruleParams.find(kv.first);
+                    if (pi != sr->ruleParams.end()) nc->ruleParams[kv.first] = pi->second;
+                }
+                for (auto& nm : sr->ruleOrder)
+                    if (std::find(nc->ruleOrder.begin(), nc->ruleOrder.end(), nm) == nc->ruleOrder.end())
+                        nc->ruleOrder.push_back(nm);
+                if (sr->isGrammar) nc->isGrammar = true;
+                for (auto& a : sr->attrs) {
+                    bool have = false;
+                    for (auto& na : nc->attrs) if (na.name == a.name) { have = true; break; }
+                    if (!have) nc->attrs.push_back(a);
+                    if (obj->attrs.count(a.name)) continue;
+                    Value dv = mixinAttrDefault(a);
+                    if (a.hasDefVal) dv = a.defVal;
+                    else if (a.def) {
+                        auto saved = tctx_.cur;
+                        if (sr->declEnv) tctx_.cur = sr->declEnv;
+                        try { dv = eval(const_cast<Expr*>(a.def)); } catch (...) { dv = Value::any(); }
+                        tctx_.cur = saved;
+                    }
+                    obj->attrs[a.name] = dv;
+                }
+                composeChain(sr);
+            }
+        };
+        for (ClassInfo* role : roleInfos) if (role) composeChain(role);
     }
     for (auto& rn : roleNames) nc->doneRoles.insert(rn);
     // `but VALUE` — a constant method named after the value's type (Str/Bool/Int/…).

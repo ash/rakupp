@@ -60,6 +60,14 @@
 #   * subscripting a Proxy an `is rw` method handed back reaches what it holds
 #   * `temp` in a METHOD body is undone on the way out
 #
+# …and the fourth sitting, from a document's cross-reference table:
+#   * a role mixed in at runtime composes the roles THAT role composes
+#   * a SUBSET outranks the package-relative short name of a nested class
+#   * an overriding `is rw` AT-POS/AT-KEY that `callsame`s is an assignment
+#     target — its local must not escape as a pointer
+#   * a NAMED argument is not an array index
+#   * `seek`/`tell` on a `:bin` handle are BYTE offsets
+#
 # Runs clean under Rakudo too.
 
 use lib $?FILE.IO.parent.add('../fixtures/pdf-util-lib').Str;
@@ -384,6 +392,60 @@ class Deref {
 my $deref = Deref.new;
 ck $deref.quietly, False, 'a method`s `temp` holds inside the body';
 ck $deref.auto,    True,  '…and is restored when the method returns';
+
+# ---- a runtime mixin composes the role's OWN role chain ------------------
+role CosBase { has Int $.obj-num is rw;  method cos-ok { 'base' } }
+role CosBool does CosBase { method content { 'bool:' ~ ?self } }
+my Bool $flag = True;
+$flag = $flag but CosBool;
+ck $flag.does(CosBase),  True,  'a mixin answers the role its role composes';
+ck $flag.cos-ok,         'base', '…and carries that role`s methods';
+ck $flag.obj-num.raku,   'Int',  '…and its attributes` type objects';
+my Int $n = 42;
+$n = $n but CosBool;
+ck $n.obj-num.raku,      'Int',  '…over a native Int too';
+
+# ---- a SUBSET beats the package-relative short name ----------------------
+my subset Boxed of Pair where { .key eq 'boxed' };
+class Wrap::Boxed { }
+class Wrap::Thing {
+    method ast returns Boxed { :boxed[1, 2] }
+}
+ck Wrap::Thing.ast.key, 'boxed', 'a subset outranks a same-named nested class';
+
+# ---- a custom `is rw` accessor that callsames writes through -------------
+class TiedArray is Array {
+    method AT-POS($p, :$check) is rw { my $val := callsame; $val }
+}
+my TiedArray $ta .= new;
+$ta[0] = 'Lab';
+ck $ta.elems,               1,     'an assignment through an overriding AT-POS lands';
+ck $ta[0],                  'Lab', '…and reads back';
+ck $ta.AT-POS(0, :check),   'Lab', 'a named argument is not an index';
+
+class TiedHash is Hash {
+    method AT-KEY($k, :$check) is rw { my $val := callsame; $val }
+}
+my TiedHash $th .= new;
+$th<k> = 5;
+ck $th<k>,                  5, 'the same for an overriding AT-KEY';
+ck $th.AT-KEY('k', :check), 5, '…called with the adverb its callsame forwards';
+
+# ---- seek/tell on a BINARY handle are byte offsets -----------------------
+my $tmp = $*TMPDIR.add("rakupp-seek-probe-{$*PID}.bin");
+$tmp.spurt: 'abcdefghij';
+{
+    my $fh = $tmp.open(:bin);
+    $fh.seek(0, SeekFromEnd);
+    ck $fh.tell, 10, '`tell` after a seek to the end is the file`s byte count';
+    $fh.seek(3, SeekFromBeginning);
+    ck $fh.tell, 3, '…and a seek to a byte offset lands on that byte';
+    ck $fh.read(4).decode('latin-1'), 'defg', '…which is where the next read starts';
+    $fh.seek(-2, SeekFromEnd);
+    ck $fh.read(2).decode('latin-1'), 'ij', 'SeekFromEnd counts back from the end';
+    $fh.close;
+}
+$tmp.unlink;
 
 # ---- `sub prefix:</>` owns the slash ------------------------------------
 # LAST in the file on purpose: from the declaration on, a bare `/` is that
