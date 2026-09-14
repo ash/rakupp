@@ -4891,6 +4891,24 @@ ExprPtr Parser::parsePrimary() {
             if (name == "INIT" && peek().kind != Tok::LBrace &&
                 peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
                 advance(); // consume INIT
+                // …and the operand may be a whole STATEMENT rather than an
+                // expression, exactly as `do`'s is: `state $ = INIT given try
+                // {require ::('PDF::Native::Filter::Predictors')} { … }` is how
+                // PDF decides once whether a native predictor module is there.
+                // Parsed as an expression, `given` read as a call to an
+                // undefined routine of that name.
+                if (isIdent("given") || isIdent("with") || isIdent("without") ||
+                    isIdent("if") || isIdent("unless") || isIdent("for") ||
+                    isIdent("while") || isIdent("until") || isIdent("loop") ||
+                    isIdent("repeat")) {
+                    auto u = std::make_unique<Unary>(); u->op = "do";
+                    auto be = std::make_unique<BlockExpr>();
+                    auto st = parseStatement();
+                    markLoopAsExpr(st.get());
+                    be->body.push_back(std::move(st));
+                    u->operand = std::move(be);
+                    return u;
+                }
                 return parseExpr(BP_ASSIGN);
             }
             // `proto sub NAME(|) {*}` / `multi sub NAME(…) {…}` as a TERM: the

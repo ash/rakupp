@@ -391,6 +391,34 @@ static bool ncStructEqv(const Value& a, const Value& b) {
 }
 
 static bool valueEqv(const Value& a, const Value& b) {
+    // A CYCLIC structure compares by shape, not by walking forever. A PDF page
+    // tree holds its parent (`:Parent($pages)`), so `is-deeply` over one
+    // recursed until the stack ran out and the process died with no diagnostic.
+    // A pair of containers already being compared higher up the walk is taken as
+    // equal: that is what makes two structures cyclic in the SAME way compare
+    // equal, and the only answer a finite walk can give.
+    struct EqvGuard {
+        static std::vector<std::pair<const void*, const void*>>& seen() {
+            static thread_local std::vector<std::pair<const void*, const void*>> v;
+            return v;
+        }
+        bool pushed = false;
+        ~EqvGuard() { if (pushed) seen().pop_back(); }
+    } eqvG;
+    {
+        const void* pa = a.arr() ? (const void*)a.arr()
+                       : a.hash() ? (const void*)a.hash()
+                       : (a.t == VT::Object && a.obj()) ? (const void*)a.obj() : nullptr;
+        const void* pb = b.arr() ? (const void*)b.arr()
+                       : b.hash() ? (const void*)b.hash()
+                       : (b.t == VT::Object && b.obj()) ? (const void*)b.obj() : nullptr;
+        if (pa && pb) {
+            auto& sv = EqvGuard::seen();
+            for (auto& e : sv) if (e.first == pa && e.second == pb) return true;
+            sv.push_back({pa, pb});
+            eqvG.pushed = true;
+        }
+    }
     // A Proxy is a container: compare what it HOLDS. `is-deeply $q<foo>, $('1','3')`
     // over URI::Query's list of Proxy containers compared containers against
     // strings and failed on type alone.
@@ -16184,6 +16212,17 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
 
     for (size_t i = 0; i < args.size(); i++) {
         Value& v = args[i];
+        // A class that COMPOSES Blob or Buf (`unit class PDF::IO::Blob does
+        // Blob[uint8]`, which is how PDF carries every encoded stream) is an
+        // OBJECT backed by one. Marshal the bytes it holds: without this it fell
+        // past every buffer arm below to the integer one, which passed the
+        // object's own address as the pointer — libz dereferenced that and the
+        // process died inside `inflate`.
+        if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
+            v.obj()->boxed.t == VT::Str &&
+            (v.obj()->boxed.hashKind == "Buf" || v.obj()->boxed.hashKind == "Blob" ||
+             v.obj()->boxed.hashKind == "utf8"))
+            v = v.obj()->boxed;
         NcSlot& s = slots[i];
         const Param* p = (prm && i >= pOff && i - pOff < prm->size()) ? &(*prm)[i - pOff] : nullptr;
         std::string pt = p ? p->type : "";
@@ -21327,7 +21366,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             static const std::set<std::string> natTy = {
                 "int", "int8", "int16", "int32", "int64", "uint", "uint8",
                 "uint16", "uint32", "uint64", "num", "num32", "num64", "str", "byte"};
-            if (tv->declare && natTy.count(tv->declType))
+            // …a natively typed SCALAR only. `my uint8 @a := …` binds a native
+            // ARRAY, which IS a container and which Rakudo accepts: PDF's
+            // password check is `my uint8 @computed := $.compute-user(…)`, and
+            // it could not run at all.
+            if (tv->declare && natTy.count(tv->declType) &&
+                !tv->name.empty() && tv->name[0] == '$')
                 throwTyped("X::Bind::NativeType", {{"name", tv->name}},
                            "Cannot bind to natively typed variable '" + tv->name +
                            "'; native types are not containers");
@@ -30244,6 +30288,21 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
                      (v.hashKind.empty() || v.hashKind == "Map")) {
                 for (auto& kv : *v.hash()) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); }
             }
+            // …and an OBJECT of a class that derives Hash slips the same way:
+            // its Capture is its entries as nameds. The line above takes only a
+            // bare Hash, so `PDF::IO::Crypt::RC4.new(:$doc, |$encrypt)` — where
+            // $encrypt is a PDF dictionary with its entry role mixed in — passed
+            // the whole dictionary as ONE POSITIONAL and the constructor refused
+            // it. (A hash-backed BUILT-IN — DateTime, Proxy, Set — is a VT::Hash
+            // with a hashKind and is still left alone, for the reason above.)
+            else if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
+                     v.obj()->boxed.t == VT::Hash && v.obj()->boxed.hash() &&
+                     v.obj()->boxed.hashKind.empty()) {
+                for (auto& kv : *v.obj()->boxed.hash()) {
+                    Value p = Value::pair(kv.first, kv.second); p.namedArg = true;
+                    args.push_back(std::move(p));
+                }
+            }
             // `|` on a PAIR passes it as a NAMED argument (`f(1, |(:tee<OUT>))`,
             // and the conditional form `|(:tee<OUT> if $on)` Test::Output uses).
             // A pair inside a slipped LIST stays positional — that is Rakudo's
@@ -33788,18 +33847,31 @@ Value Interpreter::eval(Expr* e) {
                 // carried the qualified spelling into the type's own name and read
                 // back as a different type from `Pointer[void]`. Canonicalise each
                 // argument the way a bare name resolves.
-                if (nt->ofType.find("NativeCall::") != std::string::npos) {
+                // …and a parameter that NAMES A LEXICAL bound to a type IS that
+                // type: `constant RC4_INT = uint32; Buf[RC4_INT]` is a buffer of
+                // 32-bit elements. Kept as the written word it was a plain
+                // byte buffer of the same ELEMENT count, so PDF sized OpenSSL's
+                // RC4 key schedule at 258 bytes where the library writes 1,032 —
+                // heap corruption, and an encrypted document crashed the process
+                // about half the time.
+                {
                     std::string canon;
                     size_t pos = 0;
                     while (pos <= nt->ofType.size()) {
                         size_t c = nt->ofType.find(',', pos);
                         std::string part = nt->ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
-                        canon += resolveClassAlias(part);
+                        std::string res = resolveClassAlias(part);
+                        if (res == part && !part.empty() && !isKnownTypeName(part) &&
+                            !isNativeTypeName(part) && !classes_.count(part) &&
+                            !subsets_.count(part))
+                            if (Value* bound = tctx_.cur->find(part))
+                                if (bound->t == VT::Type && !bound->s.empty()) res = bound->s;
+                        canon += res;
                         if (c == std::string::npos) break;
                         canon += ","; pos = c + 1;
                     }
                     ty.ofTypeM() = canon;
-                } else ty.ofTypeM() = nt->ofType;
+                }
                 ty.i = nt->defConstraint;
                 return ty;
             }

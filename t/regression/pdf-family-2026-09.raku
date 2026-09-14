@@ -68,6 +68,16 @@
 #   * a NAMED argument is not an array index
 #   * `seek`/`tell` on a `:bin` handle are BYTE offsets
 #
+# …and the fifth sitting, from the filters and the encryption dictionary:
+#   * `|$obj` on a Hash-derived object slips its entries as NAMED arguments
+#   * a type parameter may NAME a constant (`constant W = uint32; Buf[W]`)
+#   * `INIT` takes a whole STATEMENT as its operand, as `do` does
+#   * a native-typed ARRAY is a container and may be bound
+# (two more from that sitting are not pinned here: a class COMPOSING Blob
+# marshals its bytes to a native call — which needs a library to call — and
+# `eqv` no longer follows a cycle forever, which Rakudo itself does not
+# survive, so the comparison has nowhere to run.)
+#
 # Runs clean under Rakudo too.
 
 use lib $?FILE.IO.parent.add('../fixtures/pdf-util-lib').Str;
@@ -446,6 +456,38 @@ $tmp.spurt: 'abcdefghij';
     $fh.close;
 }
 $tmp.unlink;
+
+# ---- `|$obj` on a Hash-derived object slips its entries as nameds --------
+class Entries is Hash { }
+role EncryptEntries { }
+class Taker { has $.V; has $.R; submethod TWEAK(|c) { } }
+my $enc = Entries.new;
+$enc<V> = 2; $enc<R> = 3;
+$enc = $enc but EncryptEntries;
+ck Taker.new(|$enc).V, 2, 'a Hash-derived object slips as named arguments';
+ck Taker.new(|$enc).R, 3, '…every entry of it';
+
+# ---- a type parameter may NAME a constant -------------------------------
+sub wide-buf {
+    constant WORD = uint32;
+    Buf[WORD].allocate(4);
+}
+ck wide-buf().bytes,     16,       'Buf[CONSTANT] sizes by the type the constant names';
+ck wide-buf().of.^name,  'uint32', '…and reports it as its element type';
+
+# ---- `INIT` takes a whole STATEMENT as its operand -----------------------
+sub init-given  { state $x = INIT given 21   { $_ * 2 }; $x }
+sub init-with   { state $x = INIT with  5    { $_ * 3 }; $x }
+sub init-if     { state $x = INIT if True    { 9 };      $x }
+ck init-given, 42, '`INIT given` runs the statement and yields its value';
+ck init-with,  15, '…and `INIT with`';
+ck init-if,     9, '…and `INIT if`';
+
+# ---- a native-typed ARRAY may be bound ----------------------------------
+sub native-bytes { my uint8 @a = 1, 2, 3; @a }
+my uint8 @bound := native-bytes();
+ck @bound.elems,    3,       'a native-typed array is a container and binds';
+ck @bound.of.^name, 'uint8', '…keeping its element type';
 
 # ---- `sub prefix:</>` owns the slash ------------------------------------
 # LAST in the file on purpose: from the declaration on, a bare `/` is that
