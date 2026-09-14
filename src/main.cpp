@@ -3300,8 +3300,10 @@ int main(int argc, char** argv) {
     // ---- run (the default mode) --------------------------------------------
     if (!haveSrc) {
         if (rakupp::stdinIsTerminal() || rakupp::replForced()) {
-            // Bare `rakupp` at a terminal: an interactive session.
-            return rakupp::rakuppRepl(exePath, libPaths, g_quiet);
+            // Bare `rakupp` at a terminal: an interactive session. -M/-m
+            // reaches it the same way it reaches a program, as a `use` run
+            // before the first prompt — there is no `src` here to join it onto.
+            return rakupp::rakuppRepl(exePath, libPaths, g_quiet, preloadModules);
         }
         // Bare `rakupp` with stdin redirected — `echo … | rakupp`, `rakupp < f.raku`
         // — is a whole program arriving on stdin, exactly as before. Its name

@@ -1567,6 +1567,12 @@ public:
     // the L10N modules whose slang the rewrite above has already applied, so
     // their `sub EXPORT` failing to find `$*LANG` is expected, not news
     std::set<std::string> l10nApplied_;
+    // A REPL session is one token vector per LINE but one language throughout,
+    // so `use L10N::RU` typed at the prompt has to go on applying to the lines
+    // after it. These two carry it; off everywhere else, where a program is a
+    // single vector and "rewrite to the end of it" is already the whole story.
+    bool l10nSticky_ = false;
+    std::vector<std::string> l10nSessionLangs_;   // activated, in order
     // SLANG-PLAN: this Interpreter is the scratch HOST a slang module runs in —
     // `Raku.legacy` answers False there, so a slang's actions take their RakuAST
     // branch (the legacy one wants $*W and QAST, which nothing here has).

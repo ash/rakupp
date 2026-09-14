@@ -14,9 +14,10 @@ namespace rakupp {
 // Lives in the `rakupp` executable rather than the runtime library, so nothing
 // here is linked into the binaries `--exe` produces.
 // `quiet` (-q) skips the banner — python's -q, for a session that starts at
-// the prompt.
+// the prompt. `preload` is -M/-m: the modules a program would have been given
+// as a `use` line, run here before the first prompt.
 int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths,
-               bool quiet = false);
+               bool quiet = false, const std::vector<std::string>& preload = {});
 
 // --repl-after (python -i): run `src` — as `fileName`, with `args` as @*ARGS —
 // in the session's own interpreter, then hand the prompt over with everything

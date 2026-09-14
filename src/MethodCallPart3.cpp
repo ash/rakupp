@@ -4136,6 +4136,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 //     one: swallowing it unconditionally would hide a module that really did
 //     fail to load.
 void Interpreter::applyL10NSlang(const std::string& src, std::vector<Token>& toks) {
+    // A session that has already seen `use L10N::XX` rewrites this vector whole
+    // before looking for a pragma in it. The prompt hands us one vector per
+    // LINE, so a rewrite that runs to the end of the vector ends with the line
+    // unless the language is carried across. Off outside a session, where it
+    // costs one bool test.
+    if (l10nSticky_ && !l10nSessionLangs_.empty()) {
+        for (const std::string& lang : l10nSessionLangs_) {
+            TokenXform x;
+            try { x = l10nTokenXform(lang); } catch (...) { continue; }
+            if (x) x(toks);
+        }
+    }
     // This is on the parse path of every program ever run, so it opens with the
     // one check that costs nothing: a token's text comes from the source bytes,
     // so no `L10N::` in the source means no pragma to find.
@@ -4154,17 +4166,23 @@ void Interpreter::applyL10NSlang(const std::string& src, std::vector<Token>& tok
         size_t from = i + 2;
         while (from < toks.size() && toks[from].kind != Tok::Semicolon) from++;
         if (from < toks.size()) from++;
-        if (from >= toks.size()) continue;
         // Not installed, or shipping no `role L10N::<lang>`: say nothing and
         // leave it. The `use` itself is about to report that properly, and a
         // pre-pass is not the place to raise a module-resolution error.
         TokenXform x;
         try { x = l10nTokenXform(lang); } catch (...) { continue; }
         if (!x) continue;
+        // Handled — recorded BEFORE the "is there anything left to rewrite"
+        // test, because at a prompt there usually is not: `use L10N::RU;` on a
+        // line of its own rewrites nothing and still has to arm the session.
+        l10nApplied_.insert(mod.text);
+        if (l10nSticky_ && std::find(l10nSessionLangs_.begin(), l10nSessionLangs_.end(),
+                                     lang) == l10nSessionLangs_.end())
+            l10nSessionLangs_.push_back(lang);
+        if (from >= toks.size()) continue;
         std::vector<Token> rest(toks.begin() + from, toks.end());
         x(rest);
         std::copy(rest.begin(), rest.end(), toks.begin() + from);
-        l10nApplied_.insert(mod.text);
     }
 }
 

@@ -681,6 +681,7 @@ struct ReplCtx {
     bool quiet = false;   // -q: no banner
     std::string preSrc, preFile;      // --repl-after: the program to run first…
     std::vector<std::string> args;    // …and its @*ARGS
+    std::vector<std::string> preload; // -M/-m: modules to `use` before the prompt
 };
 
 int replMain(ReplCtx& ctx) {
@@ -703,9 +704,23 @@ int replMain(ReplCtx& ctx) {
         interp->srcFile_ = "<repl>";
         interp->execPath_ = ctx.exePath;
         interp->libPaths_.insert(interp->libPaths_.begin(), ctx.libPaths.begin(), ctx.libPaths.end());
+        // One language for the whole session: `use L10N::RU` typed at the
+        // prompt goes on applying to the lines after it, which it cannot do
+        // where each line is its own token vector unless the session says so.
+        interp->l10nSticky_ = true;
         return interp;
     };
     auto interp = fresh();
+    // -M/-m: the session begins as if `use <module>;` had been typed, which is
+    // what the same flags do to a program — main() joins them onto its first
+    // line. A module that will not load is reported and dropped; it should not
+    // cost the session.
+    for (const std::string& m : ctx.preload) {
+        try { interp->evalString("use " + m + ";", /*mainlinePH=*/true); }
+        catch (RakuError& e) { printError(interp->renderError(e, interp->btStyleForStderr())); }
+        catch (ParseError& e) { printError(std::string("Parse error: ") + e.what()); }
+        catch (std::exception& e) { printError(std::string("Internal error: ") + e.what()); }
+    }
     if (!ctx.preSrc.empty()) {
         // --repl-after: the program runs through the same path a typed
         // statement takes, so its declarations land in the session scope and
@@ -825,8 +840,10 @@ bool replForced() {
     return e && *e && std::strcmp(e, "0") != 0;
 }
 
-int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths, bool quiet) {
+int rakuppRepl(const std::string& exePath, const std::vector<std::string>& libPaths, bool quiet,
+               const std::vector<std::string>& preload) {
     ReplCtx ctx{exePath, libPaths, quiet};
+    ctx.preload = preload;
     // Same 1 GiB stack a script gets: recursion typed at the prompt should reach
     // as deep as recursion in a file.
     return rakuppMainOnBigStack([](void* p) { return replMain(*static_cast<ReplCtx*>(p)); }, &ctx);
