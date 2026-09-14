@@ -93,9 +93,11 @@ check 'an Int from MAIN is not the exit code', $rc, 0;
 check '…and is not printed either',            $out, '';
 
 # --- --exe: the compiled binary dispatches MAIN through its own entry point -
-my $v = run($*EXECUTABLE, '--version', :out, :err);
-my $banner = $v.out.slurp(:close); $v.err.slurp(:close);
-if $banner.contains('rakupp') {
+# The engine, by the name it answers to — the house idiom. This used to read
+# the `--version` banner for the string "rakupp", which stopped appearing in it,
+# and every compiled-mode case in t/regression/ silently skipped itself.
+my $rakupp = $*RAKU.compiler.name eq 'Raku++';
+if $rakupp {
     my $work = $*TMPDIR.add("main-sink-$*PID");
     mkdir $work;
     my $src = $work.add('m.raku');

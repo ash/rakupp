@@ -11,9 +11,11 @@
 # Each compile asserts "(native)": if a probe ever falls back to the bundled
 # interpreter, this file stops guarding native codegen and says so.
 
-my $v = run($*EXECUTABLE, '--version', :out, :err);
-my $banner = $v.out.slurp(:close); $v.err.slurp(:close);
-unless $banner.contains('rakupp') {
+# The engine, by the name it answers to — the house idiom. This used to read
+# the `--version` banner for the string "rakupp", which stopped appearing in it,
+# and every compiled-mode case in t/regression/ silently skipped itself.
+my $rakupp = $*RAKU.compiler.name eq 'Raku++';
+unless $rakupp {
     # only rakupp has --exe; under Rakudo there is nothing this file can test
     note 'main-args-exe: not rakupp, nothing to compile';
     say 'PASS';

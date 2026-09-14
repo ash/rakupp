@@ -11,6 +11,12 @@ void rakuppSetDocMode(bool on); // enable --doc (run DOC phasers + print rendere
 void rakuppSetLLException(bool on); // enable --ll-exception (full, uncollapsed backtraces)
 void rakuppSetStackBytes(size_t bytes); // --stack-size: the program thread's stack (default 1 GiB)
 void rakuppSetStageStats(bool on); // --stagestats: phase timings and module loads on stderr at exit
+// The name a COMPILED binary answers to: $*PROGRAM-NAME, and so the first line
+// of the MAIN usage text. A generated main() passes its own argv[0] here before
+// entering the runtime, because the program the user ran is that binary and not
+// the .raku file it was built from. Unset for the interpreter, where the program
+// IS the source file it was given.
+void rakuppSetProgramName(const std::string& name);
 
 // Parse and interpret `src`. Returns the process exit code.
 // This is the shared entry point used both by the `rakupp` CLI and by

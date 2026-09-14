@@ -24,9 +24,11 @@
 # "(native)" — a silent return to bundling would pass the output checks alone.
 # Contract: exit 0 + last line PASS.
 
-my $v = run($*EXECUTABLE, '--version', :out, :err);
-my $banner = $v.out.slurp(:close); $v.err.slurp(:close);
-unless $banner.contains('rakupp') {
+# The engine, by the name it answers to — the house idiom. This used to read
+# the `--version` banner for the string "rakupp", which stopped appearing in it,
+# and every compiled-mode case in t/regression/ silently skipped itself.
+my $rakupp = $*RAKU.compiler.name eq 'Raku++';
+unless $rakupp {
     # only rakupp has --exe; under Rakudo there is nothing this file can test
     note 'indirect-method-call-native: not rakupp, nothing to compile';
     say 'PASS';

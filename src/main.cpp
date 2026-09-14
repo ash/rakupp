@@ -866,6 +866,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "#endif\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
                 " const std::string&, const std::string&, const std::vector<std::string>&); void setupConsole();"
+                " void rakuppSetProgramName(const std::string&);"
                 " int rakuppRefuseInterpreterEval(int, char**); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
@@ -907,6 +908,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
+                "  rakupp::rakuppSetProgramName(exe);\n"
                 "  char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
                 "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";

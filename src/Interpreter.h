@@ -2128,7 +2128,13 @@ public:
     // before emitTest.
     int testLine() const { return curLine_; }
     void restoreTestLine(int l) { curLine_ = l; }
-    std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
+    std::string srcFile_;             // source file path as invoked
+    // $*PROGRAM-NAME when it is not the source file: a COMPILED binary IS the
+    // program, so it is named by the command that ran it (argv[0]), not by the
+    // .raku file it was built from — which on the user's machine may not even
+    // exist any more. Empty for an interpreted run, where the two are the same.
+    std::string progName_;
+    const std::string& progName() const { return progName_.empty() ? srcFile_ : progName_; }
     std::string srcFileAbs_;          // absolute source file path ($?FILE)
     std::string curDeclFile_;         // file whose top level is executing (module load switches it)
     size_t curDeclDepth_ = 0;         // callFrames depth when curDeclFile_ was set: a frame above it is a routine entered since

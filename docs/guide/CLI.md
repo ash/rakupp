@@ -1020,3 +1020,10 @@ refusing a good command line would be worse than accepting a bad one.
 compiled answers to the oracle matrix; it used to be that a compiled binary
 silently ran on argument lines the same program would refuse under the
 interpreter.
+
+A compiled binary also names *itself*. `$*PROGRAM-NAME`, `$*PROGRAM` and
+`$*EXECUTABLE` are the binary as it was invoked — `./analyze`, which is what
+the first line of the usage text prints — not the `.raku` file it was built
+from, which need not still exist on the machine that runs it. `$?FILE` and
+the diagnostics keep naming the source, where the code was written. This
+holds for `--bundle` and `--aot` as well as `--exe`.

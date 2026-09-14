@@ -163,6 +163,13 @@ void rakuppSetStackBytes(size_t bytes) { g_stackBytes = bytes; g_stackExplicit =
 // the module loads come from the interpreter's own collector (Interpreter.h).
 static bool g_stageStats = false;
 void rakuppSetStageStats(bool on) { g_stageStats = on; stageStatsEnable(on); }
+// A COMPILED binary records argv[0] here before it enters the runtime: the
+// program the user ran is that binary, not the .raku file behind it, and
+// $*PROGRAM-NAME (so the MAIN usage text) has to name what they can type
+// again. srcFile_ stays the source, which is what a diagnostic and $?FILE
+// want. Empty for the interpreter's own runs, where the two are the same.
+static std::string g_progName;
+void rakuppSetProgramName(const std::string& name) { g_progName = name; }
 namespace {
 struct StageClock {
     using clk = std::chrono::steady_clock;
@@ -265,6 +272,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 interp.srcFile_ = fileName;
                 interp.srcFileAbs_ = absSrcPath(fileName);
                 interp.execPath_ = exePath;
+                interp.progName_ = g_progName;
                 interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
                 interp.seedSrcLines(fileName, src);
                 if (int rc = declCheckRc(cachedProg); rc >= 0) return rc;
@@ -325,6 +333,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.llException_ = g_llException;
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
+        interp.progName_ = g_progName;
         // srcFile_ and the -I lib dirs are set above, before the L10N rewrite
         interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
@@ -363,6 +372,7 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
         interp.srcFile_ = fileName;
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
+        interp.progName_ = g_progName;
         return interp.run(prog);
     } catch (const RakuError& e) {
         std::cerr << e.message << "\n";

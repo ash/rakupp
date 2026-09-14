@@ -1458,7 +1458,7 @@ std::string Interpreter::mainUsage() {
     };
     for (auto& cand : cands) {
         if (!cand.code() || !cand.code()->params) continue;
-        std::string line = "  " + (srcFile_.empty() ? std::string("<program>") : srcFile_);
+        std::string line = "  " + (progName().empty() ? std::string("<program>") : progName());
         // Rakudo lists the OPTIONS first and the positionals after, whatever
         // order they were declared in — so the two are collected separately and
         // joined below. (The option list underneath keeps declaration order.)
@@ -14134,8 +14134,8 @@ Value Interpreter::dynVar(const std::string& name) {
     }
     if (name == "$*RAKU" || name == "$*PERL" || name == "$?RAKU" || name == "$?PERL") return rakuIntrospection(false);
     if (name == "$?FILE") return Value::str(fileConstNow());
-    if (name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; }
-    if (name == "$*PROGRAM-NAME") return Value::str(srcFile_);
+    if (name == "$*PROGRAM") { Value p = Value::str(progName()); p.hashKind = "IO"; return p; }
+    if (name == "$*PROGRAM-NAME") return Value::str(progName());
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
     if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
     if (name == "$*OUT" || name == "$*ERR" || name == "$*IN") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["std"] = Value::str(name == "$*ERR" ? "err" : name == "$*IN" ? "in" : "out"); return h; }
@@ -33480,8 +33480,8 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*CWD") { Value p = Value::str(cwdName()); p.hashKind = "IO"; return p; }
             if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL")
                 return rakuIntrospection(false);
-            if (ve->name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; } // running script, as IO::Path
-            if (ve->name == "$*PROGRAM-NAME") return Value::str(srcFile_);
+            if (ve->name == "$*PROGRAM") { Value p = Value::str(progName()); p.hashKind = "IO"; return p; } // running script, as IO::Path
+            if (ve->name == "$*PROGRAM-NAME") return Value::str(progName());
             if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
             if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
             if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {

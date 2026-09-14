@@ -103,7 +103,7 @@ my $one = 1;
 # …and here they keep the name that says more than X::AdHoc does. Rakudo throws
 # the bare X::AdHoc, so this half is the one thing in the file that is ours
 # alone — the `when` above is what has to agree, and does.
-if $*RAKU.compiler.name eq 'rakupp' {
+if $*RAKU.compiler.name eq 'Raku++' {
     my $a = thrown({ sub f($a, $b) { $a }; my &g = &f; g($one) });
     @fail.push("arity-keeps-name ({$a ?? $a.^name !! 'no throw'})")
         unless $a && $a.^name eq 'X::Signature::ArityMismatch';
@@ -149,7 +149,7 @@ for 'slurp' => { slurp($gone) }, 'spurt' => { spurt($gone, 'x') } -> $case {
 }
 # …and here the name says WHICH call failed, which is the whole reason to have
 # one. Rakudo cannot: it answers X::AdHoc to both.
-if $*RAKU.compiler.name eq 'rakupp' {
+if $*RAKU.compiler.name eq 'Raku++' {
     my %s = io-probe({ slurp($gone) });
     my %p = io-probe({ spurt($gone, 'x') });
     @fail.push("io-slurp-name (%s<name>)") unless %s<name> eq 'X::IO::Open';
