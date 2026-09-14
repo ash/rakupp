@@ -1338,6 +1338,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (mm != inv.hash()->end()) return mm->second;
             return methodCall(ex, m, args, rwArgs);
         }
+        // Everything else is Failure.FALLBACK: a method the Failure does not
+        // answer itself is a USE of the value, and a use throws the exception
+        // it carries — handled or not, as Rakudo has it. Without this the
+        // call fell through to the Hash the Failure is stored as, so
+        // `"x".Int.elems` answered 2 (the hash's key count) and a symbolic
+        // lookup that missed (`$::($lang)`, Date::Names) went on as if it had
+        // found something. The names that stay quiet are the Failure's own
+        // and Mu's introspection — asking WHAT a thing is does not use it.
+        static const std::set<std::string> quiet = {
+            "exception", "defined", "Bool", "so", "not", "handled", "self", "Failure",
+            "throw", "sink", "rethrow", "message", "raku", "perl", "new", "clone",
+            "WHAT", "WHICH", "WHERE", "HOW", "WHO", "DEFINITE", "isa", "does", "can",
+            "ACCEPTS", "item", "VAR", "mark-handled", "bless", "BUILDALL", "CREATE" };
+        if (!m.empty() && m[0] != '^' && !quiet.count(m)) {
+            (*inv.hash())["handled"] = Value::boolean(true);
+            auto mm = inv.hash()->find("message");
+            std::string msg = mm != inv.hash()->end() ? mm->second.toStr() : ex.toStr();
+            if (ex.t == VT::Object) throw RakuError{ex, msg};
+            throw RakuError{ex.t == VT::Type ? ex : Value::typeObj("X::AdHoc"), msg};
+        }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Pod") {
         auto& h = *inv.hash();
@@ -5050,6 +5070,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             }
         }
+        // A MIXIN over a built-in value — `Date.new(…) does Role` — is an
+        // Object whose class chain ends at the built-in, and nothing above
+        // walks past that boundary: the role's own methods answered, the
+        // Date's did not. Ask the boxed value itself, which is where the
+        // curated Dateish list and the probe live. Date::Calendar::Strftime
+        // is used exactly this way (`Date.new(…) does Date::Calendar::Strftime`),
+        // gates %u and %V on `.can('day-of-week')`, and emitted the specifier.
+        if (out.arr()->empty() && inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed &&
+            inv.obj()->boxed.t != VT::Object)
+            return methodCall(inv.obj()->boxed, "can", ValueList{args});
         return out;
     }
     if (inv.t == VT::Type && m == "raku") return Value::str(inv.s); // Int.raku -> "Int" (no parens)

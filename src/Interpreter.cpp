@@ -34110,13 +34110,34 @@ Value Interpreter::eval(Expr* e) {
             if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
                 // resolve exactly as if it were the variable/routine of that name
                 VarExpr tmp(nm); tmp.line = e->line;
-                try { return eval(&tmp); }
-                catch (RakuError&) {
+                auto noSuch = [&]() {
                     Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol"); // as the two sibling sites
                     (*f.hash())["message"]   = Value::str("No such symbol '" + nm + "'");
                     return f; // soft failure: falsey / undefined
+                };
+                // A PACKAGE-QUALIFIED variable that nobody declared is a miss,
+                // not an empty slot: `$::('Names::xx::dow')` on a language the
+                // dist never shipped answered an undefined Any (the "unset
+                // slot" reading `Foo::<bar>` gets), and Date::Names went on to
+                // build a names table out of nothing. Rakudo hands back
+                // X::NoSuchSymbol, and so does this — but only when neither the
+                // qualified global nor the package stash holds the name; a
+                // declared-but-undefined one still reads as its value.
+                if (nm.find("::") != std::string::npos && !tctx_.cur->find(nm)) {
+                    auto sep = nm.rfind("::");
+                    auto it = pkgStashes_.find(nm.substr(1, sep - 1));
+                    bool inStash = it != pkgStashes_.end() &&
+                                   it->second->find(nm.substr(sep + 2)) != it->second->end();
+                    if (!inStash) {
+                        auto sit = pkgStashes_.find(nm.substr(0, sep));   // sigil-less package spelling
+                        inStash = sit != pkgStashes_.end() &&
+                                  sit->second->find(nm.substr(sep + 2)) != sit->second->end();
+                    }
+                    if (!inStash) return noSuch();
                 }
+                try { return eval(&tmp); }
+                catch (RakuError&) { return noSuch(); }
             }
             // sigilless: constant, then type / builtin resolution (NameTerm rules)
             if (Value* p = tctx_.cur->find(nm)) return *p;
