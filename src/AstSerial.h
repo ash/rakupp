@@ -20,7 +20,11 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 21; // v21: BlockExpr.retRw and SubDecl.handles — `sub (…) is rw` as a TERM and
+inline constexpr uint32_t kAstSerialVersion = 22; // v22: Param.captureName — a signature TYPE CAPTURE
+// (`::T $x`) keeps its name apart from `type`, which a following constraint
+// overwrites (`::T Red::Model:U \type`); without it a cached module's capture
+// bound nothing and the body's `T` was undeclared
+// v21: BlockExpr.retRw and SubDecl.handles — `sub (…) is rw` as a TERM and
 // `method m handles <…>`; both are parser-consumed traits that live nowhere else,
 // so a cached module came back without them (the same hole SubDecl.retRw had)
 // v20: ClassDecl.isModuleDecl — `module` and `package` answer different metaobjects, and a cached unit that lost the distinction reported the wrong one (the same staleness hole `usesRakuAst` had at P0)

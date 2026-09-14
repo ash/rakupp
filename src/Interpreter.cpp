@@ -857,6 +857,7 @@ static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
 
 // ---- placeholder ($^a) collection ----
 static void collectPHExpr(const Expr* e, std::set<std::string>& out);
+static std::string privMixinKey(const std::string& name);
 static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
@@ -6455,6 +6456,27 @@ const Value* Interpreter::builtinRef(const std::string& name) {
     return &(builtinRefs_[name] = code);
 }
 
+// Would importing `key` = `val` REPLACE a routine already in scope with something
+// that cannot be called? Some of rakupp's built-in module surfaces publish a name
+// as a bare TYPE-OBJECT placeholder — NativeCall's export list carries
+// `&trait_mod:<is>` that way, since the trait it stands for is built into the
+// engine and has no Raku routine to point at. Harmless until another module
+// re-exports that same list: NativeLibs copies NativeCall's exports into its own
+// (`CHECK for NativeCall::EXPORT::.keys`), so `use NativeLibs` dropped the
+// placeholder over whatever `trait_mod:<is>` candidates were already imported —
+// and every user-defined `is` trait in the file then did NOTHING, silently. That
+// is how Red lost its columns: `use Red` pulls NativeLibs in, and `is column`
+// stopped being a trait at all (issue #77). A placeholder never displaces a real
+// routine; two real routines still follow the ordinary last-wins import rule.
+bool Interpreter::importWouldShadowRoutine(const std::string& key, const Value& val) {
+    if (key.empty() || key[0] != '&' || val.t == VT::Code) return false;
+    if (!rtIsDefined(val) || val.t == VT::Type) {
+        Value* cur = tctx_.cur ? tctx_.cur->find(key) : nullptr;
+        if (cur && cur->t == VT::Code) return true;
+    }
+    return false;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
     // the evaluated `use Mod EXPR, …` arguments belong to THIS load — take them
     // now, before the module's own `use` statements run through here again
@@ -6507,7 +6529,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                     bool want = reqAll || reqNames.count(bare) != 0;
                     for (const std::string& tag : se.tags)
                         if ((tag == "DEFAULT" && reqDefault) || tag == "MANDATORY" || reqTags.count(tag)) { want = true; break; }
-                    if (want && !mainlineSubNames_.count(se.key)) tctx_.cur->define(se.key, se.value);
+                    if (want && !mainlineSubNames_.count(se.key) &&
+                        !importWouldShadowRoutine(se.key, se.value))
+                        tctx_.cur->define(se.key, se.value);
                 }
             }
         }
@@ -6519,7 +6543,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             try {
                 Value res = callCallable(it->second, eargs);
                 if (res.t == VT::Hash && res.hash())
-                    for (auto& kv : *res.hash()) tctx_.cur->define(kv.first, kv.second);
+                    for (auto& kv : *res.hash())
+                        if (!importWouldShadowRoutine(kv.first, kv.second))
+                            tctx_.cur->define(kv.first, kv.second);
             } catch (RakuError& e) {
                 // For `use`/`need` a module's own refusal is the `use` failing,
                 // and it propagates — Rakudo aborts compilation and exits 1.
@@ -6906,6 +6932,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                             // real export of a real container (roast's gh2979.t).
                             if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
                                 continue;
+                            if (importWouldShadowRoutine(kv.first, kv.second)) continue;
                             tctx_.cur->define(kv.first, kv.second);
                         }
                 } catch (RakuError& e) {
@@ -12063,6 +12090,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
                     p.isCopy || p.defaultVal || p.subSig || p.litVal ||
                     p.whereExpr || p.defConstraint || p.coerce ||
+                    p.typeCapture ||   // `::T $x` binds the NAME T as well as $x
+
                     (!p.type.empty() && isCoercionSubset(p.type)) || // `subset CC of Str()`: binds coerced
                     (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
                     { simple = 0; break; }
@@ -12491,6 +12520,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 (v.t == VT::Array) && !v.itemized)
                 v.itemized = true;
             env->define(slotName(p, pidx), v);
+            // `::T $x` — a TYPE CAPTURE names the type of whatever was bound, for
+            // the rest of the signature and the whole body. The name was declared
+            // at parse time (so a later `T` is not "undeclared") but never bound
+            // to anything, so it answered a type object literally called `T`:
+            // Rakudo says Int for `f(42)`. Red's `method add-column(::T
+            // Red::Model:U \type, …)` then passes that `T` on and asks
+            // `T.^can($name)`, which is as far as a model's columns got (issue #77).
+            if (p.typeCapture && !p.captureName.empty())
+                env->define(p.captureName, v.t == VT::Type ? v : Value::typeObj(v.typeName()));
             // POSITIONAL attributive param `method set-body($!body)`: the bound
             // value writes through to the invocant's attribute (Cro's
             // MessageWithBody sets bodies this way)
@@ -18969,6 +19007,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (selfp && selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
                 selfp->hash() && selfp->hash()->count("\x01cls"))
                 return &(*selfp->hash())["\x01" "a" + ve->name];
+            // an ATTRIBUTE/PARAMETER meta-object with a role mixed in keeps that
+            // role's attributes as plain keys (see the read path): a role method
+            // WRITING its own `$!x` has to reach the same slot its reader does.
+            if (selfp && selfp->t == VT::Hash && selfp->hash() &&
+                (selfp->hashKind == "Attribute" || selfp->hashKind == "Parameter")) {
+                auto& hm = *selfp->hash();
+                const std::string pk = privMixinKey(ve->attrBare);
+                if (hm.count(pk)) return &hm[pk];            // the role's private slot
+                if (hm.count(ve->attrBare)) return &hm[ve->attrBare];  // …or its public one
+                return &hm[ve->name[1] == '!' ? pk : ve->attrBare];    // neither yet: make the right one
+            }
             if (selfp && selfp->t == VT::Object && selfp->obj()) {
                 // record the attr's declared type for the assignment check
                 // (`$.method = $m.uc` with `has RequestMethod $.method is rw`
@@ -28548,15 +28597,34 @@ Value Interpreter::evalBinary(Binary* b) {
             // back matching nothing.
             bool allPairs = !rc->args.empty();
             for (auto& a : rc->args) if (a->kind != NK::Pair) { allPairs = false; break; }
+            // The positional presets the role's single PUBLIC attribute. A
+            // private one does not count and a second public one makes the form
+            // an error — both are X::Role::Initialization in Rakudo. Counting
+            // EVERY attribute got the arity wrong in both directions: a role
+            // with a private one BESIDE its public was refused, and a role whose
+            // only attribute was private had that private one preset. The first
+            // is `Red::Attr::Column` exactly (`has %.args; has Red::Column
+            // $!column;`), so `$attr does Red::Attr::Column(%column)` fell
+            // through to the default constructor — "only takes named arguments"
+            // — every Red model came out with no columns, and `CREATE TABLE
+            // person ()` is a SQLite syntax error (issue #77).
+            const ClassAttr* rolePub = nullptr;
+            int rolePubs = 0;
+            if (ci != classes_.end() && ci->second)
+                for (auto& a : ci->second->attrs) if (a.pub) { rolePubs++; rolePub = &a; }
             bool onePositional = rc->args.size() == 1 && ci != classes_.end() &&
-                                 ci->second && ci->second->attrs.size() == 1 &&
-                                 rc->args[0]->kind != NK::Pair;
+                                 ci->second && rc->args[0]->kind != NK::Pair;
+            if (onePositional && ci->second->isRole && rolePubs != 1)
+                throwTypedV("X::Role::Initialization",
+                            {{"role", Value::typeObj(ci->second->name)}},
+                            "Can only supply an initialization value for a role if it has a single "
+                            "public attribute, but this is not the case for '" + ci->second->name + "'");
             if (ci != classes_.end() && ci->second && ci->second->isRole &&
                 (onePositional || allPairs)) {
                 // (attribute name, value) for each preset the form carries
                 std::vector<std::pair<std::string, Value>> presets;
                 if (onePositional)
-                    presets.emplace_back(ci->second->attrs[0].name, eval(rc->args[0].get()));
+                    presets.emplace_back(rolePub->name, eval(rc->args[0].get()));
                 else
                     for (auto& a : rc->args) {
                         auto* pe = static_cast<PairExpr*>(a.get());
@@ -29192,6 +29260,11 @@ Value Interpreter::evalBinary(Binary* b) {
 // DECLARED TYPE object, exactly as a class's own attribute does. Bare Any left
 // `$att.cos .= new` with nothing to call `new` on — PDF::COS::Tie mixes the role
 // carrying `has COSAttr $.cos` into an Attribute and then builds it in place.
+// The map key a role's PRIVATE attribute takes when the role is mixed into an
+// Attribute/Parameter meta-object (a Hash). Prefixed with a control byte so it
+// can never be reached as a method name — see the seeding loop in mixinValue.
+static std::string privMixinKey(const std::string& name) { return "\x01" "p" + name; }
+
 static Value mixinAttrDefault(const ClassAttr& a) {
     if (!a.type.empty() && a.type != "Mu" && a.type != "Any")
         return Value::typeObj(a.type);
@@ -29273,7 +29346,16 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         std::function<void(ClassInfo*)> seedRole = [&](ClassInfo* role) {
             if (!role || !seeded.insert(role).second) return;
             for (auto& a : role->attrs) {
-                if (base.hash()->count(a.name)) continue;
+                // A PRIVATE attribute is seeded under a key no method call can
+                // reach. Under its bare name it became a de-facto accessor and
+                // SHADOWED the role's own method of that name: Red::Attr::Column
+                // has `has Red::Column $!column` beside `method column`, so
+                // `$attr.column` answered the empty attribute — a Red::Column type
+                // object — and never ran the method that builds one (issue #77).
+                // A PUBLIC attribute keeps the bare key, which is what serves its
+                // accessor and what `%!args` reads back through.
+                const std::string key = a.pub ? a.name : privMixinKey(a.name);
+                if (base.hash()->count(key)) continue;
                 Value dv = mixinAttrDefault(a);
                 if (a.hasDefVal) dv = a.defVal;
                 else if (a.def) {
@@ -29282,7 +29364,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
                     try { dv = eval(const_cast<Expr*>(a.def)); } catch (...) { dv = Value::any(); }
                     tctx_.cur = saved;
                 }
-                (*base.hash())[a.name] = dv;
+                (*base.hash())[key] = dv;
             }
             for (auto& sub : role->doneRoles) {
                 roles.arr()->push_back(Value::str(sub));
@@ -33635,6 +33717,24 @@ Value Interpreter::eval(Expr* e) {
                     selfp->hash() && selfp->hash()->count("\x01cls")) {
                     auto it = selfp->hash()->find("\x01" "a" + ve->name);
                     return it != selfp->hash()->end() ? it->second : Value::any();
+                }
+                // …and self is an ATTRIBUTE or PARAMETER meta-object, with a role
+                // mixed into it: the role's own attributes are plain keys in that
+                // same map — where the mixin seeds them, so that the holder of the
+                // ClassAttr sees them. The ACCESSOR spelling already read them, by
+                // falling through to the method-call arm at the bottom; `$!x` read
+                // the sigil's default instead. So a role method could not see the
+                // state its own trait had just set: `$attr does Red::Attr::Column(%args)`
+                // composed, and `Red::Column.new: |%!args` inside it built from
+                // nothing, so every Red model came out with no columns and
+                // `CREATE TABLE person ()` is a SQLite syntax error (issue #77).
+                if (ve->name[1] == '!' && selfp->t == VT::Hash && selfp->hash() &&
+                    (selfp->hashKind == "Attribute" || selfp->hashKind == "Parameter")) {
+                    // a PRIVATE one sits under a key no method call can reach; a
+                    // public one under its bare name, which its accessor shares
+                    auto it = selfp->hash()->find(privMixinKey(ve->attrBare));
+                    if (it == selfp->hash()->end()) it = selfp->hash()->find(ve->attrBare);
+                    if (it != selfp->hash()->end()) return it->second;
                 }
                 if (selfp && selfp->t == VT::Object && selfp->obj()) {
                     const std::string& an = ve->attrBare;   // built once, at parse

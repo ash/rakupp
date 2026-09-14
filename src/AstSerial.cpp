@@ -162,7 +162,7 @@ template <class IO> void F(IO& io, NqpOpc& x)      { if constexpr (IO::reading) 
 template <class IO> void ioParam(IO& io, Param& p) {
     F(io, p.name); F(io, p.sigil); F(io, p.type);
     ioExpr(io, p.whereExpr); ioExpr(io, p.litVal); ioExpr(io, p.defaultVal);
-    F(io, p.defaultRaku); F(io, p.hadWhere); F(io, p.typeCapture);
+    F(io, p.defaultRaku); F(io, p.hadWhere); F(io, p.typeCapture); F(io, p.captureName);
     F(io, p.namedKey); F(io, p.aliasBoth); ioVec(io, p.aliasKeys);
     F(io, p.pod); F(io, p.slurpyKind); F(io, p.named); F(io, p.slurpy);
     F(io, p.optional); F(io, p.required); F(io, p.invocant);

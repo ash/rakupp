@@ -5235,15 +5235,51 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // walking `while $obj.^find_method('type')` loop past the leaf type
             // and call `.type` on an Int (Data::TypeSystem's is-full-array).
             Value probeInv = inv;
+            // A SUBSET probes as its base type — `UInt` is an Int and has exactly
+            // Int's methods. Without this it had no sentinel at all, so every name
+            // came back as a method object: Red asks
+            // `$attr.type.^find_method("red-type-db-methods")` of each column's
+            // declared type and then CALLS what it is handed, which died on a UInt
+            // column for eleven of its test files (issue #77).
+            std::string tn = inv.t == VT::Type ? inv.s : std::string();
+            for (int hop = 0; hop < 4 && !tn.empty(); hop++) {
+                auto sit = subsets_.find(tn);
+                if (sit == subsets_.end() || sit->second.base.empty() || sit->second.base == tn) break;
+                tn = sit->second.base;
+            }
+            // …and the ones the LANGUAGE defines, which are not in `subsets_`
+            // because no Raku `subset` statement declared them here
+            if (tn == "UInt" || tn == "IntStr" || tn == "int" || tn == "uint" ||
+                tn == "int8" || tn == "int16" || tn == "int32" || tn == "int64" ||
+                tn == "uint8" || tn == "uint16" || tn == "uint32" || tn == "uint64" ||
+                tn == "byte" || tn == "Priority") tn = "Int";
+            else if (tn == "NumStr" || tn == "num" || tn == "num32" || tn == "num64") tn = "Num";
+            else if (tn == "StrStr") tn = "Str";
             if (inv.t == VT::Type && !classes_.count(inv.s)) {
-                if (inv.s == "Str") probeInv = Value::str("");
-                else if (inv.s == "Int") probeInv = Value::integer(0);
-                else if (inv.s == "Num") probeInv = Value::number(0);
-                else if (inv.s == "Bool") probeInv = Value::boolean(false);
+                if (tn == "Str") probeInv = Value::str("");
+                else if (tn == "Int") probeInv = Value::integer(0);
+                else if (tn == "Num") probeInv = Value::number(0);
+                else if (tn == "Bool") probeInv = Value::boolean(false);
+                else if (tn == "Array" || tn == "List" || tn == "Positional") probeInv = Value::array();
+                else if (tn == "Hash" || tn == "Map" || tn == "Associative") probeInv = Value::makeHash();
+                // Date/DateTime answer their own methods and nothing else's, so the
+                // sentinel has to be one of them — built through the ordinary
+                // constructor, which reads a clock and touches nothing else.
+                else if (tn == "DateTime" || tn == "Date") {
+                    try { ValueList none; probeInv = methodCall(Value::typeObj(tn), "now", none); }
+                    catch (...) { probeInv = inv; }
+                }
             }
             if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
                 probeInv.t != VT::Any && probeInv.t != VT::Nil &&
                 probeMethodExists(probeInv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
+                return Value::typeObj("Mu");
+            // `Mu` and `Any` are the ROOT types: anything they have, every other
+            // type has too. So a name that is not even on an Int cannot be on
+            // them, and this probe only ever turns a wrong YES into a right NO —
+            // never the reverse, which is why the answer is not read positively.
+            if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
+                probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
             code.code()->name = mn; code.code()->isMethod = true;

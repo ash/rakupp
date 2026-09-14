@@ -3218,6 +3218,42 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
+            // `.^add_multi_method($name, $meth)` — the same, as a multi CANDIDATE:
+            // it joins whatever group that name already holds instead of replacing
+            // it. Red generates one comparison method per column this way
+            // (`type.^add_multi_method: $attr.name.substr(2), method (Mu:U:) {…}`),
+            // so without it a model's columns stopped at the first one (issue #77).
+            if (m == "add_multi_method" && args.size() >= 2) {
+                noteSymbolMutation("runtime .^add_multi_method");
+                const std::string mname = args[0].toStr();
+                Value cand = args[1];
+                // a plain sub installed as a method takes the invocant as its first
+                // positional, exactly as the single-method path clones it to do
+                if (cand.t == VT::Code && cand.code() && !cand.code()->isMethod &&
+                    !cand.code()->subAsMethod) {
+                    auto clone = std::make_shared<Callable>(*cand.code());
+                    clone->subAsMethod = true;
+                    Value c2; c2.t = VT::Code; c2.setCode(std::move(clone));
+                    cand = std::move(c2);
+                }
+                auto it = ci->methods.find(mname);
+                if (it != ci->methods.end() && it->second.t == VT::Code && it->second.code() &&
+                    it->second.code()->isMultiDispatcher)
+                    it->second.code()->candidates.push_back(cand);
+                else {
+                    Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+                    disp.code()->name = mname;
+                    disp.code()->isMultiDispatcher = true;
+                    disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
+                    // an existing single method of that name becomes the first candidate,
+                    // so adding a multi beside it does not silently drop it
+                    if (it != ci->methods.end() && it->second.t == VT::Code)
+                        disp.code()->candidates.push_back(it->second);
+                    disp.code()->candidates.push_back(cand);
+                    ci->methods[mname] = disp;
+                }
+                return args[1];
+            }
             if (m == "add_parent" && !args.empty()) { // .^add_parent(Type) — runtime inheritance
                 // Test::Mock builds a mock type with `Metamodel::ClassHOW.new_type`
                 // then `.^add_parent($mocked)` so the mock is-a the mocked type;
@@ -5552,7 +5588,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                return false; }())) &&
         !args.empty() && args[0].t == VT::Type) {
         static const std::set<std::string> howOps = {
-            "add_method", "add_attribute", "add_parent", "add_role", "add_fallback",
+            "add_method", "add_multi_method", "add_attribute", "add_parent", "add_role", "add_fallback",
             "compose", "compose_repr", "compose_attributes", "set_name", "set_shortname",
             "set_ver", "set_auth", "set_api", "set_rw",
             "publish_method_cache", "publish_type_cache", "invalidate_method_caches",

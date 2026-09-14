@@ -1207,6 +1207,9 @@ public:
     // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
     // handed a hook; with none it defaults to PASS. Every site that builds its
     // own Regex needs this, or one pattern answers differently in each of them.
+    // An import must not drop a bare type-object PLACEHOLDER over a routine of
+    // the same name that is already in scope (see the definition).
+    bool importWouldShadowRoutine(const std::string& key, const Value& val);
     struct GrammarHooks codeAssertHooks();
     static bool patHasCodeAssert(const std::string& pat);
     // The pattern a `<{ … }>` block's value stands for, compiled once per

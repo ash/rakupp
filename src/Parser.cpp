@@ -6908,6 +6908,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // the shared var/named/default handling so it can type a following param.
         if (isOp("::") && peek().kind == Tok::Ident) {
             advance(); p.type = advance().text; p.typeCapture = true;
+            p.captureName = p.type;   // a following constraint overwrites `type`, never this
             // a type capture DECLARES its name for the unit: `::T $x` makes a
             // later bare `T` a legitimate (captured) type, not an undeclared one
             declTypeNames_.insert(p.type);

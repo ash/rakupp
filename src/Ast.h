@@ -551,6 +551,10 @@ struct Param {
                              // (priming a named param turns it into `:$a = <primed value>`)
     bool hadWhere = false;   // residual-signature copies can't own whereExpr; remember it was there
     bool typeCapture = false; // `::T $x` — `type` names a type variable, not a real type
+    // …and the capture's NAME, kept apart from `type` because a capture may ALSO
+    // carry a constraint (`::T Red::Model:U \type`), where `type` is the
+    // constraint and this is the name the body reads the bound type back through.
+    std::string captureName;
     std::string namedKey; // external name for `:name($var)` (else = var name)
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
     std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers
