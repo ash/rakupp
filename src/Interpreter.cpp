@@ -9543,8 +9543,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         ? rakuAstClass(pn) : nullptr;
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
                 else if (rakuAstExtra) ci->extraParents.push_back(*rakuAstExtra);
-                else if (!isKnownTypeName(pn))
-                    pendingIsTraits.push_back(pn);
+                // A BUILT-IN parent that arrives here rather than in the parent slot:
+                // `class C does R is Str` puts the role in the slot first, so the
+                // `is Str` lands among the extras and was dropped — the class was
+                // not a Str at all. PDF::COS::TextString is declared
+                // `also does PDF::COS; also is Str;` and could not bind its own
+                // `sub pdfdoc-encode(Str $str)`.
+                else if (isKnownTypeName(pn)) {
+                    if (ci->nativeParent.empty()) ci->nativeParent = pn;
+                }
+                else pendingIsTraits.push_back(pn);
             }
             // -------- role composition helpers --------
             // a stub body is a bare `...` / `!!!` — in a role it declares a
@@ -11373,6 +11381,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 tctx_.curGivenFrame = savedGF;
                 if (topicSlot && topicChanged(env->vars["$_"], topic))
                     *topicSlot = env->vars["$_"];   // write the alias back
+                // …and the ELSE branch of `with`/`without` aliases the topic too:
+                // `with %h<k> { } else { $_ = … }` writes through the container, which
+                // is how PDF initialises its document ID. No slot is taken up front
+                // there — the value is undefined, and asking for its lvalue would
+                // autovivify the key whether or not the block assigns — so take it
+                // now, only because something did.
+                else if (skip && g->defGuard && topicChanged(env->vars["$_"], topic))
+                    if (Value* s = topicAliasSlot(g->topic.get(), /*skip=*/false, /*allowObject=*/true))
+                        *s = env->vars["$_"];
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return r;
             }
@@ -11407,6 +11424,24 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         bindParams(g->elseParams, one, scope);
                     }
                     else if (!g->elseVar.empty()) scope->define(g->elseVar, topic); // else -> $pos { }
+                    // The ELSE branch of `with`/`without` aliases the topic exactly as
+                    // the main branch does: `with %h<k> { } else { $_ = … }` writes
+                    // through the container (PDF initialises its document ID that way).
+                    // The slot is taken only if something actually assigned — asking
+                    // for the lvalue of an undefined element up front would autovivify
+                    // it whether or not the block writes.
+                    struct LazyTopicWrite {
+                        Env* sc; Value orig; std::function<void(const Value&)> write;
+                        ~LazyTopicWrite() {
+                            if (!sc || !write) return;
+                            auto it = sc->vars.find("$_");
+                            if (it != sc->vars.end() && topicChanged(it->second, orig)) write(it->second);
+                        }
+                    } ltw{g->defGuard ? scope.get() : nullptr, topic,
+                          [this, g](const Value& v) {
+                              if (Value* sl = topicAliasSlot(g->topic.get(), /*skip=*/false,
+                                                             /*allowObject=*/true)) *sl = v;
+                          }};
                     try { return execBlock(g->elseBody.get(), scope); }
                     catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
                 }
@@ -13279,6 +13314,16 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             score += 4; // a satisfied where-constraint is more specific
         }
     }
+    // An argument a SLURPY swallows is bound LESS specifically than one a declared
+    // parameter takes, and the per-parameter comparison can only say so if it has
+    // an entry for it. Unpadded, two such candidates had vectors of different
+    // LENGTH, which sends betterCandidate to the summed score — where one
+    // constrained parameter outscores two untyped ones however the rest of the
+    // arguments are bound. PDF::COS declares `multi method coerce($a is raw,
+    // $b is raw)` above `multi method coerce(%dict!, |c)`, and every two-argument
+    // call went to the second, which coerced nothing and said nothing.
+    if (perParam)
+        for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(-1);
     // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
     // that named arg wasn't passed — `multi MAIN(:$test!)` must lose to the
     // default candidate on a bare invocation. A supplied match adds specificity,
@@ -13343,13 +13388,29 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // A large fixed boost approximates that lexicographic rule.
             score += p.required ? 32 : 4;  // (doubled with the positional scale)
         }
-        // an unsupplied named with a DEFAULT satisfies its own `where` at bind
-        // time; dispatch must not evaluate the default (a side-effecting one
-        // ran once per candidate scored and again at bind — Rakudo runs it once)
-        if (p.whereExpr && !(!supplied && p.defaultVal)) {
+        // An unsupplied named with a DEFAULT is checked against the DEFAULT: in
+        // Rakudo a failing `where` loses the candidate, it does not throw at bind.
+        // Skipping the evaluation here (to keep a side-effecting default from
+        // running twice) meant the candidate won and then died —
+        // `multi method save-as(IO() $iop, Bool :preserve($) where .so && … = True, …)`
+        // is how PDF chooses incremental update, and every plain `.save-as` for a
+        // document with no reader landed on it. A default that both has a `where`
+        // AND side effects now runs twice; a wrong dispatch is the worse of the two.
+        if (p.whereExpr) {
             Value v = supplied ? sval
                     : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
+            if (!supplied && p.defaultVal) {
+                auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+                if (selfForWhere) denv->define("self", *selfForWhere);
+                auto dsaved = tctx_.cur; tctx_.cur = denv;
+                try { v = eval(p.defaultVal.get()); }
+                catch (...) { tctx_.cur = dsaved; return -1; }
+                tctx_.cur = dsaved;
+            }
             auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            // a named's `where` may read the invocant's state too (PDF's reads
+            // `$!flush` and calls `self!is-indexed`)
+            if (selfForWhere) env->define("self", *selfForWhere);
             if (!p.name.empty()) env->define(p.name, v);
             env->define("$_", v);
             auto saved = tctx_.cur; tctx_.cur = env;
@@ -19579,7 +19640,7 @@ std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
 // whole array/hash has nowhere to write back to. `skip` means the body will not run
 // (`with` on an undefined topic), and then the slot is not taken at all, so a missing
 // key is not autovivified just by being tested.
-Value* Interpreter::topicAliasSlot(Expr* topic, bool skip) {
+Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
     if (!topic || skip) return nullptr;
     if (topic->kind == NK::VarExpr) {
         auto* tv = static_cast<VarExpr*>(topic);
@@ -19597,6 +19658,12 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip) {
         if (!base) return nullptr;
         bool plain = (base->t == VT::Hash && base->hash() && base->hashKind.empty()) ||
                      (base->t == VT::Array && base->arr() && !base->isList);
+        // …and an OBJECT backed by one, when the caller has already established
+        // that the block assigned: `with self<ID> { } else { $_ = [$.id xx 2] }`
+        // is how PDF initialises a document ID, and self is a Hash-backed
+        // PDF::COS::Dict whose own ASSIGN-KEY is what the store must go through.
+        if (!plain && allowObject && base->t == VT::Object && base->obj())
+            plain = true;
         if (!plain) return nullptr;
     }
     else return nullptr;
@@ -21657,7 +21724,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         rhs.readonly = false;
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
-            if (lv->hash()->count("STORE")) { Value r = proxyStore(*lv, rhs); return sink ? Value::any() : r; }
+            // The VALUE of `$proxy = v` is the container, so reading it runs FETCH —
+            // not whatever STORE happened to return. PDF::COS::Tie's STORE ends on
+            // a bookkeeping `$got = 1`, so `my $root = $pdf.Root = {…}` bound the
+            // Int 1 instead of the dictionary it had just coerced. In SINK context
+            // nobody reads it, and FETCH may have side effects, so it is not run.
+            if (lv->hash()->count("STORE")) {
+                Value stored = *lv;               // lvalue() may invalidate lv
+                proxyStore(stored, rhs);
+                return sink ? Value::any() : deproxy(stored);
+            }
         }
         // …and so does a USER container type: `has %.Converter is
         // DBDish::TypeConverter` makes the attribute an instance of that type,
@@ -21728,7 +21804,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             "Type check failed in assignment; the value does not "
                             "satisfy the attribute's where constraint");
         }
-        if (a->op == "=" && (a->target->kind == NK::MethodCall || selfAttrTarget) &&
+        // …but NIL is not a store: it RESETS the slot to the attribute's own
+        // default, which the arm further down turns into the declared type object.
+        // Checked as a value it failed against any SUBSET type — `$!prev = Nil` on
+        // a `has UInt $.prev` died "expected UInt but got Nil", which is how
+        // PDF::IO::Writer clears the previous-xref offset before each body.
+        if (a->op == "=" && rhs.t != VT::Nil &&
+            (a->target->kind == NK::MethodCall || selfAttrTarget) &&
             !tctx_.lastLvalueAttrType.empty()) {
             std::string aty = tctx_.lastLvalueAttrType;
             tctx_.lastLvalueAttrType.clear();

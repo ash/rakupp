@@ -5110,12 +5110,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (cut != std::string::npos) n = n.substr(cut + 2);
             return Value::str(n);
         }
-        // `.^mixin(Role)` is a COPYING mixin — exactly `but`'s semantics. It has to
-        // answer here, ahead of the `tobj` collapse below, which replaces an object
-        // invocant with its bare type object and so loses the thing to mix into.
+        // `.^mixin(Role)` mixes IN PLACE — it reblesses the object itself, so every
+        // reference to it sees the role, which is what separates it from `but`.
+        // (It answers here, ahead of the `tobj` collapse below, which would replace
+        // an object invocant with its bare type object and lose the thing to mix
+        // into.) As a copy it was a silent no-op for its callers: PDF::COS::Tie's
+        // `method mixin($role) { $.^mixin($role); $.tie-init }` is how every PDF
+        // dictionary takes on its entry type, and the object came back unchanged.
         if (mm == "mixin") {
             Value r = inv;
-            for (auto& a : args) r = mixinValue(std::move(r), a, true);
+            for (auto& a : args) r = mixinValue(std::move(r), a, /*copy=*/false);
             return r;
         }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());

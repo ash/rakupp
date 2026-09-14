@@ -1698,7 +1698,15 @@ ExprPtr Parser::parsePrefix(bool tight) {
             auto u = std::make_unique<Unary>();
             // the operand parses "tight" (its own postfixes stop at a space-preceded
             // `.method`), so `^30 .map` is (^30).map while `^30.map` stays ^(30.map).
-            u->op = o; u->operand = parsePrefix(true);
+            // …unless a LEADING DOT follows the operator, which opens the OPERAND's
+            // own term: `? .obj-num` is `?($_.obj-num)` in Rakudo, where `^30 .map`
+            // stays `(^30).map` because there the operand is already complete.
+            // Stopping at the space in both cases left the method attached to the
+            // PREFIX's result — `? .obj-num` called it on a Bool, `+ .x` on a Num.
+            // PDF::IO::Serializer decides indirectness with
+            // `%!ref-count{$_} > 1 || ? .obj-num`.
+            u->op = o;
+            u->operand = parsePrefix(!(cur().kind == Tok::Op && cur().text == "."));
             // `**` binds tighter than symbolic unary: -2**2 == -(2**2) and
             // ^2**64 == ^(2**64)  (++/-- keep their assignable-operand parse)
             if (o != "++" && o != "--" && cur().kind == Tok::Op && cur().text == "**") {
@@ -1791,8 +1799,14 @@ ExprPtr Parser::parsePrefix(bool tight) {
             }
             else if (cur().kind == Tok::Var)
                 u->operand = parsePrimary();
+            // …but a LEADING DOT right after the operator opens the OPERAND's own
+            // term: `? .obj-num` is `?($_.obj-num)`, which is how Rakudo reads it.
+            // Stopping at the space left the method attached to the PREFIX's
+            // result, so the call landed on a Bool (or a Num, for `+ .x`).
+            // PDF::IO::Serializer decides indirectness with
+            // `%!ref-count{$_} > 1 || ? .obj-num`.
             else
-                u->operand = parsePrefix(true);
+                u->operand = parsePrefix(!(cur().kind == Tok::Op && cur().text == "."));
             return parsePostfix(std::move(u), tight);
         }
     }

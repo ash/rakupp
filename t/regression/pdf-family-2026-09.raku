@@ -35,6 +35,19 @@
 #   * a method `where` sees the invocant, so `where $x ~~ $!type` decides dispatch
 #   * `.^is_pun` / `.^pun_source`
 #
+# …and the second sitting, from PDF's tie machinery through its serializer:
+#   * an argument a SLURPY swallows is bound less specifically than one a
+#     declared parameter takes
+#   * `.^mixin` reblesses the object itself
+#   * a Proxy assignment is worth what FETCH answers, not what STORE returned
+#   * a leading dot after a prefix operator opens the OPERAND's term
+#   * a built-in parent still counts when a composed role took the parent slot
+#   * a built-in-backed class seeds its attributes' type defaults
+#   * Nil RESETS a subset-typed attribute rather than failing its check
+#   * a defaulted named's `where` decides dispatch instead of dying at the bind
+#   * the ELSE branch of `with`/`without` aliases the topic
+#   * a user class built on Attribute/Parameter is backed by a real meta-object
+#
 # Runs clean under Rakudo too.
 
 my $fails = 0;
@@ -178,6 +191,89 @@ ck Delegator.new.work(5), 'worked:5', '`method … handles <…>` delegates';
 # ---- pun introspection --------------------------------------------------
 class NotAPun { }
 ck ?NotAPun.^is_pun, False, 'an ordinary class is not a pun';
+
+# ======================================================================
+# The second sitting: the faults between PDF's tie machinery and its
+# serializer, found by walking t/00-helloworld.t line by line.
+# ======================================================================
+
+# ---- a slurpy binds an argument less specifically than a parameter -----
+class Coercer {
+    multi method co($a, $b)  { "two" }
+    multi method co(%h!, |c) { "hash-plus-capture" }
+}
+ck Coercer.new.co({}, Int), 'two',
+   'two declared positionals beat one parameter plus a capture';
+
+# ---- `.^mixin` mixes IN PLACE -----------------------------------------
+role Mixed { method mixed { "mixed" } }
+class Host { has $.v = 1 }
+my $host = Host.new;
+my $alias = $host;
+$host.^mixin(Mixed);
+ck ?($host ~~ Mixed),  True, '.^mixin reblesses the object itself';
+ck ?($alias ~~ Mixed), True, '…so every reference to it sees the role';
+ck $host.mixed, 'mixed', '…and the role\'s methods answer';
+
+# ---- a Proxy assignment answers what FETCH gives -----------------------
+my $behind;
+my $prox := Proxy.new(
+    FETCH => sub ($) { "fetched:{$behind // 'unset'}" },
+    STORE => sub ($, \v) { $behind = v; 99 },
+);
+ck ($prox = "abc"), "fetched:abc", 'a Proxy assignment is worth what FETCH answers';
+
+# ---- a leading dot opens the PREFIX OPERATOR's operand ------------------
+class Numbered { method num { 7 } }
+sub pfx($_) { (? .num, + .num, ~ .num, - .num) }
+ck pfx(Numbered.new), (True, 7, "7", -7),
+   'a leading-dot operand belongs to the prefix, not its result';
+ck (^30 .elems), 30, '…while an operand already complete keeps the postfix';
+
+# ---- a built-in parent behind a composed role ---------------------------
+role Tagged { method tagged { "tagged" } }
+class StrFirst is Str does Tagged { }
+class RoleFirst does Tagged is Str { }
+ck ?(StrFirst.new(value => "a")  ~~ Str), True, '`is Str does R` is a Str';
+ck ?(RoleFirst.new(value => "a") ~~ Str), True, '…and so is `does R is Str`';
+
+# ---- typed attribute defaults on a built-in-backed class ----------------
+role Numbered2 { has Int $.obj-num is rw }
+class OnHash2 is Hash does Numbered2 { has Str @.names }
+ck OnHash2.new.obj-num.WHAT.^name, 'Int', 'a typed attribute defaults to its type object';
+ck OnHash2.new.names.of.^name,     'Str', '…and a typed container is that container';
+
+# ---- Nil RESETS a subset-typed attribute --------------------------------
+class Resettable { has UInt $.prev = 3; method clear { $!prev = Nil; $!prev.WHAT.^name } }
+ck Resettable.new.clear, 'UInt', 'Nil resets a subset-typed attribute to its type object';
+
+# ---- a defaulted named`s `where` decides DISPATCH ------------------------
+class Saver {
+    has $.indexed = False;
+    multi method save(Str $f, Bool :quick($) where .so && $!indexed = True) { "incremental" }
+    multi method save(Str $f, :quick($)) { "full" }
+}
+ck Saver.new.save('x'),          'full',        'a failing where on a defaulted named loses the candidate';
+ck Saver.new(:indexed).save('x'), 'incremental', '…and a satisfied one wins it';
+
+# ---- the ELSE branch of with/without aliases the topic -------------------
+my %store;
+with %store<k> { } else { $_ = "set-in-else" }
+ck %store<k>, "set-in-else", 'the else branch of `with` writes through the container';
+my %untouched;
+with %untouched<k> { } else { }
+ck %untouched.elems, 0, '…and does not autovivify when it writes nothing';
+class HashHost is Hash { }
+my $hh = HashHost.new;
+with $hh<k> { } else { $_ = 5 }
+ck $hh<k>, 5, '…through a Hash-backed object too';
+
+# ---- a user class built on the Attribute meta-object ---------------------
+role Described { has $.described is rw }
+my class MyAttr is Attribute does Described { }
+my $myattr = MyAttr.new: :name('@!ID'), :type(Str), :package<?>;
+ck $myattr.name, '@!ID', 'a class built on Attribute keeps its name';
+ck $myattr.type.^name, 'Str', '…and its type';
 
 # ---- `sub prefix:</>` owns the slash ------------------------------------
 # LAST in the file on purpose: from the declaration on, a bare `/` is that

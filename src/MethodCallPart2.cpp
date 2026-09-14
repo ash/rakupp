@@ -3612,12 +3612,48 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         maybeRegisterDestroy(self);
                         return self;
                     }
+                    // `my class CosOfAttr is Attribute does COSAttrHOW {}` — a user
+                    // class built on a META-OBJECT. PDF::COS::Tie makes one per
+                    // array/hash element type and reads `.name`/`.type` straight back
+                    // off it; with nothing backing the instance both answered Nil.
+                    // Box a real meta-object built from the named arguments, which is
+                    // what the built-in constructor does with them.
+                    if (nb == "Attribute" || nb == "Parameter") {
+                        auto od = std::make_shared<ObjectData>();
+                        od->cls = ci; od->hasBoxed = true;
+                        Value meta = Value::makeHash(); meta.hashKind = nb;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair)
+                                (*meta.hash())[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::boolean(true);
+                        od->boxed = std::move(meta);
+                        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                            for (auto& at : c->attrs)
+                                if (!od->attrs.count(at.name))
+                                    od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
+                        Value self = Value::object(od);
+                        runBuildChain(ci.get(), self, args);
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
                     if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
                         auto od = std::make_shared<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
                         else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
                         od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
+                        // An attribute with no value is its DECLARED TYPE OBJECT
+                        // (`has Int $.obj-num` answers Int, not Any) and a typed
+                        // container is that container (`has Str @.data` is an
+                        // Array[Str]). The plain-object path seeds every slot that
+                        // way; this one seeded none, so a role's typed attribute
+                        // composed into a Hash-backed class came back Any — and
+                        // `my Int $obj-num = $object.obj-num` in PDF::IO::Serializer
+                        // failed its own type check. (A `= default` EXPRESSION is
+                        // deliberately not run: Rakudo does not run it here either.)
+                        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                            for (auto& at : c->attrs)
+                                if (!od->attrs.count(at.name))
+                                    od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
                         for (auto& arg : args)
                             if (arg.t == VT::Pair) {
                                 const ClassAttr* at = ci->findAttr(arg.s);

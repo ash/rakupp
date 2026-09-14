@@ -1323,7 +1323,10 @@ public:
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
-    Value* topicAliasSlot(Expr* topic, bool skip);  // the slot a given/with topic aliases
+    // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT
+    // (PDF's `with self<ID> { } else { $_ = … }`). Only the LAZY write-back asks
+    // for it — taking that lvalue eagerly would run the object's own store.
+    Value* topicAliasSlot(Expr* topic, bool skip, bool allowObject = false);  // the slot a given/with topic aliases
     // peel a `.grep(PRED)` off a loop source, so the alias sources above still
     // recognise `for %h.values.grep(…) { $_ = … }` (Rakudo's grep is `is raw`)
     Expr* peelGrepFilter(Expr* listExpr, Expr*& pred);
