@@ -244,6 +244,24 @@ class Coercer {
 }
 ck Coercer.new.co({}, Int), 'two',
    'two declared positionals beat one parameter plus a capture';
+# …and a position ONE candidate declares while the other leaves it to a capture
+# is not compared at all — Rakudo only weighs the parameters both candidates
+# declare. The pair therefore sits in the same band, where declaration order
+# settles it, and it must settle it in BOTH directions: scoring the swallowed
+# position as merely "wider" handed every such call to the declared parameter
+# and reversed base64-sextet.raku's adverb chain.
+my @band;
+proto sub banded(|) {*}
+multi sub banded(Str:D $s, |c)      { @band.push('pos')   }
+multi sub banded(Bool:D :$pad!, |c) { @band.push('named') }
+banded("ab", :!pad);
+ck @band.join(','), 'pos', 'a positional declared first keeps a call a capture could take';
+my @band2;
+proto sub banded2(|) {*}
+multi sub banded2(Bool:D :$pad!, |c) { @band2.push('named') }
+multi sub banded2($s, |c)            { @band2.push('pos')   }
+banded2("ab", :!pad);
+ck @band2.join(','), 'named', '…and a required named declared first keeps its own';
 
 # ---- `.^mixin` mixes IN PLACE -----------------------------------------
 role Mixed { method mixed { "mixed" } }
@@ -538,4 +556,5 @@ ck %( S => /('D'), St => 3 )<S>, 'N:D', 'prefix-slash inside a hash composer';
 ck ("abcd" ~~ m/bc/).Str, "bc",  'the m// form still matches';
 ck 10 / 4,               2.5,    'and division is still division';
 
+say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

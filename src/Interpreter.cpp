@@ -13247,6 +13247,14 @@ static bool isCallableTypeObj(const Value& v) {
     return kCallableTypes.count(v.s) > 0;
 }
 
+// The per-parameter marker for an argument a SLURPY or CAPTURE swallowed. It is
+// not a score: Rakudo compares only the positionals BOTH candidates declare
+// (`types_to_check` is the smaller of the two counts), so a position where one
+// side declared a parameter and the other did not is INCOMPARABLE — it makes
+// neither candidate narrower. Padding it with a low score instead said "wider",
+// which handed every such pair to the candidate with the declared parameter.
+static constexpr int kSwallowed = INT_MIN;
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                 std::vector<int>* perParam, const Value* selfForWhere) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
@@ -13606,7 +13614,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // $b is raw)` above `multi method coerce(%dict!, |c)`, and every two-argument
     // call went to the second, which coerced nothing and said nothing.
     if (perParam)
-        for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(-1);
+        for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(kSwallowed);
     // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
     // that named arg wasn't passed — `multi MAIN(:$test!)` must lose to the
     // default candidate on a bare invocation. A supplied match adds specificity,
@@ -13770,6 +13778,14 @@ static bool betterCandidate(const std::vector<int>& cand, int candScore,
     if (cand.size() != best.size()) return candScore > bestScore;
     bool narrower = false, wider = false;
     for (size_t i = 0; i < cand.size(); i++) {
+        const bool cs = cand[i] == kSwallowed, bs = best[i] == kSwallowed;
+        if (cs && bs) continue;                  // a slurpy took it on both sides: tied
+        // …and on exactly one side the position is INCOMPARABLE: Rakudo never
+        // reaches it, because it compares only the parameters both candidates
+        // declare. Marking it both ways puts the pair in the same band, where
+        // declaration order settles it — `multi f(Bool:D :$pad!, |c)` before
+        // `multi f(Str:D $s, |c)` wins `f("ab", :!pad)`, and after it loses.
+        if (cs || bs) { narrower = wider = true; continue; }
         if (cand[i] > best[i]) narrower = true;
         else if (cand[i] < best[i]) wider = true;
     }
@@ -18831,6 +18847,11 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
     }
     ++rwThroughDepth_;
     DepthG dg{rwThroughDepth_};
+    // Only the outermost call is looking at the frame that is about to be
+    // popped. The walk below re-enters with tctx_.cur set to a CALLER's scope,
+    // and those frames stay live — a variable of theirs is the destination of
+    // the write, not a dangling local.
+    const bool ownFrame = rwThroughDepth_ == 1;
     if (e && (e->kind == NK::NameTerm || e->kind == NK::VarExpr)) {
         const std::string& nm = e->kind == NK::NameTerm
                               ? static_cast<NameTerm*>(e)->name
@@ -18890,7 +18911,11 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
         // stayed empty. An outer lexical, an attribute and an rw-LINKED
         // parameter all still hand back their real pointer; only this call's own
         // declarations are copied out.
-        bool ownScope = true;
+        // …and only for THIS routine's own frame: `sub f(\c) is rw { return-rw c }`
+        // resolves `c` to the caller's `my $a`, and the recursive step above
+        // arrives here with the caller's scope current. Copying THAT out sent
+        // `f($a) = 1` to a temporary and left $a alone.
+        bool ownScope = ownFrame;
         for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
             Value* slot = en->local(nm);
             if (!slot) {

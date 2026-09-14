@@ -95,4 +95,5 @@ class Arity { method two($a, $b) { 'ran' } }
 ck (try { Arity.new.two(1); 'ran' }) // 'died', 'died', '…however many it wanted';
 ck Arity.new.two(1, 2), 'ran', '…and the right count still runs';
 
+say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;

@@ -15083,7 +15083,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::ReadLink: {
             const std::string path = v.empty() ? std::string() : v[0].toStr();
             char buf[4096];
-            ssize_t k = ::readlink(path.c_str(), buf, sizeof(buf) - 1);
+            // platform_readlink, not ::readlink: Windows has no POSIX readlink
+            // and Platform.h answers the link's final target there instead.
+            long long k = platform_readlink(path.c_str(), buf, sizeof(buf) - 1);
             if (k < 0) throw RakuError{Value::typeObj("X::AdHoc"),
                                        "Failed to readlink " + path + ": " + std::strerror(errno)};
             return Value::str(std::string(buf, (size_t)k));
