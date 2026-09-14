@@ -230,6 +230,7 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
             o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "!=:=" || o == "===" || o == "!==" || o == "!===" ||
+            o == "!=~=" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
         if (o == "&&") { in.valid = true; in.lbp = BP_ANDAND; return in; }
         if (o == "||" || o == "//" || o == "^^") { in.valid = true; in.lbp = BP_OROR; return in; }
@@ -2591,6 +2592,22 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             } else {
                 error("expected method name after '.'");
             }
+            // `$.numeric:sym<frac>($/)` — a proto-regex candidate's `:sym<…>` is
+            // part of its NAME on the call as much as on the declaration, and
+            // PDF::Grammar's action for `numeric:sym<real>` hands off to the
+            // `frac` candidate exactly this way. Read as an adverb, the `sym`
+            // became a call to an undefined routine. Tight only: a SPACED
+            // `:name` after a method is the detached adverb handled below.
+            if (!indirectName && isOp(":") && !cur().spaceBefore &&
+                peek().kind == Tok::Ident && peek().text == "sym" &&
+                peek(2).kind == Tok::Op &&
+                (peek(2).text == "<" || peek(2).text == "\xC2\xAB")) {
+                advance(); advance(); // : sym
+                std::vector<std::string> w;
+                if (isOp("<")) { advance(); w = readAngleWords(">"); }
+                else { advance(); w = readAngleWords("\xC2\xBB"); }
+                mc->method += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
             // An indirect (quoted/computed) method name must be immediately called:
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
@@ -2931,6 +2948,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!matchKind(Tok::Comma)) break;
                 continue;
             }
+            // …and a sigilless item may carry a TYPE: PDF::IO::Writer unpacks an
+            // indirect object as `my (UInt \obj-num, UInt \gen-num, \object) = @_`.
+            // The per-item type branch below only knows `Type $x`, so the `\` was
+            // reached with the type still in front of it — "expected variable in
+            // declaration". A sigilless binding takes the value as it comes, so
+            // the type is parsed and dropped, exactly as `my Mu \x` does.
+            if (isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == "\\" &&
+                (peek(2).kind == Tok::Ident || peek(2).kind == Tok::Var))
+                advance();
             if (matchOp("\\")) { // sigilless item:  my (\x, $y) = …
                 std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
                 if (!nm.empty()) sigilless_.insert(nm);
@@ -4120,19 +4146,41 @@ ExprPtr Parser::parsePrimary() {
             // not a method — so only the `.` twigil takes this path.
             // …and the colon spelling of the same call, `$.a: 40, 2`, which is
             // the listop form every other method call already accepts.
-            bool dotColonCall = raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
+            // …and the `:sym<…>` that NAMES a proto-regex candidate, which is part
+            // of the method name and not a listop argument: PDF::Grammar's action
+            // for `numeric:sym<real>` hands off with `$.numeric:sym<frac>($/)`,
+            // and the colon form below took `sym<frac>($/)` for its argument — a
+            // call to an undefined routine `sym`.
+            std::string symSuffix;
+            if (raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
+                isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                peek().text == "sym" && peek(2).kind == Tok::Op &&
+                (peek(2).text == "<" || peek(2).text == "\xC2\xAB")) {
+                advance(); advance(); // : sym
+                std::vector<std::string> w;
+                if (isOp("<")) { advance(); w = readAngleWords(">"); }
+                else { advance(); w = readAngleWords("\xC2\xBB"); }
+                symSuffix = ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
+            bool dotColonCall = symSuffix.empty() &&
+                                raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
                                 isOp(":") && !cur().spaceBefore &&
                                 peek().kind != Tok::RParen && peek().kind != Tok::Semicolon &&
                                 !(peek().kind == Tok::Op && peek().text == "=");
-            if (raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
-                ((isKind(Tok::LParen) && !cur().spaceBefore) || dotColonCall)) {
-                bool paren = isKind(Tok::LParen);
-                advance(); // ( or :
+            // …and `&.name(ARGS)` is the same call: the `&` sigil says the result
+            // is wanted as a Callable, not that the name IS one. PDF::COS::Tie
+            // coerces an assigned value with `&.coerce($_, :$.reader)`, which
+            // read as a variable lookup followed by an invocation of whatever it
+            // answered ("Cannot invoke non-Callable value of type Str").
+            if (raw.size() > 2 && (raw[0] == '$' || raw[0] == '&') && raw[1] == '.' &&
+                (!symSuffix.empty() || (isKind(Tok::LParen) && !cur().spaceBefore) || dotColonCall)) {
+                bool paren = isKind(Tok::LParen) && !cur().spaceBefore;
+                if (paren || dotColonCall) advance(); // ( or :
                 auto mc = std::make_unique<MethodCall>();
                 mc->line = ln;
                 mc->inv = std::make_unique<SelfTerm>();
-                mc->method = raw.substr(2);
-                if (paren ? !isKind(Tok::RParen) : true)
+                mc->method = raw.substr(2) + symSuffix;
+                if (paren ? !isKind(Tok::RParen) : dotColonCall)
                     for (;;) {
                         // BP_COMMA + 1: stop AT the comma so each argument is its
                         // own. At BP_COMMA the comma is swallowed and `$.a(2, 3)`
@@ -4564,6 +4612,11 @@ ExprPtr Parser::parsePrimary() {
                         for (auto& it : l->items) h->items.push_back(std::move(it));
                     } else h->items.push_back(std::move(e));
                 }
+                // a TRAILING separator is allowed inside a composer, as it is in
+                // any statement list: PDF::API6 ends the dictionary it coerces
+                // with `:$destination;` before the closing brace. A `;` with more
+                // after it makes the braces a block, which braceLooksHash settles.
+                while (matchKind(Tok::Semicolon)) {}
                 expectKind(Tok::RBrace, "}");
                 return h;
             }
@@ -4870,7 +4923,17 @@ ExprPtr Parser::parsePrimary() {
                     be->retType = sigRetType_;   // `sub (--> Int) { … }`
                     expectKind(Tok::RParen, ")");
                 }
-                while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
+                // The traits between the signature and the block are skipped —
+                // but `is rw` / `is raw` says what the ROUTINE RETURNS, and
+                // losing it made every anonymous `sub (…) is rw {…}` unassignable
+                // ("Target is not assignable"). PDF::COS::Tie generates one per
+                // PDF dictionary entry and adds it as the accessor.
+                while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
+                    if (isIdent("is") && peek().kind == Tok::Ident &&
+                        (peek().text == "rw" || peek().text == "raw"))
+                        be->retRw = true;
+                    advance();
+                }
                 if (isKind(Tok::LBrace)) {
                     routineDepth_++; // &?ROUTINE is legal inside an anon sub too
                     auto blk = parseBlock();
@@ -5055,7 +5118,11 @@ ExprPtr Parser::parsePrimary() {
                 }
                 return u;
             }
-            if (name == "start" && peek().kind != Tok::FatArrow) {
+            // …unless the file declared `start` as a sigilless TERM, in which case
+            // it is that term: PDF::Content::Image binds the offset of a data
+            // URI's payload to `my Numeric \start` and then calls
+            // `substr($data-uri, start)`.
+            if (name == "start" && peek().kind != Tok::FatArrow && !sigilless_.count("start")) {
                 // `start` thunks its argument so it runs on the worker, not eagerly on
                 // the current thread. `start { … }` already carries its block; `start EXPR`
                 // (e.g. `start render-page($d)`) must wrap EXPR in a deferred block, else
@@ -6441,6 +6508,14 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
             // only THIS composer's own level: a nested block owns its topic,
             // so `{ :out{ .contains: … } }` is still a Hash of one Block
             if (depth > 1) continue;
+            // A `;` with something other than the closing brace after it is a
+            // second STATEMENT, and statements are code: Rakudo composes a Hash
+            // from `{ :a(1), :b(2); }` and a Block from `{ :a(1); :b(2) }`.
+            if (tk.kind == Tok::Semicolon) {
+                size_t n = k + 1;
+                while (n < toks_.size() && toks_[n].kind == Tok::Semicolon) n++;
+                if (n < toks_.size() && toks_[n].kind != Tok::RBrace) { isHash = false; break; }
+            }
             // `@_`/`%_` are implicit parameters exactly as `$_` is, so a
             // composer mentioning one is a block too: `.map: { @_[0] =>
             // @_[1] }` builds a Pair per element, and reading it as a Hash
@@ -6774,7 +6849,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // optional type constraint: a bare Ident (possibly Foo::Bar, with :D/:U smiley, [..])
         if (isKind(Tok::Ident)) {
             p.type = advance().text; // type name (used for multi-dispatch)
-            if (isOp(":") && peek().kind == Tok::Ident &&
+            // …and the smiley is GLUED to it. Spaced, the colon opens a named
+            // parameter instead, which is how PDF::IO::Crypt asks for the PDF
+            // encryption dictionary's one-letter keys: `Str :U($user-pass)!`
+            // was read as `Str:U` plus a positional and bound nothing at all.
+            if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) { // :D/:U/:_ smiley
                 advance();
                 std::string sm = advance().text;
@@ -7249,6 +7328,29 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
+        // `method loader is rw handles <load-delegate>` — a ROUTINE may delegate
+        // just as an attribute may: the names it lists answer on the class's
+        // behalf, asked of what the routine returns. PDF::COS routes its whole
+        // loader API through one such method, and the trait was skipped with the
+        // rest of the ladder, so `$.load-delegate` had nowhere to go.
+        if (isIdent("handles")) {
+            advance();
+            bool paren = isKind(Tok::LParen);
+            if (paren) advance();
+            auto take = [&](const std::string& w) { if (!w.empty()) s->handles.push_back(w); };
+            for (;;) {
+                if (isOp("<")) { advance(); for (auto& w : readAngleWords(">")) take(w); }
+                else if (isKind(Tok::QwList)) {
+                    std::istringstream ws(advance().text);
+                    std::string w; while (ws >> w) take(w);
+                }
+                else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident)) take(advance().text);
+                else break;
+                if (!matchKind(Tok::Comma)) break;
+            }
+            if (paren && isKind(Tok::RParen)) advance();
+            continue;
+        }
         if (isIdent("export")) {
             s->isExport = true;
             // `is export(:foo :bar)` — capture the tag names. A tag that is not
@@ -9176,7 +9278,20 @@ StmtPtr Parser::parseStatementImpl() {
             es->e = parseExpression();
             return applyModifiers(std::move(es));
         }
-        if (kw == "sub") { advance(); return parseSub(false); }
+        if (kw == "sub") {
+            advance();
+            StmtPtr d = parseSub(false);
+            // A routine declaration is a TERM in Raku, so a comma strings several
+            // into one statement — PDF::Content::PageTree declares the FETCH and
+            // STORE of a Proxy as `sub FETCH($) {…}, sub STORE($, $_) {…}`. The
+            // list's value is discarded; what matters is that both names are
+            // declared, so the rest ride along with this statement.
+            while (isKind(Tok::Comma) && peek().kind == Tok::Ident && peek().text == "sub") {
+                advance(); advance(); // the comma and `sub`
+                pendingStmts_.push_back(parseSub(false));
+            }
+            return d;
+        }
         // …and the same declarator at STATEMENT level: `anon sub foo {…}` is a
         // routine nothing can name afterwards. Recognised only where a
         // declaration can follow, so a sub or variable called `anon` still
@@ -9408,8 +9523,17 @@ StmtPtr Parser::parseStatementImpl() {
             static_cast<ClassDecl*>(decl.get())->howName = userDeclarators_[kw];
             return decl;
         }
-        if (kw == "class" || kw == "role" || kw == "monitor" ||
-            kw == "grammar" || kw == "module" || kw == "package") {
+        // …and the built-in package declarators, under the same guard: a
+        // declaration needs a NAME, an anonymous `::`, or a bare block after the
+        // keyword. Unguarded, a sigilless TERM of that name was read as a
+        // declaration of an anonymous package and its `.method(…)` applied to
+        // THAT — `method compose(Mu \package) { package.^add_method(…) }`
+        // (PDF::Content::Ops' graphics-attribute trait) added the method to a
+        // package nothing else could see, and said nothing.
+        if ((kw == "class" || kw == "role" || kw == "monitor" ||
+             kw == "grammar" || kw == "module" || kw == "package") &&
+            (peek().kind == Tok::Ident || peek().kind == Tok::LBrace ||
+             (peek().kind == Tok::Op && peek().text == "::"))) {
             advance();
             StmtPtr decl = parseClass(kw == "role", kw == "grammar",
                                       kw == "module" || kw == "package",

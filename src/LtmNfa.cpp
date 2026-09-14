@@ -49,7 +49,12 @@ static bool flagHit(char f, uint32_t c) {
         case 'l': return c < 128 && ascii::islower((int)c);
         case 'x': return c < 128 && ascii::isxdigit((int)c);
         case 'b': return c == ' ' || c == '\t';
-        case 'n': return c == '\n';
+        // the LOGICAL newline, as `\n` is everywhere else — LF, VT, FF, CR, NEL,
+        // LS, PS. As LF alone, LTM ruled a carriage return out of the first
+        // alternative of PDF::Grammar's `token ws-char { <[… \n]> | <.comment> }`
+        // and the token matched nothing at all there.
+        case 'n': return c == 0x0A || c == 0x0B || c == 0x0C || c == 0x0D ||
+                         c == 0x85 || c == 0x2028 || c == 0x2029;
         default:  return false;
     }
 }

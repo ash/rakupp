@@ -413,6 +413,10 @@ struct Callable {
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
+    // A plain SUB installed as a method (`.^add_method($name, &sub)`): Rakudo
+    // hands such a routine the invocant as its FIRST POSITIONAL, which is why
+    // generated accessors are written `sub (\obj) { … }`.
+    bool subAsMethod = false;
     bool isPrivateMethod = false;                   // `method !name` — only reachable via self!name
     bool isSubmethod = false;                       // `submethod` — NOT inherited by subclasses
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
@@ -1079,6 +1083,9 @@ struct ClassInfo {
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
+    // `method loader handles <a b>` — delegated name -> the METHOD to ask for the
+    // target object. An attribute's `handles` is in ClassAttr::handles instead.
+    std::map<std::string, std::string> methodHandles;
     std::set<std::string> delegatedNames;  // names an attribute `handles` delegates that the class
                                            // does NOT declare itself: the delegation is a method ON
                                            // THE CLASS, so it outranks anything composed from a role

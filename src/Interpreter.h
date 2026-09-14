@@ -1365,8 +1365,13 @@ public:
     // where declaration order decides. The summed int cannot express that: two
     // `Str:D` params outscored one literal, so Needle::Compile's
     // `handle(Str:D, Str:D, %_)` stole every call meant for `handle("not", Any:D, %_)`.
+    // `selfForWhere`: the INVOCANT of a method dispatch, so a `where` that reads
+    // the invocant's own state (`where $lval ~~ $!type`) sees the same thing the
+    // bind would. Without it the attribute read answered Any, every such
+    // constraint passed, and the candidate then died in the bind.
     int scoreCandidate(const Value& cand, const ValueList& args,
-                       std::vector<int>* perParam = nullptr);
+                       std::vector<int>* perParam = nullptr,
+                       const Value* selfForWhere = nullptr);
     bool methodTakesJunction(const Value& inv, const std::string& m, size_t ai); // param `ai` accepts a Junction whole
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     // TARG lever B: a condition of a chapter-19-specialized comparison shape

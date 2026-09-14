@@ -972,8 +972,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool fat = (m == "FatRat");
         Value r;
         // a non-numeric string is the usual Failure, not a Rat of zero
-        if (inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph()) {
-            Value nv = numifyStrFailure(inv.s);
+        // …and a MATCH is Cool, so `$<frac>.Rat` is its TEXT read as a Rat —
+        // exact for a decimal. Falling through to the Num path below gave the
+        // continued-fraction approximation instead, and PDF::Grammar, which
+        // builds every real in a PDF out of `$/.Rat`, read 0.0648041 as 58/895.
+        if ((inv.t == VT::Str || inv.t == VT::Match) && inv.hashKind.empty() && !inv.isAllomorph()) {
+            Value nv = numifyStrFailure(inv.toStr());
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
             if (nv.t != VT::Str) return methodCall(nv, m, args, rwArgs);
         }

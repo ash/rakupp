@@ -623,6 +623,7 @@ struct BlockExpr : Expr {
     bool isMethodTerm = false; // …and `method {…}` in particular takes an invocant
     bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
+    bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
     BlockExpr(): Expr(NK::BlockExpr) {}
 };
 
@@ -654,6 +655,10 @@ struct SubDecl : Stmt {
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
     std::vector<SubTraitSpec> traits; // non-built-in `is` traits, dispatched to user trait_mod:<is> multis
+    // `method loader is rw handles <load-delegate>` — names this routine's
+    // RESULT answers on the class's behalf (PDF::COS routes its whole loader API
+    // through one such method).
+    std::vector<std::string> handles;
     bool retRw = false;  // `is rw` / `is raw` on the ROUTINE: its result is the CONTAINER its final
                          // expression names, so `$obj.meth(…) = v` writes through it
     ExprPtr retLiteral; // `--> 1` literal return: the body yields this value

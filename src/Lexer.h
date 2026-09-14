@@ -92,9 +92,21 @@ private:
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
     std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
+    // A file that declares `sub prefix:</>` has taken the slash away from the
+    // regex literal: from that declaration on, a `/` in term position is that
+    // operator (Rakudo does the same — `/bc/` there becomes prefix-slash on a
+    // term `bc` and then a division with nothing after it). Offset just past
+    // the declaration, so the text before it still reads `/…/` as a regex.
+    size_t slashPrefixAt_ = (size_t)-1;
     size_t unspaceEnd_ = (size_t)-1;  // pos right after an unspace (`\` + whitespace/comment): not whitespace
-    std::set<std::string> termNames_; // names this file declares as TERMS (`constant X`, `my \x`): a `/` after one divides
+    // names this file declares as TERMS (`constant X`, `my \x`, a `\x` parameter),
+    // each with the brace depth it is scoped to: a `/` after one divides, and a
+    // quote keyword that is also one of them is the name. Popped when that scope's
+    // `}` goes by, so a `\m` parameter does not cost the file its `m/…/` matches.
+    std::vector<std::pair<int, std::string>> termNames_;
     size_t termScan_ = 0;             // how far `out` has been scanned for those declarations
+    int termDepth_ = 0;               // brace depth at termScan_
+    int termParen_ = 0;               // paren depth at termScan_ (a `\x` inside one is a parameter)
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
     int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on
     int line_ = 1;
@@ -141,6 +153,8 @@ private:
     Token lexNumber();
     Token lexQuoted(char quote);
     bool tryQuoteForm(Token& out); // q// qq// Q// with bracketing/char delimiters
+    void refreshTermNames(const std::vector<Token>& out); // `constant X` / `my \x` names in scope
+    bool isTermName(const std::string& n) const;
     bool trySetOp(Token& out);     // (|) (&) (elem) ... ASCII set operators
     bool regexContext(const std::vector<Token>& out); // is a bare / a regex here?
     bool tryRuleDecl(std::vector<Token>& out, bool spaced); // token/rule/regex NAME { ... }

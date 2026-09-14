@@ -9486,7 +9486,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 std::string parentName = cd->parent.rfind("CORE::", 0) == 0
                                        ? cd->parent.substr(6) : cd->parent;
                 // a type may not inherit from / compose itself:  class A is A / role A does A
-                if (parentName == cd->name && !cd->name.empty() && parentName == cd->parent)
+                // …but a PARAMETERIZED one is a different role: `role R does R['x']`
+                // composes R['x'], not R. PDF::COS::ByteString is declared exactly
+                // that way — a bare role over its own default parameterization.
+                bool paramSelf = false;
+                for (auto& ra : cd->roleArgs)
+                    if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
+                if (parentName == cd->name && !cd->name.empty() && parentName == cd->parent && !paramSelf)
                     throwTyped(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit",
                         {{"name", cd->name}},
                         std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself");
@@ -9675,7 +9681,27 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 if (it == classes_.end()) continue;
-                for (auto& kv : it->second->methods) {
+                // …and everything the role composes THROUGH ITS OWN PARENT SLOT:
+                // `role B does A` puts A there rather than in B's own tables, so a
+                // class that takes B as its parent walks the chain and finds A's
+                // methods — but a class whose parent slot is already spoken for
+                // (`class D is Hash does B`) copies from B alone, and A's methods
+                // and attributes were lost. PDF::COS::Tie::Hash does PDF::COS::Tie
+                // and a PDF dictionary is Hash-backed, so the whole tie API
+                // (`.lvalue`, `.of-att`) went missing exactly there.
+                std::vector<ClassInfo*> roleChain;
+                {
+                    std::set<ClassInfo*> seenRC;
+                    std::function<void(ClassInfo*)> walkRole = [&](ClassInfo* rc) {
+                        if (!rc || !rc->isRole || !seenRC.insert(rc).second) return;
+                        roleChain.push_back(rc);
+                        walkRole(rc->parent.get());
+                        for (auto& p2 : rc->extraParents) walkRole(p2.get());
+                    };
+                    walkRole(it->second.get());
+                }
+                for (ClassInfo* rcM : roleChain)
+                for (auto& kv : rcM->methods) {
                     bool newDisp = kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isMultiDispatcher;
                     // remember which composed names are SUBMETHODS: 6.e hides them
                     // from ordinary dispatch while still running role BUILD/TWEAK
@@ -9709,7 +9735,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (eStub) ci->methods[kv.first] = newDisp ? cloneDispatcher(kv.second) : kv.second;
                     // both real implementations: recorded in `conflicted` above
                 }
-                for (auto& a : it->second->attrs) {
+                for (ClassInfo* rcA : roleChain)
+                for (auto& a : rcA->attrs) {
                     bool dup = false;
                     for (auto& ex : ci->attrs)
                         if (ex.name == a.name && ex.sigil == a.sigil) {
@@ -9913,6 +9940,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             std::set<const void*> ownParams; // this declaration's own method signatures
             for (auto& md : cd->methods) ownParams.insert(&md->params);
+            // `method loader handles <load-delegate>` — every listed name is answered
+            // by asking THIS method for the object to forward to. Recorded before the
+            // bodies are built so the dispatch below can see it, and in
+            // delegatedNames too, so nothing a composed role brought in shadows it.
+            for (auto& md : cd->methods)
+                for (auto& h : md->handles)
+                    if (!h.empty() && !md->name.empty()) {
+                        ci->methodHandles[h] = md->name;
+                        ci->delegatedNames.insert(h);
+                    }
             // methods carrying user `is` traits: dispatched to trait_mod:<is> AFTER the
             // class registers (the handler may call $*PACKAGE.^add_method / .HOW)
             std::vector<std::tuple<SubDecl*, Value, std::string>> methodTraitQueue; // decl, routine, table key
@@ -10448,6 +10485,34 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                         if (prevPkg) bodyEnv->define("$*PACKAGE", savedPkg);
                     }
+                }
+                // …and then COMPOSE each attribute whose meta-object has a
+                // `compose` of its own. Rakudo calls `$attr.compose($package)`
+                // for every attribute during class composition, and THAT is
+                // where the accessor is made — so a role a trait mixed in can
+                // override it and install a different one. PDF::COS::Tie does
+                // exactly that for every `is entry` attribute: the accessor it
+                // adds is the writable one (`$pdf.Root = {…}`), and with the
+                // call missing the attribute kept only the read-only default.
+                // Only when a mixed-in role actually supplies `compose` — the
+                // default accessor is this engine's own and needs no hook.
+                for (auto& ca2 : ci->attrs) {
+                    if (ca2.userTraits.empty()) continue;
+                    Value am = attributeMetaObject(ca2, clsName);
+                    if (am.t != VT::Hash || !am.hash()) continue;
+                    auto rit = am.hash()->find(ATTR_ROLES_KEY);
+                    if (rit == am.hash()->end() || rit->second.t != VT::Array || !rit->second.arr())
+                        continue;
+                    bool hasCompose = false;
+                    for (auto& rn : *rit->second.arr()) {
+                        auto cit = classes_.find(rn.s);
+                        if (cit != classes_.end() && cit->second && cit->second->findMethod("compose"))
+                            { hasCompose = true; break; }
+                    }
+                    if (!hasCompose) continue;
+                    try { methodCall(am, "compose", ValueList{Value::typeObj(clsName)}); }
+                    catch (RakuError&) {}   // a composer that refuses (a name already
+                                            // taken) leaves the attribute as it was
                 }
                 tctx_.cur = saved;
             }
@@ -11479,6 +11544,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `()` and only a bare `{;}` gets the implicit `$_`
     code.code()->hadSig = be->isPointy;
     code.code()->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
+    code.code()->retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
     if (be->params.empty()) code.code()->placeholders = computePlaceholders(be->body);
     // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
     // declared sub does, and reaches none of the declaration paths: the trait on
@@ -12308,7 +12374,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
     size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
     if (ln == rn) return true;
     static const std::map<std::string, std::set<std::string>> typeDoes = {
-        {"array", {"array", "Array", "List", "Positional", "Iterable", "Cool"}},
+        // …and NOT Array or List: Rakudo's native array is its own type
+        {"array", {"array", "Positional", "Iterable", "Cool"}},
         {"Array", {"Array", "List", "Positional", "Iterable", "Cool"}},
         {"List",  {"List", "Positional", "Iterable", "Cool"}},
         {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
@@ -12560,6 +12627,18 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if ((type == "Uni" || type == arg.s) &&
                 (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
                  arg.s == "NFKC" || arg.s == "NFKD")) return true;
+            // A NATIVE array (`my uint64 @a`, `array[uint8]`) IS an `array`, and
+            // is NOT an Array or a List — Rakudo's native array is its own type,
+            // Positional and Iterable and Cool but nothing in the Array family.
+            // Dispatch answered the whole family true here (nqp::istype already
+            // knew better, rtTypeMatch), so `multi json-eqv(array:D $a, $b)` in
+            // PDF::Grammar::Test could never beat the `(List:D, List:D)`
+            // candidate declared above it: the two tie per-parameter, and the
+            // earlier declaration keeps the call. Every shaped uint64 xref table
+            // went down the wrong one.
+            if (!arg.isList && isNativeScalarName(arg.ofType()))
+                return type == "array" || type == "Positional" ||
+                       type == "Iterable" || type == "Cool";
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
                    (type == "Slip" && arg.s == "Slip");   // `--> Slip` (highlighter's matches)
         case VT::Hash:
@@ -12887,7 +12966,7 @@ static bool isCallableTypeObj(const Value& v) {
 }
 
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
-                                std::vector<int>* perParam) {
+                                std::vector<int>* perParam, const Value* selfForWhere) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code()->params;
     ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
@@ -13144,7 +13223,17 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                                        // `Any`-beats-`Mu` point given just above)
             // …through the alias too, so a `constant` naming a mixin type
             // (`Str but Type`) is as specific as spelling `Str+{Type}` out.
-            if (typeAliasTarget(p->type) == pos[i].typeName()) score += 2; // exact type beats a supertype
+            // …and a NATIVE array's own type is `array` (Rakudo names it
+            // `array[uint64]`, where this engine reports the Array it is built
+            // on), so an `array` parameter is the exact one and must outrank the
+            // `List`/`Positional` a native array merely conforms to. Tied at the
+            // nominal 8, declaration order decided instead: PDF::Grammar::Test's
+            // json-eqv declares `(List:D, List:D)` above `(array:D, $b)`, and
+            // every shaped uint64 xref table went down the wrong candidate.
+            if (typeAliasTarget(p->type) == pos[i].typeName() ||
+                (p->type == "array" && pos[i].t == VT::Array && !pos[i].isList &&
+                 isNativeScalarName(pos[i].ofType())))
+                score += 2;                            // exact type beats a supertype
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
         }
         if (p->whereExpr) {
@@ -13157,6 +13246,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 try { wv = coerceToType(wv, p->type); } catch (...) { return -1; }
             }
             auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            // A method's `where` may read the INVOCANT's own state:
+            // `multi method tie($lval where $lval ~~ $!type)` is how PDF::COS::Tie
+            // picks the candidate for an entry that is already of its declared
+            // type. Scored against the CALLER's scope there is no `self`, so
+            // `$!type` answered Any, the constraint passed, and the candidate then
+            // failed its bind — "Constraint type check failed in binding".
+            if (selfForWhere) env->define("self", *selfForWhere);
             // The EARLIER parameters are in scope in a `where`: `multi f($l, $n
             // where * > $l)` compares the two arguments, and dispatch has to see
             // the same thing the bind would. Only this candidate's own earlier
@@ -13465,6 +13561,16 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
     auto emit = [&](const Value& el) {
         Value r = each(el);
         if (descends(el) && el.s == "Slip" && r.t == VT::Array && r.arr()) {
+            for (auto& x : *r.arr()) out.arr()->push_back(x);
+            return;
+        }
+        // …and a Slip the METHOD returned splices too, for the same reason: a
+        // non-nodal hyper is Rakudo's deepmap, and a map slips a Slip. A NODAL
+        // one is nodemap, which does not — `@m>>.Slip` stays a list of slips
+        // while `@matches».ast` over actions that `make` a Slip flattens.
+        // PDF::Grammar::Content builds a content stream that way, and every
+        // block came back nested one level too deep.
+        if (!nodal && r.t == VT::Array && r.arr() && r.s == "Slip") {
             for (auto& x : *r.arr()) out.arr()->push_back(x);
             return;
         }
@@ -17671,6 +17777,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // (Oracle's `OCIAttrGet(… ub4 $size is rw …)`) on the right lvalue.
         return callNative(*codeVal.code(), na, rwArgs, /*rwArgOff=*/1);
     }
+    // …and a plain SUB installed as a method takes the invocant the same way: as
+    // its FIRST POSITIONAL. (`rwArgs` indexes the CALL's arguments, which no
+    // longer line up once one is prepended; a sub-as-method's own `is rw` is
+    // about its RETURN value — retRw — and is unaffected.)
+    if (codeVal.code()->subAsMethod) {
+        ValueList sa; sa.reserve(args.size() + 1);
+        sa.push_back(self);
+        for (auto& a : args) sa.push_back(std::move(a));
+        args = std::move(sa);
+        rwArgs = nullptr;
+    }
     // `monitor` semantics, native: every method call on a monitor INSTANCE
     // holds the object's reentrant lock for its duration (OO::Monitors'
     // contract — its own HOW wrapping never engages here). The lock is
@@ -17778,7 +17895,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 std::vector<int> vec;
-                int s = scoreCandidate(cand, as, &vec);
+                int s = scoreCandidate(cand, as, &vec, &selfCopy);
                 if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
                 // constrained invocant REJECTS on mismatch and outranks an
@@ -17927,7 +18044,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         stEnv = c.state.env;
     }
     env->parent = stEnv;
-    env->define("self", self);
+    // …except for a plain SUB installed as a method: a Sub has no invocant, so
+    // `self` inside it stays the one its CLOSURE captured. PDF::COS::Tie's
+    // generated accessor is `sub (\obj) is rw { obj.rw-accessor(self, :$key) }`,
+    // written inside the Attribute's own `compose` — the `self` it passes is
+    // that Attribute, and rebinding it to the invocant handed the accessor the
+    // object instead ("expected Attribute but got …").
+    if (!c.subAsMethod) env->define("self", self);
     // Parameterized-role value params (role R[$x]/[%h]): a method/submethod of a
     // class that composed such a role must see the bound params in its body. Inject
     // them from the invocant's class MRO (child wins), skipping names the frame will
@@ -18999,6 +19122,21 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             auto it = mx.attrs.find(mc->method);
             if (it != mx.attrs.end()) return &it->second;
         }
+        // `$att.cos .= new` — an `is rw` accessor of a role a trait mixed into an
+        // ATTRIBUTE (or Parameter) meta-object, whose state lives as plain keys in
+        // that object's shared map. Plain assignment has its own arm in
+        // evalAssignInner; `.=` does not pass through it — it asks for the
+        // LVALUE, which had nothing for this shape and died "Target is not
+        // assignable". PDF::COS::Tie builds every PDF entry descriptor with
+        // `$att.cos .= new: |cos-attr-opts(…)`. Only names ALREADY PRESENT, as
+        // that arm has it, so a typo still reaches "no such method" rather than
+        // silently creating a key.
+        if (base->t == VT::Hash && base->hash() &&
+            (base->hashKind == "Attribute" || base->hashKind == "Parameter") &&
+            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
+            auto ait = base->hash()->find(mc->method);
+            if (ait != base->hash()->end()) return &ait->second;
+        }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
@@ -19102,7 +19240,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // Exceptions kept writable: `$obj!attr` (explicit private-access
             // syntax — self/trusts writes), and a name matching NO attribute
             // (a plain method call; `is rw`/`return-rw` lvalue methods rely on it).
-            if (!mc->bang && !asInvocant)
+            // …unless the class has a real METHOD of that name declared `is rw`:
+            // an accessor a trait installed with `^add_method` is the assignable
+            // one, and the attribute behind it is deliberately plain.
+            // PDF::COS::Tie composes every `is entry` attribute that way, so
+            // `$pdf.Root = {…}` goes through a generated
+            // `sub (\obj) is rw { obj.rw-accessor(…) }` — and the attribute
+            // check refused it as immutable before the method was ever consulted.
+            bool rwMethod = false;
+            if (base->obj()->cls)
+                if (Value* mv = base->obj()->cls->findMethod(mc->method))
+                    rwMethod = mv->t == VT::Code && mv->code() && mv->code()->retRw;
+            if (!mc->bang && !asInvocant && !rwMethod)
                 for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
                         // a public @./%. attr is assignable through its accessor even
@@ -28295,6 +28444,16 @@ Value Interpreter::evalBinary(Binary* b) {
     return applyArith(op, l, r);
 }
 
+// The value a mixed-in role's attribute starts at when nothing sets it: its
+// DECLARED TYPE object, exactly as a class's own attribute does. Bare Any left
+// `$att.cos .= new` with nothing to call `new` on — PDF::COS::Tie mixes the role
+// carrying `has COSAttr $.cos` into an Attribute and then builds it in place.
+static Value mixinAttrDefault(const ClassAttr& a) {
+    if (!a.type.empty() && a.type != "Mu" && a.type != "Any")
+        return Value::typeObj(a.type);
+    return Value::any();
+}
+
 Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // Collect the role(s) and attribute Pair(s) from the RHS (a single role type,
     // a list of them, or a `:name(value)` Pair mixing one attribute).
@@ -28341,7 +28500,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         for (ClassInfo* role : roleInfos)
             if (role)
                 for (auto& a : role->attrs)
-                    c->mixinsRW().attrs.emplace(a.name, Value::any());
+                    c->mixinsRW().attrs.emplace(a.name, mixinAttrDefault(a));
         return base;
     }
     // `$a does SomeRole` where $a is an ATTRIBUTE meta-object: mix in place. The
@@ -28371,7 +28530,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
             if (!role || !seeded.insert(role).second) return;
             for (auto& a : role->attrs) {
                 if (base.hash()->count(a.name)) continue;
-                Value dv = Value::any();
+                Value dv = mixinAttrDefault(a);
                 if (a.hasDefVal) dv = a.defVal;
                 else if (a.def) {
                     auto saved = tctx_.cur;
@@ -28469,7 +28628,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         for (auto& a : role->attrs) {
             nc->attrs.push_back(a);
             if (obj->attrs.count(a.name)) continue;
-            Value dv = Value::any();
+            Value dv = mixinAttrDefault(a);
             if (a.hasDefVal) dv = a.defVal;
             else if (a.def) {
                 auto saved = tctx_.cur;
@@ -32672,6 +32831,22 @@ Value Interpreter::eval(Expr* e) {
                     ValueList none;
                     return methodCall(*selfp, ve->attrBare, none);
                 }
+                // …and a self that is NOT a plain object — a class built on a Hash
+                // or an Array keeps its state in the container — still answers
+                // `$.name` / `&.name` as `self.name`, a method call. PDF::COS::Tie
+                // runs `&.coerce($_, :$.reader)` with a Hash-backed PDF dictionary
+                // as self, and got the sigil's default instead. A name the type
+                // has no method for falls through as before.
+                if (selfp && ve->name[1] == '.' && rtIsDefined(*selfp)) {
+                    try { ValueList none; return methodCall(*selfp, ve->attrBare, none); }
+                    catch (RakuError& nfe) {
+                        const Value& np = nfe.payload;
+                        bool nf = (np.t == VT::Type && np.s == "X::Method::NotFound") ||
+                                  (np.t == VT::Object && np.obj() && np.obj()->cls &&
+                                   np.obj()->cls->name == "X::Method::NotFound");
+                        if (!nf) throw;
+                    }
+                }
                 return defaultFor(sigil);
             }
             // A bare `%` / `@` term is an ANONYMOUS empty Hash / Array — `% .classify-list:
@@ -34136,8 +34311,16 @@ Value Interpreter::eval(Expr* e) {
                             if (mit != p.obj()->attrs.end()) mname = mit->second.toStr();
                             if (tit != p.obj()->attrs.end()) tname = tit->second.toStr();
                         }
+                        // …and the type it names may be an ANCESTOR of the
+                        // invocant's: a class built on a Hash (or an Array) falls
+                        // through to that builtin's dispatch, which reports the
+                        // container type it was looking in. `class B is Hash`,
+                        // `$b.?nope` — the payload said Hash where the invocant
+                        // says B, so the miss was rethrown instead of answering
+                        // Nil. PDF::COS::Dict's TWEAK opens with `self.?cb-init`.
                         if ((mname.empty() || mname == mc->method) &&
-                            (tname.empty() || tname == inv.typeName()))
+                            (tname.empty() || tname == inv.typeName() ||
+                             typeMatchesArg(inv, tname)))
                             return Value::nil();
                     }
                     throw;

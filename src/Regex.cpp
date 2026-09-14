@@ -2028,7 +2028,11 @@ void Regex::parseClassBodyMember(Node* node) {
         if (peek() == '\\') {
             pos_++; char e = peek(); pos_++;
             if (e == 'd' || e == 'w' || e == 's') node->classFlags += e;
-            else if (e == 'n') node->ranges.push_back({'\n', '\n'});
+            // `\n` is the LOGICAL newline inside a class exactly as it is outside
+            // one — LF, VT, FF, CR, NEL, LS, PS (the 'n' flag, charClassCp). As
+            // plain LF it left CR out, and PDF::Grammar's whitespace token
+            // `<[ \x20 \x0A \x0 \t \f \n ]>` stopped at every carriage return.
+            else if (e == 'n') node->classFlags += 'n';
             else if (e == 't') node->ranges.push_back({'\t', '\t'});
             else if (e == 'r') node->ranges.push_back({'\r', '\r'});
             // the other single-letter escapes (they used to fall to the "escaped
@@ -2342,7 +2346,12 @@ bool charClassMatch(char flag, uint32_t cp) {
     if (cp < 128) {
         const AsciiCC& T = asciiCC();
         signed char b = T.slot[(unsigned char)flag];
-        return b >= 0 && ((T.bits[cp] >> b) & 1);
+        // …and a flag the ASCII table does not carry (`\n`, the logical newline)
+        // is not "no member": it is simply not precomputed, so ask directly.
+        // Answering false here made `<[ \x0A \n ]>` miss every carriage return —
+        // the table is only a cache, never the definition.
+        if (b < 0) return charClassCp(flag, cp);
+        return (T.bits[cp] >> b) & 1;
     }
     return charClassCp(flag, cp);
 }
@@ -2401,6 +2410,13 @@ bool Regex::classMatch(const Node* n, char ch) const {
     return (n->byteset[c >> 5] >> (c & 31)) & 1;
 }
 
+
+// …and that one character is a LITERAL, not a class: LTM breaks a tie on the
+// leading-literal length, where a literal outranks an open class.
+bool Regex::rootIsSingleLiteral() const {
+    return ok_ && root_ && root_->k == K::Lit && !root_->icase && !root_->imark &&
+           root_->lit.size() == 1;
+}
 
 bool Regex::rootIsSingleChar() const {
     if (!ok_ || !root_) return false;
@@ -2787,7 +2803,17 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (auto& r : n->ranges) if (cp >= r.first && cp <= r.second) { in = true; break; } // mixed class
                 }
+                // …and the FLAG members (`\d`, `\s`, `\w`, `\n`), which this arm
+                // dropped entirely. A class carrying any codepoint escape comes
+                // here, so `<[ \x41 \d ]>` matched no digit and PDF::Grammar's
+                // `<[ \x20 \x0A \x0 \t \f \n ]>` no carriage return. A flag tests
+                // the base codepoint and consumes the whole grapheme, as it does
+                // in the multibyte arm below.
+                if (!in) for (char f : n->classFlags) if (charClassMatch(f, cp)) { in = true; break; }
+                bool subtractedCp = false;
+                for (char f : n->negClassFlags) if (charClassMatch(f, cp)) { subtractedCp = true; break; }
                 if (n->negate) in = !in;
+                if (subtractedCp) in = false;   // `-member` subtracts from the FINAL set
                 if (!in) return false;
                 return k(gEnd);
             }
@@ -3857,6 +3883,15 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     if (scNp != -3 && scNp != -2) {
         long np = scNp;
         if (np < 0) { noteFail(pos, name); return false; }
+        // A proto ranks its candidates by the declarative end this call reports,
+        // and the inline path never reported one: a candidate whose whole body is
+        // ONE character (PDF::Grammar's `token literal:sym<eol> { \n }`) was
+        // dropped from the ranking, so the proto matched nothing at all. Only
+        // visible when the union NFA cannot be built — a candidate that calls back
+        // into its own proto is a model gap, and PDF::Grammar's literal strings
+        // nest exactly that way.
+        candDeclEnd_ = np;
+        candLitPrefix_ = meta.singleChar->rootIsSingleLiteral() ? np - pos : 0;
         if (capKey.empty()) return k(np);
         // capturing <name>: record a leaf node spanning the one char, then continue
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;

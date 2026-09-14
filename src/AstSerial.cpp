@@ -273,7 +273,13 @@ template <class IO> void visit(IO& io, PairExpr& n) { F(io, n.key); F(io, n.colo
                                                       ioExpr(io, n.keyExpr); ioExpr(io, n.value); }
 template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); ioStmtVec(io, n.body);
                                                       F(io, n.isSub); F(io, n.isMethodTerm); F(io, n.isPointy);
-                                                      F(io, n.retType); }
+                                                      F(io, n.retType);
+                                                      // `is rw` on an ANONYMOUS routine term, consumed by the
+                                                      // parser into this flag and recorded nowhere else — the
+                                                      // same staleness hole SubDecl.retRw had. PDF::COS::Tie's
+                                                      // generated accessors are `sub (\obj) is rw {…}`, and a
+                                                      // cached load made every one of them unassignable.
+                                                      F(io, n.retRw); }
 template <class IO> void visit(IO&, SelfTerm&)      {}
 template <class IO> void visit(IO& io, WhateverExpr& n) { F(io, n.hyper); }
 
@@ -311,6 +317,8 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     // assigned to a COPY — Hash::Ordered took its writes only on the run that
     // wrote the cache, and answered empty on every run that read it.
     F(io, n.retRw);
+    // `method loader handles <load-delegate>` — also a parser-consumed trait
+    ioVec(io, n.handles);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

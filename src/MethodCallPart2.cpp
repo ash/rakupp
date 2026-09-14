@@ -1167,6 +1167,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (args.empty() && cit->second->findAttr(m) && h.count(m)) return h[m];
                     if (Value* rm = cit->second->findMethod(m))
                         return invokeMethod(*rm, inv, args, rwArgs);
+                    // …and a `handles` on one of the role's ATTRIBUTES, whose value
+                    // lives in this same map: `has COSAttr $.cos is rw handles<tie raku>`
+                    // publishes the descriptor's own methods on the Attribute, which is
+                    // how PDF::COS::Tie ties an assigned value to its entry (`.tie($lval)`).
+                    for (auto& ra : cit->second->attrs)
+                        for (size_t hi = 0; hi < ra.handles.size(); hi++)
+                            if (ra.handles[hi] == m) {
+                                auto tv = h.find(ra.name);
+                                Value target = tv != h.end() ? tv->second : Value::any();
+                                const std::string& to = hi < ra.handlesTo.size() && !ra.handlesTo[hi].empty()
+                                                        ? ra.handlesTo[hi] : (const std::string&)m;
+                                return methodCall(target, to, std::move(args), rwArgs);
+                            }
                 }
         }
         if (m == "name") return h.count("name") ? h["name"] : Value::str("");
@@ -3121,6 +3134,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 if (cand.code() == add.code()) { holdsIt = true; break; }
                             if (holdsIt) { add = kv.second; break; }
                         }
+                    // A plain SUB takes the invocant as its first POSITIONAL when it
+                    // is installed as a method — that is Rakudo's rule, and the
+                    // reason PDF::COS::Tie generates every PDF entry accessor as
+                    // `sub (\obj) is rw { obj.rw-accessor(…) }`. Stored as it came,
+                    // the sub ran with no arguments at all and `obj` was Any. The
+                    // Callable is shared, so the flag rides on a CLONE: the same
+                    // `&sub` may still be called as a sub elsewhere.
+                    if (add.t == VT::Code && add.code() && !add.code()->isMethod &&
+                        !add.code()->subAsMethod) {
+                        auto clone = std::make_shared<Callable>(*add.code());
+                        clone->subAsMethod = true;
+                        Value m2; m2.t = VT::Code; m2.setCode(std::move(clone));
+                        add = std::move(m2);
+                    }
                     ci->methods[args[0].toStr()] = add;
                 }
                 return args.size() >= 2 ? args[1] : Value::nil();
@@ -3335,6 +3362,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& rn : ci->doneRoles) out.arr()->push_back(Value::typeObj(rn));
                 return out;
             }
+            // `.^is_pun` / `.^pun_source` — a role used AS A CLASS is punned into
+            // one, and Rakudo lets a method ask whether it is running on that pun
+            // and which role it came from. PDF::COS::Tie's `induce` opens with
+            // `$obj.mixin: self.^pun_source if self.^is_pun`, so an ordinary class
+            // needs the False answer before anything else can happen.
+            if (m == "is_pun" || m == "pun_source") {
+                std::string roleOf;
+                auto pm = ci->name.find("\x01pun");
+                if (pm != std::string::npos) roleOf = ci->name.substr(0, pm);
+                else if (ci->isRole) roleOf = ci->name;   // the role itself puns to a class
+                // Rakudo answers the nqp-level 0/1 here, not a Bool — match it.
+                if (m == "is_pun") return Value::integer(roleOf.empty() ? 0 : 1);
+                return roleOf.empty() ? Value::any() : Value::typeObj(roleOf);
+            }
             if (m == "parents") { // immediate parents; composed roles are not parents
                 Value out = Value::array(); out.isList = true;
                 if (ci->parent && !ci->parent->isRole) out.arr()->push_back(Value::typeObj(ci->parent->name));
@@ -3456,6 +3497,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (useCustom) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             } else if (!m.skipOwn && ci->findMethodForCall(m, langRev_ < 2)) {
                 return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
+            }
+            // `method loader handles <load-delegate>` on a TYPE OBJECT invocant:
+            // PDF::COS is a role whose loader API is reached as `PDF::COS.load-dict`,
+            // and its body forwards with `$.load-delegate: …`. The instance path has
+            // the same arm; without this one the delegated name was never found.
+            for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+                auto hit = c->methodHandles.find(m);
+                if (hit == c->methodHandles.end()) continue;
+                Value target = methodCall(inv, hit->second, ValueList{});
+                return methodCall(target, m, std::move(args), rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
             if (const ClassAttr* at = ci->findAttr(m)) {
@@ -4010,6 +4061,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                                 ? a.handlesTo[hi] : m;
                         return methodCall(target, to, std::move(args), rwArgs);
                     }
+        // …and the same delegation written on a METHOD: `method loader is rw
+        // handles <load-delegate>` answers `.load-delegate` by asking `self.loader`
+        // for the object to forward to. PDF::COS publishes its whole loader API
+        // that way.
+        for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+            auto hit = c->methodHandles.find(m);
+            if (hit == c->methodHandles.end()) continue;
+            Value target = methodCall(inv, hit->second, ValueList{});
+            return methodCall(target, m, std::move(args), rwArgs);
+        }
         // Real-role bridge: numeric coercions/methods the class doesn't define
         // dispatch through .Bridge BEFORE the generic Cool handlers (else `.Int`
         // would numify the object itself to 0)

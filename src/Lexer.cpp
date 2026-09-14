@@ -245,9 +245,23 @@ Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {
                     (b == kl || !ascii::isalnum((unsigned char)src_[b - kl - 1]))) { decl = true; break; }
             }
             if (!decl) continue;
+            // …and not inside a LINE COMMENT. This scan runs over raw source, so a
+            // declaration quoted in a comment ("`sub prefix:</>` takes the slash")
+            // otherwise disables `/…/` for everything below it.
+            {
+                size_t ls = src_.rfind('\n', p);
+                ls = (ls == std::string::npos) ? 0 : ls + 1;
+                if (src_.find('#', ls) < p) continue;
+            }
             size_t close = src_.find('>', p + cl);
             if (close == std::string::npos) continue;
             std::string name = src_.substr(p + cl, close - p - cl);
+            // `sub prefix:</>` (PDF::API6's PDF-name maker, `/'Outlines'`) takes
+            // the slash away from the regex literal for the rest of the file.
+            // One character, so the table lexes it whole already — what it needs
+            // is for the bare-`/` regex scan to stop claiming it.
+            if (name == "/" && std::strcmp(cat, "prefix:<") == 0)
+                slashPrefixAt_ = std::min(slashPrefixAt_, close + 1);
             if (name.size() < 2) continue; // one character is always lexed whole
             bool sym = true;
             for (unsigned char c : name)
@@ -1270,6 +1284,14 @@ bool Lexer::tryQuoteForm(Token& out) {
         w = "Q";
     }
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
+    // A sigilless TERM of this name is declared above — `my \m`, a `\m`
+    // parameter, `constant m`. The NAME wins over the quote construct, which is
+    // the reading Rakudo gives once the declaration is in scope: with `m`
+    // undeclared it reports the same runaway this used to. PDF::Content::Ops
+    // takes CMYK components as `\c, \m, \y, \k` and then writes
+    // `[ c, m, y, k ]`, where the `m` opened a match with `,` for a delimiter
+    // and swallowed the rest of the expression.
+    if (isTermName(w)) return false;
     // A routine of this name is declared in the unit (or imported): the call wins
     // over the quote construct, which is the reading Rakudo gives once the routine
     // is in scope. `sub tr(&body)` then makes `tr { td 'a' }` a table row rather
@@ -2200,6 +2222,10 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
 // treated the `#` as a comment while `any /x/` was a regex.
 static const std::set<std::string> kTermAfterIdent = {
     "if", "unless", "while", "until", "when", "given", "return", "and", "or",
+    // `with`/`without`/`orwith` test a term exactly as `if` does — and PDF::Class
+    // reads its roman-numeral table with `with %%Roman-Numerals{$r0}`, where the
+    // `%%` is the hash contextualizer and not divisibility.
+    "with", "without", "orwith",
     "not", "so", "say", "print", "put", "note", "grep", "map", "first",
     "gather", "take", "ok", "nok", "is", "isnt", "like", "unlike", "split",
     "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
@@ -2209,11 +2235,57 @@ static const std::set<std::string> kTermAfterIdent = {
     "make",
     // junction constructors take matchers: `.grep(none /a/)`
     "any", "all", "one", "none",
+    // the set-family constructors take a word list: `set <m l c v y h re>`
+    // (PDF::Content::Ops' operator categories). Without them the `<` lexed as
+    // a comparison and the parser had to rebuild the list out of operator
+    // tokens — which works until a word is `#`, `'` or `"`, and then the quote
+    // it was never meant to open ran to the end of the file.
+    "set", "bag", "mix",
     // both sides of a flip-flop are usually regexes:
     // `if /^Start/ ff /^End/` (Font::AFM). All eight spellings, since
     // the `^` marks lex as part of the operator token.
     "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
 };
+
+// Names this file declares as TERMS: `constant NAME`, `my \name`, and a
+// sigilless PARAMETER `(\name)`. Two readings turn on knowing them — a `/`
+// after one divides rather than opening a regex, and a quote keyword that is
+// also such a name (`\m`) is the name. Incremental: `termScan_` remembers how
+// far `out` has been walked, so this is one pass over the token stream however
+// often it is asked.
+void Lexer::refreshTermNames(const std::vector<Token>& out) {
+    while (termScan_ < out.size()) {
+        const Token& d = out[termScan_];
+        if (d.kind == Tok::LBrace) { termDepth_++; termScan_++; continue; }
+        if (d.kind == Tok::RBrace) {
+            if (termDepth_ > 0) termDepth_--;
+            while (!termNames_.empty() && termNames_.back().first > termDepth_)
+                termNames_.pop_back();
+            termScan_++;
+            continue;
+        }
+        if (d.kind == Tok::LParen) { termParen_++; termScan_++; continue; }
+        if (d.kind == Tok::RParen) { if (termParen_ > 0) termParen_--; termScan_++; continue; }
+        if (termScan_ + 1 >= out.size()) break; // the name may not be lexed yet
+        const Token& nm = out[termScan_ + 1];
+        if (nm.kind == Tok::Ident &&
+            ((d.kind == Tok::Ident && d.text == "constant") ||
+             (d.kind == Tok::Op && d.text == "\\"))) {
+            // A `\name` inside PARENS is a signature parameter: it belongs to the
+            // block about to open, not to the scope the signature sits in. Recorded
+            // one level down, it goes out of scope with that block — which is the
+            // whole point: PDF::Content::Ops takes `\m` as a CMYK component in one
+            // method and writes `m/^Device…/` as a match two hundred lines later.
+            termNames_.push_back({termDepth_ + (termParen_ > 0 ? 1 : 0), nm.text});
+        }
+        termScan_++;
+    }
+}
+
+bool Lexer::isTermName(const std::string& n) const {
+    for (auto& e : termNames_) if (e.second == n) return true;
+    return false;
+}
 
 bool Lexer::regexContext(const std::vector<Token>& out) {
     if (out.empty()) return true;
@@ -2254,16 +2326,8 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
             if (pv.text.empty() || termWords.count(pv.text)) return false;
             if (!(pv.text[0] >= 'a' && pv.text[0] <= 'z')) return false;
             if (pos_ == 0 || !(src_[pos_ - 1] == ' ' || src_[pos_ - 1] == '\t')) return false;
-            // names this file declares as TERMS: `constant NAME`, `my \name`
-            for (; termScan_ + 1 < out.size(); termScan_++) {
-                const Token& d = out[termScan_];
-                const Token& nm = out[termScan_ + 1];
-                if (nm.kind != Tok::Ident) continue;
-                if ((d.kind == Tok::Ident && d.text == "constant") ||
-                    (d.kind == Tok::Op && d.text == "\\"))
-                    termNames_.insert(nm.text);
-            }
-            if (termNames_.count(pv.text)) return false;
+            refreshTermNames(out);
+            if (isTermName(pv.text)) return false;
             size_t nl = src_.find('\n', pos_ + 1);
             size_t close = src_.find('/', pos_ + 1);
             return close != std::string::npos && (nl == std::string::npos || close < nl);
@@ -2466,6 +2530,7 @@ Token Lexer::lexOperator(bool termBefore) {
         "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
         "!===", // negated value identity (before !== / ===)
         "!=:=", // negated container identity (before != / =:=) — JSON::Class
+        "!=~=", // negated approximate equality (before != / =~=) — PDF::Content::Matrix
         // container-typed assignment: `$x =@= LIST` assigns with ARRAY semantics
         // whatever the target's sigil is, `=%=` with Hash, `=$=` with item. Before
         // `=~=`/`==`/`=>` so the three-character form wins, and before `%=`, which
@@ -2934,13 +2999,22 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             // assignment to nothing ("Target is not assignable"). `$δ`, `@δs`
             // and `sub δf` were always fine — only the sigils that double as
             // operators reached this ASCII-only test.
-            if (!anonHash && (c == '%' || c == '&') &&
+            // `%%h` in TERM position is the hash CONTEXTUALIZER on `%h`, the same
+            // reading `$$x` and `@@a` already get — those sigils never double as
+            // an operator, so only `%` reached the table and lexed as divisibility.
+            // (`$n %% 3` is operator position and never gets here.) PDF::Class's
+            // roman numerals are read out with `%%Roman-Numerals{$r0}`, which
+            // answered the empty string.
+            bool hashContext = c == '%' && !inAngle && regexContext(out) && peek(1) == '%' &&
+                               (isIdentStart(peek(2)) || unicodeLetterAt(2));
+            if (!anonHash && !hashContext && (c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || unicodeLetterAt(1) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
                 t = lexOperator(prevIsClearTerm(out));
-            } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
+            } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) &&
+                       (refreshTermNames(out), tryQuoteForm(t))) {
                 // t set by tryQuoteForm
             } else {
                 // …and a slang may claim the bareword: 三千 is a number under Slang::Kazu,
@@ -2974,6 +3048,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         else if (c == ';') { advance(); t = make(Tok::Semicolon, ";"); }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
         else if (c == '/' && !inAngle && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
+                 pos_ < slashPrefixAt_ && // a `sub prefix:</>` above this point owns the slash
                  // `[/]` (and `[\/]`) is the division reduce metaop, not a regex
                  !(peek(1) == ']' && !out.empty() &&
                    (out.back().kind == Tok::LBracket ||

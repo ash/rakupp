@@ -481,6 +481,7 @@ public:
     // Fast path for a rule whose whole body is a single character matcher (e.g.
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
+    bool rootIsSingleLiteral() const; // …and it is a literal char (LTM tiebreak)
     // The pattern tree as a JavaScript object literal, for the --target=js backend
     // (src/codegen/Js.cpp): the runtime's matcher interprets it. Code / VarMatch /
     // CondRef nodes carry Raku text the emitter has to compile; `embed` turns
