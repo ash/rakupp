@@ -5136,6 +5136,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // Mu \topic) { self }`). paths' default file matcher is `True`, and its
     // `$!file-matcher.ACCEPTS($entry)` used to die with no such method.
     if (inv.t == VT::Bool && m == "ACCEPTS") return inv;
+    // `Numeric.ACCEPTS(Any:D \a) { self == a }` — the method `~~` runs when the
+    // MATCHER is a number, and the one an enum value answers with (an enum value
+    // is a Numeric). It was missing entirely, so `$level.ACCEPTS($message)` —
+    // what Lumberjack's smartmatch comes down to — was a missing method.
+    if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) && m == "ACCEPTS") {
+        if (args.empty()) return Value::boolean(false);
+        Value topic = args[0];
+        // `==` numifies, and an OBJECT numifies through its own `method Numeric`
+        // (Lumberjack's Message answers the level it carries)
+        if (topic.t == VT::Object && topic.obj() && topic.obj()->cls) {
+            ValueList none;
+            try { topic = methodCall(topic, "Numeric", none); } catch (RakuError&) {}
+        }
+        return Value::boolean(boolify(applyBinOp("==", inv, topic)));
+    }
     if (inv.t == VT::Bool && m == "key")   return Value::str(inv.b ? "True" : "False");
     if (inv.t == VT::Bool && m == "value") return Value::integer(inv.b ? 1 : 0);
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)

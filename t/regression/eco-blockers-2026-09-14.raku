@@ -13,6 +13,10 @@
 #   * a DELEGATED `Numeric` (`has FatRat $.f handles <Numeric>`) numifies for
 #     the numeric comparisons
 #
+# …and a second pass over the same blockers (Lumberjack, HTTP::Roles):
+#   * `Numeric.ACCEPTS` — a NUMBER is a matcher, and it numifies the topic
+#   * too FEW positionals is an error for a METHOD, not only for a sub
+#
 # Runs clean under Rakudo too.
 
 my $fails = 0;
@@ -65,5 +69,30 @@ my $w = Wrapped.new: :f(FatRat.new(1, 4));
 ck ($w == 0.25),  True,  'a delegated `Numeric` decides `==`';
 ck ($w < 0.5),    True,  '…and `<`';
 ck ($w <=> 0.25), Order::Same, '…and `<=>`';
+
+
+# ---- a NUMBER is a matcher, and it numifies the topic -------------------
+# `$message ~~ $level` is how Lumberjack tests a log message against an enum
+# value: Message.Numeric answers the level it carries, and Numeric.ACCEPTS
+# compares the two with `==`.
+enum Severity <SevOff SevFatal SevError SevWarn>;
+class Logged { has Severity $.level; method Numeric { $!level } }
+my $entry = Logged.new: :level(SevError);
+ck ($entry ~~ SevError), True,  'a numeric matcher numifies an object topic';
+ck ($entry ~~ SevWarn),  False, '…and says so when the numbers differ';
+ck SevError.ACCEPTS($entry), True, '…which is `Numeric.ACCEPTS`, callable by name';
+ck 42.ACCEPTS(42), True, '…on any number';
+
+# ---- too FEW positionals is an error for a method -----------------------
+# A role's stubbed `method middleware(Callable $sub) {*}` called bare is how
+# HTTP::Roles checks that a class implemented what the role asked for.
+role Stubbed { method middleware(Callable $sub) {*} }
+my $unimplemented = (class { }).new;
+$unimplemented does Stubbed;
+ck (try { $unimplemented.middleware; 'ran' }) // 'died', 'died',
+   'a method called with too few positionals is an error';
+class Arity { method two($a, $b) { 'ran' } }
+ck (try { Arity.new.two(1); 'ran' }) // 'died', 'died', '…however many it wanted';
+ck Arity.new.two(1, 2), 'ran', '…and the right count still runs';
 
 exit $fails ?? 1 !! 0;

@@ -18266,6 +18266,35 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             for (auto& b : k->roleParamBindings)
                 if (!env->local(b.first)) env->define(b.first, b.second);
     }
+    // TOO FEW POSITIONALS is an error for a method as much as for a sub. The
+    // check lived only on the sub path, so a method called with fewer arguments
+    // than its signature requires simply RAN, with the missing parameter
+    // undefined — a typo'd or mis-remembered call did nothing and said nothing.
+    // HTTP::Roles asserts the opposite: a role's stubbed `method middleware
+    // (Callable $sub) {*}` called bare must die, which is how a class learns it
+    // has not implemented the role. Only the too-FEW half is checked here; the
+    // too-many half is ambiguous at this level (a quoted-key pair binds
+    // positionally, a capture-flattened named loses its bit), exactly as the
+    // sub path's comment says.
+    if (c.params && !c.params->empty() && !c.isMultiDispatcher && !c.subAsMethod) {
+        int reqPos = 0; bool unbounded = false;
+        for (auto& p : *c.params) {
+            if (p.invocant || p.named) continue;
+            if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; break; }
+            if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
+        }
+        if (!unbounded && reqPos > 0) {
+            int given = 0;
+            for (auto& a : args) if (!isNamedArg(a)) given++;
+            // a Pair may be meant positionally, so credit every one of them
+            for (auto& a : args) if (isNamedArg(a)) given++;
+            if (given < reqPos)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Too few positionals passed; expected " + std::to_string(reqPos) +
+                    " argument" + (reqPos == 1 ? "" : "s") + " but got " +
+                    std::to_string(given)};
+        }
+    }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs,
@@ -28744,6 +28773,21 @@ Value Interpreter::evalBinary(Binary* b) {
                         throw;
                     // fall through to the generic smartmatch below
                 }
+            }
+        }
+        // A NUMERIC matcher smartmatches with `==` — that is Rakudo's
+        // `Numeric.ACCEPTS(Any:D \a) { self == a }` — and `==` NUMIFIES the
+        // topic, so an object with its own (or a delegated) `method Numeric`
+        // matches by the number it answers. Lumberjack tests a log message
+        // against a level exactly this way: `$message ~~ $level`, where
+        // Message.Numeric hands back the message's own level. Without it the
+        // comparison fell through to identity and was False for every value.
+        if ((lTopic.t == VT::Object && lTopic.obj() && lTopic.obj()->cls) &&
+            (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat)) {
+            Value nb = bridgeReal(*this, lTopic);
+            if (!(nb.t == VT::Object)) {
+                bool ok = boolify(applyArith("==", nb, r));
+                return Value::boolean(op == "~~" ? ok : !ok);
             }
         }
         // generic smartmatch on the already-evaluated operands — the Whatever a
