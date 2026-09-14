@@ -987,6 +987,13 @@ public:
     // to the lexical scope every worker closes over — where all of them assigned
     // it into one std::map at once, which is a data race that corrupted the heap.
     static thread_local bool forceRoutineFrame_;
+    // The type a declaration is handing to its metaclass's `new_type` hook, if
+    // one is running. That hook reaches its base with `callsame`, and the base
+    // is `Metamodel::ClassHOW.new_type`, whose job is to CREATE the type — so
+    // left to itself it hands the metaclass a fresh anonymous class instead of
+    // the one being declared, and everything the hook then adds lands on a type
+    // nothing else can see. While this is set, the built-in answers it.
+    static thread_local std::string declaringType_;
     // one-shot: loop-phaser control for the next callCallable, set by an
     // iterating driver (.map over a block with FIRST/NEXT/LAST). Bits:
     // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),

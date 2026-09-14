@@ -2794,6 +2794,7 @@ thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
 thread_local bool Interpreter::noAutothread_ = false;
 thread_local bool Interpreter::valueSmartmatch_ = false;
 thread_local bool Interpreter::forceRoutineFrame_ = false;
+thread_local std::string Interpreter::declaringType_;
 thread_local int Interpreter::loopPhaserCtl_ = 0;
 thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
 thread_local bool Interpreter::hoistingSubs_ = false;
@@ -10161,6 +10162,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 } else {
                     ci->methods[key] = code;
                 }
+                // A class may write the build-plan routine itself, and Rakudo
+                // runs that one as readily as a metaclass-added one.
+                if (key == "POPULATE") ci->hasPopulate = true;
                 ci->roleSubmethods.erase(key); // the class declares it ITSELF now
             }
             // aggregate role requirements (composed roles already carry the ones
@@ -10645,11 +10649,106 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!cd->howName.empty() && ci->howObj.t != VT::Object) {
                 auto hcit = classes_.find(resolveClassAlias(cd->howName));
                 if (hcit != classes_.end() && hcit->second) {
-                    Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
-                    h.obj()->cls = hcit->second;
-                    h.obj()->attrs["__type"] = Value::typeObj(clsName);
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = hcit->second;
+                    od->attrs["__type"] = Value::typeObj(clsName);
+                    // A metaclass is an ordinary object and keeps state in its
+                    // own attributes across the hooks below (OO::Monitors holds
+                    // its lock Attribute in one). Built by hand, it had no slots
+                    // at all: `$!x = …` made one on assignment and looked fine,
+                    // while `@!x.push(…)` and `%!x{…} = …` mutated a temporary
+                    // and silently kept nothing. Give it the slots a constructed
+                    // object would have.
+                    ValueList noArgs;
+                    runAttrDefaults(od, hcit->second, noArgs);
+                    Value h; h.t = VT::Object; h.setObj(std::move(od));
                     ci->howObj = std::move(h);
                 }
+            }
+            // …and that metaclass DRIVES the declaration, not just its end.
+            // Rakudo hands a class to its HOW one piece at a time — new_type,
+            // then add_attribute per attribute, then add_method per method,
+            // then compose — and a metaclass does its work in whichever of
+            // those it overrides. rakupp built the whole class with its own
+            // metamodel and called `compose` alone, which was enough for the
+            // one that prompted the hook (Red builds its columns in compose)
+            // and silently nothing for a metaclass that works anywhere else:
+            // OO::Monitors adds its lock attribute in `new_type` and wraps
+            // every method in lock/unlock in `add_method`, so a `monitor`
+            // declared through it was a PLAIN CLASS. Its own test suite lost
+            // counts to the race it exists to prevent (issue #86).
+            //
+            // The class is already built when we get here, so these are not
+            // the calls that construct it — they are the same hooks in the
+            // same order, given the finished pieces. That is invisible to a
+            // metaclass that only adds to what it is handed, which is what
+            // these hooks are for; one that refuses a piece cannot unbuild it.
+            if (!cd->howName.empty() && ci->howObj.t == VT::Object && ci->howObj.obj() &&
+                ci->howObj.obj()->cls) {
+                ClassInfo* hc = ci->howObj.obj()->cls.get();
+                auto howHas = [&](const char* nm) {
+                    for (ClassInfo* c = hc; c; c = c->parent.get())
+                        if (c->methods.count(nm)) return true;
+                    return false;
+                };
+                const Value tobj = Value::typeObj(clsName);
+                // A metaclass hook reaches its base with `callsame`/`nextsame`
+                // (or the qualified `self.Metamodel::ClassHOW::add_method(…)`,
+                // which the HOW-object forward already answers). The base of
+                // each of these IS what the engine has already done, so the
+                // next candidate hands back what it produced and adds nothing.
+                auto callHook = [&](const Value& self, const char* nm, ValueList hargs, Value sameAnswer) {
+                    RedispatchCtx rc;
+                    rc.sameArgs = hargs;
+                    rc.next = [sameAnswer](ValueList) { return sameAnswer; };
+                    redispatchStack_.push_back(std::move(rc));
+                    try { methodCall(self, nm, std::move(hargs)); }
+                    catch (...) { redispatchStack_.pop_back(); throw; }
+                    redispatchStack_.pop_back();
+                };
+                // `new_type` is called on the HOW TYPE OBJECT — Rakudo has no
+                // instance yet, which is why OO::Monitors reaches its own
+                // instance the long way round, through `type.HOW`. Calling it
+                // on the instance instead would quietly accept a metaclass
+                // Rakudo rejects ("Cannot look up attributes in a … type
+                // object"), so `self` is the type object here too.
+                // An error inside a hook is the METACLASS's own and must be
+                // heard — swallowing one is what left every Red model silently
+                // half-built before the compose hook stopped doing it. The only
+                // tolerated failure is the same one compose tolerates: a
+                // `nextsame` that has run out of candidates to redispatch to.
+                auto hookErrIsSpent = [](const RakuError& e) {
+                    return e.message.find("to redispatch to") != std::string::npos ||
+                           e.message.find("not in the dynamic scope of a dispatcher") != std::string::npos;
+                };
+                if (howHas("new_type")) {
+                    struct DeclaringGuard {           // …and `callsame` inside it answers OUR type
+                        std::string saved;
+                        DeclaringGuard(const std::string& n) : saved(declaringType_) { declaringType_ = n; }
+                        ~DeclaringGuard() { declaringType_ = saved; }
+                    } dg(clsName);
+                    try { callHook(Value::typeObj(hc->name), "new_type", ValueList{}, tobj); }
+                    catch (RakuError& e) { if (!hookErrIsSpent(e)) throw; }
+                }
+                if (howHas("add_attribute"))
+                    for (auto& ca : ci->attrs) {
+                        Value am = attributeMetaObject(ca, clsName);
+                        if (am.t != VT::Hash || !am.hash()) continue;
+                        try { callHook(ci->howObj, "add_attribute", ValueList{tobj, am}, am); }
+                        catch (RakuError& e) { if (!hookErrIsSpent(e)) throw; }
+                    }
+                // Only the methods THIS declaration wrote, under the names it
+                // wrote them: what a role composed in belongs to the role's own
+                // declaration, and a private method is `add_private_method`'s.
+                if (howHas("add_method"))
+                    for (auto& md : cd->methods) {
+                        if (md->isPrivate) continue;
+                        auto mit = ci->methods.find(md->name);
+                        if (mit == ci->methods.end()) continue;
+                        try { callHook(ci->howObj, "add_method",
+                                       ValueList{tobj, Value::str(md->name), mit->second}, mit->second); }
+                        catch (RakuError& e) { if (!hookErrIsSpent(e)) throw; }
+                    }
             }
             // Composition hook: a role mixed into the class's persistent .HOW (via a
             // method trait — Method::Also's AliasableClassHOW) may define `compose`;

@@ -1079,6 +1079,12 @@ struct ClassInfo {
     bool isGrammar = false;
     bool isRole = false;
     bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
+    // A `POPULATE` method — Rakudo's name for the routine that runs an object's
+    // build plan, and the one a metaclass wraps or supplies to get at every
+    // construction (OO::Monitors makes the instance's lock there). Flagged so
+    // the construction path can skip the lookup for the classes that have none,
+    // which is all of them until a metaclass adds one.
+    bool hasPopulate = false;
     std::string repr; // `is repr("CStruct")` — NativeCall native memory layout
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)

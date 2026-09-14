@@ -119,6 +119,35 @@ static std::string excMessageOf(Interpreter& I, const Value& inv) {
 void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueList& args,
                                 BuildStep afterBuild) {
     if (!ci) return;
+    // A metaclass-supplied POPULATE runs AROUND the build plan, as Rakudo's
+    // does: it sets up whatever the metaclass needs on the fresh instance and
+    // then `callsame`s, and the rest of construction is that next candidate.
+    // OO::Monitors makes the instance's Lock here, so without this its monitor
+    // methods would lock a Lock type object — the half of issue #86 that the
+    // declaration hooks alone do not fix. Gated on the flag: an ordinary class
+    // has no POPULATE and pays one bool for the question.
+    if (ci->hasPopulate) {
+        if (Value* pop = ci->findMethod("POPULATE")) {
+            // Re-entry guard: POPULATE's own `callsame` lands back here, and the
+            // class still says it has one. The flag is per construction, not per
+            // class, so a nested `.new` inside POPULATE still gets its own.
+            static thread_local const void* inPopulate = nullptr;
+            const void* key = (const void*)self.obj();
+            if (key && inPopulate != key) {
+                const void* saved = inPopulate;
+                inPopulate = key;
+                RedispatchCtx rc;
+                rc.sameArgs = args;
+                rc.next = [&](ValueList) { runBuildChain(ci, self, args, afterBuild); return Value::nil(); };
+                redispatchStack_.push_back(std::move(rc));
+                try { invokeMethod(*pop, self, args, nullptr, /*ownFrame=*/true); }
+                catch (...) { redispatchStack_.pop_back(); inPopulate = saved; throw; }
+                redispatchStack_.pop_back();
+                inPopulate = saved;
+                return;
+            }
+        }
+    }
     // Neither hook anywhere in the ancestry: `class K { has $.a; has $.b }`, and
     // nearly every other construction there is. Nothing has to interleave, so
     // the per-class step (the `is required` check) runs straight down the parent
@@ -3161,7 +3190,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         Value m2; m2.t = VT::Code; m2.setCode(std::move(clone));
                         add = std::move(m2);
                     }
-                    ci->methods[args[0].toStr()] = add;
+                    const std::string addName = args[0].toStr();
+                    ci->methods[addName] = add;
+                    // …and if it is the build-plan routine, say so on the class:
+                    // the construction path runs it only for a class that has one.
+                    if (addName == "POPULATE") ci->hasPopulate = true;
                 }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
@@ -5455,6 +5488,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
          // from loading.
          inv.s == "Metamodel::PackageHOW" || inv.s == "Metamodel::ModuleHOW" ||
          inv.s == "Metamodel::GrammarHOW")) {
+        // …unless a DECLARATION is asking, through its metaclass's own
+        // `new_type` hook: the type exists already, and creating a second one
+        // here would hand the metaclass a class nothing else refers to.
+        if (!declaringType_.empty()) return Value::typeObj(declaringType_);
         auto ci = std::make_shared<ClassInfo>();
         ci->name = "<anon|1>";
         for (auto& a : args)
