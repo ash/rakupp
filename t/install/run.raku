@@ -696,6 +696,15 @@ $nu.err.slurp(:close);
 my $nrec = $home7.add('.raku/dist').dir.first(*.f).slurp;
 check $nrec.contains('resources/libraries/libgate') || $nrec.contains('resources/libraries/gate.dll'),
       'native-lib: the dist record keys the platform spelling too';
+# ...and the blob itself sits under Rakudo's name as well: that engine opens
+# resources/lib<id>.dylib (.so; <id>.dll) for a libraries/ key, never the bare
+# id, so a store holding only the bare id answered rakupp and left Rakudo with
+# "Cannot locate native library" (Digest::SHA256::Native, 2026-09).
+my @twins = $home7.add('.raku/resources').dir.grep({
+    .basename ~~ / ^ 'lib'? <[0..9 a..f A..F]> ** 40 ['.dylib' | '.so' | '.dll'] $ / });
+check @twins.elems == 1 && @twins[0].slurp(:bin).elems == $home7.add('.raku/resources')
+          .add(@twins[0].basename.subst(/ ^ 'lib' /, '').subst(/ '.' \w+ $ /, '')).slurp(:bin).elems,
+      'native-lib: the built library is also stored under the name Rakudo opens';
 
 # ---- the phase-hash `depends` ----------------------------------------------
 my %ph-dry = installer('--dry-run', 'Gate::Phased');

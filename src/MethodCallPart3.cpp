@@ -945,6 +945,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (d != std::string::npos) return Value::typeObj("uint" + n.substr(d));
             }
         }
+        // A type MIXIN on a parameterized container keeps the element type:
+        // `(Array[Foo] but R).of` is Foo, as `Array[Foo].of` is. The parameter
+        // rides on the base's type Value, and the mixed type `Array[Foo]+{R}`
+        // is a fresh class whose Value carries none — so read it back out of
+        // the base's spelling in the name. JSON::Class declares its typed
+        // arrays exactly this way, and JSON::Unmarshal asks the mixed type
+        // `.of` to know what to build each element into; Mu made every
+        // element a plain Hash (JSON::Class t/050-array.t).
+        if (inv.ofType().empty()) {
+            size_t plus = inv.s.find("+{");
+            size_t open = plus == std::string::npos ? std::string::npos : inv.s.find('[');
+            if (open != std::string::npos && open < plus && inv.s[plus - 1] == ']') {
+                std::string param = inv.s.substr(open + 1, plus - 1 - open - 1);
+                size_t comma = param.find(',');       // Hash[Val,Key] — the value half
+                if (comma != std::string::npos) param = param.substr(0, comma);
+                if (!param.empty()) return Value::typeObj(param);
+            }
+        }
         return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
     }
     // …and on a buffer INSTANCE: `Buf.new(1,2).of`. The element type rides on

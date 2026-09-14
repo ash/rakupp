@@ -4670,6 +4670,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         // repo's first cut put bin blobs in bin/<sha>, which left
                         // run-script blind to them.
                         { std::ofstream o(prefix + "/resources/" + sha, std::ios::binary); o << content; }
+                        // A compiled library rides in under a SECOND name as well:
+                        // Rakudo resolves `%?RESOURCES<libraries/x>` by decorating
+                        // the blob id the way its own installer names the file —
+                        // resources/lib<id>.dylib (.so; <id>.dll) — and never
+                        // looks at the bare id. Digest::SHA256::Native built its
+                        // libsha256.dylib, this store held it as the bare sha, and
+                        // under Rakudo the module died "Cannot locate native
+                        // library"; the same bytes under both names leave the
+                        // dist usable by either engine, which is the store's promise.
+                        if (rel.rfind("resources/libraries/", 0) == 0) {
+#if defined(_WIN32)
+                            std::string twin = sha + ".dll";
+#elif defined(__APPLE__)
+                            std::string twin = "lib" + sha + ".dylib";
+#else
+                            std::string twin = "lib" + sha + ".so";
+#endif
+                            std::ofstream o(prefix + "/resources/" + twin, std::ios::binary); o << content;
+                        }
                         (*filesOut.hash())[rel] = Value::str(sha);
                         // ...and its short/ index entry: Rakudo's `.files("bin/x")`
                         // — the lookup its run-script resolves a bare script name

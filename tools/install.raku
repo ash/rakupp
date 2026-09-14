@@ -1375,6 +1375,13 @@ sub unreferenced-blobs(IO::Path $p, %dists, %referenced) {
         next unless $p.add($sub).d;
         for $p.add($sub).dir.grep(*.f) -> $b {
             next if %referenced{$b.basename};
+            # A compiled library's Rakudo-named twin (resources/lib<sha>.dylib,
+            # .so, <sha>.dll — what `%?RESOURCES<libraries/x>` opens there) is
+            # live exactly while the bare blob it copies is.
+            if $sub eq 'resources'
+                && $b.basename ~~ / ^ 'lib'? (<[0..9 a..f A..F]> ** 40) ['.dylib' | '.so' | '.dll'] $ / {
+                next if %referenced{~$0};
+            }
             # bin/ holds NAMED wrappers beside (legacy) blobs. A wrapper is not
             # content-addressed: it is live while any dist carries bin/<name>,
             # and BROKEN-adjacent only in the sense of wasted disk otherwise.

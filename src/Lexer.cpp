@@ -2714,6 +2714,17 @@ static bool angleTermContext(const std::vector<Token>& out) {
                    pv.text != "\xE2\x88\x9E" && // ∞ is a TERM lexed as an Op: `∞ < 5` compares
                    pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB";
         case Tok::Ident: {
+            // A METHOD is not a listop: `(1, 2).all < 5` compares the junction,
+            // where the bare `all <a b>` takes a word list. The name after a
+            // method-call dot is the method whatever it is spelled, so a `<`
+            // after it is an infix — otherwise `.all <` and `.any <` swallowed
+            // the rest of the line as words and the parse died on the next
+            // quote (Crypt::Random's range checks read exactly this way).
+            if (out.size() >= 2) {
+                const Token& pp = out[out.size() - 2];
+                static const std::set<std::string> methodDot = {".", ".^", ".?", ".&", ".=", "!", ".*", ".+"};
+                if (pp.kind == Tok::Op && methodDot.count(pp.text) && !pv.spaceBefore) return false;
+            }
             if (kTermAfterIdent.count(pv.text) > 0) return true;
             // `:name<#>` — a colonpair's angle VALUE: the key is an identifier
             // glued to a `:`, and what follows is a word list, never a

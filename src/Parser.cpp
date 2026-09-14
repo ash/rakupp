@@ -537,7 +537,7 @@ void Parser::scanModuleOps(const std::string& module) {
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
     // A module compiled into this binary answers before the disk is consulted.
     if (const std::string* emb = rakuppEmbeddedModuleSource(module)) {
-        lastScanSlang_ = module != "Slangify" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
+        lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
         scanOpsIn(*emb, "<embedded:" + module + ">");
         return;
     }
@@ -561,7 +561,9 @@ void Parser::scanModuleOps(const std::string& module) {
     // Slangify is the interface, never a slang; an L10N dist registers one too,
     // but what it carries is a keyword table, applied by the token rewrite
     // (Interpreter::applyL10NSlang) before this parser ever ran
-    lastScanSlang_ = module != "Slangify" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
+    // `if` is answered by the parser itself (the `:if(EXPR)` pair on a later
+    // `use`), so its actions-only slang is never activated — see loadModule.
+    lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
     scanOpsIn(src, srcPath);
 }
 

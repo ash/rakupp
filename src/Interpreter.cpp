@@ -5699,6 +5699,13 @@ bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (modul
         // compunit and dists `use` directly (Font::FreeType's Raw/Defs, and the
         // thirteen dists behind it). Built in here too, so there is no file.
         "NativeCall::Types",
+        // The ecosystem's `if` dist: `use if;` then `use Foo:if(EXPR)`. The
+        // colonpair is read natively by the `use` parser (UseStmt::ifCond)
+        // and the load skipped when it is false, so the dist has nothing
+        // left to do — and loading it anyway ran its actions-only slang
+        // into the refusal. Crypt::Random opens with the pair, and UUID::V4
+        // and six more dists stand behind it.
+        "if",
         // pragmas Rakudo accepts that rakupp does not act on
         "newline", "precompilation", "trace", "dynamic-scope", "snapper",
         "invocant", "internals", "parameters", "routines", "subroutines",
@@ -6457,6 +6464,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
     if (dataNativeUse(name, importArgs, doImport, verReq)) return;
+    // `use if;` — the ecosystem dist whose whole job is the `:if(EXPR)`
+    // colonpair on a later `use`. The parser reads that pair itself
+    // (UseStmt::ifCond) and exec() skips the load when it is false, so the
+    // dist has nothing left to do here; loading its file (found under `-I lib`
+    // when its own suite runs, or from the store) only ran its actions-only
+    // slang into the refusal. Answered before the search, like a pragma.
+    if (name == "if" && !requireForm) return;
     if (loadedModules_.count(name)) {
         // The module body ran once and stays run — but a repeat `use` still
         // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs
@@ -6927,7 +6941,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // A module that registers a slang runs its EXPORT for real only in the
         // scratch host (rakuppActivateSlang); here it fails to find `$*LANG`, and
         // that failure is expected, not news.
-        if (name != "Slangify" && rakuppIsSlangSource(src)) slangModules_.insert(name);
+        if (name != "Slangify" && name != "if" && rakuppIsSlangSource(src)) slangModules_.insert(name);
         if (!cached) try {
             Lexer lx(src);
             lx.tolerant_ = true;   // a slang below a `use` may own syntax this first lex cannot read
@@ -11931,11 +11945,19 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
     // `sub f(Int:D $x) {…}; f(Int)` bound happily — and a module choosing a
     // parameterization by which signature ACCEPTS its arguments always got the
     // first one (Parameterizable).
-    if (p.defConstraint == 1 && !isDefined(v))
+    // A Failure is CONCRETE: `.defined` answers False on one (that is how it
+    // is noticed), but the smiley asks whether the value is an instance, and
+    // a Failure is one. Rakudo binds `"x".Int` to an `Any:D` parameter and
+    // refuses it for `Int:D` as a TYPE mismatch, which the check below then
+    // reports. Treating it as a type object here raised InvalidConcreteness
+    // out of Getopt::Long's `store-direct(Int:D $value)` for a `--count x`,
+    // in place of the module's own "Cannot convert" report.
+    const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
+    if (p.defConstraint == 1 && !isDefined(v) && !failure)
         throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
             "Parameter '" + p.name + "' must be an object instance of type '" +
             (p.type.empty() ? std::string("Any") : p.type) + "', not a type object"};
-    if (p.defConstraint == 2 && isDefined(v))
+    if (p.defConstraint == 2 && (isDefined(v) || failure))
         throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
             "Parameter '" + p.name + "' must be a type object of type '" +
             (p.type.empty() ? std::string("Any") : p.type) + "', not an object instance"};
