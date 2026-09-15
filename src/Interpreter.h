@@ -59,6 +59,7 @@ bool isNativeTypeName(const std::string& n);
 // Installation-repository prefixes, in resolution order.
 const std::vector<std::string>& rakuRepoPrefixes();
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
+std::vector<std::pair<std::string, int>> signalNamesAndNumbers(); // every Signal name this build knows
 void srandSeed(long long s); // reseed the RNG (srand)
 void rakuppSetSeed(long long s); // --seed=N: what every thread's FIRST rand() seeds from, instead of time+pid
 void rakuppSetTrace(bool on);    // --trace: print every statement to stderr as it runs
@@ -292,6 +293,12 @@ struct EnvExtras {
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
+    // Variables declared with a COERCION type (`my Int() $x`). The declaration
+    // site carries it on the VarExpr, but a later `$x = "7"` is a different
+    // VarExpr with nothing on it, so the coercion has to live with the variable
+    // or the assignment type-check refuses what the declaration would have
+    // converted. Git::Blame::File's porcelain walk turns on exactly that.
+    std::map<std::string, std::string> varCoerce;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
 };
 

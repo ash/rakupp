@@ -1043,7 +1043,17 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
                    ((t.text == "%" || t.text == "@") && &t == &cur() &&
                     ((peek().kind == Tok::LParen && !peek().spaceBefore) ||
-                     (peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1))) || // `%(...)` / `@(...)` / `@$x` / `%$h` contextualizers
+                     // …and the HASH composer `%{ … }`. A listop argument
+                     // position has no left operand, so a `%` there cannot be
+                     // infix modulo and the brace cannot be a block. Without
+                     // this, `make %{'k' => 1}` parsed as a nullary `make`
+                     // followed by a stray block and stored nothing —
+                     // FEN::Grammar builds its castling rights exactly that way,
+                     // so every parsed position lost all four flags. (`@{ … }`
+                     // is deliberately NOT here: it is the Perl 5 dereference,
+                     // which Rakudo refuses outright and points at `@( … )`.)
+                     (t.text == "%" && peek().kind == Tok::LBrace && !peek().spaceBefore) ||
+                     (peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1))) || // `%(...)` / `@(...)` / `%{...}` / `@$x` / `%$h` contextualizers
                    (t.text == "&" && &t == &cur() && !peek().spaceBefore &&
                     (peek().kind == Tok::LBracket ||   // infix-as-value `say &[+](2,3)`
                      peek().kind == Tok::LParen ||     // Callable contextualizer `say &(%h<k>)()`

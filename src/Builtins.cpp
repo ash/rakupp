@@ -8357,6 +8357,15 @@ int signalNumberOfName(const std::string& n) {
     auto it = signalNameMap().find(n);
     return it != signalNameMap().end() ? it->second : -1;
 }
+// Every Signal-enum name this build knows, for `Signal.WHO` and
+// `Signal.^enum_value_list`. Without them the stash was empty, `Signal.WHO<SIGPIPE>`
+// resolved to Any and numified to 0, and the `sigpipe` pragma quietly called
+// signal(0, 0) instead of restoring SIGPIPE — a no-op nobody could see.
+std::vector<std::pair<std::string, int>> signalNamesAndNumbers() {
+    std::vector<std::pair<std::string, int>> out;
+    for (auto& kv : signalNameMap()) out.emplace_back(kv.first, kv.second);
+    return out;
+}
 static std::string signalNameOfNumber(int sig) {
     for (auto& kv : signalNameMap()) if (kv.second == sig) return kv.first;
     return "";

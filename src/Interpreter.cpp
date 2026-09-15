@@ -4900,6 +4900,12 @@ int Interpreter::run(Program& prog) {
                         else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
                                  ascii::isupper((unsigned char)ve0->declType[0]))
                             global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                        // …its coercion type, for the same reason: a hoisted
+                        // `my Int() $x;` never reaches the declaration path that
+                        // would have recorded it, and the later `$x = "7"` would
+                        // then be refused rather than converted.
+                        if (ve0->name[0] == '$' && !ve0->declCoerce.empty())
+                            global_->x().varCoerce[ve0->name] = ve0->declCoerce;
                         // …and its `is dynamic`, which the skipped declaration would
                         // otherwise never record (a mainline `my $x is dynamic;` with
                         // no initializer is hoisted here and never evaluated)
@@ -19089,6 +19095,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
                 de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            if (sigil == '$' && !ve->declCoerce.empty())
+                de->x().varCoerce[ve->name] = ve->declCoerce; // `my Int() $x` coerces every later assignment
             if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
             return &de->define(ve->name, std::move(init));
         }
@@ -22793,6 +22801,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             break;
                         }
                     }
+                // A coercion-typed slot converts rather than refuses — see the
+                // other assignment check for why Git::Blame::File needed it.
+                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                    auto ci = en->xr().varCoerce.find(nm);
+                    if (ci != en->xr().varCoerce.end()) {
+                        if (rhs.typeName() != ci->second) rhs = coerceToType(rhs, ci->second);
+                        break;
+                    }
+                    if (en->local(nm)) break;
+                }
                 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                     auto di = en->xr().varDefault.find(nm);
                     if (di != en->xr().varDefault.end()) {
@@ -24443,9 +24461,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
             op == "<=>" || op == "cmp") { // (`leg` is STRINGWISE — it never lands here)
-            // zero-denominator Rats compare as their Num (±Inf / NaN; NaN == NaN is False)
+            // A zero-denominator Rat is EQUALITY-compared as its Num — `<0/0>` is
+            // NaN, so `$z == $z` is False — but ORDERED against everything else
+            // by the ordinary cross-multiplication, which is what Rakudo does and
+            // is not the same answer: `<0/0> <= 1` cross-multiplies to `0 <= 0`
+            // and is True, where the Num path makes it False.
+            //
+            // The difference is not academic. Algorithm::KDimensionalTree prunes
+            // a branch with `distance-on-the-split-axis <= best-so-far`, and the
+            // Canberra distance between two axis-projected vectors is exactly
+            // `<0/0>`. Routing that through NaN made the test permanently false,
+            // the other branch was never searched, and the k nearest neighbours
+            // came back wrong — on 184 of 400 queries, silently, and only here.
             auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD() && v.ratD()->isZero(); };
-            if (zeroDen(l) || zeroDen(r))
+            if ((op == "==" || op == "!=" || op == "cmp") && (zeroDen(l) || zeroDen(r)))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
             if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
@@ -26928,12 +26957,30 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 i = j - 1; continue;
             }
             if (s[i] == '$' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+                size_t j = i + 1; std::string nm;
+                // A hyphen or apostrophe CONTINUES an identifier when a letter or
+                // digit follows it, exactly as it does everywhere else in Raku.
+                // Stopping at the hyphen made `s/$sep\n/$commit-sep/` interpolate
+                // an undeclared `$commit` — the empty string — and leave `-sep` as
+                // literal text, so Git::Log's record separator became the four
+                // characters `-sep` and two commits came back glued into one.
+                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
+                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
+                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) nm += s[j++];
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
             }
             if (s[i] == '@' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+                size_t j = i + 1; std::string nm;
+                // A hyphen or apostrophe CONTINUES an identifier when a letter or
+                // digit follows it, exactly as it does everywhere else in Raku.
+                // Stopping at the hyphen made `s/$sep\n/$commit-sep/` interpolate
+                // an undeclared `$commit` — the empty string — and leave `-sep` as
+                // literal text, so Git::Log's record separator became the four
+                // characters `-sep` and two commits came back glued into one.
+                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
+                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
+                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) nm += s[j++];
                 // `@arr[expr]` — a non-empty subscript indexes one element (captures
                 // are already bound, so the subscript may use $0/$<name>).
                 if (j < s.size() && s[j] == '[') {
@@ -31346,6 +31393,16 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
         return false;
     };
     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        // A coercion-typed slot CONVERTS what it is handed rather than refusing
+        // it: `my Int() $x; $x = "7"` stores 7, as the declaration form already
+        // did. Without this the two spellings disagreed, and Git::Blame::File —
+        // whose porcelain chunk counter is `my Int() $todo` assigned later —
+        // died with "weird end" on an ordinary blame.
+        {
+            auto ci = en->xr().varCoerce.find(nm);
+            if (ci != en->xr().varCoerce.end() && rhs.typeName() != ci->second)
+                rhs = coerceToType(rhs, ci->second);
+        }
         auto di = en->xr().varDefault.find(nm);
         if (di != en->xr().varDefault.end()) {
             if (di->second.t != VT::Type) break;
@@ -34112,6 +34169,8 @@ Value Interpreter::eval(Expr* e) {
                 if (!ve->declType.empty() || !de->local(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
                         de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+                    if (sigil == '$' && !ve->declCoerce.empty())
+                        de->x().varCoerce[ve->name] = ve->declCoerce;
                     return de->define(ve->name, declInitial(ve, sigil));
                 }
                 Value* dp = de->local(ve->name);

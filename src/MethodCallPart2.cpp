@@ -5820,6 +5820,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*stash)["Same"] = Value::orderVal(0);
             (*stash)["More"] = Value::orderVal(1);
         }
+        else if (pkg == "Signal") {
+            for (auto& [nm, num] : signalNamesAndNumbers()) {
+                Value e = Value::enumVal(nm, num); e.enumType = "Signal";
+                (*stash)[nm] = e;
+            }
+        }
         else if (pkg == "Endian") {
             for (auto& [nm, v] : {std::pair<const char*, long long>{"NativeEndian", 0},
                                   {"LittleEndian", 1}, {"BigEndian", 2}}) {
