@@ -465,7 +465,7 @@ enum class NqpOpc : uint16_t {
     OpenDir, NextFileDir, CloseDir,           // nqp::opendir / nextfiledir / closedir
     FileReadable, FileWritable, FileExecutable, FileIsLink,
     Handle,                                    // nqp::handle(expr, 'CATCH', handler) — lazy
-    IsneS, NotI, ModI, FindCClass,
+    IsneS, IseqS, IsltS, IsleS, IsgtS, IsgeS, NotI, ModI, FindCClass,
     StatTime, LstatTime,                       // nqp::stat_time / lstat_time — a Num, not an Int
     Rindex, Flip, Split,                       // string leaves paths / String::Utils reach for
     IsNullS,                                   // nqp::isnull_s — a native str holds no null, so "" stands in
@@ -485,6 +485,7 @@ enum class NqpOpc : uint16_t {
     // the native mod_i beside it TRUNCATES.
     BoxI, BoxN,
     IseqBigI, IsltBigI, IsleBigI, IsgeBigI, IsgtBigI, CmpBigI,
+    CmpS, CmpI,   // three-way compare on a native str / int (-1, 0, 1)
     MulBigI, SubBigI, ModBigI, NegBigI, AbsBigI, PowBigI, GcdBigI, LcmBigI,
     BitandBigI, BitorBigI, BitxorBigI, BitshiftlBigI, BitshiftrBigI,
     IsBigI, ToStrBigI, FromStrBigI, SqrtN,

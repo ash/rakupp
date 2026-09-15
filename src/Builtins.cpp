@@ -15033,6 +15033,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return out;
         }
         case O::IsneS: return Value::integer(S(0).str() != S(1).str() ? 1 : 0);
+        case O::IseqS: return Value::integer(S(0).str() == S(1).str() ? 1 : 0);
+        case O::IsltS: return Value::integer(S(0).str() <  S(1).str() ? 1 : 0);
+        case O::IsleS: return Value::integer(S(0).str() <= S(1).str() ? 1 : 0);
+        case O::IsgtS: return Value::integer(S(0).str() >  S(1).str() ? 1 : 0);
+        case O::IsgeS: return Value::integer(S(0).str() >= S(1).str() ? 1 : 0);
         case O::NotI:  return Value::integer(I(0) ? 0 : 1);
         // nqp::mod_i TRUNCATES — the remainder takes the sign of the DIVIDEND,
         // as C's `%` does. It is NOT Raku's `%`, and it is not consistent with
@@ -15163,6 +15168,14 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::IsgeBigI: return Value::integer(bigCmp(A0(), A1()) >= 0 ? 1 : 0);
         case O::IsgtBigI: return Value::integer(bigCmp(A0(), A1()) >  0 ? 1 : 0);
         case O::CmpBigI:  return Value::integer(bigCmp(A0(), A1()));
+        // …and the native spellings, which answer the same -1/0/1. `cmp_n`
+        // shares the numeric arm: the operands decide, as they do for `cmp`.
+        case O::CmpS: { std::string a = v.size() > 0 ? v[0].toStr() : std::string(),
+                                    b = v.size() > 1 ? v[1].toStr() : std::string();
+                        return Value::integer(a < b ? -1 : a > b ? 1 : 0); }
+        case O::CmpI: { double a = v.size() > 0 ? v[0].toNum() : 0,
+                               b = v.size() > 1 ? v[1].toNum() : 0;
+                        return Value::integer(a < b ? -1 : a > b ? 1 : 0); }
         // `isbig_I` asks whether the value needs more than a native int
         case O::IsBigI: return Value::integer(!v.empty() && v[0].big() ? 1 : 0);
         case O::ToStrBigI: return Value::str(v.empty() ? std::string("0") : v[0].toStr());

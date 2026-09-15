@@ -3754,7 +3754,14 @@ ExprPtr Parser::parsePrimary() {
         // `self` (DBDish::Connection's `method new` does `::?CLASS.bless`, and
         // baking the role's own name built role-punned connections).
         if (which == "CLASS" && !typeIsRole_.empty() && typeIsRole_.back())
-            return std::make_unique<NameTerm>("::?CLASS");
+            // …with the ROLE's own name carried alongside, for the one place the
+            // invocant cannot answer: the role BODY itself, which runs before any
+            // class consumes it. `my &AT-KEY := ::?CLASS.^find_method('AT-KEY')`
+            // at role-body level resolved to Mu and found nothing, so
+            // WriteOnceHash called something that answered the hash rather than
+            // the element. (Inside a METHOD `self` still decides, as before.)
+            return std::make_unique<NameTerm>(nm.empty() ? std::string("::?CLASS")
+                                                         : "::?CLASS\x01" + nm);
         return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
     }
     // root symbol access: `::<$x>` — the symbol looked up through the scope chain
@@ -10160,7 +10167,11 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         // small leaves: String::Utils spells `ne`, `!`, `%` and the positive
         // character-class scan this way, and the `_s` spellings of the list and
         // attribute ops are the same ops on strings
-        {"isne_s", NqpOpc::IsneS}, {"not_i", NqpOpc::NotI}, {"mod_i", NqpOpc::ModI},
+        {"isne_s", NqpOpc::IsneS}, {"iseq_s", NqpOpc::IseqS},
+        // the rest of the string comparison family — Array::Sorted::Util
+        // walks its keys with `iseq_s`/`islt_s` and has eleven dists behind it
+        {"islt_s", NqpOpc::IsltS}, {"isle_s", NqpOpc::IsleS},
+        {"isgt_s", NqpOpc::IsgtS}, {"isge_s", NqpOpc::IsgeS}, {"not_i", NqpOpc::NotI}, {"mod_i", NqpOpc::ModI},
         {"findcclass", NqpOpc::FindCClass},
         {"null_s", NqpOpc::Null}, {"atpos_s", NqpOpc::Atpos}, {"bindpos_s", NqpOpc::Bindpos},
         {"bindattr_i", NqpOpc::Bindattr}, {"bindattr_s", NqpOpc::Bindattr},
@@ -10181,6 +10192,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"iseq_I", NqpOpc::IseqBigI}, {"islt_I", NqpOpc::IsltBigI},
         {"isle_I", NqpOpc::IsleBigI}, {"isge_I", NqpOpc::IsgeBigI},
         {"isgt_I", NqpOpc::IsgtBigI}, {"cmp_I", NqpOpc::CmpBigI},
+        // the NATIVE three-way compares beside the bignum one: Array::Sorted::Util
+        // orders its keys with `nqp::cmp_s` and String::Color sorts through it
+        {"cmp_s", NqpOpc::CmpS}, {"cmp_i", NqpOpc::CmpI}, {"cmp_n", NqpOpc::CmpI},
         {"mul_I", NqpOpc::MulBigI},   {"sub_I", NqpOpc::SubBigI},
         {"mod_I", NqpOpc::ModBigI},   {"neg_I", NqpOpc::NegBigI},
         {"abs_I", NqpOpc::AbsBigI},   {"pow_I", NqpOpc::PowBigI},

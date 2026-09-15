@@ -12149,7 +12149,11 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
         if (ac > 0 && v.hashKind.empty() && v.enumType.empty() &&
             !subsets_.count(p.type) && !classes_.count(p.type)) {
             switch (ac) {
-                case 1: case 5: if (v.t == VT::Int) return; break;
+                // A Bool IS an Int — Raku's Bool is an enum over one — so it
+                // binds `Int` and the native `int` family: `f(False)` is 0.
+                // String::Color passes its `$force` flag to a native-int
+                // parameter and could not call its own helper.
+                case 1: case 5: if (v.t == VT::Int || v.t == VT::Bool) return; break;
                 case 2: case 7: if (v.t == VT::Str) return; break;
                 case 3: case 6: if (v.t == VT::Num) return; break;
                 case 4: if (v.t == VT::Bool) return; break;
@@ -13414,6 +13418,23 @@ static constexpr int kSwallowed = INT_MIN;
 // non-negative, so the declared parameter wins the position.
 static constexpr int kSlurped = INT_MIN + 1;
 
+// …and a bare CATCH-ALL — `multi method show(|) {…}`, a capture and nothing
+// else — loses to any candidate that declares the position. Rakudo prefers the
+// declaring one whatever the declaration order; scored as merely incomparable,
+// a catch-all declared FIRST won every call, and App::Game::Concentration's
+// `multi method show(|) {*}` (whose body is a bare Whatever) handed `*` back to
+// every caller instead of the card. A capture that sits BESIDE other parameters
+// — `(Bool:D :$pad!, |c)` — is not this: it keeps kSwallowed, so the band that
+// rewards a satisfied required named still decides those.
+static constexpr int kCatchAll = INT_MIN + 2;
+
+// A trailing marker on the per-parameter vector, carrying what the comparison
+// needs but no position owns: whether this candidate has a REQUIRED NAMED that
+// the call supplied. Rakudo ranks that above declaring a positional the other
+// candidate's capture swallows, which is the only thing that separates
+// `(Bool:D :$pad!, |c)` from `(Str:D $s, |c)` on `f("ab", :!pad)`.
+static constexpr int kMeta = INT_MIN + 3;
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                 std::vector<int>* perParam, const Value* selfForWhere) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
@@ -13774,8 +13795,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // call went to the second, which coerced nothing and said nothing.
     if (perParam) {
         // A `|capture` swallow is incomparable (kSwallowed); a `*@`/`**@`/`+@`
-        // one is wider than any declared parameter (kSlurped).
-        const int mark = slurpyParam && slurpyParam->sigil == '@' ? kSlurped : kSwallowed;
+        // one is wider than any declared parameter (kSlurped); a capture that is
+        // the candidate's ONLY parameter is wider still (kCatchAll).
+        const bool pureCatchAll = params.size() == 1 &&
+                                  (params[0].sigil == '|' || params[0].sigil == '\\') &&
+                                  !params[0].subSig;
+        const int mark = pureCatchAll ? kCatchAll
+                       : slurpyParam && slurpyParam->sigil == '@' ? kSlurped : kSwallowed;
         for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(mark);
     }
     // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
@@ -13783,6 +13809,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // default candidate on a bare invocation. A supplied match adds specificity,
     // and a `where` constraint participates (evaluated against the supplied
     // value, or the type object / default when absent).
+    int reqNamedOk = 0;        // how many required nameds the call actually supplied
     for (auto& p : params) {
         if (!p.named) continue;
         // every name this param answers to: the primary key, nested alias keys,
@@ -13807,6 +13834,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (supplied) break;
         }
         if (p.required && !supplied) return -1;
+        if (p.required && supplied) reqNamedOk++;
         // An ABSENT named binds its TYPE OBJECT, which cannot satisfy a `:D` smiley:
         // `multi method new(Real:D :$r, Real:D :$g, …)` must not match a call that
         // passes none of them (Color's rgba candidate was swallowing every
@@ -13872,6 +13900,32 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // a named's `where` may read the invocant's state too (PDF's reads
             // `$!flush` and calls `self!is-indexed`)
             if (selfForWhere) env->define("self", *selfForWhere);
+            // …and the candidate's OTHER parameters, which is how a named
+            // constrains itself against a sibling: Math::PascalTriangle declares
+            // `multi method get(UInt:D() :$line!, UInt:D() :$col! where * <= $line)`.
+            // The positional arm has always put them in scope; this one did not,
+            // so the constraint could not be evaluated and NO candidate matched.
+            for (size_t j = 0; j < positional.size() && j < pos.size(); j++)
+                if (!positional[j]->name.empty() && !positional[j]->subSig)
+                    env->define(positional[j]->name, pos[j]);
+            for (auto& q : params) {
+                if (!q.named || q.slurpy || q.name.empty() || q.name == p.name) continue;
+                std::vector<std::string> qk;
+                if (!q.namedKey.empty()) qk.push_back(q.namedKey);
+                for (auto& ak : q.aliasKeys) qk.push_back(ak);
+                if (q.namedKey.empty() || q.aliasBoth)
+                    qk.push_back(q.name.size() > 2 && (q.name[1] == '!' || q.name[1] == '.')
+                                 ? q.name.substr(2)
+                                 : (q.name.size() > 1 ? q.name.substr(1) : q.name));
+                for (auto& a : args) {
+                    if (!isNamedArg(a)) continue;
+                    bool hit = false;
+                    for (auto& key : qk) if (a.s == key) { hit = true; break; }
+                    if (!hit) continue;
+                    env->define(q.name, a.pairVal() ? *a.pairVal() : Value::boolean(true));
+                    break;
+                }
+            }
             if (!p.name.empty()) env->define(p.name, v);
             env->define("$_", v);
             auto saved = tctx_.cur; tctx_.cur = env;
@@ -13925,6 +13979,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // fixed-arity candidate wins (`multi f(){}` beats `multi f(*@a){}` on `f()`),
     // but a more-constrained slurpy still beats a plainer fixed one. Encode that as
     // the low bit so it only decides otherwise-equal scores; matches stay >= 0.
+    if (perParam) { perParam->push_back(kMeta); perParam->push_back(reqNamedOk); }
     return score * 2 + (slurpy ? 0 : 1);
 }
 
@@ -13936,10 +13991,22 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
 // meant for `handle("not", Any:D, %_)` went to `handle(Str:D, Str:D, %_)`.
 // Different arities compare by the summed score, which is what the candidate-level
 // bands (unfilled subsets, declared nameds, the slurpy bit) were tuned against.
-static bool betterCandidate(const std::vector<int>& cand, int candScore,
-                            const std::vector<int>& best, int bestScore) {
+static bool betterCandidate(const std::vector<int>& candIn, int candScore,
+                            const std::vector<int>& bestIn, int bestScore) {
+    // Strip the trailing meta marker (see kMeta): it carries the required-named
+    // flag, which ranks a pair the per-parameter comparison cannot separate.
+    auto split = [](const std::vector<int>& v, int& reqNamed) {
+        size_t n = v.size();
+        reqNamed = 0;
+        if (n >= 2 && v[n - 2] == kMeta) { reqNamed = v[n - 1]; n -= 2; }
+        return std::vector<int>(v.begin(), v.begin() + n);
+    };
+    int candReqNamed = 0, bestReqNamed = 0;
+    const std::vector<int> cand = split(candIn, candReqNamed);
+    const std::vector<int> best = split(bestIn, bestReqNamed);
     if (cand.size() != best.size()) return candScore > bestScore;
     bool narrower = false, wider = false;
+    bool swallowSplit = false;   // a position ONE side declares and the other swallows
     for (size_t i = 0; i < cand.size(); i++) {
         const bool cs = cand[i] == kSwallowed, bs = best[i] == kSwallowed;
         if (cs && bs) continue;                  // a slurpy took it on both sides: tied
@@ -13948,12 +14015,41 @@ static bool betterCandidate(const std::vector<int>& cand, int candScore,
         // declare. Marking it both ways puts the pair in the same band, where
         // declaration order settles it — `multi f(Bool:D :$pad!, |c)` before
         // `multi f(Str:D $s, |c)` wins `f("ab", :!pad)`, and after it loses.
-        if (cs || bs) { narrower = wider = true; continue; }
+        if (cs || bs) { narrower = wider = true; swallowSplit = true; continue; }
         if (cand[i] > best[i]) narrower = true;
         else if (cand[i] < best[i]) wider = true;
     }
     if (narrower != wider) return narrower;  // one of them dominates
-    if (narrower) return false;              // same band — the earlier declaration stays
+    // A position only ONE of them declares makes the pair incomparable, and the
+    // summed score is what Rakudo settles such a pair with: a candidate that
+    // declares the position outscores one whose capture swallows it, while a
+    // satisfied required named still outweighs both (its band is in the score).
+    // Declaration order used to settle it, which let `multi sub test-asl($n, |c)`
+    // recurse into itself forever rather than reaching the `(@nrs, @expected)`
+    // candidate below it (Backtrace::Files).
+    if (narrower) {
+        // Two candidates that each win a DIFFERENT parameter are in one band, and
+        // declaration order settles them — `("not", Any:D, %o)` keeps the call
+        // against `(Str:D, Str:D, %o)`, which is what the per-parameter rule is
+        // for. Only a position one side DECLARES and the other SWALLOWS gets the
+        // ranking below.
+        if (!swallowSplit) return false;
+        // What Rakudo weighs is how much of the call each candidate actually
+        // DECLARES: the positions it names, plus every required named the call
+        // supplied. `(%h, |c)` loses to `($a, $b)` in either declaration order,
+        // and so does `($x, |c)` to `(@a, @b)`; `(Str:D $s, |c)` and
+        // `(Bool:D :$pad!, |c)` come out EQUAL — one positional against one
+        // required named — and there declaration order settles it, in both
+        // directions (t/regression/pdf-family-2026-09.raku asserts each way).
+        auto declared = [](const std::vector<int>& v) {
+            int n = 0;
+            for (int d : v) if (d != kSwallowed && d != kSlurped && d != kCatchAll) n++;
+            return n;
+        };
+        int dc = declared(cand) + candReqNamed, db = declared(best) + bestReqNamed;
+        if (dc != db) return dc > db;
+        return false;                        // tied — the earlier declaration stays
+    }
     return candScore > bestScore;            // identical per parameter: the bands decide
 }
 
@@ -22838,6 +22934,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
         else if (sigil == '%') {
+            // `my %h is MyHash = …` where MyHash derives a BUILT-IN container and
+            // defines no STORE of its own: the variable IS a MyHash, so the
+            // assignment fills the container it already holds instead of putting
+            // a plain Hash in its place. Replacing it made `%h.^name` answer Hash
+            // and `%h ~~ MyHash` False the moment the declaration carried an
+            // initialiser — AccountableBagHash's first assertion, with EERPG
+            // waiting behind it. (A class WITH a STORE is handled further up.)
+            if (a->op == "=" && lv->t == VT::Object && lv->obj() && lv->obj()->hasBoxed &&
+                lv->obj()->boxed.t == VT::Hash) {
+                Value& box = lv->obj()->boxed;
+                Value nv = coerceHash(rhs, /*store=*/true, box.objKeyed);
+                if (nv.hash() && box.hash()) *box.hash() = *nv.hash();
+                else if (nv.hash()) { auto kind = box.hashKind; box = nv; box.hashKind = kind; }
+                return sink ? Value::any() : *lv;
+            }
             // `%a := %b` BINDS: both names are the same hash from then on, so a
             // write through either is visible through the other. The coercion
             // below copies (which is right for `=`), and that copy is why an
@@ -22855,6 +22966,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType(); // typed container: `my Int %h` keeps Int
             auto keepDefault = lv->elemDefault();    // …and its `is default(…)` element default
+            // …and a USER container class keeps its TYPE. `my %h is MyHash = …`
+            // declares the variable to BE a MyHash; the assignment replaces the
+            // CONTENTS, not the container. Losing it made `%h.^name` answer Hash
+            // and `%h ~~ MyHash` False the moment the declaration carried an
+            // initialiser — AccountableBagHash's first assertion, with EERPG
+            // behind it. (A class with its own STORE never reaches here.)
+            std::string keepKind = lv->t == VT::Hash && !lv->hashKind.empty() &&
+                                   classes_.count(lv->hashKind.str())
+                                 ? lv->hashKind.str() : std::string();
             if (lv->t == VT::Hash && setty.count(lv->hashKind)) { // my %h is Set = 1,2,3
                 // Set/Bag/Mix are immutable — only the initial (empty) fill assigns
                 if (lv->hash() && !lv->hash()->empty() &&
@@ -22891,6 +23011,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
+            if (!keepKind.empty() && lv->t == VT::Hash) lv->hashKind = keepKind;
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::Index) {
             // Storing Nil into an ELEMENT restores that element's default, the
@@ -34701,13 +34822,17 @@ Value Interpreter::eval(Expr* e) {
             // the deferred `::?CLASS`-in-a-role marker: the CONSUMING class,
             // read off the live invocant (self.WHAT); a type-object self keeps
             // its own name
-            if (n == "::?CLASS") {
+            if (n.rfind("::?CLASS", 0) == 0 &&
+                (n.size() == 8 || n[8] == '\x01')) {
                 if (Value* selfp = tctx_.cur->findSelf()) {
                     if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls)
                         return Value::typeObj(selfp->obj()->cls->name);
                     if (selfp->t == VT::Type) return *selfp;
                     return Value::typeObj(selfp->typeName());
                 }
+                // no invocant — the ROLE BODY. The role itself is the nearest
+                // honest answer; Mu answered nothing at all (see the parser).
+                if (n.size() > 9) return Value::typeObj(n.substr(9));
                 return Value::typeObj("Mu");
             }
             // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash

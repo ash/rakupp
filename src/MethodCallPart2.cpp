@@ -229,6 +229,16 @@ static Value attrTypeValue(const ClassAttr& a) {
 // them set `built`). It is cached on the ClassAttr because a user `trait_mod:<is>`
 // mixes roles into it at declaration time and `.^attributes` must return the same
 // object, not a fresh one that has forgotten the trait ever ran.
+// The container interface a class inherits from a built-in parent — the names
+// `.^find_method` must answer for even though no `methods` entry holds them.
+static bool isContainerMethodName(const std::string& mn) {
+    static const std::set<std::string> kContainerMethods = {
+        "AT-KEY", "ASSIGN-KEY", "BIND-KEY", "DELETE-KEY", "EXISTS-KEY",
+        "AT-POS", "ASSIGN-POS", "BIND-POS", "DELETE-POS", "EXISTS-POS",
+        "STORE", "elems", "keys", "values", "pairs", "kv", "iterator"};
+    return kContainerMethods.count(mn) != 0;
+}
+
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
     if (a.metaObj.t == VT::Hash && a.metaObj.hash()) return a.metaObj;
     Value at = Value::makeHash(); at.hashKind = "Attribute";
@@ -3256,7 +3266,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // metamodel (.^find_method / .^add_method / .^methods / .^lookup / .^can)
             if (m == "find_method" || m == "lookup") {
                 std::string mn = args.empty() ? "" : args[0].toStr();
-                Value* um = ci->findMethod(mn);
+                // A ROLE asking for a CONTAINER method wants the ORIGINAL, not the
+                // override it is in the middle of declaring: Rakudo runs a role
+                // body per composition, before the role's own methods reach the
+                // class, so `my &AT-KEY := ::?CLASS.^find_method('AT-KEY')` there
+                // is the built-in one. Our role bodies run once, with the role's
+                // methods already registered, so the lookup found the override and
+                // WriteOnceHash called itself until the stack ran out.
+                const bool roleWantsOriginal = ci->isRole && isContainerMethodName(mn);
+                Value* um = roleWantsOriginal ? nullptr : ci->findMethod(mn);
                 if (um) return *um;
                 // An ATTRIBUTE ACCESSOR is a method too: `has $.type` publishes
                 // `.type`, and `.^find_method('type')` must find it. The
@@ -3277,6 +3295,46 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             };
                             return code;
                         }
+                // …and a method the class inherits from a BUILT-IN parent. A
+                // `class WOH is Hash` answers AT-KEY/ASSIGN-KEY/… from the
+                // engine, not from `methods`, so the lookup found nothing and
+                // WriteOnceHash — which captures the original with
+                // `::?CLASS.^find_method('AT-KEY')` and calls it from its own
+                // override — got back something that answered the hash itself.
+                // The stub dispatches for real when it is invoked.
+                {
+                    bool fromBuiltin = ci->isRole;   // a ROLE's ::?CLASS is not composed yet
+                    for (ClassInfo* c = &*ci; c && !fromBuiltin; c = c->parent.get())
+                        if (!c->nativeParent.empty()) fromBuiltin = true;
+                    std::string nativeBase;   // the built-in this class derives
+                    for (ClassInfo* c = &*ci; c; c = c->parent.get())
+                        if (!c->nativeParent.empty()) { nativeBase = c->nativeParent; break; }
+                    if (fromBuiltin && isContainerMethodName(mn)) {
+                        Value code; code.t = VT::Code;
+                        code.setCode(std::make_shared<Callable>());
+                        code.code()->name = mn; code.code()->isMethod = true;
+                        code.code()->builtin = [mn, nativeBase](Interpreter& I, ValueList& av) -> Value {
+                            if (av.empty()) return Value::any();
+                            Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
+                            // The ORIGINAL is what the caller asked for, so reach
+                            // the BUILT-IN behind the class rather than dispatching
+                            // again — dispatch would find the override that is
+                            // asking, and WriteOnceHash (whose AT-KEY calls the
+                            // captured original) recursed 32,000 frames deep.
+                            // The storage is shared, so a write through the
+                            // stripped view still lands in the object.
+                            if (in2.t == VT::Object && in2.obj() && in2.obj()->hasBoxed)
+                                in2 = in2.obj()->boxed;
+                            if (in2.t == VT::Hash || in2.t == VT::Array) {
+                                Value plain = in2;
+                                plain.hashKind = nativeBase;   // "" = the plain built-in
+                                return I.methodCall(plain, mn, rest);
+                            }
+                            return I.methodCall(in2, mn, rest, nullptr, /*skipOwn=*/true);
+                        };
+                        return code;
+                    }
+                }
                 return Value::nil();
             }
             if (m == "declares_method") { // locally declared (not inherited)?
