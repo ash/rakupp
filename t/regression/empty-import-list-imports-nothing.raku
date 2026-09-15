@@ -4,6 +4,13 @@
 # under their bare names on top of that — so `use P5index ()` installed &index
 # over the built-in one and `index("foobar","zzz")` answered -1 where it has to
 # answer Nil.
+#
+# P5index is not part of this repo, so the case declares what it needs and the
+# runner skips it where the module is absent — CI has never installed it, and
+# without the marker the file failed there while testing nothing at all.
+
+#?requires P5index
+
 use Test;
 plan 4;
 
