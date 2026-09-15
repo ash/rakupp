@@ -198,6 +198,7 @@ program `use`s are found and embedded, so the binary needs nothing at run time.
 | `RAKUPP_CONFIG=…` | Use a different settings file than `~/.config/rakupp/rakupp.config` |
 | `RAKUPP_TRACE=1` | Report every module as it loads: where it came from, and whether it parsed or came from the cache |
 | `RAKUPP_NO_DECLCHECK=1` | Skip the check that refuses a program naming an undeclared variable before it starts — see [CLI.md](CLI.md) |
+| `RAKUPP_VM_NAME=moar` | Make `$*VM.name` answer that instead of `cpp`, for modules that branch on it and die on the `else` — see [differences](faq/differences.md#differences-you-will-actually-run-into) |
 
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
 search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's

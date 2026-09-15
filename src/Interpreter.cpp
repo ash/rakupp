@@ -14594,6 +14594,23 @@ std::string Interpreter::cwdName() {
     char buf[4096]; return getcwd(buf, sizeof buf) ? buf : ".";
 }
 
+// `$*VM.name` — `cpp` (the honest answer: this engine is a C++ tree-walking
+// interpreter), unless RAKUPP_VM_NAME says otherwise. The ecosystem's build
+// recipes gate on `moar` and have no other branch — LibraryMake's get-vars ends
+// `else { die "Unknown VM; don't know how to build" }`, uniprop's `given
+// $*VM.name` has a `default { die }`, and NativeHelpers::Blob's CompileTestLib
+// the same — so a user who wants those distributions can say so at the call
+// site: `RAKUPP_VM_NAME=moar rakupp …`. It is the USER asserting a compatibility
+// dialect for one run, never this engine claiming an identity, and nothing sets
+// it on their behalf: the ecosystem sweep must not, or the measurement inherits
+// the claim. `rakupp install` already does the same thing scoped to a BUILD HOOK
+// (tools/install.raku's vm-toolchain-shim); this is that, scoped to a process.
+static std::string vmName() {
+    if (const char* n = std::getenv("RAKUPP_VM_NAME"))
+        if (*n) return std::string(n);
+    return "cpp";
+}
+
 Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*CWD") { Value p = Value::str(cwdName()); p.hashKind = "IO"; return p; }
     // IntStr allomorphs like Rakudo's: numeric face = uid/gid, string face =
@@ -14654,7 +14671,7 @@ Value Interpreter::dynVar(const std::string& name) {
     }
     if (name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash())["name"] = Value::str(platDistroName()); return h; }
     if (name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash())["name"] = Value::str(platKernelName()); return h; }
-    if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash())["name"] = Value::str("cpp");   return h; }
+    if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash())["name"] = Value::str(vmName());   return h; }
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
@@ -34400,7 +34417,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*ARGFILES") return dynVar(ve->name);       // built on access — see the resolver
             if (ve->name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash())["name"] = Value::str(platDistroName()); return h; }
             if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash())["name"] = Value::str(platKernelName()); return h; }
-            if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash())["name"] = Value::str("cpp");   return h; }
+            if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash())["name"] = Value::str(vmName());   return h; }
             if (ve->name == "$*SPEC") return Value::typeObj("IO::Spec::Unix"); // POSIX platform
             if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash())["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash())["id"] = Value::integer(1); return h; }
             if (ve->name == "$*SCHEDULER") {

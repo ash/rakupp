@@ -7232,14 +7232,29 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `use v6.*` pragma; the compiler object keeps its own version string.
         std::string langVer = langRev_ == 0 ? "6.c" : (langRev_ == 1 ? "6.d" : "6.e");
         if (m == "compiler") return rakuIntrospection(true);
-        if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
+        // rakupp's engine is a C++ tree-walking interpreter, not MoarVM. Rakudo
+        // answers the same string here as in `$*VM.name`, so RAKUPP_VM_NAME has
+        // to move both or the two spellings of one fact contradict each other.
+        if (m == "backend") {
+            if (const char* ov = std::getenv("RAKUPP_VM_NAME")) if (*ov) return Value::str(ov);
+            return Value::str("cpp");
+        }
         if (m == "KERNELnames" || m == "DISTROnames" || m == "VMnames") { // known-platform introspection lists
             Value out = Value::array(); out.isList = true;
             // The VM names are this engine's BACKENDS, the same shape Rakudo's
             // moar/jvm/js is: `cpp` for the interpreter and `--exe`, `js` for
             // `--target=js`. Roast's one hard check on the name (S02-magicals/
             // VM.t) is that `$*VM.name` is a member of this list.
-            if (m == "VMnames") { out.arr()->push_back(Value::str("cpp")); out.arr()->push_back(Value::str("js")); return out; }
+            if (m == "VMnames") {
+                out.arr()->push_back(Value::str("cpp")); out.arr()->push_back(Value::str("js"));
+                // …and whatever RAKUPP_VM_NAME asked `$*VM.name` to answer, so
+                // that Roast's membership check still holds under the override
+                // (see vmName() in Interpreter.cpp for what the override is for).
+                if (const char* ov = std::getenv("RAKUPP_VM_NAME"))
+                    if (*ov && std::string(ov) != "cpp" && std::string(ov) != "js")
+                        out.arr()->push_back(Value::str(ov));
+                return out;
+            }
             out.arr()->push_back(Value::str(m == "KERNELnames" ? platKernelName() : platDistroName()));
             return out;
         }

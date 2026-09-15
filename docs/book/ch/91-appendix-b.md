@@ -96,6 +96,7 @@ sixty-six flags the binary accepts, including a whole run mode.
 | `ROAST` | adds the specification suite's test-helper library |
 | `RAKUPP_HOME` | where the binary considers itself installed |
 | `RAKUPP_CONFIG` | override the settings file location |
+| `RAKUPP_VM_NAME` | what `$*VM.name` answers instead of `cpp`, for modules that branch on it |
 | `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` | the settings and cache directories |
 
 ### The parse cache
@@ -174,6 +175,14 @@ Two of the variables above change *results* rather than speed: `RAKUPP_LTM` and
 `RAKUPP_PARALLEL`. Both are off by default, and the policy for both is the same:
 the old path stays available for at least one release after the default changes,
 so a regression can be bisected to the switch rather than to the release.
+
+`RAKUPP_VM_NAME` is a third, and a different kind. It changes one answer —
+`$*VM.name`, and the `$*RAKU.VMnames` list it has to stay a member of — so that
+a module which branches on the name and dies on the `else` takes its `moar`
+branch instead. Nothing sets it on your behalf, and no measurement this project
+publishes runs with it set: the default is what this engine is, and asserting a
+dialect is the caller's statement, not the engine's. `$*VM.config` is untouched
+either way, because the toolchain values in it were already real.
 
 Everything else here either reports something or selects a code path that is
 required to produce identical output.
