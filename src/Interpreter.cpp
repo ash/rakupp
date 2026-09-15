@@ -3073,6 +3073,12 @@ Interpreter::Interpreter() {
         classes_["CompUnit::Repository"] = repoRole;
         auto fs = std::make_shared<ClassInfo>();
         fs->name = "CompUnit::Repository::FileSystem"; fs->parent = repoRole;
+        // …with the two attributes the constructor is always given, declared so
+        // that `.prefix` answers (Rakudo hands back an IO::Path) and so the
+        // repository can look a module up in the tree it was pointed at.
+        for (const char* a : {"prefix", "next-repo"}) {
+            ClassAttr ca; ca.name = a; ca.sigil = '$'; ca.pub = true; fs->attrs.push_back(ca);
+        }
         classes_["CompUnit::Repository::FileSystem"] = fs;
         // CompUnit::Repository::Installation — a writable CURI (short/sources/dist/
         // resources index). rakupp already READS this layout to resolve `use`; the
@@ -8857,6 +8863,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return a.empty() ? Value::nil()
                                  : I.regexMatch(I.rxSubject(a[0]), pat, nullptr, kind);
             };
+            regexRoutineSrc_[code.code()] = {pat, kind};  // recoverable from `&name`
             tctx_.cur->define("&" + nr->name, code);
             return Value::any();
         }
@@ -11130,6 +11137,23 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 Value lvRaw = eval(fs->list.get());
                 Value lv = iterationSourceOf(lvRaw);
                 drainIfFiniteLazy(lv);
+                // …and a user object doing the Iterator role is DRAINED by
+                // pull-one, exactly as the block form below does it. Only the
+                // block form did: `.say for @a` over a container class with its
+                // own `.iterator` ran ONCE, with the iterator object itself as
+                // the topic. Array::Agnostic's whole family iterates that way.
+                if (lv.t == VT::Object && lv.obj() && lv.obj()->cls &&
+                    lv.obj()->cls->findMethod("pull-one")) {
+                    Value* po = lv.obj()->cls->findMethod("pull-one");
+                    Value acc = Value::array(); acc.isList = true;
+                    for (;;) {
+                        ValueList none;
+                        Value v = invokeMethod(*po, lv, none);
+                        if (v.t == VT::Type && v.s == "IterationEnd") break;
+                        acc.arr()->push_back(v);
+                    }
+                    lv = acc;
+                }
                 // an object that supplied its own iterator is ITERATED, even
                 // through a `$` variable — being Iterable is what decides here,
                 // not the sigil
@@ -13022,6 +13046,14 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // names is Rakudo's (see Value::typeName)
             if (arg.hashKind == "DependencySpec" && type == "CompUnit::DependencySpecification") return true;
             if (arg.hashKind == type) return true;
+            // …and everything else the built-in does-table knows about this tag:
+            // a Bag is Baggy and a QuantHash, a Set is Setty, a Mix is both Mixy
+            // and Baggy. `~~` has always answered that from typeNameConforms
+            // while BINDING stopped at the three names below, so `multi sub
+            // mode(Baggy $x)` could not be called with a Bag at all — Stats
+            // declares exactly that pair of candidates, and the Bag one was
+            // unreachable.
+            if (typeNameConforms(arg.hashKind.str(), type, arg.ofType(), "")) return true;
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             return type == "Hash" || type == "Map" || type == "Associative";
         // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
@@ -19491,6 +19523,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 base->obj()->cls->findMethod("AT-POS")) {
                 static thread_local Value atPosHold;
                 Value k = eval(idx->index.get());
+                // `$obj[*-1]` — a Whatever index resolves against the CONTAINER's
+                // own `.elems` before the subscript, which is what Rakudo does
+                // (it calls .elems and hands AT-POS the resolved Int). Passed
+                // through raw, a class's `method AT-POS($p)` received a
+                // WhateverCode and read element 0: every `@a[* - $_]` in
+                // Array::Agnostic's suite answered the first element.
+                if (k.t == VT::Code && k.code() && k.code()->isWhateverCode &&
+                    base->obj()->cls->findMethod("elems")) {
+                    Value self = *base;   // methodCall may invalidate `base`
+                    Value n = methodCall(self, "elems", {});
+                    k = callCallable(k, ValueList{Value::integer(n.toInt())});
+                }
                 // lvalue mode — same contract as the AT-KEY arm above
                 struct WantG { ExecContext& t; int w; Value* o;
                     ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
@@ -25901,6 +25945,30 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
             }
         }
         auto it = namedRegex_.find(name);
+        // An IMPORTED `token`/`rule`/`regex` is not in namedRegex_ — that map
+        // holds what THIS unit declared, and an exported one arrives as a Regex
+        // VALUE bound to `&name` in the importing scope. Without this it fell to
+        // the lenient branch below and the subrule matched the EMPTY STRING:
+        // `$line ~~ / ^ "1.2.3.4 - foo " <timefmt> … /` in Apache::LogFormat's
+        // own test said True while matching sixteen characters and none of the
+        // rest, which is a silent wrong answer rather than a refusal.
+        if (it == namedRegex_.end() && tctx_.cur) {
+            if (Value* cv = tctx_.cur->find("&" + name)) {
+                std::string pat, kind;
+                if (cv->t == VT::Regex) { pat = cv->s.str(); kind = cv->hashKind.str(); }
+                else if (cv->t == VT::Code && cv->code()) {
+                    auto rit = regexRoutineSrc_.find(cv->code());
+                    if (rit != regexRoutineSrc_.end()) { pat = rit->second.first; kind = rit->second.second; }
+                }
+                if (!pat.empty()) {
+                    const std::string f = kind == "rule" ? "sr"       // sigspace + ratchet
+                                        : kind == "token" ? "r"        // ratchet
+                                        : "";                          // backtracking
+                    auto sub = compileRegexCached(rxInterpArrays(pat), f);
+                    return sub->matchAt(subj, pos, out, resolver, &lexNames, useHooks);
+                }
+            }
+        }
         // an unknown name stays a lenient zero-width match: Rakudo built-ins we lack
         // (`<commit>`, `<same>`) arrive here too, and a throw killed S05-mass/rx.t at
         // test 18 of 756 (Grand Review E, withdrawn; ledger L8 F27)
@@ -32908,6 +32976,15 @@ Value Interpreter::evalIndex(Index* idx) {
         else if (!adv.empty()) method = ""; // :k/:v/:kv/:p — leave to the generic path
         if (!method.empty() && covers(base.obj()->cls.get(), method)) {
             Value k = eval(idx->index.get());
+            // `$obj[*-1]` — a Whatever index resolves against the CONTAINER's own
+            // `.elems` first, which is what Rakudo does (it calls .elems and
+            // hands AT-POS the resolved Int). Passed through raw, a class's
+            // `method AT-POS($p)` received a WhateverCode and read element 0:
+            // every `@a[* - $_]` in Array::Agnostic's suite — ten assertions per
+            // subtest — answered the first element.
+            if (!idx->isHash && k.t == VT::Code && k.code() && k.code()->isWhateverCode &&
+                covers(base.obj()->cls.get(), "elems"))
+                k = callCallable(k, ValueList{Value::integer(methodCall(base, "elems", {}).toInt())});
             if (k.t == VT::Array || k.t == VT::Range) {
                 Value out = Value::array(); out.isList = true;
                 for (auto& kk : k.flatten()) out.arr()->push_back(methodCall(base, method, ValueList{kk}));

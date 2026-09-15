@@ -4480,6 +4480,65 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (m == "files" || m == "candidates" || m == "installed")) {
             Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
         }
+        // …and it RESOLVES like any repository: a short-name asked for by a
+        // DependencySpecification answers a CompUnit when this tree holds the
+        // module, and Nil when it does not. Without an arm of its own the call
+        // fell through to IO::Path's `.resolve` and came back as a PATH, so
+        // `isa-ok compunit($class, $dir), CompUnit` failed for Identity::Utils
+        // and the five identity modules beside it. The tree is searched the two
+        // ways a source repository is laid out — `<prefix>/Foo/Bar.rakumod` and
+        // `<prefix>/lib/Foo/Bar.rakumod` — plus the dist's own META6 provides.
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->name == "CompUnit::Repository::FileSystem" &&
+            (m == "resolve" || m == "need")) {
+            std::string want;
+            if (!args.empty()) {
+                if (args[0].t == VT::Str) want = args[0].s;
+                else if (args[0].t == VT::Hash && args[0].hash()) {
+                    auto it = args[0].hash()->find("short-name");
+                    if (it != args[0].hash()->end()) want = it->second.toStr();
+                }
+            }
+            if (want.empty()) return Value::nil();
+            auto& at = inv.obj()->attrs;
+            std::string prefix = at.count("prefix") ? at["prefix"].toStr() : "";
+            std::string rel = want;
+            for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::"))
+                rel.replace(p, 2, "/");
+            auto exists = [](const std::string& path) {
+                struct stat st;
+                return ::stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode);
+            };
+            // Rakudo looks under the prefix ITSELF (`<prefix>/Foo/Bar.rakumod`),
+            // and a prefix that is a distribution root — with a META6.json —
+            // goes through that file's `provides` instead. A `lib/` guess is
+            // NOT part of it: a bare dist root with no META6 resolves nothing
+            // there, and this answers the same.
+            bool found = false;
+            for (const char* ext : {".rakumod", ".pm6", ".pm"})
+                if (exists(prefix + "/" + rel + ext)) { found = true; break; }
+            if (!found && exists(prefix + "/META6.json")) {
+                std::ifstream mf(prefix + "/META6.json");
+                std::string meta((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+                // "Foo::Bar" : "lib/Foo/Bar.rakumod" — take the path it names and
+                // check the file is really there, so a stale provides entry does
+                // not answer for a module the tree no longer holds.
+                size_t kp = meta.find("\"" + want + "\"");
+                if (kp != std::string::npos) {
+                    size_t c = meta.find(':', kp + want.size() + 2);
+                    size_t q1 = c == std::string::npos ? std::string::npos : meta.find('"', c);
+                    size_t q2 = q1 == std::string::npos ? std::string::npos : meta.find('"', q1 + 1);
+                    if (q2 != std::string::npos)
+                        found = exists(prefix + "/" + meta.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+            if (!found) return Value::nil();
+            if (m == "need") loadModule(want);
+            Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
+            (*cu.hash())["short-name"] = Value::str(want);
+            (*cu.hash())["repo"] = inv;
+            return cu;
+        }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
             inv.obj()->cls->name == "CompUnit::Repository::Installation") {
             auto& at = inv.obj()->attrs;

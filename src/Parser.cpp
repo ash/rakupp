@@ -9187,6 +9187,23 @@ StmtPtr Parser::parseStatementImpl() {
                 es->e = std::move(rl);
                 return es;
             }
+            // traits between the name and the body — `my token stamp is export
+            // {…}`. Unconsumed, the RegexLit check below failed and the
+            // declaration fell to the brace-skipping fallback with an EMPTY
+            // pattern: the name registered, every `<stamp>` resolved to it, and
+            // matched the empty string — inside the declaring module as much as
+            // in the importer. Apache::LogFormat's test library exports its
+            // `<timefmt>` exactly this way.
+            while (isIdent("is") && (peek().kind == Tok::Ident || peek().kind == Tok::Var)) {
+                advance(); advance();                      // is NAME
+                if (isKind(Tok::LParen)) {                 // is foo(...)
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                    while (d > 0 && !isKind(Tok::End));
+                }
+                else if (isKind(Tok::QwList) && !cur().spaceBefore) advance();   // is foo<a b>
+                else if (isOp("<") && !cur().spaceBefore) { advance(); readAngleWords(">"); }
+            }
             if (isKind(Tok::RegexLit)) nr->pattern = advance().text; // lexer captured the body as a RegexLit
             else { // fallback: skip a brace body we couldn't capture
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();

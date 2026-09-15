@@ -2100,6 +2100,27 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         do { char ch = peek(); if (ch == '(') pd++; else if (ch == ')') pd--; name += advance(); } while (!eof() && pd > 0);
         while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
     }
+    // TRAITS between the name and the body — `my token stamp is export {…}`,
+    // `token t is pure {…}`. Without stepping over them the lexer bailed here,
+    // the body was never captured as a RegexLit, and the parser's fallback
+    // registered the name with an EMPTY pattern: every `<stamp>` then matched
+    // the empty string and said True, inside the declaring module as much as in
+    // an importer. Apache::LogFormat's test library exports `<timefmt>` so, and
+    // asserted a whole log line against a pattern that matched nothing.
+    while (peek() == 'i' && peek(1) == 's' && (peek(2) == ' ' || peek(2) == '\t')) {
+        size_t before = pos_;
+        advance(); advance();                                    // is
+        while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
+        if (!isIdentStart(peek())) { pos_ = before; break; }
+        while (isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) advance();
+        if (peek() == '(' || peek() == '<') {                     // is export(:TAG) / is foo<a b>
+            char open = peek(), close = open == '(' ? ')' : '>';
+            int ad = 0;
+            do { char ch = peek(); if (ch == open) ad++; else if (ch == close) ad--; advance(); }
+            while (!eof() && ad > 0);
+        }
+        while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
+    }
     if (peek() != '{') { pos_ = save; return false; }
     advance(); // {
     // Read the `{ … }`-delimited regex body with the same quote/block/char-class

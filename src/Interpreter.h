@@ -2137,6 +2137,12 @@ public:
     // export (a tag the `use` did not ask for) is simply the program's own.
     std::set<std::string> mainlineSubNames_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
+    // …and the same source, reachable from the ROUTINE a named regex also
+    // defines (`&NAME`). An EXPORTED token reaches its importer only as that
+    // routine — the map above holds what the importing unit declared, not what
+    // it imported — so a `<NAME>` subrule could not find the pattern and matched
+    // the empty string. Keyed by Callable so nothing is paid per ordinary sub.
+    std::unordered_map<const Callable*, std::pair<std::string, std::string>> regexRoutineSrc_;
     // `<{ … }>` patterns by (flags, source) — see dynRegexFor. shared_ptr, not
     // unique_ptr: Regex is incomplete in this header and the map dies with the
     // interpreter. Guarded: matches run on worker threads too.
