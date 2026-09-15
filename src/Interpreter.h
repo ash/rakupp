@@ -2136,6 +2136,11 @@ public:
     // name is a redeclaration ERROR there, and a name the module did not actually
     // export (a tag the `use` did not ask for) is simply the program's own.
     std::set<std::string> mainlineSubNames_;
+    // Every enum's pair-list, by name. `.enums`/`.pick`/`.roll` on an enum TYPE
+    // look the declaration up lexically, which fails wherever the declaration is
+    // not in scope — a role's `::EnumBits` type capture reaches the type object
+    // from the role body, where the consumer's `my enum MyBits` never was.
+    std::unordered_map<std::string, Value> enumPairs_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     // …and the same source, reachable from the ROUTINE a named regex also
     // defines (`&NAME`). An EXPORTED token reaches its importer only as that

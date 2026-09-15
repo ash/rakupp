@@ -5556,6 +5556,7 @@ ExprPtr Parser::parsePrimary() {
                       return nat.count(peek().text) > 0; }())) {
                 advance(); // [
                 std::string params;
+                bool atArgStart = true;   // a colonpair is a NAMED argument only here
                 int tpd = 1; // nesting: Baz[Foo[Int], Bar[Int]]
                 while (tpd > 0 && !isKind(Tok::End)) {
                     if (isKind(Tok::LBracket)) { tpd++; params += "["; advance(); continue; }
@@ -5563,6 +5564,44 @@ ExprPtr Parser::parsePrimary() {
                         tpd--;
                         if (tpd == 0) break;
                         params += "]"; advance(); continue;
+                    }
+                    // A NAMED argument — `R[Type, :prefix<P_>]` / `R[Type, prefix
+                    // => 'P_']`. Only identifiers were kept here, so the value was
+                    // dropped and the colonpair's KEY joined the positional list:
+                    // `BitEnum[MyBits, :prefix<BIT_>]` bound no prefix at all and
+                    // every lookup through it failed. Kept in the `:name<value>`
+                    // spelling the pun builder reads back.
+                    if (isKind(Tok::Comma)) { advance(); atArgStart = true; continue; }
+                    // …and ONLY at the start of an argument: `Array[Str:D]` is a
+                    // type with a SMILEY, not a type plus a named `:D`, and reading
+                    // it as one broke `Array[Str:D] ~~ Positional[Str]`.
+                    if ((atArgStart && isOp(":") && peek().kind == Tok::Ident) ||
+                        (isKind(Tok::Ident) && peek().kind == Tok::FatArrow)) {
+                        std::string cp;
+                        if (isOp(":")) { advance(); cp = ":" + advance().text; }
+                        else { cp = ":" + advance().text; advance(); }   // name =>
+                        if (isKind(Tok::QwList) && !cur().spaceBefore) cp += "<" + advance().text + ">";
+                        else if (isOp("<") && !cur().spaceBefore) {
+                            advance();
+                            std::vector<std::string> ws = readAngleWords(">");
+                            std::string joined;
+                            for (auto& w : ws) { if (!joined.empty()) joined += " "; joined += w; }
+                            cp += "<" + joined + ">";
+                        }
+                        else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) ||
+                                 isKind(Tok::IntLit) || isKind(Tok::NumLit))
+                            cp += "<" + advance().text + ">";
+                        else if (isKind(Tok::LParen)) {
+                            advance();
+                            std::string inner;
+                            while (!isKind(Tok::RParen) && !isKind(Tok::End)) inner += advance().text;
+                            matchKind(Tok::RParen);
+                            cp += "<" + inner + ">";
+                        }
+                        if (!params.empty()) params += ",";
+                        params += cp;
+                        atArgStart = false;
+                        continue;
                     }
                     if (isKind(Tok::Ident)) {
                         if (!params.empty() &&
@@ -5573,6 +5612,7 @@ ExprPtr Parser::parsePrimary() {
                         while (isOp("::") && peek().kind == Tok::Ident) {
                             advance(); params += "::" + advance().text;
                         }
+                        atArgStart = false;
                         continue;
                     }
                     advance(); // commas / smileys — the comma is re-added implicitly

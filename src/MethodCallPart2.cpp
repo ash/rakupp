@@ -5404,9 +5404,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // declaration built. `.enums` was implemented only there, so `Mass.enums`
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
         // the type object carries enumType too, and forwarding from it recurses.
-        if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType.empty())
+        if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType.empty()) {
             if (Value* et = tctx_.cur->find(inv.enumType))
                 if (et->t == VT::Array) return methodCall(*et, m, args, rwArgs);
+            // …and when the declaration is not in scope here at all. A role's
+            // `::EnumBits` capture hands the type object to the role BODY, whose
+            // lexical chain never saw the consumer's `my enum MyBits`, so
+            // `EnumBits.enums` — the line every BitEnum consumer runs — answered
+            // "No such method 'enums'".
+            auto ep = enumPairs_.find(inv.enumType.str());
+            if (ep != enumPairs_.end() && ep->second.t == VT::Array)
+                return methodCall(ep->second, m, args, rwArgs);
+        }
     }
     if (inv.t == VT::Match && (m == "made" || m == "ast")) return inv.pairVal() ? *inv.pairVal() : Value::nil();
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);

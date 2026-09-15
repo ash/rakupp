@@ -8592,8 +8592,17 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
             for (; ai < argv.size(); ai++)
                 if (!argv[ai].namedArg && seen++ == posIdx) { found = true; break; }
             if (found) {
-                Value tv = argv[ai].t == VT::Type ? argv[ai]
-                                                  : Value::typeObj(argv[ai].typeName());
+                // An ENUM's type object is the tagged pair-list, not a VT::Type,
+                // so re-wrapping it as a bare type object threw the enum away:
+                // `role R[::EnumBits]` bound a name that answered MyBits to
+                // `.^name` and False to `~~ Enumeration`, and `EnumBits.enums`
+                // — the line every BitEnum consumer runs — found no method.
+                const bool enumTypeObj = argv[ai].t == VT::Array &&
+                                         !argv[ai].enumType.empty() &&
+                                         argv[ai].enumType == argv[ai].typeName();
+                Value tv = (argv[ai].t == VT::Type || enumTypeObj)
+                             ? argv[ai]
+                             : Value::typeObj(argv[ai].typeName());
                 dest->roleParamBindings.push_back({p.type, tv});
             }
             // …and a bare `does R` takes the capture's DEFAULT (`role R[::T = Any]`),
@@ -8611,6 +8620,23 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
         if (!p.named && !p.slurpy) posIdx++;
         if (!p.name.empty())
             if (Value* v = tmp->find(p.name)) dest->roleParamBindings.push_back({p.name, *v});
+    }
+    // …and into the ROLE BODY's own scope, which is what a `sub` declared in the
+    // body closes over. A role's METHODS receive the bindings per call, from the
+    // invocant's class (invokeMethod); a plain sub has no invocant to carry them,
+    // so unless the value is in its closure it is simply not declared. BitEnum
+    // looks its bit names up in `sub lookup` — reading `$prefix`, the role's own
+    // named parameter — and every consumer died on the first lookup. Existing
+    // entries are left alone, so a second composition cannot rewrite what the
+    // first one bound.
+    if (!dest->roleParamBindings.empty()) {
+        for (auto& m : role->methods) {
+            if (m.second.t != VT::Code || !m.second.code() || !m.second.code()->closure) continue;
+            auto& env = m.second.code()->closure;
+            for (auto& b : dest->roleParamBindings)
+                if (!env->local(b.first)) env->define(b.first, b.second);
+            break;
+        }
     }
 }
 
@@ -9390,6 +9416,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 pairs.arr()->push_back(Value::pair(key, val));
             }
             pairs.enumType = ed->name; // the type object itself is the tagged pair-list
+            if (!ed->name.empty()) enumPairs_[ed->name] = pairs;  // reachable from any scope
             if (!ed->name.empty()) {
                 tctx_.cur->define(ed->name, pairs);
                 if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);
@@ -32884,7 +32911,15 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (auto& e : static_cast<ListExpr*>(ix)->items) argExprs.push_back(e.get());
             else argExprs.push_back(ix);
             Value iv = eval(ix);
-            if (iv.t == VT::Array && iv.isList && !iv.itemized)
+            // …but an ENUM's type object IS a tagged pair-list, and flattening it
+            // turned `R[MyBits]` into `R[A => 1, B => 2]`: the type capture bound
+            // the first PAIR, every named parameter after it lost its flag with
+            // the arity, and BitEnum's consumers — `BitEnum[MyBits].new(6)` — got
+            // neither their enum nor their prefix.
+            auto enumTypeObj = [](const Value& v) {
+                return v.t == VT::Array && !v.enumType.empty() && v.enumType == v.typeName();
+            };
+            if (iv.t == VT::Array && iv.isList && !iv.itemized && !enumTypeObj(iv))
                 for (auto& e : *iv.arr()) argv.push_back(e);
             else argv.push_back(iv);
             if (argExprs.size() == argv.size())
@@ -34698,7 +34733,38 @@ Value Interpreter::eval(Expr* e) {
                         while (pos <= rest.size()) {
                             size_t c = rest.find(',', pos);
                             std::string part = rest.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
-                            if (!part.empty()) argv.push_back(Value::typeObj(part));
+                            while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) part.erase(0, 1);
+                            while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
+                            if (!part.empty()) {
+                                // The arguments arrive here as TEXT, so each one is
+                                // resolved rather than wrapped: a `:name<value>`
+                                // colonpair is a NAMED argument (wrapped as a type
+                                // object it bound nothing and the parameter kept its
+                                // default), and a name that belongs to an ENUM is the
+                                // enum's own type object, which carries its values —
+                                // `BitEnum[MyBits]` needs both.
+                                if (part[0] == ':' && part.size() > 1) {
+                                    std::string key = part.substr(1), val;
+                                    size_t br = key.find_first_of("<(");
+                                    if (br != std::string::npos) {
+                                        char close = key[br] == '<' ? '>' : ')';
+                                        size_t e = key.rfind(close);
+                                        val = e != std::string::npos && e > br
+                                            ? key.substr(br + 1, e - br - 1) : std::string();
+                                        key = key.substr(0, br);
+                                    }
+                                    Value pr = Value::pair(key, br == std::string::npos
+                                                                ? Value::boolean(true)
+                                                                : Value::str(val));
+                                    pr.namedArg = true;
+                                    argv.push_back(pr);
+                                }
+                                else {
+                                    auto ep = enumPairs_.find(part);
+                                    argv.push_back(ep != enumPairs_.end() ? ep->second
+                                                                         : Value::typeObj(part));
+                                }
+                            }
                             if (c == std::string::npos) break;
                             pos = c + 1;
                         }
