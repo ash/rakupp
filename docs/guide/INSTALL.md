@@ -60,8 +60,10 @@ curl -fsSL https://raku.online/install.sh | sh
 ```
 
 x86-64 and ARM64 both have a prebuilt archive, so nothing is compiled. The
-binary carries its own libstdc++, so there is no dependency to satisfy first
-and no distribution version to match.
+binary carries its own libstdc++ and needs nothing beyond glibc 2.28 (2018)
+or newer, so there is no dependency to satisfy first. What each platform's
+binary needs at run time — and what the programs it compiles need — is one
+table in [COMPILERS.md](COMPILERS.md#what-runs-where).
 
 Two Linux cases have a route of their own rather than an archive:
 [**Nix**](#nix--nixos), which cannot run a generic Linux binary at all, and
@@ -288,9 +290,9 @@ targets:
 | Platform | Archive |
 |---|---|
 | macOS 11+, Apple Silicon and Intel | `rakupp-macos-universal.tar.gz` — one universal binary for both |
-| Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, no dependencies |
-| Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere |
-| OpenBSD, x86-64 | `rakupp-openbsd-x86_64.tar.gz` — base clang |
+| Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, glibc 2.28+ |
+| Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere; glibc 2.28+ |
+| OpenBSD, x86-64 | `rakupp-openbsd-x86_64.tar.gz` — base clang, for the OpenBSD release it was built on |
 | Windows, x64 | `rakupp-windows-x64.zip` — MSVC, static CRT, no redistributable |
 | Windows, x64 (MinGW) | `rakupp-windows-x64-mingw.zip` — for a MinGW-w64 / MSYS2 toolchain |
 

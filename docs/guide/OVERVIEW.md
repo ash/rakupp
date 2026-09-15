@@ -136,7 +136,7 @@ They make different trade-offs:
 | | Raku++ | Rakudo |
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
-| Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
+| Implementation | C++17, no third-party libraries | VM-based (MoarVM/JVM), NQP/Raku |
 | Coverage | a growing subset (~45% of Roast) | complete |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |

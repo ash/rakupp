@@ -380,6 +380,33 @@ and failed the MinGW job alone (2026-09-11). Check every file the change
 touched, not just the one that looks platform-specific: the build stops at the
 first bad translation unit, so one error hides the rest.
 
+**The same cross-compiler checks what `--bundle` GENERATES.** The bundle stub
+declares the runtime's registration functions by hand, and a type that is the
+same as `size_t` on POSIX and not on 64-bit Windows (`unsigned long`) mangled
+to a symbol the runtime does not export: MSVC could not link and a MinGW
+binary found none of its modules (issue #80). No POSIX gate can see it — the
+types agree there — and CI's Windows `--exe` smokes compile programs that
+take the native path, so the stub never met a Windows compiler until a user's
+did. The check is the stub's mangled names against the runtime's own:
+
+```bash
+RAKUPP_KEEPGEN=1 build/rakupp --bundle t/fixtures/uses-modules.raku -I t/fixtures/modlib -o /tmp/b
+x86_64-w64-mingw32-g++ -std=c++17 -c /tmp/b.rakupp.stub.cpp -o /tmp/b.o
+x86_64-w64-mingw32-nm /tmp/b.o | grep rakuppRegisterModule     # …PKcyS7_ and …PKcy: y = 64-bit
+```
+
+`m` in that position (`…PKcmS7_`) is the bug. release.yml now compiles and
+runs a `--bundle` of the same fixture on both Windows legs, with the module
+tree renamed away, so the next mismatch fails there rather than on a user.
+
+**The Linux floor is measured, not assumed.** The release builds in a
+manylinux 2.28 container, and `tools/floor-gate.raku` (a CI step on both Linux
+legs) reads the glibc and libstdc++ versions the packaged `rakupp`,
+`librakupp.so` and a `--static` program actually need and fails the build when
+they exceed what [COMPILERS.md](../guide/COMPILERS.md#what-runs-where)
+promises. v3.26.0 shipped needing glibc 2.38 because the runner image did —
+and no step had ever looked (issue #82).
+
 ### 6. The distribution bar
 
 ```bash

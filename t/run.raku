@@ -729,6 +729,32 @@ section('compile modes embed their modules (run with the module tree removed)');
     try unlink %bin{$_} for <bundle aot exe>;
 }
 
+# ---- --static composes with every compile mode ------------------------
+# The flag shapes the LINK (Linux: libstdc++/libgcc into the binary; MinGW:
+# the whole runtime; a no-op elsewhere), so what is portable to check here is
+# that every mode accepts it, the product runs, and the manifest records it —
+# the Linux floor gate (tools/floor-gate.raku) reads the link result itself.
+# Like --slim it means nothing outside a compile mode.
+section('--static: accepted by every compile mode, recorded in the manifest');
+{
+    for <bundle aot exe> -> $mode {
+        my $bin = $*TMPDIR.add("rakupp-suite-static-$mode-$*PID").Str;
+        my $c = run($*EXECUTABLE, "--$mode", '--static', '-q', '-e', 'say 6 * 7', '-o', $bin, :out, :err);
+        $c.out.slurp(:close); my $err = $c.err.slurp(:close);
+        unless $c.exitcode == 0 { ok(False, "--$mode --static builds"); diag("--$mode --static: $err"); next }
+        my $r = run($bin, :out, :err);
+        my $got = $r.out.slurp(:close); $r.err.slurp(:close);
+        is($got, "42\n", "--$mode --static: the product runs");
+        my $info = run($*EXECUTABLE, '--exe-info', $bin, :out, :err);
+        my $line = $info.out.slurp(:close); $info.err.slurp(:close);
+        ok($line.contains('"static":"yes"'), "--$mode --static: the manifest says so");
+        try unlink $bin;
+    }
+    my $p = run($*EXECUTABLE, '--static', '-e', 'say 1', :out, :err);
+    $p.out.slurp(:close); my $e = $p.err.slurp(:close);
+    ok($e.contains('Illegal option --static'), '--static outside a compile mode is an illegal option');
+}
+
 # ---- a module export vs a same-named built-in --------------------------
 # The interpreter resolves a call through the environment BEFORE the builtin
 # table, so an `is export`ed `sub val` wins over the built-in `val` (and a

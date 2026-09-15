@@ -72,12 +72,42 @@ jobs:
       # faster than GCC across the whole bench suite (fib +28%, loopsum +46%;
       # measured on arm64 with Clang 17 vs GCC 16.1, LTO/-mcpu=native change
       # nothing). GCC portability is still guarded by a local GCC build.
-      - name: Configure (Linux, Clang, static libstdc++)
+      #
+      # In a manylinux 2.28 container, not on the runner: a binary needs the
+      # glibc it was linked against, and ubuntu-latest's is whatever the image
+      # rotates to (24.04: 2.39). v3.26.0 shipped needing GLIBC_2.38 and would
+      # not start on Ubuntu 22.04, Debian 12 or RHEL 9 (issue #82). AlmaLinux 8
+      # pins the floor at 2.28 for rakupp, librakupp.so AND the runtime archive
+      # every --exe program links, whatever machine runs --exe. Clang is
+      # AppStream's (21); libstdc++ is gcc-toolset-11's, so compiled programs
+      # need nothing newer than GCC 11's (GLIBCXX_3.4.29) -- the toolset the
+      # clang package drags in on its own (15) would raise that floor for every
+      # user whose compiler is older. Everything after this step runs on the
+      # host against the container's products (2.28 is below any runner's
+      # glibc), so the gates, the wheel and the packaging are unchanged. The
+      # workspace is mounted at its own path so CMake's absolute paths stay
+      # valid on the host, and the products are handed back to the runner user.
+      # The floor gate below reads the result back; this step sets it.
+      - name: Configure + build + install layout (Linux, Clang, static libstdc++, manylinux 2.28)
         if: runner.os == 'Linux'
-        env:
-          CC: clang
-          CXX: clang++
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+        run: |
+          case "${{ runner.arch }}" in
+            X64)   image=quay.io/pypa/manylinux_2_28_x86_64;  triple=x86_64-redhat-linux ;;
+            ARM64) image=quay.io/pypa/manylinux_2_28_aarch64; triple=aarch64-redhat-linux ;;
+            *)     echo "no manylinux image for ${{ runner.arch }}"; exit 1 ;;
+          esac
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" "$image" bash -ec '
+            dnf -q install -y clang gcc-toolset-11 gcc-toolset-11-libstdc++-devel
+            gcc="--gcc-install-dir=/opt/rh/gcc-toolset-11/root/usr/lib/gcc/'"$triple"'/11"
+            clang++ "$gcc" -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC"
+            CC=clang CXX=clang++ CFLAGS="$gcc" CXXFLAGS="$gcc" \
+              cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
+                    "-DCMAKE_EXE_LINKER_FLAGS=$gcc -static-libgcc -static-libstdc++" \
+                    "-DCMAKE_SHARED_LINKER_FLAGS=$gcc"
+            cmake --build build -j 4
+            cmake --install build --prefix dist/rakupp
+            chown -R '"$(id -u):$(id -g)"' build dist
+          '
 
       # No pinned -G: windows-latest rotates its Visual Studio version (2022 is
       # already gone); CMake's default generator picks whatever VS is installed.
@@ -106,7 +136,7 @@ jobs:
         run: cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON "-DCMAKE_EXE_LINKER_FLAGS=-static"
 
       - name: Build
-        if: matrix.mingw != true
+        if: matrix.mingw != true && runner.os != 'Linux'
         run: cmake --build build --config Release -j 4
 
       - name: Build (MinGW-w64)
@@ -235,6 +265,50 @@ jobs:
           echo "native exit code: $code"
           exit $code
 
+      # --bundle on Windows: the stub declares the runtime's registration
+      # functions by hand, and a type that is size_t on POSIX and not on
+      # Win64 mangled to a symbol the runtime does not export -- MSVC could
+      # not link, and a MinGW binary found none of its modules (issue #80).
+      # Both --exe smokes above compile programs that take the native path,
+      # so no Windows compiler had ever seen the stub. These do, on a program
+      # with modules, and run the binary with the module tree renamed away:
+      # it has to carry them.
+      - name: Smoke test --bundle with modules (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          build\Release\rakupp.exe --bundle t\fixtures\uses-modules.raku -I t\fixtures\modlib -o bundle-native.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Rename-Item t\fixtures\modlib modlib-hidden
+          try {
+            $out = (.\bundle-native.exe | Out-String)
+            $code = $LASTEXITCODE
+          } finally {
+            Rename-Item t\fixtures\modlib-hidden modlib
+          }
+          Write-Host "got: [$out] exit $code"
+          if ($code -ne 0) { exit 1 }
+          $want = "outer(inner)`nshape-7`n34"
+          if (($out -replace "`r", "").Trim() -ne $want) { exit 1 }
+
+      - name: Smoke test --bundle with modules (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        env:
+          CXX: g++
+        run: |
+          build/rakupp.exe --bundle t/fixtures/uses-modules.raku -I t/fixtures/modlib -o bundle-native.exe
+          mv t/fixtures/modlib t/fixtures/modlib-hidden
+          set +e
+          raw=$(./bundle-native.exe)
+          code=$?
+          set -e
+          mv t/fixtures/modlib-hidden t/fixtures/modlib
+          out=$(printf '%s' "$raw" | tr -d '\r')
+          echo "got: [$out] exit $code"
+          test "$code" -eq 0
+          test "$out" = "$(printf 'outer(inner)\nshape-7\n34')"
+
       # Byte-for-byte checks of every example + showcase against t/expected/,
       # plus live pastebin/chat servers. POSIX only: the server tests background
       # a process through the shell and stop it with pkill. The goldens are
@@ -347,7 +421,7 @@ jobs:
       # split; findRuntime() locates the set and errors on a missing member),
       # and include/rakupp/*.h.
       - name: Install layout
-        if: matrix.mingw != true
+        if: matrix.mingw != true && runner.os != 'Linux'    # Linux: done in the container step
         run: cmake --install build --config Release --prefix dist/rakupp
 
       - name: Install layout (MinGW-w64)
@@ -365,6 +439,17 @@ jobs:
           out=$(./dist-native)
           echo "got: [$out]"
           test "$out" = "42"
+
+      # The Linux floor gate: what the packaged binaries NEED, read back from
+      # them -- glibc 2.28 at most for rakupp and librakupp.so, GCC 11's
+      # libstdc++ at most, no __isoc23_* (the glibc 2.38 tell) in the
+      # archives, and a --static program that needs no libstdc++.so at all,
+      # with the default link as the control. The container step sets the
+      # floor; this is what notices when it moves (issue #82: nothing had
+      # ever looked).
+      - name: Floor gate (Linux)
+        if: runner.os == 'Linux'
+        run: build/rakupp tools/floor-gate.raku dist/rakupp
 
       - name: Smoke test --exe from install layout (Windows, MSVC)
         if: runner.os == 'Windows' && matrix.mingw != true
@@ -386,6 +471,16 @@ jobs:
           out=$(./dist-native.exe)
           echo "got: [$out]"
           test "$out" = "42"
+          # --static: the MinGW runtime goes INTO the exe, as it does into
+          # rakupp.exe itself. The default link's import table is printed for
+          # the record; the static one must name no MinGW DLL -- and must name
+          # kernel32, so an empty listing cannot pass by accident.
+          dist/rakupp/bin/rakupp.exe --exe --static -e 'say 6 * 7' -o dist-static.exe
+          test "$(./dist-static.exe)" = "42"
+          objdump -p dist-native.exe | grep -i 'DLL Name' | tee dlls-default.txt
+          objdump -p dist-static.exe | grep -i 'DLL Name' | tee dlls-static.txt
+          grep -qi kernel32 dlls-static.txt
+          ! grep -qiE 'libstdc\+\+|libgcc|libwinpthread' dlls-static.txt
 
       # THE BINARY ON ITS OWN. `rakupp install` and `rakupp doc` used to run a
       # Raku script found beside the executable, so a rakupp lifted out of the

@@ -424,7 +424,7 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
-| `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
+| `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts, `--static`) |
 
 ### Diagnostics as data: `--json`
 
@@ -688,10 +688,18 @@ writes it to a file.
 
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see
 [COMPILERS.md](COMPILERS.md) and [NATIVE.md](NATIVE.md). Their flags
-(`-o OUT`, `-O[level]`, `-I`, `--slim[=SPEC]`) compose in any order with the
-mode, before or after the source file. `-q` drops the `Compiled …` line and
-the list of embedded modules; a module that could *not* be embedded is still
-reported, because the binary will need the disk for it.
+(`-o OUT`, `-O[level]`, `-I`, `--slim[=SPEC]`, `--standalone`, `--static`)
+compose in any order with the mode, before or after the source file. `-q`
+drops the `Compiled …` line and the list of embedded modules; a module that
+could *not* be embedded is still reported, because the binary will need the
+disk for it.
+
+`--static` links the C++ runtime into the binary where the platform has one
+to link — libstdc++ and libgcc on Linux, the whole MinGW runtime on Windows —
+so the program needs only the C library of the machine that runs it. MSVC
+output and macOS already are that way, and the flag says so and does nothing.
+What each platform's output needs, with and without it, is the table in
+[COMPILERS.md](COMPILERS.md#what-runs-where).
 
 ### `--slim` — how much of itself a compiled binary keeps
 

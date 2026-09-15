@@ -83,16 +83,23 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ```
 
-**Portable binaries:** the Linux release links `libstdc++`/`libgcc` statically so
-the archive runs on any distro with no runtime dependency:
+**Portable binaries:** the Linux release links `libstdc++`/`libgcc` statically,
+and it is built in a manylinux 2.28 container, so the archive needs nothing
+beyond glibc 2.28 (2018): RHEL 8, Debian 10, Ubuntu 18.10 and everything
+newer. A `rakupp` you build yourself gets the same static libstdc++ with
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
 ```
 
+but its glibc floor is your machine's — the C library is never linked
+statically (glibc's `dlopen`, which NativeCall needs, does not survive it).
+
 `--exe` uses the system `c++` (GCC or Clang, whichever is default). Set `$CXX`
-to override — see below.
+to override — see below. The programs it builds link the machine's
+`libstdc++` unless you pass `--static`; what they need is in
+[What runs where](#what-runs-where).
 
 ## Windows — MSVC (`cl`) or MinGW-w64 (`g++`)
 
@@ -154,6 +161,43 @@ CXX=g++-14  rakupp --exe program.raku -o program
 The compiler that builds the transpiled program is independent of the one that
 built `rakupp`; you can build `rakupp` with Clang and still compile `--exe`
 output with GCC, or vice versa.
+
+## What runs where
+
+What a binary needs from the machine that runs it, per platform — for the
+`rakupp` in the release archive, for a program it compiled with `--exe`,
+`--aot` or `--bundle`, and for the same program compiled with `--static`.
+`--static` links the C++ runtime into the binary where the platform has one to
+link; it never links the C library (glibc's `dlopen`, which NativeCall needs,
+does not work from a static executable).
+
+| Platform | `rakupp` (release archive) | a compiled program | compiled with `--static` |
+|---|---|---|---|
+| **Linux** x86_64, ARM64 | glibc 2.28+; libstdc++ inside | glibc 2.28+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.28+ |
+| **macOS** | macOS 11+ | macOS 11+ | the same — libc++ is part of the OS, there is nothing to link |
+| **Windows**, MSVC build | Windows only (static CRT) | Windows only (the output is `/MT` too) | the same |
+| **Windows**, MinGW build | Windows only (`-static`) | the MinGW DLLs beside it or on `PATH`: `libstdc++-6`, `libgcc_s_seh-1`, `libwinpthread-1` | Windows only |
+| **OpenBSD** | the OpenBSD release it was built on | the same | the same — no effect |
+
+Two things decide the Linux numbers, and neither is the machine that runs
+`--exe`:
+
+- **The floor is the build machine's.** A binary needs the glibc it was linked
+  against, so the release is built in a `quay.io/pypa/manylinux_2_28`
+  container (AlmaLinux 8, glibc 2.28, Clang, GCC 11's libstdc++), and every
+  compiled program inherits that floor from the runtime archive it links —
+  whatever built it. `tools/floor-gate.raku` reads the numbers back from the
+  packaged binaries in CI and fails the build when they move.
+- **Compiled programs link `libstdc++` dynamically by default**, like every
+  other C++ program on the machine, so a binary built on one distribution can
+  fail to start on an older one with `GLIBCXX_3.4.30 not found`. `--static`
+  puts libstdc++ and libgcc into the binary (about 0.7 MB) and the program then
+  needs glibc alone. Building for containers, an older distribution, or a
+  machine you do not control: pass it.
+
+Optional libraries are found at run time by `dlopen` and change nothing above:
+without libffi NativeCall takes its fallback path ([FFI.md](FFI.md)), without
+OpenSSL `https` is unavailable — the binary still starts.
 
 ## Clang vs GCC — why we ship Clang
 

@@ -80,8 +80,9 @@ no server, with an embeddable in-page playground.
 ## Platforms
 
 - **macOS** (one universal binary: Apple Silicon + Intel), **Linux** x86_64
-  (static libstdc++ — no runtime deps), **Windows** x64 (static CRT — no
-  redistributable needed).
+  and ARM64 (static libstdc++, glibc 2.28+), **Windows** x64 (static CRT — no
+  redistributable needed). What a compiled program needs, per platform:
+  [COMPILERS.md](COMPILERS.md#what-runs-where).
 - Prebuilt archives on [GitHub Releases](https://github.com/ash/rakupp/releases);
   macOS also via `brew install ash/rakupp/rakupp`.
 - CI builds and smoke-tests all three on every push.

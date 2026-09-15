@@ -137,11 +137,24 @@ static bool onPathW(const wchar_t* name) {
     wchar_t buf[4096];
     return ::SearchPathW(nullptr, name, L".exe", 4096, buf, nullptr) != 0;
 }
-// A compile failed on Windows: point at the likely toolchain mismatch. The
-// runtime archive is toolchain-specific, so the MinGW build needs g++ and the
-// MSVC build needs cl — using the wrong build in the wrong shell is the usual
-// cause (a MinGW .a handed to cl, or vice versa).
-static void winCompilerHint(const std::string& lib) {
+static std::string msvcEnvPrefix();
+// Is the compiler --exe chose actually there to run? A bare name is looked up
+// on PATH; a path is checked as given; `cl` also counts when the vcvars
+// bootstrap below can reach it.
+static bool compilerFound(const std::string& cxx) {
+    if (cxx.find_first_of("/\\") != std::string::npos) return fileExists(cxx);
+    if (onPathW(widen(cxx).c_str())) return true;
+    return msvcStyle(cxx) && !msvcEnvPrefix().empty();
+}
+// A compile failed on Windows because the COMPILER was not found: point at the
+// likely toolchain mismatch. The runtime archive is toolchain-specific, so the
+// MinGW build needs g++ and the MSVC build needs cl — using the wrong build in
+// the wrong shell is the usual cause (a MinGW .a handed to cl, or vice versa).
+// Only for a compiler that could not run (cmd.exe answers 9009 for an unknown
+// command): a compiler that ran and failed has printed its own error, and this
+// hint under a link error pointed the reader at the wrong problem (issue #80).
+static void winCompilerHint(const std::string& lib, const std::string& cxx, int rc) {
+    if (rc != 9009 && compilerFound(cxx)) return;
     bool gnuArchive = lib.size() >= 2 && lib.compare(lib.size() - 2, 2, ".a") == 0;
     if (gnuArchive)
         std::cerr << "(this is the MinGW build: its --exe needs g++ (MSYS2/MinGW-w64) on PATH. "
@@ -259,6 +272,15 @@ struct SlimSpec {
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
 static bool g_standalone = false;       // --standalone: an unembeddable module is a build ERROR (MODULES-PLAN B2)
+// --static: link the C++ runtime INTO the compiled binary where the platform
+// has one to link — libstdc++/libgcc on Linux, the whole MinGW runtime on
+// Windows. Opt-in: the default output links the system C++ library, which is
+// what every other compiled program on the machine does, and which a machine
+// without that library's version cannot run (issue #82). The C library is
+// never static: glibc's dlopen and NSS need the shared copy, and NativeCall
+// needs dlopen. What each platform's output needs is tabulated in
+// docs/guide/COMPILERS.md.
+static bool g_static = false;
 // -q / --quiet — ONE option, accepted by every mode (issue #50). It drops the
 // lines a mode prints about its own progress or success: `Compiled …`,
 // `Syntax OK`, the lint summary, the REPL banner, the installer's `already
@@ -440,6 +462,7 @@ static std::string slimManifestTU(const char* how) {
         "\",\"mode\":\"" + how +
         "\",\"slim\":\"" + lvl +
         "\",\"symbols\":\"" + (g_slim.stripSyms ? "stripped" : "kept") +
+        "\",\"static\":\"" + (g_static ? "yes" : "no") +
         "\",\"cut\":[" + cut + "]}";
     return "\nextern \"C\" const char rakupp_exe_manifest[] = " +
            cppstr(slimMarker() + json) + ";\n"
@@ -583,6 +606,7 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
         // program transpiles to a large TU, and the section cap is per object,
         // not per project. Free to set, so it is not worth waiting for someone
         // to hit C1128 with a big --exe program.
+        // (--static asks for nothing more here: /MT is already the static CRT.)
         std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w /bigobj " + o;
         if (!inc.empty()) c += " /I " + shq(inc);
         c += " " + shq(in);
@@ -631,6 +655,10 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
     if (g_slim.deadStrip) c += " -Wl,--gc-sections";
     if (g_slim.stripSyms) c += " -s"; // GNU ld on PE: strip at link
+    // --static: libstdc++, libgcc and winpthread go into the exe, as they do
+    // into rakupp.exe itself; without it the output needs the three MinGW
+    // DLLs beside it or on PATH.
+    if (g_static) c += " -static";
 #elif defined(__APPLE__)
     // The generated main() runs on the process main thread, whose default 8 MiB
     // stack gives natively-compiled recursion a far smaller budget than the
@@ -641,9 +669,23 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     // ld64's -x keeps local symbols out of the output — the same table
     // `strip -x` would remove, without a second process.
     if (g_slim.stripSyms) c += " -Wl,-x";
+    // --static has nothing to link here: libc++ is part of the OS and Apple
+    // ships no static copy. The output already runs on any macOS at or above
+    // the deployment target it was built with.
+    if (g_static && !g_quiet)
+        std::cerr << "--static: nothing to link statically on macOS (libc++ is part of the OS)\n";
 #else
     if (g_slim.deadStrip) c += " -Wl,--gc-sections";
     if (g_slim.stripSyms) c += " -Wl,-s"; // ELF: no symbol table in the output
+  #ifdef __linux__
+    // --static: the same two flags the Linux release links rakupp itself
+    // with. The output then needs only glibc — at the version of the machine
+    // that built the runtime archive, not of the machine that ran --exe.
+    if (g_static) c += " -static-libstdc++ -static-libgcc";
+  #else
+    if (g_static && !g_quiet)
+        std::cerr << "--static: no static C++ runtime link on this platform; the output links the system one\n";
+  #endif
 #endif
     c += extraLink;   // the rk_* export list, when this program hosts an extension
     return c;
@@ -858,7 +900,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         if (!stub) { std::cerr << "Cannot write " << stubPath << "\n"; return 5; }
         stub << "// Generated by `rakupp --bundle`. Embeds a Raku program and runs it\n"
                 "// via the linked-in Raku++ runtime.\n"
-                "#include <string>\n#include <vector>\n#include <cstdlib>\n"
+                "#include <string>\n#include <vector>\n#include <cstdlib>\n#include <cstddef>\n"
                 "#ifdef _WIN32\n"
                 "#define RAKUPP_REALPATH(p, r) _fullpath((r), (p), 4096)\n"
                 "#else\n"
@@ -898,8 +940,14 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
             stub << decls.str();
             bundleModuleCalls = calls.str();
         }
-        stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, unsigned long, const std::string&);\n"
-                "                  void rakuppRegisterModuleSource(const std::string&, const char*, unsigned long); }\n";
+        // Declared by hand rather than through Interpreter.h (the stub compiles
+        // without the headers), so the types must match the runtime's EXACTLY:
+        // the length is size_t there. Written as `unsigned long` it mangled to
+        // a different symbol on 64-bit Windows, where that type is 32 bits —
+        // MSVC could not link and a MinGW binary found none of its modules
+        // (issue #80). POSIX never noticed: the two types are the same there.
+        stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, std::size_t, const std::string&);\n"
+                "                  void rakuppRegisterModuleSource(const std::string&, const char*, std::size_t); }\n";
         stub << "int main(int argc, char** argv) {\n"
              // a bundled binary embeds ONE program: `-e` has nothing to eval here
              << "  if (int rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return rc;\n"
@@ -923,14 +971,15 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
     }
     std::string expList, extra;
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, rtLibs, outPath, extra);
+    std::string cxx = nativeCxx(lib);
+    std::string cmd = compileCmd(cxx, "-O2", "", stubPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(stubPath);  // as the other two paths honour it
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        winCompilerHint(lib);
+        winCompilerHint(lib, cxx, rc);
 #endif
         return 5;
     }
@@ -1214,14 +1263,15 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     }
     std::string expList, extra;
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
-    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, rtLibs, outPath, extra);
+    std::string cxx = nativeCxx(lib);
+    std::string cmd = compileCmd(cxx, ccOpt, inc, genPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        winCompilerHint(lib);
+        winCompilerHint(lib, cxx, rc);
 #endif
         return 5;
     }
@@ -1291,14 +1341,15 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     }
     std::string expList, extra;
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, rtLibs, outPath, extra);
+    std::string cxx = nativeCxx(lib);
+    std::string cmd = compileCmd(cxx, "-O2", inc, genPath, rtLibs, outPath, extra);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        winCompilerHint(lib);
+        winCompilerHint(lib, cxx, rc);
 #endif
         return 5;
     }
@@ -1663,6 +1714,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--exe", 0, nullptr, "compile natively to C++"},
     {"--slim", 1, "safe auto max none help list verify", "cut unused runtime subsystems from the binary"},
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
+    {"--static", 0, nullptr, "link the C++ runtime into the compiled binary (Linux, MinGW)"},
     {"--target", 1, "parse ast rakuast js cpp raku", "parse, ast, rakuast, or emit JavaScript, C++ or Raku"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
     {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
@@ -2365,6 +2417,9 @@ int main(int argc, char** argv) {
             // cannot embed becomes a BUILD ERROR instead of a silent
             // load-from-disk-at-run-time fallback.
             if (a == "--standalone") { g_standalone = true; continue; }
+            // --static: the compiled binary carries its C++ runtime (see the
+            // flag's declaration for what that means per platform).
+            if (a == "--static") { g_static = true; continue; }
             if (a == "-e" || (a.rfind("-e", 0) == 0 && a.size() > 2)) {
                 if (!haveSrc) {
                     if (a == "-e") {
@@ -2508,6 +2563,7 @@ int main(int argc, char** argv) {
         // the interpreter or to --cpp (which emits source and never links).
         if (g_slimExplicit && !isCompileMode(mode)) return illegalOpt("--slim");
         if (g_standalone && !isCompileMode(mode) && mode != Mode::Js) return illegalOpt("--standalone");
+        if (g_static && !isCompileMode(mode)) return illegalOpt("--static");   // a link flag, like --slim
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
@@ -2679,6 +2735,9 @@ int main(int argc, char** argv) {
 "                               binary (--slim=help explains the levels and cuts)\n"
 "  --standalone                 A module the compile mode cannot embed becomes a\n"
 "                               build ERROR instead of a run-time disk fallback\n"
+"  --static                     Link the C++ runtime into the binary, so it needs\n"
+"                               only the C library: libstdc++/libgcc on Linux, the\n"
+"                               MinGW runtime on Windows (MSVC and macOS already do)\n"
 "\n"
 "Modules (the ecosystem installer; each command alone shows its full usage):\n"
 "  rakupp install MODULE ...    Fetch, test and install into the CURI store\n"
