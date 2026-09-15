@@ -14932,6 +14932,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(!v.empty() && v[0].truthy() ? 1 : 0);
         case O::IsConcrete:
             return Value::integer(!v.empty() && rtIsDefined(v[0]) ? 1 : 0);
+        case O::P6Definite:   // the same test, handed back as a Raku Bool
+            return Value::boolean(!v.empty() && rtIsDefined(v[0]));
         case O::CloneOp: { // shallow clone: fresh backing store, same elements
             if (v.empty()) return Value::nil();
             Value c = v[0];

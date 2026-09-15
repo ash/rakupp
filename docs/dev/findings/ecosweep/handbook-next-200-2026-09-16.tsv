@@ -1,0 +1,201 @@
+deps	name	version	auth	verdict	seconds	first-error
+34	IO::Socket::SSL	0.0.4	zef:raku-community-modules	pass	1.8	
+23	Sparrowdo	0.1.55	zef:sp1983	pass	4.5	
+17	Log::Async	0.0.17	zef:bduggan	pass	8.7	
+15	Sparrow6	0.0.93	zef:sp1983	pass	3.2	
+14	Distribution::Builder::MakeFromJSON	0.6	github:niner	pass	0.8	
+12	Cro::Core	0.8.10	zef:cro	pass	1.7	
+10	MacOS::NativeLib	0.0.6	zef:lizmat	pass	0.7	
+10	Pod::Load	0.7.2	zef:jjmerelo	pass	2	
+10	Term::termios	0.2.8	zef:krunen	pass	2.4	
+9	Clipboard	0.1.2	zef:antononcube	pass	1	
+9	HTTP::Easy	1.3	zef:raku-community-modules	pass	1.5	
+9	IRC::Client	4.0.15	zef:lizmat	pass	1.2	
+8	Compress::Zlib	1.1.0	github:retupmoca	pass	0.8	
+7	HTTP::Tinyish	0.4.1	zef:skaji	pass	1.2	
+7	Slangify	0.0.5	zef:lizmat	pass	0.9	
+7	Text::Markdown	1.1.1	zef:JJMERELO	pass	1.5	
+6	DB::Pg	1.1	cpan:CTILMES	pass	1.5	
+6	RakuConfig	0.8.2	zef:finanalyst	pass	0.8	
+5	CBOR::Simple	0.1.4	zef:japhb	pass	0.6	
+5	Hash::Agnostic	0.0.20	zef:lizmat	pass	0.8	
+5	if	0.1.5	zef:raku-community-modules	pass	0.8	
+5	IO::Capture::Simple	v0.0.2	zef:jjmerelo	pass	0.8	
+5	LibCurl	1.5	github:CurtTilmes	pass	1.2	
+5	PDF::Grammar	0.3.6	zef:dwarring	pass	1.5	
+5	PSGI	1.2.3	zef:raku-community-modules	pass	0.8	
+5	Text::SubParsers	0.1.4	zef:antononcube	pass	17.3	
+4	Array::Sorted::Util	0.0.11	zef:lizmat	pass	3	
+4	Cookie::Baker	*	github:tokuhirom	pass	0.8	
+4	Font::AFM	1.24.10	zef:dwarring	pass	0.9	
+4	Linenoise	0.1.2	zef:raku-community-modules	pass	2.1	
+4	Net::DNS	1.4	zef:rbt	pass	1.3	
+4	SCGI	2.6	zef:raku-community-modules	pass	1.7	
+4	Stats	0.0.6	github:MattOates	pass	0.7	
+4	String::Utils	0.0.40	zef:lizmat	pass	0.7	
+3	CLI::Version	0.0.10	zef:lizmat	pass	0.8	
+3	Cro::TLS	0.8.10	zef:cro	pass	1.8	
+3	Data::Translators	0.1.18	zef:antononcube	pass	2	
+3	FastCGI::NativeCall	0.0.12	zef:jonathanstowe	pass	5.3	
+3	FatRatStr	0.0.14	zef:librasteve	pass	0.8	
+3	IO::Blob	0.0.1	github:moznion	pass	0.7	
+3	LibraryCheck	0.0.12	zef:jonathanstowe	pass	1.6	
+3	Log::Syslog::Native	0.1.2	zef:jonathanstowe	pass	1.6	
+3	paths	10.2	zef:lizmat	pass	0.3	
+3	Pod::From::Cache	0.6.1	zef:finanalyst	pass	1	
+3	Pod::To::Anything	0.1.0	cpan:TYIL	pass	0.6	
+3	Prompt	0.0.11	zef:lizmat	pass	0.8	
+3	SDL2::Raw	0.3	cpan:TIMOTIMO	pass	0.8	
+3	Sparky	0.2.32	zef:sp1983	pass	6.1	
+2	Audio::PortMIDI	0.0.12	zef:jonathanstowe	pass	3.3	
+2	Compress::Bzip2	0.4.1	zef:Altai-man	pass	0.8	
+2	Crypt::SodiumPasswordHash	0.0.6	zef:jonathanstowe	pass	2.4	
+2	DateTime::TimeZone	0.10.2	zef:raku-community-modules	pass	1.1	
+2	Desktop::Notify	1.0.1	zef:FRITH	pass	0.9	
+2	Exportable	0.0.4	zef:elcaro	pass	0.8	
+2	FEN::Grammar	0.0.7	zef:vushu	pass	1	
+2	ForwardIterables	0.0.4	zef:lizmat	pass	0.8	
+2	Hash::int	0.0.7	zef:lizmat	pass	0.8	
+2	HTTP::Roles	0.2.3	zef:raku-community-modules	pass	0.9	
+2	Math::SparseMatrix	0.0.15	zef:antononcube	pass	3.9	
+2	ML::TriesWithFrequencies	0.6.7	zef:antononcube	pass	1.6	
+2	ORM::ActiveRecord	0.9.4	zef:gdonald	pass	11.6	
+2	path-utils	0.0.25	zef:lizmat	pass	0.9	
+2	Rakuast::RakuDoc::Render	1.0.18	zef:finanalyst	pass	4.7	
+2	RPi::Wiring::Pi	2.26.0	github:Sufrostico	pass	0.8	
+2	silently	0.0.7	zef:lizmat	pass	0.8	
+2	Sparrowdo::Archive	0.0.2	cpan:MELEZHIK	pass	1.2	
+2	Sparrowdo::RemoteFile	0.0.4	cpan:MELEZHIK	pass	1.3	
+2	StrictClass	0.0.3	github:ufobat	pass	0.7	
+2	Text::Tabs	1.0	zef:Altai-man	pass	0.7	
+2	WWW::Gemini	0.0.25	zef:antononcube	pass	2.5	
+2	WWW::LLaMA	0.1.3	zef:antononcube	pass	1.3	
+2	WWW::MistralAI	0.1.3	zef:antononcube	pass	0.9	
+2	WWW::Ollama	0.0.7	zef:antononcube	pass	1.5	
+2	WWW::OpenAI	0.3.20	zef:antononcube	pass	1.2	
+2	WWW::OpenRouter	0.0.3	zef:antononcube	pass	0.8	
+1	AccountableBagHash	0.0.7	zef:lizmat	pass	0.9	
+1	Algorithm::MinMaxHeap	0.13.5	cpan:TITSUKI	pass	0.9	
+1	Anolis	1.0.0	zef:patrickb	pass	0.7	
+1	Apache::LogFormat	*	github:lestrrat	pass	1.1	
+1	App::GPTrixie	0.29	github:Skarsnik	pass	0.7	
+1	Auth::SASL	0.1.1	cpan:HANENKAMP	pass	2.3	
+1	Auth::SCRAM::Async	0.0.1	cpan:LEONT	pass	1.3	
+1	BDD::Behave	0.9.5	zef:gdonald	pass	0.6	
+1	BSON::Simple	0.0.2	zef:japhb	pass	3.3	
+1	CCLog	0.0.6	github:ccworld1000, ccworld1000@gmail.com, 2291108617@qq.com	pass	1.8	
+1	Compress::Bzip2::Raw	0.2.2	zef:Altai-man	pass	0.8	
+1	Constants::Sys::Socket	0.0.2	cpan:GARLANDG	pass	0.7	
+1	CPAN::Uploader::Tiny	0.1.0	zef:skaji	pass	1.1	
+1	DB::Model::Easy	0.0.1	github:raku-community-modules	pass	0.8	
+1	DBIish::Pool	1.1.0	zef:rbt	pass	2.8	
+1	Debugger::UI::CommandLine	*	github:jnthn	pass	0.7	
+1	Dependency::Sort	1	github:jaffa4	pass	0.8	
+1	Digest::xxHash	1.8.0	zef:raku-community-modules	pass	0.8	
+1	Doc::TypeGraph	2.3.1	zef:raku-community-modules	pass	1.1	
+1	DSL::Examples	0.0.7	zef:antononcube	pass	0.8	
+1	ERK	1.1.4	zef:ulisesb	pass	0.7	
+1	FastCGI::NativeCall::Async	0.0.6	zef:jonathanstowe	pass	8.4	
+1	fez	100.0.2	zef:tony-o	pass	2.1	
+1	File::Compare	*	github:labster	pass	0.7	
+1	Game::Numeric	0.1.6	cpan:KOBOLDWIZ	pass	0.7	
+1	Git::Blame::File	0.0.11	zef:lizmat	pass	0.8	
+1	Git::Files	0.0.9	zef:lizmat	pass	0.8	
+1	Grammar::Debugger	1.0.3	zef:raku-community-modules	pass	0.9	
+1	GTK::Simple	0.3.0	zef:finanalyst	pass	2.3	
+1	Gzz::Prompt	0.1.2	zef:grizzlysmit	pass	1	
+1	has-word	0.0.7	zef:lizmat	pass	0.8	
+1	HTTP::Parser	0.0.2	github:tokuhirom	pass	0.7	
+1	HTTP::Request::FormData	0.2	cpan:HANENKAMP	pass	1	
+1	hyperize	0.0.4	zef:lizmat	pass	0.8	
+1	Implementation::Loader	0.0.10	zef:wayland	pass	1.1	
+1	IO::Path::ChildSecure	1.2	zef:raku-community-modules	pass	0.8	
+1	JSON::Fast::Hyper	0.0.11	zef:lizmat	pass	0.9	
+1	L10N::CY	0.0.7	zef:l10n	pass	0.8	
+1	L10N::DE	0.0.4	zef:l10n	pass	0.8	
+1	L10N::EN	0.0.4	zef:l10n	pass	0.8	
+1	L10N::EO	0.0.3	zef:l10n	pass	0.8	
+1	L10N::FR	0.0.3	zef:l10n	pass	0.8	
+1	L10N::HU	0.0.3	zef:l10n	pass	0.8	
+1	L10N::IT	0.0.3	zef:l10n	pass	0.8	
+1	L10N::JA	0.0.3	zef:l10n	pass	0.8	
+1	L10N::NL	0.0.6	zef:l10n	pass	0.8	
+1	L10N::PT	0.0.3	zef:l10n	pass	0.8	
+1	LaTeX::Grammar	0.0.5	zef:antononcube	pass	2	
+1	LibUUID	0.5	github:CurtTilmes	pass	1	
+1	Lines::Containing	0.0.11	zef:lizmat	pass	0.8	
+1	Lingua::EN::Sentence	0.1.5	zef:kimryan	pass	0.8	
+1	LocalTime	0.0.3	zef:tbrowder	pass	2	
+1	Map::Agnostic	0.0.14	zef:lizmat	pass	0.8	
+1	Math::NumberTheory	0.1.3	zef:antononcube	pass	7.7	
+1	Math::SparseMatrix::Native	0.0.9	zef:antononcube	pass	2.4	
+1	META::constants	0.0.6	zef:lizmat	pass	1	
+1	Munge	0.1	cpan:CTILMES	pass	1.1	
+1	nano	0.0.3	zef:lizmat	pass	0.8	
+1	NativeHelpers::Callback	0.1	cpan:CTILMES	pass	1	
+1	NativeHelpers::CBuffer	0.0.3	github:scovit	pass	0.9	
+1	P6TCI	0.0.5	github:ugexe	pass	0.7	
+1	Pod::To::Pager	0.2.0	cpan:TYIL	pass	0.7	
+1	Pod::To::Raku	0.0.4	zef:bduggan	pass	0.8	
+1	Pod::Usage	0.0.1	zef:leont	pass	0.8	
+1	Qwiratry	0.10.0	zef:wayland	pass	1.4	
+1	RakudoPrereq	1.1	zef:raku-community-modules	pass	0.8	
+1	Redis::Async	0.6	github:CurtTilmes	pass	1.2	
+1	ReverseIterables	0.0.2	zef:lizmat	pass	1.4	
+1	RPi::Device::SMBus	0.0.7	zef:jonathanstowe	pass	2.3	
+1	Semaphore::ReadersWriters	0.2.6	cpan:MARTIMM	pass	11	
+1	sigpipe	0.0.3	zef:leont	pass	0.9	
+1	Slang::NumberBase	0.0.3	zef:lizmat	pass	0.9	
+1	Slang::Roman	0.6.3	zef:raku-community-modules	pass	0.9	
+1	Slang::Tuxic	0.0.5	zef:raku-community-modules	pass	0.9	
+1	snip	0.0.2	zef:lizmat	pass	117.8	
+1	Sparky-Job-Api	0.0.13	zef:sp1983	pass	4	
+1	Syndication	1.0.0	github:retupmoca	pass	1.1	
+1	Test::Util::ServerPort	0.0.5	zef:jonathanstowe	pass	1.5	
+1	Text::Plot	0.1.4	zef:antononcube	pass	1	
+1	Timer::Breakable	0.1.1	cpan:SCIMON	pass	1.2	
+1	Universal::errno	0.2.0	cpan:GARLANDG	pass	0.7	
+1	WWW::MermaidInk	0.1.2	zef:antononcube	pass	1.4	
+1	WWW::WolframAlpha	0.1.2	zef:antononcube	pass	1.1	
+1	WWW::XAI	0.1.3	zef:antononcube	pass	1.5	
+1	X11::Xlib::Raw	*	github:slobo	pass	1.1	
+1	XML::Canonical	1.0.2	zef:raku-community-modules	pass	1.3	
+0	ABC	0.6.13	zef:colomon	pass	1.7	
+0	ACME::Fez	6	zef:tony-o	pass	0.8	
+0	Acme::Insult::Lala	0.0.7	zef:jonathanstowe	pass	1.6	
+0	Acme::Meow	0.2	zef:raku-community-modules	pass	0.8	
+11	WWW	1.005007	zef:raku-community-modules	dep-fail	3.3	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+8	Config::TOML	0.1.3	zef:raku-community-modules	dep-fail	1.4	FAILED: add.rakutest | # Failed test 'Is expected value' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-inst
+8	Crust	0.0.1	github:tokuhirom	timeout	300	
+7	Intl::UserLanguage	0.4.0	zef:guifa	dep-fail	1.1	FAILED: 00-sanity.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-68170-Intl
+7	LLM::DWIM	0.0.6	zef:bduggan	dep-fail	23.2	FAILED: 04-LLM-chats.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-68225-L
+6	DB::SQLite	0.7	cpan:CTILMES	dep-fail	1.2	FAILED: 01-simple.t | # Failed test 'Numify' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-68690-Bi
+5	Temp::Path	1.001008	github:ufobat	self-fail	1.8	FAILED: 03-group.t | Cannot invoke non-Callable value of type Pair
+3	Pastebin::Gist	1.007	zef:raku-community-modules	dep-fail	3.2	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+2	Actionable	0.0.7	zef:librasteve	dep-fail	0.8	FAILED: 01-basic.rakutest | # Failed test 'general g small' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-i
+2	Air::Plugin::Hilite	0.0.10	zef:librasteve	dep-fail	2.2	FAILED: compat.t | usage: $.token($ast, :$type)
+2	Archive::Libarchive	0.0.17	zef:FRITH	dep-fail	0.9	FAILED: 02-list.rakutest | # Failed test 'error string' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-insta
+2	DB::MySQL	0.8	zef:davidromero55	dep-fail	7.6	FAILED: stress.rakutest | # Failed test 'Pushed/popped correct values' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn
+2	Intl::Number::Plural	0.5.4	github:alabamenhu	dep-fail	1.2	FAILED: 00-sanity.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-73324-Intl
+2	ML::NLPTemplateEngine	0.1.9	zef:antononcube	dep-fail	4.5	FAILED: 04-LLM-chats.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-73416-L
+2	Web::App	0.9.2	zef:raku-community-modules	dep-fail	1.7	FAILED: 01-basic.rakutest | Variable 'EXPERIMENTAL-PACK' is not declared
+2	Web::Template	3.0	zef:raku-community-modules	dep-fail	1	FAILED: 01-simple.rakutest | # Failed test 'Get statement.' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-i
+1	Astro::Utils	0.0.3	zef:tbrowder	dep-fail	1	FAILED: frac-methods.t | # Failed test 'is f(Inf) = NaN for function fractional' at /var/folders/8y/kz8l_x2x63x5knxw5bpx
+1	Crypt::LibScrypt	0.0.9	zef:knarkhov	self-fail	8	FAILED: 01.t | # Failed test 'hello keccak256' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-76609-
+1	CSS::Nested	0.0.1	zef:FCO	dep-fail	0.6	FAILED: compat.t | usage: $.token($ast, :$type)
+1	DB	0.5	cpan:CTILMES	dep-fail	7.3	FAILED: stress.rakutest | # Failed test 'Pushed/popped correct values' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn
+1	DSL::Bulgarian	0.1.1	zef:antononcube	dep-fail	2.3	FAILED: Array-of-regexes-matches.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-ins
+1	DSL::English::SearchEngineQueries	0.5.0	zef:antononcube	dep-fail	1.4	FAILED: Array-of-regexes-matches.rakutest | # Failed test at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-ins
+1	File::file	0.0.1	zef:tbrowder	dep-fail	0.8	FAILED: 01-basic.rakutest | # Failed test 'creates object using simplified interface' at /var/folders/8y/kz8l_x2x63x5knx
+1	GIO	0.0.4	cpan:CBWOOD	dep-fail	2	FAILED: basic.rakutest | get-config failed
+1	Hilite	0.2.8	zef:librasteve	dep-fail	0.8	FAILED: sub-langs.rakutest | ===SORRY!=== Parse error at line 1209: Error while compiling module Rainbow::RakuGrammar (l
+1	Lingua::Translation::DeepL	0.1.5	zef:antononcube	dep-fail	2.8	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+1	Module::Toolkit	0.7	github:tadzik	dep-fail	0.9	FAILED: source-file.t | # Failed test 'planned 2' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-813
+1	MVC::Keayl	0.9.1	zef:gdonald	dep-fail	6	FAILED: 0200-multiline-attrs.rakutest | # Failed test 'child after multi-line hash records the actual source line' at /v
+1	OAuth2::Client::Google	0.1.1	cpan:BDUGGAN	dep-fail	2.3	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+1	TelegramBot	0.2.0	github:GildedHonour	dep-fail	2.6	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+1	Text::Diff	1.0.5	zef:rbt	dep-fail	0.8	FAILED: base.rakutest | Undefined routine 'Algorithm::Diff::_longestCommonSubsequence'
+1	WebService::HazIP	1.0.0	github:cbk	timeout	300	
+1	WWW::P6lert	1.001004	github:raku-community-modules	dep-fail	3.6	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakup
+1	XML::Signature	1.0.0	github:retupmoca	self-fail	2.4	FAILED: 01-basic.t | Could not find Digest::SHA in:
+0	Acme::Advent::Highlighter	1.003	github:raku-community-modules	dep-fail	2.1	FAILED: 005-entities.t | # Failed test 'right HTML unescaped result' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T

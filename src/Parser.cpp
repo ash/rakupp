@@ -10141,6 +10141,10 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},
         {"iscont", NqpOpc::IsCont}, {"istrue", NqpOpc::IsTrue},
         {"isconcrete", NqpOpc::IsConcrete}, {"isconcrete_nd", NqpOpc::IsConcrete},
+        // Rakudo's own op, not NQP's: same question as `isconcrete`, but the
+        // answer is a Raku Bool rather than an nqp int. Compress::Zlib's line
+        // reader loops on it (`while nqp::p6definite(my $line = self.get)`).
+        {"p6definite", NqpOpc::P6Definite},
         // `nqp::can($type.HOW, "roles")` — RakuAST::Utils asks a META-OBJECT
         // whether it answers a method before calling it.
         {"can", NqpOpc::Can},

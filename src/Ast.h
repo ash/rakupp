@@ -438,7 +438,7 @@ enum class NqpOpc : uint16_t {
     Create, Istype, Getattr, Bindattr, P6BindAttrInvRes, P6ScalarWithValue,
     Null, IsNanOrInf,
     // appended (AST-cache safe): the AttrX::Mooish surface
-    What, IsList, IsCont, IsTrue, IsConcrete, CloneOp, Shift, LockOp, UnlockOp,
+    What, IsList, IsCont, IsTrue, IsConcrete, P6Definite, CloneOp, Shift, LockOp, UnlockOp,
     // appended: raw file handles (Crypt::Random reads /dev/urandom this way)
     OpenFh, ReadFh, CloseFh,
     // appended: nqp::stat / nqp::lstat — Path::Finder's whole stat-matcher
