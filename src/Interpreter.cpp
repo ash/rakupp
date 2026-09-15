@@ -3813,12 +3813,32 @@ void Interpreter::applySubTraits(SubDecl* sd) {
 // When the frame exits, break the back-edges of any Code that closes over THIS env
 // and is referenced nowhere else (use_count 1 ⇒ it did not escape via return or
 // assignment). A torn-down non-escaped frame has no surviving `state` to preserve.
-void Interpreter::breakSelfClosures(Env* env) {
+void Interpreter::breakSelfClosures(const std::shared_ptr<Env>& envp) {
     // Wiring an on-demand supply block: its env OUTLIVES the frame (whenever
     // taps fire later, from I/O workers) — a nested `my sub`'s closure must
     // survive, so the frame-death heuristic is suspended.
     if (noCycleBreak_ > 0) return;
-    // forEachVar: a nested `my &f = sub {…}` at owner level lives in the pad
+    Env* env = envp.get();
+    if (!env) return;
+    // Count what the frame's own nested subs hold before cutting anything. Each
+    // self-closured sub is one reference back to this frame, and so is a `state`
+    // env parked on it; anything LEFT once those are subtracted — beyond the one
+    // reference this call was handed — means the frame ESCAPED. A closure
+    // returned from here still reaches these subs BY NAME, and cutting their
+    // closure strands their lexicals: Terminal::ANSIParser hands back a table of
+    // blocks that call nested `my sub`s sharing a `$sequence` buffer, and every
+    // one of them died with "Variable '$sequence' is not declared" the moment
+    // the parser was used outside the sub that built it.
+    //
+    // forEachVar: a nested `my &f = sub {…}` at owner level lives in the pad.
+    size_t held = 0;
+    env->forEachVar([&](const std::string&, Value& v) {
+        if (v.t != VT::Code || !v.code() || !v.payloadUnique()) return;
+        if (v.code()->closure.get() == env) held++;
+        if (v.code()->state.env.get() == env) held++;
+    });
+    if (!held) return;
+    if ((size_t)envp.use_count() > held + 1) return;   // the frame outlives this scope
     env->forEachVar([&](const std::string&, Value& v) {
         if (v.t == VT::Code && v.code() && v.payloadUnique() &&
             v.code()->closure.get() == env) {
@@ -7974,7 +7994,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                         for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
                         tcx.cur->ex->letRestores.clear();
                     }
-                    if (hasNestedSub) breakSelfClosures(blockEnv);
+                    if (hasNestedSub) breakSelfClosures(tcx.cur);
                     tcx.cur = saved;
                     if (r == 2) throw;                   // R1: unmatched → rethrow
                     return Value::nil();                 // handled
@@ -7991,7 +8011,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
             tcx.cur->ex->letRestores.clear();
         }
-        if (hasNestedSub) breakSelfClosures(blockEnv);
+        if (hasNestedSub) breakSelfClosures(tcx.cur);
         tcx.cur = saved;
         throw;
     } catch (...) {
@@ -8000,7 +8020,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
             tcx.cur->ex->letRestores.clear();
         }
-        if (hasNestedSub) breakSelfClosures(blockEnv);
+        if (hasNestedSub) breakSelfClosures(tcx.cur);
         tcx.cur = saved;
         throw;
     }
@@ -8014,7 +8034,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                         !(outV.t == VT::Hash && outV.hashKind == "Failure");
         runLeavePhasers(b->stmts, ok, tempMark);
     }
-    if (hasNestedSub) breakSelfClosures(blockEnv);
+    if (hasNestedSub) breakSelfClosures(tcx.cur);
     tcx.cur = saved;
     return last;
 }
@@ -10424,6 +10444,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // body that ran and DIED propagates, or its real error would be replaced
             // by a misleading UnknownParent.
             for (auto& tn : pendingIsTraits) {
+                // `is implementation-detail` is a TYPE trait that constrains
+                // nothing we model — a class carrying it is an ordinary class.
+                // Read as inheritance it died with "cannot inherit from
+                // 'implementation-detail'", and Cro::WebApp marks every template
+                // it compiles that way. It is the only no-argument trait Rakudo
+                // takes on a type: `is pure`, `is nodal` and
+                // `is hidden-from-backtrace` are routine traits and stay errors
+                // here too.
+                if (tn == "implementation-detail") continue;
                 bool handled = false;
                 if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) {
@@ -12989,6 +13018,9 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // $s)). It is NOT an IO, and IO::Socket::Async is not an IO::Socket
             // either; both of those are False on Rakudo too.
             if (arg.hashKind == "Socket" && (type == "IO::Socket" || type == "IO::Socket::INET")) return true;
+            // the internal tag for a module-dependency descriptor; the type it
+            // names is Rakudo's (see Value::typeName)
+            if (arg.hashKind == "DependencySpec" && type == "CompUnit::DependencySpecification") return true;
             if (arg.hashKind == type) return true;
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             return type == "Hash" || type == "Map" || type == "Associative";
@@ -13313,6 +13345,15 @@ static bool isCallableTypeObj(const Value& v) {
 // neither candidate narrower. Padding it with a low score instead said "wider",
 // which handed every such pair to the candidate with the declared parameter.
 static constexpr int kSwallowed = INT_MIN;
+
+// …but a `*@slurpy` is not incomparable, it is simply WIDER. Rakudo binds
+// `f(@a)` to `(@f)` and never to `(*@f)`, in either declaration order; scoring
+// the two as a tie left declaration order deciding, and Text::CSV — whose
+// `multi method combine(*@f) { self.combine(@f) }` sits above
+// `multi method combine(@f)` — called itself 18,000 times and died of
+// recursion. A low mark is all this needs: every real per-parameter delta is
+// non-negative, so the declared parameter wins the position.
+static constexpr int kSlurped = INT_MIN + 1;
 
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                 std::vector<int>* perParam, const Value* selfForWhere) {
@@ -13672,8 +13713,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // arguments are bound. PDF::COS declares `multi method coerce($a is raw,
     // $b is raw)` above `multi method coerce(%dict!, |c)`, and every two-argument
     // call went to the second, which coerced nothing and said nothing.
-    if (perParam)
-        for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(kSwallowed);
+    if (perParam) {
+        // A `|capture` swallow is incomparable (kSwallowed); a `*@`/`**@`/`+@`
+        // one is wider than any declared parameter (kSlurped).
+        const int mark = slurpyParam && slurpyParam->sigil == '@' ? kSlurped : kSwallowed;
+        for (size_t i = positional.size(); i < pos.size(); i++) perParam->push_back(mark);
+    }
     // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
     // that named arg wasn't passed — `multi MAIN(:$test!)` must lose to the
     // default candidate on a bare invocation. A supplied match adds specificity,
@@ -17301,7 +17346,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     bool hasNestedSub = false;
     struct CycleBreaker {
         Interpreter* self; std::shared_ptr<Env>& env; bool& active;
-        ~CycleBreaker() { if (active && env) self->breakSelfClosures(env.get()); }
+        ~CycleBreaker() { if (active && env) self->breakSelfClosures(env); }
     } cycleBreaker{this, env, hasNestedSub};
     // `state` vars live in a per-callable persistent env spliced into the lookup chain.
     // Its parent is constant (the closure scope, or global), so create it exactly once
@@ -18686,7 +18731,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // (300k calls of a method with a helper sub leaked ~1.7 KB each).
     struct CycleBreaker {
         Interpreter* self; std::shared_ptr<Env>& env; bool& active;
-        ~CycleBreaker() { if (active && env) self->breakSelfClosures(env.get()); }
+        ~CycleBreaker() { if (active && env) self->breakSelfClosures(env); }
     } cycleBreaker{this, env, hasNestedSub};
     if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed);
     // A method body may carry a CATCH, exactly as a sub's does. This path had no
@@ -21827,6 +21872,45 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // `%h{$k} := $v` / `@a[$i] := $v` on a USER container: its own BIND-KEY /
         // BIND-POS answers (Hash::int keeps a native-int hash behind them; the
         // generic lvalue path wrote into a copy the object never saw)
+        // `%h<k> := $a` / `@a[0] := $x` — an ELEMENT bound to a CONTAINER. The
+        // element used to take the source's VALUE, so a later write to `$a` was
+        // invisible through the hash where Rakudo shares the container outright.
+        // Same promotion the scalar alias does below: the source's slot becomes a
+        // proxy onto a shared cell and the element holds another onto the same
+        // cell. Hash::MultiValue binds its elements exactly so, and asserts the
+        // write-through on its first test.
+        if (a->op == ":=" && a->target->kind == NK::Index && a->value->kind == NK::VarExpr) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            auto* sv = static_cast<VarExpr*>(a->value.get());
+            if (ix->index && !ix->multiDim && ix->adverb.empty() &&
+                sv->name.size() > 1 && sv->name[0] == '$' &&
+                (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) {
+                std::shared_ptr<Env> owner;
+                for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                    if (en->local(sv->name)) { owner = en; break; }
+                Value* srcSlot = owner ? owner->local(sv->name) : nullptr;
+                std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
+                if (!cell && srcSlot && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+                    cell = std::make_shared<Value>(*srcSlot);
+                    *srcSlot = makeSharedCellProxy(cell);
+                }
+                if (cell) {
+                    Value prox = makeSharedCellProxy(cell);
+                    Value base = ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm
+                               ? eval(ix->base.get()) : Value::any();
+                    if (base.t == VT::Object && base.obj() && base.obj()->cls &&
+                        base.obj()->cls->findMethod(ix->isHash ? "BIND-KEY" : "BIND-POS")) {
+                        ValueList ba; ba.push_back(eval(ix->index.get())); ba.push_back(prox);
+                        Value r = methodCall(base, ix->isHash ? "BIND-KEY" : "BIND-POS", ba);
+                        return sink ? Value::any() : r;
+                    }
+                    if (Value* el = lvalue(a->target.get())) {
+                        *el = prox;
+                        return sink ? Value::any() : eval(a->value.get());
+                    }
+                }
+            }
+        }
         if (a->op == ":=" && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() && ix->base->kind == NK::VarExpr) {

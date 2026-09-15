@@ -1555,7 +1555,13 @@ bool Lexer::tryQuoteForm(Token& out) {
         case '{': close = '}'; break;
         case '[': close = ']'; break;
         case '<': close = '>'; break;
-        case '/': case '|': case '!': close = d; bracket = false; break;
+        // `~` is a legal delimiter for every quote form and is common in code
+        // that quotes text full of slashes: Apache::LogFormat builds its
+        // compiler with `q~…~`, Data::Dump::Tree renames accessors with
+        // `s~^(.).~$0.~`. It is only ever read as one here when it sits TIGHT
+        // behind the keyword, and a declared `&q`/`&s` already wins over the
+        // quote (quoteWordShadowedAt), which is where `$a ~ $b` lives.
+        case '/': case '|': case '!': case '~': close = d; bracket = false; break;
         case ',': // comma delimiter: bare `m,pat,` is documented Raku; bare
             // `s,`/`S,` stays a term/call — Rakudo disambiguates those via
             // declared-symbol lookup (`foo(S,S)` passes type args, roast

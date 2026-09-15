@@ -1543,7 +1543,7 @@ public:
     // class/grammar/role declarations seen ahead in a scope but not yet created
     std::unordered_map<std::string, ClassDecl*> pendingTypes_;
     bool materializePendingType(const std::string& name); // true while hoistSubs is registering (defers trait application)
-    void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
+    void breakSelfClosures(const std::shared_ptr<Env>& env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed (a frame something else still holds keeps them)
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration

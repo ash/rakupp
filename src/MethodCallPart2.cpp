@@ -1631,6 +1631,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; return h; }
         if (m == "sink" || m == "self") return inv;
         if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
+        // `.shell(CMD)` / `.spawn(@cmd)` on a Proc built by `Proc.new` — run it
+        // NOW, with the adverbs the constructor recorded, and fill this same
+        // object in place: `$proc.out` after the call is the child's output,
+        // and the Proc the caller holds is the one that answers `.exitcode`.
+        if ((m == "shell" || m == "spawn") && !args.empty() && inv.hash()->count("unspawned")) {
+            ValueList ba;
+            if (m == "shell") ba.push_back(Value::str(args[0].toStr()));
+            else if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())
+                for (auto& x : *args[0].arr()) ba.push_back(Value::str(x.toStr()));
+            else for (auto& a : args) { if (a.t != VT::Pair) ba.push_back(Value::str(a.toStr())); }
+            for (const char* k : {"out", "err", "merge"}) {
+                auto w = inv.hash()->find(std::string("want-") + k);
+                if (w == inv.hash()->end()) continue;
+                Value pr = Value::pair(k, Value::boolean(w->second.truthy()));
+                pr.namedArg = true;
+                ba.push_back(pr);
+            }
+            for (auto& a : args) if (a.t == VT::Pair) ba.push_back(a); // :cwd / :env pass through
+            Value res = callBuiltin(m == "shell" ? "shell" : "run", std::move(ba));
+            if (res.t == VT::Hash && res.hash())
+                for (auto& kv : *res.hash()) (*inv.hash())[kv.first] = kv.second;
+            inv.hash()->erase("unspawned");
+            auto ec = inv.hash()->find("exitcode");
+            return Value::boolean(ec != inv.hash()->end() && ec->second.toInt() == 0);
+        }
     }
     if (inv.t == VT::Hash && inv.hashKind == "ProcIn") { // $proc.in — feed stdin, which runs a deferred proc
         // Closing stdin without ever writing to it still runs the child — with no
@@ -2859,7 +2884,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "Slip")) {
         Value out = Value::array();
         out.isList = inv.s != "Array";
-        if (inv.s == "Seq") out.s = "Seq";
+        // …and the container KEEPS the type it was asked for. A `Slip` came back
+        // as a plain List, so `is-deeply @a.Slip, (1,2,3).Slip` failed with both
+        // sides rendering identically — Array::Agnostic builds its `.Slip` as
+        // `Slip.from-iterator(self.iterator)`, and List::Agnostic and
+        // Array::Sparse inherit the same assertion.
+        if (inv.s == "Seq" || inv.s == "Slip") out.s = inv.s;
         for (;;) {
             ValueList none;
             Value x = methodCall(args[0], "pull-one", none);
@@ -3653,6 +3683,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 };
                 walk(ci.get());
                 return out;
+            }
+            // `.^get_attribute_for_usage('$!x')` — ONE attribute's meta-object,
+            // by name. AttrX::Mooish reaches every lazy attribute through it
+            // (`self.^get_attribute_for_usage('$!' ~ $name).get_value(self)`),
+            // and it works on an instance as well as on the type. Rakudo looks
+            // only at the class's OWN attributes — a parent's `$!b` answers
+            // "No $!b attribute in Kid" there — so neither does this.
+            if (m == "get_attribute_for_usage" && !args.empty()) {
+                std::string want = args[0].t == VT::Hash && args[0].hashKind == "Attribute" &&
+                                   args[0].hash() && args[0].hash()->count("name")
+                                 ? args[0].hash()->at("name").toStr() : args[0].toStr();
+                for (auto& a : ci->attrs) {
+                    if (std::string(1, a.sigil) + "!" + a.name == want || a.name == want)
+                        return attributeMetaObject(a, ci->name);
+                }
+                throw RakuError{Value::typeObj("X::Attribute::Undeclared"),
+                                "No " + want + " attribute in " + ci->name};
             }
             // `new`: a user-defined `new` (often a multi) coexists with the default
             // Mu.new. Use a custom candidate only if one matches the args; otherwise

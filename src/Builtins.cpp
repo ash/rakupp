@@ -1579,11 +1579,17 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             // itemized empty list with a `.Seq` called on it.
             bool seq = v.isList && v.s == "Seq";
             if (seq) o += ".Seq";
+            // a Slip's .raku is Rakudo's `slip(1, 2, 3)` — the round-tripping
+            // form. It rendered as a plain list here, so a Slip and a List with
+            // the same elements were indistinguishable in test output: both
+            // sides of Array::Agnostic's failing `is-deeply` printed `(1, 2, …)`.
+            bool slipv = v.isList && v.s == "Slip";
+            if (slipv) o = "slip" + o;
             // an ITEMIZED container carries its `$` marker — `($t,)` for a
             // `$`-held list is `($(1, 2),)` — except as an ARRAY element, whose
             // slot itemizes anyway (`[$x,]` is `[[1, 2],]`)
             if (v.itemized && !wasElem) {
-                if (seq) o = "$(" + o + ")";
+                if (seq || slipv) o = "$(" + o + ")";
                 else if (v.isList && v.arr() && v.arr()->empty()) o = "$( )"; // Rakudo's empty item
                 else o = "$" + o;
             }
@@ -6605,6 +6611,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         h.obj()->attrs["unit"] = unit;
         return h;
     }
+    // `Proc.new(:out, :err, :merge)` — an UNSPAWNED Proc. Rakudo's Proc is a
+    // class you may build first and run later (`.spawn`/`.shell`), and the
+    // adverbs chosen here decide what the later run captures. Clipboard reads a
+    // pasteboard exactly so: `my $proc = Proc.new(:out); $proc.shell($cmd);
+    // $proc.out.slurp(:close)`. Until now Proc objects existed only as run()'s
+    // answer, and `Proc.new` was a missing method.
+    if (inv.t == VT::Type && inv.s == "Proc" && m == "new") {
+        Value p = Value::makeHash(); p.hashKind = "Proc";
+        (*p.hash())["exitcode"] = Value::integer(-1);
+        (*p.hash())["out-str"] = Value::str("");
+        (*p.hash())["err-str"] = Value::str("");
+        (*p.hash())["unspawned"] = Value::boolean(true);
+        for (auto& a : args) {
+            if (a.t != VT::Pair) continue;
+            bool on = a.pairVal() ? a.pairVal()->truthy() : true;
+            if (a.s == "out" || a.s == "err" || a.s == "merge" || a.s == "in")
+                (*p.hash())["want-" + a.s.str()] = Value::boolean(on);
+        }
+        return p;
+    }
     // CompUnit::DependencySpecification.new(:short-name<Foo>, …) — a module dependency
     // descriptor. Requires a Str short-name; the version/auth/api matchers default True.
     if (inv.t == VT::Type && inv.s == "CompUnit::DependencySpecification" && m == "new") {
@@ -8064,7 +8090,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // of its own classes died where Rakudo answers 1 — Data::TypeSystem's
     // Examiner, and the six dists queued behind it. Last resort, after every
     // user method and builtin path has already declined.
-    if (inv.t == VT::Object) {
+    // …and a CODE object is an Any like any other: `rx/a/.cache` is `(rx/a/,)`,
+    // `(sub {}).keys` is `(0)`. Only objects reached this arm, so a Regex — the
+    // Code a module is most likely to hand around as a value — died on the
+    // one-element interface. Testo caches the regex it was given before
+    // matching with it, and stopped on its first assertion.
+    if (inv.t == VT::Object || inv.t == VT::Code || inv.t == VT::Regex) {
         static const std::set<std::string> kOneElem = {
             "elems", "end", "list", "List", "Array", "flat", "cache", "eager",
             "values", "keys", "pairs", "antipairs", "kv", "head", "tail",

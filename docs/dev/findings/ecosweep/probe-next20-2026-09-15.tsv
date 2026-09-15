@@ -1,0 +1,37 @@
+name	version	released	verdict	detail	seconds	exit	first-error
+Apache::LogFormat	*	2017-04-26	self-fail		0.9	1	FAILED: 00-sanity.t | ===SORRY!=== Parse error at line 65: Error while compiling module Apache::LogFormat::Compiler (line 65): Missing required term after infix
+App::RaCoCo	2.0.1	2023-02-24	self-fail		1.9	1	FAILED: 04-precomp-supplier.rakutest | Fail execute: raku -I/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-79678-App--RaCoCo/dist/t-resources/exam/lib --target=mbc --output=/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-79678-App--RaCoCo/dist/t-resou …
+Array::Agnostic	0.0.18	2026-02-10	self-fail		0.8	1	FAILED: 01-basic.rakutest | # Failed test 'is the Slip ok' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-79713-Array--Agnostic/Array-Agnostic-0.0.18/t/01-basic.rakutest line 30
+AttrX::Mooish	1.0.10	2024-04-11	self-fail		1.3	1	FAILED: 010-base.custom.rakutest | # No such method 'get_attribute_for_usage' for invocant of type 'Attribute'
+BitEnum	0.5	2020-04-23	self-fail		0.8	1	FAILED: 01-simple.t | No such method 'value' for invocant of type 'Int'
+CSS::Grammar	0.4.3	2026-06-13	self-fail		0.8	1	FAILED: compat.t | usage: $.token($ast, :$type)
+CSS::Module::CSS3::Selectors	0.0.6	2022-06-22	dep-fail	CSS::Grammar	0.4	1	FAILED: compat.t | usage: $.token($ast, :$type)
+CSS::Properties	0.10.9	2026-07-15	dep-fail	CSS::Grammar	0.6	1	FAILED: compat.t | usage: $.token($ast, :$type)
+CSS::Specification	0.5.3	2025-12-23	dep-fail	CSS::Grammar	0.4	1	FAILED: compat.t | usage: $.token($ast, :$type)
+Clipboard	0.1.2	2023-11-15	self-fail		0.8	1	FAILED: 02-from-clipboard.t | No such method 'new' for invocant of type 'Proc'
+Crane	0.1.2	2024-11-12	self-fail		0.9	1	FAILED: add.rakutest | # Failed test 'Is expected value' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-80015-Crane/Crane-0.1.2/t/add.rakutest line 63
+Cro::HTTP::Test	0.8.1	2021-05-13	self-fail		1.9	1	FAILED: checks.t | Type check failed in binding to parameter '$incoming'; expected Supply but got List (( ))
+Cro::WebApp	0.10.1	2026-06-23	self-fail		2	1	FAILED: compile-all.rakutest | Class 'Cro::WebApp::Template::Compiled' cannot inherit from 'implementation-detail' because it is unknown
+Data::Dump::Tree	2.9.4	2026-03-16	dep-fail	Terminal-API	1.1	1	FAILED: basic.rakutest | get-config failed
+Data::Reshapers	0.3.8	2025-11-02	dep-fail	Text::CSV	4.6	1	FAILED: 10_base.t | Too many levels of recursion
+HTTP::MultiPartParser	*	2018-08-01	self-fail		0.8	1	FAILED: 035_headers.t | # Failed test 'parts (--xxx\x0DFoo:\x20Foo\x0DBar:\x20Bar\x0D\x0D\x0D--xxx--\x0D)' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81094-HTTP--MultiPartParser/p6-HTTP-MultiPartParser-master/t/035_headers.t line 57
+HTTP::UserAgent	1.2.0	2025-05-03	self-fail		2.6	1	FAILED: 030-cookies.rakutest | # Failed test 'set-cookie 1/11' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81116-HTTP--UserAgent/HTTP-UserAgent-1.2.0/t/030-cookies.rakutest line 24
+Hash::MultiValue	0.7	2018-11-10	self-fail		1	1	FAILED: basic.t | # Failed test 'correct value after change elsewhere' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81156-Hash--MultiValue/Hash-MultiValue-0.7/t/basic.t line 34
+IO::Path::ChildSecure	1.2	2022-04-22	self-fail		0.8	1	FAILED: 01-operation.rakutest | # Failed test 'code returned a Failure' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81169-IO--Path--ChildSecure/IO-Path-ChildSecure-1.2/t/01-operation.rakutest line 49
+Identity::Utils	0.0.29	2026-08-21	self-fail		0.9	1	FAILED: 01-basic.rakutest | # Failed test 'The object is-a 'CompUnit::DependencySpecification'' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81182-Identity--Utils/Identity-Utils-0.0.29/t/01-basic.rakutest line 69
+LLM::Prompts	0.2.15	2026-05-14	self-fail		1.6	1	FAILED: 02-prompt-parsing.rakutest | # Failed test 'Parsing function cell spec' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81306-LLM--Prompts/dist/t/02-prompt-parsing.rakutest line 33
+META::verauthapi	0.0.1	2024-09-25	self-fail		0.8	1	FAILED: 01-basic.rakutest | # Failed test ':auth on A at compile-time' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81324-META--verauthapi/META-verauthapi-0.0.1/t/01-basic.rakutest line 28
+Method::Protected	0.0.4	2025-03-27	self-fail		35.5	1	FAILED: 01-basic.rakutest | No such method 'add_attribute' for invocant of type 'GLOBAL'
+Native::Packing	0.0.6	2023-01-12	self-fail		0.8	1	FAILED: 00-readme.t | # Failed test 'code sample' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81925-Native--Packing/Native-Packing-0.0.6/t/00-readme.t line 14
+NativeHelpers::Blob	0.1.13	2026-07-16	self-fail		0.9	1	FAILED: 02-cstruct.rakutest | Unknown VM; don't know how to compile test libraries
+PDF::Content	0.9.11	2026-06-04	dep-fail	Native::Packing	3.6	1	FAILED: 00-readme.t | # Failed test 'code sample' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-81955-Native--Packing/Native-Packing-0.0.6/t/00-readme.t line 14
+Stats	0.0.6	2020-01-17	self-fail		0.6	1	FAILED: correlation.t | ===SORRY!=== Parse error at line 71: Error while compiling module Stats (line 71): expected variable in declaration (got 'Any')
+Template::Mustache	1.2.6	2026-01-12	self-fail		1	1	FAILED: 01-basic.rakutest | # Failed test 'Standalone interpolation should not alter surrounding whitesp' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-82186-Template--Mustache/Template-Mustache-1.2.6/t/01-basic.rakutest line 6
+Terminal-API	1.0.5	2025-11-18	self-fail		0.3	1	FAILED: basic.rakutest | get-config failed
+Terminal::ANSIParser	0.0.4	2024-10-18	self-fail		0.8	1	FAILED: 01-basic.rakutest | Variable '$sequence' is not declared
+Terminal::Print	0.978	2026-06-06	dep-fail	Terminal-API	0.3	1	FAILED: basic.rakutest | get-config failed
+Test::Assertion	0.0.6	2024-06-25	self-fail		0.7	1	FAILED: 01-basic.rakutest | # Failed test 'we did not add an unneeded 'is test-assertion' candidate' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-82273-Test--Assertion/Test-Assertion-0.0.6/t/01-basic.rakutest line 20
+Test::Async	0.1.17	2023-12-10	self-fail		1.2	1	FAILED: 003-declaration.rakutest | ===SORRY!=== Parse error at line 6: `use Test::Async::Decl`: the module registered no slang (got 'use')
+Test::Mock	1.8	2025-03-27	self-fail		0.8	1	FAILED: computing.rakutest | # Failed test 'never called shave with arguments matching :($ where { ... })' at /var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/rakupp-install-82305-Test--Mock/Test-Mock-1.8/t/computing.rakutest line 39
+Testo	1.9	2026-08-09	self-fail		0.7	1	FAILED: 01-is.t | No such method 'cache' for invocant of type 'Regex'
+Text::CSV	0.022	2023-10-30	self-fail		2.5	1	FAILED: 10_base.t | Too many levels of recursion

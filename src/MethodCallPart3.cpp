@@ -1755,12 +1755,34 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             { std::string cur;
               for (char c : s) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
               if (!cur.empty()) segs.push_back(cur); }
+            // `:completely` means every component that has to be TRAVERSED must
+            // exist: what cannot be resolved is a FAILURE (X::IO::Resolve), not
+            // a path with the unresolved tail glued on. A single missing LAST
+            // component is fine — the file need not exist yet — but anything
+            // beyond it fails, which is exactly how Rakudo answers
+            // `child('foo')` (a path) and `child('foo/bar')` (a Failure). The
+            // adverb was ignored here, so IO::Path::ChildSecure — which decides
+            // whether a child is really a child by resolving both sides
+            // completely — never saw the failure its contract is built on, and
+            // 90 dists sit behind it.
+            bool completely = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "completely")
+                    completely = a.pairVal() ? a.pairVal()->truthy() : true;
+            auto resolveFailure = [&]() {
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Resolve");
+                (*f.hash())["message"] = Value::str("Failed to completely resolve " + s);
+                (*f.hash())["path"] = asIO(s);
+                return f;
+            };
             std::string tail;
             for (size_t take = segs.size() + 1; take-- > 0; ) {
                 std::string pre = "/";
                 for (size_t k = 0; k < take; k++) { if (k) pre += "/"; pre += segs[k]; }
                 char rbuf[4096];
                 if (realpath(pre.c_str(), rbuf)) {
+                    if (completely && tail.find('/') != std::string::npos) return resolveFailure();
                     std::string out = rbuf;
                     if (!tail.empty()) { if (out != "/") out += "/"; out += tail; }
                     return asIO(out);
@@ -1768,6 +1790,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (take == 0) break;
                 tail = tail.empty() ? segs[take - 1] : segs[take - 1] + "/" + tail;
             }
+            if (completely && s.find('/', 1) != std::string::npos) return resolveFailure();
             return asIO(s);
         }
         // …but only on an IO::Path. These three used to answer for ANY

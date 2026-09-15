@@ -3077,6 +3077,20 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!matchKind(Tok::Comma)) break;
                 continue;
             }
+            // a bare TYPE in a destructuring declaration (`my ($q1, Any, $q2)`)
+            // is an anonymous slot too: the position is skipped, nothing is
+            // declared for it. Stats reads the first and third quartile exactly
+            // so. A type NAMING a variable was handled above, so what is left
+            // here is an identifier standing on its own.
+            if (isKind(Tok::Ident) &&
+                (peek().kind == Tok::Comma || peek().kind == Tok::RParen)) {
+                advance();
+                auto anon = std::make_unique<VarExpr>(std::string("$") + kAnonSlot);
+                anon->declare = true; anon->declScope = scope;
+                list->items.push_back(std::move(anon));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
             // a literal element in a destructuring declaration (`my ($a, "foo")`)
             // binds nothing — an anonymous slot stands in
             if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::IntLit) || isKind(Tok::NumLit)) {
@@ -3518,7 +3532,11 @@ ExprPtr Parser::parseColonPair() {
         if (isKind(Tok::LParen) && !cur().spaceBefore) {
             advance();
             if (isKind(Tok::RParen)) { pair->value = std::make_unique<ListExpr>(); advance(); return pair; }
-            ExprPtr v = parseExpression();
+            // a STATEMENT MODIFIER inside the value parens — `:title(S/…// given $s)`,
+            // `:t(5 if $ok)`. The plain-paren path has always taken the whole
+            // chain; a colonpair's value stopped at the modifier keyword and
+            // reported "expected )". Data::Dump::Tree writes its titles this way.
+            ExprPtr v = applyExprModifiers(parseExpression());
             // `:shape(2;2)` — a semicolon-list value (multidim shape/index)
             if (isKind(Tok::Semicolon)) {
                 auto lst = std::make_unique<ListExpr>();
@@ -6917,7 +6935,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // and `(::?CLASS:D:)` were indistinguishable and the first declared
             // candidate won for every invocant (JSON::Class splits its type-object
             // and instance behaviour on exactly this).
-            if (isOp(":")) {
+            //
+            // …but a colon GLUED to a variable opens a NAMED parameter of this
+            // type — `::?CLASS :$copy` — and taking that for the invocant marker
+            // made `$copy` a required POSITIONAL: CSS::Properties' TWEAK then
+            // refused every `.new`, and with another named ahead of it the
+            // signature would not even parse. The invocant colon never has a
+            // variable tight behind it.
+            if (isOp(":") && !(peek().kind == Tok::Var && !peek().spaceBefore)) {
                 advance();
                 p.invocant = true; p.type = "Mu"; p.name = ""; p.sigil = '$';
                 params.push_back(std::move(p));

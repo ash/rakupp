@@ -950,6 +950,13 @@ std::string Value::typeName() const {
                         // signature — Lumberjack declares `has Backtrace::Frame
                         // @.backtrace` and every message failed its element check
                         if (hashKind == "BacktraceFrame") return "Backtrace::Frame";
+                        // the module-dependency descriptor is Rakudo's
+                        // `CompUnit::DependencySpecification`; the short internal
+                        // tag made `.^name` answer `DependencySpec` and the
+                        // `~~ CompUnit::DependencySpecification` every identity
+                        // module asserts come back False (Identity::Utils, PURL,
+                        // SBOM::Raku, MCP, Pod::TreeWalker all test it)
+                        if (hashKind == "DependencySpec") return "CompUnit::DependencySpecification";
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
         case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
                              : code() && code()->isRegexRoutine ? "Regex"
