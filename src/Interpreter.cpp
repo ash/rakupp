@@ -12788,6 +12788,65 @@ static bool hashKindIsAssociative(const std::string& kind) {
 }
 
 
+// The parameters of a type as the engine spells them, split into components
+// with their definedness smileys reattached. A type object keeps `Array[Int:D]`
+// as "Int,D" - the smiley rides as a trailing pseudo-parameter - and a hash's
+// value and key types as "Int,Str", so "Int,D,Str" reads back as {"Int:D", "Str"}.
+static std::vector<std::string> typeParamParts(const std::string& ofType) {
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos <= ofType.size()) {
+        size_t c = ofType.find(',', pos);
+        std::string part = ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+        if ((part == "D" || part == "U" || part == "_") && !out.empty()) out.back() += ":" + part;
+        else if (!part.empty()) out.push_back(part);
+        if (c == std::string::npos) break;
+        pos = c + 1;
+    }
+    return out;
+}
+
+// The element type of NativeCall's live values - a Pointer, or a CArray a
+// native call returned - which keep it in an "of" slot rather than in ofType
+// (see ncMakePointer / ncMakeLiveCArray); "" for anything else, and for an
+// unparameterized Pointer (C's `void *`).
+static std::string ncElemTypeOf(const Value& v) {
+    if (v.t != VT::Hash || !v.hash() || (v.hashKind != "Pointer" && v.hashKind != "CArray")) return "";
+    auto it = v.hash()->find("of");
+    return it == v.hash()->end() ? std::string() : it->second.toStr();
+}
+
+// One parameter's bare name and its smiley: "Int:D" is "Int" and "D".
+static void splitTypeSmiley(const std::string& p, std::string& bare, std::string& smiley) {
+    size_t c = p.rfind(':');
+    if (c != std::string::npos && c + 2 == p.size() &&
+        (p[c + 1] == 'D' || p[c + 1] == 'U' || p[c + 1] == '_')) {
+        bare = p.substr(0, c); smiley = p.substr(c + 1);
+    } else { bare = p; smiley.clear(); }
+}
+
+static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
+                             const std::string& lOfType, const std::string& rOfType);
+
+// Does a container's parameter list satisfy a parameterized ROLE's - is an
+// `Array[Int]` a `Positional[Cool]`? Its element type conforms to the role's
+// (Int is Cool), a definedness smiley on the role's parameter narrows it
+// (`Positional[Int:D]` refuses `Array[Int]`, while `Array[Int:D]` is a
+// `Positional[Int]`), and an unparameterized container is not even a
+// `Positional[Mu]`. A two-parameter spelling matches nothing a container
+// does: a Hash[V,K] does Associative[V], never Associative[V,K]. Measured
+// against Rakudo, each of them.
+static bool roleParamConforms(const std::vector<std::string>& have,
+                              const std::vector<std::string>& want) {
+    if (want.size() != 1 || have.empty()) return false;
+    std::string hb, hs, wb, ws;
+    splitTypeSmiley(have[0], hb, hs); splitTypeSmiley(want[0], wb, ws);
+    if (ws == "D" && hs != "D") return false;
+    if (wb == "Mu") return true;
+    if (wb == "Any") return hb != "Mu";
+    return typeNameConforms(hb, wb, std::string(), std::string());
+}
+
 // Does the TYPE NAME `ln` conform to `rn`? The built-in "does" table, the
 // numeric/string tower, and the user class/role ancestry — one answer, shared by
 // the `~~` operator and by parameter dispatch. They used to disagree: `~~` knew
@@ -12795,8 +12854,14 @@ static bool hashKindIsAssociative(const std::string& kind) {
 // `uri-escape(Str)` bound a `Match $s` parameter.
 static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
                              const std::string& lOfType, const std::string& rOfType) {
-    std::string ln = lnIn;
-    size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
+    // a composed spelling ("CArray[int32]", the way a CArray instance names
+    // itself) carries the parameter inside the name
+    std::string ln = lnIn, lp = lOfType;
+    size_t br = ln.find('[');
+    if (br != std::string::npos) {
+        if (lp.empty() && ln.back() == ']') lp = ln.substr(br + 1, ln.size() - br - 2);
+        ln = ln.substr(0, br);
+    }
     if (ln == rn) return true;
     static const std::map<std::string, std::set<std::string>> typeDoes = {
         // …and NOT Array or List: Rakudo's native array is its own type
@@ -12873,22 +12938,10 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         // read; the two tables had drifted — `IntStr ~~ Str` was False here)
         if (!baseOk) for (auto& anc : typeAncestry(ln)) if (anc == rn && anc != "Any" && anc != "Mu") { baseOk = true; break; }
     }
-    // A DEFINEDNESS SMILEY on the left's parameter is a narrowing of it, so
-    // `Array[Str:D]` is still a `Positional[Str]` — the element type is Str
-    // either way, and the smiley only says which Strs. Comparing the parameter
-    // names literally made the constrained form conform to nothing but itself.
-    // The smiley arrives as a trailing parameter — `Array[Str:D]` records its
-    // parameter as "Str,D", not "Str:D" — so that is the form to strip.
-    auto bareParam = [](const std::string& t) {
-        for (const char* sm : {",D", ",U", ",_", ":D", ":U", ":_"}) {
-            size_t n = std::strlen(sm);
-            if (t.size() > n && t.compare(t.size() - n, n, sm) == 0)
-                return t.substr(0, t.size() - n);
-        }
-        return t;
-    };
-    if (baseOk && (rOfType.empty() || rOfType == lOfType ||
-                   bareParam(rOfType) == bareParam(lOfType))) return true;
+    // ...and the role's parameter, when it has one: `Array[Int]` is a
+    // `Positional[Cool]` and `Array[Str:D]` a `Positional[Str]`
+    // (roleParamConforms has the rules)
+    if (baseOk) return rOfType.empty() || roleParamConforms(typeParamParts(lp), typeParamParts(rOfType));
     // a user type object matches its own ancestry: parent classes, composed
     // roles, and roles/parents anywhere up the chain — including a BUILT-IN
     // parent (`is Str`, or the implicit Grammar) and everything above it
@@ -12906,6 +12959,64 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
             }
     }
     return false;
+}
+
+// Does the left side of `~~` satisfy the PARAMETER of the parameterized type
+// on its right? Asked once the names have matched (see the operator): every
+// name test compares bare names, so a CArray[N-Error] instance was a "CArray"
+// and the Array[Int] type object an "Array", and `$e ~~ CArray[Str]`,
+// `Array[Int] ~~ Array[Str]` and `Hash[Int] ~~ Hash[Str]` were all True
+// (issue #89). The rules, each measured against Rakudo:
+//   - the SAME base type (Array[T] against Array[U], a CArray, a Hash, a Bag):
+//     the parameters are identical. `Array[Int:D]` and `Array[Int]` are two
+//     types, and a bare `Array` - or `[1,2]` - is neither `Array[Int]` nor
+//     `Array[Mu]`; an object hash `my Int %h{Str}` is a `Hash[Int,Str]` and
+//     not a `Hash[Int]`. An instance never carries a smiley (a `my Int:D @a`
+//     is an Array[Int] here), so it compares by bare name.
+//   - a ROLE the left does (Positional[T], Associative[T]): its element type
+//     CONFORMS to T - `Array[Int]` is a `Positional[Cool]` - a definedness
+//     smiley on T narrows it (`Positional[Int:D]` refuses `Array[Int]`), and
+//     an unparameterized container is not even a `Positional[Mu]`. A
+//     two-parameter spelling matches nothing a container does: a Hash does
+//     Associative[Value], never Associative[Value,Key].
+//   - a user class or object keeps its answer: `does Positional[Int]` records
+//     the role by name alone, so there is no parameter to compare, and a role
+//     pun carries its parameter in its own class name (makeRolePun), which the
+//     name test already told apart.
+static bool typeParamMatches(const Value& l, const Value& r) {
+    std::vector<std::string> want = typeParamParts(r.ofType());
+    if (want.empty()) return true;
+    if (l.t == VT::Object) return true;
+    std::string lbase;
+    const bool instance = l.t != VT::Type;
+    if (l.t == VT::Type) {
+        lbase = l.s;
+        if (g_matchClasses && g_matchClasses->count(lbase) && !isKnownTypeName(lbase)) return true;
+    }
+    else if (l.t == VT::Array || l.t == VT::Hash || l.t == VT::Str) lbase = l.typeName();
+    else return false;   // an Int, a Code: nothing a parameterized container type takes
+    // a composed spelling ("CArray[int32]", the way a CArray instance names
+    // itself) carries the parameter inside the name; a live Pointer or CArray
+    // keeps it in its "of" slot
+    std::vector<std::string> have;
+    size_t br = lbase.find('[');
+    if (br != std::string::npos && lbase.back() == ']') {
+        have = typeParamParts(lbase.substr(br + 1, lbase.size() - br - 2));
+        lbase = lbase.substr(0, br);
+    }
+    else have = typeParamParts(l.ofType().empty() ? ncElemTypeOf(l) : l.ofType());
+    if (have.empty()) return false;
+    std::string hb, hs, wb, ws;
+    if (lbase == r.s) {
+        if (want.size() != have.size()) return false;
+        for (size_t i = 0; i < want.size(); i++) {
+            if (!instance) { if (have[i] != want[i]) return false; continue; }
+            splitTypeSmiley(have[i], hb, hs); splitTypeSmiley(want[i], wb, ws);
+            if (hb != wb) return false;
+        }
+        return true;
+    }
+    return roleParamConforms(have, want);
 }
 
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
@@ -25367,7 +25478,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `Date.new(…) ~~ Dateish` holds just as `Date ~~ Dateish` does)
             if (!res) {
                 std::string ln = l.t == VT::Type ? l.s : l.typeName();
-                res = typeNameConforms(ln, r.s, l.ofType(), r.ofType());
+                res = typeNameConforms(ln, r.s, l.ofType().empty() ? ncElemTypeOf(l) : l.ofType(), r.ofType());
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
@@ -25410,6 +25521,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     if (ci->name == r.s) { res = true; break; }
             if (!res && l.t == VT::Object && l.obj() && l.obj()->cls && l.obj()->cls->doesRole(r.s))
                 res = true;
+            // a PARAMETERIZED type is matched by its parameter as well as by
+            // its name; every test above compared names alone, so any two
+            // CArrays, Arrays or Hashes matched (issue #89 - the rules are
+            // with typeParamMatches)
+            if (res && !r.ofType().empty()) res = typeParamMatches(l, r);
         } else if (r.t == VT::Bool) {
             res = r.b; // $x ~~ True/False
         } else if (r.t == VT::Hash &&

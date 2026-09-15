@@ -5625,6 +5625,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return ty;
         }
         if (inv.t == VT::Type) return inv; // a (parameterized) type object is its own .WHAT
+        // a CArray instance names its element type inside its own name
+        // ("CArray[int32]"); its .WHAT carries the parameter where a
+        // `CArray[int32]` written in code keeps it, so the two are `===`
+        if (inv.t == VT::Str && inv.hashKind == "CArray" && !inv.enumName.empty()) {
+            Value ty = Value::typeObj("CArray"); ty.ofTypeM() = inv.enumName.str(); return ty;
+        }
+        // ...and so does a live Pointer[T], or a CArray[T] a native call
+        // returned, whose element type sits in an "of" slot
+        if (inv.t == VT::Hash && inv.hash() && (inv.hashKind == "Pointer" || inv.hashKind == "CArray")) {
+            auto it = inv.hash()->find("of");
+            if (it != inv.hash()->end() && !it->second.toStr().empty()) {
+                Value ty = Value::typeObj(inv.hashKind.str()); ty.ofTypeM() = it->second.toStr(); return ty;
+            }
+        }
         // native-container subclass instance parameterized as A[Int]
         if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
             !inv.obj()->boxed.ofType().empty()) {
