@@ -86,6 +86,16 @@ my @benches =
     %( :name<textsplit>,:file("textsplit.raku"),:perl("textsplit.pl"),
        :note('20k lines split into fields, reordered, rejoined') ),
     %( :name<rats>,     :file("rats.raku"),     :note('200k short-lived Rats summed and read') ),
+    # multiwhere (2026-09-15): a `where`-constrained multi candidate, 400k calls.
+    # Nothing else here dispatches on a constrained signature, which is where
+    # UInt and most of the ecosystem's validated types are actually checked.
+    # NOTE for whoever reads the table: the --exe column is NOT compiled code for
+    # this row. Codegen declines a `where` on a multi candidate and bundles the
+    # interpreter, so `native` here is the interpreter plus binary startup. That
+    # is worth charting rather than hiding — it is exactly the shape the compiler
+    # currently hands back — but it is not a like-for-like native reading.
+    %( :name<multiwhere>, :file("multiwhere.raku"),
+       :note('400k calls into a `where`-constrained multi candidate (--exe falls back to the interpreter)') ),
     %( :name<objects>,  :file("objects.raku"),  :note('200k .new + 300k method calls') );
 @benches = @benches.grep({ .<name> (elem) @only }) if @only;
 unless @benches {
