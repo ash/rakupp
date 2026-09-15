@@ -2589,6 +2589,25 @@ struct Codegen {
     // ValueList — handling positional, named, optional/default, and slurpy.
     // hasSelf: `__a[0]` is the invocant (methods), so positionals start at 1.
     void bindParams(const std::vector<Param>& ps, int ind, bool hasSelf) {
+        // A `where` or a `:D`/`:U` smiley on an ORDINARY routine was never
+        // emitted. The guard for this existed, but only on the two multi-candidate
+        // paths (undecidableMulti and the multi dispatcher), so a plain sub
+        // compiled NATIVELY with its constraint silently absent:
+        // `sub f(Int $n where * > 0)` bound -1 and ran the body, and a counter
+        // inside the constraint proved it was never evaluated at all rather than
+        // evaluated and ignored. Same for `sub f(Int:D $n)` called with `Int`.
+        // That is a wrong answer, not a slow one, and it is the shape a program
+        // uses to VALIDATE its input — so it loses its validation on the way to
+        // becoming a binary, silently, which also breaks the invariant that the
+        // three execution modes agree.
+        //
+        // Falling back costs the whole program its native compilation, which is
+        // why emitting the check is the better answer and the follow-up; this is
+        // the stop-the-bleeding half, and it is what the multi paths already do.
+        for (const Param& p : ps) {
+            if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
+            if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
+        }
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
         for (const Param& p : ps) {
