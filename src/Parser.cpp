@@ -5798,7 +5798,8 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     if (w[i] == '!') { neg = true; i++; if (i >= w.size()) return nullptr; }
     if (ascii::isdigit((unsigned char)w[i]) && !neg) { // :42name — value-first pair
         size_t d = i; while (d < w.size() && ascii::isdigit((unsigned char)w[d])) d++;
-        if (d < w.size() && (ascii::isalpha((unsigned char)w[d]) || w[d] == '_')) {
+        if (d < w.size() && (ascii::isalpha((unsigned char)w[d]) || w[d] == '_' ||
+                             (unsigned char)w[d] >= 0x80)) {
             std::string ds = w.substr(i, d - i);
             if (ds.size() > 18) return nullptr; // past long long: not a value-first pair
             auto pe = std::make_unique<PairExpr>();
@@ -5809,11 +5810,19 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
         }
         return nullptr;
     }
-    if (!(ascii::isalpha((unsigned char)w[i]) || w[i] == '_')) return nullptr;
+    // A colonpair key is an IDENTIFIER, and a Raku identifier may be any Unicode
+    // letter — so the non-ASCII bytes of a UTF-8 letter continue it. Requiring
+    // ASCII here made `enum Weekday <<:måndag(1) tisdag onsdag>>` read the whole
+    // token `:måndag(1)` as a literal enum KEY at ordinal 0 and shift every
+    // following name down by one: Swedish::TextDates_sv answered onsdag for
+    // Thursday and trettonde for twelve, silently and only under rakupp.
+    auto idStart = [](unsigned char c) { return ascii::isalpha(c) || c == '_' || c >= 0x80; };
+    auto idCont  = [](unsigned char c) { return ascii::isalnum(c) || c == '_' || c >= 0x80; };
+    if (!idStart((unsigned char)w[i])) return nullptr;
     size_t j = i;
-    while (j < w.size() && (ascii::isalnum((unsigned char)w[j]) || w[j] == '_' ||
+    while (j < w.size() && (idCont((unsigned char)w[j]) ||
            ((w[j] == '-' || w[j] == '\'') && j + 1 < w.size() &&
-            ascii::isalpha((unsigned char)w[j + 1])))) j++;
+            idStart((unsigned char)w[j + 1])))) j++;
     auto pe = std::make_unique<PairExpr>();
     pe->colonForm = true;
     pe->key = w.substr(i, j - i);
@@ -9316,6 +9325,15 @@ StmtPtr Parser::parseStatementImpl() {
                 // same rule the spaced capture applies.
                 else if (u->module == "experimental" && val.empty())
                     u->importArgs.push_back(adv);
+            }
+            // `use Mod ()` — an explicit EMPTY import list loads the module and
+            // imports NOTHING. The parens used to fall through to the sub-EXPORT
+            // expression branch below, which parsed them as an empty list and
+            // left the default import running: `use P5index ()` still installed
+            // &index over the built-in one.
+            if (!u->isNo && isKind(Tok::LParen) && peek().kind == Tok::RParen) {
+                advance(); advance();
+                u->emptyImport = true;
             }
             if (!u->isNo && u->fromLang.empty()) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)

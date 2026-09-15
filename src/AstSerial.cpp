@@ -394,7 +394,7 @@ template <class IO> void visit(IO& io, LastStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, NextStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, RedoStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.arg); F(io, n.fromLang); ioVec(io, n.importArgs);
-                                                      ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed);
+                                                      ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed); F(io, n.emptyImport);
                                                       F(io, n.verReq);   // dropping the :ver<…> constraint from the
                                                                          // cache made run 2 load ANY version
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson

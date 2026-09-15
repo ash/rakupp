@@ -3123,6 +3123,33 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(s);
     }
+    // `.naive-word-wrapper` — Rakudo's own message formatter. Split on
+    // whitespace, refill greedily to 71 characters, never break a word. It
+    // looks like an odd thing for an engine to owe until you notice how many
+    // distributions build a `note` with it: every tombstoned lizmat module
+    // formats its "install version X instead" farewell this way, so without it
+    // the one message that would unblock the user is replaced by
+    // X::Method::NotFound naming a content-hash path under ~/.raku/sources.
+    if (m == "naive-word-wrapper" && args.empty()) {
+        const size_t WIDTH = 71;
+        std::string out, line;
+        std::string src = inv.toStr();
+        size_t i = 0;
+        auto isSpace = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+        while (i < src.size()) {
+            while (i < src.size() && isSpace((unsigned char)src[i])) i++;
+            size_t b = i;
+            while (i < src.size() && !isSpace((unsigned char)src[i])) i++;
+            if (i == b) break;
+            std::string word = src.substr(b, i - b);
+            size_t wlen = (size_t)graphemeCount(word);
+            if (line.empty()) line = word;
+            else if ((size_t)graphemeCount(line) + 1 + wlen <= WIDTH) { line += ' '; line += word; }
+            else { if (!out.empty()) out += '\n'; out += line; line = word; }
+        }
+        if (!line.empty()) { if (!out.empty()) out += '\n'; out += line; }
+        return Value::str(out);
+    }
     if (m == "trim" || m == "trim-leading" || m == "trim-trailing") {
         // Unicode White_Space, as `.words` splits on — the ASCII-only set left
         // NBSP, form feed and vertical tab in place

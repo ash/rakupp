@@ -6805,6 +6805,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                     // module altogether.
                     if (global_->vars.count(k)) continue;
                 }
+                // `need Mod` and `use Mod ()` import NOTHING, and publishing the
+                // module's exported routines to GLOBAL under their bare names
+                // imports them by the back door: `use P5index ()` left &index
+                // over the built-in one, so `index("foobar","zzz")` answered -1
+                // where it has to answer Nil.
+                if (!doImport && k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)))
+                    continue;
                 // never clobber a routine the PROGRAM declared itself
                 if (mainlineSubNames_.count(k)) continue;
                 // …and never replace a live VIEW with a copy. An `our` variable
@@ -9023,7 +9030,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `use NQPHLL:from<NQP>` / `use QAST:from<NQP>`: Rakudo's own compiler
                 // guts, which a slang's legacy role imports. Nothing to load here.
                 if (u->fromLang == "NQP") return Value::any();
-                loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq,
+                loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
                 // (rakupp imports a module's whole export set; the alias is the part
@@ -21966,6 +21973,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
                 keys.push_back(k);
             }
+            if (!anyMulti)
+                for (size_t d = 0; d < dims->items.size() && d < keys.size(); d++)
+                    if (dims->items[d]->kind != NK::Whatever)
+                        pendingSubscripts_.emplace_back(dims->items[d].get(), keys[d]);
             if (anyMulti) {
                 Value* root = lvalue(ix->base.get(), /*asInvocant=*/true);
                 std::vector<ValueList> tuples = expandDimTuples(*root, keys);
@@ -22003,6 +22014,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `%h{ $obj.name } = …` a single-key assignment.
             if (sliceSubscript(ix)) {
                 Value keys = eval(ix->index.get());
+                if (!(keys.t == VT::Array || keys.t == VT::Range)) {
+                    // not a slice after all — hand this answer to the ordinary
+                    // path below rather than running the subscript a second time
+                    pendingSubscripts_.emplace_back(ix->index.get(), keys);
+                }
                 if (keys.t == VT::Array || keys.t == VT::Range) {
                     ValueList ks;
                     if (keys.t != VT::Range) ks = keys.flatten(); // a Range waits for the target's size below
@@ -33700,6 +33716,20 @@ Value Interpreter::eval(Expr* e) {
 #ifdef RAKUPP_NODE_COUNT
     ++g_evalNodes;
 #endif
+    // An element ASSIGNMENT asks its subscript twice: once to decide whether the
+    // subscript names many elements or one, and again through lvalue() to reach
+    // the slot. A subscript that calls something therefore ran its side effects
+    // TWICE — `@a[next-slot()] = $v` advanced the cursor by two and wrote into
+    // the wrong slot every time. Data::RandomKeep's reservoir is exactly that
+    // shape and silently dropped 13.7% of what it was offered. The first eval
+    // parks its answer here for the second one to collect, once.
+    if (!pendingSubscripts_.empty())
+        for (size_t i = 0; i < pendingSubscripts_.size(); i++)
+            if (pendingSubscripts_[i].first == e) {
+                Value v = std::move(pendingSubscripts_[i].second);
+                pendingSubscripts_.erase(pendingSubscripts_.begin() + i);
+                return v;
+            }
     switch (e->kind) {
         case NK::IntLit: {
             auto* il = static_cast<IntLit*>(e);

@@ -1577,6 +1577,9 @@ public:
     // `requireForm` marks the `require` spellings: Rakudo runs no `sub EXPORT`
     // for them, so a failing EXPORT stays a warning there instead of failing
     // the load as it does for `use`/`need`.
+    // see eval(): the first of an element assignment's two subscript evaluations
+    // parks its result here so the second one does not re-run the user's code
+    std::vector<std::pair<const Expr*, Value>> pendingSubscripts_;
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false);
     // `.AST("DE")` — the localized parse (RAKUAST-PLAN P1-L10N). Loads
     // `L10N::<lang>` and turns the role it ships into a rewrite over the token

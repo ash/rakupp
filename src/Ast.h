@@ -900,6 +900,12 @@ struct UseStmt : Stmt {
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`
     bool isNo = false; // `no strict` / `no worries` — the negated pragma form
     bool isNeed = false; // `need Mod` — compiles/loads but imports NOTHING
+    // `use Mod ()` — an EXPLICIT empty import list. Rakudo loads the module
+    // and imports nothing at all, which is the whole point of the spelling:
+    // `use P5index ()` must leave the built-in `index` alone. The empty parens
+    // used to reach the sub-EXPORT expression branch, which parsed them as an
+    // empty list and left the DEFAULT import running.
+    bool emptyImport = false;
     // `require Mod` — the bareword runtime form, which the parser also builds a
     // UseStmt for. It differs from `use` in one way that matters downstream:
     // Rakudo does not run a module's `sub EXPORT` for `require` at all, so a
