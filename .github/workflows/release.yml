@@ -87,7 +87,16 @@ jobs:
       # glibc), so the gates, the wheel and the packaging are unchanged. The
       # workspace is mounted at its own path so CMake's absolute paths stay
       # valid on the host, and the products are handed back to the runner user.
-      # The floor gate below reads the result back; this step sets it.
+      # -fPIE, which the runner's own toolchain used to supply by default and
+      # this one does not: Ubuntu patches clang and gcc to default to PIE, while
+      # AlmaLinux's leave it off, so moving the build in here quietly started
+      # emitting absolute relocations. The archive is the piece that matters —
+      # it ships, and `--exe` links it with the USER's compiler, which on every
+      # mainstream distro does default to -pie. A non-PIC archive then refuses
+      # to link at all ("can not be used when making a PIE object"), so the
+      # Linux release could compile nothing. librakupp.so is unaffected either
+      # way: CMake appends its own -fPIC after these flags, and the later flag
+      # wins. The floor gate below reads the result back; this step sets it.
       - name: Configure + build + install layout (Linux, Clang, static libstdc++, manylinux 2.28)
         if: runner.os == 'Linux'
         run: |
@@ -100,7 +109,7 @@ jobs:
             dnf -q install -y clang gcc-toolset-11 gcc-toolset-11-libstdc++-devel
             gcc="--gcc-install-dir=/opt/rh/gcc-toolset-11/root/usr/lib/gcc/'"$triple"'/11"
             clang++ "$gcc" -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC"
-            CC=clang CXX=clang++ CFLAGS="$gcc" CXXFLAGS="$gcc" \
+            CC=clang CXX=clang++ CFLAGS="$gcc -fPIE" CXXFLAGS="$gcc -fPIE" \
               cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
                     "-DCMAKE_EXE_LINKER_FLAGS=$gcc -static-libgcc -static-libstdc++" \
                     "-DCMAKE_SHARED_LINKER_FLAGS=$gcc"
