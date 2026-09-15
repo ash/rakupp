@@ -2759,6 +2759,14 @@ std::string whichOf(const Value& v) {
         if (numName == "Complex") numId = Value::number(num.n).toStr() + "|" + Value::number(num.im()).toStr();
         return v.typeName() + "|" + numName + "|" + numId + "|Str|" + v.s;
     }
+    // A Date identifies by its DAYCOUNT — Rakudo's is "Date|57385". A
+    // `:formatter` changes how it PRINTS, and the default arm below builds the
+    // identity out of exactly that rendering, so a formatted Date stopped being
+    // `===` to the same day unformatted. (A DateTime's WHICH *is* its .Str,
+    // formatter and all — that is Rakudo's too, so it keeps the default arm;
+    // what makes the two eqv regardless is valueEqv, which skips the key.)
+    if (v.t == VT::Hash && v.hashKind == "Date" && v.hash())
+        return "Date|" + std::to_string((long long)dateNumeric(v));
     switch (v.t) {
         case VT::Bool:    return "Bool|" + std::string(v.b ? "1" : "0");
         case VT::Rat:     return "Rat|" + ratPart(v);
@@ -2833,6 +2841,10 @@ std::string baggyKeyStr(const Value& v) {
     // …and an OBJECT, whose rendering is `Class<obj>` for every instance, so two
     // distinct objects collapsed into one Set element.
     if (v.t == VT::Object) return whichOf(v);
+    // …and a Dateish, whose rendering a `:formatter` rewrites: two Dates of the
+    // same day are ONE set element however either of them prints (whichOf keys a
+    // Date on its daycount, a DateTime on its rendering — both as Rakudo does).
+    if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return whichOf(v);
     return v.toStr();
 }
 // A Bag count must stay EXACT: the old long-long path saturated weights near

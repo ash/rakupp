@@ -274,12 +274,14 @@ void daysToCivil(long long z, long long& y, long long& m, long long& d) {
     m = mp + (mp < 10 ? 3 : -9);
     y += (m <= 2);
 }
-Value makeDate(long long days) {
+Value makeDate(long long days, const Value* from) {
     long long y, m, d; daysToCivil(days, y, m, d);
     Value v = Value::makeHash(); v.hashKind = "Date";
     (*v.hash())["year"] = Value::integer(y);
     (*v.hash())["month"] = Value::integer(m);
     (*v.hash())["day"] = Value::integer(d);
+    if (from && from->t == VT::Hash && from->hash() && from->hash()->count("formatter"))
+        (*v.hash())["formatter"] = from->hash()->at("formatter");
     return v;
 }
 static bool isDateVal(const Value& v) { return v.t == VT::Hash && v.hashKind == "Date"; }
@@ -478,7 +480,23 @@ static bool valueEqv(const Value& a, const Value& b) {
             // constraint and the `{Any}` key shape.
             if (a.typeName() != b.typeName() || a.ofType() != b.ofType() ||
                 a.objKeyed != b.objKeyed) return false;
-            if (!a.hash() || !b.hash() || a.hash()->size() != b.hash()->size()) return false;
+            if (!a.hash() || !b.hash()) return false;
+            // A Dateish `:formatter` is a RENDERING hook, not state. Rakudo's
+            // `Date.new(…, :formatter($f)) eqv Date.new(…)` is True, and roast
+            // leans on it: S32-temporal/Date.t is-deeply's `.first-date-in-month`
+            // (which inherits the formatter) against a plain Date. Every other
+            // key still counts, in both directions.
+            if (a.hashKind == "Date" || a.hashKind == "DateTime") {
+                for (auto& kv : *a.hash()) {
+                    if (kv.first == "formatter") continue;
+                    auto it = b.hash()->find(kv.first);
+                    if (it == b.hash()->end() || !valueEqv(kv.second, it->second)) return false;
+                }
+                for (auto& kv : *b.hash())
+                    if (kv.first != "formatter" && !a.hash()->count(kv.first)) return false;
+                return true;
+            }
+            if (a.hash()->size() != b.hash()->size()) return false;
             for (auto& kv : *a.hash()) { auto it = b.hash()->find(kv.first); if (it == b.hash()->end() || !valueEqv(kv.second, it->second)) return false; }
             return true;
         case VT::Pair:
@@ -14224,6 +14242,28 @@ static void forceLazyImpl(const Value& v) {
     g_cbInterp->materializeLazy(v, 1000000);
 }
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
+
+// The g_dateFormat hook (Value.h): render a Date/DateTime through its stored
+// `:formatter`. A formatter that stringifies its OWN argument is unbounded —
+// Rakudo loops forever on one — and unbounded recursion HERE is a stack
+// overflow, so a Date already being formatted falls back to ISO 8601. The
+// guard is per-VALUE, not a flat depth counter: a formatter that renders some
+// OTHER Date (`{ .year ~ Date.new(2021,2,3) }`) is legitimate and must work.
+static thread_local std::vector<const void*> t_dateFormatting;
+static bool dateFormatImpl(const Value& d, std::string& out) {
+    if (!g_cbInterp || !d.hash()) return false;
+    auto it = d.hash()->find("formatter");
+    if (it == d.hash()->end() ||
+        (it->second.t != VT::Code && it->second.t != VT::Object)) return false;
+    const void* key = d.hash();
+    for (const void* p : t_dateFormatting) if (p == key) return false;
+    t_dateFormatting.push_back(key);
+    struct Pop { ~Pop() { t_dateFormatting.pop_back(); } } pop;
+    ValueList fa{d};
+    out = g_cbInterp->callCallable(it->second, fa).toStr();
+    return true;
+}
+static const bool g_dateFormatInstalled = ((g_dateFormat = &dateFormatImpl), true);
 static bool endlessLazyImpl(const Value& v) { // caller checked t == Array && ext
     return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
 }
@@ -23958,8 +23998,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // ---- Date arithmetic ----
     if (isDateVal(l) && isDateVal(r) && op == "-") return Value::integer(dateDays(l) - dateDays(r));
     if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-"))
-        return makeDate(dateDays(l) + (op == "+" ? r.toInt() : -r.toInt()));
-    if (isDateVal(r) && l.t == VT::Int && op == "+") return makeDate(dateDays(r) + l.toInt());
+        return makeDate(dateDays(l) + (op == "+" ? r.toInt() : -r.toInt()), &l);
+    if (isDateVal(r) && l.t == VT::Int && op == "+") return makeDate(dateDays(r) + l.toInt(), &r);
 
     // Range ± n shifts both endpoints, preserving exclusivity: ^9+1 is 1..9,
     // (1..5)+1 is 2..6. n + Range commutes.
@@ -24779,7 +24819,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             static const std::set<std::string> kValueKinds = {
                 "Set", "Bag", "Mix", "Date", "DateTime", "Version",
                 "ObjAt", "Encoding", "Distro"};
-            same = kValueKinds.count(l.hashKind) ? (l.toStr() == r.toStr())
+            // A value kind identifies through whichOf — "the one home for
+            // identity" — not through its bare rendering. The rendering alone
+            // dropped the type tag, so `set(1,2) === bag(1,2)` and
+            // `set(1,2) === SetHash.new(1,2)` were True (Rakudo: False), and it
+            // made a Date's `:formatter` part of its identity, so a formatted
+            // Date stopped being `===` to the same day plain (Rakudo: True —
+            // a Date is its DAYCOUNT). A DateTime's identity IS its rendering,
+            // formatter included, on both engines; whichOf says so.
+            same = kValueKinds.count(l.hashKind) ? (whichOf(l) == whichOf(r))
                                                  : (l.hash() == r.hash());
         }
         // …and the reference types that are NOT hashes underneath got the same
@@ -35487,7 +35535,9 @@ Value Interpreter::eval(Expr* e) {
                 long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (r->exFrom ? 1 : 0);
                 long long hi = civilToDays(fld(to, "year"), fld(to, "month"), fld(to, "day")) - (r->exTo ? 1 : 0);
                 Value arr = Value::array(); arr.isList = true;
-                for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d));
+                // the endpoints' formatter rides along: `Date.new(…, :formatter($f))
+                // .. Date.new(…, :formatter($f))` joins as formatted dates
+                for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
                 return arr;
             }
             if (from.t == VT::Str && to.t == VT::Str) {

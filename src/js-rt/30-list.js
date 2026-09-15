@@ -746,7 +746,7 @@ function whichKey(v) {
             if (v instanceof RPair) return 'Pair|' + whichKey(v.k) + '|' + whichKey(v.v);
             if (v instanceof RList) return v.ty.name + '|' + v.a.map(whichKey).join(',');
             if (v instanceof RObj) { const m = v.ty.findUser('WHICH'); if (m) return str(m(v)); return v.ty.name + '|' + objId(v); }
-            if (v instanceof RDate) return v.ty.name + '|' + v.d.getTime();
+            if (v instanceof RDate) return dateWhich(v);
             if (v instanceof RVersion) return 'Version|' + v.Str();
             return typeName(v) + '|' + objId(v);
     }

@@ -382,18 +382,37 @@ class RVersion {
 }
 // --- Date / DateTime (the small subset) -------------------------------------------
 class RDate {
-    constructor(ty, d) { this.ty = ty; this.d = d; }
-    Str() { const d = this.d; const p = n => String(n).padStart(2, '0'); const ymd = d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()); if (this.ty === T.Date) return ymd; return ymd + 'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'Z'; }
+    // `fmt` is a `:formatter(&code)` block. It renders the value EVERYWHERE a
+    // string is wanted (str() routes every coercion through Str()), and rides
+    // along to Dates derived from this one — .succ, .later, .truncated-to.
+    constructor(ty, d, fmt) { this.ty = ty; this.d = d; if (fmt) this.fmt = fmt; }
+    iso() { const d = this.d; const p = n => String(n).padStart(2, '0'); const ymd = d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()); if (this.ty === T.Date) return ymd; return ymd + 'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'Z'; }
+    // A formatter that stringifies its own argument is unbounded; render the
+    // ISO form on re-entry rather than blowing the stack.
+    Str() { if (typeof this.fmt !== 'function' || this.fmting) return this.iso(); this.fmting = true; try { return str(this.fmt(this)); } finally { this.fmting = false; } }
     raku() { const d = this.d; if (this.ty === T.Date) return 'Date.new(' + d.getUTCFullYear() + ',' + (d.getUTCMonth() + 1) + ',' + d.getUTCDate() + ')'; return 'DateTime.new(' + [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()].join(',') + ')'; }
     daycount() { return Math.floor(this.d.getTime() / 86400000) + 40587; }   // Modified Julian Day
     numeric() { return this.ty === T.Date ? this.daycount() : this.d.getTime() / 1000; }
 }
 function dateNew(ty, args) {
     const [pos, named] = splitArgs(args);
-    if (pos.length === 1) { if (typeof pos[0] === 'string' && !(ty === T.Date ? /^\d{4}-\d\d-\d\d$/ : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/).test(pos[0])) throw new RakuError(`Invalid ${ty.name} string '${pos[0]}'; use ${ty === T.Date ? 'yyyy-mm-dd' : 'yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00'} instead`, 'X::Temporal::InvalidFormat'); return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000)); }
-    if (pos.length >= 3) return new RDate(ty, new Date(Date.UTC(Number(pos[0]), Number(pos[1]) - 1, Number(pos[2]), Number(pos[3] || 0), Number(pos[4] || 0), Number(pos[5] || 0))));
+    const fmt = named.get('formatter');
+    // A Dateish or Instant argument is the day/instant it NAMES, not a POSIX
+    // reading: the fall-through below multiplies `toFloat(pos[0])` by 1000, and
+    // a Date numifies to its DAYCOUNT, so `Date.new($d)` answered 1970-01-01.
+    // A Date target keeps the civil day (this runtime has no timezone of its
+    // own, so the civil day and the UTC day are the same one); a DateTime
+    // target keeps the whole instant, and a Date source is its midnight.
+    if (pos.length === 1 && pos[0] instanceof RDate) {
+        const s0 = pos[0].d;
+        return new RDate(ty, ty === T.Date
+            ? new Date(Date.UTC(s0.getUTCFullYear(), s0.getUTCMonth(), s0.getUTCDate()))
+            : new Date(s0), fmt);
+    }
+    if (pos.length === 1) { if (typeof pos[0] === 'string' && !(ty === T.Date ? /^\d{4}-\d\d-\d\d$/ : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/).test(pos[0])) throw new RakuError(`Invalid ${ty.name} string '${pos[0]}'; use ${ty === T.Date ? 'yyyy-mm-dd' : 'yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00'} instead`, 'X::Temporal::InvalidFormat'); return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000), fmt); }
+    if (pos.length >= 3) return new RDate(ty, new Date(Date.UTC(Number(pos[0]), Number(pos[1]) - 1, Number(pos[2]), Number(pos[3] || 0), Number(pos[4] || 0), Number(pos[5] || 0))), fmt);
     const g = k => named.has(k) ? Number(toInt(named.get(k))) : 0;
-    return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))));
+    return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))), fmt);
 }
 // --- IO shells; the host adapter (70-host.js) does the work ---------------------------
 class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }

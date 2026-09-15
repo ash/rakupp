@@ -2778,7 +2778,11 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
 // Proleptic-Gregorian day count <-> civil date (for Date arithmetic).
 long long civilToDays(long long y, long long m, long long d);
 void daysToCivil(long long z, long long& y, long long& m, long long& d);
-Value makeDate(long long days); // build a Date hash (hashKind="Date") from a day count
+// Build a Date hash (hashKind="Date") from a day count. `from`, when given, is
+// the Date this one is DERIVED from (.succ, .later, `+ 1`, Range iteration, …)
+// and donates its `:formatter` — Rakudo carries the formatter across every such
+// step, so a formatted Date stays formatted for its whole walk.
+Value makeDate(long long days, const Value* from = nullptr);
 // Numeric value of a Date (daycount) / DateTime (posix instant) — how Dateish
 // numifies in Rakudo, and what `==`/`<`/`+` on them compare.
 double dateNumeric(const Value& v);

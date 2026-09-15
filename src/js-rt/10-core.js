@@ -468,7 +468,23 @@ function arith(op, a, b) {
     throw new RakuError('unknown arithmetic operator ' + op);
 }
 
+// ---- Date arithmetic ----
+// A Date numifies to its DAYCOUNT, so `$d + 1` used to fall straight through to
+// integer addition and answer 57386 where the interpreter answers a Date. Only
+// an Int or a Bool shifts a Date (the interpreter's rule): `$d + 1.5` stays
+// numeric, 57386.5. `Date - Date` is the day SPAN, an Int, and keeps falling
+// through — both sides numify to daycounts and subtract.
+// A derived Date carries the source's `:formatter`, as .succ and .later do.
+function isDay(v) { return v instanceof RDate && v.ty === T.Date; }
+function dayShift(v, n, sign) {
+    if (!(typeof n === 'bigint' || typeof n === 'boolean' ||
+          (typeof n === 'number' && Number.isInteger(n)))) return null;
+    const d = new Date(v.d); d.setUTCDate(d.getUTCDate() + sign * Number(toInt(n)));
+    return new RDate(v.ty, d, v.fmt);
+}
 function add(a, b) {
+    if (isDay(a) && !(b instanceof RDate)) { const r = dayShift(a, b, 1); if (r) return r; }
+    if (isDay(b) && !(a instanceof RDate)) { const r = dayShift(b, a, 1); if (r) return r; }
     if (typeof a === 'number' && typeof b === 'number') {
         const r = a + b;
         if (Number.isInteger(a) && Number.isInteger(b)) return Number.isSafeInteger(r) ? r : normBig(BigInt(a) + BigInt(b));
@@ -477,6 +493,7 @@ function add(a, b) {
     return arith('+', a, b);
 }
 function sub(a, b) {
+    if (isDay(a) && !(b instanceof RDate)) { const r = dayShift(a, b, -1); if (r) return r; }
     if (typeof a === 'number' && typeof b === 'number') {
         const r = a - b;
         if (Number.isInteger(a) && Number.isInteger(b)) return Number.isSafeInteger(r) ? r : normBig(BigInt(a) - BigInt(b));
@@ -858,6 +875,15 @@ function xrepeat(s, n) {         // infix:<x>
     const k = toInt(n); if (typeof k === 'bigint' || k <= 0) return '';
     return str(s).repeat(k);
 }
+// The identity of a Dateish, and the one home for it: `===`, `.WHICH` and
+// quanthash keying all read it. A Date is its DAYCOUNT — a `:formatter`
+// changes how it PRINTS, not which day it is — and a DateTime is its
+// rendering, formatter included. Both as the interpreter has them.
+function dateWhich(v) {
+    if (v.ty === T.Date) return 'Date|' + v.daycount();
+    if (v.ty === T.DateTime) return 'DateTime|' + v.Str();
+    return v.ty.name + '|' + v.d.getTime();
+}
 // ===  and eqv
 function identical(a, b) {
     a = decont(a); b = decont(b);
@@ -868,6 +894,11 @@ function identical(a, b) {
     if (a instanceof RRat && b instanceof RRat) return a.n === b.n && a.d === b.d;
     if (a instanceof REnum && b instanceof REnum) return a.ty === b.ty && a.key === b.key;
     if (a instanceof RType && b instanceof RType) return a === b;
+    // a Dateish is a VALUE type, not a reference one: two Dates of the same day
+    // are identical however either was built (the interpreter keeps Date and
+    // DateTime in its kValueKinds set). Without this, `===` compared object
+    // references and every separately built Date was distinct.
+    if (a instanceof RDate && b instanceof RDate) return a.ty === b.ty && dateWhich(a) === dateWhich(b);
     return false;
 }
 function eqv(a, b) {

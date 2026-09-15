@@ -50,6 +50,7 @@ namespace rakupp {
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
+DateFormatFn g_dateFormat = nullptr; // installed by Interpreter.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
 // self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it
@@ -534,7 +535,13 @@ std::string Value::toStr() const {
                 return hash()->at("path").toStr();
             if (hashKind == "StrDistance" && hash() && hash()->count("after"))
                 return hash()->at("after").toStr(); // "$dist" is the resulting string
-            if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateGist(*hash(), hashKind == "Date");
+            if ((hashKind == "Date" || hashKind == "DateTime") && hash()) {
+                // a stored `:formatter` is THE stringifier: `$d eq '29/12/2015'`
+                // and `"$d"` have to agree, and Test's `is` compares here
+                std::string fd;
+                if (hash()->count("formatter") && g_dateFormat && g_dateFormat(*this, fd)) return fd;
+                return dateGist(*hash(), hashKind == "Date");
+            }
             // Setty/Baggy .Str is the elements space-joined — `elem(weight)`
             // for a non-1 Bag/Mix weight — NOT the generic key\tvalue dump
             // (`say ([(^)] @words).Str` prints "orange", not "orange\tTrue")

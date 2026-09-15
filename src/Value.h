@@ -990,6 +990,14 @@ extern EndlessLazyFn g_endlessLazy;
 inline bool endlessLazy(const Value& v) {
     return v.t == VT::Array && v.ext() && g_endlessLazy && g_endlessLazy(v);
 }
+// A Date/DateTime built with `:formatter(&code)` renders through THAT block
+// wherever it becomes a string — not only `.Str`/`.gist`, but `eq`, `~`,
+// `sprintf "%s"`, a hash key, and the gist of a list holding it. Rendering
+// lives here and calling a Raku Callable needs the interpreter, so it goes
+// through this hook (same pattern as g_forceLazy). False means "no formatter
+// to apply" — the caller then renders ISO 8601.
+using DateFormatFn = bool (*)(const Value&, std::string&);
+extern DateFormatFn g_dateFormat;
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }

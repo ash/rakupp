@@ -2272,17 +2272,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date")) {
         auto fld = [&](const char* k) { auto it = inv.hash()->find(k); return it != inv.hash()->end() ? it->second.toInt() : 0; };
-        // a stored `:formatter(&code)` drives .Str and .gist — `say` shows the
-        // formatted form too (Dateish gist delegates to Str)
-        if ((m == "Str" || m == "gist") && inv.hash()->count("formatter") &&
-            ((*inv.hash())["formatter"].t == VT::Code || (*inv.hash())["formatter"].t == VT::Object)) {
-            ValueList fa{inv};
-            return Value::str(callCallable((*inv.hash())["formatter"], fa).toStr());
-        }
         // Dates enumerate day by day: .succ/.pred step a whole day (Range
         // iteration and `for $d1..$d2` rely on this)
         if ((m == "succ" || m == "pred") && inv.hashKind == "Date")
-            return makeDate(civilToDays(fld("year"), fld("month"), fld("day")) + (m == "succ" ? 1 : -1));
+            return makeDate(civilToDays(fld("year"), fld("month"), fld("day")) + (m == "succ" ? 1 : -1), &inv);
         // with no formatter of its own a Date/DateTime answers the Callable TYPE
         // object — the attribute's declared type, not a bare Any
         if (m == "formatter") return inv.hash()->count("formatter") ? (*inv.hash())["formatter"]
@@ -2395,9 +2388,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str(buf);
         }
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
-            if (m == "Date") return makeDate(civilToDays(fld("year"), fld("month"), fld("day")));
-            // one ISO 8601 formatter, shared with the value model
-            return Value::str(dateGist(*inv.hash(), inv.hashKind == "Date" || m == "yyyy-mm-dd"));
+            // `$d.Date` on a Date is Rakudo's `self` and keeps the formatter;
+            // `$dt.Date` on a DateTime builds a fresh Date and does NOT
+            if (m == "Date")
+                return makeDate(civilToDays(fld("year"), fld("month"), fld("day")),
+                                inv.hashKind == "Date" ? &inv : nullptr);
+            // .Str/.gist go through the value model, which applies a stored
+            // `:formatter` (one renderer — `$d eq "$d"` has to hold).
+            // `.yyyy-mm-dd` is the ISO form by name and never formats.
+            if (m == "yyyy-mm-dd") return Value::str(dateGist(*inv.hash(), true));
+            return Value::str(inv.toStr());
         }
         if (m == "day-of-week" || m == "dow") { // 1=Monday .. 7=Sunday (Sakamoto's algorithm)
             long long y = fld("year"), mo = fld("month"), d = fld("day");
@@ -2429,7 +2429,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) lim = 29;
                 if (d > lim) d = lim;
             }
-            return makeDate(civilToDays(y, mo, d) + sign * days);
+            return makeDate(civilToDays(y, mo, d) + sign * days, &inv);
         }
         if ((m == "later" || m == "earlier") && inv.hashKind == "DateTime") {
             long long sign = (m == "later") ? 1 : -1;
@@ -2496,7 +2496,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 dn -= wd; daysToCivil(dn, y, mo, d); }
             else if (u == "month")  { sec = 0; mi = 0; h = 0; d = 1; }
             else if (u == "year")   { sec = 0; mi = 0; h = 0; d = 1; mo = 1; }
-            if (inv.hashKind == "Date") return makeDate(civilToDays(y, mo, d));
+            if (inv.hashKind == "Date") return makeDate(civilToDays(y, mo, d), &inv);
             long long tz = fld("timezone");
             long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + si - tz;
             Value v = Value::makeHash(); v.hashKind = "DateTime";
@@ -2519,10 +2519,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long dim = (mo >= 1 && mo <= 12) ? mlen[mo - 1] : 30;
             if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
             if (m == "days-in-month") return Value::integer(dim);
-            return makeDate(civilToDays(y, mo, dim)); // last-date-in-month → a Date
+            return makeDate(civilToDays(y, mo, dim), &inv); // last-date-in-month → a Date
         }
         if (m == "first-date-in-month")
-            return makeDate(civilToDays(fld("year"), fld("month"), 1));
+            return makeDate(civilToDays(fld("year"), fld("month"), 1), &inv);
         if (m == "day-of-year") {
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
