@@ -12076,7 +12076,8 @@ static inline bool isMuTypeObject(const Value& v) {
     return v.t == VT::Type && v.s == "Mu" && v.ofType().empty();
 }
 
-void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam) {
+void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
+                                bool whereVerified) {
     // A type SMILEY is part of the constraint: `Int:D $x` refuses a type object
     // and `Int:U $x` refuses an instance. The smiley was recorded (multi
     // dispatch scores on it) but never enforced on an ordinary bind, so
@@ -12160,6 +12161,17 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam)
             }
         }
     }
+    // A SUBSET parameter carries its `where` on the type, not on the parameter, so
+    // the bindParams guard below cannot see it: `subset S of Int where {…}` used as
+    // `multi ms(S $n)` had its constraint run once by scoreCandidate (Interpreter.cpp
+    // line ~13768) to pick the candidate and again here, firing side effects twice
+    // where Rakudo fires them once. Scoring checked the SAME value, so on a
+    // dispatched candidate this repeat says nothing new. A COERCION subset is
+    // excluded: it binds the coerced value, which is not what scoring saw.
+    if (whereVerified && !p.type.empty()) {
+        auto sit = subsets_.find(p.type);
+        if (sit != subsets_.end() && !sit->second.coerce) return;
+    }
     if (typeOrSubsetMatches(v, p.type)) return;
     throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
@@ -12180,7 +12192,8 @@ static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::s
 }
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
-                             std::shared_ptr<Env>& env, bool methodCtx, bool blockParams) {
+                             std::shared_ptr<Env>& env, bool methodCtx, bool blockParams,
+                             bool whereVerified) {
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -12222,7 +12235,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // Any constraint rejects (isMuTypeObject is one enum compare
                     // for every ordinary argument)
                     if (!params[i].type.empty() || isMuTypeObject(v))
-                        typeCheckBind(params[i], v, blockParams);
+                        typeCheckBind(params[i], v, blockParams, whereVerified);
                     // a native-int param truncates on bind (see the slow path)
                     { int spec = paramNatSpec(params[i]);
                       if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
@@ -12512,7 +12525,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
                 if (!p.subSig && p.sigil == '$' && !p.coerce &&
                     (!p.type.empty() || isMuTypeObject(it->second)))
-                    typeCheckBind(p, it->second, blockParams);
+                    typeCheckBind(p, it->second, blockParams, whereVerified);
                 // named @/% params follow the positional binding rules: bind
                 // (share) the caller's container — unless `is copy`, which takes
                 // a fresh one (HTTP::Tiny's `:%headers is copy` mutates its copy;
@@ -12648,7 +12661,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // bind anything, Mu included, so they stay outside the gate.
             else if ((p.sigil == '$' || (p.sigil == '\\' && !p.slurpy)) &&
                      !p.invocant && (!p.type.empty() || isMuTypeObject(v)))
-                typeCheckBind(p, v, blockParams); // a lone typed candidate REJECTS a mismatch (like Rakudo)
+                typeCheckBind(p, v, blockParams, whereVerified); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             // …and `is raw` too: it hands over the container itself, so a write
             // through it is the point of writing it that way.
@@ -12733,6 +12746,17 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     }
     // enforce `where` constraints on the bound values (a single sub isn't dispatched,
     // so scoreCandidate never ran — `sub p(Int $n where * > 0)` must reject p(-1))
+    //
+    // A DISPATCHED multi candidate is the one case that has already been checked:
+    // scoreCandidate evaluated every `where` here to choose this candidate, against
+    // the same values (it wraps natives the way the bind does, so the two agree by
+    // construction). Re-running them fired observable side effects twice —
+    // `multi g($n where { @log.push($n); … })` logged every matching argument
+    // twice, where Rakudo logs it once — and charged the constraint twice on the
+    // path that MATCHES, which is the hot one. Only the two dispatch sites set
+    // this; a candidate reached any other way (`&f.candidates[0](-1)`, which never
+    // goes through scoring) still gets the check that is its only guard.
+    if (whereVerified) return;
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
         if (!p.whereExpr || p.slurpy || p.name.empty()) continue;
@@ -13861,6 +13885,17 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             Value wv = pos[i];
             if (p->coerce && !p->type.empty() && wv.typeName() != p->type) {
                 try { wv = coerceToType(wv, p->type); } catch (...) { return -1; }
+            }
+            // A NATIVE parameter's `where` sees the WRAPPED value, because that is
+            // what the bind will store and therefore what the constraint is about.
+            // bindParams wraps immediately before checking; scoring did not, so the
+            // two evaluated the same constraint against different values:
+            // `multi m(uint8 $n where * == 300)` scored 300 (passed, and the
+            // candidate won the dispatch), then bound 44 and DIED in the bind
+            // instead of falling back to the `Int` candidate Rakudo picks.
+            if (!p->type.empty()) {
+                bool nsign; int nbits = Value::natWidthOfType(p->type, nsign);
+                if (nbits) wrapNative(wv, nbits, nsign);
             }
             auto env = std::make_shared<Env>(); env->parent = whereScope;
             // A method's `where` may read the INVOCANT's own state:
@@ -15974,7 +16009,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     return (*base.arr())[i];
 }
 
-Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
+Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
     // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
     // routine body (callCallableRaw). Wrappers are consulted outermost-first.
@@ -15996,7 +16031,7 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
             };
         return runLevel((int)wraps.size() - 1, std::move(args));
     }
-    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck);
+    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
 }
 
 static bool ncIsFloatType(const std::string& t) {
@@ -17319,7 +17354,7 @@ struct PooledFrame {
 };
 } // namespace
 
-Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
+Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // --profile: routine-level entry/exit (RAII — this function returns in many
     // places). Bare blocks and builtins are skipped: block time lands in the
@@ -17549,8 +17584,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // integer one (`is-prime($p.re.abs.Int)`) from inside themselves.
                 if (!c.isMethod && !c.name.empty())
                     if (const BuiltinFn* bf = builtinPtr(c.name)) return (*bf)(*this, as);
+                // Name the ARGUMENTS that found no candidate. The parens were empty
+                // whatever was passed, so the one fact the reader needs to see — what
+                // the call actually offered — was the one thing the message dropped.
+                std::string argProf;
+                for (auto& a : as) {
+                    if (isNamedArg(a)) continue;
+                    if (!argProf.empty()) argProf += ", ";
+                    argProf += a.typeName();
+                }
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
-                                "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
+                                "Cannot resolve caller " + c.name + "(" + argProf +
+                                "); no matching multi candidate"};
             }
             visited->push_back(best);
             RedispatchCtx rc;
@@ -17559,7 +17604,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             rc.restart = [this, codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = callCallable(*best, as, rwArgs, /*ownFrame=*/true); }
+            try { r = callCallable(*best, as, rwArgs, /*ownFrame=*/true, /*arityCheck=*/false,
+                                   /*whereVerified=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
@@ -17727,7 +17773,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
-        bindParams(*c.params, args, env, c.isMethod, c.isBlock);
+        bindParams(*c.params, args, env, c.isMethod, c.isBlock, whereVerified);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs,
                                  !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
@@ -18517,7 +18563,8 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
         // call in this frame, and the pointers cost nothing when nobody asks.
         ExecContext::BuiltinFallback fb{&name, &self, &args, 0};
         return invokeMethod(*um, self, args, rwArgs, /*ownFrame=*/false,
-                            /*selfBack=*/nullptr, /*skipWrappers=*/false, &fb);
+                            /*selfBack=*/nullptr, /*skipWrappers=*/false,
+                            /*whereVerified=*/false, &fb);
     }
     RedispatchCtx rc;
     rc.sameArgs = args;
@@ -18582,7 +18629,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 }
 
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
-                                Value* selfBack, bool skipWrappers, ExecContext::BuiltinFallback* fallback) {
+                                Value* selfBack, bool skipWrappers, bool whereVerified, ExecContext::BuiltinFallback* fallback) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     if (codeVal.t != VT::Code || !codeVal.code()) return Value::any();
     // A NativeCall method: the invocant is C's first argument, then the rest.
@@ -18814,7 +18861,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = invokeMethod(*best, selfCopy, as, rwArgs, /*ownFrame=*/true); }
+            try { r = invokeMethod(*best, selfCopy, as, rwArgs, /*ownFrame=*/true,
+                                   /*selfBack=*/nullptr, /*skipWrappers=*/false,
+                                   /*whereVerified=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
@@ -18918,7 +18967,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (c.params && !c.params->empty()) {
-        bindParams(*c.params, args, env, /*methodCtx=*/true);
+        bindParams(*c.params, args, env, /*methodCtx=*/true, /*blockParams=*/false, whereVerified);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs,
                                  !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
     }

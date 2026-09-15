@@ -951,7 +951,12 @@ public:
     void runLoopLast(Block* body, const std::shared_ptr<Env>& scope); // LAST {…} at loop end, in the final iteration's scope
 
     // calling
-    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
+    // `whereVerified`: the multi dispatcher already evaluated this candidate's
+    // `where` constraints in scoreCandidate and they passed, so bindParams must
+    // not evaluate them a SECOND time. Only the two dispatch sites pass it; a
+    // candidate invoked directly (`&f.candidates[0](-1)`) never went through
+    // scoring, so it keeps the bind-time check that is its only guard.
+    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false, bool whereVerified = false);
     // loadModule hook: wrap JSON::Fast's &to-json/&from-json with the native
     // codec (fallback to the module's own subs for uncovered calls)
     void wrapJsonFastExports(Env& moduleEnv);
@@ -1016,7 +1021,7 @@ public:
     // crash); as a thread_local it cost loopsum 6% by reshuffling macOS TLV
     // layout under the interpreter's hot thread-locals. The context object
     // travels with the block, is already thread-correct, and is free.)
-    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false); // no wrap layer
+    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false, bool whereVerified = false); // no wrap layer
     // rwArgOff: how many leading `args` entries have no matching `rwArgs` expression
     // — 1 for a NativeCall METHOD, whose invocant is prepended as C's first argument.
     Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr,
@@ -1297,6 +1302,9 @@ public:
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false,
                        Value* selfBack = nullptr,  // selfBack: copy the frame's `self` out (rw invocant)
                        bool skipWrappers = false, // true: innermost wrap level reached — run the body
+                       // set only by the multi-method dispatcher: scoreCandidate already
+                       // evaluated this candidate's `where` constraints (see bindParams)
+                       bool whereVerified = false,
                        // the built-in behind this method, for callsame/nextsame: filled in by
                        // the caller, stamped with this activation's frame and installed here
                        ExecContext::BuiltinFallback* fallback = nullptr);
@@ -1519,7 +1527,11 @@ public:
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam
     // says the signature belongs to a Block, whose untyped parameters are
     // Mu-constrained where a Routine's are Any-constrained.
-    void typeCheckBind(const Param& p, const Value& v, bool blockParam = false);
+    // `whereVerified`: set when the multi dispatcher already accepted this
+    // candidate for these values, so a SUBSET parameter's `where` must not be
+    // evaluated a second time. The nominal/smiley checks above it still run.
+    void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
+                       bool whereVerified = false);
     std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,
@@ -2490,7 +2502,12 @@ private:
                     // A BLOCK's untyped parameter is Mu-constrained; a Routine's
                     // is Any-constrained, so only a routine refuses Mu. Rakudo:
                     // `sub f($x) {…}; f(Mu)` dies, `(-> $x {…})(Mu)` does not.
-                    bool blockParams = false);
+                    bool blockParams = false,
+                    // Set only by the multi dispatcher: scoreCandidate already
+                    // evaluated every `where` on this candidate against the same
+                    // values, so re-running them here would fire side effects
+                    // twice and double the constraint's cost on the hot path.
+                    bool whereVerified = false);
 };
 
 // helpers

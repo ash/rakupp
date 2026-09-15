@@ -40,6 +40,13 @@
         'attrread'=> { 'baseline' => 221.3, 'best' => 221.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
         'method'  => { 'baseline' => 201.0, 'best' => 201.0, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
         'multimeth'=> { 'baseline' => 430.4, 'best' => 430.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        # multiwhere landed 2026-09-15 with the fix that stopped a multi candidate's
+        # `where` being evaluated twice per matching call. Its first baseline is the
+        # number measured AFTER that fix (781.4), not before it (943.0): recording
+        # the pre-fix figure would have let the double evaluation back in through the
+        # very kernel added to catch it — the same trap the three string kernels
+        # above document. The pre-fix figure is kept here so the gain stays legible.
+        'multiwhere'=> { 'baseline' => 781.4, 'best' => 781.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-15' },
         'objnew'  => { 'baseline' => 386.6, 'best' => 386.6, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
         'privmeth'=> { 'baseline' => 357.7, 'best' => 357.7, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
         # `rats` was added to the guard on 2026-08-22, after the cold block

@@ -137,6 +137,24 @@ my %kernels =
                             multi method m(Str $x) { $x } }
                   my $k = K.new; my $t = 0; my int $n = 0;
                   while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    # multiwhere was added 2026-09-15, after a `where` constraint on a multi
+    # candidate turned out to be evaluated TWICE per matching call: scoreCandidate
+    # ran it to choose the candidate and bindParams ran it again to enforce it, so
+    # a constraint with a side effect fired twice (Rakudo fires it once) and every
+    # matching call paid for it twice. Removing the second evaluation took this
+    # kernel down 24%, and NO kernel above could see any of it: `multimeth` is the
+    # closest, and its two candidates are constraint-free, so the whole
+    # where/subset enforcement path — which is also where UInt and every other
+    # constrained subset parameter in the ecosystem is checked — was unmeasured.
+    # Deliberately identical to `multimeth` except for the constraint, so the
+    # DIFFERENCE between the two is the constraint and nothing else (the same way
+    # `attrread` is `method` plus one attribute read). A regression that doubles
+    # the constraint again shows up here and nowhere else.
+    multiwhere=> 'class K { proto method m(|) {*}
+                            multi method m(Int $x where * > 0) { $x }
+                            multi method m(Int $x) { 0 } }
+                  my $k = K.new; my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
     objnew    => 'class K { has $.a; has $.b }
                   my $t; my int $n = 0;
                   while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;',
@@ -165,7 +183,7 @@ my %kernels =
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth objnew mainnext mainwhen>;
+                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as
