@@ -1421,6 +1421,31 @@ bool Lexer::tryQuoteForm(Token& out) {
                 drop("c", 'c'); drop("closure", 'c'); drop("b", 'b'); drop("backslash", 'b');
                 if (feats != "sahfcb") heredocFeats_ = feats;
             }
+            else {
+                // A `q`/`Q` heredoc with POSITIVE interpolation adverbs —
+                // `q:s:to/END/` interpolates scalars, `Q:c:s:to/END/` scalars
+                // and closures. Only `qq:to` turned interpolation on, so these
+                // came out as their own literal source text: FEN::Result's
+                // show-state printed "$.active-color", and
+                // Image::Markup::Utilities emitted its whole SVG template
+                // verbatim. The adverbs ADD to an otherwise inert quote, which
+                // is the mirror image of the `:!x` subtraction above.
+                std::string feats;
+                auto add = [&](const char* nm, char f) {
+                    if (adverbs.find(":" + std::string(nm) + " ") != std::string::npos &&
+                        feats.find(f) == std::string::npos) feats += f;
+                };
+                add("s", 's'); add("scalar", 's'); add("a", 'a'); add("array", 'a');
+                add("h", 'h'); add("hash", 'h'); add("f", 'f'); add("function", 'f');
+                add("c", 'c'); add("closure", 'c'); add("b", 'b'); add("backslash", 'b');
+                if (!feats.empty()) {
+                    heredocInterp_ = true;
+                    heredocFeats_  = feats;
+                    // `q` already unescapes; `Q` keeps every backslash unless
+                    // `:b` was the adverb that asked for it.
+                    heredocEscapes_ = (w == "q") || feats.find('b') != std::string::npos;
+                }
+            }
             out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
             return true;
         }

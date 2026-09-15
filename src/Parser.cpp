@@ -4121,6 +4121,23 @@ ExprPtr Parser::parsePrimary() {
         case Tok::Var: {
             if (cur().text.rfind("&?ROUTINE", 0) == 0 && routineDepth_ == 0)
                 throw ParseError("&?ROUTINE is only available inside a routine (X::Undeclared::Symbols)", cur().line);
+            // `$?CLASS` / `$?ROLE` / `$?PACKAGE` — the SIGILLED spelling of the
+            // compile-time enclosing type, and the same constant as `::?CLASS`
+            // (handled in parsePrimary's `::` arm). Only the `::` form resolved,
+            // so inside a `unit class` body `$?CLASS` read as an undeclared
+            // variable and answered Any — which is what a class-level registry
+            // keyed on `$?CLASS.^name` gets instead of its own name, and why
+            // `Log.get` / `Logger.get` were dead here while working on Rakudo.
+            if ((cur().text == "$?CLASS" || cur().text == "$?ROLE" ||
+                 cur().text == "$?PACKAGE") && !typeStack_.empty()) {
+                bool klass = cur().text == "$?CLASS";
+                advance();
+                // In a ROLE, `$?CLASS` is the CONSUMING class — resolved per
+                // invocant at run time, exactly as the `::?CLASS` arm does.
+                if (klass && !typeIsRole_.empty() && typeIsRole_.back())
+                    return std::make_unique<NameTerm>("::?CLASS");
+                return std::make_unique<NameTerm>(typeStack_.back());
+            }
             // sigil contextualizer glued to a variable: `@$x` == @($x), `%$h` == %($h)
             if (cur().text.size() == 1 &&
                 (cur().text[0] == '@' || cur().text[0] == '%' || cur().text[0] == '$') &&

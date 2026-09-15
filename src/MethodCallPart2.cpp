@@ -2761,6 +2761,33 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // constants builds one in its EXPORT sub to read the compiler's name and
         // version, and got X::Method::NotFound for a type that already exists.
         if (t == "Compiler") return rakuIntrospection(true);
+        // ANY exception type is constructible, not just the handful the
+        // interpreter registers by hand. Rakudo ships every X:: name as a real
+        // class, so `X::Hash::Store::OddNumber.new(...)` is ordinary code there
+        // — and library code writes it: Hash::Agnostic's STORE constructs
+        // exactly that one to report an odd element count, so building a
+        // Hash::Ordered died with "No such method 'new'" instead of storing.
+        // The name is registered on first use with whatever named arguments it
+        // was given (plus `message`), and `Exception` as the native parent so
+        // the generated ancestry still answers `.^mro` and `~~ Exception`.
+        if ((t.rfind("X::", 0) == 0 || t.rfind("CX::", 0) == 0) && !classes_.count(t)) {
+            auto ci = std::make_shared<ClassInfo>();
+            ci->name = t;
+            ci->nativeParent = "Exception";
+            std::set<std::string> seen;
+            for (auto& a : args)
+                if (a.t == VT::Pair && seen.insert(a.s).second) {
+                    ClassAttr ca; ca.name = a.s; ca.sigil = '$'; ca.pub = true;
+                    ci->attrs.push_back(ca);
+                }
+            if (!seen.count("message")) {
+                ClassAttr ca; ca.name = "message"; ca.sigil = '$'; ca.pub = true;
+                ci->attrs.push_back(ca);
+            }
+            classes_[t] = ci;
+            // fall through to the ordinary construction path below, which now
+            // finds the class and binds the named arguments to its attributes
+        }
         // …and `VM.new`, the same object `$*VM` answers, for the same reason:
         // META::constants reads both in its EXPORT sub.
         if (t == "VM") { Value h = Value::makeHash(); h.hashKind = "VM"; (*h.hash())["name"] = Value::str("cpp"); return h; }

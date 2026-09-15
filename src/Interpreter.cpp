@@ -12245,6 +12245,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 size_t piStart = pi;
                 bool capture = p.sigil == '\\' && p.slurpyKind == 0;
                 size_t remaining = positional.size() - pi;
+                // A SLIP flattens into every slurpy, itemization notwithstanding —
+                // that is the whole of what a Slip is for, and assigning one to a
+                // scalar itemizes it. Shared by all three branches below.
+                auto isSlip = [](const Value& e) {
+                    return e.t == VT::Array && e.arr() && e.s == "Slip";
+                };
                 if (p.slurpyKind == 'f') {
                     // *@a — flatten: dissolve every Iterable arg into the slurpy.
                     //
@@ -12255,10 +12261,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // Ints. Flattening everything made a test helper taking
                     // `*@exp` compare a flat list of strings against the rows it
                     // was handed (Text::CSV's 67_emptrow).
-                    auto walksThrough = [](const Value& e) {
-                        return !e.itemized &&
-                               (e.t == VT::Range ||
-                                (e.t == VT::Array && e.arr() && (e.isList || e.s == "Slip")));
+                    // A SLIP flattens even when itemized — that is the whole of
+                    // what a Slip is for, and `my $s = @a.Slip` itemizes it the
+                    // moment it lands in a scalar. Every other itemized value is
+                    // left whole. Without this `f($s)` bound ONE element where
+                    // Rakudo binds three, which is how BinaryHeap's `.new` and
+                    // `.push` Slip candidates built a heap holding one nested
+                    // list instead of its elements.
+                    auto walksThrough = [&](const Value& e) {
+                        return isSlip(e) ||
+                               (!e.itemized &&
+                                (e.t == VT::Range ||
+                                 (e.t == VT::Array && e.arr() && e.isList)));
                     };
                     std::function<void(const Value&)> spread = [&](const Value& v) {
                         if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
@@ -12277,7 +12291,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     };
                     for (; pi < positional.size(); pi++) {
                         auto& x = positional[pi];
-                        if (!x.itemized && (x.t == VT::Array || x.t == VT::Range)) spread(x);
+                        if (isSlip(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range)))
+                            spread(x);
                         else a.arr()->push_back(x);
                     }
                 } else if (p.slurpyKind == 'n' || capture) {
@@ -12292,15 +12307,28 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // pass-through idiom `sub wrapper(|c) { inner(|c) }` — a
                     // shipped JSON::Native (then Rakupp::JSON) serialised `to-json([1,2,3])` as `1`,
                     // because the array reached JSON::Fast as three arguments.
-                    for (; pi < positional.size(); pi++) a.arr()->push_back(positional[pi]);
+                    // …except a SLIP, which flattens into every slurpy there
+                    // is. `**@a` declines to dissolve an Array; a Slip is the
+                    // value whose one purpose is to dissolve, so it does.
+                    for (; pi < positional.size(); pi++) {
+                        if (isSlip(positional[pi]))
+                            for (auto& e : *positional[pi].arr()) a.arr()->push_back(e);
+                        else a.arr()->push_back(positional[pi]);
+                    }
                 } else {
                     // +@a (and default) — single-argument rule: a lone Iterable arg
                     // flattens; multiple args are kept as-is (so f(@a,@b) is two elements).
-                    if (remaining == 1 && !positional[pi].itemized && (positional[pi].t == VT::Array || positional[pi].t == VT::Range)) {
+                    if (remaining == 1 && (isSlip(positional[pi]) ||
+                                           (!positional[pi].itemized &&
+                                            (positional[pi].t == VT::Array || positional[pi].t == VT::Range)))) {
                         for (auto& x : positional[pi].flatten()) a.arr()->push_back(x);
                         pi++;
                     } else {
-                        for (; pi < positional.size(); pi++) a.arr()->push_back(positional[pi]);
+                        for (; pi < positional.size(); pi++) {
+                            if (isSlip(positional[pi]))
+                                for (auto& e : *positional[pi].arr()) a.arr()->push_back(e);
+                            else a.arr()->push_back(positional[pi]);
+                        }
                     }
                 }
                 // a `|c` capture also carries the UNCLAIMED named args (as
@@ -22368,7 +22396,32 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 !static_cast<VarExpr*>(a->target.get())->name.empty() &&
                 static_cast<VarExpr*>(a->target.get())->name[0] == '$';
             if (!scalarTarget) {
-                ValueList sargs{rhs};
+                ValueList sargs;
+                // A slurpy `*@values` FLATTENS a Hash into its pairs, so
+                // `%ordered = %plain` must reach STORE as N Pairs — the shape
+                // every Hash::Agnostic-style STORE loops over. Passing the Hash
+                // itself left Hash::Ordered seeing one non-Pair value, counting
+                // an odd number of elements and throwing
+                // X::Hash::Store::OddNumber, which is the canonical way to copy
+                // one ordered hash into another. A LIST rhs already arrives
+                // flattened; only the Hash case was missing.
+                if (rhs.t == VT::Hash && rhs.hashKind.empty() && rhs.hash())
+                    for (auto& kv : *rhs.hash())
+                        sargs.push_back(Value::pair(kv.first, kv.second));
+                // …and an ASSOCIATIVE OBJECT flattens the same way: copying one
+                // Hash::Ordered into another (`my %b is Hash::Ordered = %a`) is
+                // the canonical spelling, and the source is an object, not a
+                // plain Hash. Its `.pairs` is what the slurpy would see.
+                else if (rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
+                         rhs.obj()->cls->findMethod("pairs")) {
+                    Value ps = methodCall(const_cast<Value&>(rhs), "pairs", ValueList{});
+                    if (ps.t == VT::Array && ps.arr())
+                        for (auto& p : *ps.arr()) sargs.push_back(p);
+                    else
+                        sargs.push_back(rhs);
+                }
+                else
+                    sargs.push_back(rhs);
                 // `my %m is MyMap = @pairs` — the DECLARATION's initialiser is
                 // told it is one: Rakudo passes `:INITIALIZE` on that first
                 // assignment and on no later one, which is how a container knows
