@@ -1980,23 +1980,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately).
             {
                 if (mo < 1 || mo > 12)
-                    throwTyped("X::OutOfRange",
+                    throwTyped("X::Temporal::OutOfRange",
                         {{"what", "Month"}, {"got", std::to_string(mo)}, {"range", "1..12"}},
                         "Month out of range. Is: " + std::to_string(mo) + ", should be in 1..12");
                 static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
                 long long dim = mlen[mo - 1];
                 if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
                 if (d < 1 || d > dim)
-                    throwTyped("X::OutOfRange",
+                    throwTyped("X::Temporal::OutOfRange",
                         {{"what", "Day"}, {"got", std::to_string(d)}, {"range", "1.." + std::to_string(dim)}},
                         "Day out of range. Is: " + std::to_string(d) + ", should be in 1.." + std::to_string(dim));
                 if (inv.s == "DateTime") {
                     if (h < 0 || h > 23)
-                        throwTyped("X::OutOfRange",
+                        throwTyped("X::Temporal::OutOfRange",
                             {{"what", "Hour"}, {"got", std::to_string(h)}, {"range", "0..23"}},
                             "Hour out of range. Is: " + std::to_string(h) + ", should be in 0..23");
                     if (mi < 0 || mi > 59)
-                        throwTyped("X::OutOfRange",
+                        throwTyped("X::Temporal::OutOfRange",
                             {{"what", "Minute"}, {"got", std::to_string(mi)}, {"range", "0..59"}},
                             "Minute out of range. Is: " + std::to_string(mi) + ", should be in 0..59");
                 }
@@ -2770,6 +2770,42 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // The name is registered on first use with whatever named arguments it
         // was given (plus `message`), and `Exception` as the native parent so
         // the generated ancestry still answers `.^mro` and `~~ Exception`.
+        // A standard X:: exception built by hand carries its message in its
+        // ATTRIBUTES, not in a `message` argument: Rakudo gives each of these
+        // classes a `method message` that renders the attributes it was given.
+        // Without that, `X::OutOfRange.new(what => 'Year', got => 0, range =>
+        // '1..Inf')` answered an undefined `.message` and an empty `.gist` —
+        // and four of the Date::Calendar distributions throw exactly that one
+        // to report a bad month or day, so their errors arrived blank. The
+        // message is synthesised HERE, before construction, so it lands in the
+        // ordinary `message` attribute and `.message`, `.Str`, `.gist` and a
+        // `.throw`n message all read the same string. An explicit `message`
+        // argument still wins, and this runs whether or not the class has been
+        // registered already.
+        if (t.rfind("X::", 0) == 0) {
+            std::map<std::string, std::string> at;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal() && rtIsDefined(*a.pairVal()))
+                    at[a.s] = a.pairVal()->toStr();
+            std::string syn;
+            if (t == "X::OutOfRange" && at.count("what")) {
+                syn = at["what"] + " out of range. Is: " +
+                      (at.count("got") ? at["got"] : std::string()) +
+                      ", should be in " + (at.count("range") ? at["range"] : std::string());
+                if (at.count("comment")) syn += "; " + at["comment"];
+            }
+            else if (t == "X::NYI" && at.count("feature"))
+                syn = at["feature"] + " not yet implemented. Sorry.";
+            // The rendered message WINS over an explicit `message` argument, as
+            // Rakudo's `method message` does — it is a method there, so an
+            // attribute of the same name never gets a say.
+            if (!syn.empty()) {
+                for (size_t i = 0; i < args.size(); )
+                    if (args[i].t == VT::Pair && args[i].s == "message") args.erase(args.begin() + i);
+                    else ++i;
+                args.push_back(Value::pair("message", Value::str(syn)));
+            }
+        }
         if ((t.rfind("X::", 0) == 0 || t.rfind("CX::", 0) == 0) && !classes_.count(t)) {
             auto ci = std::make_shared<ClassInfo>();
             ci->name = t;

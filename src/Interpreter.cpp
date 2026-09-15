@@ -29829,6 +29829,32 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     }
 }
 
+// prefix:<|> — the value AS A SLIP. Two callers build one: the eager `|$x`
+// below and the `|*` curry above it, so it lives in one place and the curried
+// form cannot drift from the direct one.
+static Value slipOf(const Value& v) {
+    if (v.t == VT::Array && v.arr()) {
+        Value out = Value::array();
+        *out.arr() = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr(); // a shaped array slips its LEAVES
+        out.isList = true; out.s = "Slip";
+        return out;
+    }
+    if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
+    // …and so does a Blob/Buf, over its ELEMENTS: it is Positional, even
+    // though it is a VT::Str internally and would otherwise be taken for a
+    // scalar by the arm below.
+    if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+        Value out = Value::array(v.blobList()); out.isList = true; out.s = "Slip";
+        return out;
+    }
+    // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
+    if (v.t != VT::Hash && v.t != VT::Code) {
+        Value out = Value::array({v}); out.isList = true; out.s = "Slip";
+        return out;
+    }
+    return v;
+}
+
 Value Interpreter::evalUnary(Unary* u) {
     // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
     // nested arrays and hash values (keys kept); ++/-- mutate the elements in
@@ -30578,7 +30604,7 @@ Value Interpreter::evalUnary(Unary* u) {
     // an empty range, so every trie came out one node deep.
     if ((v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode)) &&
         (u->op == "~" || u->op == "-" || u->op == "+" || u->op == "?" || u->op == "!" ||
-         u->op == "so" || u->op == "not" || u->op == "+^" || u->op == "^")) {
+         u->op == "so" || u->op == "not" || u->op == "+^" || u->op == "^" || u->op == "|")) {
         Value inner = v; std::string op = u->op;
         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
@@ -30596,6 +30622,12 @@ Value Interpreter::evalUnary(Unary* u) {
             if (op == "+" || op == "-") return I.prefixNumeric(op, b);
             if (op == "?" || op == "so") return Value::boolean(I.boolify(b));
             if (op == "^") return Value::range(0, strictInt(b), false, true);
+            // `|*` — the one-level flattener `@aoa.map(|*)` spreads each inner
+            // list with. Evaluated eagerly it slipped the WHATEVER itself, and
+            // mapping over that Slip yielded nothing at all: Data::Tree's
+            // `flatten` returned only the root and `levels` only the first
+            // level, silently, on every tree.
+            if (op == "|") return slipOf(b);
             if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
                 if (b.big()) {
                     BigInt res = BigInt(0) - (*b.big() + BigInt(1));
@@ -30697,25 +30729,7 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
-        if (v.t == VT::Array && v.arr()) {
-            Value out = Value::array();
-            *out.arr() = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr(); // a shaped array slips its LEAVES
-            out.isList = true; out.s = "Slip";
-            return out;
-        }
-        if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
-        // …and so does a Blob/Buf, over its ELEMENTS: it is Positional, even
-        // though it is a VT::Str internally and would otherwise be taken for a
-        // scalar by the arm below.
-        if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
-            Value out = Value::array(v.blobList()); out.isList = true; out.s = "Slip"; return out;
-        }
-        // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
-        if (v.t != VT::Hash && v.t != VT::Code) {
-            Value out = Value::array({v}); out.isList = true; out.s = "Slip";
-            return out;
-        }
-        return v;
+        return slipOf(v);
     }
     // user-defined prefix operator: `sub prefix:<§>($x) { … }`
     if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">"))
@@ -30761,6 +30775,16 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             args.push_back(regexLitValue(static_cast<RegexLit*>(a.get())));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
+            // `|*` in an argument list is a WHATEVER-CURRY, not a spread: it is
+            // the one-level flattener `@aoa.map(|*)` uses. Spreading it here put
+            // a bare Whatever in the argument list, so `.map` mapped over
+            // nothing and Data::Tree's `flatten` silently returned just the root.
+            // The curry itself is built by evalUnary; this arm only has to stand
+            // aside for it.
+            if (v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode)) {
+                args.push_back(eval(a.get()));
+                continue;
+            }
             // |@list slips positionally ONE level (post-GLR: nested lists stay
             // whole elements — |(<a b>, <c d>) is two List arguments, not four
             // strings); |%hash slips as named args.

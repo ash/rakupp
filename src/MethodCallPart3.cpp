@@ -1770,7 +1770,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             return asIO(s);
         }
-        if (m == "absolute" || m == "canonpath" || m == "cleanup") {
+        // …but only on an IO::Path. These three used to answer for ANY
+        // invocant, so `7.absolute` returned "$*CWD/7" and `Int.^can("absolute")`
+        // said True — a silent wrong answer where Rakudo throws
+        // X::Method::NotFound, and the way a typo on a number turns into a
+        // plausible-looking path instead of an error.
+        if ((m == "absolute" || m == "canonpath" || m == "cleanup") && inv.hashKind == "IO") {
             std::string s = inv.toStr();
             // Already absolute? On Unix that is a leading `/` and nothing else —
             // `C:foo` is an ordinary relative filename there, so the drive-letter

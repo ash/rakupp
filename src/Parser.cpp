@@ -6314,7 +6314,18 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                             // makes "%{$width}s" a printf format rather than "s".
                             (raw[i + 1] == '{' && c != '%') ||
                             raw[i + 1] == '*' || raw[i + 1] == '!' ||
-                            raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
+                            // `.` is the PUBLIC-ATTRIBUTE twigil, so an attribute
+                            // NAME has to follow it. Accepting a bare `.` made
+                            // `"%.{$n}g"` — the way a printf precision is built —
+                            // parse as a hash subscript on an unnamed attribute,
+                            // and the format string came back as just `"g"`:
+                            // Astro::Sunrise's convergence test compared "g" with
+                            // "g", declared success on the first pass, and its
+                            // `:iter` mode returned midnight for every location.
+                            (raw[i + 1] == '.' && i + 2 < n &&
+                             (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_' ||
+                              (unsigned char)raw[i + 2] >= 0x80)) ||
+                            raw[i + 1] == '^' || colonPh ||
                             (raw[i + 1] == '?' && i + 2 < n &&
                              (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
                             ((unsigned char)raw[i + 1] >= 0x80 &&
