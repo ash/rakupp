@@ -90,8 +90,8 @@ there.)
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6, Apple Silicon M3), re-measured 2026-09-03 at
-  `v3.24.0-51-g4d873a8` (the v3.25.0 release commit, before the tag) — the SAME
+- **Machine:** macOS (Darwin 24.6, Apple Silicon M3), re-measured 2026-09-15 at
+  `v3.28.0-73-gcddf835` — the SAME
   machine as every earlier revision of this file, so the rows are comparable
   with the 2026-09-01, 2026-08-24, 2026-08-22 and 2026-08-21 ones. The
   reference lanes are the proof of that: re-measured in the same sitting,
@@ -401,21 +401,22 @@ clearest sign the wins are where they claim to be.
 
 | Benchmark | Raku++ (interp) | mutsu | Rakudo | vs Rakudo | vs mutsu |
 |---|---:|---:|---:|---|---|
-| bigint    |      5.7 ms |      9.1 ms |    160.9 ms | **28.2×** | **1.6×** |
-| strcat    |      8.1 ms |    106.9 ms |     87.4 ms | **10.8×** | **13.2×** |
-| sortnums  |     25.7 ms |     30.4 ms |    189.4 ms | **7.4×** | **1.2×** |
-| hash      |     18.2 ms |     42.0 ms |    123.8 ms | **6.8×** | **2.3×** |
-| sortby    |     28.0 ms |     32.8 ms |    163.4 ms | **5.8×** | **1.2×** |
-| regex     |     38.1 ms |    238.5 ms |    182.2 ms | **4.8×** | **6.3×** |
-| arrayops  |     47.8 ms |     97.7 ms |    189.0 ms | **4.0×** | **2.0×** |
-| textsplit |     58.0 ms |    246.3 ms |    184.5 ms | **3.2×** | **4.2×** |
-| hashfill  |    103.2 ms |    392.9 ms |    284.1 ms | **2.8×** | **3.8×** |
-| loopsum   |     85.8 ms |    123.6 ms |    230.4 ms | **2.7×** | **1.4×** |
-| arraypush |    127.5 ms |    383.3 ms |    262.5 ms | **2.1×** | **3.0×** |
-| fib       |    299.4 ms |    245.6 ms |    311.4 ms | level | mutsu 1.2× |
-| streq     |    228.8 ms |    609.3 ms |    231.6 ms | level | **2.7×** |
-| rats      |    243.9 ms |    367.6 ms |    236.6 ms | level | **1.5×** |
-| objects   |    479.5 ms |   1585.1 ms |    207.2 ms | Rakudo 2.3× | **3.3×** |
+| bigint     |       5.9 ms |       8.9 ms |     168.0 ms | **28.5×** | **1.5×** |
+| strcat     |       8.4 ms |     107.9 ms |      97.1 ms | **11.6×** | **12.8×** |
+| sortnums   |      28.0 ms |      30.9 ms |     229.6 ms | **8.2×** | level |
+| sortby     |      29.0 ms |      33.5 ms |     191.9 ms | **6.6×** | **1.2×** |
+| hash       |      21.9 ms |      42.6 ms |     136.3 ms | **6.2×** | **1.9×** |
+| regex      |      39.1 ms |     241.4 ms |     209.4 ms | **5.4×** | **6.2×** |
+| arrayops   |      48.4 ms |     100.1 ms |     214.7 ms | **4.4×** | **2.1×** |
+| textsplit  |      61.8 ms |     247.2 ms |     216.5 ms | **3.5×** | **4.0×** |
+| hashfill   |     113.5 ms |     415.2 ms |     304.0 ms | **2.7×** | **3.7×** |
+| loopsum    |      88.8 ms |     123.7 ms |     222.9 ms | **2.5×** | **1.4×** |
+| arraypush  |     142.5 ms |     391.7 ms |     304.6 ms | **2.1×** | **2.7×** |
+| streq      |     251.3 ms |     613.8 ms |     286.9 ms | level | **2.4×** |
+| rats       |     260.7 ms |     369.0 ms |     274.5 ms | level | **1.4×** |
+| fib        |     340.8 ms |     248.8 ms |     353.5 ms | level | mutsu 1.4× |
+| objects    |     381.0 ms |    1588.0 ms |     243.3 ms | Rakudo 1.6× | **4.2×** |
+| multiwhere |     783.1 ms |   35013.9 ms |     357.4 ms | Rakudo 2.2× | **44.7×** |
 
 **`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
 machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
@@ -456,21 +457,22 @@ program.
 
 | Benchmark | Raku++ (`--exe`) | mutsu | Rakudo | vs Rakudo | vs mutsu | vs interp |
 |---|---:|---:|---:|---|---|---:|
-| bigint    |      4.6 ms |      9.1 ms |    160.9 ms | **35.0×** | **2.0×** | 1.2× |
-| strcat    |      3.0 ms |    106.9 ms |     87.4 ms | **29.1×** | **35.6×** | 2.7× |
-| loopsum   |     12.4 ms |    123.6 ms |    230.4 ms | **18.6×** | **10.0×** | 6.9× |
-| hash      |      7.4 ms |     42.0 ms |    123.8 ms | **16.7×** | **5.7×** | 2.5× |
-| sortnums  |     14.3 ms |     30.4 ms |    189.4 ms | **13.2×** | **2.1×** | 1.8× |
-| streq     |     19.4 ms |    609.3 ms |    231.6 ms | **11.9×** | **31.4×** | 11.8× |
-| sortby    |     19.2 ms |     32.8 ms |    163.4 ms | **8.5×** | **1.7×** | 1.5× |
-| hashfill  |     35.6 ms |    392.9 ms |    284.1 ms | **8.0×** | **11.0×** | 2.9× |
-| regex     |     26.5 ms |    238.5 ms |    182.2 ms | **6.9×** | **9.0×** | 1.4× |
-| fib       |     51.3 ms |    245.6 ms |    311.4 ms | **6.1×** | **4.8×** | 5.8× |
-| textsplit |     34.6 ms |    246.3 ms |    184.5 ms | **5.3×** | **7.1×** | 1.7× |
-| arraypush |     53.0 ms |    383.3 ms |    262.5 ms | **5.0×** | **7.2×** | 2.4× |
-| arrayops  |     48.2 ms |     97.7 ms |    189.0 ms | **3.9×** | **2.0×** | 1.0× |
-| rats      |    154.5 ms |    367.6 ms |    236.6 ms | **1.5×** | **2.4×** | 1.6× |
-| objects   |    324.6 ms |   1585.1 ms |    207.2 ms | Rakudo 1.6× | **4.9×** | 1.5× |
+| bigint     |       4.7 ms |       8.9 ms |     168.0 ms | **35.7×** | **1.9×** | 1.3× |
+| strcat     |       3.1 ms |     107.9 ms |      97.1 ms | **31.3×** | **34.8×** | 2.7× |
+| hash       |       7.8 ms |      42.6 ms |     136.3 ms | **17.5×** | **5.5×** | 2.8× |
+| loopsum    |      13.1 ms |     123.7 ms |     222.9 ms | **17.0×** | **9.4×** | 6.8× |
+| sortnums   |      14.7 ms |      30.9 ms |     229.6 ms | **15.6×** | **2.1×** | 1.9× |
+| streq      |      19.4 ms |     613.8 ms |     286.9 ms | **14.8×** | **31.6×** | 13.0× |
+| sortby     |      20.0 ms |      33.5 ms |     191.9 ms | **9.6×** | **1.7×** | 1.4× |
+| hashfill   |      36.8 ms |     415.2 ms |     304.0 ms | **8.3×** | **11.3×** | 3.1× |
+| regex      |      27.0 ms |     241.4 ms |     209.4 ms | **7.8×** | **8.9×** | 1.4× |
+| fib        |      53.0 ms |     248.8 ms |     353.5 ms | **6.7×** | **4.7×** | 6.4× |
+| textsplit  |      35.8 ms |     247.2 ms |     216.5 ms | **6.0×** | **6.9×** | 1.7× |
+| arraypush  |      56.8 ms |     391.7 ms |     304.6 ms | **5.4×** | **6.9×** | 2.5× |
+| arrayops   |      47.8 ms |     100.1 ms |     214.7 ms | **4.5×** | **2.1×** | 1.0× |
+| rats       |     158.7 ms |     369.0 ms |     274.5 ms | **1.7×** | **2.3×** | 1.6× |
+| objects    |     194.5 ms |    1588.0 ms |     243.3 ms | **1.3×** | **8.2×** | 2.0× |
+| multiwhere |     803.3 ms |   35013.9 ms |     357.4 ms | Rakudo 2.2× | **43.6×** | 1.0× |
 
 ### What mutsu is faster at
 
