@@ -233,7 +233,12 @@ add_dependencies(rakupp_rt rakupp_build_info)
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
                                             "${CMAKE_CURRENT_SOURCE_DIR}/include"
                                             "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
-target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
+# ${CMAKE_DL_LIBS} is "dl" on Linux and empty everywhere else we build (Darwin,
+# the BSDs and Windows all carry dlopen in libc). glibc 2.34 folded libdl into
+# libc, so a modern Ubuntu links these without asking — but the release build
+# runs in manylinux 2.28, whose glibc 2.28 still keeps libdl apart, and there
+# dlopen/dlsym/dlclose/dlerror went unresolved at the executable link.
+target_link_libraries(rakupp_rt PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 # On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
 # so the rk_* extension ABI lands in the export table of whatever links this
 # library — the rakupp CLI and `--exe` binaries alike, either of which may host
@@ -293,7 +298,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
                                                   "${CMAKE_CURRENT_SOURCE_DIR}/include"
                                                   "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
-  target_link_libraries(rakupp_shared PUBLIC Threads::Threads)
+  target_link_libraries(rakupp_shared PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
   target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)
   set_target_properties(rakupp_shared PROPERTIES
     OUTPUT_NAME rakupp

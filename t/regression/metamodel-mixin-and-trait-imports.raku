@@ -17,6 +17,12 @@
 #   6. `.^add_multi_method` did not exist.
 #
 # Every expectation below was checked against Rakudo.
+#
+# Gap 4 needs a module that re-exports NativeCall's export list — NativeLibs
+# is the one the original report used, and the `use` below is what arms the
+# whole file. Declared, so a machine without it skips instead of dying on the
+# import: CI installs no ecosystem modules, and there this case cannot run.
+#?requires NativeLibs
 
 use lib $?FILE.IO.parent.add('lib').Str;
 use RakuppTraitProbe;

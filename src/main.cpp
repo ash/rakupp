@@ -678,6 +678,14 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     if (g_slim.deadStrip) c += " -Wl,--gc-sections";
     if (g_slim.stripSyms) c += " -Wl,-s"; // ELF: no symbol table in the output
   #ifdef __linux__
+    // -ldl AFTER the archives, because the runtime dlopen()s: FFI libraries,
+    // rk_* extensions, NativeCall. glibc 2.34 moved dlopen/dlsym into libc and
+    // left libdl.so an empty stub, so on a current distro this changes nothing
+    // — but the release archive is built against glibc 2.28 (manylinux 2.28),
+    // and on any machine at that floor, up to 2.33, --exe linked with dlopen
+    // undefined. The stub keeps the flag valid above 2.34, so it is
+    // unconditional rather than probed.
+    c += " -ldl";
     // --static: the same two flags the Linux release links rakupp itself
     // with. The output then needs only glibc — at the version of the machine
     // that built the runtime archive, not of the machine that ran --exe.
