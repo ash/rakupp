@@ -2200,24 +2200,46 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // (Reached constantly here: this engine's DateTime + Num is a
             // DateTime, where Rakudo's is an Instant, so a module adding a
             // random offset to a bound hands .new exactly this.)
+            //
+            // Date has two shapes of its own (#88: `Date.new(now)` printed
+            // +1789452789-01-01 — the posix reading taken as a year, because
+            // only the DateTime arm below consumed the seconds):
+            //  - Date.new(Dateish) copies the CIVIL day, as Rakudo's
+            //    `self.new($d.year, $d.month, $d.day)` does. A DateTime at
+            //    01:00 in +02:00 is that local date, not the UTC one its posix
+            //    names, so it must not go through the seconds at all;
+            //  - Date.new(Instant) is Rakudo's `self.new(DateTime.new($i))`,
+            //    which is UTC — the seconds arm, with no zone applied.
+            // An Instant is a NUMBER tagged "Instant" (that is how `now` and
+            // Instant.from-posix arrive), so the tag is read before the
+            // Dateish-hash test, which it does not pass.
+            bool fromInstant = pos.size() == 1 && pos[0].hashKind == "Instant";
             if (!isoStr && pos.size() == 1 && pos[0].t == VT::Hash &&
                 (pos[0].hashKind == "DateTime" || pos[0].hashKind == "Date" ||
                  pos[0].hashKind == "Instant")) {
-                Value posix = methodCall(pos[0], pos[0].hashKind == "Instant" ? "Num" : "posix",
+                if (inv.s == "Date" && !fromInstant) {
+                    auto& dh = *pos[0].hash();
+                    auto civil = [&](const char* k) {
+                        auto it = dh.find(k); return it == dh.end() ? 0LL : it->second.toInt();
+                    };
+                    long long cy = civil("year"), cmo = civil("month"), cd = civil("day");
+                    return mk(cy, cmo, cd, 0, 0, Value::integer(0), civilToDays(cy, cmo, cd) * 86400, 0);
+                }
+                Value posix = methodCall(pos[0], fromInstant ? "Num" : "posix",
                                          ValueList{Value::pair("real", Value::boolean(true))});
                 pos[0] = posix;
             }
-            if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
+            if (!isoStr && pos.size() == 1 && pos[0].isNumeric() && (inv.s == "DateTime" || fromInstant)) {
                 // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
                 // shifts the displayed civil time (posix itself stays the same instant).
                 // An INSTANT argument (`DateTime.new(now)`) is on the Instant clock,
                 // which carries the epoch offset `.to-posix` takes back off — the civil
                 // time it names is the POSIX one.
                 double pep = pos[0].toNum();
-                if (pos[0].hashKind == "Instant") pep -= kInstantEpochOffset;
+                if (fromInstant || pos[0].hashKind == "Instant") pep -= kInstantEpochOffset;
                 long long ip = (long long)std::floor(pep);
                 double frac = pep - (double)ip;
-                long long lt = ip + tz;
+                long long lt = ip + (inv.s == "DateTime" ? tz : 0); // a Date has no zone: the UTC day
                 long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
                 long long rem = lt - days * 86400;
                 daysToCivil(days, y, mo, d);
