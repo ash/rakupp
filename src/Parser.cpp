@@ -730,6 +730,30 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             if (c > 127 || ascii::isalnum(c)) return false;
         return true;
     };
+    // `sub term:<name>` is harvested the same way the operators are: a term is
+    // syntax, so the file that `use`s the module has to know the name while it
+    // is still being PARSED. Lingua::EN::Numbers queries its flag with the term
+    // `no-commas?`, which without this read as the sub `no-commas` and then a
+    // stray `?` ("Confused"). Only the name is needed — the term is a 0-ary sub
+    // by the time it is called.
+    {
+        const std::string needle = "term:<";
+        for (size_t pos = src.find(needle); pos != std::string::npos;
+             pos = src.find(needle, pos + 1)) {
+            size_t b = pos;
+            while (b > 0 && ascii::isspace((unsigned char)src[b - 1])) b--;
+            if (b > 0 && src[b - 1] == '&') { b--; while (b > 0 && ascii::isspace((unsigned char)src[b - 1])) b--; }
+            size_t e = b;
+            while (b > 0 && (ascii::isalnum((unsigned char)src[b - 1]) || src[b - 1] == '_')) b--;
+            const std::string kw = src.substr(b, e - b);
+            if (kw != "sub" && kw != "multi" && kw != "proto" && kw != "only" &&
+                kw != "my" && kw != "our") continue;
+            size_t close = src.find('>', pos + needle.size());
+            if (close == std::string::npos) continue;
+            const std::string name = src.substr(pos + needle.size(), close - pos - needle.size());
+            if (!name.empty() && name.find(' ') == std::string::npos) sigilless_.insert(name);
+        }
+    }
     for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
         std::string needle = std::string(cat) + ":<";
         for (size_t pos = src.find(needle); pos != std::string::npos;
@@ -5759,6 +5783,17 @@ ExprPtr Parser::parsePrimary() {
             // listop: `x2 < 0 || 1 > 7` is two comparisons, never `x2(< 0 || 1 >) 7`.
             // (A tight `name(...)` call was already handled above, so invoking a
             // Callable held in a sigilless var still works.)
+            // `sub term:<no-commas?>` — a declared term may end in `?` or `!`,
+            // which the lexer cannot know about: it hands back the identifier and
+            // the punctuation separately. Join them when the joined spelling is a
+            // name something declared (Lingua::EN::Numbers queries its flag with
+            // `no-commas?`, and the bare `no-commas` beside it is a different sub).
+            if (!cur().spaceBefore && cur().kind == Tok::Op &&
+                (cur().text == "?" || cur().text == "!") &&
+                sigilless_.count(name + cur().text)) {
+                std::string full = name + advance().text;
+                auto nt = std::make_unique<NameTerm>(full); nt->noAutoQuote = t.flag; return nt;
+            }
             if (sigilless_.count(name)) { auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = t.flag; return nt; }
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).

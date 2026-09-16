@@ -220,6 +220,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // numeric
     if (m == "abs") {
+        // A Str numifies to its OWN type before the abs: "5000000000000000000"
+        // is that Int, not 5e+18. Falling through to fabs() put every wide
+        // integer through a double — Lingua::EN::Numbers' `comma` splits a
+        // number and calls `.abs` on the string half, so anything past 2**53
+        // came back in scientific notation with the commas inserted into the
+        // exponent ("5e,+18"). `.Numeric` has always answered Int here; only
+        // this arm went the other way.
+        if ((inv.t == VT::Str || inv.t == VT::Match) && !inv.isAllomorph() && inv.hashKind.empty()) {
+            Value n = numifyStr(inv.toStr());
+            if (n.isNumeric() && n.t != VT::Num) return methodCall(n, "abs", args);
+        }
         if (inv.t == VT::Int && inv.big()) return Value::bigint(inv.big()->abs());
         if (inv.t == VT::Int) return inv.toInt() == std::numeric_limits<long long>::min()
             ? Value::bigint(-BigInt(inv.toInt())) : Value::integer(std::llabs(inv.toInt())); // llabs(LLONG_MIN) is UB (it wrapped)
