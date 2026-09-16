@@ -224,6 +224,11 @@ GrammarParseDiag& grammarParseDiag();
 // rk_grammar_shim().
 const char* grammarShimSource();
 extern std::function<Value(const Value&)> g_deproxy; // reads a Proxy container
+// An object's OWN `method Str`, for the stringifying paths that live outside
+// the interpreter and so only ever saw a Value's raw rendering: `sprintf("%s")`
+// and the key of a hash built from an object. Answers false when the value has
+// no user Str, leaving the existing rendering in place.
+extern std::function<bool(const Value&, std::string&)> g_userStr;
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);
 // `errOut`/`errInherit`/`outMode` as in spawnCapture: capture, inherit ours, or

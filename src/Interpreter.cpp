@@ -2882,6 +2882,7 @@ std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 // rakuRepr is a free function with no interpreter to call FETCH with, so the
 // interpreter publishes one here — same shape as g_subsetCheck above.
 std::function<Value(const Value&)> g_deproxy;
+std::function<bool(const Value&, std::string&)> g_userStr;
 std::atomic<uint64_t> g_lexShadowMask{0};
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as
@@ -2924,6 +2925,15 @@ void Interpreter::adoptProcessStatics() {
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
     g_deproxy = [this](const Value& v) -> Value { return deproxy(v); };
+    // Only an OBJECT with a `Str` of its own: everything else keeps the
+    // rendering it already had, so this cannot change what a plain value
+    // sprintf'd or a plain key hashed to.
+    g_userStr = [this](const Value& v, std::string& out) {
+        if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
+        if (!v.obj()->cls->findMethod("Str")) return false;
+        out = strOf(v);
+        return true;
+    };
     g_lexInfixLookup = [this](const std::string& op) -> Value* { return lexInfixLookup(op); };
     g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
         if (!subsets_.count(name)) return false;

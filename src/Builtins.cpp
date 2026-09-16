@@ -2423,7 +2423,12 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
             }
             case 's': {
                 Value sa = nextArg();
-                std::string sv = (sa.t == VT::Any || sa.t == VT::Nil) ? "" : sa.toStr();
+                // `%s` is a .Str, so an object's own one answers it — this is
+                // outside the interpreter, where only the raw rendering was
+                // reachable and `sprintf("%s", $obj)` printed Class<address>.
+                std::string sv;
+                if (sa.t == VT::Any || sa.t == VT::Nil) sv = "";
+                else if (!(g_userStr && g_userStr(sa, sv))) sv = sa.toStr();
                 // Width/precision count characters (codepoints), not bytes, so multibyte
                 // text pads correctly: sprintf("%8s","🦋🦋🦋") → "     🦋🦋🦋".
                 auto cpCount = [](const std::string& s) { int n = 0; for (unsigned char c : s) if ((c & 0xC0) != 0x80) n++; return n; };
@@ -12322,12 +12327,17 @@ void Interpreter::registerBuiltins() {
     B["kv"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling kv() requires an argument"}; ValueList none; return I.methodCall(a[0], "kv", none); };
     B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
     B["append"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
-    B["join"] = [](Interpreter&, ValueList& a) -> Value {
+    // …through the METHOD, so the sub and the method stringify identically.
+    // joinValues asks each element's raw rendering, which does not know about a
+    // user `method Str` — so `join(';', $obj)` printed Class<address> where
+    // `@list.join(';')` printed the object's own text. Dice::Roller's whole
+    // display is `join('; ', @!rolls)` over objects that define Str.
+    B["join"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
-        std::string sep = a[0].toStr();
-        ValueList items;
-        for (size_t i = 1; i < a.size(); i++) { ValueList l = toList(a[i]); items.insert(items.end(), l.begin(), l.end()); }
-        return Value::str(joinValues(items, sep));
+        Value items = Value::array(); items.isList = true;
+        for (size_t i = 1; i < a.size(); i++)
+            for (auto& x : toList(a[i])) items.arr()->push_back(x);
+        return I.methodCall(items, "join", ValueList{a[0]});
     };
     // :16("2e") radix conversion — the value's digits parsed in the given base.
     // :256[a, b, c] — place-value digits in the given base; slips/arrays
