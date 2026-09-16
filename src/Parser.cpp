@@ -3756,12 +3756,23 @@ ExprPtr Parser::parsePrimary() {
     if (isOp("&") && peek().kind == Tok::LBracket && !peek().spaceBefore) {
         advance(); advance(); // & [
         std::string op;
-        while (!isKind(Tok::End) && !isKind(Tok::RBracket)) {
+        // …counting NESTED brackets: `&[R[~~]]` is the R metaop over `[~~]`, and
+        // stopping at the first `]` left a stray one behind. Test::Run flips its
+        // comparison operator that way.
+        int inner = 0;
+        while (!isKind(Tok::End)) {
+            if (isKind(Tok::RBracket)) { if (!inner) break; inner--; }
+            else if (isKind(Tok::LBracket)) inner++;
             // `&[«+»]`: the lexer made «+» a qw-list — restore its markers
             if (isKind(Tok::QwList)) op += "\xC2\xAB" + advance().text + "\xC2\xBB";
             else op += advance().text;
         }
         expectKind(Tok::RBracket, "]");
+        // the nested metaop spelling normalises to the flat name this engine
+        // uses: `R[~~]` is `R~~`, the same operator either way
+        if (op.size() > 3 && op[1] == '[' && op.back() == ']' &&
+            (op[0] == 'R' || op[0] == 'X' || op[0] == 'Z' || op[0] == 'S'))
+            op = op[0] + op.substr(2, op.size() - 3);
         return std::make_unique<VarExpr>("&infix:<" + hyperMarkersToUni(op) + ">");
     }
     // user circumfix operator: `⟦ … ⟧`  ==  circumfix:<⟦ ⟧>( … )
@@ -4888,12 +4899,24 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "&" && peek().kind == Tok::LBracket) {
                 advance(); advance(); // & [
                 std::string op;
-                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
+                // …counting NESTED brackets: `&[R[~~]]` is the R metaop over `[~~]`,
+                // and stopping at the first `]` left a stray one behind ("expected )").
+                // Test::Run flips its comparison operator that way.
+                int inner = 0;
+                while (!isKind(Tok::End)) {
+                    if (isKind(Tok::RBracket)) { if (!inner) break; inner--; }
+                    else if (isKind(Tok::LBracket)) inner++;
                     // `&[«+»]`: the lexer made «+» a qw-list — restore its markers
                     if (isKind(Tok::QwList)) op += "\xC2\xAB" + advance().text + "\xC2\xBB";
                     else op += advance().text;
                 }
                 matchKind(Tok::RBracket);
+                // A metaop written with the nested spelling normalises to the flat
+                // one this engine names it by: `R[~~]` is `R~~`. Rakudo prints the
+                // nested form back as the name; the behaviour is the same operator.
+                if (op.size() > 3 && op[1] == '[' && op.back() == ']' &&
+                    (op[0] == 'R' || op[0] == 'X' || op[0] == 'Z' || op[0] == 'S'))
+                    op = op[0] + op.substr(2, op.size() - 3);
                 return std::make_unique<VarExpr>("&infix:<" + hyperMarkersToUni(op) + ">");
             }
             // `&&(EXPR)` / `||(EXPR)` glued to `(` in TERM position is the value
@@ -6943,10 +6966,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (named && isKind(Tok::Ident) && peek().kind == Tok::LParen) {
             p.namedKey = advance().text;
             advance(); // (
-            if (isKind(Tok::LParen)) { // nested sub-signature:  :value((Str :key($d), …))
+            // nested sub-signature:  :value((Str :key($d), …))  — and the SQUARE
+            // spelling, which destructures a Positional the same way:
+            // `:out([$out?, :pass($p) = True])` is how Test::Run declares a
+            // three-part named argument. Only the paren form was accepted, so
+            // the bracket one died at "expected variable in named-parameter
+            // alias".
+            if (isKind(Tok::LParen) || isKind(Tok::LBracket)) {
+                Tok close = isKind(Tok::LBracket) ? Tok::RBracket : Tok::RParen;
                 advance();
-                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
-                if (!matchKind(Tok::RParen)) error("expected ')' in nested sub-signature");
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(close));
+                if (!matchKind(close)) error("expected closing bracket in nested sub-signature");
                 p.name = ""; p.sigil = '$'; p.named = true;
                 if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
                 if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);

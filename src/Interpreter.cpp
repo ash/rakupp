@@ -432,6 +432,14 @@ static bool valueEqv(const Value& a, const Value& b) {
     if (a.t != b.t && isAnyTypeObject(a) && isAnyTypeObject(b)) return true;
     // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
     if (a.t != b.t) return false;
+    // Two mentions of the same built-in operator are one routine. `&[~~]` is
+    // synthesised fresh each time it is named, so a pointer comparison said
+    // False where Rakudo says True — Test::Run decides whether to flip its
+    // comparison operator with `$op_std eqv &[~~]`, and never matched. User
+    // routines keep pointer identity.
+    if (a.t == VT::Code && a.code() && b.code() && a.code() != b.code() &&
+        a.code()->builtin && b.code()->builtin && !a.code()->name.empty())
+        return a.code()->name == b.code()->name;
     // …and an allomorph is its own type: `42 eqv <42>` is False although both are
     // VT::Int. They differ only in their WHICH, which carries both halves.
     if (a.isAllomorph() || b.isAllomorph()) return whichOf(a) == whichOf(b);
@@ -25389,7 +25397,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Type) same = (l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
                                           l.typeName() == r.typeName()) &&
                                          l.ofType() == r.ofType();
-        else if (l.t == VT::Code) same = (l.code() == r.code());
+        // Two references to the same ROUTINE are one object. A built-in operator
+        // named as a value (`&[~~]`, `&infix:<+>`) is synthesised fresh at every
+        // mention, so pointer identity said False where Rakudo says True —
+        // Test::Run compares `$op_std eqv &[~~]` to decide whether to flip its
+        // comparison, and never matched. Two synthesised builtins with the same
+        // name ARE the same operator; user routines keep pointer identity.
+        else if (l.t == VT::Code)
+            same = (l.code() == r.code()) ||
+                   (l.code() && r.code() && l.code()->builtin && r.code()->builtin &&
+                    !l.code()->name.empty() && l.code()->name == r.code()->name);
         // Lists/Arrays are reference identity — except a CAPTURE, which is the one
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
         // their own identity, so `\(1)` stays apart from `\("1")`.
