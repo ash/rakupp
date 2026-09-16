@@ -1485,14 +1485,27 @@ Regex::NodePtr Regex::parseAtom() {
             }
             return seq;
         }
-        else if (peek() == '-' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
+        else if (peek() == '-' && [&]{
+                     // Whitespace is insignificant in a regex, so a blank may sit
+                     // between the sign and the name: `<- print>` is `<-print>`.
+                     // Without this it fell past every branch to a generic
+                     // assertion that matched EMPTY at each position, so
+                     // `$str.subst(/<- print>/, …, :g)` substituted between every
+                     // character instead of nowhere — CSS::Writer escapes
+                     // unprintables that way and put an escape before each letter
+                     // of "Hello World!".
+                     size_t q = pos_ + 1;
+                     while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
+                     return q < pat_.size() && (ascii::isalpha((unsigned char)pat_[q]) ||
+                                                pat_[q] == '.' || pat_[q] == '_'); }()) {
             // <-name> — negated subrule char class: one char NOT matched by rule `name`.
             // Equivalent to `[ <!name> . ]`. COMPOSABLE with further set terms:
             // `<-restricted +name-sep>` (zef's identity grammar) is
             //   [ <name-sep> | <!restricted> . ]
             // — each `+rule` adds a positive alternative, each `-rule` another
             // negative lookahead on the fallback any-char branch.
-            pos_++;
+            pos_++;                                       // '-'
+            while (peek() == ' ' || peek() == '\t') pos_++;  // …and any blank after it
             if (peek() == '.') pos_++;
             auto readName = [&]() {
                 std::string nm;
