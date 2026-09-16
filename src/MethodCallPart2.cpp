@@ -5273,6 +5273,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else if (inv.s == "Int") probeInv = Value::integer(0);
             else if (inv.s == "Num") probeInv = Value::number(0);
             else if (inv.s == "Bool") probeInv = Value::boolean(false);
+            // …and the rest of the built-in types a program asks about. Only
+            // four had a sentinel, so `Rat.can('precise')` answered [] for a
+            // method `(0.5).precise` plainly runs — an `augment class Rat` is
+            // invisible to .can without one, which is the single assertion
+            // Rat::Precise's suite fails on (can-ok is Test's .^can).
+            else if (inv.s == "Rat" || inv.s == "FatRat") probeInv = Value::rat(BigInt(0), BigInt(1));
+            else if (inv.s == "Complex") probeInv = Value::complex(0, 0);
+            else if (inv.s == "Array") { probeInv = Value::array(); }
+            else if (inv.s == "List" || inv.s == "Seq") probeInv = Value::list({});
+            else if (inv.s == "Hash" || inv.s == "Map") probeInv = Value::makeHash();
+            else if (inv.s == "Pair") probeInv = Value::pair("k", Value::integer(0));
         }
         if (!ci && out.arr()->empty() && !mn.empty() &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&

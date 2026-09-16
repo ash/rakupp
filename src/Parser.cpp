@@ -1139,7 +1139,13 @@ ExprPtr Parser::parseExpr(int minbp) {
     for (;;) {
         // a block-closing `}` at end of line ends the statement: whatever is on the
         // next line is a new one, not an infix continuation (see lastBlockClose_)
-        if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && cur().line != toks_[pos_ - 1].line)
+        // …unless an UNSPACE joins them: `} \` + newline + `==> sort()` is ONE
+        // statement, and the backslash is the whole reason it is. An unspaced
+        // token is the only way a token on a LATER line carries no space before
+        // it, so that flag is the test (P6Repl::Helper feeds a gather that way,
+        // and `do {1} \` + newline + `+ 2` silently answered 1).
+        if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && cur().line != toks_[pos_ - 1].line &&
+            cur().spaceBefore)
             break;
         // user-defined infix operator: `4 avg 10`  ==  infix:<avg>(4, 10)
         // A SYMBOLIC user infix (`sub infix:<±>`) arrives as Tok::Op, not Ident —
@@ -2001,8 +2007,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         // solution came to ask a Block for its sum. The `}` has to belong to the
         // statement being parsed: when the NEXT statement starts right after it,
         // nothing has been consumed yet and breaking here would spin forever.
+        // An unspace joins the lines: see the note in parseExpr.
         if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && lastBlockClose_ >= stmtStart_ &&
-            cur().line != toks_[pos_ - 1].line)
+            cur().line != toks_[pos_ - 1].line && cur().spaceBefore)
             break;
         // ZERO-WIDTH UNSPACE before a subscript: `@row\[$j - 1]` is `@row[$j - 1]`.
         // The lexer already drops `\` before a postfix dot and before a
@@ -8961,8 +8968,9 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
     // line is CSS::Writer's, and it stopped four dists in the battery.
     // lastBlockClose_ is the same test the infix and method-call continuation
     // rules use; the statement being parsed must own the brace.
+    // An unspace joins the lines: see the note in parseExpr.
     if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && lastBlockClose_ >= stmtStart_ &&
-        cur().line != toks_[pos_ - 1].line) return s;
+        cur().line != toks_[pos_ - 1].line && cur().spaceBefore) return s;
     if (cur().kind == Tok::Ident) {
         const std::string& kw = cur().text;
         if (kw == "if" || kw == "unless") {
@@ -9328,9 +9336,39 @@ StmtPtr Parser::parseStatementImpl() {
             u->isImport = true;
             u->module = advance().text;
             while (isKind(Tok::Op) && cur().text == "::") { advance(); u->module += "::" + advance().text; }
-            // …and the optional import list, accepted and ignored the way the
-            // `require` forms accept theirs.
-            while (!isKind(Tok::End) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace)) advance();
+            // …and the import list, which for `import` is the whole point of the
+            // statement: `need Math::Trig; import Math::Trig :radial;` is how a
+            // module's SELECTIVE exports are asked for after a load that took
+            // none. The list used to be skipped, so the tag never reached the
+            // module and six subs stayed unimported.
+            while (!isKind(Tok::End) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace)) {
+                if (isOp(":") && peek().kind == Tok::Var && peek().text.size() > 1 &&
+                    std::strchr("&$@%", peek().text[0])) {      // :&name
+                    advance();
+                    u->importArgs.push_back(advance().text);
+                    continue;
+                }
+                if (isOp(":") && peek().kind == Tok::Ident) {   // :tag
+                    advance();
+                    std::string tag = advance().text;
+                    bool valued = (isOp("<") && !cur().spaceBefore) ||
+                                  (isKind(Tok::QwList) && !cur().spaceBefore) ||
+                                  (isKind(Tok::LParen) && !cur().spaceBefore);
+                    if (!valued) u->importArgs.push_back(tag);
+                    continue;
+                }
+                if (isKind(Tok::QwList)) {                      // <a b>
+                    std::string w;
+                    for (char c : cur().text) {
+                        if (c == ' ' || c == '\t') { if (!w.empty()) u->importArgs.push_back(w); w.clear(); }
+                        else w += c;
+                    }
+                    if (!w.empty()) u->importArgs.push_back(w);
+                    advance();
+                    continue;
+                }
+                advance();
+            }
             matchKind(Tok::Semicolon);
             return u;
         }

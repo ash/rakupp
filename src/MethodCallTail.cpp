@@ -468,7 +468,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
          inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair ||
          inv.t == VT::Type) && // a type object is one item to ITERATE (see above)
-        (m == "grep" || m == "map" || m == "first" || m == "sort" || m == "reverse" ||
+        (m == "grep" || m == "map" || m == "flatmap" || m == "first" || m == "sort" || m == "reverse" ||
          m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply" ||
          m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
          m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" ||
@@ -1099,6 +1099,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Match) {
         static const std::set<std::string> listy = {
             "map", "flatmap", "grep", "first", "reduce", "sort", "reverse",
+            "flat", // Email::Valid asks a Match for `.flat` before it walks the captures
             "join", "kv", "pairs", "antipairs", "head", "tail", "skip", "rotor",
             "classify", "categorize", "unique", "squish", "sum", "min", "max",
             "combinations", "permutations", "batch", "produce", "tree"};

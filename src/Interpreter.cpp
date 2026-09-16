@@ -9082,6 +9082,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // the two apart; a program that could would see a name in scope
                 // that Rakudo would not give it.
                 if (u->isImport) {
+                    // `import Mod :tag` asks the module for a SELECTIVE export
+                    // set, which only the loader can answer — the package scan
+                    // below sees what a load already published, never what a tag
+                    // would add. loadModule is idempotent for an already-loaded
+                    // module and replays just the import, which is exactly the
+                    // shape `need Mod; import Mod :tag;` needs (Math::Trig).
+                    if (!u->importArgs.empty())
+                        loadModule(u->module, u->importArgs, /*doImport=*/true, /*quiet=*/true,
+                                   u->verReq, /*requireForm=*/false);
                     const std::string pfx = u->module + "::";
                     for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
                         for (auto& kv : e->vars) {
@@ -9163,7 +9172,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code()->langRev = langRev_;
                 c.code()->rakuAst = rakuAstPragma_;
                 c.code()->closure = tctx_.cur;
-                c.code()->retType = sd->retType;
+                c.code()->retType = qualifyDeclType(sd->retType);
                 c.code()->retRw = sd->retRw;
                 c.code()->declFile = declFileNow();
                 c.code()->declLine = sd->line;
@@ -9458,7 +9467,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.setCode(std::make_shared<Callable>());
                     code.code()->name = md->name;
                     code.code()->params = &md->params;
-                    code.code()->retType = md->retType;
+                    code.code()->retType = qualifyDeclType(md->retType);
                     code.code()->retRw = md->retRw;
                     code.code()->pod = md->pod;
                     code.code()->body = &md->body;
@@ -9486,12 +9495,39 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         // this back, and code that dispatches on it (a
                         // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
                         disp.code()->isMethod = true;
+                        disp.code()->pkg = cd->name;   // see the class path
                         if (code.code()) code.code()->isMultiCandidate = true;
                         disp.code()->candidates.push_back(code);
                         tbl[md->name] = disp;
                         return;
                     }
                     tbl[md->name] = code;
+                };
+                // `augment class Rat does Precise { }` — the ROLES an augment
+                // composes. Rat::Precise adds its `.precise` to Rat and FatRat
+                // that way and declares no method in the body at all, so an
+                // augment that reads only cd->methods added nothing. This is a
+                // shallow composition: the role's own methods, by name, into the
+                // same table the body's methods go to. A role that brings
+                // attributes or composes further roles of its own is not served
+                // here — a full compose needs the class-declaration path.
+                std::vector<std::string> augRoles;
+                if (cd->parentIsDoes && !cd->parent.empty()) augRoles.push_back(cd->parent);
+                for (auto& rn : cd->roles) augRoles.push_back(rn);
+                auto roleInfo = [&](const std::string& rn) -> ClassInfo* {
+                    auto it = classes_.find(rn);
+                    if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                        it = classes_.find(tctx_.pkgPrefix + rn);
+                    if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
+                    return it == classes_.end() ? nullptr : it->second.get();
+                };
+                auto addRolesTo = [&](auto& tbl) {
+                    for (auto& rn : augRoles) {
+                        ClassInfo* ri = roleInfo(rn);
+                        if (!ri) continue;
+                        for (auto& kv : ri->methods)
+                            if (!tbl.count(kv.first)) tbl[kv.first] = kv.second;
+                    }
                 };
                 // resolve package-relative short names: `augment class B` inside
                 // `augment class A { … }` finds the nested A::B via prefix/alias
@@ -9503,6 +9539,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (existing != classes_.end()) {
                     // augment a user-declared type — merge into its ClassInfo
                     ClassInfo* ci = existing->second.get();
+                    addRolesTo(ci->methods);
+                    for (auto& rn : augRoles) ci->doneRoles.insert(rn);
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
@@ -9525,6 +9563,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                    {{"package-kind", "class"}, {"package", cd->name}},
                                    "You tried to augment class " + cd->name +
                                    ", but it does not exist");
+                    addRolesTo(builtinExt_[cd->name]);
                     for (auto& md : cd->methods) addTo(builtinExt_[cd->name], md.get());
                     noteSymbolMutation("augment (built-in type)");
                 }
@@ -10204,7 +10243,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // a role method, and GLOBAL made every method look class-borne
                 code.code()->pkg = clsName;
                 code.code()->params = &md->params;
-                code.code()->retType = md->retType;
+                code.code()->retType = qualifyDeclType(md->retType, clsName);
                 code.code()->retRw = md->retRw;
                 code.code()->body = &md->body;
                 code.code()->langRev = langRev_;
@@ -10296,6 +10335,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         // this back, and code that dispatches on it (a
                         // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
                         disp.code()->isMethod = true;
+                        // …and it belongs to the same class its candidates do. A
+                        // trait on the PROTO (`proto method pick(|) is protected
+                        // {*}`) reads `$method.package`, and the group carried no
+                        // package at all, so it answered GLOBAL — Method::Protected
+                        // then asked GLOBAL for `^add_attribute`.
+                        disp.code()->pkg = clsName;
                         disp.code()->candidates.push_back(code);
                         ci->methods[key] = disp;
                     }
@@ -11931,7 +11976,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
     // `()` and only a bare `{;}` gets the implicit `$_`
     code.code()->hadSig = be->isPointy;
-    code.code()->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
+    code.code()->retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     code.code()->retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
     if (be->params.empty()) code.code()->placeholders = computePlaceholders(be->body);
     // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
@@ -14835,6 +14880,10 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
+    // the default `=~=` tolerance. A program that SETS it gets its own dynamic
+    // and never reaches here; reading it used to answer Any, which is a value
+    // no arithmetic can use.
+    if (name == "$*TOLERANCE") return Value::number(1e-15);
     if (name == "$*INIT-INSTANT") return initInstantVal();
     if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash())["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash())["id"] = Value::integer(1); return h; }
     if (name == "$*SCHEDULER") {
@@ -18115,7 +18164,11 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // declared as `--> Num`. Only the boxed set was consulted here, so every
     // native return constraint died "Type 'num' is not declared" the moment the
     // routine actually returned a value (an empty body never reached the check).
-    std::string retName = resolveClassAlias(c.retType);
+    // …qualified against the DECLARING type as well: a method of `unit class
+    // RetUse` whose `--> Line` means RetUse::Line cannot be resolved at
+    // declaration time, because the class registers its methods before its
+    // nested declarations run. At the call everything is registered.
+    std::string retName = resolveClassAlias(qualifyDeclType(c.retType, c.pkg));
     // A `constant` bound to a type object NAMES a type: `my constant DH = Pointer;
     // sub get_dh2048() returns DH {…}`. Nothing registers such a name as a class,
     // so this check called it undeclared and the routine died the moment it
@@ -25235,11 +25288,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // comparisons -> Bool
     if (op == "==") return Value::boolean(l.toNum() == r.toNum());
     if (op == "!=") return Value::boolean(l.toNum() != r.toNum());
-    if (op == "=~=" || op == "≅") { // approximately-equal (relative tolerance 1e-15)
+    if (op == "=~=" || op == "≅") {
+        // Rakudo's tolerance is RELATIVE, except when one side is exactly zero,
+        // where a relative test can never succeed — there it is absolute. That
+        // is the whole difference between `1e-17 =~= 0` (True) and
+        // `1e-17 =~= 1e-18` (False), and Math::Trig's `ok($z =~= 0)` is the
+        // first test in the corpus to depend on it. The tolerance itself is
+        // $*TOLERANCE, which a program may set; it was hardcoded here.
         double a = strictNum(l).toNum(), b = strictNum(r).toNum();
         if (a == b) return Value::boolean(true);
+        const double tol = Interpreter::toleranceDyn();
+        if (a == 0.0 || b == 0.0) return Value::boolean(std::fabs(a - b) < tol);
         double scale = std::max(std::fabs(a), std::fabs(b));
-        return Value::boolean(std::fabs(a - b) <= 1e-15 * scale);
+        return Value::boolean(std::fabs(a - b) / scale < tol);
     }
     if (op == "<")  return Value::boolean(l.toNum() <  r.toNum());
     if (op == "<=") return Value::boolean(l.toNum() <= r.toNum());
@@ -34586,6 +34647,9 @@ Value Interpreter::eval(Expr* e) {
                 return rakuIntrospection(false);
             if (ve->name == "$*PROGRAM") { Value p = Value::str(progName()); p.hashKind = "IO"; return p; } // running script, as IO::Path
             if (ve->name == "$*PROGRAM-NAME") return Value::str(progName());
+            // the `=~=` tolerance, readable as well as settable (a `my
+            // $*TOLERANCE = …` is found by findDynamicLenient above and wins)
+            if (ve->name == "$*TOLERANCE") return Value::number(1e-15);
             if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
             if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
             if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {

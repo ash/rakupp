@@ -1746,6 +1746,25 @@ public:
         }
         return n;
     }
+    // A bare RETURN type names the enclosing package's own class before any
+    // imported one. `unit class CSV::Table` declares `class Line` and uses
+    // Text::Utils, which exports a Line of its own; `sub process-header(…
+    // --> Line)` means CSV::Table::Line, and the flat alias table — first-wins
+    // and global — gave it the import instead, so every call died on its own
+    // return value. Term position already resolved it correctly, which is how
+    // one file disagreed with itself. Resolved at DECLARATION time, while the
+    // package prefix is still known.
+    std::string qualifyDeclType(const std::string& t, const std::string& inPkg = "") {
+        if (t.empty()) return t;
+        if (t.find("::") != std::string::npos) return t;
+        if (classes_.count(t) || subsets_.count(t)) return t;  // an exact name still wins
+        // the DECLARING type first (a method of `unit class RetUse` sees
+        // RetUse::Line), then the enclosing package prefix
+        if (!inPkg.empty() && classes_.count(inPkg + "::" + t)) return inPkg + "::" + t;
+        if (tctx_.pkgPrefix.empty()) return t;
+        std::string q = tctx_.pkgPrefix + t;
+        return classes_.count(q) ? q : t;
+    }
     // `augment class Int {…}` on a built-in type: extra methods keyed by type name.
     // methodCall consults this for native values whose type has been augmented.
     std::unordered_map<std::string, std::unordered_map<std::string, Value>> builtinExt_;
@@ -2675,9 +2694,25 @@ inline Value numToIntExact(double x) {
     char buf[400]; std::snprintf(buf, sizeof buf, "%.0f", x);
     return Value::bigint(BigInt::fromString(buf));
 }
-inline Value rtBFloor(Interpreter&, const Value& v)   { return v.t == VT::Int ? v : numToIntExact(std::floor(v.toNum())); }
-inline Value rtBCeiling(Interpreter&, const Value& v) { return v.t == VT::Int ? v : numToIntExact(std::ceil(v.toNum())); }
-inline Value rtBRound(Interpreter&, const Value& v)   { return v.t == VT::Int ? v : numToIntExact(std::floor(v.toNum() + 0.5)); }
+// A Rat/FatRat goes to its METHOD, which divides exactly. Through toNum() a
+// wide rational is a double first, and `floor(FatRat.new(10**55-1, 10**55))`
+// answered 1 for a number strictly below 1 — the sub form disagreed with the
+// method form on the same value (Rat::Precise renders exactly such a FatRat).
+inline Value rtBFloor(Interpreter& I, const Value& v) {
+    if (v.t == VT::Int) return v;
+    if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "floor", none); }
+    return numToIntExact(std::floor(v.toNum()));
+}
+inline Value rtBCeiling(Interpreter& I, const Value& v) {
+    if (v.t == VT::Int) return v;
+    if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "ceiling", none); }
+    return numToIntExact(std::ceil(v.toNum()));
+}
+inline Value rtBRound(Interpreter& I, const Value& v) {
+    if (v.t == VT::Int) return v;
+    if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "round", none); }
+    return numToIntExact(std::floor(v.toNum() + 0.5));
+}
 // log / log10 / log2 of a NEGATIVE real. Before 6.e the answer is NaN; from 6.e
 // on it is the complex logarithm, the same widening 6.e gave sqrt — ln|x| + iπ,
 // divided by ln(base) when there is one. Written once here because all three

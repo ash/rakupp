@@ -601,6 +601,40 @@ void Lexer::skipWhitespaceAndComments() {
         // is the three words "#", "name", "ver". Treating the `#` as a comment
         // swallowed the closing `>` and the rest of the line.
         if (c == '#' && angleWords_ == 0) {
+            // `#`«…»` — the GUILLEMET spelling of the same embedded comment, and
+            // the tripled `#`«««…»»»` a module uses to comment out a whole
+            // signature (Terminal::Gauge). Both delimiters are two UTF-8 bytes,
+            // so this cannot ride the single-char path below; without it the
+            // commented-out text was lexed as code and its `-->` reported as an
+            // operator in term position.
+            if ((peek(1) == '`' || peek(1) == '|' || peek(1) == '=') &&
+                (unsigned char)peek(2) == 0xC2 && (unsigned char)peek(3) == 0xAB) {
+                const int startLine = line_;
+                auto at = [&](size_t k, unsigned char b1) {
+                    return (unsigned char)peek(k) == 0xC2 && (unsigned char)peek(k + 1) == b1;
+                };
+                advance(); advance(); // # `
+                size_t rep = 0;
+                while (!eof() && at(0, 0xAB)) { advance(); advance(); rep++; }
+                auto runOf = [&](unsigned char b1) {  // how many of the pair start here
+                    size_t k = 0;
+                    while (at(k * 2, b1)) k++;
+                    return k;
+                };
+                auto eat = [&] { for (size_t k = 0; k < rep; k++) { advance(); advance(); } };
+                int d = 1;
+                while (!eof() && d > 0) {
+                    if (runOf(0xAB) >= rep)      { eat(); d++; }
+                    else if (runOf(0xBB) >= rep) { eat(); d--; }
+                    else advance();
+                }
+                if (d > 0) {
+                    std::string open, close;
+                    for (size_t k = 0; k < rep; k++) { open += "\xC2\xAB"; close += "\xC2\xBB"; }
+                    runawayTerm(close, open, startLine);
+                }
+                continue;
+            }
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
             // bracket group only — the rest of the line still parses. The declarator
             // comments #|[ ... ] / #=[ ... ] take the same multi-line bracket forms.

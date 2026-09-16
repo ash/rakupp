@@ -12239,6 +12239,55 @@ void Interpreter::registerBuiltins() {
         return Value::nil();
     };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
+    // msb/lsb — the position of an Int's highest and lowest set bit, counting
+    // from 0. Rakudo's answer for a NEGATIVE argument is the two's-complement
+    // one: msb(-1) is 0, msb(-255) is 8 (one more than msb(255)), because the
+    // sign bit needs a place. Zero has no set bit at all, so both answer Nil.
+    // Rat::Precise sizes its decimal expansion with `msb(self.denominator)`.
+    {
+        // the number of bits in |v|, 0 for zero — base-1e9 BigInt has no bit
+        // view, so step down 32 bits at a time and finish in a machine word
+        auto bitLen = [](BigInt v) -> long long {
+            if (v.isZero()) return 0;
+            if (v.sign < 0) v = v.abs();
+            long long bits = 0;
+            const BigInt chunk(4294967296LL);
+            while (!v.fitsLL()) { BigInt q, r; BigInt::divmod(v, chunk, q, r); v = q; bits += 32; }
+            unsigned long long u = (unsigned long long)v.toLL();
+            while (u) { u >>= 1; bits++; }
+            return bits;
+        };
+        auto trailing = [](BigInt v) -> long long {
+            if (v.sign < 0) v = v.abs();
+            long long tz = 0;
+            const BigInt chunk(4294967296LL);
+            for (;;) {
+                BigInt q, r; BigInt::divmod(v, chunk, q, r);
+                unsigned long long rr = (unsigned long long)r.toLL();
+                if (rr != 0) { while ((rr & 1ULL) == 0) { rr >>= 1; tz++; } return tz; }
+                if (q.isZero()) return tz;
+                tz += 32; v = q;
+            }
+        };
+        auto asBig = [](const Value& v) {
+            return v.big() ? *v.big() : BigInt(v.toInt());
+        };
+        B["msb"] = [bitLen, asBig](Interpreter&, ValueList& a) -> Value {
+            if (a.empty()) return Value::nil();
+            BigInt n = asBig(a[0]);
+            if (n.isZero()) return Value::nil();
+            // a negative needs the bit that holds its sign: msb(-n) is the
+            // length of (|n| - 1), which is 0 for -1 and 8 for both -255 and -256
+            if (n.sign < 0) return Value::integer(bitLen(n.abs() - BigInt(1)));
+            return Value::integer(bitLen(n) - 1);
+        };
+        B["lsb"] = [trailing, asBig](Interpreter&, ValueList& a) -> Value {
+            if (a.empty()) return Value::nil();
+            BigInt n = asBig(a[0]);
+            if (n.isZero()) return Value::nil();
+            return Value::integer(trailing(n));
+        };
+    }
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
     B["end"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling end() requires an argument"}; ValueList none; return I.methodCall(a[0], "end", none); };
