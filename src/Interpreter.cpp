@@ -5855,12 +5855,19 @@ static bool findModuleSourceFor(const std::string& name,
                                 bool sixE) {
     std::string rel = name;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
-    // 6.e dropped `.pm`: CompUnit::Repository::FileSystem looks for .rakumod and
-    // .pm6 only, so a 6.e program cannot load a module written in a .pm file.
-    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
-    static const char* exts6e[]  = {".rakumod", ".pm6", ".raku"};
+    // The extensions a NAME resolves to, and `.raku` is deliberately not among
+    // them: Rakudo's CompUnit::Repository::FileSystem does not take it even
+    // with an explicit -I, `.raku` is the extension a PROGRAM wears, and
+    // treating it as a module made every script beside the one being run a
+    // candidate module — a scratch file named `paths.raku` shadowed the
+    // installed `paths` distribution and reported "Undefined routine 'paths'".
+    // A dist that really does keep a module in a `.raku` file still loads: a
+    // META6 `provides` path is explicit and is tried before any of these.
+    // 6.e then drops `.pm`, as Rakudo does, leaving .rakumod and .pm6.
+    static const char* extsAll[] = {".rakumod", ".pm6", ".pm"};
+    static const char* exts6e[]  = {".rakumod", ".pm6"};
     const char* const* exts = sixE ? exts6e : extsAll;
-    const size_t nExts = sixE ? 3 : 4;
+    const size_t nExts = sixE ? 2 : 3;
     for (auto& entry : searchPath) {
         std::string storePre;
         if (repoSpecStore(entry, storePre)) continue; // an inst# store is not a directory
@@ -5907,11 +5914,11 @@ bool moduleFileOnPath(const std::string& module,
                       const std::vector<std::string>& paths, bool sixE) {
     std::string rel = module;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
-    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    static const char* extsAll[] = {".rakumod", ".pm6", ".pm"};  // not `.raku` — see findModuleSourceFor
     for (auto& base : paths) {
         std::string storePre;
         if (base.empty() || repoSpecStore(base, storePre)) continue; // an inst# store is not a directory (`base[0] == '#'` never matched one)
-        for (size_t e = 0; e < (sixE ? 3u : 4u); e++) {
+        for (size_t e = 0; e < (sixE ? 2u : 3u); e++) {
             struct ::stat st;
             std::string cand = repoSpecDir(base) + "/" + rel + extsAll[e]; // `file#/dir` names a directory
             if (::stat(cand.c_str(), &st) == 0) return true;
@@ -7092,12 +7099,19 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // distribution root rather than its `lib/` dir (e.g. Roast's `use lib
     // $*PROGRAM.parent(2).add("packages/Test-Helpers")`), so try `<base>/lib/` too —
     // this is the common case Rakudo resolves via META6.json.
-    // 6.e dropped `.pm`: CompUnit::Repository::FileSystem looks for .rakumod and
-    // .pm6 only, so a 6.e program cannot load a module written in a .pm file.
-    static const char* extsAll[] = {".rakumod", ".pm6", ".raku", ".pm"};
-    static const char* exts6e[]  = {".rakumod", ".pm6", ".raku"};
+    // The extensions a NAME resolves to, and `.raku` is deliberately not among
+    // them: Rakudo's CompUnit::Repository::FileSystem does not take it even
+    // with an explicit -I, `.raku` is the extension a PROGRAM wears, and
+    // treating it as a module made every script beside the one being run a
+    // candidate module — a scratch file named `paths.raku` shadowed the
+    // installed `paths` distribution and reported "Undefined routine 'paths'".
+    // A dist that really does keep a module in a `.raku` file still loads: a
+    // META6 `provides` path is explicit and is tried before any of these.
+    // 6.e then drops `.pm`, as Rakudo does, leaving .rakumod and .pm6.
+    static const char* extsAll[] = {".rakumod", ".pm6", ".pm"};
+    static const char* exts6e[]  = {".rakumod", ".pm6"};
     const char* const* exts = sixE() ? exts6e : extsAll;
-    const size_t nExts = sixE() ? 3 : 4;
+    const size_t nExts = sixE() ? 2 : 3;
     if (traceLoad) {
         std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
     }

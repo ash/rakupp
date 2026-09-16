@@ -205,6 +205,22 @@ search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
 `-I`. `RAKULIB` does the same via the environment, separating paths with `,`
 or `:` — both are accepted.
 
+**Three directories are already on that path**, relative to the directory you
+run from: `lib`, `.`, and `rakulib`. So a checkout with its modules in `lib/`
+needs no `-I lib`, and a flat project whose modules sit beside the program needs
+no `-I .`. **Rakudo has neither** — there `-I.` is the explicit opt-in — so a
+program that relies on the implicit entries will not run under Rakudo unaltered.
+Pass `-I` explicitly in anything you intend to be portable.
+
+A name resolves to `Foo.rakumod`, `Foo.pm6` or `Foo.pm` (`.pm` goes away under
+`use v6.e.PREVIEW`), exactly as Rakudo resolves it. **`Foo.raku` is not a
+module** on either engine: `.raku` is the extension a program wears, and a
+distribution that does keep a module in one names that path in its META6
+`provides`, which is honoured. This matters more here than on Rakudo precisely
+because `.` is implicit — otherwise every script in your working directory
+would be a candidate module, and a scratch file could displace an installed
+distribution of the same name.
+
 Raku++ can cache the parsed form of what it runs, so a later run skips
 re-parsing anything unchanged. It is **off by default**, with two switches:
 

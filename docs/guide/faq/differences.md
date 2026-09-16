@@ -107,6 +107,29 @@ on the list.
 **Hash iteration order.** Raku++ iterates sorted; Rakudo's order is its own and
 varies. Neither is guaranteed by the language — sort if you depend on it.
 
+**`lib`, `.` and `rakulib` are already on the module search path.** They are
+relative to the directory you run from, so a checkout finds its own `lib/`
+without `-I lib`, and a program finds a module sitting beside it without
+`-I .`. Rakudo has none of the three: there, `-I.` is the explicit opt-in.
+
+```sh
+cd myproject && rakupp app.raku     # finds lib/Helper.rakumod and ./Helper.rakumod
+cd myproject && raku  app.raku      # Could not find Helper
+cd myproject && raku -I. -Ilib app.raku   # …now it does
+```
+
+Two consequences. A program written against Raku++ and never run elsewhere may
+be relying on this without knowing; pass `-I` explicitly in anything meant to
+be portable. And a module file in the directory you happen to be in takes
+precedence over an installed distribution of the same name — convenient when
+that is a working copy you are editing, and worth knowing about when it is not.
+
+Both engines resolve a name to `Foo.rakumod`, `Foo.pm6` or `Foo.pm`, and `.pm`
+goes away under `use v6.e.PREVIEW`. **Neither resolves `Foo.raku`** — `.raku`
+is a program's extension, not a module's — and on both, a distribution that
+does keep a module in a `.raku` file is loaded through the path its META6
+`provides` names.
+
 **`$*RAKU.compiler.version` reports a Rakudo era, not the Raku++ release.**
 It answers `v2026.08` — the Rakudo release Raku++ is verified byte-identical
 against — while the rest of the object says who is actually running:
