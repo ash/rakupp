@@ -1235,6 +1235,35 @@ ExprPtr Parser::parseExpr(int minbp) {
                 rPfx = "R"; advance();
             }
             bool made = false;
+            // A CALLABLE used as an infix: `A [&f] B` is `f(A, B)`. Terminal::UI
+            // picks `&infix:<+>` or `&infix:<->` at run time and applies it as
+            // `$current [&($op)] 1`; the spelling gathering below only recognises
+            // an operator's own text, so every `&` form died at "expected )".
+            // Rakudo gives it additive precedence, left-associative:
+            // `1 + 2 [&f] 3` is `(1+2) [&f] 3` and `2 [&f] 3 + 1` is `(2 [&f] 3) + 1`.
+            if (BP_ADD >= minbp &&
+                ((cur().kind == Tok::Var && cur().text.size() > 1 && cur().text[0] == '&') ||
+                 (cur().kind == Tok::Op && cur().text == "&" && peek().kind == Tok::LParen))) {
+                ExprPtr fn;
+                bool ok = true;
+                if (cur().kind == Tok::Var) fn = parsePrefix();
+                else {
+                    advance(); advance();                    // & (
+                    fn = parseExpression();
+                    if (!matchKind(Tok::RParen)) ok = false;
+                }
+                if (ok && isKind(Tok::RBracket)) {
+                    advance();                               // ]
+                    auto call = std::make_unique<Call>();
+                    call->callee = std::move(fn);
+                    call->parenned = true;
+                    call->args.push_back(std::move(lhs));
+                    call->args.push_back(parseExpr(BP_ADD + 1));
+                    lhs = std::move(call);
+                    made = true;
+                }
+                if (!made) { pos_ = save; continue; }        // not this form — hand it back
+            }
             // The content is the operator's own spelling, which may be more than
             // one token: `[max]` and `[eq]` are words, `[Z=>]`/`[X~]` are a word
             // plus an operator. Gather up to four adjacent tokens and ask the
@@ -7093,6 +7122,23 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
                 }
             }
+            // …and a type capture AFTER the constraint: `Response ::RESPONSE = …`
+            // constrains the parameter AND names whatever type actually arrived.
+            // The capture branch above only fires when `::` OPENS the parameter,
+            // so the constrained spelling died at "expected ) (got '::')". Net::HTTP
+            // declares both GET and POST that way. typeCapture stays FALSE here —
+            // it means "this parameter has no real type", and this one does: Rakudo
+            // refuses `f("s")` for `f(Int ::T $x)` at compile time.
+            if (isOp("::") && peek().kind == Tok::Ident) {
+                advance();
+                p.captureName = advance().text;
+                declTypeNames_.insert(p.captureName);
+                if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                    (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
+                    advance(); std::string sm = advance().text;
+                    if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
+                }
+            }
         }
         // named alias following a type constraint:  Int:D :key($plan)  /
         // Pair :value((Str:D :key($desc), :value(&tests)))  (nested sub-signature)
@@ -7243,6 +7289,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
         parseParamTraits(p); // where / is / returns / of trait clauses
+        // …and a destructuring sub-signature may sit after them too:
+        // `@metas is copy [$, *@] = $.package-list` (App::ecogen). The check
+        // above runs before the trait ladder, so the trait-first spelling died
+        // at "expected ) (got '['".
+        if (!p.subSig && isKind(Tok::LBracket) && cur().spaceBefore) {
+            advance();
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RBracket));
+            if (!matchKind(Tok::RBracket)) error("expected ']' in sub-signature");
+        }
         // …the invocant marker may also sit AFTER the traits:
         // `(::?CLASS:U $_ is rw: **@values)` — BinaryHeap's writable
         // class-invocant form. The check above runs before the trait loop, so

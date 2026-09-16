@@ -10396,7 +10396,11 @@ void Interpreter::registerBuiltins() {
         // string named no module at all and every such use-ok reported a failure.
         std::string bare = mod, verReq;
         for (size_t i = 0; i + 1 < mod.size(); i++) {
-            if (mod[i] != ':' || (i && mod[i - 1] == ':')) continue;
+            // …and a `::` in the NAME is not an adverb colon. The guard skipped
+            // the second colon of the pair but not the first, so
+            // `Sway::Config:auth<zef:CIAvash>` read its adverb as ":Config:auth",
+            // fell out of the loop and asked the loader for the whole string.
+            if (mod[i] != ':' || (i && mod[i - 1] == ':') || mod[i + 1] == ':') continue;
             size_t lt = mod.find('<', i);
             size_t gt = lt == std::string::npos ? std::string::npos : mod.find('>', lt);
             if (lt == std::string::npos || gt == std::string::npos) break;

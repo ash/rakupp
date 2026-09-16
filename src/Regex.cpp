@@ -2056,7 +2056,16 @@ void Regex::parseClassBodyMember(Node* node) {
         if (ascii::isspace((unsigned char)peek())) { pos_++; continue; }
         if (peek() == '\\') {
             pos_++; char e = peek(); pos_++;
-            if (e == 'd' || e == 'w' || e == 's') node->classFlags += e;
+            // \d \w \s — and their NEGATED uppercase spellings, which are a
+            // positive member meaning "anything this class does not match".
+            // `<[\S]>` matched the literal letter S, so Net::HTTP::URL's
+            // `token path { <+[\S] -[?#]>* }` matched nothing and the module
+            // would not load. classFlags has carried "uppercase = negated" in
+            // its declaration all along and LtmNfa already reads it that way;
+            // only the two matchers below had never been taught.
+            if (e == 'd' || e == 'w' || e == 's' ||
+                e == 'D' || e == 'W' || e == 'S') node->classFlags += e;
+            else if (e == 'N') node->classFlags += 'N';   // \N — not a logical newline
             // `\n` is the LOGICAL newline inside a class exactly as it is outside
             // one — LF, VT, FF, CR, NEL, LS, PS (the 'n' flag, charClassCp). As
             // plain LF it left CR out, and PDF::Grammar's whitespace token
@@ -2407,8 +2416,11 @@ bool Regex::classMatch(const Node* n, char ch) const {
             if (!pos && c < 0x80 && (T.bits[c] & posMask)) pos = true;
             // a flag the ASCII table does not carry (`\n`, the logical newline)
             // is tested directly, byte by byte
-            if (!pos) for (char f : n->classFlags)
-                if (T.slot[(unsigned char)f] < 0 && charClassCp(f, c)) { pos = true; break; }
+            if (!pos) for (char f : n->classFlags) {
+                if (ascii::isupper((unsigned char)f)) {      // negated member: in when the class is NOT
+                    if (!charClassCp((char)ascii::tolower((unsigned char)f), c)) { pos = true; break; }
+                } else if (T.slot[(unsigned char)f] < 0 && charClassCp(f, c)) { pos = true; break; }
+            }
             return pos;
         };
         auto subtracted = [&](unsigned char c) -> bool {
@@ -2887,7 +2899,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     bool in = false;
                     for (auto& r : n->ranges)   if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
-                    if (!in) for (char f : n->classFlags)    if (flagHitCp(f, cp)) { in = true; break; }
+                    if (!in) for (char f : n->classFlags)
+                        if (ascii::isupper((unsigned char)f)
+                                ? !flagHitCp((char)ascii::tolower((unsigned char)f), cp)
+                                : flagHitCp(f, cp)) { in = true; break; }
                     bool subtractedCp = false;
                     for (char f : n->negClassFlags) if (flagHitCp(f, cp)) { subtractedCp = true; break; }
                     // enumerated (range) members are whole-grapheme; property/flag members

@@ -18,6 +18,12 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 ## Process
 
+- **[MODULE-HUNTING.md](MODULE-HUNTING.md)** — how to find engine faults by
+  running real distributions, staged cheapest-first: a compile pass, then a load
+  pass, then the test suite, with Rakudo as the filter that throws out what is
+  the machine's fault rather than ours. Why all four stages, the measured cost
+  of each, and the traps (`use-ok` swallows the exception; `-c` cannot see a
+  load fault; a store is reached with `-I inst#`).
 - **[RELEASING.md](RELEASING.md)** — the release checklist: the Roast,
   local-suite, **performance** and compiler-agreement gates that must pass before
   a version is bumped, and why each one exists.

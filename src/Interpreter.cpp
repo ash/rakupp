@@ -12278,6 +12278,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     p.isCopy || p.defaultVal || p.subSig || p.litVal ||
                     p.whereExpr || p.defConstraint || p.coerce ||
                     p.typeCapture ||   // `::T $x` binds the NAME T as well as $x
+                    !p.captureName.empty() ||  // …and so does `Int ::T $x`, which is typed
 
                     (!p.type.empty() && isCoercionSubset(p.type)) || // `subset CC of Str()`: binds coerced
                     (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
@@ -12619,6 +12620,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
                     bv = coerceToType(bv, p.type);
                 if (!p.name.empty() || !p.subSig) env->define(slotName(p, pidx), bv);
+                if (!p.captureName.empty())
+                    env->define(p.captureName, bv.t == VT::Type ? bv : Value::typeObj(bv.typeName()));
                 attrWrite(bv);
             }
             else if (p.defaultVal) {
@@ -12627,6 +12630,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.coerce && !p.type.empty() && dv.typeName() != p.type)
                     dv = coerceToType(dv, p.type); // `IO:D() :$cwd = $*CWD` coerces the DEFAULT too
                 env->define(slotName(p, pidx), dv);
+                if (!p.captureName.empty())
+                    env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
                 attrWrite(dv); // `:$!x = 42` with no arg still initializes the attr
             }
             else if (p.required)
@@ -12742,7 +12747,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // Rakudo says Int for `f(42)`. Red's `method add-column(::T
             // Red::Model:U \type, …)` then passes that `T` on and asks
             // `T.^can($name)`, which is as far as a model's columns got (issue #77).
-            if (p.typeCapture && !p.captureName.empty())
+            // captureName alone is the test: a CONSTRAINED capture (`Int ::T $x`)
+            // is not a typeCapture — its type is real and gets checked — but it
+            // still binds T to whatever arrived.
+            if (!p.captureName.empty())
                 env->define(p.captureName, v.t == VT::Type ? v : Value::typeObj(v.typeName()));
             // POSITIONAL attributive param `method set-body($!body)`: the bound
             // value writes through to the invocant's attribute (Cro's
@@ -12758,9 +12766,25 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
             }
         } else if (p.subSig) {
-            bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
+            // …with a DEFAULT, the default is what gets destructured — binding the
+            // inner signature to () left every inner name undefined even though
+            // the parameter had a value to unpack (App::ecogen's
+            // `@metas is copy [$, *@] = $.package-list`).
+            if (p.defaultVal) {
+                Value dv = evalDefault(p.defaultVal.get());
+                ValueList inner;
+                if (dv.arr()) inner = *dv.arr(); else if (isDefined(dv)) inner.push_back(dv);
+                bindParams(*p.subSig, inner, env);
+                if (!p.name.empty()) env->define(slotName(p, pidx), dv);
+            }
+            else bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
         } else if (p.defaultVal) {
-            env->define(slotName(p, pidx), evalDefault(p.defaultVal.get()));
+            Value dv = evalDefault(p.defaultVal.get());
+            // a type capture names the DEFAULT's type when no argument came
+            // (`Response ::RESPONSE = Net::HTTP::Response`)
+            if (!p.captureName.empty())
+                env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
+            env->define(slotName(p, pidx), std::move(dv));
         } else {
             env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
         }

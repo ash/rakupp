@@ -2216,14 +2216,33 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // `<-[` or `<+[` (also `+[`/`-[` in a set expression) and cannot nest.
         if (ch == '[') {
             if (inClass) { body += advance(); continue; }        // a member
-            char prev  = body.empty() ? '\0' : body.back();
-            char prev2 = body.size() > 1 ? body[body.size() - 2] : '\0';
+            // The two characters before the `[`, blanks skipped on BOTH sides of
+            // the set operator: `<+[\S] -[#]>`, `<+alnum - [#]>` and `<+[a]-[b]>`
+            // are all one class.
+            auto backNonBlank = [&](size_t from, size_t& at) -> char {
+                size_t k = from;
+                while (k > 0 && (body[k - 1] == ' ' || body[k - 1] == '\t')) k--;
+                at = k;
+                return k > 0 ? body[k - 1] : '\0';
+            };
+            size_t at1 = 0, at2 = 0;
+            char prev = backNonBlank(body.size(), at1);
+            // Reading ` -[` as a plain group left a `#` inside it unshielded, so
+            // it opened a comment that ate the token's closing brace and the
+            // error surfaced at end of file. Net::HTTP::URL's path and query
+            // tokens are written that way, which is as far as Net::HTTP,
+            // LendingClub and WebService::Slack::Webhook all got.
+            char prev2 = at1 > 0 ? backNonBlank(at1 - 1, at2) : '\0';
+            // …and a set operator may continue a NAMED member as readily as a
+            // bracketed one: `<+alnum -[#]>` ends its first member in a letter.
+            bool afterMember = prev2 == '<' || prev2 == ']' ||
+                               ascii::isalnum((unsigned char)prev2) || prev2 == '_';
             // A class opens as `<[`, `<-[`, `<+[`, the zero-width `<?[` / `<![`
             // (Docker::File's `<?[[]>`), or a set-op continuation `]+[` / `]-[`.
             // The char alone cannot decide: in `a?[b]` the `?` is a quantifier
             // and the `[` a plain group.
             if (prev == '<' ||
-                ((prev == '-' || prev == '+') && (prev2 == '<' || prev2 == ']')) ||
+                ((prev == '-' || prev == '+') && afterMember) ||
                 ((prev == '?' || prev == '!') && prev2 == '<'))
                 inClass = true;
             sd++; body += advance(); continue;
