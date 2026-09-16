@@ -1841,8 +1841,41 @@ Regex::NodePtr Regex::parseAtom() {
                         emitCp(std::strtol(digits.c_str(), nullptr, base));
                     }
                 }
+                else if (e == 'c' && peek() == '[') {
+                    // "\c[LATIN CAPITAL LETTER A]" / "\c[10]" — a character named
+                    // or numbered, the same spelling a qq string takes. A comma
+                    // separates several.
+                    pos_++;
+                    std::string body;
+                    while (!eof() && peek() != ']') body += pat_[pos_++];
+                    if (peek() == ']') pos_++;
+                    size_t p2 = 0;
+                    while (p2 <= body.size()) {
+                        size_t comma = body.find(',', p2);
+                        std::string tok = body.substr(p2, comma == std::string::npos ? std::string::npos : comma - p2);
+                        size_t a2 = tok.find_first_not_of(" \t"), b2 = tok.find_last_not_of(" \t");
+                        if (a2 != std::string::npos) {
+                            tok = tok.substr(a2, b2 - a2 + 1);
+                            long cp = ascii::isdigit((unsigned char)tok[0])
+                                        ? std::strtol(tok.c_str(), nullptr, 10)
+                                        : (long)uniCharByName(tok);
+                            if (cp >= 0) lit += cpToU8((uint32_t)cp);
+                        }
+                        if (comma == std::string::npos) break;
+                        p2 = comma + 1;
+                    }
+                }
+                // The control escapes a qq string takes, which a quoted span in a
+                // regex takes too. `\b` is the one that bites: it is BACKSPACE
+                // here, not a word boundary (Raku spells that `<|w>`), and leaving
+                // it to `default` made it the letter `b` — so String::CamelCase's
+                // wordsplit, whose alternation contains a literal "\b", split
+                // "year_bbs" on every b and answered ("year", "s").
                 else switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
-                             case 'r': lit += '\r'; break; case '0': lit += '\0'; break; default: lit += e; }
+                             case 'r': lit += '\r'; break; case '0': lit += '\0'; break;
+                             case 'b': lit += '\b'; break; case 'e': lit += '\x1B'; break;
+                             case 'f': lit += '\f'; break; case 'a': lit += '\a'; break;
+                             default: lit += e; }
             } else if (q == '"' && peek() == '{') {
                 // "…{EXPR}…" inside a double-quoted regex literal evaluates at
                 // match time and matches the result's Str literally, exactly as

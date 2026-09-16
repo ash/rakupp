@@ -3584,9 +3584,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool haveLimit = limit != -12345;
             if (haveLimit && limit <= 0) return out;
             if (haveLimit && limit == 1) { emit(subj); return out; }
-            while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
+            // The piece boundary and the SEARCH position are two different things,
+            // and a zero-width separator is where they part company. `pos` is where
+            // the next piece starts; `scan` is where the next search begins, one
+            // past a zero-width hit so the same point cannot match for ever.
+            // Advancing `pos` past it as well ate one character at every split
+            // point: `"abcd".split(/""/)` answered five empty strings, and
+            // String::CamelCase — which splits on a pair of zero-width lookarounds
+            // — turned "YearBBS" into "Year BS".
+            long scan = pos;
+            while (re.ok() && scan <= (long)subj.size() && re.search(subj, scan, mm)) {
                 if (haveLimit && (long long)out.arr()->size() >= limit - 1) break;
-                if (mm.to == mm.from && mm.from == pos) { if (pos >= (long)subj.size()) break; }
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
                     Value sepv = Value::matchVal(subj.substr(mm.from, mm.to - mm.from),
@@ -3600,7 +3608,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         out.arr()->push_back(std::move(pr));
                     }
                 }
-                pos = mm.to > mm.from ? mm.to : mm.to + 1;
+                if (mm.to > mm.from) { pos = scan = mm.to; }
+                else                 { pos = mm.from; scan = mm.from + 1; }
             }
             emit(subj.substr(std::min((size_t)pos, subj.size())));
             return out;
