@@ -20102,9 +20102,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // method-call lvalue: $obj.accessor = value  (rw accessors)
     if (e->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(e);
+        // `$obj."$name"() = v` — a dynamic method call as an ASSIGNMENT
+        // TARGET. The name lives in methodExpr, so `mc->method` is EMPTY here
+        // and every test below compared against "": the write fell through to
+        // attrs[""] and created an unnamed attribute, so it silently did
+        // nothing at all. HTTP::Cookies' actions are written exactly that way
+        // (`$h."{$a<name>.lc}"() = ~$a<value>` for expires, path and domain),
+        // so every parsed cookie came back carrying only its name and flags.
+        const std::string mcName =
+            !mc->methodExpr                  ? std::string(mc->method.c_str())
+          : tctx_.dynMethodNode == (void*)mc ? tctx_.dynMethodName
+                                             : eval(mc->methodExpr.get()).toStr();
         // Pair.value is a writable container ($p.value = 5, .value-- in loops);
         // pairVal is shared between pair copies so mutation is visible everywhere
-        if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper) {
+        if (mcName == "value" && mc->args.empty() && !mc->meta && !mc->hyper) {
             Value* base = nullptr;
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Pair && base->pairVal()) return base->pairVal();
@@ -20113,12 +20124,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // they are writable: `@stack.tail = …` is how a Weekly Challenge author
         // replaces the top of a stack. (With an argument they answer a list, and
         // a list is not a target.)
-        if ((mc->method == "head" || mc->method == "tail") && mc->args.empty() &&
+        if ((mcName == "head" || mcName == "tail") && mc->args.empty() &&
             !mc->meta && !mc->hyper) {
             Value* base = nullptr;
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Array && base->arr() && !base->arr()->empty() && !base->isList)
-                return mc->method == "head" ? &base->arr()->front() : &base->arr()->back();
+                return mcName == "head" ? &base->arr()->front() : &base->arr()->back();
         }
         // A method declared `is rw` / `is raw` hands back a CONTAINER, so a call to
         // it is an assignment target: `$obj.meth(…) = v`, and `self.AT-KEY($k) =
@@ -20128,7 +20139,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // target pays a second evaluation of its invocant expression.
         if ((mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm ||
              mc->inv->kind == NK::NameTerm) &&
-            !mc->meta && !mc->methodExpr && !mc->hyper) {
+            !mc->meta && !mc->hyper && !mcName.empty()) {
             Value invv;
             bool haveInv = false;
             try { invv = eval(mc->inv.get()); haveInv = true; } catch (RakuError&) {}
@@ -20143,7 +20154,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (ct != classes_.end()) invCls = ct->second.get();
             }
             if (invCls) {
-                Value* mv = invCls->findMethodForCall(mc->method);
+                Value* mv = invCls->findMethodForCall(mcName);
                 if (mv && mv->t == VT::Code && mv->code() && mv->code()->retRw) {
                     static thread_local Value rwHold;
                     ValueList args;
@@ -20159,7 +20170,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     // from, and a `return-rw` of such a parameter needs that
                     // link to reach past this frame — `method m(\c) is rw {
                     // return-rw c }` wrote into its own frame copy otherwise.
-                    rwHold = methodCall(invv, mc->method, args, &mc->args);
+                    rwHold = methodCall(invv, mcName, args, &mc->args);
                     if (Value* out = tcx.lvalueOut) {
                         if (tcx.lvalueOutLocal) { rwHold = *out; return &rwHold; }
                         return out;
@@ -20170,7 +20181,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // `$io.nl-out = "\t\t"` on an IO::Handle-derived object: the accessor is
         // writable state on the instance (see the shim in MethodCallPart2).
-        if ((mc->method == "nl-out" || mc->method == "nl-in" || mc->method == "chomp") &&
+        if ((mcName == "nl-out" || mcName == "nl-in" || mcName == "chomp") &&
             mc->args.empty() && !mc->meta && !mc->hyper) {
             Value* base = nullptr;
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
@@ -20180,18 +20191,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     nb = c->nativeParent;
                 if (nb == "IO::Handle") {
                     auto& at = base->obj()->attrs;
-                    if (!at.count(mc->method))
-                        at[mc->method] = mc->method == "chomp" ? Value::boolean(true)
+                    if (!at.count(mcName))
+                        at[mcName] = mcName == "chomp" ? Value::boolean(true)
                                                                : Value::str("\n");
-                    return &at[mc->method];
+                    return &at[mcName];
                 }
             }
         }
         // container-access methods as l-values: `%h.AT-KEY("k") = v`,
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
-        if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
+        if ((mcName == "AT-KEY" || mcName == "AT-POS") && !mc->args.empty() && !mc->meta) {
             Value* base = lvalue(mc->inv.get());
-            if (mc->method == "AT-KEY") {
+            if (mcName == "AT-KEY") {
                 if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
                 Value k = eval(mc->args[0].get());
                 // `%h.AT-KEY($k) = v` is the same store as `%h{$k} = v` and has
@@ -20223,14 +20234,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (hv.t == VT::Hash && (hv.hashKind == "FileHandle" || hv.hashKind == "Scheduler") && hv.hash()) {
                 static thread_local Value dynHandleHold;
                 dynHandleHold = hv; // shares .hash() with the persistent handle
-                return &(*dynHandleHold.hash())[mc->method];
+                return &(*dynHandleHold.hash())[mcName];
             }
         }
         // `Pkg.WHO.<x> = v` — the stash is a persistent shared map (pkgStashes_),
         // so evaluating WHO here yields a Hash whose writes land in it. Same hold
         // pattern as the dynamic-handle case above: the slot pointer must outlive
         // this call, and the invocant (a type) has no lvalue of its own.
-        if (mc->method == "WHO" && !mc->meta && !mc->methodExpr) {
+        if (mcName == "WHO" && !mc->meta && !mc->methodExpr) {
             Value invv = eval(mc->inv.get());
             ValueList none;
             Value who = methodCall(invv, "WHO", none);
@@ -20268,12 +20279,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // value is an Object declaring this attribute or method.
         static thread_local Value proxyInvHold;
         if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash() &&
-            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
+            !mc->meta && !mc->hyper && !mcName.empty()) {
             Value fetched = deproxy(*base);
             if (fetched.t == VT::Object && fetched.obj() && fetched.obj()->cls &&
-                (fetched.obj()->attrs.count(mc->method) ||
-                 fetched.obj()->cls->findAttr(mc->method) ||
-                 fetched.obj()->cls->findMethod(mc->method))) {
+                (fetched.obj()->attrs.count(mcName) ||
+                 fetched.obj()->cls->findAttr(mcName) ||
+                 fetched.obj()->cls->findMethod(mcName))) {
                 proxyInvHold = std::move(fetched);
                 base = &proxyInvHold;
             }
@@ -20284,9 +20295,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // hide-methods wraps every method of a class this way and marks each
         // one as it goes.
         if (base->t == VT::Code && base->code() && base->code()->mixins.p &&
-            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
+            !mc->meta && !mc->hyper && !mcName.empty()) {
             auto& mx = *base->code()->mixins.p;
-            auto it = mx.attrs.find(mc->method);
+            auto it = mx.attrs.find(mcName);
             if (it != mx.attrs.end()) return &it->second;
         }
         // `$att.cos .= new` — an `is rw` accessor of a role a trait mixed into an
@@ -20300,19 +20311,19 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // silently creating a key.
         if (base->t == VT::Hash && base->hash() &&
             (base->hashKind == "Attribute" || base->hashKind == "Parameter") &&
-            !mc->meta && !mc->hyper && !mc->methodExpr && !mc->method.empty()) {
-            auto ait = base->hash()->find(mc->method);
+            !mc->meta && !mc->hyper && !mcName.empty()) {
+            auto ait = base->hash()->find(mcName);
             if (ait != base->hash()->end()) return &ait->second;
         }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
-        if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
+        if (base->t == VT::Hash && base->hashKind == "Failure" && mcName == "handled") {
             if (!base->hash()) base->setHash(std::make_shared<ValueMap>());
             return &(*base->hash())["handled"];
         }
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
             if (!base->hash()) base->setHash(std::make_shared<ValueMap>());
-            return &(*base->hash())[mc->method];
+            return &(*base->hash())[mcName];
         }
         if (base->t == VT::Object && base->obj()) {
             // `$obj.meth[i] = v` / `$obj.meth<k> = v` where `meth` is a plain
@@ -20326,16 +20337,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // attribute of that name — the write vanished and the method went on
             // answering the old list.
             if (asInvocant && base->obj()->cls && !mc->meta && !mc->hyper &&
-                !mc->methodExpr && !base->obj()->attrs.count(mc->method)) {
+                !mcName.empty() && !base->obj()->attrs.count(mcName)) {
                 bool isAttr = false;
                 for (ClassInfo* ci = base->obj()->cls.get(); ci && !isAttr; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
-                        if (at.name == mc->method) { isAttr = true; break; }
-                if (!isAttr && base->obj()->cls->findMethod(mc->method)) {
+                        if (at.name == mcName) { isAttr = true; break; }
+                if (!isAttr && base->obj()->cls->findMethod(mcName)) {
                     ValueList as;
                     for (auto& a : mc->args) as.push_back(eval(a.get()));
                     static thread_local Value methHold;
-                    methHold = methodCall(*base, mc->method, as);
+                    methHold = methodCall(*base, mcName, as);
                     if (methHold.t == VT::Array || methHold.t == VT::Hash || methHold.t == VT::Object)
                         return &methHold;
                 }
@@ -20351,13 +20362,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             //
             // Only when the outer class has no attribute of that name itself: a
             // real attribute keeps the ordinary path, delegation or not.
-            if (!mc->meta && !mc->hyper && !mc->methodExpr) {
+            if (!mc->meta && !mc->hyper && !mcName.empty()) {
                 bool ownAttr = false;
                 for (ClassInfo* ci = base->obj()->cls.get(); ci && !ownAttr; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
-                        if (at.name == mc->method) { ownAttr = true; break; }
+                        if (at.name == mcName) { ownAttr = true; break; }
                 Value* cur = base;
-                std::string want = mc->method;
+                std::string want = mcName;
                 // a bounded walk, so a chain (`handles` onto something that also
                 // delegates) resolves and a cyclic one cannot spin.
                 for (int hop = 0; !ownAttr && hop < 16; hop++) {
@@ -20416,7 +20427,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // check refused it as immutable before the method was ever consulted.
             bool rwMethod = false;
             if (base->obj()->cls)
-                if (Value* mv = base->obj()->cls->findMethod(mc->method))
+                if (Value* mv = base->obj()->cls->findMethod(mcName))
                     rwMethod = mv->t == VT::Code && mv->code() && mv->code()->retRw;
             if (!mc->bang && !asInvocant && !rwMethod)
                 for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
@@ -20425,10 +20436,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // without `is rw` (list-assign replaces the container's
                         // contents — Cro: `.body-parsers = @!body-parsers`); only
                         // $-attrs need the rw trait
-                        if (at.name == mc->method &&
+                        if (at.name == mcName &&
                             !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                             throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                "Cannot modify an immutable '" + mc->method + "'"};
+                                "Cannot modify an immutable '" + mcName + "'"};
             // record the attr's declared type so the assignment enforces it
             // (`has C $.x is rw` — `.x = 42` must throw X::TypeCheck::Assignment).
             // ALWAYS reset first: resolving the INVOCANT of a chained accessor
@@ -20439,7 +20450,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             tcx.lastLvalueAttrWhere = nullptr;
             for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                 for (auto& at : ci->attrs)
-                    if (at.name == mc->method) {
+                    if (at.name == mcName) {
                         if (at.sigil == '$' && !at.type.empty() &&
                             ascii::isupper((unsigned char)at.type[0]))
                             tcx.lastLvalueAttrType = at.type;
@@ -20447,7 +20458,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         goto attrTypeDone;
                     }
             attrTypeDone:
-            return &base->obj()->attrs[mc->method];
+            return &base->obj()->attrs[mcName];
         }
     }
     // `$(expr)` as an assignment target: the itemization wrapper is transparent
@@ -22109,12 +22120,26 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto* mc = static_cast<MethodCall*>(a->target.get());
         if (!mc->meta && !mc->hyper && !mc->bang && mc->args.empty() &&
             (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm)) {
+            // `$obj."$name"() = v` names its method at run time, so the sigil
+            // lookup has to ask for that name too — matching against the EMPTY
+            // `mc->method` found no attribute and left the sigil `$`, which
+            // stored a `@`/`%` attribute as one itemized value. The name is
+            // computed ONCE here and handed to the lvalue arm through the
+            // context: it is an arbitrary expression, not a literal.
+            std::string mname = mc->method;
+            if (mc->methodExpr) {
+                try {
+                    mname = eval(mc->methodExpr.get()).toStr();
+                    tctx_.dynMethodNode = mc;
+                    tctx_.dynMethodName = mname;
+                } catch (...) {}
+            }
             try {
                 Value invv = eval(mc->inv.get());
                 if (invv.t == VT::Object && invv.obj()) {
                     for (ClassInfo* ci = invv.obj()->cls.get(); ci && sigil == '$'; ci = ci->parent.get())
                         for (auto& at : ci->attrs)
-                            if (at.name == mc->method && at.pub && (at.sigil == '@' || at.sigil == '%')) { sigil = at.sigil; break; }
+                            if (at.name == mname && at.pub && (at.sigil == '@' || at.sigil == '%')) { sigil = at.sigil; break; }
                 }
             } catch (...) {}
         }

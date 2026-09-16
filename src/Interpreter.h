@@ -862,6 +862,12 @@ struct ExecContext {
     // subscript reached, recorded by the Index lvalue arm so the assignment can
     // enforce it (`my Int @a; @a[1] = $*ERR` throws; roast S02-types/array.t)
     std::string lastLvalueElemType;
+    // `$obj."$name"() = v` — the method name, computed ONCE. The assignment
+    // resolves the target's sigil before it takes the lvalue, and both halves
+    // need the name; an arbitrary expression must not be run twice for it.
+    // Keyed by the MethodCall node so a stale value can never be picked up.
+    const void* dynMethodNode = nullptr;
+    std::string dynMethodName;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value

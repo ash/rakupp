@@ -5965,6 +5965,27 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (a.s == "listen") listen = pv.truthy();
             else if (a.s == "family") family = pv.toInt();
         }
+        // `:host<name:port>` — the port may ride along in the host string, and an
+        // explicit `:port` wins over it. That is how HTTP::UserAgent connects:
+        // a request's `.host` is its Host HEADER, which carries the port
+        // whenever it is not the scheme's default, so a request to
+        // http://localhost:3137/ asked for the host "localhost:3137" and we
+        // tried to resolve that as a NAME.
+        // Only a SINGLE colon: an IPv6 literal (`::1`, `fe80::1`) has several
+        // and is a host in its own right.
+        auto splitHostPort = [](std::string& h, long& p) {
+            size_t c = h.find(':');
+            if (c == std::string::npos || h.find(':', c + 1) != std::string::npos) return;
+            if (c + 1 >= h.size()) return;
+            std::string tail = h.substr(c + 1);
+            h = h.substr(0, c);
+            if (p) return;                       // an explicit port wins
+            char* end = nullptr;
+            long v = std::strtol(tail.c_str(), &end, 10);
+            if (end && *end == '\0') p = v;      // …and a non-numeric tail is simply dropped
+        };
+        if (listen) splitHostPort(localhost, localport);
+        else        splitHostPort(host, port);
         // Validate before touching the OS: port 0..65535, family a sane small value.
         long usePort = listen ? localport : port;
         if (usePort < 0 || usePort > 65535)
