@@ -906,6 +906,28 @@ static std::string retCoercionMark(const Token& next) {
     return (next.kind == Tok::LParen && !next.spaceBefore) ? "()" : "";
 }
 
+// A NativeCall return type keeps its parameter: `--> CArray[Str]` names the
+// element type the unmarshalling needs, exactly as a PARAMETER of that type
+// does (see the `keep` flag in parseSignature). Dropping it left every element
+// of a returned CArray reading as the raw pointer — Geo::Hash binds a
+// `char **` and got eight addresses where it expected eight geohashes. Other
+// parameterised return types stay bare, as they always were.
+std::string Parser::nativeRetParam(size_t identPos) const {
+    const Token& id = toks_[identPos];
+    if (id.text != "CArray" && id.text != "Pointer") return "";
+    size_t k = identPos + 1;
+    if (toks_[k].kind != Tok::LBracket || toks_[k].spaceBefore) return "";
+    std::string out;
+    int depth = 0;
+    for (; toks_[k].kind != Tok::End; k++) {
+        if (toks_[k].kind == Tok::LBracket) depth++;
+        else if (toks_[k].kind == Tok::RBracket) depth--;
+        out += toks_[k].text;
+        if (!depth) break;
+    }
+    return depth ? std::string() : out;
+}
+
 // `class` / `role` / `grammar` in a position where a DECLARATION cannot follow
 // is an ordinary bareword — a sigilless variable, or a call. A declaration has
 // to be followed by a name, a `{` or a `::`; anything else (a `)`, a comma, an
@@ -6869,7 +6891,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek()); // remember the return type
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek()); // remember the return type
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
@@ -7393,7 +7415,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek());
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                      isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `($n --> 99)`: literal return value
@@ -7416,7 +7438,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek());
         else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                  isKind(Tok::StrLit) || isKind(Tok::StrInterp))
             sigRetLiteral_ = parsePrimary();
@@ -7622,7 +7644,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + retCoercionMark(peek());
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek());
                            else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                                     isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                                sigRetLiteral_ = parsePrimary(); // `(2 --> 1)`: literal return
@@ -7836,9 +7858,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             // return type of that spelling was recorded as `Numeric`
             const bool elemOf = isIdent("of") && !s->retType.empty();
             advance();
-            if (!elemOf) s->retType = cur().text;
+            // `returns CArray[Str]` keeps its element parameter, as `--> …` does
+            if (!elemOf) s->retType = cur().text + nativeRetParam(pos_);
         } else if (isOp("-->") && peek().kind == Tok::Ident) {
-            advance(); s->retType = cur().text;
+            advance(); s->retType = cur().text + nativeRetParam(pos_);
         } else if (isOp("-->") && (peek().kind == Tok::IntLit || peek().kind == Tok::NumLit ||
                                    peek().kind == Tok::StrLit || peek().kind == Tok::StrInterp)) {
             advance(); // -->

@@ -289,6 +289,8 @@ private:
     //   %(r => $r, …)                    <- a new statement, not `} % (…)`
     // A subscript's `}` does not count (`%h{'a'}\n + 3` really is a continuation),
     // which is why this records the position rather than testing the token kind.
+    // `--> CArray[Str]` — a NativeCall return type keeps its element parameter
+    std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
     size_t stmtStart_ = 0; // first token of the statement being parsed (see lastBlockClose_)
     bool matchOp(const std::string& s);
