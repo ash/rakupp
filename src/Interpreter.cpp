@@ -12448,6 +12448,22 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     return e.t == VT::Array && e.arr() && e.s == "Slip";
                 };
                 if (p.slurpyKind == 'f') {
+                    // A LAZY list handed to a flattening slurpy stays lazy: the
+                    // slurpy is a view of it, not a copy. Spreading it here pulled
+                    // every element, so `@divs.is-lazy` inside the routine answered
+                    // False and a module that branches on it took the eager path —
+                    // Int::polydiv then ran its finite loop over `16 xx *` and
+                    // emitted a trailing 0 the lazy branch would have stopped
+                    // before. Only the sole-argument case: with several arguments
+                    // the slurpy really is collecting them.
+                    if (remaining == 1 && !capture) {
+                        const Value& only = positional[pi];
+                        if (only.t == VT::Array && only.ext() && !only.itemized) {
+                            env->define(slotName(p, pidx), only);
+                            pi = positional.size();
+                            continue;
+                        }
+                    }
                     // *@a — flatten: dissolve every Iterable arg into the slurpy.
                     //
                     // …but only as far as Rakudo does. Flattening walks THROUGH
@@ -12514,6 +12530,17 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 } else {
                     // +@a (and default) — single-argument rule: a lone Iterable arg
                     // flattens; multiple args are kept as-is (so f(@a,@b) is two elements).
+                    // A LAZY one is bound as it stands, for the same reason `*@a`
+                    // is: flattening pulls every element, and the routine then
+                    // cannot tell it was handed something lazy. Int::polydiv
+                    // branches on exactly that (`@divs.is-lazy`) and ran its
+                    // finite loop over `16 xx *`.
+                    if (remaining == 1 && !capture && positional[pi].t == VT::Array &&
+                        positional[pi].ext() && !positional[pi].itemized) {
+                        env->define(slotName(p, pidx), positional[pi]);
+                        pi = positional.size();
+                        continue;
+                    }
                     if (remaining == 1 && (isSlip(positional[pi]) ||
                                            (!positional[pi].itemized &&
                                             (positional[pi].t == VT::Array || positional[pi].t == VT::Range)))) {
