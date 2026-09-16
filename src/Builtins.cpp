@@ -6744,7 +6744,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         else for (auto& a : args) add(a);
         Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
         b.hashKind = (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("Buf", 0) == 0) ? "Buf" : "Blob";
-        b.ofTypeM() = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
+        // blob8 IS Blob[uint8] — the [T] always shows — but a SIGNED parameter
+        // keeps its sign: `Buf[int8].new(255)[0]` is -1, not 255. The element
+        // type was forced unsigned here, so every signed buffer read back as a
+        // magnitude (Binary::Structured decodes signed fields this way).
+        // the parameter may arrive as the ofType ("int8") or inside the name
+        // ("Buf[int8]"), and `buf8`/`blob8` are unsigned by their own spelling
+        std::string et = wsrc;
+        if (size_t lb = et.find('['); lb != std::string::npos) et = et.substr(lb + 1, et.find(']', lb) - lb - 1);
+        bool signedElem = et.compare(0, 3, "int") == 0;
+        b.ofTypeM() = (signedElem ? "int" : "uint") + std::to_string(w * 8);
         b.s.promote();   // a native buffer needs stable, shared storage
         if (b.hashKind == "Buf") identify(b);
         return b;

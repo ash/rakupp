@@ -984,6 +984,18 @@ long long Value::blobWordAt(long long idx) const {
 
 Value Value::blobElemAt(long long idx) const {
     long long w = blobWordAt(idx);
+    // A SIGNED element type reads back signed: `Buf[int8].new(255)[0]` is -1.
+    // blobWordAt assembles the bytes low-first and zero-extends, which is right
+    // for every unsigned width and wrong for every signed one narrower than the
+    // word — so sign-extend here, where the element type is known.
+    {
+        bool sgn = false;
+        int bits = natWidthOfType(ofType(), sgn);
+        if (sgn && bits > 0 && bits < 64) {
+            const long long top = 1LL << (bits - 1);
+            if (w & top) w -= (top << 1);
+        }
+    }
     // only an 8-byte UNSIGNED element can overflow a long long; every narrower
     // width fits, and a signed one is meant to come back negative
     if (blobElemSize() == 8 && w < 0 && ofType().rfind("uint", 0) == 0) {
