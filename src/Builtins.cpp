@@ -2130,6 +2130,12 @@ ValueList toList(const Value& v) {
     // interpreter (itemized stays one item)
     if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
         return v.blobList();
+    // A Pod block is an OBJECT that happens to be stored as a hash. It is not
+    // Iterable and not Associative, so it lists as ITSELF — flattening it into
+    // its own `podclass`/`contents` pairs is what `Array.new($block)` did, and
+    // Pod::Utils' pod-title built a two-pair soup where Rakudo builds a
+    // one-element array holding the block.
+    if (v.t == VT::Hash && v.hashKind == "Pod") return {v};
     if (v.t == VT::Hash && v.hash()) {
         ValueList out;
         // The object-hash test is hoisted: this is the hot path for every hash
@@ -11874,6 +11880,11 @@ void Interpreter::registerBuiltins() {
         ValueList rest{a[0]};
         for (size_t i = 2; i < a.size(); i++) rest.push_back(a[i]);
         return I.methodCall(a[1], "comb", rest);
+    };
+    // Pod::To::Text's `pod2text` — a core module in Rakudo, native here.
+    B["pod2text"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::str("");
+        return Value::str(pod2text(a[0]));
     };
     B["uniparse"] = [](Interpreter&, ValueList& a) -> Value {
         std::string out;

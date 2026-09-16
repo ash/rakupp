@@ -5762,6 +5762,10 @@ bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (modul
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
         "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
         "NativeCall",  // its `is native` FFI is handled natively by the compiler
+        // Rakudo ships Pod::To::Text in CORE, so a dist `use`s it and expects
+        // `pod2text` to be there; there is no distribution to install. The
+        // renderer is native (see Pod.cpp), so there is no file either.
+        "Pod::To::Text",
         // …and the types WITHOUT the machinery, which upstream ships as its own
         // compunit and dists `use` directly (Font::FreeType's Raw/Defs, and the
         // thirteen dists behind it). Built in here too, so there is no file.
@@ -7300,7 +7304,20 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         ValueList& slot; ValueList saved;
         PodSwap(ValueList& s, ValueList mine) : slot(s), saved(std::move(s)) { slot = std::move(mine); }
         ~PodSwap() { slot = std::move(saved); }
-    } podSwap(podDom_, src.find("\n=") != std::string::npos || src.rfind("=", 0) == 0 ? parsePod(src) : ValueList{});
+    // A pod directive may be INDENTED — the block's margin is its delimiter's
+    // own indent — so looking only for a `=` at column 0 missed every indented
+    // block and left $=pod empty inside the EVAL.
+    } podSwap(podDom_, [&] {
+        for (size_t i = 0; i <= src.size();) {
+            size_t j = i;
+            while (j < src.size() && (src[j] == ' ' || src[j] == '\t')) j++;
+            if (j < src.size() && src[j] == '=') return true;
+            size_t nl = src.find('\n', i);
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+        return false;
+    }() ? parsePod(src) : ValueList{});
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
@@ -13337,6 +13354,26 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // the internal tag for a module-dependency descriptor; the type it
             // names is Rakudo's (see Value::typeName)
             if (arg.hashKind == "DependencySpec" && type == "CompUnit::DependencySpecification") return true;
+            // A Pod block is an OBJECT, not an Associative. It is a hash here
+            // only as a representation, carrying its real class in `podclass`,
+            // and asking the "Pod" tag instead let it answer True to Map and
+            // Associative — so `Array.new($block)` FLATTENED it into its own
+            // pairs, which is what Pod::Utils' pod-title built instead of a
+            // one-element array. It also answered False to Pod::Block, its own
+            // parent. Ask the podclass, and nothing else.
+            if (arg.hashKind == "Pod") {
+                const std::string& pc = arg.hash() && arg.hash()->count("podclass")
+                                      ? arg.hash()->at("podclass").s : std::string();
+                if (pc.empty()) return false;
+                if (type == pc || type == "Any" || type == "Mu") return true;
+                // Every Pod::* is a Pod::Block — Pod::Block::Para, ::Code,
+                // ::Named, ::Table, ::Comment, ::Declarator, Pod::Heading,
+                // Pod::Item and Pod::FormattingCode alike. Pod::Utils'
+                // `multi textify-guts (Pod::Block \v)` is the candidate every
+                // one of them has to reach.
+                if (type == "Pod::Block" && pc.rfind("Pod::", 0) == 0) return true;
+                return typeNameConforms(pc, type, "", "");
+            }
             if (arg.hashKind == type) return true;
             // …and everything else the built-in does-table knows about this tag:
             // a Bag is Baggy and a QuantHash, a Set is Setty, a Mix is both Mixy
@@ -25681,6 +25718,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `$x ~~ Foo:D` is the type test AND a definedness test
             if (r.i == 1 && !isDefined(l)) return Value::boolean(op != "~~");
             if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
+            // A Pod block is an OBJECT; it is a hash here only as a
+            // representation. typeMatchesArg owns what it conforms to — its own
+            // podclass and Pod::Block — and, just as importantly, what it does
+            // NOT: the generic hash fallback below called it a Map and an
+            // Associative, which no Pod block is.
+            if (l.t == VT::Hash && l.hashKind == "Pod") {
+                bool pres = typeMatchesArg(l, r.s);
+                return Value::boolean(op == "~~" ? pres : !pres);
+            }
             // `Mu ~~ Any` is False: Any sits BELOW Mu, and the Mu type object
             // conforms only to Mu itself (Getopt::Long branches on exactly
             // this to decide whether a parameter carries a usable type)

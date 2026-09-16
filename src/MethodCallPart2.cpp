@@ -1377,6 +1377,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "contents") return h.count("contents") ? h["contents"] : Value::array();
         if (m == "level")    return h.count("level") ? h["level"] : Value::integer(1);
         if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();
+        // A table's own two: the header row (empty when the table has no
+        // divider) and the caption from its config.
+        if (m == "headers")  return h.count("headers") ? h["headers"] : Value::array();
+        if (m == "caption")  return h.count("caption") ? h["caption"] : Value::str("");
         if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s.str() : std::string("Pod::Block"));
         if (m == "defined" || m == "Bool") return Value::boolean(true);
         if (m == "Str" || m == "gist" || m == "raku") {
@@ -2728,6 +2732,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `Match.new(:orig(…), :from(…), :pos(…), :list(…), :hash(…))` — the inverse of
     // Match.raku, so a match round-trips through EVAL (S05-match/raku.t does exactly
     // that). Every part is optional; what is absent is simply empty.
+    // The Pod::* classes are SYNTHESISED — a hash carrying a `podclass` — so
+    // they had no `.new` candidate at all and every program that BUILDS pod
+    // rather than reading it died on the first constructor. Pod::Utils' whole
+    // Build module is such constructors (`Pod::Block::Para.new(:@contents)`,
+    // `Pod::FormattingCode.new(type => 'L', …)`). Each named argument is an
+    // attribute — contents, name, level, type, meta, config — and the class
+    // name is the podclass.
+    if (inv.t == VT::Type && m == "new" && inv.s.rfind("Pod::", 0) == 0) {
+        Value v = Value::makeHash(); v.hashKind = "Pod";
+        (*v.hash())["podclass"] = Value::str(inv.s);
+        (*v.hash())["contents"] = Value::array();
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.pairVal()) (*v.hash())[a.s] = *a.pairVal();
+        // A FormattingCode always carries a `meta`, empty when the code has no
+        // `|` half — which is what the PARSER produces, so a constructed one
+        // without it is not `is-deeply` the same block.
+        if (inv.s == "Pod::FormattingCode" && !v.hash()->count("meta"))
+            (*v.hash())["meta"] = Value::array();
+        return v;
+    }
     if (inv.t == VT::Type && inv.s == "Match" && m == "new") {
         std::string orig; long long from = 0, pos = 0;
         Value list, hash;

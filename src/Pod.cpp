@@ -364,6 +364,72 @@ static bool splitLeveled(const std::string& kw, const std::string& base, int& le
     return true;
 }
 
+// A Pod table's rows, as Rakudo yields them. `headers` is the row above the
+// first divider — a line of nothing but `= - + |` and spaces — and is empty
+// when the table has none; `contents` is one list of cells per remaining
+// non-blank line; `caption` comes from the block's config and is "" otherwise.
+// All three are always present, because a parsed table is compared against a
+// constructed one (Pod::Utils' `pod-table`) and a missing key is a difference.
+//
+// Cells split on `|` when the row has one and on runs of two-or-more spaces
+// when it does not, which is what makes a whitespace-aligned table work.
+static ValueList podTableCells(const std::string& line) {
+    ValueList out;
+    std::string t = strip(line);
+    auto push = [&](std::string c) { out.push_back(Value::str(strip(c))); };
+    if (t.find('|') != std::string::npos) {
+        size_t p = 0;
+        for (;;) {
+            size_t bar = t.find('|', p);
+            push(t.substr(p, bar == std::string::npos ? std::string::npos : bar - p));
+            if (bar == std::string::npos) break;
+            p = bar + 1;
+        }
+        return out;
+    }
+    size_t p = 0;
+    while (p < t.size()) {
+        size_t gap = t.find("  ", p);
+        push(t.substr(p, gap == std::string::npos ? std::string::npos : gap - p));
+        if (gap == std::string::npos) break;
+        p = t.find_first_not_of(' ', gap);
+        if (p == std::string::npos) break;
+    }
+    return out;
+}
+
+static bool podTableDivider(const std::string& s) {
+    std::string t = strip(s);
+    if (t.empty()) return false;
+    for (char c : t) if (c != '=' && c != '-' && c != '+' && c != '|' && c != ' ') return false;
+    return true;
+}
+
+static void fillPodTable(Value& block, const std::vector<std::string>& rows) {
+    Value headers = Value::array(), body = Value::array();
+    size_t div = rows.size();
+    for (size_t k = 0; k < rows.size(); k++) if (podTableDivider(rows[k])) { div = k; break; }
+    if (div < rows.size()) {
+        // the last non-blank line above the divider is the header row
+        for (size_t k = div; k-- > 0;)
+            if (!strip(rows[k]).empty()) { *headers.arr() = podTableCells(rows[k]); break; }
+    }
+    for (size_t k = div == rows.size() ? 0 : div + 1; k < rows.size(); k++) {
+        if (strip(rows[k]).empty() || podTableDivider(rows[k])) continue;
+        Value r = Value::array(); *r.arr() = podTableCells(rows[k]);
+        body.arr()->push_back(std::move(r));
+    }
+    (*block.hash())["headers"] = headers;
+    (*block.hash())["contents"] = body;
+    auto cfg = block.hash()->find("config");
+    Value cap = Value::str("");
+    if (cfg != block.hash()->end() && cfg->second.t == VT::Hash && cfg->second.hash()) {
+        auto c = cfg->second.hash()->find("caption");
+        if (c != cfg->second.hash()->end()) cap = Value::str(c->second.toStr());
+    }
+    (*block.hash())["caption"] = cap;
+}
+
 // Map a block name to its Pod class (and level for head/item). `=begin item2`,
 // `=item2`, `=for item2` all become Pod::Item level 2, etc.
 static std::string classForBlock(const std::string& name, int& level) {
@@ -376,15 +442,15 @@ static std::string classForBlock(const std::string& name, int& level) {
     return "Pod::Block::Named";
 }
 
-// The block's virtual left margin: the indent of its first non-blank, non-directive
-// content line. Text at the margin is ordinary; text indented past it is a code block.
-static int blockMargin(const std::vector<std::string>& lines, size_t start) {
-    for (size_t j = start; j < lines.size(); j++) {
-        std::string kw, rest;
-        if (matchDirective(lines[j], kw, rest)) { if (kw == "end") return 0; continue; }
-        if (!strip(lines[j]).empty()) return indentOf(lines[j]);
-    }
-    return 0;
+// The block's virtual left margin: the indent of its own `=begin` DELIMITER.
+// Text at the margin is ordinary; text indented past it is verbatim — a code
+// block. Reading the margin off the first CONTENT line instead meant a block
+// whose content was all indented set its own margin and so had no verbatim
+// text at all: `=begin pod` at column 0 with nothing but an indented example
+// under it gave a Para where Rakudo gives a Pod::Block::Code, which is
+// Pod::Utils' and Pod::Utilities' `first-code-block` answering "".
+static int blockMargin(const std::vector<std::string>& lines, size_t begin) {
+    return begin < lines.size() ? indentOf(lines[begin]) : 0;
 }
 
 static void parseSeq(const std::vector<std::string>& lines, size_t& i,
@@ -406,6 +472,15 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (lv) (*block.hash())["level"] = Value::integer(lv);
                 if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
                 ValueList inner;
+                if (cls == "Pod::Block::Table") { // rows, not pod
+                    std::vector<std::string> rows; std::string k2, r2;
+                    while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
+                        { rows.push_back(lines[i]); i++; }
+                    fillPodTable(block, rows);
+                    if (i < lines.size()) i++;
+                    out.push_back(block);
+                    continue;
+                }
                 if (cls == "Pod::Block::Code" || cls == "Pod::Block::Comment") { // verbatim contents
                     std::vector<std::string> code; std::string k2, r2;
                     while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
@@ -419,7 +494,7 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     out.push_back(block);
                     continue;
                 }
-                parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
+                parseSeq(lines, i, name, true, inner, blockMargin(lines, i - 1));
                 Value ic = Value::array(); *ic.arr() = std::move(inner);
                 (*block.hash())["contents"] = ic;
                 if (i < lines.size()) i++; // consume the =end line
@@ -435,6 +510,14 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (cls == "Pod::Block::Named") (*block.hash())["name"] = Value::str(name);
                 if (lv) (*block.hash())["level"] = Value::integer(lv);
                 if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
+                if (cls == "Pod::Block::Table") { // `=for table` — the paragraph below is the rows
+                    std::vector<std::string> rows; std::string k3, r3;
+                    while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k3, r3))
+                        { rows.push_back(lines[i]); i++; }
+                    fillPodTable(block, rows);
+                    out.push_back(block);
+                    continue;
+                }
                 Value ic = Value::array();
                 if (cls == "Pod::Block::Comment" || cls == "Pod::Block::Code") {
                     std::string v = collectVerbatim(lines, i, cls == "Pod::Block::Comment");
@@ -491,11 +574,23 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 out.push_back(cm);
                 continue;
             }
+            if (kw == "table") { // abbreviated `=table`: rows until a blank line
+                std::vector<std::string> rows;
+                if (!strip(rest).empty()) rows.push_back(rest);
+                i++;
+                std::string k2, r2;
+                while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k2, r2))
+                    { rows.push_back(lines[i]); i++; }
+                Value block = mkPod("Pod::Block::Table");
+                fillPodTable(block, rows);
+                out.push_back(block);
+                continue;
+            }
             if (kw == "pod") { // =pod … =end pod delimiter-less start OR abbreviated; treat like a named block
                 std::string name = "pod"; i++;
                 Value block = mkPod("Pod::Block::Named");
                 (*block.hash())["name"] = Value::str(name);
-                ValueList inner; parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
+                ValueList inner; parseSeq(lines, i, name, true, inner, blockMargin(lines, i - 1));
                 Value ic = Value::array(); *ic.arr() = std::move(inner);
                 (*block.hash())["contents"] = ic;
                 if (i < lines.size()) i++;
@@ -519,10 +614,18 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
             if (indentOf(lines[i]) > margin) {
                 // implicit code block: verbatim, may span internal blank lines; dedent by
                 // the least indent of its non-blank lines.
+                // A verbatim run spans internal blank lines, but only while it
+                // stays at or right of where it started: a line indented LESS
+                // than the run's first line ends it and (still being past the
+                // margin) opens a new one. Without that, an example at 8 and a
+                // following one at 6 fused into a single block whose common
+                // dedent left the first two spaces in.
                 std::vector<std::string> code; std::string k2, r2;
+                int codeInd = indentOf(lines[i]);
                 while (i < lines.size()) {
                     if (matchDirective(lines[i], k2, r2)) break;
-                    if (!strip(lines[i]).empty() && indentOf(lines[i]) <= margin) break;
+                    if (!strip(lines[i]).empty() &&
+                        (indentOf(lines[i]) <= margin || indentOf(lines[i]) < codeInd)) break;
                     code.push_back(lines[i]); i++;
                 }
                 while (!code.empty() && strip(code.back()).empty()) code.pop_back();
@@ -547,6 +650,115 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
             i++; // top-level code between POD blocks
         }
     }
+}
+
+
+// ---------- pod2text: Pod::To::Text, the core module, natively ----------
+//
+// Rakudo ships Pod::To::Text in core and modules `use` it directly — the dists
+// behind it here all reach for `pod2text`. Every rule below is oracle-checked
+// against that module.
+//
+// Two join modes matter. A Para's children run TOGETHER (a paragraph is one
+// run of text, its formatting codes inline); a Named block's or a document's
+// children are separated by a BLANK LINE.
+static std::string podPrefixLines(const std::string& text, const std::string& pre) {
+    std::string out; size_t p = 0;
+    for (;;) {
+        size_t nl = text.find('\n', p);
+        out += pre;
+        out += text.substr(p, nl == std::string::npos ? std::string::npos : nl - p);
+        if (nl == std::string::npos) break;
+        out += "\n"; p = nl + 1;
+    }
+    return out;
+}
+
+static std::string podKids(const Value& v, bool blankBetween) {
+    if (v.t != VT::Hash || !v.hash()) return "";
+    auto it = v.hash()->find("contents");
+    if (it == v.hash()->end()) return "";
+    const Value* c = &it->second;
+    if (c->t != VT::Array || !c->arr()) return "";
+    std::string out; bool first = true;
+    for (auto& k : *c->arr()) {
+        std::string s = pod2text(k);
+        if (blankBetween && s.empty()) continue;
+        if (!first && blankBetween) out += "\n\n";
+        out += s; first = false;
+    }
+    return out;
+}
+
+static std::string podTableText(const Value& v) {
+    std::vector<std::vector<std::string>> rows;
+    auto addRow = [&](const Value& r) {
+        std::vector<std::string> cells;
+        if (r.t == VT::Array && r.arr()) for (auto& c : *r.arr()) cells.push_back(c.toStr());
+        else cells.push_back(r.toStr());
+        rows.push_back(std::move(cells));
+    };
+    auto h = v.hash()->find("headers");
+    if (h != v.hash()->end() && h->second.t == VT::Array && h->second.arr() && !h->second.arr()->empty())
+        addRow(h->second);
+    auto c = v.hash()->find("contents");
+    if (c != v.hash()->end() && c->second.t == VT::Array && c->second.arr())
+        for (auto& r : *c->second.arr()) addRow(r);
+    std::vector<size_t> w;
+    for (auto& r : rows)
+        for (size_t k = 0; k < r.size(); k++) {
+            if (w.size() <= k) w.push_back(0);
+            w[k] = std::max(w[k], r[k].size());
+        }
+    std::string out;
+    for (auto& r : rows) {
+        std::string line;
+        for (size_t k = 0; k < r.size(); k++) {
+            if (k) line += "  ";
+            line += r[k];
+            if (k + 1 < r.size()) line.append(w[k] - r[k].size(), ' ');
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += "  " + line + "\n";
+    }
+    return out;
+}
+
+std::string pod2text(const Value& v) {
+    if (v.t == VT::Str) return v.s.str();
+    if (v.t == VT::Array && v.arr()) {
+        std::string out; bool first = true;
+        for (auto& k : *v.arr()) {
+            std::string s = pod2text(k);
+            if (s.empty()) continue;
+            if (!first) out += "\n\n";
+            out += s; first = false;
+        }
+        return out;
+    }
+    if (v.t != VT::Hash || v.hashKind != "Pod" || !v.hash()) return v.toStr();
+    auto pcIt = v.hash()->find("podclass");
+    std::string pc = pcIt == v.hash()->end() ? std::string() : pcIt->second.s.str();
+    auto level = [&]() -> long long {
+        auto l = v.hash()->find("level");
+        return l == v.hash()->end() ? 1 : l->second.toInt();
+    };
+    if (pc == "Pod::Block::Comment") return "";
+    if (pc == "Pod::Block::Code")    return podPrefixLines(podKids(v, false), "    ");
+    if (pc == "Pod::Block::Table")   return podTableText(v);
+    if (pc == "Pod::Block::Para" || pc == "Pod::FormattingCode") return podKids(v, false);
+    if (pc == "Pod::Heading")
+        return std::string(2 * (size_t)std::max(0LL, level() - 1), ' ') + podKids(v, false);
+    if (pc == "Pod::Item")
+        return std::string(2 * (size_t)std::max(0LL, level()), ' ') + "* " + podKids(v, false);
+    if (pc == "Pod::Block::Named") {
+        auto n = v.hash()->find("name");
+        std::string name = n == v.hash()->end() ? std::string() : n->second.s.str();
+        std::string kids = podKids(v, true);
+        if (name.empty() || name == "pod") return kids;
+        return kids.empty() ? name : name + "\n" + kids;
+    }
+    return podKids(v, true);
 }
 
 ValueList parsePod(const std::string& src) {
