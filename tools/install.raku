@@ -979,12 +979,21 @@ sub local-dist-entry(Str $arg) {
     %e
 }
 
-# The engine's CompUnit install takes any object with .meta and .IO.
-class InstallableDist {
+# This engine's CompUnit install takes any object with .meta and .IO, but
+# Rakudo's types the parameter `Distribution` — so without the role the same
+# installer cannot run under Rakudo at all, and every dist that needs a
+# dependency installed dies at "expected Distribution but got InstallableDist".
+# That matters because running this harness under Rakudo is how a failure is
+# told apart from a machine that cannot pass it either (docs/dev/MODULE-HUNTING.md).
+# The role wants `meta` and `content`; both engines accept the composition.
+class InstallableDist does Distribution {
     has %.meta;
     has $.root;
     method IO {
         $.root
+    }
+    method content($address) {
+        $.root.IO.add($address).open(:r, :bin)
     }
 }
 

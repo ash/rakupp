@@ -59,6 +59,43 @@ no `/sbin/ldconfig`, and the identical chain yields `Any` under Rakudo too.
 Font::QueryInfo shells out to `fc-query`, absent for the same reason. Neither is
 convertible on this machine at all.
 
+### Running the oracle at scale
+
+`tools/install.raku` is ordinary Raku and **Rakudo can run it**, which makes the
+oracle a controlled comparison rather than an approximation: the same harness,
+the same verdict classification, the engine as the only variable.
+
+```bash
+raku tools/install.raku --test-only --to=<store> <Dist>
+```
+
+A three-line shim that maps `test --to=S N` onto that command can be handed to
+`sweep-fresh.raku` as `--rakupp=`, so the whole sweep — timeout, classification,
+resumability — runs under Rakudo unchanged.
+
+This did not work until 2026-09-16, and the way it failed is worth knowing,
+because it looked like data. `class InstallableDist` carried the comment "the
+engine's CompUnit install takes any object with .meta and .IO" — true here, and
+Rakudo types that parameter `Distribution`. So under Rakudo the installer could
+not install a *dependency* at all, and every distribution that needed one died
+before it was tested: **86 of a 200-dist sample landed in `other`**, which
+scaled to a ceiling ~250 distributions too low. `other` is the one verdict that
+can mean the harness failed rather than the distribution — at 43% of a sample it
+is never a finding. It is now `does Distribution` with the `content` method the
+role requires, opened `:bin` because Rakudo's CURI reads content as a Blob.
+
+### What the oracle said, the first time it was asked
+
+On 2026-09-16, over 200 distributions drawn at random from the 1,532 this engine
+does not pass: **Rakudo passes 97 of them, 48.5%** (95% CI 41.6–55.4). Scaled to
+the cohort that is ~743 reachable, against 997 passing at the time — a **ceiling
+of roughly 1,740 of 2,529 on this machine**, not 2,529. The remaining ~790
+cannot pass here under any engine: no libgsl, no fontconfig, no `/sbin/ldconfig`,
+network tests, and distributions that are simply broken.
+
+Publish against the ceiling, not the catalogue. A pass rate measured against
+2,529 charges this engine for libraries the machine does not have.
+
 ## Index by FAULT, not by distribution
 
 The board is per-distribution; the work is per-fault. Normalise each failure to
