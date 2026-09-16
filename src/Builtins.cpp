@@ -7239,7 +7239,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::string nm = isComp ? "Raku++" : "Raku";
         // Language revision the program is running under (6.c/6.d/6.e), from any
         // `use v6.*` pragma; the compiler object keeps its own version string.
-        std::string langVer = langRev_ == 0 ? "6.c" : (langRev_ == 1 ? "6.d" : "6.e");
+        // …from the MAIN unit's revision, not this one's: `$*RAKU` is one object
+        // for the process and Rakudo answers the same version inside a module
+        // whatever that module's own `use v6.…` says (see rakuIntrospection).
+        const int langRevForRaku = mainLangRevSet_ ? mainLangRev_ : langRev_;
+        std::string langVer = langRevForRaku == 0 ? "6.c" : (langRevForRaku == 1 ? "6.d" : "6.e");
         if (m == "compiler") return rakuIntrospection(true);
         // rakupp's engine is a C++ tree-walking interpreter, not MoarVM. Rakudo
         // answers the same string here as in `$*VM.name`, so RAKUPP_VM_NAME has

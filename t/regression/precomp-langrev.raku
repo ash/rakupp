@@ -19,10 +19,19 @@
 my @fail;
 my $dir = $*TMPDIR.add("precomp-langrev-{$*PID}");
 $dir.mkdir;
-LEAVE { .unlink for $dir.dir; $dir.rmdir }
+# best effort — Rakudo leaves a .precomp TREE behind, which .unlink cannot take
+LEAVE { try { my sub rm($d) { for $d.dir { $_.d ?? rm($_) !! .unlink }; $d.rmdir }; rm($dir) } }
 
-# `use v6.*` means "the newest revision this compiler implements" — 6.e here and
-# on Rakudo, which is why lizmat writes it with that comment.
+# `use v6.*` means "the newest revision this compiler implements", which is why
+# lizmat writes it with that comment — and the module's ROUTINES run under it,
+# which is what the `.AST` check below proves and what this file is really about.
+#
+# `$*RAKU.version` is NOT a probe for that. It is one object for the process and
+# reports the MAIN unit's revision: a module written `use v6.*` and loaded from a
+# 6.d program answers 6.d, on Rakudo 2026.08 and now here. This check asserted
+# 6.e and so did not pass under the oracle at all — corrected 2026-09-16 when
+# App::ModuleSnap turned up defaulting a parameter to `$*RAKU.version` inside
+# exactly such a module and storing a revision its own suite then rejected.
 $dir.add('SixE.rakumod').spurt(q:to/MOD/);
     use v6.*;
     unit module SixE;
@@ -33,8 +42,8 @@ $dir.add('SixE.rakumod').spurt(q:to/MOD/);
 for 1..3 -> $run {
     my $p = run($*EXECUTABLE, '-e', "use lib '$dir'; use SixE; print rev()", :out, :err);
     my $got = $p.out.slurp(:close); $p.err.slurp(:close);
-    @fail.push("run $run: the module's own revision is {$got.raku}, want \"6.e\"")
-        unless $got eq '6.e';
+    @fail.push("run $run: \$*RAKU.version inside the module is {$got.raku}, want \"6.d\" — the MAIN unit's")
+        unless $got eq '6.d';
 }
 
 # …and the thing that made it visible: a 6.e-only surface reached from inside

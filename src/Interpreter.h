@@ -1778,6 +1778,11 @@ public:
     // is the tripwire wired into every structural writer — under RAKUPP_FREEZE_TRACE
     // it reports any post-freeze mutation (and which thread did it), the empirical
     // signal for whether lock-free reads are safe. Behaviour is otherwise unchanged.
+    // `$*RAKU.version` is the MAIN unit's language revision, for the whole
+    // process — langRev_ moves per compilation unit and gates features, but the
+    // language object does not follow it (see rakuIntrospection).
+    int mainLangRev_ = 1;
+    bool mainLangRevSet_ = false;
     std::atomic<bool> symbolsFrozen_{false};
     std::thread::id mainThread_;
     void noteSymbolMutation(const char* what);

@@ -4662,6 +4662,14 @@ int Interpreter::run(Program& prog) {
     // was too late for anything hoisted — every sub in the unit is created
     // before the mainline starts, and was being stamped 6.d.
     langRev_ = prog.langRev;
+    // `$*RAKU` is ONE object for the process, and its version is the MAIN unit's
+    // — Rakudo answers the same revision inside a module whatever that module's
+    // own `use v6.…` says. langRev_ itself stays per-unit, because that is what
+    // gates the features; only the reported LANGUAGE version is pinned here.
+    // App::ModuleSnap defaults a parameter to `$*RAKU.version` inside a module
+    // written `use v6.*`, and the value it stored came back 6.e where its own
+    // suite expects the 6.d the test file is written in.
+    if (!mainLangRevSet_) { mainLangRev_ = prog.langRev; mainLangRevSet_ = true; }
     // …and the pragma the parser recorded, BEFORE the subs below are hoisted:
     // each one is stamped with it, and a routine declared under the pragma
     // keeps the namespace open in its own body wherever it is called from.
@@ -14847,8 +14855,9 @@ Value Interpreter::rakuIntrospection(bool compiler) {
     // The language object shows the language revision; the COMPILER shows its
     // own version, which is the Rakudo era we verify against (kOracleEra,
     // Interpreter.h) — `rakudo (2026.08)` is the shape Rakudo uses.
+    const int lr = mainLangRevSet_ ? mainLangRev_ : langRev_;   // the process's language, not this unit's
     (*r.hash())["ver"] = Value::str(compiler ? kOracleEra
-                       : (langRev_ == 0 ? "6.c" : langRev_ == 1 ? "6.d" : "6.e"));
+                       : (lr == 0 ? "6.c" : lr == 1 ? "6.d" : "6.e"));
     return r;
 }
 
