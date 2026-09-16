@@ -6263,6 +6263,32 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::boolean(false);
 #endif
         }
+        // NORMALIZE_ENCODING('UTF-8') → 'utf8' — the canonical spelling of an
+        // encoding name. It is Rakudo-internal, but a module that decodes a
+        // BYTE STREAM has to call it: the spelling is what
+        // `Encoding::Registry.find` is keyed by. IO::Socket::Async::SSL opens
+        // its character Supply with exactly this call, so without it the whole
+        // supply block threw before emitting anything and `.Supply(:enc(…))`
+        // on a TLS connection yielded NOTHING — while `.Supply(:bin)` worked.
+        // That one missing method is the single biggest dependency blocker in
+        // the ecosystem.
+        //
+        // The rule, oracle-checked: lowercase, then map the aliases. Anything
+        // unknown comes back lowercased and otherwise untouched (`Utf_8` is
+        // `utf_8`, and `UTF-32` is `utf-32` — only `utf32` is a real name).
+        if (m == "NORMALIZE_ENCODING" && args.size() >= 1) {
+            std::string n = args[0].toStr();
+            for (auto& c : n) c = (char)ascii::tolower((unsigned char)c);
+            static const std::map<std::string, std::string> alias = {
+                {"utf-8", "utf8"},        {"utf-16", "utf16"},
+                {"utf-16le", "utf16le"},  {"utf-16be", "utf16be"},
+                {"latin1", "iso-8859-1"}, {"latin-1", "iso-8859-1"},
+                {"iso_8859-1", "iso-8859-1"},
+                {"utf-8-c8", "utf8-c8"},
+            };
+            auto it = alias.find(n);
+            return Value::str(it == alias.end() ? n : it->second);
+        }
         // REGISTER-DYNAMIC '$*NAME', { PROCESS::<$NAME> = … } — the initializer
         // a module supplies for a process-wide dynamic it owns. Rakudo defers it
         // to the variable's first lookup; we run it at registration instead,
@@ -6541,8 +6567,52 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             buf.s.erase(0, n);
             return b;
         }
-        if (m == "consume-all-chars" || m == "consume-available-chars") {
+        if (m == "consume-all-chars") {
             std::string all = buf.s; buf.s.clear(); return Value::str(all);
+        }
+        // `consume-available-chars` is what a STREAM decoder yields as bytes
+        // arrive, and it is not the same as draining the buffer: the tail may
+        // not be a whole character yet, and even a whole one may not be a whole
+        // GRAPHEME — the next chunk could open with a combining mark. Draining
+        // regardless turned a multi-byte character split across two socket
+        // writes into two replacement characters, so
+        // IO::Socket::Async::SSL's own encoding test read "П¸ВО" for "ПИВО".
+        //
+        // Two hold-backs, both oracle-checked:
+        //   * an incomplete trailing UTF-8 sequence, and
+        //   * the final grapheme — unless it ends in a control that nothing can
+        //     extend or join (LF, TAB, NUL are emitted; CR is not, because CRLF
+        //     is one cluster; a space is not, because a mark can attach to it).
+        if (m == "consume-available-chars") {
+            const std::string& b = buf.s;
+            size_t end = b.size();
+            // …the incomplete sequence
+            for (size_t i = end, back = 0; i > 0 && back < 4; i--, back++) {
+                unsigned char c = (unsigned char)b[i - 1];
+                if ((c & 0xC0) == 0x80) continue;          // continuation byte
+                size_t need = c < 0x80          ? 1
+                            : (c & 0xE0) == 0xC0 ? 2
+                            : (c & 0xF0) == 0xE0 ? 3
+                            : (c & 0xF8) == 0xF0 ? 4 : 1;
+                if (end - (i - 1) < need) end = i - 1;
+                break;
+            }
+            // …and the final grapheme
+            if (end) {
+                size_t lastStart = 0, p = 0;
+                while (p < end) {
+                    size_t e = uniClusterEndUtf8(b, p, end);
+                    if (e <= p) break;
+                    lastStart = p; p = e;
+                }
+                std::vector<uint32_t> tail = utf8cp(b.substr(lastStart, end - lastStart));
+                uint32_t last = tail.empty() ? 0u : tail.back();
+                bool terminal = (last < 0x20 || last == 0x7F) && last != 0x0D;
+                if (!terminal) end = lastStart;
+            }
+            std::string out = b.substr(0, end);
+            buf.s.erase(0, end);
+            return Value::str(out);
         }
         if (m == "consume-all-bytes" || m == "consume-available-bytes") {
             Value b = Value::str(buf.s); b.hashKind = "Blob"; buf.s.clear(); return b;
@@ -9340,8 +9410,16 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         bool bin = h.count("bin") && h.at("bin").truthy();
         Interpreter* self = this;
+        // The enclosing `react`, carried to the worker: reactStack_ is
+        // THREAD-LOCAL, so a `done` inside `whenever $conn.Supply {…}` ran on
+        // this worker with an empty stack, found no react to close, and simply
+        // returned True — the react then waited for ever. Every other async
+        // source already hands its ReactCtx across (see tapSignal); this one
+        // did not, so the commonest socket shape there is could not be ended
+        // from inside its own handler.
+        auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
-        addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin]() mutable {
+        addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin, rctx0]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
             bool tapClosed = false;
@@ -9374,11 +9452,19 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (bin) chunk.hashKind = "Blob";
                 if (emitCb.t == VT::Code) {
                     ValueList one{chunk};
-                    try { self->callCallable(emitCb, one); }
-                    catch (RakuError& e) { fprintf(stderr, "===WARNING=== async read handler died: %s\n", e.message.c_str()); }
-                    catch (...) {}
+                    if (rctx0) self->reactStack_.push_back(rctx0);
+                    auto pop = [&] { if (rctx0 && !self->reactStack_.empty()) self->reactStack_.pop_back(); };
+                    // `done`/`last` in the handler ends this tap, exactly as it
+                    // does for a value-backed supply.
+                    try { self->callCallable(emitCb, one); pop(); }
+                    catch (NextEx&) { pop(); }
+                    catch (LastEx&) { pop(); tapClosed = true; }
+                    catch (DoneEx&) { pop(); tapClosed = true; }
+                    catch (RakuError& e) { pop(); fprintf(stderr, "===WARNING=== async read handler died: %s\n", e.message.c_str()); }
+                    catch (...) { pop(); }
                 }
                 self->gilYieldNotify();
+                if (tapClosed) break;
             }
             self->gil_.lock();
             ExecContext wctx; self->loadCtx(wctx);
@@ -12548,9 +12634,27 @@ void Interpreter::registerBuiltins() {
         // ran the handler EAGERLY with the Supplier as topic. That deadlock was
         // masked by awaitPromise's no-workers escape until a real async source
         // (Supply.interval) engaged the GIL earlier in the program.
-        if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Supplier") {
-            ValueList none; a[0] = I.methodCall(a[0], "Supply", none);
-        }
+        // …and so does anything else that PUBLISHES a Supply. An
+        // IO::Socket::Async is the one in the wild: `whenever $conn -> $msg`
+        // (no `.Supply`) is how IO::Socket::Async::SSL's own upgrade test
+        // reads a connection, and it fell through to the run-once-with-the-
+        // value arm below, which ran the body EAGERLY with the socket as its
+        // topic. That is what made a `my $tap = do whenever $conn {…$tap…}`
+        // report `$tap` undeclared: the body ran while the declaration it
+        // belongs to was still being evaluated.
+        static const char* supplyish[] = {"Supplier", "AsyncSocket"};
+        if (!a.empty() && a[0].t == VT::Hash)
+            for (auto* k : supplyish)
+                if (a[0].hashKind == k) {
+                    ValueList none; a[0] = I.methodCall(a[0], "Supply", none);
+                    break;
+                }
+        // NOT extended to a user CLASS that publishes a Supply, though Rakudo
+        // does coerce those too: IO::Socket::Async::SSL's `whenever $conn.head`
+        // then taps a real stream and its upgrade test HANGS where it used to
+        // finish with one failure. The tap is right and something downstream of
+        // it is not; shipping the coercion without knowing what would trade a
+        // wrong answer for a hang.
         // Inside an on-demand supply activation (real tap or eager drain): wire a
         // real inner tap. The body runs (now or later, from an I/O worker) with
         // this activation re-established, so its emits reach the downstream tap.
