@@ -20799,11 +20799,51 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
 // value's own method named T first and falls back to the type's COERCE/new; a
 // QUALIFIED name has no matching method on a built-in (Str has `.IO`, not
 // `.IO::Path`), which is what `IO::Path() :$filename` in XML's from-xml-file hits.
+// Coerce a container's ELEMENTS in place, for `my Int() @a` / `my Hash() %h`.
+// A `%` coerces the VALUE of each pair and leaves the key alone; an `@` coerces
+// each element. Undefined values are left as they are — Rakudo's
+// Array[Str(Any)] holds a Str type object without stringifying it — and a Pair
+// list is what a hash assignment arrives as before the store builds the hash.
+void Interpreter::coerceElems(Value& v, const std::string& ct, char sigil) {
+    auto one = [&](Value& e) { if (rtIsDefined(e)) e = coerceToType(e, ct); };
+    // COPY before coercing. The right-hand side of `my Hash() %o = %defaults`
+    // is the source container itself — one shared_ptr, not a snapshot — so
+    // coercing its entries where they lie rewrote %defaults' own values, and
+    // the two ended up sharing every Hash: a later `%o<headers><k> = '+'`
+    // wrote through into the Map it was copied from.
+    if (v.t == VT::Hash && v.hash()) {
+        auto fresh = std::make_shared<ValueMap>(*v.hash());
+        v.setHash(fresh);
+    }
+    else if (v.t == VT::Array && v.arr()) {
+        auto fresh = std::make_shared<ValueList>(*v.arr());
+        v.setArr(fresh);
+    }
+    if (sigil == '%') {
+        if (v.t == VT::Hash && v.hash()) { for (auto& kv : *v.hash()) one(kv.second); return; }
+        if (v.t == VT::Pair) {
+            if (Value* pv = v.pairVal()) { auto nv = std::make_shared<Value>(*pv); one(*nv); v.setPairVal(nv); }
+            return;
+        }
+        if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) coerceElems(e, ct, '%'); return; }
+        return;
+    }
+    if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) one(e); return; }
+    one(v);
+}
+
 Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     // A value that IS already the target type is not coerced at all — Rakudo's
     // coercion protocol only runs when it has to. Without this, `Mu:D(Int) $a`
     // (a way of saying "take anything, definite") died looking for a `.Mu`
     // method on an Int.
+    // A Map is not a Hash. Both are one VT here, so the nominal check below
+    // calls a Map a Hash and the coercion never ran — `my Hash() %o = %defaults`
+    // left Text::Table::Simple's inner Maps immutable and its `.append` built an
+    // Array. Rakudo's Map is Hash's PARENT (`Map ~~ Hash` is False here too),
+    // and the same holds for the set family, so ask `.Hash`.
+    if (type == "Hash" && v.t == VT::Hash && !v.hashKind.empty() && v.hashKind != "Hash")
+        return methodCall(v, "Hash", ValueList{});
     if (type == "Mu" || type == "Any" || typeOrSubsetMatches(v, type)) return v;
     try { return methodCall(v, type, ValueList{}); }
     catch (RakuError&) {}
@@ -22927,7 +22967,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
-            if (!ct.empty()) rhs = coerceToType(rhs, ct);
+            // On a `@` or `%` the coercion is the ELEMENT's, not the container's:
+            // `my Int() @a` is Rakudo's Array[Int(Any)]. Coercing the whole right
+            // side instead turned `my Int() @b = "3", "4"` into [2] — the list
+            // numified to its own element count — and `my Hash() %o = %defaults`
+            // left every value a Map, so Text::Table::Simple's `%options.append`
+            // built a two-element Array where a merged Hash belonged and the
+            // table came out in the default markers.
+            if (!ct.empty()) {
+                char sg = static_cast<VarExpr*>(a->target.get())->name[0];
+                if (sg == '@' || sg == '%') coerceElems(rhs, ct, sg);
+                else rhs = coerceToType(rhs, ct);
+            }
         }
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
@@ -31784,6 +31835,28 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
             if (v.obj()->cls->name == "X::AdHoc" && (it == v.obj()->attrs.end() || !rtIsDefined(it->second))) {
                 auto pl = v.obj()->attrs.find("payload");
                 if (pl != v.obj()->attrs.end() && rtIsDefined(pl->second)) return pl->second.toStr();
+            }
+            // `message` is a METHOD as often as an attribute — X::Protocol and
+            // every other hand-rolled X:: class computes it from its other
+            // fields. The base Exception hands down an undefined `message`
+            // attribute, so the attribute branch below won and gisted to the
+            // empty string: `say $e` printed a BLANK LINE where `~$e` printed
+            // the message, because prefixStringify honours the method and this
+            // did not. Ask the method whenever the attribute has nothing in it.
+            // This does not widen the X::-name predicate above — it only
+            // rescues classes already inside it.
+            if (it == v.obj()->attrs.end() || !rtIsDefined(it->second)) {
+                if (v.obj()->cls->findMethod("message")) {
+                    std::string msg = invokeMethodChain("message", v.obj()->cls.get(), v, {}, nullptr).toStr();
+                    if (!msg.empty()) {
+                        if (v.obj()->attrs.count("__bt")) {
+                            BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;
+                            std::string fr = renderBacktraceValue(backtraceOf(v), plain);
+                            if (!fr.empty()) return msg + "\n" + fr;
+                        }
+                        return msg;
+                    }
+                }
             }
             if (it != v.obj()->attrs.end()) {
                 // …plus the frames it was thrown from: `say $!` and `$!.gist`

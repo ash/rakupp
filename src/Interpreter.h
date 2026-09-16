@@ -1331,6 +1331,7 @@ public:
     Value deproxy(Value v);
     // `T($v)` coercion — see the definition in Interpreter.cpp.
     Value coerceToType(const Value& v, const std::string& type);
+    void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param
     bool isCoercionSubset(const std::string& type) const;
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
