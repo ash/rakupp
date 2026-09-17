@@ -12456,7 +12456,7 @@ static inline bool isMuTypeObject(const Value& v) {
 }
 
 void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
-                                bool whereVerified) {
+                                bool whereVerified, Env* sigEnv) {
     // A type SMILEY is part of the constraint: `Int:D $x` refuses a type object
     // and `Int:U $x` refuses an instance. The smiley was recorded (multi
     // dispatch scores on it) but never enforced on an ordinary bind, so
@@ -12505,7 +12505,35 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
     // stays resolved, so the TRUE answer is remembered; the false one is not.
     if (!p.typeKnown) {
         if (!classes_.count(p.type) && !subsets_.count(p.type) &&
-            !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) return;
+            !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) {
+            // The name does not resolve. Almost always that means an unimported
+            // module type, and binding freely is the right answer — but it is also
+            // how `T $a` arrives when an earlier `::T` in the SAME signature has
+            // captured a real type, and that has to be enforced. bindParams has
+            // already bound the capture into this environment as a type object
+            // under its own name, so the answer is a lookup rather than a second
+            // copy of it. `tv->s != p.type` is the guard that it actually resolved:
+            // an unbound `::T` answers a type object literally called T, which
+            // would otherwise check against itself for ever.
+            //
+            // This lives INSIDE the unresolvable branch deliberately. An earlier
+            // version resolved the capture up in bindParams and passed the answer
+            // down, which put an unordered_map and two lambdas in the frame of
+            // every call the engine makes; 800 concurrent signature-bind failures
+            // then segfaulted the process (S17-promise/start.t, a test that exists
+            // to do exactly that). Down here the ordinary bind never reaches it and
+            // the hot path is untouched.
+            if (sigEnv && !p.typeCapture)
+                if (Value* tv = sigEnv->find(p.type))
+                    if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
+                        if (typeOrSubsetMatches(v, tv->s)) return;
+                        throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                            "Type check failed in binding to parameter '" + p.name +
+                            "'; expected " + tv->s + " but got " + v.typeName() +
+                            " (" + typeCheckRepr(v) + ")"};
+                    }
+            return;
+        }
         p.typeKnown = 1;
     }
     // TARG lever C: fast-accept for the core concrete types. The class of the
@@ -12710,6 +12738,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         return slotBuf;                               // no Raku identifier has a space
     };
     size_t pi = 0;
+    // `sub f(::T, T $a)` — a type capture names the type of whatever was bound, and
+    // a LATER parameter spelled `T` is constrained by it. The name was bound into
+    // the env (so the body's `T` answers Int) but the constraint was never checked:
+    // `T` is not a declared type, and an unknown type name matches everything, so
+    // `f(Int, "x")` bound happily where Rakudo throws X::TypeCheck::Binding::Parameter.
+    // The priming path already resolves it this way (MethodCallPart2.cpp, `a bound
+    // ::T checks as its type`); this is the same lookup on the direct-call path.
     for (size_t pidx = 0; pidx < params.size(); pidx++) {
         const Param& p = params[pidx];
         // An explicit invocant (`$self:` / `Type:D:`) binds to `self` (already in
@@ -12932,7 +12967,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
                 if (!p.subSig && p.sigil == '$' && !p.coerce &&
                     (!p.type.empty() || isMuTypeObject(it->second)))
-                    typeCheckBind(p, it->second, blockParams, whereVerified);
+                    typeCheckBind(p, it->second, blockParams, whereVerified, env.get());
                 // named @/% params follow the positional binding rules: bind
                 // (share) the caller's container — unless `is copy`, which takes
                 // a fresh one (HTTP::Tiny's `:%headers is copy` mutates its copy;
@@ -13072,7 +13107,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // bind anything, Mu included, so they stay outside the gate.
             else if ((p.sigil == '$' || (p.sigil == '\\' && !p.slurpy)) &&
                      !p.invocant && (!p.type.empty() || isMuTypeObject(v)))
-                typeCheckBind(p, v, blockParams, whereVerified); // a lone typed candidate REJECTS a mismatch (like Rakudo)
+                typeCheckBind(p, v, blockParams, whereVerified, env.get()); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             // …and `is raw` too: it hands over the container itself, so a write
             // through it is the point of writing it that way.
@@ -25481,7 +25516,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if ((op == "==" || op == "!=" || op == "cmp") && (zeroDen(l) || zeroDen(r)))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
-            if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
+            // TWO zero-denominator Rats cross-multiply to `0` against `0`, so every
+            // ordering between them answered Same — `<1/0> <=> <-1/0>` is +Inf against
+            // -Inf and must be More. Rakudo orders that pair by the sign of the
+            // NUMERATOR (`<1/0>` +, `<0/0>` NaN at 0, `<-1/0>` -), and only the pair
+            // is special: one zero denominator against an ordinary Rat already
+            // cross-multiplies correctly (`<1/0> <=> 0` is `1*1` against `0*0`).
+            // Leaving the ordinary path alone is what keeps `<0/0> <= 1` True, which
+            // is the Algorithm::KDimensionalTree case the block above exists for.
+            if (zeroDen(l) && zeroDen(r)) {
+                int sl = getN(l).sign, sr = getN(r).sign;
+                c = sl < sr ? -1 : sl > sr ? 1 : 0;
+            }
+            else if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
 #if RAKUPP_HAS_INT128
             else if (long long cn1, cd1, cn2, cd2;
                      anyRat && smallParts(l, cn1, cd1) && smallParts(r, cn2, cd2)) {

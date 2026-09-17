@@ -1567,8 +1567,12 @@ public:
     // `whereVerified`: set when the multi dispatcher already accepted this
     // candidate for these values, so a SUBSET parameter's `where` must not be
     // evaluated a second time. The nominal/smiley checks above it still run.
+    // sigEnv: the environment this signature is binding into, so that a parameter
+    // typed by a `::T` capture can be resolved to what T actually captured. It is
+    // read ONLY on the path where `p.type` does not name a real type — the rare
+    // one — so an ordinary bind pays nothing for it.
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
-                       bool whereVerified = false);
+                       bool whereVerified = false, Env* sigEnv = nullptr);
     std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,

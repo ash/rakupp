@@ -4619,17 +4619,37 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return code;
         }
+        // `.assuming` leaves the RESIDUAL signature in primedParams and `params`
+        // null, so both counters below fell through to `placeholders` (empty) and
+        // answered 0 for every primed routine — where Rakudo answers the real
+        // number. `.signature` was right the whole time, because makeSignature
+        // already prefers primedParams (Builtins.cpp, "a .assuming wrapper carries
+        // its residual params"), so the engine disagreed with ITSELF: `&k.arity`
+        // said 0 while `&k.signature.arity` said 1. Same source for both now.
+        auto countedParams = [&](std::vector<const Param*>& out) {
+            const Callable* c = inv.code();
+            if (c->hasPrimed) { for (auto& sp : c->primedParams) out.push_back(sp.get()); }
+            else if (c->params) for (auto& p : *c->params) out.push_back(&p);
+        };
         if (m == "arity") {
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
+            std::vector<const Param*> ps; countedParams(ps);
             long long n = 0;
-            if (inv.code()->params) { for (auto& p : *inv.code()->params) if (!p.slurpy && !p.named && !p.optional) n++; }
+            // `hasPrimed || params` is "this routine has a parameter list at all".
+            // A primed routine whose residual list is EMPTY must answer 0, not fall
+            // through to the placeholder count.
+            if (inv.code()->hasPrimed || inv.code()->params) {
+                for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional) n++;
+            }
             else n = (long long)inv.code()->placeholders.size();
             return Value::integer(n);
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
+            std::vector<const Param*> ps; countedParams(ps);
             long long n = 0; bool slurpy = false;
-            if (inv.code()->params) for (auto& p : *inv.code()->params) {
+            if (inv.code()->hasPrimed || inv.code()->params) for (const Param* pp : ps) {
+                const Param& p = *pp;
                 if (p.named) continue;
                 // `*%opts` slurps NAMED arguments and accepts no positional at
                 // all, so it does not make the count Inf — only *@ / **@ / +@ do.
