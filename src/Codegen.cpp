@@ -998,7 +998,16 @@ struct Codegen {
                 if ((v->name.size() > 1 && v->name[1] == '*') || v->name == "$!" || v->name == "$/")
                     return "RT.dynVar(" + cesc(v->name) + ")"; // resolved from the live env at runtime
                 if (v->name == "$?FILE") return "Value::str(RT.srcFile_)";       // compile-time constant ($?LINE answered above)
-                if (v->name.size() > 1 && (v->name[1] == '?' || v->name[1] == '!'))
+                // The twigils that have no compiled form. `=` (a unit's pod) and
+                // `~` (a slang) were missing here, and missing meant SILENTLY
+                // falling through to varRef below — which emitted a reference to
+                // a local nothing had declared, so `--exe` on any program using
+                // `$=pod` failed in the C++ compiler with "use of undeclared
+                // identifier 'v_s_3dpod'" against generated code the author never
+                // wrote. That is issue #32's shape, and the answer is the same:
+                // name the construct and let the bundling fallback take it.
+                if (v->name.size() > 1 && (v->name[1] == '?' || v->name[1] == '!' ||
+                                           v->name[1] == '=' || v->name[1] == '~'))
                     unsupported("special/dynamic variable '" + v->name + "'");
                 if (v->name.size() > 1 && v->name[0] == '$' &&
                     std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return ascii::isdigit(c); })) {
@@ -1085,6 +1094,18 @@ struct Codegen {
             }
             case NK::NameTerm: {
                 const std::string& n = static_cast<NameTerm*>(e)->name;
+                // A PARAMETERIZED type — Buf[int8], Array[Int], a role pun Q[Int].
+                // The parameters live in `ofType` and nothing here read them, so
+                // `Buf[int8].new(-5, 3)` compiled to plain `Buf.new(-5, 3)` and
+                // answered Nil where the interpreter and Rakudo both answer -5 —
+                // silently, which is the worst way to be wrong. Resolving them
+                // here would mean a second copy of the interpreter's role-pun,
+                // enum and colonpair handling (Interpreter.cpp's NameTerm eval),
+                // and that is exactly the drift rtNameTerm exists to prevent —
+                // so this hands the program to the bundling fallback instead.
+                if (!static_cast<NameTerm*>(e)->ofType.empty())
+                    unsupported("the parameterized type '" + n + "[" +
+                                static_cast<NameTerm*>(e)->ofType + "]'");
                 if (n == "True")  return "Value::boolean(true)";
                 if (n == "False") return "Value::boolean(false)";
                 if (n == "Nil")   return "Value::nil()";
@@ -1963,8 +1984,17 @@ struct Codegen {
         }
         if (e->kind == NK::MethodCall) { // $obj.accessor = v (rw accessors; RO check at runtime)
             auto* mc = static_cast<MethodCall*>(e);
-            if (!mc->mutate && !mc->hyper && !mc->meta && mc->args.empty())
-                return "RT.accessorRef(" + lvalueExpr(mc->inv.get()) + ", " + cesc(mc->method) + ")";
+            if (!mc->mutate && !mc->hyper && !mc->meta && mc->args.empty()) {
+                // An INDIRECT call as a target — `$obj."$name"() = v` — carries its
+                // name in methodExpr and leaves `method` EMPTY. Reading `method`
+                // unconditionally compiled that to accessorRef(obj, ""), which
+                // wrote an attribute called "" and left the real one untouched:
+                // the program ran, printed the old value, and reported nothing.
+                const std::string nm = mc->methodExpr
+                    ? "(" + ex(mc->methodExpr.get()) + ").toStr()"
+                    : cesc(mc->method);
+                return "RT.accessorRef(" + lvalueExpr(mc->inv.get()) + ", " + nm + ")";
+            }
         }
         unsupported("assignment to this target");
     }
