@@ -11,9 +11,9 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v4.0.0** (2026-09-17) — *Raku that travels*: the
-version was reserved for this a month before the code, and it collects three
-things. **Modules travel** — `rakupp install` needs no Rakudo and no zef, and a
+**Status:** current release **v4.0.1** (2026-09-17), a one-fix follow-up to
+**v4.0.0** — *Raku that travels*: the version was reserved for this a month
+before the code, and it collects three things. **Modules travel** — `rakupp install` needs no Rakudo and no zef, and a
 compiled binary carries its modules with a *guarantee*: every mode reports what
 it embedded and what it could not, and `--standalone` refuses to build one that
 would need the disk. **The engine embeds** — one C API, with bindings for C++,
@@ -40,14 +40,14 @@ gate, an instrument rather than the ecosystem picture.
 written before the code — is in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v4.0.0 | at v3.0.0 | at v2.0.0 |
+| | v4.0.1 | at v3.0.0 | at v2.0.0 |
 |---|---:|---:|---:|
 | Roast, per individual test — of what the suite declares‡ | **200,843 of ~219,610 (91%)** | 197,191 of 218,772 | 197,090 of ~203,500 |
 | Roast, all-or-nothing — files fully passing, of 1,464 | **676 (46%)** | 594 | 594 |
 | Official documentation examples byte-identical on both engines | **957** | 945 | 952 |
 | Modules — the 59-dist battery, each against its own suite | **50 / 59** | 47 / 59 | 50 / 59 |
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529§ | **1,006** | — | — |
-| Local regression suite | **1,020** | 398 | 312 |
+| Local regression suite | **1,021** | 398 | 312 |
 
 Dashes mean the measurement did not exist yet.
 

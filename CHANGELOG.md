@@ -3,6 +3,62 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v4.0.1 (2026-09-17) — `::T:U` constrains, it does not capture
+
+A fix-only release, hours after v4.0.0. A smiley decides which of two things a
+`::` parameter is, and the difference shows up in the body rather than in the
+binding:
+
+| form | what it is | `Foo` in the body |
+|---|---|---|
+| `::Foo $x` | a type **capture** | the argument's type |
+| `::Foo:U $x` | a type **constraint** | the outer `Foo` |
+
+v4.0.0 took the first reading for both, so a signature that merely constrained a
+parameter quietly rebound that type's name for the rest of the routine. It got
+the bare capture right — that was one of the five faults the v4.0.0 gates found
+and fixed — and applied it one form too wide.
+
+The cost is not theoretical. YAMLish declares
+
+```raku
+our sub load-yaml(Str $input, ::Grammar:U :$schema = ::Schema::Core) {
+    my $match = Grammar.parse($input);
+```
+
+where `Grammar` means the grammar the module itself declares — the one whose
+`method parse` override attaches the actions. Captured, that call reached
+`$schema`'s type instead, whose `parse` is the plain built-in: the match still
+succeeded, no action method ever ran, and `.ast` came back as the document's own
+source text. Every `load-yaml` died with `No such method 'concretize' for
+invocant of type 'Str'` — a message naming neither the signature nor the grammar.
+
+Found by raku.online's `sites/spec/verify.sh`, on a documentation example that
+passed at v3.25.0. The shape appears in 329 files of the module battery; in 43 of
+them the captured name is also used in the body, which is where it bites. Only
+YAMLish is confirmed broken — the rest are candidates, not measured failures.
+
+Roast is unchanged: **676 / 1,464** files, and the same file list byte for byte —
+three runs here, 675/676/676, the one short run dropping `S15-nfg/concat-stable.t`
+and nothing else, with the union identical to v4.0.0's: 0 regressed, 0 gained.
+Local suite 1,020 → **1,021**, the new test being the difference.
+
+One divergence is left standing on purpose. rakupp enforces the smiley, so
+`sub f(::Foo:U $x)` refuses `f(42)` where Rakudo binds it without complaint.
+v3.25.0 refused the same five cases, so it predates the type-capture work and is
+not this release's business; the regression test records it rather than asserting
+it.
+
+Regression test: `t/regression/type-capture-smiley-is-constraint.raku`. It runs
+unchanged on both engines, and fails on the released v4.0.0 binary.
+
+### Also
+
+`tools/run-roast.raku` gains `-j=N` (and `-jN`), which sets the CPU budget and
+sizes the worker pool to match, the way `make -j` reads. It defaults to every
+core the machine has rather than one fewer; `--cpu` and `--workers` still set the
+two halves separately.
+
 ## v4.0.0 (2026-09-17) — Raku that travels
 
 | | v3.28.0 | v4.0.0 |
