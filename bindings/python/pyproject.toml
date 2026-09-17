@@ -1,14 +1,40 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rakulang"
-version = "0.1.0"
+# The engine's version, because a platform wheel carries librakupp inside it:
+# tools/build-wheel.sh refuses a wheel whose bundled library reports another
+# rk_version(). Bumped with CMakeLists.txt at release time
+# (docs/dev/RELEASING.md). A binding-only fix on the same engine is a
+# post-release: "4.0.1.post1".
+version = "4.0.1"
 description = "Raku grammars and an embedded Raku++ interpreter for Python, over librakupp"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "MIT" }
+requires-python = ">=3.9"
+license = "Artistic-2.0"
+# a byte copy of the repository's LICENSE; build-wheel.sh checks it is
+license-files = ["LICENSE"]
+authors = [{ name = "Andrew Shitov" }]
+keywords = ["raku", "grammar", "parser", "interpreter", "embedding"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Other",
+    "Topic :: Software Development :: Interpreters",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing",
+]
+
+[project.urls]
+Homepage = "https://raku.online"
+Repository = "https://github.com/ash/rakupp"
+Documentation = "https://github.com/ash/rakupp/blob/main/bindings/python/README.md"
+Issues = "https://github.com/ash/rakupp/issues"
 
 [tool.setuptools]
 packages = ["rakulang"]

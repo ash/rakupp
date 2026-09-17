@@ -524,8 +524,12 @@ So:
 1. Bump `project(RakuPP VERSION …)` in [CMakeLists.txt](../../CMakeLists.txt),
    the matching `(version "X.Y.Z-git")` in
    [.guix/modules/rakupp-package.scm](../../.guix/modules/rakupp-package.scm)
-   (the Guix package, PR #6), and `version = "X.Y.Z"` in
-   [flake.nix](../../flake.nix) (the Nix package, issue #5).
+   (the Guix package, PR #6), `version = "X.Y.Z"` in
+   [flake.nix](../../flake.nix) (the Nix package, issue #5), and
+   `version = "X.Y.Z"` in
+   [bindings/python/pyproject.toml](../../bindings/python/pyproject.toml)
+   (the PyPI package: `tools/build-wheel.sh` refuses a wheel whose bundled
+   library reports another version).
 
    Then **rebuild and check it**:
 

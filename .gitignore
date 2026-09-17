@@ -67,3 +67,4 @@ bindings/python/build/
 /showcase/eclipse/build/
 /showcase/fourier/build/
 /showcase/orbits/build/
+dist-wheel/

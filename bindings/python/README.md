@@ -2,7 +2,7 @@
 
 A pure-source Python package over `librakupp`'s C ABI. No compiled glue: the
 loader is `ctypes`, values cross through
-[`rakupp.h`](../../include/rakupp/rakupp.h), and the grammar logic lives in a
+[`rakupp.h`](https://github.com/ash/rakupp/blob/main/include/rakupp/rakupp.h), and the grammar logic lives in a
 small Raku shim (`rakulang/grammar_shim.raku`) the binding evaluates into its
 interpreter at startup.
 
@@ -15,9 +15,10 @@ Python is the reference binding; the other four follow it.
 
 ## 1. What you need
 
-- **Python 3.8+.** No third-party packages — `ctypes` is in the standard
+- **Python 3.9+.** No third-party packages — `ctypes` is in the standard
   library.
-- **`librakupp`.** From the repo root:
+- **`librakupp`**, unless the wheel from PyPI is what you install: that one
+  carries the library inside it. From a checkout, build it at the repo root:
 
   ```bash
   cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
@@ -29,8 +30,18 @@ Python is the reference binding; the other four follow it.
 
 ## 2. Install
 
-From a checkout, `pip install -e bindings/python`, after which plain `import
-rakulang` works. The examples below add the directory to `sys.path` instead,
+```bash
+pip install rakulang
+```
+
+The wheel carries `librakupp` inside it, so it needs no rakupp on the
+machine; `rakulang.interpreter().version` says which engine it holds, and the
+package version is that engine's. It is built for macOS (universal) and Linux
+(x86_64 and aarch64), and each wheel's own platform tag names the floor it
+needs.
+
+From a checkout, `pip install -e bindings/python` instead, after which plain
+`import rakulang` works. The examples below add the directory to `sys.path`,
 so they run against a fresh checkout with nothing installed.
 
 Finding the library usually needs no configuration: if `rakupp` is on PATH,
@@ -62,7 +73,7 @@ RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/calc.py
 RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/shopping.py
 ```
 
-`calc` ([examples/calc.py](examples/calc.py)) prints:
+`calc` ([examples/calc.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/calc.py)) prints:
 
 ```
 2 + 2 = 4
@@ -74,7 +85,7 @@ greet: Hello, Ada! You are 36.
 died: division by zero
 ```
 
-`shopping` ([examples/shopping.py](examples/shopping.py)) prints:
+`shopping` ([examples/shopping.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/shopping.py)) prints:
 
 ```
 3 items
@@ -181,23 +192,88 @@ build/rakupp tools/bindings-smoke.raku
 ```
 
 Runs both examples in all five languages and checks the output against
-[../examples/expected/](../examples/expected). For the deep gate — this
+[../examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected). For the deep gate — this
 binding driving the same grammar and 2000-line corpus as the Raku reference
 driver, byte-compared — run `build/rakupp tools/grammar-smoke.raku`. Both run
 in CI on every push.
 
-## When things go wrong
+## Troubleshooting
 
-- **`librakupp not found`** — the loader lists every path it tried. Set
-  `RAKUPP_LIB` to the library file. If a `rakupp` binary was found but no
-  library beside it, that build directory is static-only: rebuild with
-  `-DRAKUPP_BUILD_SHARED=ON`.
-- **`incompatible architecture`** — your `python3` and the library disagree
-  (`file $(which python3)` against `file build/librakupp.dylib`). Build the
-  library for your interpreter's architecture:
-  `cmake -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DRAKUPP_BUILD_SHARED=ON ...`
-- **`rk_new refused`** — something already created an interpreter in this
-  process. Use `rakulang.interpreter()`, which returns the shared one.
+Four questions settle most reports: which Python ran, which copy of the
+package it imported, which library file that copy loaded, and which engine
+that library is. One line answers all four:
+
+```bash
+python3 -c "import rakulang, sys; r = rakulang.interpreter(); print(sys.executable, rakulang.__file__, r._lib._name, r.version, sep='\n')"
+```
+
+`_lib._name` is the loaded file's path — a private attribute, fine for
+diagnosis. Compare the last line with `rakupp --version` for the binary on
+PATH: the library reports the plain release number, the binary adds its git
+describe suffix, and the leading numbers should agree.
+
+The search order decides the third line. A library you name is used as
+given: the path passed to `interpreter()`, else `RAKUPP_LIB`, else
+`RAKUPP_HOME/lib/`. Otherwise the loader takes, in this order, a copy bundled
+inside the package (`rakulang/_lib/`), the library beside the `rakupp` on
+PATH (its sibling `lib/`, then its own directory), and the system linker
+path.
+
+**`librakupp not found`.** Nothing bundled, nothing beside `rakupp`, nothing
+on the linker path; the message lists every path it tried. If it continues
+`A rakupp binary WAS found (…) but its build carries no shared library`, the
+build directory on PATH is configured without `-DRAKUPP_BUILD_SHARED=ON`.
+Reconfigure it with that option and build again, set `RAKUPP_LIB` to a build
+that has the library, or install the platform wheel (below).
+
+**`RAKUPP_LIB names …, which could not be loaded`.** A named library is
+authoritative; the loader does not fall back to another. The quoted `dlopen`
+error says why: `no such file` when the path does not exist — a relative path
+is resolved against the current directory, so a shell profile wants an
+absolute one — or the architecture mismatch below. Unset the variable to
+search instead.
+
+**`incompatible architecture`.** Your `python3` and the library disagree
+(`file $(which python3)` against `file build/librakupp.dylib`). Build the
+library for your interpreter's architecture:
+`cmake -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DRAKUPP_BUILD_SHARED=ON ...`
+
+**`.version` is older than `rakupp --version`.** The library the loader
+found is a leftover. A build directory keeps its `librakupp.*` files until a
+build overwrites them, and a directory reconfigured without
+`-DRAKUPP_BUILD_SHARED=ON` never does: the binary beside them stays current
+while the library keeps the version it had. `make rakupp` rebuilds the binary
+only; `cmake --build <dir>` with no target rebuilds the library too. Delete
+the leftovers or rebuild the shared target — the loader cannot tell a leftover
+from a fresh build.
+
+**`AttributeError: dlsym(…, rk_…): symbol not found`.** Raised from
+`interpreter()` when the library lacks an entry point this package declares,
+which means the library predates the package. Rebuild it from the same
+checkout the package came from.
+
+**`import rakulang` is not the copy you edited.** `rakulang.__file__` says
+which one loaded. `pip install -e bindings/python` imports the checkout
+itself; a plain `pip install bindings/python`, or a wheel, copies the package
+at install time and does not follow later edits — reinstall to refresh. `python`
+and `python3` can be different interpreters with different site-packages.
+
+**The platform wheel.** `tools/build-wheel.sh <build-dir>` bundles that
+build's library into the package, and a `pip install` of the result needs no
+`rakupp` on PATH and no variables. The bundled copy is a snapshot: `.version`
+reports it, and refreshing it is a rebuild and a reinstall. The script builds
+in a scratch venv, so it needs pip access to PyPI.
+
+```bash
+tools/build-wheel.sh build dist-wheel
+```
+```bash
+python3 -m pip install --force-reinstall --no-deps dist-wheel/rakulang-*.whl
+```
+
+**`rk_new refused: an interpreter is already live in this process`.**
+Something already created an interpreter in this process. Use
+`rakulang.interpreter()`, which returns the shared one.
 
 ## Numbers (G0 gate, 2026-08-11, M-series macOS)
 
