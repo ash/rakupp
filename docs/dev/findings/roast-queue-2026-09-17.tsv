@@ -1,0 +1,765 @@
+path	class	lost	first-failing-test	expected	got	first-error
+6.c/APPENDICES/A03-older-specs/01-misc.t	part-3-10	8	.open with "-" as path uses $*IN/$*OUT	${:buffer(""), :mode("w"), :path("<tmp>t_01_misc_t_line_0_799729066926762178966	{:bin(Bool::True), :buffer(""), :mode("w"), :path("-")}	        # No such method 'opened' for invocant of type 'FileHandle'
+6.c/APPENDICES/A04-experimental/01-misc.t	part-3-10	7	:D DefiniteHow target (core types)	42	"42"	        # Type check failed for return value; expected Str but got Int (42)
+6.c/MISC/bug-coverage-stress.t	part-3-10	3	Supply.merge on signals does not crash	'0'	'1'	No such method 'merge' for invocant of type 'Supply'
+6.c/MISC/bug-coverage.t	part-3-10	4	.count-only/.bool-only for iterated content	3	1	    # Cannot resolve caller uc(Any:U); the invocant is a type object, not an instance
+6.c/S02-names/SETTING-6c.t	part-1	1	::("SETTING") works			
+6.c/S02-names/pseudo-6c.t	part-3-10	4	can bind through OUR::	'33'	''	Variable '$x37' is not declared
+6.c/S02-types/subset-6c.t	part-11+	15	Can't assign value that violates type constraint via subset			        # Type check failed in binding to parameter '$'; expected Foo but got Num (42e0)
+6.c/S03-operators/set_precedes.t	parse					===SORRY!=== Parse error at line 55: Missing required term after infix
+6.c/S04-declarations/my-6c.t	part-11+	11	$b is not available in this scope			Cannot invoke non-Callable value of type Any
+6.c/S05-grammar/methods.t	part-1	1	duplicate methods err sanely			
+6.c/S05-grammar/parse_and_parsefile-6c.t	part-3-10	4	dies if no TOP rule	'abc'	''	
+6.c/S06-other/main-refactored.t	part-2	2	MAIN NOT called for ''			Usage:
+6.c/S12-class/mro-6c.t	parse					===SORRY!=== Parse error at line 93: expected } (got '')
+6.c/S14-roles/attributes.t	part-1	1	Class prioritization	'42'	'666'	
+6.c/S14-roles/mixin-6c.t	part-0	0				No such method 'test' for invocant of type 'Array'
+6.c/S32-io/file-tests.t	part-11+	11	.d			
+6.d/S09-multidim/indexing.t	part-2	2	Delete out of bounds dies (:delete) (1)			
+6.d/S32-str/sprintf-x.t	part-11+	38	Tested '%#08x'	"000000x1"	"0x000001"	
+6.d/S32-str/sprintf.t	part-3-10	6	args-used 0	'1.11500000000000000000000000000000000000000000000000'	'1.11499999999999999111821580299874767661094665527344'	
+APPENDICES/A01-limits/misc.t	timeout					
+APPENDICES/A01-limits/overflow.t	part-3-10	5	raising a Rat to largish power does not throw			
+APPENDICES/A02-some-day-maybe/misc.t	parse					===SORRY!=== Parse error at line 36: Confused (got ';')
+APPENDICES/A02-some-day-maybe/multi-no-match.t	part-11+	11	.splice(offset, array) throws			
+MISC/misc.t	parse					===SORRY!=== Parse error at line 103: expected variable after declarator (got 'constant')
+S02-lexical-conventions/comments.t	parse					===SORRY!=== Parse error at line 39: Two terms in a row across lines (missing semicolon or comma?)
+S02-lexical-conventions/one-pass-parsing.t	part-2	2	Calling sub if okay parens as long as not followed by whitespace			
+S02-lexical-conventions/unicode-whitespace.t	part-3-10	6	NO-BREAK SPACE	'a b c'	''	
+S02-lexical-conventions/unicode.t	parse					===SORRY!=== Parse error at line 60: unexpected operator in term position (got 'ा')
+S02-lexical-conventions/unspace.t	parse					===SORRY!=== Parse error at line 217: expected ) (got ':')
+S02-lists/tree.t	part-1	1	idempotent .tree variants	[1, 2]	(1, 2)	    # No such method 'tree' for invocant of type 'Int'
+S02-literals/adverbs.t	part-0	0				Cannot invoke non-Callable value of type Hash
+S02-literals/allomorphic.t	part-11+	11	<...> is equivalent to qw:v[...]	[IntStr.new(1, "1"), RatStr.new(<2/3>, "2/3"), RatStr.new(4.5, "4.5"), NumStr.new(60000000e0, "6e7"), ComplexStr.new(<8+9i>, "8+9i"), "ten"]	[IntStr.new(1, "1"), <2/3>, RatStr.new(4.5, "4.5"), NumStr.new(60000000e0, "6e7"), <8+9i>, "ten"]	    Leading 0 does not indicate octal in Raku; please use 0o000 if you meant that.
+S02-literals/char-by-name.t	parse					===SORRY!=== Parse error at line 28: Unrecognized character name [woman gesturing OK]
+S02-literals/char-by-number.t	part-3-10	5	broken "\x[6211"			
+S02-literals/hash-interpolation.t	part-3-10	4	%h<<a>> interpolates correctly	'foo 42 bar'	'foo %h<<a>> bar'	
+S02-literals/heredocs.t	part-3-10	4	mixing tabs and spaces even more evil-ly	'line one	'         line one	line two
+S02-literals/listquote.t	parse					===SORRY!=== Parse error at line 102: Unable to parse quote-words subscript; couldn't find '>>' (got '')
+S02-literals/misc-interpolation.t	part-1	1	original number still available after local version in closure: works	'1 2 1'	'2 2 2'	Variable '$x' is not declared
+S02-literals/numeric.t	parse					===SORRY!=== Parse error at line 127: expected method name after '.' (got ':')
+S02-literals/pairs.t	part-1	1	|$pair becomes a name, which fails to dispatch	[:a(Bool::True), :b(Bool::False), :c(42)]	[:a(Bool::True), :b(Bool::False)]	
+S02-literals/pod.t	part-3-10	3	$=DATA contains the right string	'hello, world!'	''	'
+S02-literals/quoting-unicode.t	part-3-10	10	Single interpolated Scalar correct result	(IntStr.new(5, "5"), IntStr.new(6, "6"))	("5 6",)	
+S02-literals/quoting.t	part-3-10	3	and interpolates correctly	'$foo BAR'	'$foo \qq[$bar]'	EVAL parse error: expected ) (got '
+S02-literals/radix.t	parse					===SORRY!=== Parse error at line 250: Radix -1 out of range
+S02-literals/string-interpolation.t	part-3-10	3	interpolation at edge of quoteword items does not cancel out inter-item space			    Leading 0 does not indicate octal in Raku; please use 0o1 if you meant that.
+S02-literals/sub-calls.t	part-1	1	call with one arg, has no space and no parens			
+S02-literals/types.t	part-3-10	3	Can't do a non-existing role			Sub object coerced to string (please use .gist or .raku to do that)
+S02-magicals/DISTRO.t	part-1	1	The object is-a 'Blob'			
+S02-magicals/KERNEL.t	part-3-10	4	The object is-a 'Blob'			
+S02-magicals/VM.t	part-1	1	The object is-a 'Blob'			
+S02-magicals/dollar-underscore.t	part-3-10	10	bare block aliases $_	'42'	'43'	
+S02-magicals/sub.t	part-3-10	3	&?ROUTINE is correct inside a regex	'&foo'	''	
+S02-names-vars/contextual.t	part-3-10	3	symbol $*a			
+S02-names-vars/fmt.t	part-2	2	default $comma fails to work with hashes	'1 a'	'1'	
+S02-names-vars/list_array_perl.t	part-0	0				EVAL parse error: Confused (got ']')
+S02-names-vars/names.t	part-0	0				'self' used where no object is available
+S02-names-vars/signature.t	parse					===SORRY!=== Parse error at line 33: expected ) (got '?')
+S02-names-vars/variables-and-packages.t	part-11+	19	MY is an out of scope name	'2'	'3'	Cannot invoke non-Callable value of type Any
+S02-names-vars/varnames.t	part-0	0				Target is not assignable
+S02-names/SETTING-6e.t	part-3-10	4	some SETTING::(OUTER::)* path resolves to CORE &not			
+S02-names/caller.t	part-2	2	vars not declared "is dynamic" are not accessible via $CALLER::	'24'	'23'	
+S02-names/dynamic-scope.t	part-2	2	Pragma dynamic-scope without args			
+S02-names/identifier.t	parse					===SORRY!=== Parse error at line 92: expected ; (got ')')
+S02-names/is_default.t	part-0	0				No such method 'default' for invocant of type 'Int'
+S02-names/is_dynamic.t	part-3-10	3	dynamic set correctly for non-existing @a[0]			No such method 'dynamic' for invocant of type 'Int'
+S02-names/name.t	part-11+	21	uninitialized untyped array should have name	'@a'	'element'	
+S02-names/our.t	part-1	1	call to eval-born sub outside eval dies			
+S02-names/pseudo-6d.t	part-3-10	4	can bind through OUR::	'33'	''	Variable '$x37' is not declared
+S02-names/pseudo-6e.t	part-11+	25	Root	'10'	''	    # Variable '$our-var' is not declared
+S02-names/strict.t	part-1	1	lax declared variable is package scoped	'42'	''	
+S02-names/symbolic-deref.t	part-0	0				No such symbol 'e'
+S02-packages/package-lookup.t	part-1	1	can access a subroutine in the stash			
+S02-types/WHICH.t	part-11+	156	Nil returns an ObjAt	'(Special)'	''	No such symbol 'utf16'
+S02-types/anon_block.t	part-1	1	implicit params become errors			
+S02-types/array-shapes.t	part-11+	19	operation push	'Array.new(:shape(2, 2), ["a", "b"], ["c", "d"])'	'[]'	Unsupported operator '='
+S02-types/array.t	part-2	2	end range as lvalue	'd c b a'	'd c b a b c d'	        assign to a end-indexed slice array from array
+S02-types/array_ref.t	part-2	2	creating arrays using [] creates new containers (1)			
+S02-types/autovivification.t	part-1	1	binding does not immediately autovivify	'0'	'1'	
+S02-types/bag.t	part-3-10	7	Make sure we cannot assign on a .values alias	'Scalar'	'Set'	
+S02-types/baggy.t	part-0	0				No such method 'invert' for invocant of type 'Foo'
+S02-types/baghash.t	part-11+	15	.grab(Callable) returns the right number of items	'2'	'0'	
+S02-types/bool.t	part-3-10	6	^^ operator with sub {} right operand works correctly	42	sub { ... }	
+S02-types/capture.t	part-1	1	mixing ordinary args with captures (1)			Cannot unpack or Capture `OH => HAI`.
+S02-types/declare.t	part-3-10	6	message  'Cannot unbox 101 bit wide bigint into native integer' 	'num'	'Num'	
+S02-types/flattening.t	part-3-10	8	Hash flattened by append	'5'	'6'	
+S02-types/generics.t	part-1	1	Nominalizable generic			    # No such method 'new' for invocant of type 'T'
+S02-types/hash.t	part-3-10	3	Non flattening Hashes do not become Pairs when passed to map	'(Hash)'	'(Pair) (Pair)'	No such method 'hash' for invocant of type 'Pair'
+S02-types/infinity.t	part-2	2				
+S02-types/instants-and-durations.t	part-0	0				Undefined routine 'now'
+S02-types/int-uint.t	dies					No such symbol 'int1'
+S02-types/is-type.t	part-3-10	5	is TypeName on @ sigil has effect (my)			
+S02-types/isDEPRECATED.t	parse					===SORRY!=== Parse error at line 132: Confused (got ')')
+S02-types/lazy-lists.t	part-0	0				Cannot elems a lazy list onto an Array
+S02-types/list.t	parse					===SORRY!=== Parse error at line 37: Confused (got ';')
+S02-types/lists.t	part-3-10	4	assigning a list element changed the original variable	'23'	'42'	
+S02-types/mix.t	part-3-10	8	Make sure we cannot assign on a .values alias	("a"=>-10,"b"=>-20,"c"=>-10,"d"=>10).Mix	("a"=>-10,"b"=>-20,"d"=>10).Mix	
+S02-types/mixhash.t	part-11+	13	Make sure we cannot assign Str on a key	666.1	0	
+S02-types/mu.t	part-3-10	6	Mu.return-rw	Bool::True	Bool::False	
+S02-types/multi_dimensional_array.t	part-1	1	Insertion and reading of shaped array elements	'0'	''	    # Looks like you planned 158 tests, but ran 21
+S02-types/native.t	part-3-10	7	can identify native type with multi dispatch (int)	'int'	'Int'	
+S02-types/nil.t	part-3-10	9	bare return returns Nil	'Nil'	'Any'	
+S02-types/nominalizables.t	parse					===SORRY!=== Parse error at line 78: expected variable in declaration (got ')')
+S02-types/num.t	dies					    Leading 0 does not indicate octal in Raku; please use 0o1 if you meant that.
+S02-types/pair.t	dies					Undefined routine 'pair'
+S02-types/quanthash.t	part-0	0				Type check failed for Set key; expected Int but got 1
+S02-types/range-iterator.t	part-11+	12	tests for int range.antipairs	["1" => "0", "2" => "1", "3" => "2", "4" => "3", "5" => "4", "6" => "5", "7" => "6", "8" => "7", "9" => "8", "10" => "9", "11" => "10", "12"	[1 => 0, 2 => 1, 3 => 2, 4 => 3, 5 => 4, 6 => 5, 7 => 6, 8 => 7, 9 => 8, 10 => 9, 11 => 10, 12 => 11, 13 => 12, 14 => 13, 15 => 14, 16 => 15	
+S02-types/range.t	part-11+	43	str in range	'0.5..5.0'	'0.5..5'	    # Looks like you planned 3 tests, but ran 2
+S02-types/set.t	part-11+	12	trying to assign throws X::Assignment::RO	(42=>1).Mix	(42=>Bool::True).Mix	
+S02-types/sethash.t	part-11+	12	does attempt to add item of wrong type croak	("Bool::True" => "a", "Bool::True" => "b", "Bool::True" => "c")	(Bool::True => "a", Bool::True => "b", Bool::True => "c").Seq	
+S02-types/sigils-and-types.t	part-11+	14	unitialized @var does Positional	'a'	'b'	
+S02-types/signed-unsigned-native.t	part-11+	16	is unsigned ok	'18446744073709551615'	'-1'	
+S02-types/subset-6e.t	part-11+	19	Can't assign value that violates type constraint via subset			        # Type check failed in binding to parameter '$'; expected Foo but got Num (42e0)
+S02-types/type.t	part-3-10	5	native int type cannot be undefined			
+S02-types/version-stress.t	part-11+	39	sort() a list of Version	("1.2.0.999", "1.2.1_01", "1.2.1_2", "1.2.1_003", "1.2.1a1", "1.2.1.alpha1", "1.2.1b1", "1.2.1.beta1", "1.2.1.gamma", "1.2.1α1", "1.2.1β1"	("1.2.0.999", "1.2.1", "1.2.1.alpha1", "1.2.1.beta1", "1.2.1.gamma", "1.2.1_003", "1.2.1_01", "1.2.1_2", "1.2.1a1", "1.2.1b1", "1.2.1α1", "	
+S02-types/whatever.t	part-3-10	6	The object is-a ''	'0'	'1'	Cannot invoke non-Callable value of type Seq
+S03-binding/arrays.t	part-3-10	3	array assignment creates new containers (4)	'a e c'	'a f c'	
+S03-binding/attributes.t	part-0	0				No such method 'bar' for invocant of type 'Any'
+S03-binding/hashes.t	part-1	1	hash assignment creates new containers (4)	'e x z'	'f x z'	
+S03-binding/nested.t	part-1	1	binding an element of a structure to an element of the same structure works (4)	'23'	'foo very_new_value	subkey ignored 23'
+S03-binding/scalars.t	part-3-10	3	y is bound to x (we checked with the =:= identity op)	'42'	'23'	
+S03-feeds/basic.t	part-1	1				
+S03-junctions/autothreading.t	part-3-10	9	auto-threaded over named parameters to call sub enough times	'4'	'1'	
+S03-junctions/boolean-context.t	part-2	2		'1'	'0'	
+S03-junctions/misc.t	part-11+	12	((1|2)&(3&4)) equiv to all(any(1,2),all(3,4))	'all(any(1, 2), all(3, 4))'	'all(any(1, 2), 3, 4)'	    # Type check failed in binding to parameter '$got'; expected Junction but got List ((:type("all"),))
+S03-metaops/cross.t	part-3-10	5	non-associating ops cannot be cross-ops with more than one op chained	'1 2a 1 2b'	'1a 1b 2a 2b'	Unsupported operator '*='
+S03-metaops/eager-hyper.t	part-1	1	iterator was lazy and only ran the block once	'1'	'5'	Undefined routine 'hyper'
+S03-metaops/hyper.t	part-3-10	10	.categorize is nodal	'({2 => [2], 3 => [3]} {4 => [4], 5 => [[5 6]]})'	'({Nil => [2 3]} {5 => [[5 6]], Nil => [4]})'	Lists on either side of non-dwimmy hyperop are not of the same length
+S03-metaops/misc.t	parse					===SORRY!=== Parse error at line 73: unexpected operator in term position (got '=')
+S03-metaops/not.t	parse					===SORRY!=== Parse error at line 57: unexpected operator in term position (got '&&')
+S03-metaops/reduce.t	parse					===SORRY!=== Parse error at line 28: expected ) (got '13')
+S03-metaops/reverse.t	part-1	1	Rxx thunks the RHS			Undefined routine 'RRxx'
+S03-metaops/zip.t	parse					===SORRY!=== Parse error at line 82: expected ) (got ';')
+S03-operators/adverbial-modifiers.t	parse					===SORRY!=== Parse error at line 187: expected ) (got ':')
+S03-operators/also.t	parse					===SORRY!=== Parse error at line 6: expected ) (got 'S')
+S03-operators/andthen.t	part-3-10	5	first undefined value (2)	any(:a(42), :b(72))	{:a(42), :b(72)}	
+S03-operators/assign.t	part-11+	18	assignment as function with types (2)	'100'	''	
+S03-operators/bit.t	parse					===SORRY!=== Parse error at line 93: Unrecognized character name [united states]
+S03-operators/boolean-bitwise.t	part-3-10	4	?| with no arguments yields a Bool			
+S03-operators/brainos.t	part-3-10	3	caught "=~" braino			
+S03-operators/buf.t	part-11+	25	got -1	Blob.new(0,1,2,3,4,5,6,7,8,9)	[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]	
+S03-operators/cmp.t	part-3-10	5	cmp on Pair/Inf	'Less'	'More'	
+S03-operators/comparison.t	part-1	1	(still fails scaled down)			
+S03-operators/composition.t	part-0	0				Cannot invoke non-Callable value of type Whatever
+S03-operators/context-forcers.t	part-3-10	9	+ context forcer works (5)	<-1-4i>	NaN	
+S03-operators/context.t	part-3-10	7	(item $a, $b) makes a List	'3 2'	'3'	
+S03-operators/div.t	part-3-10	3	10 / 0e0 softfails			
+S03-operators/equality.t	part-11+	18	&infix:<==> with one argument is correct			
+S03-operators/eqv.t	part-3-10	3	chained eqv (1)	Bool::False	Bool::True	
+S03-operators/flip-flop.t	part-1	1	different clones of the sub get different ff	'xBCxBC'	'xBCABC'	
+S03-operators/identity.t	part-11+	16	=:= is true after rebinding (1-1)			
+S03-operators/increment.t	part-3-10	5	Mu++ == 0	'0'	''	
+S03-operators/infixed-function.t	parse					===SORRY!=== Parse error at line 10: expected ) (got '7')
+S03-operators/inplace.t	part-3-10	3	coverage for performance optimizations			    # Target is not assignable
+S03-operators/minmax.t	timeout		No! No left-associativeness!	'foo'	'Inf'	
+S03-operators/misc.t	parse					===SORRY!=== Parse error at line 112: unexpected operator in term position (got '≃')
+S03-operators/nesting.t	parse					===SORRY!=== Parse error at line 16: Confused (got ']')
+S03-operators/notandthen.t	part-0	0				Undefined routine 'notandthen'
+S03-operators/orelse.t	part-3-10	4	1-arg Hash is broken down into Pairs, like +@foo slurpy does it	any(:a(42), :b(72))	{:a(42), :b(72)}	
+S03-operators/precedence.t	part-11+	21	on left side . is looser than ** and left-to-right with unary -	'4'	'-4'	
+S03-operators/range-basic.t	part-11+	29	Testing "!".."&"	'"!".."\&"'	'"!".."&"'	    # No such method 'excludes-min' for invocant of type 'Range'
+S03-operators/range.t	part-11+	33	unary ^0.1 produces the range 0..^x where 0 < x < 1	'0'	''	
+S03-operators/reduce-le1arg.t	parse					===SORRY!=== Parse error at line 11: expected ) (got '(')
+S03-operators/relational.t	part-11+	17	chained smartmatch ~~ ~~ true (0)	'True'	'False'	
+S03-operators/repeat.t	timeout		list repeating with -NaN fails			
+S03-operators/set_addition.t	part-2	2	(Mix) (+) (Mix)	(Mix=>2).Mix	(Mix=>2).Bag	
+S03-operators/set_difference.t	part-11+	16	[(-)] @params>>.gist()	("a"=>Bool::True,"b"=>Bool::True,"d"=>-1,"e"=>-2,"f"=>-1).Mix	("a"=>1,"b"=>1,"d"=>-1,"e"=>-2,"f"=>-1).Mix	
+S03-operators/set_elem.t	part-11+	12	13 is NOT (elem) of Hash[Any,Any]	Bool::False	Bool::True	
+S03-operators/set_equality.t	part-11+	24	a(-1) is NOT (==) of Mix	Bool::False	Bool::True	
+S03-operators/set_proper_subset.t	part-3-10	8	a(-1) is (<) of Mix	Bool::True	Bool::False	Unsupported operator '⊄'
+S03-operators/set_subset.t	part-3-10	8	a(-1) is NOT (<=) of Mix	Bool::False	Bool::True	Unsupported operator '⊈'
+S03-operators/set_symmetric_difference.t	part-11+	60	Mix(a(3.141592653589793) b(6.283185307179586)) (^) Mix(c d)	("a"=>3.141592653589793e0,"b"=>6.283185307179586e0,"c"=>Bool::True,"d"=>Bool::True).Mix	("a"=>3.141592653589793e0,"b"=>6.283185307179586e0,"c"=>1,"d"=>1).Mix	
+S03-operators/short-circuit.t	part-1	1	xor warns when used with bad precedence			
+S03-operators/subscript-adverbs.t	part-11+	28	can assign to (@array[0]:p).value	'a'	'A'	
+S03-operators/ternary.t	parse					===SORRY!=== Parse error at line 102: expected '!!' in ternary (got ':')
+S03-operators/u2212-minus.t	part-3-10	5	infix:<−>() returns zero	0	Any	
+S03-operators/value_equivalence.t	part-3-10	3	chained === (1)	Bool::True	42	
+S03-sequence/arity-2-or-more.t	part-3-10	5	arity-2 GCD	'6'	'42'	
+S03-sequence/basic.t	part-11+	19	simple sequence with two further terms on the RHS	'1, 2, 3, 4, 5, 6, 7'	'1, 6, 7, , , , '	
+S03-sequence/exhaustive.t	part-11+	122	multiple endpoints 0 3 0	(0, 1, 2, 3, 2, 1, 0)	(0,)	    # Unsupported operator '^...'
+S03-sequence/limit-arity-2-or-more.t	part-3-10	4	arity-3 curvature limit	'-28, 0, 10, 8, 0, -8, -10'	'-28, 0, 10'	
+S03-sequence/misc.t	part-11+	21	can use regex for endpoint without it being confused for closure	'fom fon foo'	'fom'	Sub object coerced to string (please use .gist or .raku to do that)
+S03-sequence/nonnumeric.t	part-3-10	7	Str decrement fails after 'AA': leftmost characters are never removed	'B'	'Z'	
+S03-smartmatch/00-sanity.t	part-1	1	direct	Bool::False	Nil	
+S03-smartmatch/any-hash-pair.t	dies					Undefined routine 'b'
+S03-smartmatch/any-pair.t	part-2	2	$obj ~~ Pair, nonexistent, dies (1)			
+S03-smartmatch/array-array.t	part-3-10	8	smartmatch with list RHS treats Iterable LHS as equivalent to a list	Bool::True	Bool::False	
+S03-smartmatch/capture-signature.t	part-3-10	6	signature smart-match against hash works (1)	'pivo'	'False'	
+S03-smartmatch/disorganized.t	part-3-10	4	~~ Routine (true)			
+S03-smartmatch/hash-hash.t	part-3-10	8	Hash ~~ Hash ($_ eqv X) 1			
+S03-smartmatch/range-range.t	part-2	2	smartmatch against numeric range	Bool::True	Bool::False	
+S03-smartmatch/signature-signature.t	part-3-10	10	:(:a($x), :b($y)) ~~ :(:a(:b(:c($x))))	'False'	'True'	
+S04-blocks-and-statements/let.t	part-3-10	4	let() should restore the variable, as our block failed	'42'	'23'	
+S04-blocks-and-statements/pointy-rw.t	part-3-10	5	aliases returned by %hash.values should be rw (2)	'5'	''	
+S04-blocks-and-statements/pointy.t	part-3-10	5	if this test fails, check the block in test file was not moved	'25'	'0'	
+S04-blocks-and-statements/temp.t	part-3-10	6	TEMP block (2)	'1'	'0'	Target is not assignable
+S04-declarations/constant-6.d.t	part-11+	25	implied | implied | sigilless	(1, 2, 3)	1	  Permutated parts:
+S04-declarations/constant.t	parse					===SORRY!=== Parse error at line 371: Redeclaration of routine 'infix:<☄>' (multi/only mix)
+S04-declarations/implicit-parameter.t	part-3-10	6	{$_} is count 1	'1'	'0'	
+S04-declarations/my-6e.t	part-3-10	9	$b is not available in this scope			Cannot invoke non-Callable value of type Any
+S04-declarations/our.t	part-3-10	6	variables are seen within other lexical child blocks via package	'9'	''	
+S04-declarations/smiley.t	part-11+	28	typeobject assignment to Int:D via MY:: pseudo package fails	'111'	''	
+S04-declarations/state.t	part-3-10	7	array state retained between calls	'2|2|3'	'1|2|3'	
+S04-declarations/will.t	part-3-10	8	all begin/check blocks in order	'abcdef'	'acfd'	Variable '$boo' is not declared
+S04-exception-handlers/catch.t	part-0	0				beta
+S04-exception-handlers/control.t	part-0	0				next without loop construct
+S04-exceptions/exceptions-alternatives.t	part-2	2	can handle exception without `message` method			
+S04-exceptions/fail.t	parse					===SORRY!=== Parse error at line 43: expected { (got '(')
+S04-exceptions/pending.t	part-1	1	$!.pending has one unhandled exception	'1'	'0'	
+S04-phasers/begin.t	part-1	1	BEGIN block was executed before a parse error happened later in the file	'begin'	''	
+S04-phasers/check.t	part-3-10	4	check blocks run after begin blocks	'begin1 begin2 check '	'begin1 check begin2 '	
+S04-phasers/enter-leave.t	part-3-10	3	$! set in LEAVE if exception thrown	'21'	'2'	
+S04-phasers/in-eval.t	part-3-10	8	INIT {...} fires at run-time	'IrR'	'rIR'	
+S04-phasers/in-loop.t	part-2	2	"last" statement called by LEAVE breaks out of while loop	'1'	'123456'	
+S04-phasers/init.t	part-3-10	10	init blocks run after begin blocks	'begin1 begin2 init '	''	
+S04-phasers/interpolate.t	part-3-10	4	INIT {...} fired at the beginning of runtime	'BCI'	'I'	
+S04-phasers/keep-undo.t	part-3-10	5	UNDO worked as expected	'1 > 0 0 <= 0 '	'1 > 0 0 > 0 '	foobar
+S04-phasers/pre-post.t	part-11+	14	phaser PRE	'(x)'	'()x'	
+S04-phasers/rvalue.t	part-3-10	10	INIT {} runs only once	'BCI'	'I'	
+S04-statement-modifiers/for.t	part-2	2	does for modifier respect itemization	'1'	'3'	
+S04-statement-modifiers/with.t	part-3-10	4	sanity check	'41 43'	'41  43'	
+S04-statements/do.t	part-3-10	4	'do' can't take the 'while' modifier			
+S04-statements/for.t	part-11+	22	-> $var is ro by default	'2 3 4 5'	'1 2 3 4'	b 3
+S04-statements/for_with_only_one_item.t	part-2	2	for on (a_single_var) -> is rw	'43'	'42'	
+S04-statements/gather.t	part-3-10	4	not yet gathered	'2'	'10'	
+S04-statements/given.t	part-3-10	3	given/when with junctions as topics and indirect condition			
+S04-statements/if.t	part-1	1	slurpy parameters on block	[1, 2, 3, (4, 5)]	[]	        # Variable '@a' is not declared
+S04-statements/label.t	part-3-10	6				
+S04-statements/once.t	part-1	1	`once` does not containerize its values			
+S04-statements/redo.t	part-1	1	testRedoWithFor	'201'	'220'	
+S04-statements/repeat.t	part-0	0				Variable '$another_x' is not declared
+S04-statements/return.t	part-11+	11	bare return fails (2)	'False'	'True'	
+S04-statements/sink.t	part-0	0				Target is not assignable
+S04-statements/terminator.t	part-2	2		''	'50'	
+S04-statements/try.t	part-2	2	CATCH allows to resume to right after the exception	'1'	'0'	No such method 'payload' for invocant of type 'MyPayload'
+S04-statements/when.t	part-2	2	when does not strip Scalar containers	'42'	'41'	
+S04-statements/while.t	part-3-10	3	keyword needs at least one whitespace after it	'2 4 6 8'	' 2  4  6  8 '	
+S04-statements/with.t	part-3-10	6	$_: with on Int, elsif on 0			
+S05-capture/alias.t	part-3-10	6	Capture starting at non-zero	'f'	''	
+S05-capture/array-alias.t	part-11+	12	No extra captures	'bc'	''	
+S05-capture/caps.t	part-0	0				No such method 'chunks' for invocant of type 'Match'
+S05-capture/dot.t	part-11+	12	Captured	'abcdef'	'abcd'	Internal error: stol: out of range
+S05-capture/match-object.t	part-2	2	=== of different but similar match objects	'False'	'True'	No such method 'key' for invocant of type 'Any'
+S05-capture/subrule.t	part-2	2	Cap hash capture	'[one] [two] [three]'	''	
+S05-grammar/action-stubs.t	part-0	0				No such method 'actions' for invocant of type 'Match'
+S05-grammar/inheritance.t	part-2	2	does it have the right type	Str	Mu	
+S05-grammar/namespace.t	part-1	1	regex can call regex in nested namespace			
+S05-grammar/parse_and_parsefile-6e.t	part-2	2	grammar is created using 6.e version of Grammar class	'6.e'	'6.c'	message Confused'
+S05-grammar/polymorphism.t	part-2	2	<Another.sea>			
+S05-grammar/signatures.t	part-3-10	3	barfoo matches			
+S05-interpolation/lexicals.t	part-2	2	<&foo(...)> parses and passes args correctly (2)			
+S05-interpolation/regex-in-variable.t	parse					===SORRY!=== Parse error at line 112: expected ) (got '\')
+S05-mass/charsets.t	part-3-10	7	space chars	'9,10,11,12,13,32,133,160'	'9,10,11,12,13,32,133,160,133,160'	
+S05-mass/properties-general.t	part-2	2	Digit doesn't match normal letters			
+S05-mass/recursive.t	part-3-10	6	with "x"	'x'	''	
+S05-mass/rx.t	part-11+	41	no backtrack into subpattern	'aaa'	''	Match.new(:orig("a"), :from(0), :pos(1))
+S05-mass/stdrules.t	part-2	2	<!same> succeeds between two different characters	rx/a <-[]>/	"abc"	
+S05-match/arrayhash.t	part-3-10	4	@a ~~ / ^ 'b' /			
+S05-match/capturing-contexts.t	parse					===SORRY!=== Parse error at line 239: Unrecognized backslash sequence: '\d'
+S05-match/raku.t	part-1	1	right result (2)	'+'	''	｢r
+S05-metachars/line-anchors.t	part-3-10	4	error when quantifying ^			
+S05-metachars/tilde.t	part-2	2	backtracking into tilde rule (1)			
+S05-metasyntax/angle-brackets.t	part-11+	13	<...> without whitespace calls a method (not quote words)	'a'	''	
+S05-metasyntax/assertions.t	part-1	1	255 !< 255			
+S05-metasyntax/charset.t	part-11+	12	Difference set match 6	'123'	'abc123def'	
+S05-metasyntax/delimiters.t	part-11+	17	^ as delimiter in match and substitution			
+S05-metasyntax/interpolating-closure.t	part-3-10	4	Rule block first	'2'	''	
+S05-metasyntax/litvar.t	part-3-10	4	Array deref ignores 0	'a'	'ab'	Cannot resolve caller substr(Any:U); the invocant is a type object, not an instance
+S05-metasyntax/longest-alternative.t	part-11+	16	Longest alternative wins 2	'aa'	'aaaa'	
+S05-metasyntax/lookaround.t	part-2	2	Lookbehind failure			
+S05-metasyntax/regex.t	part-3-10	9	did it set $/ (5)	'joo'	'ioo'	
+S05-metasyntax/repeat.t	part-11+	18	Fixed non inclusive max range repetition	'abcabcabcabc'	''	
+S05-metasyntax/sequential-alternation.t	part-3-10	4	first ||@list alternative matches	'x'	'xxxx'	
+S05-metasyntax/single-quotes.t	parse					===SORRY!=== Parse error at line 35: Two terms in a row across lines (missing semicolon or comma?)
+S05-metasyntax/unicode-property-pair.t	part-3-10	4	the char has a proper fractional value	'¼½'	'flubber¼½worms'	
+S05-metasyntax/unknown.t	part-3-10	4	"!" is not valid metasyntax			
+S05-modifier/continue.t	part-3-10	3	match first 'a'	'1a'	''	
+S05-modifier/counted-match.t	part-3-10	4	nth(infinite series) is ok	'3'	'2'	
+S05-modifier/exhaustive.t	part-11+	12	Capture 0 adj	'time'	'time '	
+S05-modifier/ignorecase-and-ignoremark.t	part-11+	11	character class	'äàAÁâåba'	'A'	
+S05-modifier/ignorecase.t	part-2	2	need whitespace after modifier			
+S05-modifier/ignoremark.t	part-3-10	8	Ignoremark with character class	'äàaáâåba'	'a'	
+S05-modifier/ii.t	part-11+	19	:ii modifier: Hello ~~ s:ii/.*/foo/ => Foo	'Foo'	'Hello foo foo[1]'	
+S05-modifier/my.t	part-11+	14	can declare :constant in regex	'afoo'	''	
+S05-modifier/overlapping.t	part-11+	11	Two matches found	'2'	'0'	
+S05-modifier/pos.t	part-3-10	7	Matched 1: ''	'3'	''	No such method 'to' for invocant of type 'List'
+S05-modifier/ratchet.t	part-3-10	3	normal regexes backtrack into subrules			
+S05-modifier/repetition-exhaustive.t	part-3-10	3	Simple combination of :x(2) and :exhaustive	'abb'	''	
+S05-modifier/repetition.t	part-2	2	:2x (repetition) modifier (+)			
+S05-modifier/samemark.t	part-2	2	:mm transported mark information to longer substitution string	'oo⃨o⃨o⃨'	'oo⃨oo'	
+S05-modifier/sigspace.t	part-3-10	3	word space match with ms//			
+S05-transliteration/trans-TR-operator.t	part-3-10	10	TR:d///	"mEws"	"mEEws"	
+S05-transliteration/trans-tr-lowercase-operator.t	part-11+	12	tr///	{:after("mEOws"), :before("meows")}	{:after("mEOws"), :before("meows"), :distance(2)}	
+S05-transliteration/trans.t	part-11+	15	ambiguous ranges combined	'abcdefghijklmnopqrstuvwxyz'	'abcdefghIJKLMNOPQRSTUVWXYz'	
+S05-transliteration/with-closure.t	part-11+	12	Can use a closure on the RHS	'a1b2c3d'	'asbscsd'	
+S06-advanced/callframe.t	part-1	1	can access outer lexicals via .my	'42'	''	Target is not assignable
+S06-advanced/dispatching.t	parse					===SORRY!=== Parse error at line 338: expected ) (got ';')
+S06-advanced/lexical-subs.t	parse					===SORRY!=== Parse error at line 32: expected ) (got '@')
+S06-advanced/return-prioritization.t	part-3-10	5	LEAVE can overwrite return value with a return	'1'	'0'	
+S06-advanced/return.t	part-3-10	9	A bare return is Nil	[Any]	[]	
+S06-advanced/stub.t	part-2	2	executing stub subroutine dies			
+S06-advanced/wrap.t	part-3-10	3	cannot upwrap a never-wrapped sub.	'yyy'	'xxx'	No such method 'set_rw' for invocant of type 'Attribute'
+S06-currying/positional.t	part-2	2	Priming :(Int $a) with \(1.1) mixed in a Failure 	([1, 2, (3, 4)], Bool::False)	([1, 2, 3, 4], Bool::False)	
+S06-multi/by-trait.t	part-3-10	7	variable was modified	'100'	'99'	
+S06-multi/lexical-multis.t	part-3-10	3	multi variant from inner scope not callable in outer			
+S06-multi/proto.t	part-2	2	attempt to define two proto subs with the same name dies			
+S06-multi/subsignature.t	part-3-10	4	...but lexical multi no longer callable	'0'	'1'	
+S06-multi/syntax.t	part-2	2	dispatch tied as expected	'0'	'1'	Sub object coerced to string (please use .gist or .raku to do that)
+S06-multi/type-based.t	part-3-10	5	dispatched to the Inf sub	'Inf'	'Numeric'	Undefined routine 'A::a'
+S06-multi/unpackability.t	part-2	2	Multi-dispatch descends into sub signatures (1)	'2'	'1'	
+S06-multi/value-based.t	parse					===SORRY!=== Parse error at line 26: expected parameter variable (got '-')
+S06-operator-overloading/circumfix.t	part-0	0				EVAL parse error: unexpected operator in term position (got '`')
+S06-operator-overloading/imported-subs.t	part-0	0				EVAL parse error: expected ) (got 'NAN')
+S06-operator-overloading/infix.t	parse					===SORRY!=== Parse error at line 277: unexpected operator in term position (got '⨧')
+S06-operator-overloading/prefix.t	parse					===SORRY!=== Parse error at line 33: unexpected operator in term position (got '∓')
+S06-operator-overloading/sub.t	parse					===SORRY!=== Parse error at line 179: unexpected operator in term position (got '°')
+S06-operator-overloading/term.t	parse					===SORRY!=== Parse error at line 25: unexpected operator in term position (got '•')
+S06-operator-overloading/workout.t	parse					===SORRY!=== Parse error at line 98: expected ) (got 'T')
+S06-other/anon-hashes-vs-blocks.t	part-2	2	{ 1 R=> "a" } is a Hash	'1'	''	
+S06-other/introspection.t	part-3-10	4	junction sig matches first candidate	'0'	'1'	
+S06-other/main-semicolon.t	parse					===SORRY!=== Parse error at line 23: &?ROUTINE is only available inside a routine (X::Undeclared::Symbols)
+S06-other/main-usage.t	part-11+	12	a user-defined GENERATE-USAGE sub is called if MAIN dispatch fails			
+S06-other/main.t	part-11+	12	MAIN can take type-constraint using Enums			
+S06-other/misc.t	part-3-10	4	what sub { ... }			
+S06-other/pairs-as-lvalues.t	part-0	0				Target is not assignable
+S06-parameters/smiley.t	part-3-10	8	does Int:foo fail	'(Int:U)'	'(Int)'	
+S06-routine-modifiers/lvalue-subroutines.t	dies					Target is not assignable
+S06-routine-modifiers/proxy.t	part-2	2	lvalue_test3() was called (9)	'2'	'1'	    # No such method 'history' for invocant of type 'Int'
+S06-routine-modifiers/scoped-named-subs.t	part-0	0				Cannot invoke non-Callable value of type Any
+S06-signature/arity.t	part-11+	20	block with one placeholder var has .arity == 1	'1'	'0'	
+S06-signature/closure-parameters.t	part-3-10	8	code dies with invalid signature (1)	'Two'	'Int'	
+S06-signature/code.t	part-3-10	4	can't pass thing that doesn't do Callable			
+S06-signature/definite-return.t	part-2	2	Value-less returns are allowed in functions with definite return value in their signatures	'6'	''	Type 'pi' is not declared
+S06-signature/errors.t	part-11+	11	named parameter of undeclared attribute dies			
+S06-signature/introspection.t	part-3-10	6	... some optional	'0 1 1'	'0 1 0'	No such method 'type_captures' for invocant of type 'Parameter'
+S06-signature/mixed-placeholders.t	part-3-10	9	Placeholder vars work	'8'	'2'	
+S06-signature/multi-invocant.t	part-1	1	one autogenerated positional slurpy	'1'	'0'	No such method 'multi-invocant' for invocant of type 'Any'
+S06-signature/named-parameters.t	part-3-10	5	Dies on passing superfluous arguments			Unexpected named argument '' passed
+S06-signature/optional.t	part-3-10	6	two commas in a row doesn't parse			
+S06-signature/outside-subroutine.t	part-2	2	signature binding outside of routine calls	'False'	'True'	    # Target is not assignable
+S06-signature/passing-arrays.t	part-2	2	non-slurpy array does not take a single Int			
+S06-signature/positional-placeholders.t	part-3-10	4	A non-twigil variable should not precede a corresponding twigil variable			
+S06-signature/positional.t	part-3-10	6	two sub params with the same scalar name			
+S06-signature/shape.t	part-11+	27	[3] shape constraint denies unshaped array	(2,)	(0,)	
+S06-signature/sigilless.t	part-1	1	passing of non-flatteing arguments			
+S06-signature/slurpy-and-interpolation.t	part-1	1	... slurpy args flattening and not matching because of too many parameters			
+S06-signature/slurpy-params.t	part-3-10	10	Testing: `sub foo($n, *%h) { }; foo 1, x => 20, y => 300, 4000`	'1'	'1 2 3 4 5'	
+S06-signature/slurpy-placeholders.t	part-3-10	4	Leftover named args get passed to %_ if present	'1'	''	
+S06-signature/sub-ref.t	part-3-10	5	invocation of a parameterless anonymous sub with a parameter dies			
+S06-signature/type-capture.t	part-1	1	can use captured type in declaration			Impossible coercion from 'Rat' into 'T'
+S06-signature/types.t	parse					===SORRY!=== Parse error at line 48: expected parameter variable (got '-')
+S06-signature/unpack-array.t	part-3-10	4	fixed length array unpacking too short			
+S06-signature/unpack-object.t	part-0	0				Type check failed in binding to parameter '$value'; expected Int but got Str ("x")
+S06-signature/unspecified.t	part-3-10	10	sub with no signature dies when given a named argument	':(*@_)'	':()'	
+S06-traits/as.t	part-3-10	3	object bound .WHATs to the right thing	'(Int)'	'(Failure)'	message Cannot convert string to number: base-10 number must begin with valid digits or '.' in 'omg hedgehog!''
+S06-traits/is-assoc.t	part-3-10	3	assoc<list>	'(1|2|3)'	'((1|2)|3)'	
+S06-traits/is-rw.t	part-2	2	pairs are mutable	'42'	'23'	
+S06-traits/misc.t	part-3-10	5	is rw dies in signature binding if passed an itemized array			
+S06-traits/native-is-rw.t	part-3-10	3	variable $x			
+S06-traits/precedence.t	parse					===SORRY!=== Parse error at line 95: expected ) (got '3')
+S06-traits/slurpy-is-rw.t	part-2	2	@test was changed	'hi'	'1'	
+S07-hyperrace/basics.t	timeout		method hyper	Bool::False	Bool::True	
+S07-hyperrace/for.t	part-2	2	A race for loop runs the body over threads			
+S07-iterators/range-iterator.t	part-11+	20	$r.pull-one == -1.5 and Range Iterator kept place	'-1.5'	'-1'	
+S07-slip/slip.t	part-3-10	7	simple slip listop middle	'(1 (2 3) 4)'	'(1 2 3 4)'	
+S09-autovivification/autoincrement.t	part-1	1	lvalue [[]][][] works	'1'	''	
+S09-autovivification/autovivification.t	part-3-10	3	autovivification to an array by &push	'1 2 3'	''	
+S09-hashes/objecthash.t	part-11+	12	Any-typed hash does not like Mu keys	'0.3,0.5'	'0.3,0.5,2'	No such method 'new' for invocant of type 'Hash'
+S09-multidim/XX-POS-on-dimensioned.t	part-3-10	8	operation assign to			Index out of range
+S09-multidim/XX-POS-on-undimensioned.t	part-0	0				Index out of range
+S09-multidim/decl.t	part-3-10	8	Cannot assign to sized array out of bounds	'3 3'	'*'	
+S09-multidim/indexing.t	part-3-10	7	Access out of bounds with indexer dies (1)	Any	Nil	
+S09-multidim/subs.t	part-11+	17	operation push	'0 0 0 1 1 0 1 1'	'0 1'	
+S09-subscript/multidim-assignment.t	part-3-10	5	Autovivifying LoL assignment on Array with multiple final indices	[Any, Any, Any, Any, "Charlotte's Web", "The Voyage of the Dawn Treader"]	[Any, Any, [Any, Any, "Charlotte's Web", "The Voyage of the Dawn Treader"]]	
+S09-subscript/slice.t	part-11+	27	nested slice	(3, (7, 9))	(3, 7, 9)	
+S09-typed-arrays/arrays.t	part-11+	12	my Array of Int @x declares a nested array	((Bool::True, Bool::False, Bool::True), (Bool::True,))	((Bool::True,), (Bool::False,))	
+S09-typed-arrays/hashes.t	part-3-10	7	Type constraint prevents autovivification	(42 => "a", 72 => "b", Foo.new => Foo, (:bars(100)) => "c", (:bers(200)) => "c").Seq	(42 => "a", 72 => "b", Foo.new => Foo, {:bars(100), :bers(200)} => "c").Seq	
+S09-typed-arrays/native-int.t	part-0	0				Target is not assignable
+S09-typed-arrays/native-num.t	part-0	0				Target is not assignable
+S09-typed-arrays/native-shape1-int.t	part-3-10	5	Accessing non-existing on int array dies	'66'	''	Target is not assignable
+S09-typed-arrays/native-shape1-num.t	part-3-10	5	Accessing non-existing on num array dies	'66'	''	Target is not assignable
+S09-typed-arrays/native-shape1-str.t	part-11+	11	Accessing non-existing on str array dies	'a'	''	
+S09-typed-arrays/native-str.t	part-11+	31	Cannot bind to str array	'a b c'	'b c'	Target is not assignable
+S09-typed-arrays/native.t	part-3-10	3	assigning other arrays into native arrays dies if the type of an element is wrong	'array[str]'	'array'	
+S10-packages/basic.t	part-11+	11	WHO implementation with longname	'Simple::Bar'	''	Undefined routine 'RetOuterLex::outer_lex_val'
+S10-packages/export.t	part-2	2	'is export' works correctly even when not exporting to Main (2)			
+S10-packages/nested-use.t	part-3-10	4	... the Bar::bar method resolved	'bar'	''	
+S10-packages/precompilation.t	part-3-10	3		'3'	'0'	  (X::Method::NotFound)
+S10-packages/require-and-use.t	part-2	2	circular dependencies are detected and reported			    # Cannot resolve caller is_run(Str, Block, Str); no matching multi candidate
+S10-packages/scope.t	part-3-10	9	The Main $?PACKAGE was not broken by any declarations	'GLOBAL'	'Any'	
+S11-modules/export.t	part-0	0				Undefined routine 'EXPORT::ALL::exp_no_parens'
+S11-modules/import-multi.t	part-1	1	A) doesn't import non-exported multis			
+S11-modules/import.t	part-2	2	doesn't import non-exported routines			
+S11-modules/importing.t	part-0	0				Cannot resolve caller waz(); no matching multi candidate
+S11-modules/lexical.t	part-2	2	sub is only imported into the inner lexical scope			
+S11-modules/module-file.t	part-3-10	4	$?PACKAGE for "module Foo::Bar;"	'Foo::Bar'	'Any'	
+S11-modules/module.t	part-3-10	8	$?PACKAGE for "module Foo::Bar {}"	'Foo::Bar'	'Any'	
+S11-modules/rakulib.t	part-1	1	RT 130883 is fixed			
+S11-modules/require.t	dies					Undefined routine 'Test'
+S11-modules/versioning.t	part-3-10	9	6.c from 6.c			
+S11-repository/cur-candidates.t	dies					Undeclared name 'Distribution::Path'
+S11-repository/cur-current-distribution.t	part-3-10	3	CompUnit::Repository::FileSystem without META6.json	'1'	'0'	    # Undeclared name 'Distribution::Path'
+S11-repository/curli-install.t	part-3-10	3	repository does C::R::Installable	'inst'	'home'	No such method 'loaded' for invocant of type 'CompUnit::Repository::Installation'
+S12-attributes/class.t	part-2	2	Instance call gets instance attribute, not class attribute	'17'	'23'	You cannot declare an attribute here; maybe you'd like a class or a role?
+S12-attributes/clone.t	part-3-10	3	cloned object sanity	["g", "h", "i"]	"g"	
+S12-attributes/defaults.t	part-1	1	Attribute constraint checked at run-time			
+S12-attributes/delegation.t	part-0	0				No such method 'hi' for invocant of type 'ClassFrontend'
+S12-attributes/inheritance.t	part-3-10	3	private attributes do not leak from child to parent class (1)	'23'	'42'	
+S12-attributes/instance.t	part-11+	11	cannot pass positional to .new	(1, 2, 3, 4)	(1, Int, 3, 4)	No such method 'x' for invocant of type 'AttrInSub'
+S12-attributes/native.t	part-3-10	7	Cannot update int rw attr with non-int (1)			
+S12-attributes/recursive.t	part-0	0				No such method 'attr' for invocant of type 'C'
+S12-attributes/smiley.t	part-11+	12	type Int:D			
+S12-attributes/undeclared.t	part-3-10	5	Test Undeclared public attribute assignment from a class			
+S12-class/anonymous.t	part-1	1	anon class is actually anon			
+S12-class/attributes-required.t	part-2	2	is required with array attributes			
+S12-class/attributes.t	part-3-10	3	no attr access for sub inside class	'1 2 3'	'1'	
+S12-class/augment-supersede.t	part-2	2	used to crash rakudo			
+S12-class/basic.t	part-0	0				No such method 'x' for invocant of type 'A61354_1'
+S12-class/inheritance.t	part-3-10	5	Cannot call unrelated method with $obj.Class::method syntax			
+S12-class/interface-consistency.t	parse					===SORRY!=== Parse error at line 48: Confused (got '}')
+S12-class/lexical.t	part-1	1	scope is correctly restricted			
+S12-class/magical-vars.t	part-1	1	self is not overridden inside an EVAL	'evo'	'GLOBAL::evo'	
+S12-class/mro-6e.t	part-1	1	Rolified MRO	4 elements		     got: 3 elements
+S12-class/namespaced.t	part-1	1	class A::B not available outside of class as B			No such method 'new' for invocant of type 'Any'
+S12-class/rw.t	part-2	2	'is rw' on a class			    # Class 'C' cannot inherit from 'rw' because it is unknown
+S12-class/stubs.t	part-2	2	Can stub a module, and later on declare it			
+S12-coercion/coercion-methods.t	part-2	2	Classes	'42'	'The Answer'	    # No matching multi candidate for method COERCE
+S12-coercion/coercion-return.t	part-3-10	3	Basic Coercive Return			    # Type check failed for return value; expected Foo but got Int (42)
+S12-coercion/coercion-types.t	parse					===SORRY!=== Parse error at line 156: expected variable in declaration (got ')')
+S12-coercion/parameterized.t	part-2	2	Basics	(42, Bool::False)	("42", 0)	    # Parameter '$v' must be an object instance of type 'Any', not a type object
+S12-construction/BUILD.t	part-2	2	fail in BUILD works	'42'	'666'	
+S12-construction/roles-6e.t	part-3-10	3	BUILD	("R0", "C0", "R0", "R1", "R2", "C1")	("C0", "C1")	    # Looks like you planned 2 tests, but ran 1
+S12-enums/anonymous.t	parse					===SORRY!=== Parse error at line 24: unexpected operator in term position (got '::')
+S12-enums/as-role.t	dies					No such method 'No' for invocant of type 'Foo'
+S12-enums/basic.t	part-3-10	8	Can smartmatch for enum type	'1'	'0'	    # No such method 'pair' for invocant of type 'Int'
+S12-enums/misc.t	parse					===SORRY!=== Parse error at line 51: unexpected operator in term position (got '::')
+S12-enums/non-int.t	part-3-10	3	mixed type enums are forbidden	'y'	'b'	
+S12-enums/pseudo-functional.t	part-0	0				No such method 'Tue' for invocant of type 'Str'
+S12-enums/thorough.t	part-2	2	enum itself stringififes	'(day)'	'[Sun => 0 Mon => 1 Tue => 2 Wed => 3 Thu => 4 Fri => 5 Sat => 6]'	(A+{<anon|1>})
+S12-introspection/attributes.t	part-3-10	9	second attribute has build block	'42'	''	Cannot modify an immutable 'a'
+S12-introspection/can.t	part-3-10	7	and also through the HOW	'2'	'1'	
+S12-introspection/meta-class.t	part-3-10	7	... Foo can bar	'IntrospectAtBEGINTime'	'M::P::IntrospectAtBEGINTime'	
+S12-introspection/methods.t	part-3-10	6	can get methods for List (proto)			Sub object coerced to string (please use .gist or .raku to do that)
+S12-introspection/parents.t	part-11+	24	right number of parents in list of all, from type-object, with :all	'2'	'1'	No such method 'parents' for invocant of type 'Str'
+S12-introspection/roles.t	part-3-10	6	with no args returned list with correct number of roles	'3'	'1'	
+S12-introspection/walk.t	part-3-10	3	Basics			    # No such method 'WALK' for invocant of type 'E'
+S12-meta/exporthow.t	part-1	1	directive BBQ			No such method 'tryit' for invocant of type 'Act'
+S12-meta/grammarhow.t	part-1	1				
+S12-meta/primitives.t	dies					No such method 'create_type' for invocant of type 'Metamodel::Primitives'
+S12-methods/accessors.t	part-3-10	5	$.a contextualizes as item (1)	'1'	'4'	
+S12-methods/attribute-params.t	part-3-10	4	call $.x	'foo'	''	
+S12-methods/calling_sets.t	part-2	2	.* calls up inheritance hierarchy	'7'	'1'	No such method 'bar' for invocant of type 'C'
+S12-methods/default-trait.t	part-3-10	3	'is default' trait tie-breaks on method dispatch	'9'	'6'	
+S12-methods/defer-call.t	part-1	1	callsame exhausts the iterator	'X'	'X X X'	No such method 'cw' for invocant of type 'DeadEnd'
+S12-methods/defer-next.t	part-0	0				Variable '&?ROUTINE' is not declared
+S12-methods/fallback.t	part-0	0				No such method 'the-light' for invocant of type 'D'
+S12-methods/instance.t	part-1	1	Invocant type is checked			No such method 'bar' for invocant of type 'A'
+S12-methods/multi.t	part-2	2	redefinition of non-multi method (RT #67024)			No matching multi candidate for method rt69192
+S12-methods/parallel-dispatch.t	parse					===SORRY!=== Parse error at line 29: unexpected operator in term position (got '»')
+S12-methods/private.t	part-1	1	method wrong			
+S12-methods/qualified.t	parse					===SORRY!=== Parse error at line 38: expected method name after '.' (got '::')
+S12-methods/trusts.t	part-0	0				No such private method '!Truster::get-x-priv' for invocant of type 'Truster'
+S12-methods/what.t	part-3-10	3	a sub isa Routine	'(Foo)'	'Bar'	
+S12-subset/subtypes.t	part-11+	25	objects of Int::Odd don't get even	'3'	'4'	
+S12-subset/type-subset.t	part-3-10	8	When refinement is an expression value			
+S13-overloading/metaoperators.t	parse					===SORRY!=== Parse error at line 23: expected ) (got 'Xwtf')
+S13-overloading/typecasting-long.t	part-3-10	6	($:, :$) -> (:U, $) arity check			
+S14-roles/attributes-6e.t	dies					No such method 'WALK' for invocant of type 'C'
+S14-roles/basic.t	part-3-10	5	type-check enforced			
+S14-roles/conflicts.t	part-1	1	message sub { ... }			
+S14-roles/lexical.t	part-1	1	scope is correctly restricted			
+S14-roles/mixin-6e.t	part-3-10	6	but with array literal provides a .Array method	'1 2'	'True'	
+S14-roles/namespaced.t	part-3-10	8	declaration class			
+S14-roles/parameter-subtyping.t	part-3-10	5	subtyping by role parameters (one param)	'2'	'3'	
+S14-roles/parameterized-basic.t	part-2	2	arity-based selection of role with no parameters	'1'	'3'	No such method 'candidates' for invocant of type 'Metamodel::ParametricRoleGroupHOW'
+S14-roles/parameterized-mixin.t	part-3-10	5	attribute was initialized correctly (1)	'42'	''	
+S14-roles/parameterized-type.t	parse					===SORRY!=== Parse error at line 23: expected ) (got '$x')
+S14-roles/rw.t	part-3-10	5	Puning	'12'	'13'	
+S14-roles/typecheck.t	part-2	2	Role group matches a parent class of its non-parameterized member			
+S14-roles/versioning.t	part-3-10	4	Basic role language revision			    # No such method 'candidates' for invocant of type 'VerRole'
+S14-traits/attributes.t	part-0	0				No such method 'doc' for invocant of type 'Any'
+S14-traits/package.t	part-2	2	description role applied to class and set with argument	'eats bananas, awesome'	''	No such method 'candidates' for invocant of type 'Nom'
+S14-traits/routines.t	part-0	0				No such method 'description' for invocant of type 'Sub'
+S14-traits/variables.t	part-2	2	have correct number of names noted from trait applied by name	'3'	'0'	No such method 'doc' for invocant of type 'Any'
+S15-unicode-information/uniprop.t	part-2	2	uniprop an empty string yields Nil	Nil	""	
+S16-filehandles/argfiles.t	part-3-10	9	get() should read from $*ARGFILES, which reads from files in @*ARGS	'one	'Nil	'
+S16-filehandles/filetest.t	part-1	1	file test from before spec revision 27503 is error			
+S16-filehandles/io.t	part-3-10	8	get($in) worked (and autochomps)	'Hello World'	''	
+S16-filehandles/io_in_for_loops.t	part-11+	17	... got the right line (array controlled loop)	'1'	''	
+S16-filehandles/io_in_while_loops.t	part-3-10	9	... got the right line (array controlled loop)	'1'	''	
+S16-filehandles/open.t	part-1	1	trying say			
+S16-io/bare-say.t	part-3-10	4	`put for ...` throws			
+S16-io/bom.t	part-3-10	9	.chars reflects stripping of UTF-8 BOM (BOM + 4 chars)	'4'	'5'	
+S16-io/comb.t	part-11+	24	testing 'zero' with \("\n")	'	''	'
+S16-io/eof.t	part-3-10	3	.eof on TTY STDIN works right	sub { ... }	"^D\b\bmeow\r\nTrue\r\n\r\nTrue\r\n"	
+S16-io/handles-between-threads.t	part-1	1	reading from $*IN from another thread works (file)			
+S16-io/home.t	parse					===SORRY!=== Parse error at line 18: Confused (got ')')
+S16-io/lines.t	part-1	1	rest of file: () / LF	'zeroonetwothreefour'	'zero'	No such method 'opened' for invocant of type 'FileHandle'
+S16-io/newline.t	part-3-10	4	use newline :cr influences \n	''	'	'
+S16-io/print.t	part-1	1	printing routines with Junctions	3	4	            # Looks like you planned 5 tests, but ran 4
+S16-io/prompt.t	part-11+	18	default handle attributes	"foobar"	Nil	
+S16-io/put.t	part-1	1	<anon|1>.new (sub form)	"pass\n"	"<anon|1><515040234648>\n"	
+S16-io/split.t	part-11+	18	testing 'zero' with Str	'zero one two three four'	'<roast>/S16-io/split.testing'	 ne
+S16-io/supply.t	part-3-10	5	can not be called as a class method	$["a", "b", "c", "d", "e"]	[:path("<roast>/S16-io/supply.testing"), :mode("r"), :buffer("")]	
+S16-io/watch.t	parse					===SORRY!=== Parse error at line 12: Malformed radix number
+S16-io/words.t	part-3-10	10	no extra args (IO::Handle method form)	$(("word0", "word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10", "word11", "word12", "word13", "word14	("word0", "word1", "word2", "word3", "word4", "word5", "word6", "word7", " ", "word8", " ", "word9", " ", " ", " ", " ", "word10"	        # No such method 'opened' for invocant of type 'FileHandle'
+S16-unfiled/getpeername.t	dies					No such method 'connect' for invocant of type 'IO::Socket::INET'
+S17-channel/basic.t	part-2	2	Supply.from-list and @(.Channel) work	'1 2 3 4 5'	'queue 1 2 3 4 5 closed True closedPromise status Kept'	No such method 'tap' for invocant of type 'List'
+S17-lowlevel/atomic.t	part-2	2	Cannot atomic assign value failing to meet subset type	'6'	'3'	No such method 'Range' for invocant of type 'atomicint'
+S17-lowlevel/cas-loop.t	part-2	2	Cannot use CAS block form with value of the wrong type			
+S17-lowlevel/cas.t	timeout		Cannot CAS value of the wrong type	'11'	'30'	
+S17-lowlevel/lock.t	dies					Undeclared name 'Lock::Soft'
+S17-procasync/basic.t	part-0	0				No such method 'started' for invocant of type 'Proc::Async'
+S17-procasync/bind-handles.t	dies					No such method 'bind-stdout' for invocant of type 'Proc::Async'
+S17-procasync/encoding.t	part-3-10	10	stderr Supply quit on encoding error	'2'	'3'	e��# Failed test 'stderr Supply quit on encoding error' at <roast>/S17-procasync/encoding.t line 23
+S17-procasync/kill.t	part-1	1	did it exit with the right value	'0'	'1'	===SORRY!=== Error while compiling <tmp>t_kill_t_line_0_33127503204451614178966
+S17-procasync/nonexistent.t	part-3-10	5	Writing to an async process that does not exist breaks the returned Promise			
+S17-procasync/stress.t	part-1	1	.Supply on multiple Proc::Async's does not deadlock	"pass"	"test\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\ntest\nt	
+S17-procasync/windows-arg-quoting.t	parse					===SORRY!=== Parse error at line 59: Couldn't find terminator ] (corresponding [ was at line 54)
+S17-promise/allof.t	part-1	1	got the right order	'0 1 2 3 4 5 6 7 8 9'	'0'	
+S17-promise/basic.t	part-3-10	7	Cannot call cause on a Planned Promise	'Died'	''	    # No such method 'start' for invocant of type 'Meows'
+S17-promise/lock-async.t	part-3-10	3	Cannot unlock an async lock that was never locked			No such method 'status' for invocant of type 'Bool'
+S17-promise/nonblocking-await.t	timeout		Hundred of outstanding awaits on supplies works	'5050'	'100'	'
+S17-promise/single-assignment.t	part-3-10	4	promise result 2			status Kept
+S17-promise/start.t	part-3-10	3	a bare await should not work			Cannot convert string to number: base-10 number must begin with valid digits or '.' in 'barbaz.chars()'
+S17-promise/then.t	part-3-10	4	simple keep			        # No such method 'andthen' for invocant of type 'Promise'
+S17-scheduler/at.t	timeout					
+S17-scheduler/every.t	timeout					
+S17-scheduler/in.t	timeout					
+S17-supply/Channel.t	part-3-10	4	doneing closes the Channel	'le supply quit'	''	
+S17-supply/Seq.t	part-3-10	4	Supply.Seq should return a Seq			
+S17-supply/basic.t	part-3-10	6	no further events after done	'42 44'	'42 44 46'	
+S17-supply/categorize.t	part-1	1	we got a classification Supply (Block)			No such method 'tap' for invocant of type 'Hash'
+S17-supply/classify.t	part-1	1	we got a classification Supply (Block)			No such method 'tap' for invocant of type 'Hash'
+S17-supply/collate.t	dies					Invocant of method 'collate' must be an object instance of type 'Supply', not a type object
+S17-supply/comb.t	part-3-10	6	comb a simple list of words with rx/../, 2)	$["ol", "dd"]	["ol", "dd", "og", "ju", "mp", "so"]	
+S17-supply/decode.t	dies					No such method 'decode' for invocant of type 'Supply'
+S17-supply/elems.t	part-3-10	4	just tracing elems works			    # No such method 'live' for invocant of type 'Int'
+S17-supply/encode.t	dies					No such method 'encode' for invocant of type 'Supply'
+S17-supply/flat.t	part-0	0				No such method 'tap' for invocant of type 'Seq'
+S17-supply/interval.t	part-3-10	3	interval of 1 second	$[0, 1, 2, 3, 4]	[0]	
+S17-supply/merge.t	dies					No such method 'merge' for invocant of type 'Supply'
+S17-supply/migrate.t	part-0	0				No such method 'migrate' for invocant of type 'Supply'
+S17-supply/minmax.t	part-3-10	4	ascending alpha works	$["a".."a", "a".."b", "a".."c", "a".."d", "a".."e"]	[["a"], ["a", "b"], ["a", "b", "c"], ["a", "b", "c", "d"], ["a", "b", "c", "d", "e"]]	
+S17-supply/on-demand.t	part-0	0				No such method 'on-demand' for invocant of type 'Supply'
+S17-supply/produce.t	part-2	2	producing bag union works			    # No such method 'live' for invocant of type 'Seq'
+S17-supply/reduce.t	part-2	2	reducing bag union works			    # No such method 'live' for invocant of type 'Pair'
+S17-supply/repeated.t	part-11+	14	repeated tap with 2 ranges works			    # No such method 'live' for invocant of type 'Seq'
+S17-supply/rotor.t	part-11+	30	we can rotor with negative gap	$[[1, 2, 3], [2, 3, 4], [3, 4, 5]]	[(1, 2, 3), (2, 3, 4), (3, 4, 5)]	
+S17-supply/snip.t	part-3-10	7	can not be called as a class method			    # No such method 'live' for invocant of type 'List'
+S17-supply/start.t	part-0	0				No such method 'start' for invocant of type 'Supply'
+S17-supply/supplier-preserving.t	part-1	1	No races in Supplier::Preserving	'1 2 3 4 5'	'3 4 5'	
+S17-supply/syntax-nonblocking-await.t	part-2	2	An exception from a react that dies does X::React::Died		'goodbye!	'
+S17-supply/syntax.t	part-3-10	10	take-until style supply emitted correct values	'tea coffee'	'tea coffee cocoa'	No such method 'on-demand' for invocant of type 'Supply'
+S17-supply/throttle.t	part-0	0				No such method 'throttle' for invocant of type 'Supply'
+S17-supply/unique.t	timeout		unique with expiry works	$[1, 2, 3, 1, 2]	[1, 2, 3]	
+S17-supply/zip-latest.t	dies					No such method 'zip-latest' for invocant of type 'Supply'
+S17-supply/zip.t	dies					No such method 'zip' for invocant of type 'Supply'
+S19-command-line-options/04-negation.t	part-2	2	negation of multiple short options fails			
+S22-package-format/local.t	part-1	1	The object is-a 'IO::Path'			No such method 'short-id' for invocant of type 'CompUnit::Repository::FileSystem'
+S24-testing/1-basic.t	part-2	2	The object is-a 'Metamodel::ParametricRoleGroupHOW'			
+S24-testing/11-plan-skip-all-subtests.t	dies					Cannot resolve caller is_run(Str, Block, Str); no matching multi candidate
+S24-testing/12-subtest-todo.t	part-3-10	7	case one			FAILS: 2|0
+S24-testing/3-output.t	part-3-10	3	eval error via diag			
+S24-testing/9-is_deeply.t	parse					===SORRY!=== Parse error at line 13: expected ) (got ':')
+S24-testing/line-numbers.t	part-3-10	5	failing test with eval-dies-ok reports correct line number 9		'# Failed test at <roast>/S24-testing/test-data/line-number-eval-dies-ok.txt line 1	'
+S26-documentation/02-paragraph.t	part-1	1	nested paras do not crash/warn			
+S26-documentation/07-tables.t	part-11+	14		'Zebra|4|Cookies'	'Zebra|+|4|+ Cookies'	
+S26-documentation/07a-tables.t	part-11+	34		'3'	'0'	
+S26-documentation/07b-tables.t	part-3-10	4	dies-ok, empty table			
+S26-documentation/07c-tables.t	part-3-10	8		'3'	'2'	
+S26-documentation/08-formattingcodes.t	part-0	0				No such method 'contents' for invocant of type 'Any'
+S26-documentation/09-configuration.t	part-1	1	The object is-a 'Pod::FormattingCode'	(IntStr.new(1, "1"), IntStr.new(2, "2"), IntStr.new(3, "3"), IntStr.new(4, "4"))	("1", "2", "3", "4")	
+S26-documentation/12-non-breaking-space.t	part-1	1	Test non-breaking spaces in tables...	'Raku Language is the best!'	'Raku Language   ᠎            　is the best!'	
+S26-documentation/14-defn.t	part-1	1	The object is-a 'Pod::Defn'			No such method 'term' for invocant of type 'Pod::Block::Named'
+S26-documentation/15-numbered-alias.t	part-1	1	:numbered alias abbreviated blocks	'True'	'False'	    # No such method 'term' for invocant of type 'Pod::Block::Named'
+S26-documentation/block-leading-user-format.t	part-1	1	without env var 'RAKUDO_POD_DECL_BLOCK_USER_FORMAT'			
+S26-documentation/block-leading.t	part-11+	23	Simple	'simple case'	''	podclass Pod::Block::Declarator'
+S26-documentation/block-trailing.t	part-11+	23	Simple	'simple case'	''	podclass Pod::Block::Declarator'
+S26-documentation/module-comment.t	part-1	1	module + semicolon trailing comment	'before	''	after'
+S26-documentation/multiline-leading.t	part-2	2	multiline-leading method.WHY	'Does Stuff'	''	
+S26-documentation/multiline-trailing.t	part-1	1		'Does Stuff'	''	
+S26-documentation/wacky.t	part-3-10	5	leading document within an anoymous sub	'hello'	''	trailing comment for eleven'
+S26-documentation/why-both.t	part-11+	15	Simple	'a module	''	    # Failed to get the directory contents of '/private/tmp/claude-501/-Users-ash-raku--/d075d543-43c5-4f33-b8ce-99d12b14f2e4/scratchpad/tap
+S26-documentation/why-leading.t	part-11+	24	Simple	'a module'	''	    # Failed to get the directory contents of '/private/tmp/claude-501/-Users-ash-raku--/d075d543-43c5-4f33-b8ce-99d12b14f2e4/scratchpad/tap
+S26-documentation/why-trailing.t	part-11+	25	Simple	'a module'	''	    # Failed to get the directory contents of '/private/tmp/claude-501/-Users-ash-raku--/d075d543-43c5-4f33-b8ce-99d12b14f2e4/scratchpad/tap
+S29-any/are.t	part-2	2	Int not Str?			
+S29-any/isa.t	part-2	2	... isa() with a extra args is a failing case (invocant notation)			
+S29-any/minpairs-maxpairs.t	part-1	1	Setty.maxpairs/.minpairs	42	("0" => Foo.new,)	
+S29-context/eval.t	part-1	1	block EVAL is gone			No such method 'load-source' for invocant of type 'CompUnit::Loader'
+S32-array/adverbs.t	part-3-10	3	container respected in array access	'101'	'  '	
+S32-array/create.t	part-2	2				Cannot invoke non-Callable value of type List
+S32-array/delete-adverb.t	part-3-10	3	1 3 should be deleted now	(Int, Int)	(Any, Any)	
+S32-array/delete.t	part-3-10	5	deletion of the same array element accessed by different indices returned right things	'c '	'c c'	
+S32-array/end.t	part-0	0				No such method 'end' for invocant of type 'Any'
+S32-array/exists-adverb.t	part-0	0				Unexpected adverbs passed to subscript
+S32-array/multislice-6e.t	part-11+	385	@array[0;0;0]:exists gives True	((0, 0, 0), Bool::True)	(("0", 0e0, 0.0), Bool::True)	
+S32-array/pairs.t	part-1	1	aliases returned by @array.pairs should be rw (2)	'123'	'23'	
+S32-array/perl.t	part-2	2	can we serialize a array with constrained values	'Array[Int].new(1, 2)'	'[1, 2]'	EVAL parse error: Confused (got ']')
+S32-array/pop.t	part-3-10	3	pop() requires arguments			
+S32-array/push.t	part-3-10	5	push() requires arguments (1)			
+S32-array/shift.t	part-3-10	3	shift() requires arguments			
+S32-array/splice.t	dies					
+S32-array/unshift.t	part-1	1	unshift() requires arguments			
+S32-basics/warn.t	part-1	1	Stringifying Any warns		'0'	
+S32-basics/xxKEY.t	part-11+	25	target Set	'True'	'42'	
+S32-basics/xxPOS-native.t	part-11+	40	message Cannot bind to a natively typed array			
+S32-basics/xxPOS.t	part-0	0				No such method 'ASSIGN-POS' for invocant of type 'Any'
+S32-container/buf.t	part-3-10	5	Blob.allocate works when allocating from...	Blob.new(1,2,3,1,2,3,1,2,3,1)	Blob.new(3,3,3,3,3,3,3,3,3,3)	message Cannot convert string to number: base-10 number must begin with valid digits or '.' in '''
+S32-container/roundrobin.t	part-2	2	roundrobin respects itemization of arguments (1)	'1 2 a b c'	'1 a 2 b c'	
+S32-container/zip.t	part-2	2	zip:with works on right associative	'1 2417851639229258349412352'	'1 4096'	
+S32-encoding/decoder.t	dies					Unknown string encoding 'utf8-c8'
+S32-encoding/encoder.t	part-3-10	3	Dies it try to encode disallowed char	Blob[uint8].new(102,111,111,63)	Blob.new(102,111,111,194,163)	
+S32-encoding/registry.t	part-11+	30	Can find built-in utf8 encoding			    # No such method 'alternative-names' for invocant of type 'Encoding'
+S32-exceptions/misc.t	part-11+	53	post_types sub { ... }			Died
+S32-exceptions/misc2.t	part-11+	33		'1'	'0'	Stub code executed
+S32-hash/delete.t	part-2	2	:delete on Hash:U returns Nil	Nil		     got: Any
+S32-hash/exists-adverb.t	part-3-10	4	Test exists:k,   invalid combo			
+S32-hash/hyperslice.t	part-3-10	7	seen deep leaf in {**}:tree	'1'	''	
+S32-hash/keys_values.t	part-3-10	6	keys($pair) works	'a'	'0'	
+S32-hash/kv.t	part-3-10	3	aliases returned by %hash.kv should be rw (2)	'102'	'2'	
+S32-hash/map.t	part-3-10	10	Map:U.Hash gives Hash type object	Hash	{}	
+S32-hash/multislice-6e.t	part-11+	287	%hash{"a";"b";"c"}:exists gives True	{:a(${:b(${:c(777), :d(888), :e(999)})})}	{:a(${:b(${:c(42), "c d e" => $(777, 888, 999), :d(666), :e(${:f(314)})})})}	
+S32-hash/pairs.t	part-1	1	aliases returned by %hash.pairs should be rw (2)	'102'	'2'	
+S32-hash/perl.t	part-11+	18	can we serialize a hash with constrained values	'(my Int % = :a(1), :b(2))'	'{:a(1), :b(2)}'	
+S32-hash/push.t	part-1	1	Hash.apend general functionailty	{:a($[1, "X"]), :b($[2, 3, "Y"]), :c($[4, 5, "Z"]), :d(6)}	{:a($[1, "X"]), :b($(2, 3, "Y")), :c($[4, 5, "Z"]), :d(6)}	
+S32-hash/slice.t	part-11+	11	assigning a slice too many items yields a correct return value	'A B'	'A B C D'	
+S32-io/IO-Socket-Async-UDP.t	dies					No such method 'bind-udp' for invocant of type 'IO::Socket::Async'
+S32-io/IO-Socket-Async.t	part-0	0				No such method 'socket-port' for invocant of type 'Tap'
+S32-io/IO-Socket-INET-UNIX.t	part-3-10	7	can create TCP UNIX socket servers	'Hello, world!'	''	
+S32-io/IO-Socket-INET.t	part-2	2	received ꀁ	'ꀁ'	'�'	Target is not assignable
+S32-io/chdir-process.t	parse					===SORRY!=== Parse error at line 16: unexpected operator in term position (got '`')
+S32-io/chdir.t	part-11+	73	chdir with \() fails because of path does not exist	IO::Path.new("<tmp>t_chdir_t_line_0_60888841328076641789663603", :SPEC(IO::Spec	IO::Path.new("<tmp>t_chdir_t_line_0_049110809736429671789663603", :SPEC(IO::Spe	
+S32-io/indir.t	part-11+	74	&indir($path, …), non-existent path	IO::Path.new("<tmp>t_indir_t_line_0_017204790560136021789663603", :SPEC(IO::Spe	IO::Path.new("<tmp>t_indir_t_line_0_88593831654084811789663603", :SPEC(IO::Spec	        # Failed to change the working directory to '<tmp>t_indir_t_line_0_7546
+S32-io/io-cathandle.t	part-11+	29	chomp method and nl-in method	("0", "1")	("files\t<tmp>t_io_cathandle_t_line9_0_94881038940803821789663605 /private/var/	    # Target is not assignable
+S32-io/io-handle.t	part-0	0				
+S32-io/io-path-cygwin.t	part-3-10	6	dirname "C:foo\\bar\" -> "foo"	'foo'	'foo/'	
+S32-io/io-path-extension.t	part-2	2	using non-numeric Range as parts throws			
+S32-io/io-path-symlink.t	part-1	1	created link filetests for .e and .l	Bool::True	Bool::False	Failed to open file <tmp>t_io_path_symlink_t_line_0_459112722506723971789663605
+S32-io/io-path-unix.t	part-3-10	3	dirname "foo//bar//" -> "foo"	'foo'	'foo/'	
+S32-io/io-path-win.t	part-11+	18	dirname "C:foo//bar//" -> "foo"	'foo'	'foo/'	
+S32-io/io-path.t	part-2	2	Can use either :basename or positional argument	'bar.txt'	''	No such method 'volume' for invocant of type 'IO::Path'
+S32-io/io-spec-win.t	part-2	2	.absolute with paths that have combiners on slashes	$((".", "foo", "bar", any("C:/ber/", "C:\\ber/", "C:\\ber\\", "C:/ber\\"), "m♥eow").Seq)	(".", "foo", "bar", "C:/ber/", "m♥eow").Seq	    # Must specify a non-empty string as a path
+S32-io/lock.t	timeout		\(), ""			
+S32-io/native-descriptor.t	part-1	1	file handle has a native descriptor			
+S32-io/open.t	part-3-10	9	.open with :x / :mode<wo>, :create, :exclusive	'some ♥ contenttent'	'some ♥ content'	        # Failed to open file <tmp>t_open_t_line_0_08369600934875621789663615: 
+S32-io/pipe.t	part-3-10	8	Child succeeds but does not print anything	'baz	''	bar
+S32-io/seek.t	part-3-10	3	SeekFromBeginning	'300'	'30'	
+S32-io/signals.t	dies					No such method 'enums' for invocant of type 'Signal'
+S32-io/slurp.t	part-3-10	4	slurp() on directories fails	Buf[uint8].new(73,32,194,174,32,85)	"meow\nI ® U"	    # No such method 'opened' for invocant of type 'FileHandle'
+S32-io/socket-host-port-split.t	dies					Undeclared name 'PF_INET'
+S32-io/spurt.t	part-1	1	IO::Handle spurt	Buf[uint8].new(200,200)	Blob.new(200)	
+S32-io/tell.t	part-3-10	5	open(:w) handle	2	0	
+S32-io/utf16.t	part-3-10	6	Buf.encode('utf16be') gives correct output	'		
+S32-list/are.t	part-3-10	3	list of Ints and Mu	Mu	Any	
+S32-list/categorize-list.t	part-11+	23	on empty Hash, basic, with &as	{:cat1($["val 1"]), :cat2($["val 2", "val 3"])}	{"1" => $[1], "2" => $[2], "3" => $[3], "sub \{ ... }" => $[sub { ... }]}	
+S32-list/classify-list.t	part-11+	14	on empty Hash, basic, with &as	{:cat1($["val 1"]), :cat2($["val 2", "val 3"])}	{"1" => $[1], "2" => $[2], "3" => $[3], "sub \{ ... }" => $[sub { ... }]}	    # No such method 'new' for invocant of type 'Hash'
+S32-list/classify.t	part-3-10	3	basic classify as sub with Sub and new into Bag 1) two evens	'2'	'2 4'	
+S32-list/combinations.t	part-11+	13	1^..3 items	((1, 2), (1, 3), (2, 3), (1, 2, 3))	((1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)).Seq	
+S32-list/deepmap.t	part-0	0				next without loop construct
+S32-list/duckmap.t	part-1	1	did next work	'a c'	'a b c'	
+S32-list/first.t	part-0	0				Target is not assignable
+S32-list/flat.t	part-3-10	5	flat propagates .is-lazy (subform)	Bool::True	Bool::False	
+S32-list/grep.t	part-3-10	5	grep is rw-like, can chain it to modify elements of grepped list/array	'1 3 3 5 5 7 7 9 9 11'	'1 2 3 4 5 6 7 8 9 10'	
+S32-list/head.t	part-3-10	10	head(5,$List) works	($("a", "b", "b", "c", "d", "e", "b", "b", "e", "b", "b", "f", "b"),)	("a", "b", "b", "c", "d").Seq	
+S32-list/iterator.t	part-3-10	10	tests for list.antipairs	[:a("0"), :b("1"), :c("2"), :d("3"), :e("4"), :f("5"), :g("6"), :h("7"), :i("8"), :j("9"), :k("10"), :l("11"), :m("12"), :n("13"), :o("14"),	["a" => 0, "b" => 1, "c" => 2, "d" => 3, "e" => 4, "f" => 5, "g" => 6, "h" => 7, "i" => 8, "j" => 9, "k" => 10, "l" => 11, "m" => 12, "n" =>	
+S32-list/join.t	part-3-10	4	join("|", $[]) should not join anything	'a b c'	'a|b|c'	
+S32-list/map.t	part-3-10	7	argument number mismatch on odd-numbered list	'3'	'6'	
+S32-list/minmax.t	parse					===SORRY!=== Parse error at line 205: expected ) (got '@ints')
+S32-list/permutations.t	part-3-10	5	permutations function	((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)).Seq	((3,),).Seq	
+S32-list/pick.t	part-3-10	3	.pick on object Hashes	(Bool::True => Bool::False, 42e0 => 0.5, :foo(42)).Seq	("42" => 0.5, :True(Bool::False), :foo(42)).Seq	
+S32-list/produce.t	part-3-10	4	n-ary produce() works	'1'	'(1 1 1 1 1 1 1 1 1)'	No such method 'produce' for invocant of type 'Int'
+S32-list/reduce.t	part-3-10	7	n-ary reduce() works	'141'	'1'	
+S32-list/reverse.t	part-2	2	reverses correctly over holes	(4, 3, Int, 1, 0)	(4, 3, Any, 1, 0).Seq	
+S32-list/roll.t	part-1	1	.pick on object Hashes	(Bool::True => Bool::False, 42e0 => 0.5, :foo(42)).Seq	("42" => 0.5, :True(Bool::False), :foo(42)).Seq	
+S32-list/rotor.t	part-3-10	7	.rotor on infinite list	'1|2 3|4 5 6|7 8 9 10'	'1|2|3|4'	     got: $((("a",), ("b",), ("c",), ("d",), ("e",), ("f",)).Seq)
+S32-list/seq.t	part-3-10	7	We didn't flatten the RHS because it's no single argument	'1'	'3'	Target is not assignable
+S32-list/skip.t	part-11+	30	skip(5,$List) works	()	Bool::True	
+S32-list/sort.t	part-3-10	5	sort does not accept &rand	(IntStr.new(42, "42"), IntStr.new(123, "00123"), IntStr.new(123, "123"), IntStr.new(420, "420"))	(IntStr.new(42, "42"), IntStr.new(123, "123"), IntStr.new(123, "00123"), IntStr.new(420, "420")).Seq	
+S32-list/squish.t	part-3-10	7	squish propagates is-lazy	Bool::True	Bool::False	
+S32-list/tail.t	part-3-10	7	tail(5,$List) works	($("a", "b", "b", "c", "d", "e", "b", "b", "e", "b", "b", "f", "b"),)	("e", "b", "b", "f", "b").Seq	    # No such symbol 'does'
+S32-num/base.t	part-11+	16	Integer digits are 0s	'100.000'	'100'	
+S32-num/complex.t	part-2	2	constant -i has 0 as real value	(0e0, -1e0)	(-0e0, -1e0)	
+S32-num/cool-num.t	part-0	0				No such method 'conj' for invocant of type 'NotComplex'
+S32-num/exp.t	part-3-10	8	5.exp(2) == 32			
+S32-num/int.t	part-3-10	8	(-126).msb is 7	'7'	'6'	
+S32-num/is-prime.t	part-2	2	coersion from different types	Bool::False	Bool::True	
+S32-num/narrow.t	part-2	2	.narrow on approximate Complex produces correct integer	'-1'	'-1+1.2246467991473532e-16i'	
+S32-num/negative-zero.t	part-3-10	4	Str.Num gives neg. zero, U+2212 minus	Bool::False	Bool::True	
+S32-num/power.t	part-1	1	-1 ** 4553535345364535345634543533  == -1	-1	1	Cannot invoke non-Callable value of type Int
+S32-num/rat.t	part-3-10	5	subclass of class that does Rational can be instantiated	(42, 31337)	(0, 1)	    # No such method 'roles' for invocant of type 'Rat'
+S32-num/real-bridge.t	part-11+	13	1 * 1 == 1			    # No such method 'Bridge' for invocant of type '<anon|1>'
+S32-num/rounders.t	part-3-10	6	floor(NaN) is NaN	'NaN'	'0'	
+S32-num/stringify.t	part-11+	12	~<0+Inf\i>	'0+Inf\i'	'0+Infi'	
+S32-scalar/undef.t	part-3-10	4	undefine array referent	'0'	'5'	Target is not assignable
+S32-str/Collation.t	parse					===SORRY!=== Parse error at line 30: Unrecognized character name [woman facepalming]
+S32-str/comb.t	part-11+	15	negative limit returns no matches	'0'	'10'	
+S32-str/contains.t	part-3-10	3	Cool.contains with wrong args does not hang			
+S32-str/encode.t	part-3-10	3	Non-ascii character	''	'å'	
+S32-str/ends-with.t	part-1	1	Cool.ends-with with wrong args does not hang			
+S32-str/format.t	part-0	0				No such method 'Callable' for invocant of type 'Format'
+S32-str/indent.t	part-11+	18	Same space - .indent(1) prefix="\x[2002]"	'"  quack"'	'"  quack"'	  meow
+S32-str/index.t	part-1	1	Cool.index with wrong args does not hang			
+S32-str/indices.t	part-3-10	4	meth empty simple test, no overlap	'0 1 2 3'	''	No such method 'indices' for invocant of type 'Int'
+S32-str/numeric.t	part-1	1	+"3+Infi" fails			
+S32-str/parse-base.t	part-3-10	8	can parse − sign (fancy Unicode minus) (sub form)	-255	{:exception(X::Str::Numeric), :message("Cannot convert string to number: '−FF' is not a valid base-16 number")}	
+S32-str/rindex.t	part-3-10	6	rindex where pos > length of str return undefined			
+S32-str/space-chars.t	part-2	2	incoming hex '0x2000' (gets normalized to 0x2002.chr)	8192	8194	
+S32-str/split-simple.t	part-2	2	split with zero-width assertions	'ab|-|3|-|4d|-|5z'	'|-|a|-|b|-|3|-|4|-|d|-|5|-|z|-|'	
+S32-str/split.t	parse					===SORRY!=== Parse error at line 557: Couldn't find final ')' (corresponding ( was at line 433)
+S32-str/sprintf.t	part-3-10	5	args-used 0	'1.11500000000000000000000000000000000000000000000000'	'1.11499999999999999111821580299874767661094665527344'	
+S32-str/starts-with.t	part-1	1	Cool.starts-with with wrong args does not hang			
+S32-str/substr-rw.t	part-11+	23	assignment to reference modifies original	'boing ding'	'gloop ding'	
+S32-str/substr.t	part-3-10	4	substr outside of string	'cd'	''	message Length argument to substr out of range. Is: -3, should be in 0..4; use *-3 if you want to index relative to the end'
+S32-str/uniparse.t	part-11+	18	one char  (any form)	"🔔"	"BELL"	
+S32-str/utf8-c8.t	part-3-10	3	Got expected number of chars	'4'	'2'	Failed to open file <tmp>t_utf8_c8_t_line_0_152644126148693721789663618/�: Ill
+S32-str/val.t	part-11+	913	Tested ':10«42»'	Nil	Int	    Leading 0 does not indicate octal in Raku; please use 0o00 if you meant that.
+S32-str/windows-1251-windows-1252-encode-decode.t	part-1	1	Test encoding from Unicode to windows-1251	'67 149 194 32 33 123 199 75 124 166 235 105 51 174 0 25 132 140 9 168 56 7 28 144 167 233 231 94 91 157 182 242 11 113 177 180 202 122 99 2	'67 226 128 162 208 146 32 33 123 208 151 75 124 194 166 208 187 105 51 194 174 0 25 226 128 158 208 138 9 208 129 56 7 28 209 146 194 167 2	Malformed UTF-8 near byte 95 at line 1 col 2
+S32-temporal/Date.t	part-3-10	4	obviously malformed string	'-0001-12-27'	'-001-12-27'	
+S32-temporal/DateTime-Instant-Duration.t	part-11+	16	DateTime.Instant counts leap seconds	'0.28571429'	'0.28571427'	No such method 'Date' for invocant of type 'Instant'
+S32-temporal/DateTime.t	part-11+	13	delting to a leap second	'2012-06-30T23:59:60Z'	'2012-07-01T00:00:00Z'	
+S32-trig/atan2.t	part-11+	18	Num.atan2(DifferentReal)			
+integration/99problems-21-to-30.t	part-1	1	group works	'1 2 3 1 2 4 1 3 2 1 3 4 1 4 2 1 4 3 2 3 1 2 3 4 2 4 1 2 4 3 3 4 1 3 4 2'	'1 2 1 2 1 3 1 3 1 4 1 4 2 3 2 3 2 4 2 4 3 4 3 4'	
+integration/99problems-41-to-50.t	timeout					
+integration/advent2009-day02.t	part-2	2	Hash.fmt	'any'	'foo bar'	
+integration/advent2009-day08.t	part-2	2	Comb ASCII hex chars with hyperop to convert to ASCII equivalent	'Perl6'	'	
+integration/advent2009-day16.t	parse					===SORRY!=== Parse error at line 59: expected ) (got 'when')
+integration/advent2009-day18.t	part-3-10	3	the $mug is a Cup of EggNog	'Cup[EggNog]'	'EggNog'	
+integration/advent2009-day20.t	part-3-10	3	Introspecting arity, i.e. number of required arguments	'2'	'3'	
+integration/advent2009-day24.t	part-3-10	3	base grammar			
+integration/advent2010-day03.t	part-1	1	first line of TODO	'ODO items for the Raku Test Suite'	'TODO items for the Raku Test Suite'	
+integration/advent2010-day04.t	part-1	1	Fibonacci bounded after the fact is correct	'0 1 1 2 3 5 8 13 21 34 55 89 144 233 377 610 987 1597 2584 4181 6765'	'0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49	
+integration/advent2010-day11.t	dies					Undefined routine 'q'
+integration/advent2010-day12.t	part-2	2		[:str(Bool::False), :six(Bool::True), :bar(Bool::False), :match(Bool::False), "15..25" => Bool::False, :closure(Bool::True), :arr(Bool::True	[:str(Bool::False), :six(Bool::False), :bar(Bool::False), :match(Bool::False), "15..25" => Bool::False, :closure(Bool::True), :arr(Bool::Tru	
+integration/advent2010-day19.t	part-1	1	True but False	'False'	'True'	
+integration/advent2010-day22.t	part-2	2	Rat $!numerator $!denominator& attributes			
+integration/advent2011-day07.t	part-2	2	num calls recorded			
+integration/advent2011-day10.t	part-0	0				Failed to get the directory contents of '<cwd>
+integration/advent2011-day11.t	part-2	2	order total with typo			
+integration/advent2011-day14.t	part-0	0				
+integration/advent2011-day20.t	part-2	2	Hash .keys	("Panacea", "Photek").Seq	["Panacea", "Photek"]	
+integration/advent2011-day23.t	part-1	1	@array[ rand*@array ];			
+integration/advent2011-day24.t	part-1	1	ambiguous multi - dies			
+integration/advent2012-day04.t	part-0	0		4075	0	No such method 'key' for invocant of type 'Seq'
+integration/advent2012-day12.t	part-1	1	adhoc error	'X::AdHoc.new(payload => "Neat error message")'	'X::AdHoc.new(payload => "Neat error message", message => "Neat error message")'	
+integration/advent2012-day13.t	part-1	1	baggy assign (dies)			Unsupported operator '⊈'
+integration/advent2012-day14.t	part-0	0				Unable to deduce arithmetic or geometric sequence from: 2,3,5
+integration/advent2012-day15.t	part-3-10	4	INIT sub call	'Score Player	'Score Player	----- ------
+integration/advent2012-day19.t	parse					===SORRY!=== Parse error at line 62: expected ) (got 'kΩ')
+integration/advent2012-day21.t	part-3-10	6	recursive-ternary-hand-cached	'1: 1	'1: 1	2: 1
+integration/advent2013-day08.t	part-0	0				Lists on either side of non-dwimmy hyperop are not of the same length
+integration/advent2013-day09.t	part-0	0				No such method 'add_fallback' for invocant of type 'Pair'
+integration/advent2013-day10.t	parse					===SORRY!=== Parse error at line 27: expected ) (got '«')
+integration/advent2013-day12.t	part-0	0				No such method 'hash' for invocant of type 'Pair'
+integration/advent2013-day18.t	part-1	1	duplicates detected in actions	["a♥", "j♥"]	[]	
+integration/advent2013-day20.t	part-2	2				No such method 'default' for invocant of type 'Any'
+integration/advent2014-day13.t	parse					===SORRY!=== Parse error at line 47: Missing required term after infix
+integration/advent2014-day16.t	parse					===SORRY!=== Parse error at line 101: Missing required term after infix
+integration/code-blocks-as-sub-args.t	part-2	2	pointy block is not a sub			
+integration/deep-recursion-initing-native-array.t	dies					Index 0 out of range for dimension 0 (0..-1)
+integration/error-reporting.t	part-11+	11	non-existing subroutine is caught before run time	'Backtrace(1 frame)'	'  in sub foo at <roast>/integration/error-reporting.t line 253	'
+integration/precompiled.t	dies					No such method 'precomp-repository' for invocant of type 'CompUnit::Repository::Installation'
+integration/real-strings.t	part-1	1	variables returned from split and passed to pointy block are still ro			
+integration/role-composition-vs-attribute.t	part-2	2	did we see the Int private attribute from the role	'0'	''	
+integration/weird-errors.t	part-3-10	9	weird code that used to parsefail rakudo			

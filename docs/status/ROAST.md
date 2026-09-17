@@ -154,8 +154,18 @@ while many of its files still don't run at all — read it alongside No-TAP.
 ## Where this stands among implementations
 
 Roast is the common yardstick, so it is worth knowing where the other engines
-land on it. **Rakudo runs essentially all of the suite** — it is the reference,
-and it is the oracle both other implementations check themselves against.
+land on it. **Rakudo itself passes 1,433 of the 1,464 here** — measured
+2026-09-17 with this harness, Rakudo 2026.08 as the engine under test, Roast's
+own `fudge` applied and a 60-second timeout
+([ROAST-CEILING-2026-09-17](../dev/findings/ROAST-CEILING-2026-09-17.md)).
+Seven of the 31 it does not pass, Raku++ does, so the reachable set on this
+machine is **1,440 files** and the honest figure is **676 of 1,440 (46.9%)**.
+The 764 files between the two are the work queue, listed with each one's
+first failure in
+[roast-queue-2026-09-17.tsv](../dev/findings/roast-queue-2026-09-17.tsv); the
+list Rakudo passed is archived as
+[roast-lists/rakudo-2026.08.list](roast-lists/rakudo-2026.08.list). Rakudo is
+the oracle both other implementations check themselves against.
 
 **[mutsu](https://github.com/tokuhirom/mutsu)**, the Rust implementation, is
 **well ahead of Raku++ on Roast coverage**. Measured 2026-08-31 by running

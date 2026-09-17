@@ -1,0 +1,3 @@
+rakudo 2026.08 (/opt/homebrew/Cellar/rakudo/2026.08/bin/rakudo) | roast b2cbe8a42, fudged with roast's own fudgeall --version=v6.d rakudo.moar (280 files rewritten) | 1464 files | -j=3, ROAST_TIMEOUT=60
+fully-passing 1433
+generated 2026-09-17T18:44:50+02:00
