@@ -89,6 +89,12 @@ compatibility.
   the tag and the built-in version ever disagree, both appear and the odd one
   is labelled `build`.
 
+  At a terminal that line is followed by a dim pointer to `--info`, because a
+  bug report that arrives without the compiler, the FFI backend and the path of
+  the binary that answered costs a round trip to get them. Piped, redirected or
+  under `-q` the pointer is not printed, so what a script captures is the one
+  line above and nothing else.
+
   `-V` is the full report: the same identity as an aligned block, plus the
   Raku version implemented, the compiler that made the binary, the FFI
   backend NativeCall found, and the path of the binary that answered — the

@@ -189,6 +189,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--seed[=N]` / `--stack-size=N` | Pin the random generator (bare `--seed` picks and prints one) / size the recursion ceiling (default 1G, a bare number is MiB) |
 | `--env-file=FILE` / `RAKUPP_OPT` / `--color=WHEN` / `-x` | Load a `.env` first / standing options from the environment (options only) / colour `auto`, `always`, `never` (`NO_COLOR` honoured) / skip to the `#!` line |
 | `rakupp doc SYMBOL` / `--completions=SHELL` | Look a builtin, method or operator up offline / a completion script for bash, zsh or fish |
+| `-v` / `--version` · `-V` / `--info` | The release, the build it came from and the platform, on one line / the full build report: also the Raku version implemented, the compiler, the FFI backend NativeCall found and which binary answered. Quote `--info` whole in a bug report |
 
 Flags are position-independent and cluster like Perl's (`rakupp -pi.bak -e
 '$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:

@@ -10,6 +10,7 @@
 #include "Codegen.h"
 #include "codegen/Js.h"
 #ifdef _WIN32
+#include <io.h>         // _isatty
 #include <process.h>
 #define getpid _getpid
 #else
@@ -290,6 +291,16 @@ static bool g_static = false;
 // A mode with nothing informational to say accepts the flag and changes
 // nothing, the way -l does.
 static bool g_quiet = false;
+// Whether stdout is a terminal rather than a pipe, a file or a CI log. A line
+// written only when this is true is addressed to the person reading it, and
+// cannot change what a script captures.
+static bool stdoutIsTty() {
+#ifdef _WIN32
+    return ::_isatty(::_fileno(stdout)) != 0;
+#else
+    return ::isatty(1) != 0;
+#endif
+}
 // `rakupp install` / `rakupp doc`: the sub-program's name as it appears in argv
 // after the rewrite, and the source the binary carries for it. Both are cleared
 // the moment the argument scan consumes them.
@@ -2184,7 +2195,26 @@ int main(int argc, char** argv) {
         if (isOpt) {
             // the information modes win outright, from any position
             if (a == "--help" || a == "-h")  { mode = Mode::Help; break; }
-            if (a == "--version" || a == "-v") { mode = Mode::Version; break; }
+            // `-q` is documented as taken by every mode, before or after its
+            // command — but an information mode breaks out of this loop, so a
+            // trailing one was never seen. It cost nothing while this mode had
+            // no line to drop; now that it points at `--info`, pick the flag up
+            // on the way out.
+            if (a == "--version" || a == "-v") {
+                mode = Mode::Version;
+                for (int j = i + 1; j < argc; j++) {
+                    std::string q = argv[j];
+                    if (q == "--") break;
+                    if (q == "-q" || q == "--quiet") g_quiet = true;
+                    // …and a trailing --color, for the same reason: the flags
+                    // are documented position-independent, and this is the one
+                    // mode that breaks out before reaching them.
+                    else if (q == "--color=never"  || q == "--colour=never")  putEnv("RAKUPP_COLOR", "0", true);
+                    else if (q == "--color=always" || q == "--colour=always" ||
+                             q == "--color"        || q == "--colour")        putEnv("RAKUPP_COLOR", "1", true);
+                }
+                break;
+            }
             if (a == "-V" || a == "--info" || a == "--version-full") { mode = Mode::VersionFull; break; }
             if (a == "--ffi-info")           { mode = Mode::FfiInfo; break; }
             if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
@@ -2889,6 +2919,38 @@ int main(int argc, char** argv) {
             note = "build " + build + ", ";
         std::cout << "Raku++ " << ver << tail << " (" << note << rakupp::buildDate()
                   << ") " << rakupp::platform() << "\n";
+        // `--info` is the flag nobody finds. This line answers the question
+        // people came with, so they never look for a fuller one — and then a
+        // bug report arrives without the compiler, without the FFI backend and
+        // without which of several builds on the machine actually answered.
+        // So the version line names the flag that has them.
+        //
+        // Only for a person, though: piped or redirected this mode stays the
+        // single machine-readable line the installer, the updater, install.sh
+        // and the perf gates parse, byte for byte what it printed before. `-q`
+        // drops it the way it drops every other line a mode prints about
+        // itself.
+        if (!g_quiet && stdoutIsTty()) {
+            // The colour POLICY, not just "can this terminal do escapes":
+            // consoleAnsi() answers the second question and on POSIX is
+            // unconditionally true, so asking it alone printed `ESC[2m` straight
+            // through `--color=never` and through NO_COLOR, which the README
+            // promises is honoured. Same rule the backtrace uses: RAKUPP_COLOR
+            // decides when it is set (that is where --color lands), otherwise a
+            // terminal that can, and never against NO_COLOR.
+            const char* force = std::getenv("RAKUPP_COLOR");
+            const std::string f = force ? force : "";
+            const bool colour = f == "1" ? true
+                              : f == "0" ? false
+                              : (rakupp::consoleAnsi(1) && std::getenv("NO_COLOR") == nullptr);
+            std::cout << (colour ? "\033[2m" : "")
+                      // 76 columns: it must not wrap at 80 beside a version
+                      // line that does not. It names what the line above does
+                      // NOT already carry, which is the whole point of it.
+                      << "`rakupp --info` adds the compiler, the FFI backend "
+                         "and which binary answered"
+                      << (colour ? "\033[0m" : "") << "\n";
+        }
         return 0;
     }
     // `-V` is the same identity with everything a bug report needs around it,
