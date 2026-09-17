@@ -205,19 +205,37 @@ profiles differ the way they do, see
 build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by rakupp)
 ```
 
-It runs the full ~1,460-file suite in about **3½ minutes** — the millisecond
-cold-start means spawning a fresh process per file is cheap, so the whole run
-is quick enough to re-do after any change. It streams a per-file line
+It runs the full ~1,460-file suite in **under 30 seconds** on an 8-core
+machine (26–27 s measured on the machine of record, with a media-indexing
+daemon holding a core throughout), against 3½ minutes before the harness was
+rewritten. The saving is scheduling, not spawning: rakupp cold-starts in 3 ms,
+so a fresh process per file costs the whole run ~4.5 s of CPU, but the suite's
+time is skewed — 1,326 files finish in under 50 ms while 25 files are three
+quarters of the summed wall, and most of that is sleeping (two spec sleeps of
+18 s, timeouts that hang at zero CPU). The harness keeps every core busy with
+the bulk while the sleepers wait beside it. It streams a per-file line
 (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends with the summary **plus a
 paste-ready copy of the by-synopsis table above** — so refreshing that table
 is a copy-paste, not a hand computation. Filter by path
 substring: `build/rakupp tools/run-roast.raku S05`.
 
-`--workers=N` runs N test files at a time (`… tools/run-roast.raku
---workers=8`): each file runs from a `start` worker and the interpreter parks
-the GIL while a worker waits on its child process, so the children genuinely
-overlap. Output and totals are identical to a sequential run — results are
-tallied and printed in file order regardless of N.
+How it schedules: one work queue ordered longest first from the previous
+run's per-file wall times (`docs/status/roast-lists/roast.times`, committed;
+`--times=FILE` reads and rewrites a file of your own), served by `--workers=N`
+threads (default two per core) under a CPU budget of `--cpu=N` cores (default
+one fewer than the machine has). Each file carries an estimated demand in
+cores from the previous run's CPU sample, so a file that only waits starts at
+once and a file that computes starts when a core's worth of demand is free;
+the CPU-heavy files that finish just inside the 10 s timeout go first, onto
+the idle machine, and the files that timed out last time — which need no
+fidelity — overlap with the bulk afterwards. Output and totals are identical
+to a sequential run: results are tallied and printed in file order regardless
+of N. The harness also serialises its forks: the engine's spawn leaves a new
+child's pipe ends inheritable for a moment, and a sibling forked in that
+moment held them until it exited, which is what put a file with its complete
+TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
+across passes in the snapshots below was that race, not the engine under test.
+Two sweeps of the same build now agree file for file.
 
 _Snapshot 2026-09-07, main at `35c9691` (`--workers=4`, five passes): 660 /
 1,464 files fully passing (~45% coverage); 672 partial, 117 no-TAP, 15 timeout.

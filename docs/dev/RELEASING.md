@@ -59,7 +59,7 @@ git -C "$ROAST" clean -f
 ### 1. Roast — no regression
 
 ```bash
-ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4 \
+ROAST=/path/to/roast rakupp tools/run-roast.raku \
     --list=docs/status/roast-lists/vX.Y.Z.list | tee roast.txt
 ```
 

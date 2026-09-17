@@ -2,13 +2,25 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [--workers=N] [--list=FILE] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
-# substring against the path. --workers=N runs N test files at a time: each
-# file's subprocess runs from a `start` worker, and the interpreter parks the
-# GIL while a worker waits on its child, so the children genuinely overlap.
-# Results are tallied and printed in file order regardless of N.
+# substring against the path. The files run from one work queue, longest
+# first, on --workers=N `start` threads (default: two per core), admitted
+# against a CPU budget of --cpu=N cores (default: one fewer than the machine
+# has): a file that only waits — a spec sleep, a timeout that hangs at zero
+# CPU — starts at once, a file that computes starts when a core's worth of
+# estimated demand is free. The interpreter parks the GIL while a worker waits
+# on its child, so the children genuinely overlap. Results are tallied and
+# printed in file order regardless of N.
+#
+# --times=FILE reads FILE for the ordering and the demand estimates (wall time
+# and a CPU sample per file from the previous run) and rewrites it with this
+# run's, the way --list writes its list. Without the flag the committed
+# docs/status/roast-lists/roast.times is read and nothing is written;
+# `--times=` (empty) reads nothing, so every file is assumed to need a core
+# and the queue carries no ordering information. The scheduling note above the
+# queue has the measurements.
 #
 # --list=FILE writes the fully-passing file paths, one per line, sorted. THAT is
 # what a release diff should compare — RELEASING.md calls the file list the gate,
@@ -68,27 +80,59 @@ sub rmtree($p) {
 }
 END { rmtree($SCRATCH) }
 
-# Run a test file, capturing stdout with a hard timeout (idiomatic Proc::Async + Promise).
-# Returns (output-string, timed-out-bool).
+# Run a test file, capturing stdout, with a hard timeout. Returns
+# (output-string, timed-out-bool).
+#
+# ONE FORK AT A TIME. The engine's spawn leaves a new child's pipe ends
+# inheritable for a moment, and a sibling forked from another thread in that
+# moment keeps a copy of the child's stdout write end until the SIBLING exits.
+# The child then finishes, its whole TAP is captured, and its EOF never comes:
+# the harness waits the full timeout and files it as [TIME]. Measured with
+# three files from three threads (at.t, in.t, sleep.t): stuck in 4 of 10
+# rounds, with either Proc::Async or run(:timeout), and `lsof` on the running
+# sleep.t child showed four pipe descriptors that were never its own. This is
+# the noise the old harness lived with — the release snapshots record 12 to
+# 22 timeouts across passes of the same build. Serialising the fork, and the
+# close of the stdin pipe with it, removes the window; the wait itself still
+# overlaps, because the lock is released as soon as the child is started.
+#
+# The child's stdin is a pipe closed at once, so it reads EOF whatever the
+# harness itself was started with. Inherited, a stdin that is an open pipe
+# nobody closes (a CI step, a backgrounded shell) parks every file that reads
+# it: prompt.t and S16-filehandles/io.t sat at their first read until the
+# timeout, and five files that finish in 0.1 s were counted as timeouts.
+#
+# Stderr is captured and dropped. Inherited, at --workers=4 the children's TAP
+# diagnostics were written straight into the harness's own stream and spliced
+# mid-line into its per-file status lines, and RELEASING.md's gate is `awk
+# '{print $NF}'` over those lines — four files a run silently lost their path
+# and read as regressions.
+#
+# The child's promise is awaited exactly once: Promise.anyof leaves its losing
+# promise Broken, so a second wait on it returns at once.
+my $SPAWN = Lock.new;
 sub run-with-timeout($bin, $file, $timeout) {
-    my $proc = Proc::Async.new($bin, $file);
+    my $proc = Proc::Async.new($bin, $file, :w);
     my $out = '';
     $proc.stdout.tap(-> $chunk { $out ~= $chunk });
-    # …and STDERR, which must be captured even though nothing reads it. An
-    # untapped Proc::Async stderr is INHERITED, so at --workers=4 the children's
-    # TAP diagnostics were written straight into the parent's own stream and
-    # spliced mid-line into its per-file status lines — consistently four a run:
-    #     [PASS]    4/4  S03-smar# Failed test '$obj ~~ Pair, nonexistent, …
-    # The tallies survived that (they are computed from $out), but RELEASING.md
-    # calls the file LIST the gate, and that list is `awk '{print $NF}'` over
-    # these lines — so four files a run silently lost their path and read as
-    # regressions, and the site's roast map inherited the undercount.
     $proc.stderr.tap(-> $chunk { });
-    my $done = $proc.start(:cwd($SCRATCH.absolute));
+    my $done = $SPAWN.protect({
+        my $d = $proc.start(:cwd($SCRATCH.absolute));
+        $proc.close-stdin;
+        $d
+    });
     await Promise.anyof($done, Promise.in($timeout));
     my $timedout = $done.status ne 'Kept';
     $proc.kill if $timedout;
     return ($out, $timedout);
+}
+
+# ps prints cputime as [dd-]hh:mm:ss on Linux and as mm:ss.cc on macOS.
+sub parse-cputime($s) {
+    my ($days, $rest) = $s.contains('-') ?? $s.split('-', 2) !! (0, $s);
+    my $secs = 0;
+    $secs = $secs * 60 + +$_ for $rest.split(':');
+    return $days * 86400 + $secs;
 }
 
 # Recursively collect *.t files under $dir.
@@ -165,12 +209,18 @@ sub static-plan($file) {
     return -1;
 }
 
-my $WORKERS = 1;
+my $T0          = now;                            # the run's own wall clock, for the summary
+my $WORKERS     = 2 * (($*KERNEL.cpu-cores // 4) max 1);  # threads; most park in a child — see the scheduling note
+my $CPU         = (($*KERNEL.cpu-cores // 2) - 1) max 1;   # cores the running files may add up to (--cpu=N)
 my $LISTFILE;
+my $TIMESFILE   = $?FILE.IO.parent.parent.add('docs/status/roast-lists/roast.times').Str;
+my $TIMES-GIVEN = False;                          # --times=FILE names the file to read AND rewrite
 my @patterns;
 for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
     elsif $a ~~ /^ '--list=' (.+) $/  { $LISTFILE = ~$0 }
+    elsif $a ~~ /^ '--cpu=' (\d+) $/    { $CPU = (+$0) max 1 }
+    elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
     else { @patterns.push($a) }
 }
 # ---------------------------------------------------------------------------
@@ -267,45 +317,156 @@ my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncoun
 # Per-section rollups for the by-synopsis table.
 my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
 
-# Run the files in batches of $WORKERS. Each batch's subprocesses overlap (the
-# GIL is parked while a worker waits on its child); parsing and tallying happen
-# on the main thread afterwards, in file order, so output and totals match a
-# sequential run.
+# ---------------------------------------------------------------------------
+# Scheduling: a work queue, longest file first.
+#
+# The files used to run in lockstep batches of $WORKERS — a batch waited for
+# its slowest member before the next batch started. That is where the minutes
+# went, not into process startup: rakupp cold-starts in 3 ms, so spawning the
+# whole suite's children costs ~4.5 s of CPU in total. Measured one file at a
+# time (2026-09-17, wall and child CPU per file), 1,326 of the 1,464 files
+# finish under 50 ms, 43 take a second or more, and the 25 slowest are 77% of
+# the 283 s of summed wall. Of that wall 177 s is WAITING — sleep.t and
+# batch.t sleep ~18 s each by spec, seven of the twelve timeouts hang at zero
+# CPU — and only 106 s is CPU. Any batch holding one of the ~40 slow files
+# stalled every worker in it, and the slow files are scattered through the
+# list. Simulated over the measured times, lockstep took 259 s at 2 workers
+# and still 196 s at 8.
+#
+# Here every worker pulls the next file the moment it is free, and the queue
+# is ordered longest first from the previous run's recorded wall times
+# ($TIMESFILE), so the tail overlaps with the bulk instead of following it.
+# Simulated makespans in seconds, from the same measurement:
+#
+#     workers                 2     4     8    12    16
+#     lockstep, file order  259   243   196   183   171
+#     queue, file order     142    75    41    32    27
+#     queue, longest first  141    71    35    24    19
+#
+# Measured, all of the below in place: 26-27 s for the whole suite on the
+# 8-core machine of record, verdicts identical to a one-file-at-a-time run.
+#
+# The floor is 18.6 s, batch.t's own wait; 106 s of CPU over this machine's
+# cores comes to about the same. Within the queue the order protects the
+# files that need fidelity: a CPU-bound file that finishes inside the 10 s
+# timeout with room to spare — concat-stable.t needs 6.7 s of CPU,
+# hyperrace/basics.t 5.1 s — becomes a timeout if contention slows it 2×, so
+# the long finishers go first, onto the idle machine. A file that timed out
+# last run sorts as 1.99 s: it needs no fidelity, so the timeouts overlap with
+# the bulk afterwards (the sidecar reader below has the note). A file with no
+# recorded time, new in Roast, is assumed to take 1 s: ahead of the bulk,
+# behind the tail.
+#
+# Admission by CPU demand. A file that only WAITS — the two spec sleeps, a
+# timeout that hangs at zero CPU, a Promise.in test — needs no core, so it
+# should not hold a worker's slot: measured, those files are 150 of the ~330
+# slot-seconds an 8-worker run spends. A separate lane for them was measured
+# first and rejected: with the waiters gone from the head of the queue, the
+# eight CPU-heaviest finishers started together at second zero (one of them,
+# cas-int.t, runs three busy threads) and two or three of them were slowed
+# past the 10 s timeout in every run. So there is one queue and a budget:
+# each file carries an estimated demand in cores — CPU seconds over wall
+# seconds from the previous run's sample, 1.0 when it has none — and a worker
+# takes the first queued file whose demand fits under --cpu. Waiters start at
+# once, CPU-bound files are admitted as cores free up, and the threads are
+# plentiful (two per core) because most of them are parked in a child.
+#
+# Results are tallied and printed in FILE ORDER regardless of scheduling, so
+# the output and the totals are those of a sequential run. A worker parks its
+# result under a lock and flushes the completed prefix of the file list — its
+# own result and any earlier ones that were waiting on it.
+my %prior;   # rel path -> { wall, timeout, cpu } from the previous run
+if $TIMESFILE && $TIMESFILE.IO.e {
+    for $TIMESFILE.IO.lines -> $ln {
+        next if !$ln || $ln.starts-with('#');
+        my @c = $ln.split("\t");
+        next if @c.elems < 2;
+        %prior{@c[0]} = %( wall    => +@c[1],
+                           timeout => (@c[2] // '') eq 'timeout',
+                           cpu     => (@c[3] // '') ne '' ?? +@c[3] !! Nil );
+    }
+}
+my (@key, @demand);
+for ^@files.elems -> $k {
+    my $p = %prior{@files[$k].substr($ROOT.chars + 1)};
+    # S17-procasync tests spawn processes by the dozen. That load is latency,
+    # not CPU: the grandchildren live milliseconds, so no sample ever sees them,
+    # and admitted as nearly free beside seven cores of work the three heavy
+    # ones (stress.t, no-runaway-file-limit.t, many-processes-no-close-stdin.t;
+    # 1.6 to 5.7 s alone) went past the timeout in every full run. They go
+    # first, onto the idle machine, two at a time.
+    my $spawner = @files[$k].contains('/S17-procasync/');
+    @key[$k]    = $spawner ?? 100 + ($p ?? $p<wall> !! 1.0)
+                !! !$p ?? 1.0 !! $p<timeout> ?? 1.99 !! $p<wall>;
+    @demand[$k] = $spawner ?? ($CPU div 2) max 1
+                !! $p && $p<cpu>.defined && $p<wall> > 0 ?? min(4, $p<cpu> / $p<wall>) !! 1.0;
+}
+my @queue   = (^@files.elems).sort({ @key[$^b] <=> @key[$^a] });
+my $sampled = @demand.grep({ $_ != 1.0 }).elems;
+say "run-roast: cpu budget $CPU cores over $WORKERS workers; {@files.elems - $sampled} files assumed to need a core, "
+  ~ "{@demand.grep({ $_ < 0.25 }).elems} known to wait (last run's CPU samples)";
+
 my @fullypassing;   # the release gate's file LIST, collected as data not as text
-my $next = 0;
-while $next < @files.elems {
-    my $hi = ($next + $WORKERS) min @files.elems;
-    my @batch = @files[$next ..^ $hi];
-    # Each worker runs its file AND parses the TAP, so parsing overlaps with the
-    # other workers' child processes instead of serialising between batches.
-    my sub run-one($f) {
-        my $rel = $f.substr($ROOT.chars + 1);
-        my ($out, $timedout) = run-with-timeout($BIN, $f, %SLOW-FILES{$rel} // $TIMEOUT);
-        my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
-        # New fields go on the END: the unpack below is positional.
-        [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
-         $skipped, $todofail]; # an Array stays one item
+my @result;         # per file position, set by whichever worker ran it
+my @wall;           # per file position, this run's wall seconds: the next run's ordering
+my $lock    = Lock.new;
+my $flushed = 0;    # files [0 ..^ $flushed) are tallied and printed
+
+# --- the CPU sampler ---------------------------------------------------------
+# %cpu-sample: absolute file path -> CPU seconds its child had used at the last
+# look. One `ps` a second over the whole run, from a thread of its own, is what
+# tells a file that computes from one that waits (the demand estimate above).
+# It is a thread and not a timer per file because Promise.anyof leaves its
+# losing promise Broken, so a worker cannot wait on its child twice — a
+# one-second wait, a sample, then the rest turned every file over a second old
+# into a timeout. Its `ps` is spawned under the same lock as the children (see
+# run-with-timeout): a fork is a fork.
+my %cpu-sample;
+my $sampling = True;
+sub sample-children() {
+    my $p = $SPAWN.protect({ run('ps', '-axo', 'ppid=,cputime=,command=', :out, :err) });
+    my $o = $p.out.slurp(:close); $p.err.slurp(:close);
+    my %seen;
+    for $o.lines -> $ln {
+        my @w = $ln.words;
+        next unless @w.elems >= 3 && @w[0] eq ~$*PID && @w[*-1].ends-with('.t');
+        %seen{@w[*-1]} = parse-cputime(@w[1]);
     }
-    my @outs;
-    if $WORKERS > 1 && @batch.elems > 1 {
-        my @promises = @batch.map(-> $f { start run-one($f) });
-        @outs = await @promises;
+    $lock.protect({ %cpu-sample{$_} = %seen{$_} for %seen.keys });
+}
+my $sampler = start {
+    my $tick = 0;
+    while $sampling {
+        sleep 0.25;
+        sample-children() if ++$tick %% 4;
     }
-    else {
-        @outs.push(run-one($_)) for @batch; # push keeps each tuple one item
-    }
-    for ^@batch.elems -> $k {
-    my $f = @batch[$k];
+};
+
+# Run one file AND parse its TAP on the worker, so parsing overlaps with the
+# other workers' child processes instead of serialising afterwards.
+my sub run-one($f) {
+    my $rel = $f.substr($ROOT.chars + 1);
+    my ($out, $timedout) = run-with-timeout($BIN, $f, %SLOW-FILES{$rel} // $TIMEOUT);
+    my $cpu = $lock.protect({ %cpu-sample{$f} });   # the last look the sampler took while it ran
+    my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
+    # New fields go on the END: the unpack below is positional.
+    [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
+     $skipped, $todofail, $cpu]; # an Array stays one item
+}
+
+# Tally and print file $k. Called in file order, under $lock.
+my sub tally($k) {
+    my $f = @files[$k];
     my $rel = $f.substr($ROOT.chars + 1);
     my $sec = seckey($rel);
-    my $r = @outs[$k];
+    my $r = @result[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
     my ($skipped, $todofail) = $r[6] // 0, $r[7] // 0;
     if $timedout {
         $timeout++;
         %sec-time{$sec}++;
         say "  [TIME]          ", $rel;
-        next;
+        return;
     }
     $tot-ran  += $ran;
     $tot-pass += $passed;
@@ -350,9 +511,57 @@ while $next < @files.elems {
     if $mark ne '----' {
         say sprintf('  [%s]  %5s  %s', $mark, "$passed/$ran", $rel);
     }
-    }
-    $next = $hi;
 }
+
+# Admission: a worker takes the first untaken file from the head of the queue
+# whose demand fits the budget. Waiters always fit, so they start at once; a
+# CPU-bound file starts when a core's worth of estimated demand is free; an
+# idle machine admits anything. -1 means nothing fits yet.
+my @taken; my $head = 0; my $load = 0;   # $load: cores the running files are estimated to use
+my sub take-next() {
+    while $head < @queue.elems && @taken[@queue[$head]] { $head++ }
+    return Nil if $head >= @queue.elems;
+    my $i = $head;
+    while $i < @queue.elems {
+        my $k = @queue[$i];
+        if !@taken[$k] && ($load == 0 || $load + @demand[$k] <= $CPU) {
+            @taken[$k] = True;
+            $load += @demand[$k];
+            return $k;
+        }
+        $i++;
+    }
+    return -1;
+}
+my sub worker() {
+    loop {
+        my $k = $lock.protect({ take-next() });
+        last if !$k.defined;
+        if $k == -1 { sleep 0.02; next }
+        my $t0 = now;
+        my $r  = run-one(@files[$k]);
+        my $dt = (now - $t0).Num;
+        $lock.protect({
+            $load -= @demand[$k];
+            @wall[$k]   = $dt;
+            @result[$k] = $r;
+            while $flushed < @files.elems && @result[$flushed].defined {
+                tally($flushed);
+                $flushed++;
+            }
+        });
+    }
+}
+if $WORKERS > 1 && @files.elems > 1 {
+    my @workers;
+    @workers.push(start { worker() }) for ^($WORKERS min @files.elems);
+    await @workers;
+}
+else {
+    worker();
+}
+$sampling = False;
+await $sampler;
 
 # The gate's file list, as DATA. Written before the summary so a run that dies
 # formatting its own tables still leaves the thing a release actually diffs.
@@ -374,6 +583,24 @@ if $LISTFILE {
         say "";
         say "Fully-passing file list ({@fullypassing.elems} paths) -> $LISTFILE";
         say "Provenance -> $meta";
+    }
+}
+
+# The timing sidecar: this run's per-file wall time, the next run's ordering
+# key. Written only when --times=FILE names it — the committed default is read,
+# never rewritten behind anyone's back — and only by a full run, because a
+# filtered run knows nothing about the files it did not visit.
+if $TIMES-GIVEN && $TIMESFILE {
+    if @patterns {
+        note "run-roast: --times not written: a filtered run cannot time the whole suite.";
+    }
+    else {
+        my @rows = (^@files.elems).map(-> $k {
+            my $cpu = @result[$k][8];
+            sprintf("%s\t%.3f\t%s\t%s", @files[$k].substr($ROOT.chars + 1), @wall[$k] // 0,
+                    @result[$k][0] ?? 'timeout' !! '', $cpu.defined ?? sprintf('%.2f', $cpu) !! '') });
+        $TIMESFILE.IO.spurt("# path\twall-seconds\tnote\tcpu-seconds | $PROVENANCE\n" ~ @rows.sort.join("\n") ~ "\n");
+        say "Per-file wall times ({@rows.elems} rows) -> $TIMESFILE";
     }
 }
 
@@ -406,6 +633,7 @@ my $dpct  = $declared    ?? 100 * $tot-pass / $declared    !! 0;
 say "";
 say "Files: ", @files.elems, "   fully-pass: ", $pass,
     "   partial: ", $partial, "   no-TAP: ", $noplan, "   timeout: ", $timeout;
+say sprintf("Wall time:            %.1f s  (%d workers)", (now - $T0).Num, $WORKERS);
 say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
