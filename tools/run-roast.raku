@@ -421,6 +421,17 @@ my $flushed = 0;    # files [0 ..^ $flushed) are tallied and printed
 # one-second wait, a sample, then the rest turned every file over a second old
 # into a timeout. Its `ps` is spawned under the same lock as the children (see
 # run-with-timeout): a fork is a fork.
+my $running   = 0;   # children alive right now
+my $completed = 0;   # children finished, in any order ($flushed lags: it is in file order)
+# The per-file lines come out in FILE ORDER, and the first file in that order
+# is a bulk file that starts late, so a terminal shows nothing for most of the
+# run. This line, on stderr and only when stderr is a terminal, says what is
+# happening in the meantime; the flush below wipes it before printing.
+sub progress() {
+    my ($d, $r) = $lock.protect({ ($completed, $running) });
+    $*ERR.print(sprintf("\r  %d/%d done, %d running, %.0f s ", $d, @files.elems, $r, (now - $T0).Num));
+}
+sub wipe-progress() { $*ERR.print("\r" ~ (' ' x 48) ~ "\r") }
 my %cpu-sample;
 my $sampling = True;
 sub sample-children() {
@@ -438,6 +449,7 @@ my $sampler = start {
     my $tick = 0;
     while $sampling {
         sleep 0.25;
+        progress() if $*ERR.t;
         sample-children() if ++$tick %% 4;
     }
 };
@@ -526,6 +538,7 @@ my sub take-next() {
         my $k = @queue[$i];
         if !@taken[$k] && ($load == 0 || $load + @demand[$k] <= $CPU) {
             @taken[$k] = True;
+            $running++;
             $load += @demand[$k];
             return $k;
         }
@@ -545,6 +558,9 @@ my sub worker() {
             $load -= @demand[$k];
             @wall[$k]   = $dt;
             @result[$k] = $r;
+            $running--;
+            $completed++;
+            wipe-progress() if $*ERR.t && @result[$flushed].defined;
             while $flushed < @files.elems && @result[$flushed].defined {
                 tally($flushed);
                 $flushed++;
@@ -562,6 +578,7 @@ else {
 }
 $sampling = False;
 await $sampler;
+wipe-progress() if $*ERR.t;
 
 # The gate's file list, as DATA. Written before the summary so a run that dies
 # formatting its own tables still leaves the thing a release actually diffs.
@@ -658,14 +675,27 @@ my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys)
            .flat.unique.sort({ sec-order($^a) <=> sec-order($^b) });
 say "";
 say "By synopsis (paste into the ROAST.md table):";
-say "| Section | Theme | Full | Part | Time | No-TAP | Assertions | % |";
-say "|---|---|---:|---:|---:|---:|---:|---:|";
+my @head = <Section Theme Full Part Time No-TAP Assertions %>;
+my @rows;
 for @secs -> $s {
     my $a = %sec-pass{$s} // 0;
     my $b = %sec-tot{$s}  // 0;
     my $pct = $b ?? sprintf('%d%%', (100 * $a / $b).round) !! '—';
-    say sprintf('| %s | %s | %d | %d | %d | %d | %d/%d | %s |',
-        $s, (%theme{$s} // '—'),
-        (%sec-full{$s} // 0), (%sec-part{$s} // 0), (%sec-time{$s} // 0), (%sec-notap{$s} // 0),
-        $a, $b, $pct);
+    @rows.push([ $s, (%theme{$s} // '—'),
+                 ~(%sec-full{$s} // 0), ~(%sec-part{$s} // 0), ~(%sec-time{$s} // 0), ~(%sec-notap{$s} // 0),
+                 "$a/$b", $pct ]);
+}
+# Padded to column width: readable in a terminal, and still the same markdown
+# table once pasted — a padded cell and a longer dash rule are both fine there.
+my @w;
+for ^@head.elems -> $i {
+    my $m = @head[$i].chars;
+    for @rows -> $r { $m = $r[$i].chars if $r[$i].chars > $m }
+    @w[$i] = $m;
+}
+sub cell($v, $i) { $i < 2 ?? $v ~ (' ' x (@w[$i] - $v.chars)) !! (' ' x (@w[$i] - $v.chars)) ~ $v }  # text left, numbers right
+say '| ' ~ (^@head.elems).map({ cell(@head[$_], $_) }).join(' | ') ~ ' |';
+say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 1)) ~ ':' }).join('|') ~ '|';
+for @rows -> $r {
+    say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
 }
