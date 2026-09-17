@@ -352,6 +352,7 @@ static std::map<long long, SpawnedChild> g_spawned;
 static long long g_spawnedSeq = 0;
 
 static int signalNumberOf(const Value& v); // Proc::Async.kill's argument; tables are with signal() below
+static void arrayOpArgs(const std::string& op, const ValueList& a, bool oneArray); // the push/pop/shift/unshift sub forms' argument contract; defined with the nqp helpers
 
 // First half: spawn the child and return at once. The fork happens with the GIL
 // held, so forks serialise (safe in a multithreaded process).
@@ -10019,7 +10020,7 @@ void Interpreter::registerBuiltins() {
                 return Value::boolean(true);
             }
         }
-        std::string out; for (auto& v : a) out += I.strOf(v); out += "\n";
+        std::string out; for (auto& v : a) out += I.strInStrContext(v); out += "\n";
         return I.ioEmit(out, "$*OUT", false);
     };
     B["gist"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -11375,6 +11376,9 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(::rmdir(I.ioFsPath(a[0]).c_str()) == 0);
     };
     B["spurt"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Hash && a[0].hash() && a[0].hash()->count("mode")) { // an IO::Handle: its own .spurt writes through it
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "spurt", rest);
+        }
         if (!a.empty()) rejectNulPath(a[0].toStr());
         if (a.empty()) return Value::boolean(false);
         bool append = false, createonly = false;
@@ -12466,8 +12470,8 @@ void Interpreter::registerBuiltins() {
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
     B["end"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling end() requires an argument"}; ValueList none; return I.methodCall(a[0], "end", none); };
     B["kv"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling kv() requires an argument"}; ValueList none; return I.methodCall(a[0], "kv", none); };
-    B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
-    B["append"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
+    B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { arrayOpArgs("prepend", a, false); if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
+    B["append"] = [](Interpreter& I, ValueList& a) -> Value { arrayOpArgs("append", a, false); if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
     // …through the METHOD, so the sub and the method stringify identically.
     // joinValues asks each element's raw rendering, which does not know about a
     // user `method Str` — so `join(';', $obj)` printed Class<address> where
@@ -13420,12 +13424,14 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(list, "first", margs); // one implementation
     };
     B["push"] = [](Interpreter& I, ValueList& a) -> Value {
+        arrayOpArgs("push", a, false);
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
         if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "push", rest); }
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr()->push_back(a[i]); return a[0]; }
         return Value::any();
     };
     B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
+        arrayOpArgs("pop", a, true);
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
@@ -13436,6 +13442,7 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
+        arrayOpArgs("shift", a, true);
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite) I.materializeLazy(a[0], 1);
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
         if (!a.empty() && a[0].t == VT::Array && a[0].isList) { ValueList none; return I.methodCall(a[0], "shift", none); }
@@ -14070,6 +14077,7 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["unshift"] = [](Interpreter& I, ValueList& a) -> Value {
+        arrayOpArgs("unshift", a, false);
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
         if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "unshift", rest); }
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr()->insert(a[0].arr()->begin(), a[i - 1]); return Value::integer((long long)a[0].arr()->size()); }
@@ -14077,6 +14085,28 @@ void Interpreter::registerBuiltins() {
     };
 }
 
+
+// The array-op SUB forms' argument contract (S32-array/{push,pop,shift,unshift}.t):
+// `pop()` with nothing to pop from is a type error at Rakudo's compile time; the
+// one-array forms (pop, shift) take no further positional; and none of them has
+// a named parameter, so `push @a, a => 52` has nowhere to put the pair. Each
+// used to answer a silent Any or push the Pair. `push([])` stays fine: the
+// Array is the argument, and pushing nothing to it is allowed.
+static void arrayOpArgs(const std::string& op, const ValueList& a, bool oneArray) {
+    if (a.empty())
+        throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+            "Calling " + op + "() with no arguments will never work: it needs the array to " + op};
+    size_t positional = 0;
+    for (auto& v : a) {
+        if (v.t == VT::Pair && v.namedArg)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Unexpected named argument '" + v.s + "' passed to " + op};
+        positional++;
+    }
+    if (oneArray && positional > 1)
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+            "Cannot resolve caller " + op + "(" + a[0].typeName() + ":D, " + a[1].typeName() + ") — " + op + " takes the array alone"};
+}
 
 // ---- nqp buffer read/write helpers -----------------------------------------
 // MoarVM encodes (read|write)(u)int/num's last argument as size|endian: the low

@@ -2996,9 +2996,18 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                                                 out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
             std::string digits;
             if (afterTerm && tryReadSuperscript(digits)) {
+                // `*²(4)` is a CALL of the curried power — the superscript binds
+                // tighter than the postfix parens, so the base and its power are
+                // wrapped as one term when a `(` follows. Emitted flat, the parens
+                // attached to the exponent: `* ** 2(4)` invoked the Int 2
+                // (S32-num/power.t's `*⁰(0)`). A parenthesised base (`(-1)¹²³`)
+                // is already a term of its own and is left as it is.
+                bool call = peek() == '(' && lk != Tok::RParen && lk != Tok::RBracket;
+                if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
                 Token num = make(Tok::IntLit, digits); num.ival = std::strtoll(digits.c_str(), nullptr, 10);
                 out.push_back(num);
+                if (call) { Token rp = make(Tok::RParen, ")"); rp.spaceBefore = false; out.push_back(rp); }
                 continue;
             }
         }

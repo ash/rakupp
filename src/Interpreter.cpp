@@ -5024,6 +5024,9 @@ int Interpreter::run(Program& prog) {
         std::cerr << "next without loop construct\n"; code = 1; crashed = true;
     } catch (RedoEx&) {
         std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
+    } catch (ControlHandledEx&) {
+        // the mainline's own CONTROL handled a warning without .resume: the
+        // mainline is left, and the program ends normally
     }
     // the mainline CONTROL's registration ends with the mainline — an rk_run
     // session may run several programs in one process, and a stale handler
@@ -8354,6 +8357,24 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         if (hasNestedSub) breakSelfClosures(tcx.cur);
         tcx.cur = saved;
         throw;
+    } catch (ControlHandledEx& che) {
+        // THIS block's CONTROL handled a warning without .resume: the block is
+        // left, and normally — like a CATCH that handled its exception. Another
+        // block's CONTROL: unwind through, as any other exception does.
+        if (che.handler == controlBlk) {
+            runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
+            if (hasNestedSub) breakSelfClosures(tcx.cur);
+            tcx.cur = saved;
+            return Value::nil();
+        }
+        runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
+        if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+            for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+            tcx.cur->ex->letRestores.clear();
+        }
+        if (hasNestedSub) breakSelfClosures(tcx.cur);
+        tcx.cur = saved;
+        throw;
     } catch (...) {
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
         if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
@@ -8501,7 +8522,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
                   tctx_.givenCtl = 0;
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
-                  if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
+                  if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params — Rakudo re-binds; S04-statements/redo.t needs the refresh to terminate)
                   if (ctl == 1) {
                       // a `last` from a NEXT phaser — cooperative or thrown —
                       // ends the loop: LAST runs (unconditionally — see
@@ -11995,8 +12016,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         row.push_back(haveItem(i + k) ? itemsR[i + k] : Value::any());
                     for (auto& a : row) a.namedArg = false; // a loop topic is a VALUE, never a named arg
                     bindParams(fs->params, row, scope);
+                    // `redo` binds the parameters afresh — an `is copy` one is a
+                    // new copy of the element, as in the fast paths above (their
+                    // `rb`). This path had no rebind, so `-> $i is copy { …; $i
+                    // -= 1; redo if $i > 0 }` kept the decremented copy and
+                    // S04-statements/redo.t summed 220 where Rakudo's 201 needs
+                    // the refresh.
+                    std::function<void()> rb = [&] { bindParams(fs->params, row, scope); };
                     if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                     atEnd(i + np), col)) break;
+                                     atEnd(i + np), col, rb)) break;
                 }
                 return forResult();
             }
@@ -15535,6 +15563,7 @@ Value& Interpreter::dynVarRef(const std::string& name) {
 // an Array exactly as the interpreter's own undeclared-write path leaves it.
 // Which names get here is decided at compile time by findLaxVars, so this is
 // never reached for a name the program declares.
+static std::string ourPublishedName(const std::string& name, const std::string& pkgPrefix); // defined with the `our` machinery below
 Value& Interpreter::laxVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
     // The PACKAGE the write stands in, not the block that happened to run
@@ -15547,7 +15576,15 @@ Value& Interpreter::laxVarRef(const std::string& name) {
     // every iteration made its own.
     Value dflt = defaultFor(name.empty() ? '$' : name[0]);
     for (auto e = tctx_.cur; e; e = e->parent)
-        if (e->packageFrame || !e->parent) return e->define(name, dflt);
+        if (e->packageFrame || !e->parent) {
+            Value& slot = e->define(name, dflt);
+            // …and a PACKAGE's lax variable is an `our` of that package: publish
+            // the same view an `our` declaration gets, so `$Foo::foo` reads the
+            // slot `class Foo { $foo = 42 }` wrote (S02-names/strict.t).
+            if (e->packageFrame && global_ && e.get() != global_.get() && !tctx_.pkgPrefix.empty() && name.size() > 1)
+                global_->define(ourPublishedName(name, tctx_.pkgPrefix), makeEnvSlotProxy(e, name));
+            return slot;
+        }
     return (curPkgEnv_ ? curPkgEnv_ : global_)->define(name, dflt);
 }
 
@@ -18260,12 +18297,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (arityCheck && c.arityShape == 1) {
         const bool unbounded = c.arityUnbounded;
         const int maxPos = c.arityMaxPos, reqPos = c.arityReqPos;
-        // Pairs are ambiguous at this level (quoted-key pairs bind
-        // positionally; capture-flattened named args LOSE the namedArg bit),
-        // so the too-many test counts only non-Pair positionals and the
-        // too-few test credits every pair — reject only what can never fit.
+        // Pairs are ambiguous at this level (a quoted-key pair binds
+        // positionally), so the too-many test counts only non-Pair positionals
+        // and the too-few test credits every pair that is NOT a named argument —
+        // reject only what can never fit. A named argument, including one a
+        // flattened capture or `|$pair` contributed, binds to no positional and
+        // is not credited: `sub f($a) {…}; f(|(a => 42))` used to bind nothing
+        // and run with $a undefined where Rakudo reports too few positionals
+        // (S02-literals/pairs.t, S02-types/capture.t).
         int posStrict = 0, pairish = 0;
-        for (auto& a : args) { if (a.t == VT::Pair) pairish++; else posStrict++; }
+        for (auto& a : args) { if (isNamedArg(a)) continue; if (a.t == VT::Pair) pairish++; else posStrict++; }
         if (posStrict + pairish < reqPos || (!unbounded && posStrict > maxPos)) {
             std::string prof, sigt;
             for (auto& a : args) {
@@ -25464,6 +25505,22 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 throw RakuError{Value::typeObj(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow"),
                                 neg ? "Numeric underflow" : "Numeric overflow"};
             }
+            // The trivial bases with a BIG exponent are answered here, exactly. They
+            // used to fall through to the double pow below, where an exponent of
+            // 4553535345364535345634543533 is an even-looking 4.55e27 — so
+            // `(-1) ** $odd` was 1 (S32-num/power.t).
+            if (baseTrivial && r.big()) {
+                long long b = l.toInt();
+                if (b == 1) return Value::integer(1);
+                bool negExp = r.big()->sign < 0;
+                if (b == 0) {
+                    if (negExp) return armedFailure("X::Numeric::DivideByZero",
+                        "Attempt to divide by zero when raising 0 to a negative power");
+                    return Value::integer(0);
+                }
+                BigInt q, rem; BigInt::divmod(*r.big(), BigInt(2), q, rem);
+                return Value::integer(rem.isZero() ? 1 : -1);
+            }
         }
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big()) {
             long long e = r.toInt();
@@ -30702,6 +30759,13 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         obj = std::make_shared<ObjectData>();
         obj->boxed = base;
         obj->hasBoxed = true;
+        // `True but False`: the mixed-in Bool is what the value now IS in every
+        // coercion — Rakudo answers 0, "False" and False for +, ~ and ? (only
+        // `.key` still says True). The anon role already answered `.Bool`; the
+        // box underneath kept stringifying as "True" (integration/advent2010-day19.t).
+        if (base.t == VT::Bool)
+            for (auto& vm : valueMixins)
+                if (vm.t == VT::Bool) obj->boxed = Value::boolean(vm.b);
         // A TYPE OBJECT of a class we know derives from THAT class, so its own
         // methods and grammar rules survive the mixin (`Base but GR` has to keep
         // parsing with Base's rules). Only an unknown/builtin type gets the bare
@@ -32107,13 +32171,21 @@ bool Interpreter::runControlWarn(const std::string& msg) {
         Interpreter& I; std::shared_ptr<Env> e; uint64_t gf;
         ~Restore() { I.tctx_.cur = e; I.tctx_.curGivenFrame = gf; }
     } restore{*this, saved, savedGF};
-    bool resumed = false;
+    bool resumed = false, handled = false;
     try {
         struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_}; // .resume is legal here
         for (auto& s : handler.first->stmts) exec(s.get());
     }
-    catch (BreakGivenEx&) { /* a when matched but did not .resume: default print stands */ }
+    catch (BreakGivenEx&) { handled = true; }   // a when/default matched
     catch (ResumeEx&) { resumed = true; }
+    // Handled but not resumed: the warning is consumed AND the block that
+    // declared the CONTROL is left, exactly as a CATCH leaves its block (Rakudo:
+    // `{ CONTROL { when CX::Warn { … } }; warn "x"; say "after" }` never says
+    // "after"). S32-basics/warn.t plans on it — its first block's two tests
+    // after the warn are never reached, and the plan of 9 counts them out; we
+    // ran on and emitted 11. A handler that matched nothing lets the warning
+    // through to the default printer, and execution continues.
+    if (handled && !resumed) throw ControlHandledEx{handler.first};
     return resumed;
 }
 
@@ -32406,6 +32478,14 @@ std::string Interpreter::strOf(const Value& v) {
         auto cit = classes_.find(v.s);
         if (cit != classes_.end() && cit->second)
             if (Value* m = cit->second->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+    }
+    // Any other type object has no string form: Rakudo warns (S32-basics/warn.t
+    // asserts the first sentence of this message) and yields "". It was silent.
+    if (v.t == VT::Type || v.t == VT::Any) {
+        std::string msg = "Use of uninitialized value of type " + v.typeName() +
+            " in string context.\nMethods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.";
+        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        return "";
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
         // through the CHAIN, as gistOf does: a user `method Str` that defers

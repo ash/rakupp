@@ -2275,9 +2275,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const Value& fn = args[0];
             auto leaf = [&](Value& slot) -> Value {
                 topicWriteback_ = &slot; // $_/placeholder mutations alias the node
-                Value r = callCallable(fn, ValueList{slot});
+                Value r;
+                try { r = callCallable(fn, ValueList{slot}); }
+                catch (...) { topicWriteback_ = nullptr; throw; }
                 topicWriteback_ = nullptr;
                 return r;
+            };
+            // `next` in the block drops the element and `last` ends the walk, as
+            // in `map` — S32-list/duckmap.t's `<a b c>.duckmap({ next if $_ eq
+            // "b"; $_ })` is `a c`. duckmap's catch-all below took the control
+            // exception for "does not quack" and kept the element.
+            auto pushEl = [&](Value& o, Value& x, const std::function<Value(Value&)>& f) -> bool {
+                try { o.arr()->push_back(f(x)); }
+                catch (NextEx&) { }
+                catch (LastEx&) { return false; }
+                return true;
             };
             std::function<Value(Value&)> deepEl = [&](Value& e) -> Value {
                 if (e.t == VT::Array && e.arr()) {
@@ -2294,10 +2306,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             std::function<Value(Value&)> duckEl = [&](Value& e) -> Value {
                 try { return leaf(e); }
+                catch (NextEx&) { throw; }
+                catch (LastEx&) { throw; }
                 catch (...) {
                     if (e.t == VT::Array && e.arr()) {
                         Value o = Value::array(); o.isList = e.isList;
-                        for (auto& x : *e.arr()) o.arr()->push_back(duckEl(x));
+                        for (auto& x : *e.arr()) if (!pushEl(o, x, duckEl)) break;
                         return o;
                     }
                     if (e.t == VT::Hash && e.hash() && e.hashKind.empty()) {
@@ -2320,8 +2334,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // Array out); nodemap always answers a List
             Value out = Value::array();
             out.isList = (m == "nodemap") || inv.t != VT::Array || inv.isList;
-            if (inv.t == VT::Array && inv.arr())
-                for (auto& e : *inv.arr()) out.arr()->push_back(applyEl(e));
+            if (inv.t == VT::Array && inv.arr()) {
+                for (auto& e : *inv.arr()) if (!pushEl(out, e, applyEl)) break;
+            }
             else { Value tmp = inv; return applyEl(tmp); }
             return out;
         }
@@ -2526,6 +2541,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     else (*inv.hash())[key] = val;
                 } else {
                     if (it->second.t != VT::Array) { Value ar = Value::array(); ar.arr()->push_back(it->second); it->second = ar; }
+                    // …and a LIST value becomes an Array too — `:b(2, 3)` then
+                    // `.append(:b<Y>)` is `[2, 3, "Y"]`, an Array (S32-hash/push.t);
+                    // pushing onto the List left it a List.
+                    else if (it->second.isList) { Value ar = Value::array(); for (auto& x : *it->second.arr()) ar.arr()->push_back(x); it->second = ar; }
                     if (m == "append") for (auto& x : val.flatten()) it->second.arr()->push_back(x);
                     else it->second.arr()->push_back(val);
                 }
@@ -2833,6 +2852,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // terminates, which is how Cro's router drains its handler queue —
             // but detonates with X::Cannot::Empty the moment the value is USED.
             if (m == "pop" || m == "shift") {
+                for (auto& av : args)
+                    if (av.t != VT::Pair)
+                        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " + m.s + "(Array:D, " + av.typeName() + ") — " + m.s + " takes no argument"};
                 if (inv.arr()->empty()) {
                     Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = makeTypedEx("X::Cannot::Empty",
@@ -3070,6 +3093,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
             { *c.arr() = inv.blobList(); return c; }
+        // a Pair unpacks like any object, into its public attributes:
+        // `('OH' => 'HAI').Capture` is `\(:key<OH>, :value<HAI>)` (Rakudo;
+        // S02-types/capture.t reads `$c<key>`). It used to be the "cannot
+        // unpack" error below.
+        if (inv.t == VT::Pair) {
+            Value k = Value::pair("key", Value::str(inv.s)); k.namedArg = true;
+            Value v = Value::pair("value", inv.pairVal() ? *inv.pairVal() : Value::any()); v.namedArg = true;
+            c.arr()->push_back(k); c.arr()->push_back(v);
+            return c;
+        }
         if (inv.t == VT::Object && inv.obj()) {
             std::vector<std::string> names;
             for (auto& kv : inv.obj()->attrs) names.push_back(kv.first);

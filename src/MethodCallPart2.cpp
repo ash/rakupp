@@ -1568,7 +1568,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 #endif
             Value v = Value::str(ver); v.hashKind = "Version"; return v;
         }
-        if (m == "signature") return Value::str("");
+        if (m == "signature") { // a Blob (S02-magicals/VM.t, DISTRO.t assert the type), empty: nothing signs this binary
+            Value b = Value::str(""); b.hashKind = "Blob"; return b;
+        }
         // The PATH separator, which is ';' on Windows — Rakudo picks it the
         // same way, off the name.
         if (m == "path-sep")

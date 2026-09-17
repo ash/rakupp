@@ -8225,6 +8225,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isModuleDecl = kindKw == "module";
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
+    // `class GLOBAL::evo { … }` declares `evo` in the root package — the pseudo
+    // package is where it goes, not part of its name (S12-class/magical-vars.t
+    // EVALs such a class and then names it bare). Only GLOBAL:: is stripped:
+    // OUR:: would need the current package's name, which this AST does not carry.
+    if (cd->name.rfind("GLOBAL::", 0) == 0 && cd->name.size() > 8) cd->name = cd->name.substr(8);
     else if (isOp("::")) {
         advance(); // anonymous type: `class :: does R { … }` …
         if (isKind(Tok::LParen)) { // …or an INDIRECT name: `class ::(EXPR) { … }`

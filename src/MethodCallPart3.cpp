@@ -2138,9 +2138,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // `Class<address>` while the same `say` to $*OUT read the
                 // method. (IO::MiddleMan's suite writes one through a wrapped
                 // handle and compares the two.)
+                // …and `.put`/`.print` render with `.Str`, the user's own where a
+                // class declares one (S16-io/put.t writes `class { method Str {
+                // "pass" } }.new` through a file handle). `Value::toStr()` knows
+                // only the built-in rendering.
                 for (auto& a : args)
                     s += (m == "say" ? methodCall(a, "gist", ValueList{}, nullptr).toStr()
-                                     : a.toStr());
+                                     : strInStrContext(a));
                 if (m != "print") s += "\n";
             }
             s = encodeTextEnc(s, handleEnc(inv)); // the handle's `:enc` names the BYTES on disk
@@ -2324,6 +2328,30 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
                 return Value::str(out);
             }
+            // A handle read by LINES so far hands the rest of its text to the
+            // character reader: `$fh.getc` after `$fh.get` continues where the line
+            // reader stopped. Each reader kept its own cursor, so the other started
+            // over from the top of the file (integration/advent2010-day03.t reads
+            // one character and then the rest of the line).
+            {
+                auto lit = inv.hash()->find("lines");
+                if (lit != inv.hash()->end() && lit->second.arr()) {
+                    auto& ls = *lit->second.arr();
+                    auto eit = inv.hash()->find("line-eols");
+                    long long lp = (*inv.hash())["pos"].toInt();
+                    std::string rest;
+                    for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
+                        rest += ls[i].toStr();
+                        if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
+                            rest += (*eit->second.arr())[i].toStr();
+                    }
+                    Value cps = Value::array();
+                    for (auto cp : utf8cp(rest)) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
+                    (*inv.hash())["cps"] = cps;
+                    (*inv.hash())["cpos"] = Value::integer(0);
+                    inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("pos");
+                }
+            }
             if (inv.hash()->find("cps") == inv.hash()->end()) {
                 std::string path = (*inv.hash())["path"].toStr();
                 struct stat st;
@@ -2471,9 +2499,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             (void)crlf; eols.arr()->push_back(Value::str(std::cin.eof() ? "" : "\n"));
                         }
                     } else {
-                        std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
-                        std::ostringstream raw; raw << in.rdbuf();
-                        std::string decoded = decodeTextEnc(raw.str(), handleEnc(inv));
+                        std::string decoded;
+                        auto cit = inv.hash()->find("cps");
+                        if (cit != inv.hash()->end() && cit->second.arr()) {
+                            // the CHARACTER reader owned this handle so far (`.getc`
+                            // then `.get`): the lines start at its cursor, not at the
+                            // top of the file
+                            auto& cs = *cit->second.arr();
+                            long long cp0 = (*inv.hash())["cpos"].toInt();
+                            for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cs.size(); i++) decoded += cs[i].toStr();
+                            inv.hash()->erase("cps"); inv.hash()->erase("cpos");
+                        } else {
+                            std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
+                            std::ostringstream raw; raw << in.rdbuf();
+                            decoded = decodeTextEnc(raw.str(), handleEnc(inv));
+                        }
                         std::istringstream src(decoded);
                         // getline() cannot say whether the LAST line ended in a
                         // newline; the decoded text can.
@@ -3298,6 +3338,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(slice(start, start + len));
     }
     if (m == "index" || m == "rindex") {
+        // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
+        // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
+        // before this the type stringified to "" and every predicate answered True.
+        if (!args.empty() && args[0].t == VT::Type)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
+                args[0].typeName() + " (" + args[0].gist() + ")"};
         // splatted multi-needle: index($s, "a", "o", :i) — several positional
         // STRING args are all needles (a numeric-looking string is a start pos)
         {
@@ -3840,6 +3887,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `:i`/`:ignorecase` on the string predicates — fold both sides and compare
     if (m == "contains" || m == "starts-with" || m == "ends-with") {
+        // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
+        // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
+        // before this the type stringified to "" and every predicate answered True.
+        if (!args.empty() && args[0].t == VT::Type)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
+                args[0].typeName() + " (" + args[0].gist() + ")"};
         bool icase = false, imark = false, smart = false;
         for (auto& a2 : args)
             if (a2.t == VT::Pair) {

@@ -570,6 +570,10 @@ struct DoneEx {}; // `done` control flow: exits the enclosing whenever block / s
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
 struct LeaveEx { Value v; bool hasVal = false; };       // `leave` exits the enclosing block (loop bodies skip NEXT)
 struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the throw point
+// A CONTROL phaser HANDLED a warning (a `when`/`default` matched) and did not
+// `.resume`: the block that declared the phaser is left, as a CATCH leaves it.
+// Thrown by runControlWarn; the block executor whose CONTROL this is returns.
+struct ControlHandledEx { Block* handler; };
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 // ONE frame of a throw-time call chain: the routine that was running and the
