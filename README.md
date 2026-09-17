@@ -177,10 +177,10 @@ say crypt_random_buf(32);               # bytes from the OS CSPRNG
 ```
 
 Five tags, thirty-two names, every signature copied from the ecosystem module it
-stands in for — and **portable**: on any other engine the same line loads a
-distribution of that name that composes `JSON::Fast`, `Digest::SHA2`,
-`Compress::Zlib` and `Crypt::Random`, so the program runs on Rakudo unchanged
-once `zef install Data::Native` has put it there.
+stands in for. It is **designed** to be portable — the companion distribution,
+which would compose `JSON::Fast`, `Digest::SHA2`, `Compress::Zlib` and
+`Crypt::Random` so the same program runs on Rakudo unchanged, is **not published
+yet**. Until it is, `use Data::Native` works on Raku++ and nowhere else.
 A program using it compiles to a standalone binary, because there is nothing
 left to find at run time.
 

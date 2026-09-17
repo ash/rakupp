@@ -283,12 +283,12 @@ resolved, so the `use` is not on the program's start-up path at all. Five tags �
 from the ecosystem module it stands in for, so moving a program to or from
 `use JSON::Fast` is a one-line edit.
 
-**It is portable, which is the point.** On any other engine the same line loads
-a distribution of that name which composes the usual modules — `JSON::Fast`,
-`Digest::SHA2`, `Compress::Zlib`, `Crypt::Random` — so a program written against
-it runs on Rakudo too, once `zef install Data::Native` has put the distribution
-there. (That install is what Raku++ does *not* need, and the asymmetry is the
-whole feature.) Each tag exports a `*-backend()` sub that says which
+**It is designed to be portable, which is the point — but the other half is not
+published yet.** The intent is that on any other engine the same line loads a
+distribution of that name composing the usual modules — `JSON::Fast`,
+`Digest::SHA2`, `Compress::Zlib`, `Crypt::Random` — so the same program runs on
+Rakudo. That distribution does not exist in the ecosystem today, so for now
+`use Data::Native` is Raku++-only. Each tag exports a `*-backend()` sub that says which
 implementation answered:
 
 ```raku

@@ -13,18 +13,15 @@ say crypt_random_buf(32);               # bytes from the OS CSPRNG
 Nothing to install. On Raku++ the compiler answers that `use` from its own
 built-ins: no file is read, no module is loaded, no dependency is resolved.
 
-On any other engine the same line loads a distribution of the same name that
-composes the ecosystem's usual modules, so the program is portable rather than
-Raku++-only — which is the point. There it needs installing like anything else:
-
-```sh
-zef install Data::Native      # not needed on Raku++, where the compiler answers
-```
-
-A program written against this then runs on Rakudo unchanged; it just runs
-slower there. The examples on this page are therefore Raku++-runnable as they
-stand and Rakudo-runnable after that install, which is why they show up under
-`RAKUDO-FAILS` in `tools/doc-examples-diff.raku` on a machine without it.
+**The companion distribution is not published yet.** The design is that on any
+other engine the same line loads a distribution of the same name composing the
+ecosystem's usual modules, so a program written against this is portable rather
+than Raku++-only — that is the whole point of spelling it `Data::Native` instead
+of a Raku++-specific name. Until that distribution exists, `use Data::Native`
+works here and nowhere else, and the examples on this page run on Raku++ only.
+That is also why they show up under `RAKUDO-FAILS` in
+`tools/doc-examples-diff.raku`: not a machine missing an install, but a
+distribution that has not been written to the ecosystem.
 
 ## The five tags, thirty-two names
 
