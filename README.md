@@ -40,14 +40,21 @@ gate, an instrument rather than the ecosystem picture.
 written before the code — is in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v4.0.0 | at v2.0.0 |
-|---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **200,843 of ~219,610 (91%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **676 (46%)** | 594 |
-| Official documentation examples byte-identical on both engines | **957** | 952 |
-| Of the Raku ecosystem's [2,529 distributions](https://raku.online/modules/ecosystem/), passing their own test suites§ | **1,006** | — |
-| Local regression suite | **1,020** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **7,299,816 B** | 9,830,680 B (no `--slim`) |
+| | v4.0.0 | at v3.0.0 | at v2.0.0 |
+|---|---:|---:|---:|
+| Roast, per individual test — of what the suite declares‡ | **200,843 of ~219,610 (91%)** | 197,191 of 218,772 | 197,090 of ~203,500 |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **676 (46%)** | 594 | 594 |
+| Official documentation examples byte-identical on both engines | **957** | 945 | 952 |
+| Modules — the 59-dist battery, each against its own suite | **50 / 59** | 47 / 59 | 50 / 59 |
+| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529§ | **1,006** | — | — |
+| Local regression suite | **1,020** | 398 | 312 |
+
+The dashes are not omissions: the whole-ecosystem sweep did not start until
+v3.7.0, and before it the 59-dist battery was the only module measure there was. Note also what the first row does
+between v2.0.0 and v3.0.0: the passes barely move while the denominator jumps
+~15,000, because files that used to die before announcing a plan now declare
+their real ones. The percentage fell while the engine improved, which is why
+these are written as fractions rather than as percentages.
 
 § The v4.0.0 board: the 2026-09-15 board with 296 distributions re-measured on
 the release engine and merged over it — the 196 whose verdict had moved, plus
