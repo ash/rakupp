@@ -25,12 +25,12 @@ up in the
 
 **Current focus:** the ecosystem — every distribution in the Raku ecosystem run
 against rakupp, and the engine fixed until real modules install and pass their
-own test suites. The useful number is not the raw count but the ceiling: every
-distribution rakupp does not pass, re-run **under Rakudo on this machine through
-our own harness**, says **1,791 of 2,529** is what any engine could reach here,
-because **738 cannot pass on this box at all** — no libgsl, no fontconfig, no
-network. A rate against the whole catalogue charges this engine for libraries
-the machine does not have. Every distribution, with how it ran, is browsable at
+own test suites. **1,006 of 2,529 pass their own test suites**, each one measured
+rather than estimated. For context on what that leaves: every distribution rakupp
+does not pass, re-run **under Rakudo on this machine through our own harness**,
+says **1,791** is what any engine could reach here — **738 cannot pass on this box
+at all**, for want of libgsl, fontconfig or a network — so 1,006 is 56% of what is
+actually reachable. Every distribution, with how it ran, is browsable at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/); the
 59-dist battery in [RELEASING.md](docs/dev/RELEASING.md) is the per-release QA
 gate, an instrument rather than the ecosystem picture.
