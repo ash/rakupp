@@ -49,29 +49,11 @@ written before the code — is in
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529§ | **1,006** | — | — |
 | Local regression suite | **1,020** | 398 | 312 |
 
-The dashes are not omissions: the whole-ecosystem sweep did not start until
-v3.7.0, and before it the 59-dist battery was the only module measure there was. Note also what the first row does
-between v2.0.0 and v3.0.0: the passes barely move while the denominator jumps
-~15,000, because files that used to die before announcing a plan now declare
-their real ones. The percentage fell while the engine improved, which is why
-these are written as fractions rather than as percentages.
+Dashes mean the measurement did not exist yet.
 
-§ The v4.0.0 board: the 2026-09-15 board with 296 distributions re-measured on
-the release engine and merged over it — the 196 whose verdict had moved, plus
-100 board-green ones drawn at random as a regression probe. 21 gained, 4 lost,
-and none of the four is an engine regression (two are a failing dependency, one
-is this machine's dead x86_64 `perl6`, one is a flaky queue test that passes one
-run in three). A **warm** store, as every figure in this row has been: it
-answers "does this pass once its dependencies are present". Read against the
-**1,791** any engine can reach on this machine, 1,006 is 56%. No whole-ecosystem
-sweep ran this cycle — one is scheduled after the release.
-[The board](docs/dev/findings/ecosweep/BOARD-v4.0.0-2026-09-17.md).
+§ Warm-store board, 296 dists re-measured — [the board](docs/dev/findings/ecosweep/BOARD-v4.0.0-2026-09-17.md).
 
-‡ Counted against each file's declared `plan N`, so a file that aborts is
-charged for every test it failed to run; on the all-or-nothing bar a file
-counts only if *every* assertion in it passes. Both are measured with
-parallelism and true LTM on — the same binary configuration users get. How the
-runs are profiled and gated: [COUNTING.md](docs/status/COUNTING.md).
+‡ How these are counted and gated — [COUNTING.md](docs/status/COUNTING.md).
 
 ## Install
 
