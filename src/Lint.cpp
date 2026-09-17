@@ -397,13 +397,95 @@ struct Linter {
 
     void checkNumericStringCmp(Binary* b) {
         static const std::set<std::string> numCmp = {"==", "!=", "<", "<=", ">", ">="};
-        if (!numCmp.count(b->op) || !b->lhs || !b->rhs) return;
+        if (numCmp.count(b->op) && b->lhs && b->rhs) {
+            std::string sv;
+            if ((constStr(b->lhs.get(), sv) || constStr(b->rhs.get(), sv)) &&
+                !isNumericLiteralStr(sv))
+                warn(lineOf(b), "numeric-cmp-of-string",
+                     "numeric '" + b->op + "' compares the string literal \"" + sv +
+                         "\"; use eq/ne/lt/gt for string comparison");
+            return;
+        }
+        // The same mistake in ARITHMETIC, and it costs more there: the comparison
+        // answers a defined False, but `"a" + 1` cannot convert and DIES at run
+        // time — on a branch a test may never take. `+` is the operator people
+        // reach for out of Perl or JavaScript habit meaning `~`.
+        //
+        // The empty string is deliberately exempt: `"" + 1` is 1 on both engines,
+        // because empty and whitespace-only strings numify to 0 without
+        // complaint. Flagging those would be reporting working code as broken.
+        static const std::set<std::string> numArith = {"+", "-", "*", "/", "%", "**"};
+        if (!numArith.count(b->op) || !b->lhs || !b->rhs) return;
         std::string sv;
-        if ((constStr(b->lhs.get(), sv) || constStr(b->rhs.get(), sv)) &&
-            !isNumericLiteralStr(sv))
-            warn(lineOf(b), "numeric-cmp-of-string",
-                 "numeric '" + b->op + "' compares the string literal \"" + sv +
-                     "\"; use eq/ne/lt/gt for string comparison");
+        const bool onLeft = constStr(b->lhs.get(), sv);
+        if (!onLeft && !constStr(b->rhs.get(), sv)) return;
+        if (isNumericLiteralStr(sv)) return;          // "42" + 1 really is 43
+        if (sv.find_first_not_of(" \t\n\r") == std::string::npos) return; // "" and "  " are 0
+        warn(lineOf(b), "numeric-op-on-string",
+             "numeric '" + b->op + "' has the string literal \"" + sv +
+                 "\" on its " + (onLeft ? "left" : "right") +
+                 "; it cannot convert to a number and dies at run time" +
+                 (b->op == "+" ? " (concatenation is '~')" : ""));
+    }
+
+    // A condition that is an ASSIGNMENT rather than a comparison: `if $x = 5`.
+    // Deliberately silent about `if my $x = f()`, which is idiomatic Raku and
+    // the reason this rule cannot simply flag every Assign — only an assignment
+    // to an ALREADY-declared variable is the `==` typo this is looking for.
+    void checkAssignInCond(Expr* c, const char* kw) {
+        if (!c || c->kind != NK::Assign) return;
+        auto* a = static_cast<Assign*>(c);
+        if (a->op != "=" || !a->target || a->target->kind != NK::VarExpr) return;
+        auto* v = static_cast<VarExpr*>(a->target.get());
+        if (v->declare) return;                        // `if my $x = …` — binding, not a typo
+        warn(lineOf(a), "assignment-in-condition",
+             std::string(kw) + " tests an assignment to '" + v->name +
+                 "'; did you mean '=='?");
+    }
+
+    // The same condition twice in one if/elsif chain: the second can never be
+    // reached. Only conditions with no calls and no side effects are compared —
+    // `if f() {…} elsif f() {…}` is a different question and not this rule's.
+    // condKey returns "" for anything it will not vouch for, and "" never matches.
+    std::string condKey(Expr* e) const {
+        if (!e) return "";
+        switch (e->kind) {
+            case NK::VarExpr: {
+                auto* v = static_cast<VarExpr*>(e);
+                return v->declare ? "" : "v:" + v->name;
+            }
+            // a bignum keeps its value in `big`, leaving `v` meaningless — two
+            // different bignums would both key as "i:0" and read as a duplicate
+            case NK::IntLit: {
+                auto* il = static_cast<IntLit*>(e);
+                return il->big.empty() ? "i:" + std::to_string(il->v) : "";
+            }
+            case NK::StrLit: return "s:" + static_cast<StrLit*>(e)->v;
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                static const std::set<std::string> pure = {"==", "!=", "<", "<=", ">", ">=",
+                                                           "eq", "ne", "lt", "gt", "le", "ge"};
+                if (!pure.count(b->op)) return "";
+                const std::string l = condKey(b->lhs.get()), r = condKey(b->rhs.get());
+                if (l.empty() || r.empty()) return "";
+                return "(" + l + b->op + r + ")";
+            }
+            default: return "";
+        }
+    }
+
+    void checkDuplicateConds(IfStmt* f) {
+        std::map<std::string, int> seen;               // key → the line that first used it
+        for (auto& br : f->branches) {
+            const std::string k = condKey(br.first.get());
+            if (k.empty()) continue;
+            auto it = seen.find(k);
+            if (it != seen.end())
+                warn(lineOf(br.first.get()), "duplicate-condition",
+                     "this condition already decided the branch on line " +
+                         std::to_string(it->second) + ", so this one is never taken");
+            else seen[k] = lineOf(br.first.get());
+        }
     }
 
     // ---- statement walk --------------------------------------------------
@@ -497,8 +579,12 @@ struct Linter {
                     walkExpr(br.first.get());
                     walkBlock(br.second.get());
                 }
-                if (!f->branches.empty())
+                if (!f->branches.empty()) {
                     constCond(f->branches.front().first.get(), f->isUnless, s->line);
+                    checkAssignInCond(f->branches.front().first.get(),
+                                      f->isUnless ? "unless" : "if");
+                }
+                checkDuplicateConds(f);
                 walkBlock(f->elseBlock.get());
                 return;
             }

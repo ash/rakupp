@@ -1174,6 +1174,36 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '--lint -q keeps findings, drops the summary');
         ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say 1');
         ok($x == 0, '--lint on a clean program exits 0');
+
+        # numeric-op-on-string: the comparison rule's arithmetic half. `"a" + 1`
+        # does not quietly become 1 — it cannot convert and DIES, possibly on a
+        # branch nothing tests, which is why this is worth a warning.
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say "a" + 1');
+        ok($x == 1 && $o.contains('[numeric-op-on-string]') && $o.contains("concatenation is '~'"),
+           'lint: numeric + on a string literal, and it names ~');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say "42" + 1');
+        ok($x == 0, 'lint: a NUMERIC string literal in arithmetic is not flagged');
+        # …and the empty string really does numify to 0, so it must stay silent
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say "" + 1');
+        ok($x == 0, 'lint: "" + 1 is 1 on both engines, not a finding');
+
+        # assignment-in-condition, and the idiom it must stay silent about
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $x = 0; if $x = 5 { say 1 }');
+        ok($x == 1 && $o.contains('[assignment-in-condition]'),
+           'lint: `if $x = 5` is the == typo');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'if my $x = 5 { say $x }');
+        ok(!$o.contains('[assignment-in-condition]'),
+           'lint: `if my $x = …` is a binding, not flagged');
+
+        # duplicate-condition, and the impure case it must NOT judge
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e',
+            'my $n = 1; if $n == 1 { say "a" } elsif $n == 1 { say "b" }');
+        ok($x == 1 && $o.contains('[duplicate-condition]'),
+           'lint: the same condition twice in one if/elsif chain');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e',
+            'sub f() { 1 }; if f() { say "a" } elsif f() { say "b" }');
+        ok(!$o.contains('[duplicate-condition]'),
+           'lint: two calls are not assumed to answer the same thing');
     }
 
     # -q / --quiet is ONE option, taken by every mode (issue #50): a mode's
