@@ -2,17 +2,23 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
 # substring against the path. The files run from one work queue, longest
 # first, on --workers=N `start` threads (default: two per core), admitted
-# against a CPU budget of --cpu=N cores (default: one fewer than the machine
-# has): a file that only waits — a spec sleep, a timeout that hangs at zero
+# against a CPU budget of --cpu=N cores (default: every core the machine has):
+# a file that only waits — a spec sleep, a timeout that hangs at zero
 # CPU — starts at once, a file that computes starts when a core's worth of
 # estimated demand is free. The interpreter parks the GIL while a worker waits
 # on its child, so the children genuinely overlap. Results are tallied and
 # printed in file order regardless of N.
+#
+# -j=N is the one knob worth reaching for: it sets the CPU budget and sizes the
+# worker pool to match (2N), the way `make -j` reads. `-jN` is accepted too.
+# It defaults to the whole machine, so a gate run finishes as fast as the box
+# allows; pass a smaller -j to keep cores free for something else. --cpu and
+# --workers still set the two halves independently, and win if given after -j.
 #
 # --times=FILE reads FILE for the ordering and the demand estimates (wall time
 # and a CPU sample per file from the previous run) and rewrites it with this
@@ -211,7 +217,7 @@ sub static-plan($file) {
 
 my $T0          = now;                            # the run's own wall clock, for the summary
 my $WORKERS     = 2 * (($*KERNEL.cpu-cores // 4) max 1);  # threads; most park in a child — see the scheduling note
-my $CPU         = (($*KERNEL.cpu-cores // 2) - 1) max 1;   # cores the running files may add up to (--cpu=N)
+my $CPU         = ($*KERNEL.cpu-cores // 2) max 1;        # cores the running files may add up to (-j=N / --cpu=N)
 my $LISTFILE;
 my $TIMESFILE   = $?FILE.IO.parent.parent.add('docs/status/roast-lists/roast.times').Str;
 my $TIMES-GIVEN = False;                          # --times=FILE names the file to read AND rewrite
@@ -220,6 +226,7 @@ for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
     elsif $a ~~ /^ '--list=' (.+) $/  { $LISTFILE = ~$0 }
     elsif $a ~~ /^ '--cpu=' (\d+) $/    { $CPU = (+$0) max 1 }
+    elsif $a ~~ /^ '-j' '='? (\d+) $/ { $CPU = (+$0) max 1; $WORKERS = 2 * $CPU }
     elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
     else { @patterns.push($a) }
 }
