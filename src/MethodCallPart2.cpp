@@ -3946,10 +3946,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         auto od = std::make_shared<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         Value meta = Value::makeHash(); meta.hashKind = nb;
+                        // A named argument that names one of the SUBCLASS's OWN
+                        // attributes initialises that attribute; only the rest
+                        // describe the meta-object. Without the filter every pair
+                        // went to the box and the class's attributes were left at
+                        // their type defaults, so `class C is Parameter { has $.x }`
+                        // answered Nil from `C.new(x => 'V').x` — the value was in
+                        // the box, reachable as `self<x>` and by the meta-object's
+                        // catch-all accessor, but never in the slot `$!x` and the
+                        // generated accessor read. A subclass declaring NO attribute
+                        // (which is what PDF::COS::Tie's `is Attribute` classes are)
+                        // filters nothing and is byte-for-byte unchanged.
                         for (auto& arg : args)
-                            if (arg.t == VT::Pair)
+                            if (arg.t == VT::Pair && !ci->findAttr(arg.s))
                                 (*meta.hash())[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::boolean(true);
                         od->boxed = std::move(meta);
+                        // …and the attributes are bound from the args, the way every
+                        // other built-in-backed construction does it (see the
+                        // IO::Path and DateTime arms below).
+                        runAttrDefaults(od, ci, args);
                         for (ClassInfo* c = ci.get(); c; c = c->parent.get())
                             for (auto& at : c->attrs)
                                 if (!od->attrs.count(at.name))
