@@ -85,21 +85,30 @@ check $ready.status, Kept, 'the listener comes up';
 
 my $conn = await IO::Socket::Async.connect('localhost', $port);
 # Split a multi-byte character across two writes, as the module's own test does.
+# The pause is what makes this a real test rather than a lucky one: written
+# back to back the two halves coalesce into a single read on the loopback and
+# the boundary never materialises. With it, the server's tap MUST hold the half
+# character back — and `.uc` above is what proves it did, because our Str is
+# its own bytes, so a broken character survives a plain `~` and only a real
+# string operation destroys it.
 my $out = "привет\n".encode('utf-8');
 await $conn.write($out.subbuf(0, 5));
+sleep 0.4;
 await $conn.write($out.subbuf(5));
 
+# The react is bounded so a `done` that does NOT end it fails the file instead
+# of hanging the whole suite — which is how this reads on a CI runner, where a
+# wall-clock assertion is not something to hang the result on.
 my $got = '';
-my $t0  = now;
-react {
+my $ended = start react {
     whenever $conn -> $msg {      # again the bare socket
         $got ~= $msg;
         done if $got.contains("\n");
     }
 }
-my $took = now - $t0;
-check $got, "ПРИВЕТ\n", 'a bare socket taps as a character stream, split and all';
-check ($took < 5), True, 'and `done` in its handler ends the react at once';
+await Promise.anyof($ended, Promise.in(30));
+check $ended.status, Kept, '`done` in the handler ends the react';
+check $got, "ПРИВЕТ\n", 'and a bare socket taps as a character stream, split and all';
 
 if @fail {
     .say for @fail;

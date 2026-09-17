@@ -2076,6 +2076,40 @@ std::string nfcNormalize(std::string s) { // by value: the ASCII fast path moves
 
 // Unicode combining marks (Mn/Mc/Me — the common ranges) — they attach to the preceding grapheme.
 // Count grapheme clusters via the full UAX #29 algorithm (emoji/flags/Hangul-aware).
+// How many bytes of a growing UTF-8 buffer are safe to hand over as TEXT.
+//
+// A byte stream does not arrive on character boundaries, let alone grapheme
+// ones, so two things are held back: an incomplete trailing UTF-8 sequence,
+// and the final grapheme — the next chunk could open with a combining mark.
+// The exception is a grapheme ending in a control nothing can extend or join
+// (LF, TAB, NUL), which is why a line arrives whole; CR is NOT one of those,
+// because CR LF is a single cluster, and neither is a space, because a mark
+// can attach to it. Oracle-checked against Rakudo's own stream decoder.
+size_t utf8TextPrefixLen(const std::string& b) {
+    size_t end = b.size();
+    for (size_t i = end, back = 0; i > 0 && back < 4; i--, back++) {
+        unsigned char c = (unsigned char)b[i - 1];
+        if ((c & 0xC0) == 0x80) continue;          // continuation byte
+        size_t need = c < 0x80          ? 1
+                    : (c & 0xE0) == 0xC0 ? 2
+                    : (c & 0xF0) == 0xE0 ? 3
+                    : (c & 0xF8) == 0xF0 ? 4 : 1;
+        if (end - (i - 1) < need) end = i - 1;
+        break;
+    }
+    if (!end) return 0;
+    size_t lastStart = 0, p = 0;
+    while (p < end) {
+        size_t e = uniClusterEndUtf8(b, p, end);
+        if (e <= p) break;
+        lastStart = p; p = e;
+    }
+    std::vector<uint32_t> tail = utf8cp(b.substr(lastStart, end - lastStart));
+    uint32_t last = tail.empty() ? 0u : tail.back();
+    bool terminal = (last < 0x20 || last == 0x7F) && last != 0x0D;
+    return terminal ? end : lastStart;
+}
+
 long long graphemeCount(const std::string& s) {
     // `.chars` on a long ASCII string was the worst of the quadratics: called
     // once per character it decoded the whole text AND ran the full UAX #29 walk
@@ -6584,33 +6618,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         //     extend or join (LF, TAB, NUL are emitted; CR is not, because CRLF
         //     is one cluster; a space is not, because a mark can attach to it).
         if (m == "consume-available-chars") {
-            const std::string& b = buf.s;
-            size_t end = b.size();
-            // …the incomplete sequence
-            for (size_t i = end, back = 0; i > 0 && back < 4; i--, back++) {
-                unsigned char c = (unsigned char)b[i - 1];
-                if ((c & 0xC0) == 0x80) continue;          // continuation byte
-                size_t need = c < 0x80          ? 1
-                            : (c & 0xE0) == 0xC0 ? 2
-                            : (c & 0xF0) == 0xE0 ? 3
-                            : (c & 0xF8) == 0xF0 ? 4 : 1;
-                if (end - (i - 1) < need) end = i - 1;
-                break;
-            }
-            // …and the final grapheme
-            if (end) {
-                size_t lastStart = 0, p = 0;
-                while (p < end) {
-                    size_t e = uniClusterEndUtf8(b, p, end);
-                    if (e <= p) break;
-                    lastStart = p; p = e;
-                }
-                std::vector<uint32_t> tail = utf8cp(b.substr(lastStart, end - lastStart));
-                uint32_t last = tail.empty() ? 0u : tail.back();
-                bool terminal = (last < 0x20 || last == 0x7F) && last != 0x0D;
-                if (!terminal) end = lastStart;
-            }
-            std::string out = b.substr(0, end);
+            size_t end = utf8TextPrefixLen(buf.s.str());
+            std::string out = buf.s.str().substr(0, end);
             buf.s.erase(0, end);
             return Value::str(out);
         }
@@ -9422,6 +9431,16 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin, rctx0]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
+            // A CHARACTER supply must not split a character. The bytes arrive
+            // on whatever boundary the network chose, and handing each chunk
+            // over as a Str made a multi-byte character straddling two reads
+            // into two broken ones — invisible to a plain `~` (our Str IS its
+            // bytes, so they rejoin) and destructive to anything that reads
+            // the chunk as text: `$m.uc` on "пр<half и>" mangles it for real.
+            // Rakudo decodes incrementally here, so this keeps the undecodable
+            // tail back for the next read. A `:bin` tap is unaffected — a Blob
+            // has no characters to split.
+            std::string carry;
             bool tapClosed = false;
             for (;;) {
                 if (fd < 0) break;
@@ -9448,8 +9467,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 ExecContext wctx; self->loadCtx(wctx);
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
-                Value chunk = Value::str(std::string(buf.data(), (size_t)n));
-                if (bin) chunk.hashKind = "Blob";
+                Value chunk;
+                if (bin) { chunk = Value::str(std::string(buf.data(), (size_t)n)); chunk.hashKind = "Blob"; }
+                else {
+                    carry.append(buf.data(), (size_t)n);
+                    size_t take = utf8TextPrefixLen(carry);
+                    if (!take) { self->gilYieldNotify(); continue; }   // nothing whole yet
+                    chunk = Value::str(carry.substr(0, take));
+                    carry.erase(0, take);
+                }
                 if (emitCb.t == VT::Code) {
                     ValueList one{chunk};
                     if (rctx0) self->reactStack_.push_back(rctx0);
@@ -9474,6 +9500,14 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // open, may still be written to, and may be tapped again. Only a
             // real EOF or read error ends the connection, and then the worker
             // still owns the fd's lifetime.
+            // Whatever was held back still belongs to the reader: at EOF there is
+            // no next chunk to complete it, so it goes out as it stands — the
+            // same thing `consume-all-chars` does when a decoder is drained.
+            if (!tapClosed && !carry.empty() && emitCb.t == VT::Code) {
+                ValueList one{ Value::str(carry) };
+                try { self->callCallable(emitCb, one); } catch (...) {}
+                carry.clear();
+            }
             if (!tapClosed && doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
             self->gilYieldNotify();
             if (!tapClosed && fd >= 0) ::close(fd);
