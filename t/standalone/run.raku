@@ -68,6 +68,44 @@ my $r4 = run 'env', "HOME={$emptyhome}", 'RAKULIB=', $tmp.add('uses-native').Str
 check $r4.exitcode == 0 && $r4.out.slurp(:close).starts-with('0'),
       'B5: …and the binary itself still runs (the dlopen is the run-time contract)';
 
+# ---- B3: a distribution's RESOURCES travel with it -------------------------
+# The dist is copied to a temp directory and the copy is DELETED after the
+# build, so "the resources are in the binary" is tested rather than asserted:
+# nothing the program reads still exists on disk when it runs. Before this, all
+# three compile modes built such a program without complaint and the binary died
+# on `No such method 'slurp' for invocant of type 'Any'` — %?RESOURCES arrived
+# empty, and --standalone reported success.
+my $resdist = $tmp.add('resdist');
+run 'cp', '-R', $FIX.add('resdist').Str, $resdist.Str;
+my $expected = "resource-marker-quokka-5518\nnested-marker-pangolin-2604\n2\n0.3.1\n";
+for <exe aot bundle> -> $mode {
+    my $rbin = $tmp.add("uses-resources-$mode");
+    my $cb = run $EXE, "--$mode", '--standalone', '-I', $resdist.Str,
+                 $FIX.add('uses-resources.raku').Str, '-o', $rbin.Str, :out, :err;
+    my $cberr = $cb.err.slurp(:close);
+    check $cb.exitcode == 0, "B3: --$mode builds a resource-using dist under --standalone";
+    check $cberr.contains('embedded 2 resource files')
+       && $cberr.contains('motd.txt') && $cberr.contains('data/nested.txt'),
+          "B3: --$mode names the resources it embedded";
+    # hide the dist: the binary must not be able to read any of this from disk
+    run 'rm', '-rf', $resdist.Str;
+    my $rr = run 'env', "HOME={$emptyhome}", 'RAKULIB=', $rbin.Str, :out, :err;
+    check $rr.exitcode == 0 && $rr.out.slurp(:close) eq $expected,
+          "B3: --$mode binary reads its resources with the dist deleted";
+    run 'cp', '-R', $FIX.add('resdist').Str, $resdist.Str;   # for the next mode
+}
+
+# …and the copy it carries is its OWN: editing the dist after the build must not
+# change what the binary says. This is what separates "embedded" from "happened
+# to still find it on disk", and it is the check that would have caught the bug.
+my $stale = $tmp.add('uses-resources-stale');
+run $EXE, '--exe', '--standalone', '-I', $resdist.Str,
+    $FIX.add('uses-resources.raku').Str, '-o', $stale.Str, :out, :err;
+$resdist.add('resources/motd.txt').spurt("edited-after-the-build\n");
+my $rs = run 'env', "HOME={$emptyhome}", 'RAKULIB=', $stale.Str, :out, :err;
+check $rs.out.slurp(:close).starts-with('resource-marker-quokka-5518'),
+      'B3: the binary carries its own copy, not a reference to the dist';
+
 # ---- run mode refuses the flag (message + no program run, the illegalOpt
 # convention every non-compile flag follows) --------------------------------
 my $c5 = run $EXE, '--standalone', $FIX.add('uses-mod.raku').Str, :out, :err;

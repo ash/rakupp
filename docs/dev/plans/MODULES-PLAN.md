@@ -430,10 +430,35 @@ sets are ever wanted, that is a different design and a different plan.
 > into a build refusal (exit 4). t/standalone/run.raku (11 checks) builds
 > binaries and RUNS them with `HOME` at an empty directory and `RAKULIB`
 > cleared — B4's gate is a standing CI check, fixtures self-contained.
-> **B3 (resources) stays open**: nothing installed here used resources when
-> the plan was written; now that `rakupp install` exists the measurement is
-> reachable (install a resource-using dist, compile a user of it, run it
-> store-hidden) — measure before designing, as below.
+> **B3 (resources) LANDED.** The measurement came first, and it was worse than
+> the gap above described: `%?RESOURCES` was not merely unembedded, it was an
+> EMPTY hash in every compiled binary, so `%?RESOURCES<x>` answered Any and the
+> program died on `No such method 'slurp' for invocant of type 'Any'` — a
+> message that never mentions resources. It failed with the dist still on disk,
+> so this was never only a travel problem. `--standalone` reported "embedded 1
+> module" and exited 0 over the top of it, which is precisely the silent success
+> B2 exists to abolish. `$?DISTRIBUTION` was empty the same way and for the same
+> reason: the embedded-module load path bound neither, while both disk paths do.
+>
+> **The plan said "serve them from memory"; that was wrong and the design
+> changed.** `is native(%?RESOURCES<libraries/x>)` hands the value to dlopen,
+> which needs a path on a real filesystem — and `.open`, `.lines` and passing
+> the path to a C library all want the same. So a dist's resources are written
+> to one temp directory on first use and the hash points there; the directory is
+> removed at exit, and a binary that never reads a resource never makes one.
+> Both resolution shapes carry: a source checkout (META6 `resources`, walking up
+> for the META6 that describes the module rather than stripping `/lib/`, so an
+> unusual `provides` path still resolves) and an installed store blob (the dist
+> record's `resources/<key>` entries). A `libraries/` resource is written under
+> its platform name (`libraries/libsha1.dylib`, not `sha1`) and with a shared
+> library's mode. Resources ride on the first module of each dist, so a dist
+> providing a dozen modules carries one copy.
+>
+> Gated by t/standalone (21 checks, was 11): each compile mode builds against a
+> COPY of the fixture dist which is then deleted before the binary runs, and one
+> check edits the dist after the build to prove the binary carries its own copy
+> rather than a reference. Costs nothing when unused — `say "Hello"` compiles
+> byte-identically.
 
 The mechanism exists and works. What is missing is the **guarantee**, so this
 half is strictness and proof rather than plumbing.
@@ -446,8 +471,10 @@ half is strictness and proof rather than plumbing.
   an **error**. This is the flag someone shipping a binary actually wants, and
   it is the smallest change that converts "worked on my machine" into a
   build-time failure.
-- **B3 — resources.** Embed `%?RESOURCES` payloads and serve them from memory.
-  Measure the current behaviour first (gap 2 above is unverified).
+- **B3 — resources.** Embed `%?RESOURCES` payloads. *Landed; see the outcome
+  above. Serving them from memory, as this line originally read, turned out to
+  be the wrong design — a `libraries/` resource is dlopen'd and needs a real
+  path — so they are materialized to a temp directory instead.*
 - **B4 — the gate that proves it.** Build a set of module-using programs and run
   each with `HOME` pointed at an empty directory, `RAKULIB` cleared and the CURI
   store renamed. Cheap, and it is a test rather than a claim. Four distributions

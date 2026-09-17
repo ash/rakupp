@@ -70,6 +70,25 @@ void emitModuleTable(const std::vector<BundledModule>& mods, std::ostream& decls
             calls << "  rakupp::rakuppRegisterModuleSource(" << S(mods[i].name)
                   << ", reinterpret_cast<const char*>(kSrc" << i << "), sizeof kSrc" << i << ");\n";
         }
+        // Its DISTRIBUTION (MODULES-PLAN B3): the module→dist link for every
+        // module, and — on the one module that carries them — the dist's META6
+        // and resource files. Without these %?RESOURCES is an empty hash in the
+        // binary and a module that reads a resource dies on Any.
+        if (mods[i].distKey.empty()) continue;
+        calls << "  rakupp::rakuppRegisterModuleDist(" << S(mods[i].name)
+              << ", " << S(mods[i].distKey) << ");\n";
+        if (!mods[i].distMeta.empty()) {
+            emitBytes(decls, "kMeta" + std::to_string(i), mods[i].distMeta);
+            calls << "  rakupp::rakuppRegisterDistMeta(" << S(mods[i].distKey)
+                  << ", reinterpret_cast<const char*>(kMeta" << i << "), sizeof kMeta" << i << ");\n";
+        }
+        for (size_t r = 0; r < mods[i].resources.size(); r++) {
+            const std::string sym = "kRes" + std::to_string(i) + "_" + std::to_string(r);
+            emitBytes(decls, sym, mods[i].resources[r].bytes);
+            calls << "  rakupp::rakuppRegisterDistResource(" << S(mods[i].distKey) << ", "
+                  << S(mods[i].resources[r].key) << ", " << S(mods[i].resources[r].rel)
+                  << ", reinterpret_cast<const char*>(" << sym << "), sizeof " << sym << ");\n";
+        }
     }
 }
 

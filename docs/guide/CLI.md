@@ -700,6 +700,14 @@ drops the `Compiled …` line and the list of embedded modules; a module that
 could *not* be embedded is still reported, because the binary will need the
 disk for it.
 
+A module's distribution travels with it: its `resources` files are embedded
+too, and `%?RESOURCES` and `$?DISTRIBUTION` answer inside the binary as they do
+under the interpreter, with the store hidden. The compile lists them beside the
+modules. Resources are written to a temp directory on first use rather than
+served from memory, because `is native(%?RESOURCES<libraries/x>)` is a path
+handed to `dlopen`; the directory goes away when the program exits, and a
+program that reads no resource never creates one.
+
 `--static` links the C++ runtime into the binary where the platform has one
 to link — libstdc++ and libgcc on Linux, the whole MinGW runtime on Windows —
 so the program needs only the C library of the machine that runs it. MSVC

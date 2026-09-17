@@ -323,6 +323,18 @@ static bool reportModuleEmbedding(const char* mode,
                   << (mods.size() == 1 ? "" : "s") << ":";
         for (auto& m : mods) std::cerr << " " << m.name;
         std::cerr << "\n";
+        // B3: the resource files that travelled with them. Reported because a
+        // binary carrying resources is a different product from one that will
+        // look for them on disk, and B1's contract is to say which this is.
+        size_t nres = 0;
+        for (auto& m : mods) nres += m.resources.size();
+        if (nres) {
+            std::cerr << mode << ": embedded " << nres << " resource file"
+                      << (nres == 1 ? "" : "s") << ":";
+            for (auto& m : mods)
+                for (auto& r : m.resources) std::cerr << " " << r.key;
+            std::cerr << "\n";
+        }
     }
     for (auto& s : skips)
         std::cerr << mode << ": not embedded: " << s.name << " — " << s.reason
@@ -966,7 +978,11 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         // MSVC could not link and a MinGW binary found none of its modules
         // (issue #80). POSIX never noticed: the two types are the same there.
         stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, std::size_t, const std::string&);\n"
-                "                  void rakuppRegisterModuleSource(const std::string&, const char*, std::size_t); }\n";
+                "                  void rakuppRegisterModuleSource(const std::string&, const char*, std::size_t);\n"
+                "                  void rakuppRegisterModuleDist(const std::string&, const std::string&);\n"
+                "                  void rakuppRegisterDistResource(const std::string&, const std::string&,"
+                " const std::string&, const char*, std::size_t);\n"
+                "                  void rakuppRegisterDistMeta(const std::string&, const char*, std::size_t); }\n";
         stub << "int main(int argc, char** argv) {\n"
              // a bundled binary embeds ONE program: `-e` has nothing to eval here
              << "  if (int rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return rc;\n"

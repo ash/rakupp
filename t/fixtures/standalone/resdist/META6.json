@@ -1,0 +1,10 @@
+{
+  "name": "StandaloneResources",
+  "version": "0.3.1",
+  "auth": "zef:rakupp-gate",
+  "description": "A distribution whose module reads a resource — the B3 fixture.",
+  "provides": { "StandaloneResources": "lib/StandaloneResources.rakumod" },
+  "resources": [ "motd.txt", "data/nested.txt" ],
+  "depends": [],
+  "license": "Artistic-2.0"
+}

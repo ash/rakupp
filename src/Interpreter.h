@@ -177,8 +177,38 @@ std::vector<std::string> splitSearchPath(const std::string& spec);
 void rakuppRegisterModule(const std::string& name, const char* blob, size_t blobLen,
                           const std::string& finish);
 
-// One module resolved and parsed ahead of time, ready to embed.
-struct BundledModule { std::string name, blob, finish, src; };
+// A module's DISTRIBUTION travels with it (MODULES-PLAN B3). The AST alone was
+// not enough: `%?RESOURCES` and `$?DISTRIBUTION` are bound from the dist a
+// module was loaded from, and an embedded module is loaded from no dist at all,
+// so both arrived EMPTY in every compiled binary — `%?RESOURCES<x>` answered
+// Any and the program died with "No such method 'slurp' for invocant of type
+// 'Any'", a message that never mentions resources. The build side reads the
+// dist's META6 and the resource files themselves; these carry them in.
+//
+// Resources are materialized to real FILES at run time rather than served from
+// memory, because `is native(%?RESOURCES<libraries/x>)` hands the value to
+// dlopen — an in-memory blob could never satisfy that.
+void rakuppRegisterModuleDist(const std::string& module, const std::string& distKey);
+void rakuppRegisterDistResource(const std::string& distKey, const std::string& key,
+                                const std::string& rel, const char* bytes, size_t len);
+void rakuppRegisterDistMeta(const std::string& distKey, const char* meta, size_t len);
+
+// One resource file of a distribution, ready to embed. `key` is the name the
+// module asks for (`%?RESOURCES<key>`); `rel` is the path under `resources/`
+// that actually holds it, which differs for the `libraries/` form — META6 says
+// `libraries/sha1` and the file is `libraries/libsha1.dylib`. Keeping both means
+// the materialized file wears the name the platform expects.
+struct BundledResource { std::string key, rel, bytes; };
+
+// One module resolved and parsed ahead of time, ready to embed. `distKey`
+// identifies the distribution it came from; `resources` and `distMeta` are
+// filled on the FIRST module of each distribution only, so a dist that provides
+// twelve modules still carries one copy of its resources.
+struct BundledModule {
+    std::string name, blob, finish, src;
+    std::string distKey, distMeta;
+    std::vector<BundledResource> resources;
+};
 
 // Resolve `prog`'s TRANSITIVE `use` graph against `searchPath` and return each
 // module's serialized AST, dependencies first. Used by --exe/--aot to make a
@@ -2286,6 +2316,8 @@ public:
     Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
     Value buildDistribution(const std::string& distRoot);      // source checkout META6 → $?DISTRIBUTION
     Value buildInstalledDistribution(const std::string& repo, const std::string& distId); // CURI dist/<id> meta → $?DISTRIBUTION
+    Value buildEmbeddedResourceMap(const std::string& distKey); // resources compiled INTO this binary → resource Hash
+    Value buildEmbeddedDistribution(const std::string& distKey); // embedded META6 → $?DISTRIBUTION
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     Value bufSplice(Value& buf, ValueList& args); // Buf.splice — mutates in place, answers the removed bytes

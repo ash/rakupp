@@ -367,9 +367,11 @@ log-parsing grammar driven from Python, against the same grammar run by
 > [MODULES-PLAN.md](MODULES-PLAN.md). M6 landed the same day — the checker
 > first, then uninstall as gated mark-and-sweep under a real flock, with
 > shared-blob survival, reverse-dependency and provenance refusals all
-> pinned by the 22-check installer gate. **Open before tagging v4.0.0:**
-> B3 resources (measure first — now measurable), and the
-> release-procedure sweep.
+> pinned by the 22-check installer gate. **B3 resources landed 2026-09-17** —
+> the measurement found `%?RESOURCES` and `$?DISTRIBUTION` arriving EMPTY in
+> every compiled binary, under a `--standalone` that reported success, and the
+> outcome is in [MODULES-PLAN.md](MODULES-PLAN.md). **Open before tagging
+> v4.0.0:** the release-procedure sweep.
 
 ---
 

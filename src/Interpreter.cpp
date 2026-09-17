@@ -5274,6 +5274,137 @@ Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
     return h;
 }
 
+// The distributions compiled into this binary (MODULES-PLAN B3). The generated
+// prologue fills these before the program runs, exactly as it does the module
+// table — but unlike that one these are NOT read-only afterwards: a dist's
+// `materializedAt` is written the first time its resources are needed, and
+// loadModule is not serialized (a `require` inside a parallel worker can reach
+// it), so the lazy half takes a lock. `moduleDist` maps a module to the dist it
+// came from; `distMeta` holds its META6 text for $?DISTRIBUTION.
+struct EmbeddedDist {
+    std::string meta;
+    std::vector<BundledResource> resources;   // key, rel, bytes
+    std::string materializedAt;               // temp dir, once the files are written
+};
+static std::map<std::string, std::string>& embeddedModuleDist() {
+    static std::map<std::string, std::string> m;
+    return m;
+}
+static std::map<std::string, EmbeddedDist>& embeddedDists() {
+    static std::map<std::string, EmbeddedDist> m;
+    return m;
+}
+
+void rakuppRegisterModuleDist(const std::string& module, const std::string& distKey) {
+    embeddedModuleDist()[module] = distKey;
+}
+void rakuppRegisterDistResource(const std::string& distKey, const std::string& key,
+                                const std::string& rel, const char* bytes, size_t len) {
+    embeddedDists()[distKey].resources.push_back({key, rel, std::string(bytes, len)});
+}
+void rakuppRegisterDistMeta(const std::string& distKey, const char* meta, size_t len) {
+    embeddedDists()[distKey].meta.assign(meta, len);
+}
+
+// The temp directories embedded resources were written into, removed at exit.
+// A binary that never touches a resource never creates one.
+static std::vector<std::string>& embeddedResourceDirs() {
+    static std::vector<std::string> v;
+    return v;
+}
+static void removeEmbeddedResourceDirs() {
+    std::error_code ec;
+    for (auto& d : embeddedResourceDirs()) std::filesystem::remove_all(d, ec);
+}
+
+// %?RESOURCES for a distribution compiled INTO this binary (MODULES-PLAN B3).
+//
+// The bytes travel inside the executable, but the hash has to hand back
+// something that behaves like the file it stands in for, so on first use a dist
+// writes its resources into one temp directory and the hash points there.
+// Serving the bytes straight from memory would have been less work and would
+// have broken the case that matters most: `is native(%?RESOURCES<libraries/x>)`
+// passes the value to dlopen, which needs a path on a real filesystem. `.open`,
+// `.lines` and handing the path to a C library all want the same thing.
+//
+// Written once per process and reused (materializedAt). A resource that cannot
+// be written is left out rather than made fatal: the program then reports the
+// same missing-resource error it would have got from a disk install.
+Value Interpreter::buildEmbeddedResourceMap(const std::string& distKey) {
+    Value h = Value::makeHash(); h.hashKind = "";
+    auto it = embeddedDists().find(distKey);
+    if (it == embeddedDists().end() || it->second.resources.empty()) return h;
+    EmbeddedDist& d = it->second;
+    // Writes `materializedAt` and the files themselves; two threads reaching the
+    // same dist must not both create the directory or half-write a resource.
+    static std::mutex resMut;
+    std::lock_guard<std::mutex> resLock(resMut);
+    if (d.materializedAt.empty()) {
+        std::error_code ec;
+        std::string base = tmpDirPath();
+        if (!base.empty() && base.back() != '/') base += '/';
+        // One directory per (process, dist): two runs of the same binary must not
+        // race over one set of files, and two dists must not collide by name.
+        base += "rakupp-res-" + std::to_string((unsigned long long)::getpid()) + "-" +
+                sha1hex(distKey).substr(0, 12);
+        std::filesystem::create_directories(base, ec);
+        if (ec) return h;
+        if (embeddedResourceDirs().empty()) std::atexit(removeEmbeddedResourceDirs);
+        embeddedResourceDirs().push_back(base);
+        d.materializedAt = base;
+    }
+    for (auto& r : d.resources) {
+        const std::string full = d.materializedAt + "/" + r.rel;
+        std::error_code ec;
+        if (!std::filesystem::exists(full, ec)) {
+            size_t slash = full.rfind('/');
+            if (slash != std::string::npos)
+                std::filesystem::create_directories(full.substr(0, slash), ec);
+            std::ofstream out(full, std::ios::binary);
+            if (!out) continue;
+            out.write(r.bytes.data(), (std::streamsize)r.bytes.size());
+            out.close();
+            // A `libraries/` resource is about to be dlopen'd; give it the mode a
+            // shared library is installed with rather than the default 0644.
+            if (r.key.rfind("libraries/", 0) == 0)
+                std::filesystem::permissions(full,
+                    std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                    std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                    std::filesystem::perms::others_exec, ec);
+        }
+        Value path = Value::str(full);
+        path.hashKind = "IO";
+        (*h.hash())[r.key] = path;
+    }
+    return h;
+}
+
+// $?DISTRIBUTION for a distribution compiled into this binary: the same shape
+// buildDistribution gives a source checkout, from the META6 text that travelled
+// with it. `prefix` is the materialized resource directory when there is one —
+// that is the only path under which this dist's files exist at run time — and
+// otherwise empty rather than a lie about a directory that is not there.
+Value Interpreter::buildEmbeddedDistribution(const std::string& distKey) {
+    auto it = embeddedDists().find(distKey);
+    Value d = Value::makeHash(); d.hashKind = "Distribution";
+    Value meta = Value::makeHash();
+    if (it != embeddedDists().end() && !it->second.meta.empty()) {
+        Value m = jsonParseDoc(it->second.meta);
+        if (m.t == VT::Hash) {
+            // As buildDistribution does: Rakudo's meta carries `ver` beside
+            // `version`, and DBDish reads it back through .^ver.
+            if (m.hash() && !m.hash()->count("ver") && m.hash()->count("version"))
+                (*m.hash())["ver"] = (*m.hash())["version"];
+            meta = m;
+        }
+    }
+    (*d.hash())["meta"] = meta;
+    Value pfx = Value::str(it == embeddedDists().end() ? "" : it->second.materializedAt);
+    pfx.hashKind = "IO";
+    (*d.hash())["prefix"] = pfx;
+    return d;
+}
+
 
 // ---- precompiled-module cache -------------------------------------------
 //
@@ -6121,6 +6252,123 @@ void collectExportTagsByName(const std::vector<StmtPtr>& stmts,
     }
 }
 
+// The platform file name a `libraries/<base>` resource actually lives under —
+// META6 says `libraries/sha1` and the file is `libraries/libsha1.dylib`. The
+// same rule buildSourceResourceMap applies when resolving from disk, kept here
+// so an embedded copy is written under the name dlopen will look for.
+static std::string libraryResourceRel(const std::string& key, const std::string& distRoot) {
+    if (key.rfind("libraries/", 0) != 0) return key;
+    std::string dir = "libraries/", base = key.substr(10);
+    size_t sl = base.rfind('/');
+    if (sl != std::string::npos) { dir += base.substr(0, sl + 1); base = base.substr(sl + 1); }
+    std::vector<std::string> cands;
+#if defined(_WIN32)
+    cands = {base + ".dll", "lib" + base + ".dll"};
+#elif defined(__APPLE__)
+    cands = {"lib" + base + ".dylib", "lib" + base + ".so"};
+#else
+    cands = {"lib" + base + ".so", "lib" + base + ".dylib"};
+#endif
+    cands.push_back(base);
+    if (!distRoot.empty())
+        for (auto& c : cands) {
+            std::ifstream f(distRoot + "/resources/" + dir + c);
+            if (f) return dir + c;
+        }
+    return dir + cands[0];
+}
+
+static std::string slurpFileBytes(const std::string& path, bool& ok) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { ok = false; return {}; }
+    std::ostringstream ss; ss << f.rdbuf();
+    ok = true;
+    return ss.str();
+}
+
+// The distribution a resolved module file belongs to, and its resources, so the
+// compile modes can carry both into the binary (MODULES-PLAN B3). Two shapes,
+// matching the two the loader resolves from:
+//
+//   - a SOURCE checkout — walk up from the module file for the META6.json that
+//     describes it, then read its `resources` array. Walking beats stripping
+//     `/lib/` because a META6 `provides` may point anywhere in the tree.
+//   - an INSTALLED store blob (`<repo>/sources/<id>`) — the dist record names
+//     each `resources/<key>` and the content-addressed file holding it.
+//
+// False when there is no distribution at all: a bare `-I` directory of loose
+// modules has no META6, so there is nothing to carry and nothing is claimed.
+static bool embeddedDistContext(const std::string& modPath, const std::string& modName,
+                                std::string& keyOut, std::string& metaOut,
+                                std::vector<BundledResource>& resOut) {
+    // --- the installed store ------------------------------------------------
+    size_t sp = modPath.rfind("/sources/");
+    if (sp != std::string::npos) {
+        const std::string repo = modPath.substr(0, sp);
+        std::string entry; std::vector<std::string> lines;
+        if (pickInstalledDist(repo + "/short/" + sha1hex(modName), "", entry, lines)) {
+            bool ok = false;
+            const std::string j = slurpFileBytes(repo + "/dist/" + entry, ok);
+            if (ok) {
+                keyOut = "store:" + entry;
+                metaOut = j;                       // the dist record IS its meta
+                // the same targeted scan buildResourceMap uses: "resources/<key>":"<id>"
+                const std::string tag = "\"resources/";
+                for (size_t p = 0; (p = j.find(tag, p)) != std::string::npos; ) {
+                    size_t ks = p + tag.size(), ke = j.find('"', ks);
+                    if (ke == std::string::npos) break;
+                    const std::string key = j.substr(ks, ke - ks);
+                    size_t c = j.find(':', ke);
+                    if (c == std::string::npos) { p = ke + 1; continue; }
+                    size_t vs = j.find('"', c), ve = vs == std::string::npos ? vs : j.find('"', vs + 1);
+                    if (vs == std::string::npos || ve == std::string::npos) break;
+                    bool rok = false;
+                    std::string bytes = slurpFileBytes(repo + "/resources/" +
+                                                       j.substr(vs + 1, ve - vs - 1), rok);
+                    if (rok) resOut.push_back({key, libraryResourceRel(key, ""), std::move(bytes)});
+                    p = ve + 1;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+    // --- a source checkout --------------------------------------------------
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(modPath).parent_path();
+    std::string distRoot;
+    for (int up = 0; up < 8 && !dir.empty(); up++) {
+        if (std::filesystem::exists(dir / "META6.json", ec)) { distRoot = dir.string(); break; }
+        auto parent = dir.parent_path();
+        if (parent == dir) break;
+        dir = parent;
+    }
+    if (distRoot.empty()) return false;
+    bool ok = false;
+    const std::string j = slurpFileBytes(distRoot + "/META6.json", ok);
+    if (!ok) return false;
+    keyOut = "src:" + distRoot;
+    metaOut = j;
+    // the `resources` array holds bare strings, as buildSourceResourceMap reads it
+    size_t rp = j.find("\"resources\"");
+    if (rp == std::string::npos) return true;          // a dist, simply without resources
+    size_t lb = j.find('[', rp), rb = lb == std::string::npos ? lb : j.find(']', lb);
+    if (lb == std::string::npos || rb == std::string::npos) return true;
+    for (size_t p = lb + 1; p < rb; ) {
+        size_t vs = j.find('"', p);
+        if (vs == std::string::npos || vs >= rb) break;
+        size_t ve = j.find('"', vs + 1);
+        if (ve == std::string::npos || ve > rb) break;
+        const std::string key = j.substr(vs + 1, ve - vs - 1);
+        const std::string rel = libraryResourceRel(key, distRoot);
+        bool rok = false;
+        std::string bytes = slurpFileBytes(distRoot + "/resources/" + rel, rok);
+        if (rok) resOut.push_back({key, rel, std::move(bytes)});
+        p = ve + 1;
+    }
+    return true;
+}
+
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
                                               std::set<std::string>* exportsOut,
@@ -6128,6 +6376,7 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               std::set<std::string>* nativeLibsOut) {
     std::vector<BundledModule> out;
     std::set<std::string> seen;
+    std::set<std::string> distsSeen;   // a dist's resources travel once, not once per module
     std::vector<std::string> queue;
     collectUseNames(prog.stmts, queue);
     if (nativeLibsOut) collectNativeLibNames(prog.stmts, *nativeLibsOut);
@@ -6189,7 +6438,21 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                 "its AST does not serialize (" + e.msg + ")"});
             continue;
         }
-        out.push_back({name, std::move(blob), std::move(finish), std::move(src)});
+        // Its distribution comes too (MODULES-PLAN B3): %?RESOURCES and
+        // $?DISTRIBUTION are bound from the dist, and an embedded module is
+        // loaded from none. The resources and META6 ride on the FIRST module of
+        // each dist, so a dist providing a dozen modules carries one copy.
+        BundledModule bm{name, std::move(blob), std::move(finish), std::move(src)};
+        std::string distKey, distMeta;
+        std::vector<BundledResource> res;
+        if (embeddedDistContext(path, name, distKey, distMeta, res)) {
+            bm.distKey = distKey;
+            if (distsSeen.insert(distKey).second) {
+                bm.distMeta = std::move(distMeta);
+                bm.resources = std::move(res);
+            }
+        }
+        out.push_back(std::move(bm));
     }
     // Dependencies first, so a registration order matching load order costs
     // nothing to reason about (the table is a map, but the emitted code reads
@@ -7119,6 +7382,20 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         catch (AstSerialError&) { okEmbedded = false; } // fall through to the disk
         if (okEmbedded) {
             if (traceLoad) fprintf(stderr, "[Load] %s <- embedded in this binary\n", name.c_str());
+            // Its distribution travelled with it (MODULES-PLAN B3): bind
+            // %?RESOURCES and $?DISTRIBUTION exactly as the two disk paths below
+            // do, or a module that reads a resource sees an empty hash and dies
+            // on Any. Only for a module that HAS a dist, so the ordinary
+            // embedded module pays nothing.
+            auto dk = embeddedModuleDist().find(name);
+            if (dk != embeddedModuleDist().end()) {
+                resourceStack_.push_back(buildEmbeddedResourceMap(dk->second));
+                distStack_.push_back(buildEmbeddedDistribution(dk->second));
+                struct RG { ValueList& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
+                struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg{distStack_};
+                loadParsed(prog, em->finish);
+                return;
+            }
             loadParsed(prog, em->finish);
             return;
         }
