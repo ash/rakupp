@@ -109,19 +109,66 @@ raku = rakulang.interpreter()          # the process's interpreter
 raku.eval("my $x = 41")
 raku.eval("$x + 1")                    # 42 — eval keeps state, like the REPL
 
-raku.eval(open("calc.raku").read())    # so loading a file of subs is an eval
-raku.call("area", 3, 4)                # 12
-raku.call("stats", [3, 1, 4])          # {'count': 3, 'sum': 8, ...}
-raku.call("greet", {"name": "Ada"})    # a dict becomes a Raku hash
-
-raku.can("area")                       # True
 raku.version                           # '3.14.0'
 ```
 
-`eval` returns the last statement's value; `call` looks the routine up in the
-mainline scope, so anything an earlier `eval` declared is callable. Arguments
-convert automatically — `None`, `bool`, `int` (any width), `float`, `str`,
-`list`, `tuple`, `dict`. Anything else raises `TypeError`.
+`eval` returns the last statement's value, converted to Python data.
+
+### Define a sub in Raku, call it from Python
+
+Declare the sub with `eval` — the declaration stays in the interpreter's
+mainline scope — then `call` it by name. Python arguments bind to the
+signature's positional parameters, in order, and the return value comes back
+as Python data:
+
+```python
+raku.eval("""
+    sub area($w, $h)   { $w * $h }
+    sub total(@prices) { @prices.sum }
+    sub describe(%p)   { "%p<name> costs %p<price>" }
+    sub hello($name, $greeting = 'Hello') { "$greeting, $name!" }
+""")
+
+raku.call("area", 3, 4)                # 12 — one argument per parameter
+raku.call("total", [1, 2, 3.5])        # 6.5 — a list binds to @prices
+raku.call("describe", {"name": "tea", "price": 3})
+                                       # 'tea costs 3' — a dict binds to %p
+raku.call("hello", "Ada")              # 'Hello, Ada!' — the default fills in
+raku.can("area")                       # True; False before the eval
+```
+
+The subs may as well come from a file: `raku.eval(open("calc.raku").read())`
+declares everything in it, which is how [examples/calc.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/calc.py)
+loads [../examples/calc.raku](https://github.com/ash/rakupp/blob/main/bindings/examples/calc.raku).
+
+Arguments convert automatically — `None`, `bool`, `int` (any width), `float`,
+`str`, `list`, `tuple`, `dict`. Anything else raises `TypeError`. The
+conversion is by Python type, so `sub flag(Bool $b)` wants `True`, not `1`.
+
+The call is checked exactly as a call written in Raku is. Too few or too many
+arguments, or a value that fails a type constraint, raise `RakuError`
+carrying the engine's message instead of binding silently:
+
+```python
+raku.call("area", 3)
+# RakuError: Calling area(Int) will never work with declared signature ($w, $h)
+```
+
+**Named parameters.** `call` passes positionals only. A sub declared with
+named parameters is called by writing the call in Raku and evaluating it:
+
+```python
+raku.eval('sub greet(:$name, :$age = 0) { "Hello, $name! You are $age." }')
+
+raku.eval('greet(name => "Ada", age => 36)')   # 'Hello, Ada! You are 36.'
+raku.call("greet", {"name": "Ada"})            # RakuError — the dict is one
+                                               # positional Hash, not two names
+```
+
+Or declare the sub to take a hash, `sub greet(%who)`, and pass a dict — which
+is what `calc.raku` does. `multi` subs, slurpy `*@args`, and `our sub`s inside
+a package (`raku.call("Geo::perimeter", 3, 4)`) all resolve through `call`. A
+method is reached through `eval`: `raku.eval("Counter.new.bump.n")`.
 
 ## 5. Parsing with grammars
 
