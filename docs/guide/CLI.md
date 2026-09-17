@@ -80,7 +80,7 @@ compatibility.
   platform it targets:
 
   ```
-  Raku++ 3.28.0 (2026-09-12) arm64-darwin
+  Raku++ 4.0.0 (2026-09-12) arm64-darwin
   ```
 
   A build that is not a release says so in the same field, because that is
@@ -102,9 +102,9 @@ compatibility.
   in a bug report.
 
   ```
-  Raku++  3.28.0 }i{ a Raku interpreter and compiler in C++
+  Raku++  4.0.0 }i{ a Raku interpreter and compiler in C++
   Raku    6.d (6.e with `use v6.e.PREVIEW`)
-  Build   v3.28.0, 2026-09-12
+  Build   v4.0.0, 2026-09-12
   Target  arm64-darwin, clang 17.0.0
   FFI     libffi: libffi.dylib (abi 1)
   Exe     /home/me/.rakupp/bin/rakupp

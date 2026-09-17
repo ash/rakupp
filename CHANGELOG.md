@@ -3,6 +3,246 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v4.0.0 (2026-09-17) — Raku that travels
+
+| | v3.28.0 | v4.0.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 200,504 / 219,555 | **200,843 / 219,610** |
+| Roast files fully passing | 670 / 1,464 | **676 / 1,464** |
+| Local regression suite (`t/run.raku`) | 868 | **1,020** |
+| Module battery (vs each dist's own reference run) | 48 / 59 | **50 / 59** |
+| Documentation examples byte-identical on both engines | 957 | **957** |
+| Operator divergences | 21 | **21** |
+| Ecosystem distributions passing their own suites | 989\* | **1,006** |
+
+\*the 2026-09-15 board. Both columns are the same instrument — a **warm** store,
+asking "does this pass once its dependencies are present" — but neither is a fresh
+whole-ecosystem sweep, and none ran this cycle. See "What did not run" below.
+
+The version number was reserved for this release on 2026-08-08, before any of the
+code was written: `docs/dev/plans/VERSIONS.md` names v4.0.0 "Raku that travels" and
+sets out three pillars. This is the tag that collects them.
+
+### The three pillars
+
+Each had its plan written before its code, and each is a capability rather than a
+parity number — the thing the earlier majors never targeted is **Raku++ working
+somewhere other than a developer's own shell**.
+
+**1. Modules that travel.** `rakupp install` resolves the fez index, verifies
+checksums, runs each distribution's own tests and writes the shared CURI store —
+so getting a module no longer requires installing Rakudo and zef, and a graph
+installed by rakupp loads under Rakudo. The other half is that a compiled binary
+carries its modules with a *guarantee* rather than by luck: every compile mode now
+reports what it embedded and, individually, what it could not and why; and
+`--standalone` turns any such skip into a build refusal. That is the whole point —
+before it, a module that could not be embedded was skipped **silently**, so a
+binary that needed the disk at run time built without complaint.
+
+`%?RESOURCES` was the last piece and it landed in this cycle (B3). The measurement
+was worse than the plan's description of the gap: resources were not merely
+unembedded, the hash was **empty in every compiled binary**, so `%?RESOURCES<x>`
+answered `Any` and the program died on `No such method 'slurp' for invocant of
+type 'Any'` — a message that never mentions resources — and it failed with the
+distribution still sitting on disk, so this was never only a travel problem.
+`--standalone` reported "embedded 1 module" and exited 0 over the top of it.
+`$?DISTRIBUTION` was empty the same way and for the same reason.
+
+The plan said to serve the payloads from memory. That was wrong, and the design
+changed: `is native(%?RESOURCES<libraries/x>)` hands its value to `dlopen`, which
+needs a path on a real filesystem, and `.open`, `.lines` and passing a path to a C
+library all want the same. A distribution now writes its resources into one temp
+directory on first use and the hash points there; the directory is removed at exit,
+and a binary that never reads a resource never makes one. `say "Hello"` compiles
+byte-identically.
+
+**2. rakupp as a library.** One C API — `include/rakupp/rakupp.h` — with lifecycle,
+eval, output capture and rooted handles, and thin bindings over it for **C++, Go,
+JavaScript, Python, Rust and Wolfram**. The substrate turned out to be its own plan:
+the native extension ABI is the harder half of an embedding API, so the two share
+one value vocabulary instead of growing two.
+
+**3. Raku grammars as a service.** The reason anyone outside this project cares
+about the two pillars above. "Embed Raku in Python" is abstract; "use Raku grammars
+from Python" is a capability the host language has no equivalent of — a regex
+library gives you one pattern, not a composable grammar with named rules,
+inheritance and longest-token dispatch. The grammar stays a `.raku` file and each
+host-language class is a *generator* over that text, never a parallel path, which
+is the one decision that keeps the API from owing a maintenance debt that grows
+with Raku itself. `tools/grammar-smoke.raku` runs the same corpus from every host
+in CI and compares bytes.
+
+### What this cycle added — 103 commits
+
+**The ecosystem, and an honest denominator for it.** Most of the cycle is the
+module campaign: batches of real distributions run against the engine, each fault
+reduced to a one-liner and fixed. The more useful result is a measurement rather
+than a count. Every distribution rakupp did not pass was re-run **under Rakudo on
+this machine, through our own harness**, with the engine as the only variable.
+Rakudo passes 794 of them, so the ceiling here is 1,791 of 2,529 — and **738
+cannot pass under any engine on this box**, for want of libgsl, fontconfig,
+`/sbin/ldconfig` or a network. A pass rate quoted against the whole catalogue
+charges this engine for libraries the machine does not have; the ceiling is what
+it should be read against. The baseline is committed, with the work queue it
+produced, classified by how we fail: 365 of them are a plain wrong value with
+nothing raised, and they do not cluster.
+
+**The JavaScript backend grew up.** `--target=js` joins `parse`, `ast`, `rakuast`
+and `cpp` under one spelling, bun is the host, `use js` is a pragma rather than a
+module, and there is a tutorial with the four questions it actually gets asked.
+`--fallback=wasm` resolves the engine path before requiring it. Nineteen commits
+touch the code generator and its runtime.
+
+**Slangs run for real.** Eight of them: the module runs, and its tokens become the
+lexer's seams rather than a table consulted afterwards.
+
+**Three more `--lint` rules** — a string that cannot convert, a typo'd `==`, and a
+branch that cannot be reached — and Pod gained verbatim margins, tables,
+constructors and `pod2text`.
+
+**Portability.** The `--bundle` stub declared `rakuppRegisterModule` with
+`unsigned long`, which is `size_t` on POSIX and is not on 64-bit Windows: MSVC
+could not link it and a MinGW binary found none of its modules. No POSIX gate can
+see that, so the release workflow now compiles and runs a `--bundle` on both
+Windows legs. The Linux floor is measured rather than assumed — a CI step reads
+the glibc and libstdc++ versions the packaged binaries actually need and fails the
+build when they exceed what COMPILERS.md promises.
+
+**Async sockets.** `IO::Socket::Async::SSL` is the ecosystem's biggest dependency
+blocker, and seven of its eight test files pass now:
+`Rakudo::Internals.NORMALIZE_ENCODING` did not exist at all — it is the first call
+in that module's character supply, so `.Supply(:enc(…))` on a TLS connection
+yielded nothing while `:bin` worked; the streaming decoder drained its buffer
+regardless of what was in it, turning a character split across two writes into two
+replacement characters; `whenever $socket` with no `.Supply` ran its body once
+with the socket as the topic; and `done` inside such a handler did nothing,
+because the react stack is thread-local and the read worker never carried the
+enclosing react across.
+
+### Two regressions this release's own gate caught
+
+Both were found by gate 1 against v3.28.0's file list, both deterministic, and both
+are fixed in this release with regression cases that pass on **both** engines.
+
+**An infinite Rat compared equal to its opposite.** A zero-denominator Rat is not
+an error in Raku — `<1/0>` numifies to `Inf` — and ordering two Rats is a
+cross-multiplication, `n1*d2` against `n2*d1`. When *both* denominators are zero
+both sides of that are zero, so every `<`, `>`, `<=`, `>=` and `<=>` between two
+such values answered Same/False: `<1/0> <=> <-1/0>` said `Same` where Rakudo says
+`More`. Rakudo orders that pair by the sign of the numerator. Only the pair is
+special, and the fix is deliberately that narrow: one zero denominator against an
+ordinary Rat already cross-multiplies correctly, and that path must not move,
+because `<0/0> <= 1` being True is the `Algorithm::KDimensionalTree` case the
+equality half of this code was written for. Cost: `S03-operators/arith.t` and
+`S03-operators/spaceship.t`.
+
+**A `::T` type capture named a type and constrained nothing.** `sub f(::T, T $a)`
+captures whatever arrives at the first parameter and uses that type as the
+constraint on `$a`. The name bound correctly — `T.^name` answered `Int` inside the
+body, which is why this went unnoticed — but the constraint never fired, because
+`T` is not a declared type and the binder returns early for a type name it cannot
+resolve. Roast reaches this through `.assuming`, and the priming is a red herring
+worth recording: `.assuming` computes its primed parameters for **introspection
+only** — `.signature` prints `:(Int $a)`, fully resolved — while the call binds the
+*original* parameters with the primed values prepended. So the parameter arrives
+spelled `T` on both paths, the plain direct call was equally broken, and one fix
+covers both. Cost: `S06-currying/misc.t`.
+
+### What did not run, and why this entry says so
+
+**The whole-ecosystem sweep was not re-run this cycle.** A major is normally the
+release where all of it runs, and the runbook's own instruction is to say so in
+these notes rather than republish a page with a fresh timestamp over old numbers —
+so: `raku.online/modules/ecosystem` continues to show the **2026-08-30** listing,
+measured on v3.23.0, and a fresh sweep is scheduled after this release.
+
+The distribution figure quoted above therefore comes from the **board** — the
+merge of the last full sweep with the per-batch re-measurements since — re-measured
+on the release binary. It answers "does this distribution pass once its
+dependencies are present", which is a warm store, and it is not the same question
+as "can a reader starting from nothing install and test this". Both numbers are
+real; this is the first.
+
+### What the denominator join found, and what each one was
+
+The file-list gate is blind to a file that loses assertions without leaving the
+list, so the join runs against the previous release's per-file numbers. Five files
+were worse in all four runs — six assertions, none of them in a file that was
+fully passing. Each was chased to a cause rather than recorded as a number:
+
+- **`S16-io/eof.t` is the machine, not the engine.** Its TTY assertion is
+  `todo`-shielded by a hardcoded list of macOS release *names*
+  (`$*DISTRO.desc eq 'Sonoma' | 'Sequoia' | 'Tahoe 26'`), and this box changed OS
+  mid-cycle. A **v3.25.0** engine reproduces the same loss on the new OS, which is
+  what settles it.
+- **`S14-roles/mixin-6e.t`** — fixed; see the type-object `Bool` entry above.
+- **`S12-class/inheritance.t`** — fixed; a subclass of the built-in `Parameter`
+  never got its own attributes bound.
+- **`S14-roles/generic-subtyping.t`** loses `R2[Int] ~~ R2[Cool]`. A parameterized
+  role is punned into a distinct class (`R2pun1`, `R2pun2`), so the two sides never
+  compare as the same base type and the parameter conformance rule is never
+  reached. Recorded rather than patched: making it work means the punned class
+  carrying its role and parameter, which is a change to the type comparison rather
+  than a guard on it. Rakudo is no help as an oracle here — it cannot run the file
+  at all, dying at its first test on "No appropriate parametric role variant
+  available for 'R1'".
+- **`6.c/MISC/bug-coverage-stress.t` was passing for the wrong reason.** Before
+  this cycle, `whenever $socket` with no `.Supply` ran its body **once** with the
+  socket as the topic instead of tapping it, so on connect the body fired
+  immediately and printed what the test wanted. Making that correct — the change
+  that took `IO::Socket::Async::SSL` from nothing to seven of its eight test files
+  — removed the accident and exposed the real gap underneath: a
+  `supply { whenever … }` block does not deliver its taps here, which is true in
+  v3.25.0 too and has nothing to do with sockets. The engine got more correct and
+  the number went down, exactly as the subtest fix did at v2.0.0.
+
+### Known, and not fixed here
+
+**A data race in `evalCall` segfaults the process.** Call one subroutine from
+several promise threads at once and rakupp dies about half the time, in a hash
+lookup resolving the call target, on a pointer that fails authentication — the
+signature of a read concurrent with a rehash. A nine-line repro and the full
+analysis are in
+[findings/EVALCALL-RACE-2026-09-17.md](docs/dev/findings/EVALCALL-RACE-2026-09-17.md).
+
+It is not from this cycle's work and it is not new to this release: the
+unmodified tree crashes 7 times in 16 on the repro, this one 4 in 8, and v3.25.0
+not once in 8 — so it entered somewhere in v3.26.0…v3.28.0 or the commits since,
+which is the range worth bisecting. It is recorded rather than fixed because a
+data-race fix is a project and this release is about modules and embedding; it is
+named here because a segfault is worse than a wrong answer and should not be
+found by surprise.
+
+It also has a practical consequence for anyone re-measuring: the crash kills a
+different Roast file on each run, and a file that dies mid-run reports as a
+partial with a truncated count — indistinguishable at a glance from one that
+genuinely lost assertions. During these gates it landed on `S17-promise/start.t`
+and read exactly like a regression from 41/44 to 0/1. That file scores 41 on
+every run that does not crash. Read the union of several runs, and check the exit
+status before believing a collapsed denominator.
+
+Ten issues are open at the tag, four of them labelled `v4 (modules)` —
+[#77](https://github.com/ash/rakupp/issues/77) (Red install),
+[#69](https://github.com/ash/rakupp/issues/69) (Crane),
+[#60](https://github.com/ash/rakupp/issues/60) (FunctionalParsers) and
+[#35](https://github.com/ash/rakupp/issues/35) (zef after install). None blocks
+the campaign's own criteria; each is a distribution that does not install or test
+cleanly, which is the work the ecosystem batches keep eating into.
+
+### The gates
+
+| gate | result |
+|---|---|
+| 1 roast | **676 / 1,464** files, **200,843 / 219,610** declared assertions; four runs, all four identical (676 fully / 671 partial / 106 no-TAP / 11 timeout); union diff vs v3.28.0 **0 regressed, 6 gained**, and every gain checked to be the engine rather than the repaired harness |
+| 1b denominator join | 5 files worse against v3.27.0 (v3.28.0 archived no `roast.txt`), all accounted for below |
+| 2 local suite | 1,020 / 1,020 |
+| 3 perf | baseline re-recorded (four releases stale); `multimeth` +17.2% is a documented trade |
+| 4 optbench | interpreter, `--exe`, `--exe -O` and Rakudo agree on every kernel |
+| 4b slim-diff | 653 identical of 689; the two reported differences are a correct slim refusal and a program that compresses its own binary |
+| 5 GCC 16 | clean; 24 of 24 changed files pass the MinGW Windows syntax check, and the `--bundle` stub's mangled names are 64-bit (#80 does not reproduce) |
+| 6 battery | 50 / 59 |
+| 7 conformance | documentation examples 957 → 957; operator divergences 21 |
+
 ## v3.28.0 (2026-09-12) — RakuAST, a formatter, and Raku in your own language
 
 Thirty-three commits. The headline is that **RakuAST is in, end to end** — and

@@ -11,101 +11,54 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v3.28.0** (2026-09-12) — *RakuAST, a formatter,
-and Raku in your own language*: `.AST`, `.DEPARSE`, `.EVAL`, `visit-children`
-and `.rakudoc` all answer now, built as a *view* over the parse rather than a
-second front end, so the ordinary path pays nothing for them. On the same table,
-`use L10N::DE;` writes a whole program in German. `rakupp --fmt` formats source
-in the house style, whitespace only, with three gates on every run. And
-installing is one command. Every release is written up in the
+**Status:** current release **v4.0.0** (2026-09-17) — *Raku that travels*: the
+version was reserved for this a month before the code, and it collects three
+things. **Modules travel** — `rakupp install` needs no Rakudo and no zef, and a
+compiled binary carries its modules with a *guarantee*: every mode reports what
+it embedded and what it could not, and `--standalone` refuses to build one that
+would need the disk. **The engine embeds** — one C API, with bindings for C++,
+Go, JavaScript, Python, Rust and Wolfram. **And grammars are the reason to
+care** — a Raku grammar stays a `.raku` file and any host language drives it,
+which is something none of them has an equivalent of. Every release is written
+up in the
 [CHANGELOG](CHANGELOG.md).
 
-**Current focus:** the ecosystem sweep — all 2,530 distributions of the Raku
-ecosystem run against rakupp, and the engine gets fixed until real modules
-install and pass their own test suites. As of the 2026-09-05 re-sweep
-**824 of 2,530 pass**, with another 274 blocked by a failing
-dependency before their own tests could run; what the sweep finds drives what
-gets built next ([the findings](docs/dev/findings/ECOSWEEP-2026-08.md), with
-the green list and per-dist results — and **every distribution with how it
-ran is browsable at
-[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)**).
-(The comparison table below quotes the sweep itself; a small 59-dist battery
-remains the per-release QA gate — see
-[RELEASING.md](docs/dev/RELEASING.md) — an instrument, not the ecosystem
-picture.)
+**Current focus:** the ecosystem — every distribution in the Raku ecosystem run
+against rakupp, and the engine fixed until real modules install and pass their
+own test suites. The useful number is not the raw count but the ceiling: every
+distribution rakupp does not pass, re-run **under Rakudo on this machine through
+our own harness**, says **1,791 of 2,529** is what any engine could reach here,
+because **738 cannot pass on this box at all** — no libgsl, no fontconfig, no
+network. A rate against the whole catalogue charges this engine for libraries
+the machine does not have. Every distribution, with how it ran, is browsable at
+[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/); the
+59-dist battery in [RELEASING.md](docs/dev/RELEASING.md) is the per-release QA
+gate, an instrument rather than the ecosystem picture.
 
-**Three consolidation releases, now done.** Language work has the property Larry
-Wall kept pointing at: push the design in one place and something pops out in
-another. After a lot of correct individual changes, that is where this engine
-was — so these three added nothing new.
-
-- **v3.21.0** — *the state after the changes.* ✅ What had accumulated since
-  v3.20.1, measured together in one sitting. It passed all seven gates and
-  shipped a silent wrong answer anyway, which set the next release's agenda.
-- **v3.22.0** — *the instruments, fixed and then proved.* ✅ Six of the seven
-  gates had a defect of their own. All fixed, and **every gate that can fail
-  detects a planted defect** — `rakupp tools/prove-gates.raku --all`.
-- **v3.23.0** — *the re-baseline.* ✅ Every gated figure from one run, baselines
-  re-recorded, each naming what produced it — a gate whose baseline predates the
-  review is not a gate. It also corrected a claim: conformance has **no red path
-  at all**, so it is a report, not a gate.
-- **v3.24.0** — *what other people's code asked for.* ✅ Method calls and
-  attribute reads stop allocating — five OO kernels went into the perf gate
-  first, because it covered sub calls at ~2x Rakudo and could not see method
-  calls at 5.8x at all. Ecosystem re-measured to **746 / 2,526**. Gate 1 and the
-  module battery caught three regressions this release introduced, while the
-  headline count moved inside its own flap band.
-- **v3.25.0** — *the roots under the top hundred.* ✅ The top-100 battery and
-  its 169-dist closure, worked by cause: 62 → 67 own suite, 58 → 60 end to end.
-  A refresh found two rows that had quietly broken since the pinned sweep, which
-  is what a refresh is for. `ValueList` grows in one pass off a free list.
-- **v3.26.0** — *the Grand Review, and what the gates found after it.* ✅ Three
-  review phases over the source, the docs and the book. Then the gates earned
-  their keep: the per-file **denominator** join found four faults behind a green
-  file list, and the battery found three more that the review had not caused.
-  Roast **661 / 1,464**; local suite 637 → **798**.
-- **v3.27.0** — *Windows becomes a platform, and the code other people wrote.* ✅
-  Windows stops being a build target: `is-win` answered False everywhere, the
-  blind FFI path held eight arguments and passed them as 32-bit `long`, and an
-  installer landed. `rakupp install App::Rak` reaches Needle::Compile (16 of 18
-  dists). ⚠️ Ships two regressions the gates found: `OO::Monitors` no longer
-  excludes (bisected to `7f09744`), and the call path is ~10% slower than
-  v3.26.0 — which the perf gate could not see, because its baseline is four
-  releases stale. Roast **669 / 1,464**; local suite **855**.
-- **v3.28.0** — *RakuAST, a formatter, and Raku in your own language.* ✅
-  RakuAST end to end: the class hierarchy plus `.AST`, `.DEPARSE`, `.EVAL`,
-  `visit-children` and `.rakudoc`, built as a **view** over the parse rather
-  than a second front end — so it costs the ordinary path nothing, measured
-  against v3.27.0 built from source (worst +2.7%, mean −1.3% over sixteen
-  kernels). `use L10N::XX;` writes a whole program in one of eleven languages
-  off the same table. `rakupp --fmt` formats source, whitespace only, gated on
-  parse, same-program and idempotence. Roast **670 / 1,464**; local suite
-  **868**.
-
-Left open by the arc: the source review is **three files of eighty-three**. The
-performance baseline had moved twice with no cause found; v3.24.0 rebuilt
-v3.23.0's own source on the same machine and every kernel landed within 1-3% of
-its recorded number, so the drift did not recur and this release's figures are a
-comparison of code.
-
-Then the standing target: **1000 of 2,530** distributions passing their own test
-suites, up from 824, where the lever is the 274 that never ran their own tests at
-all because a dependency failed first. The plans are in
+**What each release did** is in the [CHANGELOG](CHANGELOG.md), and what each
+*major* set out to do — the number a stranger can re-measure, and the plan
+written before the code — is in
 [docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-| | v3.28.0 | at v2.0.0 |
+| | v4.0.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **200,504 of ~219,555 (91%)** | 197,090 of ~203,500 (97%) |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **670 (46%)** | 594 |
+| Roast, per individual test — of what the suite declares‡ | **200,843 of ~219,610 (91%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,464 | **676 (46%)** | 594 |
 | Official documentation examples byte-identical on both engines | **957** | 952 |
-| Of the Raku ecosystem's [2,530 distributions](https://raku.online/modules/ecosystem/), passing their own test suites§ | **824** | — |
-| Local regression suite | **868** | 312 |
-| `say "Hello"` compiled with `--exe --slim` | **6,845,704 B** | 9,830,680 B (no `--slim`) |
+| Of the Raku ecosystem's [2,529 distributions](https://raku.online/modules/ecosystem/), passing their own test suites§ | **1,006** | — |
+| Local regression suite | **1,020** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **7,299,816 B** | 9,830,680 B (no `--slim`) |
 
-§ Measured by the 2026-09-05 re-sweep, between the v3.25.0 and v3.26.0
-releases. v3.25.0 carried 746 / 2,526 forward, and v3.26.0 carries this 824
-forward in turn: no whole-ecosystem sweep ran in either cycle, as their
-[CHANGELOG](CHANGELOG.md) entries say.
+§ The v4.0.0 board: the 2026-09-15 board with 296 distributions re-measured on
+the release engine and merged over it — the 196 whose verdict had moved, plus
+100 board-green ones drawn at random as a regression probe. 21 gained, 4 lost,
+and none of the four is an engine regression (two are a failing dependency, one
+is this machine's dead x86_64 `perl6`, one is a flaky queue test that passes one
+run in three). A **warm** store, as every figure in this row has been: it
+answers "does this pass once its dependencies are present". Read against the
+**1,791** any engine can reach on this machine, 1,006 is 56%. No whole-ecosystem
+sweep ran this cycle — one is scheduled after the release.
+[The board](docs/dev/findings/ecosweep/BOARD-v4.0.0-2026-09-17.md).
 
 ‡ Counted against each file's declared `plan N`, so a file that aborts is
 charged for every test it failed to run; on the all-or-nothing bar a file
