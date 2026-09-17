@@ -2882,7 +2882,7 @@ std::string jsWasmWrapper(const std::string& src, const JsOptions& opt) {
       process.stderr.write('rakujs.js not found: put the Raku.js engine (rakujs.js and rakujs.wasm, from the rakujs-<version>.zip release asset built with node support) next to this program, or set RAKUJS=/path/to/rakujs.js\n');
       process.exit(5);
     }
-    const factory = require(found);
+    const factory = require(path.resolve(found));
     const m = await factory({ print: t => process.stdout.write(t + '\n'), printErr: t => process.stderr.write(t + '\n') });
     let stdin = ''; try { stdin = fs.readFileSync(0, 'utf8'); } catch (e) { }
     const argv = process.argv.slice(2);
