@@ -373,6 +373,14 @@ log-parsing grammar driven from Python, against the same grammar run by
 > outcome is in [MODULES-PLAN.md](MODULES-PLAN.md). **Open before tagging
 > v4.0.0:** the release-procedure sweep.
 
+## v5.0.0 — not yet named (collecting, 2026-09-17)
+
+No pillars are decided. The candidate list — everything the findings, plans,
+issues and experiments currently name as open, grouped by theme, each with the
+number it would move and what was already decided nearby — is
+[V5-IDEAS.md](V5-IDEAS.md). Its closing section lists the five framings the
+evidence supports; this section is written when one of them is chosen.
+
 ---
 
 *Keeping this current: when a campaign is decided, add its section here

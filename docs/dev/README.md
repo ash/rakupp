@@ -36,6 +36,11 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 Next up:
 
+- **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the **v5.0.0 candidate list**
+  (collecting, 2026-09-17): every open, wanted or deferred item the findings,
+  plans, issues and experiments name, in ten themes, each with the number it
+  would move and what measurement already closed nearby; ends with the five
+  framings a major could be named for.
 - **[plans/TRANSPILE-PLAN.md](plans/TRANSPILE-PLAN.md)** — `--target=js`, a **second
   Codegen with JavaScript as its output** (design draft 2026-09-03, for
   review): why reach rather than speed justifies it, the probes that fixed the
