@@ -14935,6 +14935,21 @@ bool Interpreter::boolify(const Value& v) {
         return v.enumName == "any" ? t > 0 : v.enumName == "all" ? t == total
              : v.enumName == "one" ? t == 1 : t == 0;
     }
+    // A TYPE OBJECT with a `Bool` method of its own answers that method, exactly
+    // as an instance does: `class C { method Bool { True } }; so C` is True in
+    // Rakudo, while a class without one stays false. `X but True` is the case
+    // that made this visible — mixinValue returns a type OBJECT for a type-object
+    // base (`if (baseWasType) return Value::typeObj(...)`) whose anonymous class
+    // carries the mixed-in `Bool` — so the engine disagreed with ITSELF: `.Bool`
+    // answered True through the method call while `?$b`, `if $b`, `$b ?? … !! …`
+    // and `so $b` all answered False through here. Only a method that is actually
+    // found counts, so a plain `so Int` / `so D` is still false.
+    if (v.t == VT::Type && !v.s.empty()) {
+        auto it = classes_.find(v.s);
+        if (it != classes_.end() && it->second)
+            if (Value* b = it->second->findMethod("Bool"))
+                return const_cast<Interpreter*>(this)->invokeMethod(*b, v, {}).truthy();
+    }
     return v.truthy();
 
 }
