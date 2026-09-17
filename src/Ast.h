@@ -605,6 +605,11 @@ struct Param {
     //              answer must never stick.
     mutable DecidedOnce<int> natSpec{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
+    //   aliasTarget — typeAliasTarget(type), resolved ONCE. That call is a hashed
+    //   std::string lookup and multi dispatch asks it per parameter per CANDIDATE,
+    //   twice in the same pass; the pointer is into typeAliasCache_, which is only
+    //   ever inserted into (unordered_map mapped-value references survive inserts).
+    mutable const std::string* aliasTarget = nullptr;
     //   padSlot/padOwner — TARG C2: this param's slot in its body's
     //   PadLayout, annotated by resolvePads on first build (params sit at the
     //   front of the layout). padOwner is the layout's address for the same

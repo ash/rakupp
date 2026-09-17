@@ -14312,7 +14312,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // convertible: `read(@paths)` must beat `read(IO() $path)` for a list.
             score += 6;
         }
-        else if (!typeMatchesArg(pos[i], typeAliasTarget(p->type))) return -1;
+        else if (!typeMatchesArg(pos[i],
+                 p->aliasTarget ? *p->aliasTarget
+                                : *(p->aliasTarget = &typeAliasTarget(p->type)))) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
@@ -14356,7 +14358,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // nominal 8, declaration order decided instead: PDF::Grammar::Test's
             // json-eqv declares `(List:D, List:D)` above `(array:D, $b)`, and
             // every shaped uint64 xref table went down the wrong candidate.
-            if (typeAliasTarget(p->type) == pos[i].typeName() ||
+            if ((p->aliasTarget ? *p->aliasTarget
+                                : *(p->aliasTarget = &typeAliasTarget(p->type))) == pos[i].typeName() ||
                 (p->type == "array" && pos[i].t == VT::Array && !pos[i].isList &&
                  isNativeScalarName(pos[i].ofType())))
                 score += 2;                            // exact type beats a supertype
@@ -18044,17 +18047,22 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // across the chain) picks the next-less-specific candidate and prevents loops.
         auto visited = std::make_shared<std::vector<const Value*>>();
         std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec;
+            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec, vec;
+            // `vec` is hoisted and CLEARED per candidate rather than rebuilt: declared
+            // inside the loop, every candidate of every call paid a heap allocation for
+            // a handful of ints. `bestVec = vec` copies rather than moves for the same
+            // reason — a move steals vec's buffer and the next iteration allocates again.
+            // multimeth is 400k calls x 2 candidates, so it is 800k allocations there.
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
-                std::vector<int> vec;
+                vec.clear();
                 int s = scoreCandidate(cand, as, &vec);
                 if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore)))
-                    { bestScore = s; best = &cand; bestVec = std::move(vec); }
+                    { bestScore = s; best = &cand; bestVec = vec; }
             }
             if (!best || bestScore < 0) {
                 // A redispatch (callsame/nextsame) that runs past the last same-class
@@ -19265,13 +19273,18 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
         std::function<Value(ValueList)> dispatch =
             [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, parentFrame, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec;
+            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec, vec;
+            // `vec` is hoisted and CLEARED per candidate rather than rebuilt: declared
+            // inside the loop, every candidate of every call paid a heap allocation for
+            // a handful of ints. `bestVec = vec` copies rather than moves for the same
+            // reason — a move steals vec's buffer and the next iteration allocates again.
+            // multimeth is 400k calls x 2 candidates, so it is 800k allocations there.
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
-                std::vector<int> vec;
+                vec.clear();
                 int s = scoreCandidate(cand, as, &vec, &selfCopy);
                 if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
@@ -19294,7 +19307,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     }
                 vec.insert(vec.begin(), invocantSlot);
                 if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore)))
-                    { bestScore = s; best = &cand; bestVec = std::move(vec); }
+                    { bestScore = s; best = &cand; bestVec = vec; }
             }
             if (!best || bestScore < 0) {
                 if (!visited->empty()) {                     // ran past the last same-class candidate
