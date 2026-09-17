@@ -546,14 +546,29 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
 # bundling. This pins the codegen's coverage so a change can't silently knock
 # a program back onto the interpreter bundle.
 section('native codegen coverage (--exe compiles these natively)');
+# …with the exceptions NAMED, so the set is pinned in both directions: a new
+# fallback fails here, and so does one of these starting to compile — which is
+# the day to delete its line rather than quietly widen the gate.
+my %expected-fallback =
+    # The codegen REFUSES a `where`/`:D` constraint rather than emitting it
+    # (Codegen.cpp), because dropping it silently is a wrong answer and not
+    # merely a slow one. This kernel exists to time constrained dispatch across
+    # engines, so it is the one bench program that cannot compile natively until
+    # the constraint is emitted rather than refused.
+    'multiwhere.raku' => 'a `where` constraint on a routine parameter',
+;
 for <examples tools/bench tools/optbench> -> $dir {
-    my @fellback;
+    my (@fellback, @unexpected-pass);
     for dir($ROOT.add($dir)).grep(*.Str.ends-with('.raku')).sort -> $f {
-        my $p = run($*EXECUTABLE, '--cpp', $f.Str, :!out, :!err);
-        @fellback.push($f.basename) if $p.exitcode != 0;
+        my $fell = run($*EXECUTABLE, '--cpp', $f.Str, :!out, :!err).exitcode != 0;
+        my $known = %expected-fallback{$f.basename}:exists;
+        @fellback.push($f.basename)        if $fell && !$known;
+        @unexpected-pass.push($f.basename) if !$fell && $known;
     }
-    ok(!@fellback, "$dir: every program transpiles natively");
+    ok(!@fellback && !@unexpected-pass, "$dir: every program transpiles natively, bar the known");
     diag("fell back (or parse error): {@fellback.join(', ')}") if @fellback;
+    diag("now compiles natively — drop it from %expected-fallback: {@unexpected-pass.join(', ')}")
+        if @unexpected-pass;
 }
 # The JavaScript backend (--target=js, docs/guide/JS.md): the six P1 kernels
 # transpile, run under node and agree with the interpreter byte for byte
