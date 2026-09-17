@@ -18,10 +18,10 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 344.8, 'best' => 344.8, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'asg'     => { 'baseline' => 150.6, 'best' => 150.6, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'loopsum' => { 'baseline' => 83.7, 'best' => 83.7, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'hash'    => { 'baseline' => 17.3, 'best' => 17.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'fib'     => { 'baseline' => 302.9, 'best' => 302.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'asg'     => { 'baseline' => 158.0, 'best' => 150.6, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'loopsum' => { 'baseline' => 88.6, 'best' => 83.7, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'hash'    => { 'baseline' => 20.6, 'best' => 17.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
         # The three string/call kernels were added 2026-08-09 and have no release
         # history, so their FIRST baseline is the number measured the day they
         # landed rather than the last release's. That is deliberate: v3.0.1
@@ -32,23 +32,25 @@
         #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
         #   strpass   184.3 -> 153.8
         #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
-        'strscan' => { 'baseline' => 131.1, 'best' => 108.2, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'strpass' => { 'baseline' => 68.9, 'best' => 68.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'subcall' => { 'baseline' => 164.9, 'best' => 150.3, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'rats'    => { 'baseline' => 248.7, 'best' => 176.4, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'regexloop'=> { 'baseline' => 125.0, 'best' => 99.7, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'attrread'=> { 'baseline' => 221.3, 'best' => 221.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'method'  => { 'baseline' => 201.0, 'best' => 201.0, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'multimeth'=> { 'baseline' => 430.4, 'best' => 430.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'strscan' => { 'baseline' => 118.1, 'best' => 108.2, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'strpass' => { 'baseline' => 71.2, 'best' => 68.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'subcall' => { 'baseline' => 154.4, 'best' => 150.3, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'rats'    => { 'baseline' => 208.6, 'best' => 176.4, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'regexloop'=> { 'baseline' => 105.8, 'best' => 99.7, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'attrread'=> { 'baseline' => 196.9, 'best' => 196.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'method'  => { 'baseline' => 171.0, 'best' => 171.0, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'multimeth'=> { 'baseline' => 373.2, 'best' => 373.2, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
         # multiwhere landed 2026-09-15 with the fix that stopped a multi candidate's
         # `where` being evaluated twice per matching call. Its first baseline is the
         # number measured AFTER that fix (781.4), not before it (943.0): recording
         # the pre-fix figure would have let the double evaluation back in through the
         # very kernel added to catch it — the same trap the three string kernels
         # above document. The pre-fix figure is kept here so the gain stays legible.
-        'multiwhere'=> { 'baseline' => 781.4, 'best' => 781.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-15' },
-        'objnew'  => { 'baseline' => 386.6, 'best' => 386.6, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'privmeth'=> { 'baseline' => 357.7, 'best' => 357.7, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        'multiwhere'=> { 'baseline' => 619.4, 'best' => 619.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'objnew'  => { 'baseline' => 220.3, 'best' => 220.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'privmeth'=> { 'baseline' => 302.5, 'best' => 302.5, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'mainnext'=> { 'baseline' => 31.3, 'best' => 31.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'mainwhen'=> { 'baseline' => 196.5, 'best' => 196.5, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
         # `rats` was added to the guard on 2026-08-22, after the cold block
         # moved the Rat numerator/denominator pair out of the inline Value, and
         # it went in here WITHOUT a number: it was written on the M1/Darwin 25.5
@@ -113,5 +115,5 @@
     # time, because nothing in its output moved. Pass `--for=vX.Y.Z` to name the
     # release; without it the stamp names the version of the binary measured,
     # which during a release sitting is still the previous one.
-    'recorded' => '2026-09-01 (v3.24.0)',
+    'recorded' => '2026-09-17 (v4.0.0)',
 }
