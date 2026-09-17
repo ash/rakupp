@@ -7149,15 +7149,28 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // Capture the type-variable name (+ optional smiley) and fall through to
         // the shared var/named/default handling so it can type a following param.
         if (isOp("::") && peek().kind == Tok::Ident) {
-            advance(); p.type = advance().text; p.typeCapture = true;
-            p.captureName = p.type;   // a following constraint overwrites `type`, never this
-            // a type capture DECLARES its name for the unit: `::T $x` makes a
-            // later bare `T` a legitimate (captured) type, not an undeclared one
-            declTypeNames_.insert(p.type);
+            advance(); p.type = advance().text;
+            // A SMILEY decides which of the two this is, and the difference is
+            // visible in the body. `::T $x` is a type CAPTURE: it binds T to
+            // whatever came in, and that binding shadows an outer T. `::T:U $x`
+            // is an ordinary type CONSTRAINT wearing a definedness smiley — it
+            // captures nothing, so an outer T stays visible. Rakudo draws the
+            // line here too, and rejects `::T:U` outright when no T exists.
+            // YAMLish leans on it: `load-yaml(::Grammar:U :$schema)` goes on to
+            // call `Grammar.parse`, meaning the module's own grammar. Capture
+            // that name and the call reaches $schema's type instead, no actions
+            // are attached, and every document parses to its own source text.
             if (isOp(":") && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
                 advance(); std::string sm = advance().text;
                 if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
+            }
+            else {
+                p.typeCapture = true;
+                p.captureName = p.type;   // a following constraint overwrites `type`, never this
+                // a type capture DECLARES its name for the unit: `::T $x` makes a
+                // later bare `T` a legitimate (captured) type, not an undeclared one
+                declTypeNames_.insert(p.type);
             }
         }
         // optional type constraint: a bare Ident (possibly Foo::Bar, with :D/:U smiley, [..])
