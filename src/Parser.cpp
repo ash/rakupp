@@ -22,10 +22,13 @@ namespace rakupp {
 
 // Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
 // whitespace. Covers ASCII plus the multibyte forms (NEL, NBSP, OGHAM SPACE,
-// the U+2000..200A run, LS/PS, NNBSP, U+205F, U+3000) — matches the lexer.
+// the U+2000..200A run, LS/PS, NNBSP, U+205F, U+3000) — matches the lexer,
+// whose skipWhitespace draws the same line off the same byte patterns.
 // When `breaking` is true (word-quote splitting), the non-breaking spaces —
 // NBSP (U+00A0), FIGURE SPACE (U+2007), NARROW NBSP (U+202F) — are NOT treated
-// as separators, so `<a<NBSP>b>` stays a single word (matches Rakudo).
+// as separators, so `<a<NBSP>b>` stays a single word (matches Rakudo). This
+// splits the q-family blob (`qw[…]`, `«…»`); a bare `< … >` is tokenised
+// instead, and the lexer gates the same three on its `angleWords_` depth.
 static int uniWsLen(const std::string& s, size_t i, bool breaking = false) {
     unsigned char b0 = (unsigned char)s[i];
     if (b0 == ' ' || b0 == '\t' || b0 == '\n' || b0 == '\r' || b0 == '\v' || b0 == '\f') return 1;

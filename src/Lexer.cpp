@@ -537,17 +537,24 @@ void Lexer::skipWhitespaceAndComments() {
         // SPACE, the U+2000..200A run, LINE/PARAGRAPH SEPARATOR, NARROW/MEDIUM/
         // IDEOGRAPHIC spaces. Treated as token separators like ordinary space.
         {
-            // Breaking Unicode whitespace only. The non-breaking spaces — NBSP
-            // (U+00A0), FIGURE SPACE (U+2007), NARROW NBSP (U+202F) — are left
-            // intact so `<a<NBSP>b>` stays a single word-quote element.
+            // The non-breaking spaces — NBSP (U+00A0), FIGURE SPACE (U+2007),
+            // NARROW NBSP (U+202F) — separate tokens like any other whitespace,
+            // so `my<NBSP>@x` declares @x. Inside a bare `< … >` they are left
+            // intact instead: readAngleWords glues tokens that carry no
+            // spaceBefore, so skipping them there would split `<a<NBSP>b>` into
+            // two words where Rakudo keeps one. (The q-family spellings —
+            // `qw[…]`, `«…»` — reach the parser as one raw blob and draw the
+            // same line in uniWsLen's `breaking` argument.)
+            const bool breaking = angleWords_ > 0;
             unsigned char b0 = (unsigned char)c, b1 = (unsigned char)peek(1), b2 = (unsigned char)peek(2);
             int uws = 0;
             if (b0 == 0xC2 && b1 == 0x85) uws = 2;                            // NEL
+            else if (b0 == 0xC2 && b1 == 0xA0) uws = breaking ? 0 : 2;        // NBSP (non-breaking)
             else if (b0 == 0xE1 && b1 == 0x9A && b2 == 0x80) uws = 3;         // OGHAM SPACE MARK
+            else if (b0 == 0xE2 && b1 == 0x80 && b2 == 0x87) uws = breaking ? 0 : 3; // FIGURE SPACE (non-breaking)
+            else if (b0 == 0xE2 && b1 == 0x80 && b2 == 0xAF) uws = breaking ? 0 : 3; // NARROW NBSP (non-breaking)
             else if (b0 == 0xE2 && b1 == 0x80 &&
-                     (b2 == 0x80 || b2 == 0x81 || b2 == 0x82 || b2 == 0x83 || b2 == 0x84 ||
-                      b2 == 0x85 || b2 == 0x86 || b2 == 0x88 || b2 == 0x89 || b2 == 0x8A ||
-                      b2 == 0xA8 || b2 == 0xA9)) uws = 3;                     // U+2000..200A (minus FIGURE 2007), LS, PS
+                     ((b2 >= 0x80 && b2 <= 0x8A) || b2 == 0xA8 || b2 == 0xA9)) uws = 3; // U+2000..200A, LS, PS
             else if (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) uws = 3;         // MEDIUM MATH SPACE (U+205F)
             else if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80) uws = 3;         // IDEOGRAPHIC SPACE (U+3000)
             if (uws) { for (int k = 0; k < uws; k++) advance(); continue; }
@@ -555,13 +562,15 @@ void Lexer::skipWhitespaceAndComments() {
         // unspace: backslash + whitespace run is ignored and JOINS the tokens
         // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore)
         if (c == '\\') {
-            // unspace also joins across Unicode whitespace, not just ASCII
+            // unspace also joins across Unicode whitespace, not just ASCII. An
+            // unspace run is never word-quote content, so the non-breaking
+            // spaces count here unconditionally: `foo\<NBSP>.lc` is `foo().lc`.
             auto uwsAt = [&](int off) -> int {
                 unsigned char a0 = (unsigned char)peek(off), a1 = (unsigned char)peek(off + 1), a2 = (unsigned char)peek(off + 2);
                 if (a0 == ' ' || a0 == '\t' || a0 == '\n' || a0 == '\r' || a0 == '\v' || a0 == '\f') return 1;
-                if (a0 == 0xC2 && a1 == 0x85) return 2;                       // NEL
+                if (a0 == 0xC2 && (a1 == 0x85 || a1 == 0xA0)) return 2;       // NEL, NBSP
                 if (a0 == 0xE1 && a1 == 0x9A && a2 == 0x80) return 3;         // OGHAM
-                if (a0 == 0xE2 && a1 == 0x80 && ((a2 >= 0x80 && a2 <= 0x8A && a2 != 0x87) || a2 == 0xA8 || a2 == 0xA9)) return 3;
+                if (a0 == 0xE2 && a1 == 0x80 && ((a2 >= 0x80 && a2 <= 0x8A) || a2 == 0xA8 || a2 == 0xA9 || a2 == 0xAF)) return 3;
                 if (a0 == 0xE2 && a1 == 0x81 && a2 == 0x9F) return 3;
                 if (a0 == 0xE3 && a1 == 0x80 && a2 == 0x80) return 3;
                 return 0;
