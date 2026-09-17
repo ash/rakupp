@@ -60,6 +60,18 @@ the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
 - 2026-08-25: 637 of 2,524
 - 2026-08-30: 746 of 2,526
 - 2026-09-05: 824 of 2,530
+- 2026-09-12: 860 of 2,529
+- 2026-09-14: 972 of 2,529
+- 2026-09-15: 989 of 2,529
+- 2026-09-17: 1,006 of 2,529
+
+The points from 2026-09-12 on are **boards** rather than fresh whole-ecosystem
+runs: every distribution carries a verdict, but only the dists a cycle touched
+get re-measured and the rest carry forward — the v4.0.0 board re-measured 296 of
+them. Each board is kept in `ecosweep/board-*.tsv`. They sit on this line
+because they are the numbers the README and the front page publish; a reader
+comparing a board against a sweep above is comparing the same question asked of
+a warm store, not two different instruments.
 
 The modest conversion count is the honest shape of the terrain: each fix tends
 to move its cluster ONE RUNG — a dist that failed to parse now runs its suite
