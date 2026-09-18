@@ -36,9 +36,9 @@ pip install rakulang
 
 The wheel carries `librakupp` inside it, so it needs no rakupp on the
 machine; `rakulang.interpreter().version` says which engine it holds, and the
-package version is that engine's. It is built for macOS (universal) and Linux
-(x86_64 and aarch64), and each wheel's own platform tag names the floor it
-needs.
+package version is that engine's. It is built for macOS (universal), Linux
+(x86_64 and aarch64) and Windows (x64), and each wheel's own platform tag
+names the floor it needs.
 
 From a checkout, `pip install -e bindings/python` instead, after which plain
 `import rakulang` works. The examples below add the directory to `sys.path`,
@@ -317,6 +317,9 @@ tools/build-wheel.sh build dist-wheel
 ```bash
 python3 -m pip install --force-reinstall --no-deps dist-wheel/rakulang-*.whl
 ```
+
+On Windows run it under Git Bash, and name the configuration directory the
+Visual Studio generator writes to, `build/Release`, where `rakupp.dll` is.
 
 **`rk_new refused: an interpreter is already live in this process`.**
 Something already created an interpreter in this process. Use

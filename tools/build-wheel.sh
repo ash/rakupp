@@ -5,9 +5,11 @@
 #
 #   tools/build-wheel.sh <build-dir> [out-dir]     (out-dir default: dist-wheel)
 #
-# Run by release.yml on the macOS and Linux legs. A wheel's file name is a
-# promise pip enforces, so three things are read off the library itself
-# rather than assumed:
+# Run by release.yml on the macOS, Linux and Windows (MSVC) legs — on Windows
+# under Git Bash, with <build-dir> the multi-config output directory that
+# holds rakupp.dll (build/Release). A wheel's file name is a promise pip
+# enforces, so three things are read off the library itself rather than
+# assumed:
 #
 #   - the version: pyproject.toml must say what the library's rk_version()
 #     says (a .postN suffix is allowed — a binding-only fix on the same
@@ -15,7 +17,9 @@
 #   - the platform tag: on Linux manylinux_<glibc floor>_<arch>, the floor
 #     being the newest GLIBC_ symbol version the .so needs (PEP 600); on macOS
 #     macosx_<minimum OS>_<arch> from the library's LC_BUILD_VERSION and the
-#     architectures in the file (universal2 when it holds both);
+#     architectures in the file (universal2 when it holds both); on Windows
+#     win_amd64 / win_arm64 / win32 from the PE header's machine field (a
+#     Windows wheel names no OS floor — the DLL carries its own C runtime);
 #   - the license text: bindings/python/LICENSE must be the byte copy of the
 #     repository's LICENSE that the wheel carries.
 #
@@ -28,13 +32,30 @@ OUT=${2:-dist-wheel}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PKG="$ROOT/bindings/python"
 
-case "$(uname -s)" in
-    Darwin) LIB=librakupp.dylib ;;
-    *)      LIB=librakupp.so ;;
+OS=$(uname -s)
+case "$OS" in
+    Darwin)               LIB=librakupp.dylib ;;
+    MINGW*|MSYS*|CYGWIN*) LIB=rakupp.dll; OS=Windows ;;
+    *)                    LIB=librakupp.so ;;
 esac
 SRC="$BUILD/$LIB"
 if [ ! -e "$SRC" ]; then
     echo "build-wheel: $SRC not found (configure with -DRAKUPP_BUILD_SHARED=ON)" >&2
+    exit 1
+fi
+
+# The interpreter that builds the wheel. PYTHON= names one outright. On
+# Windows the name `python3` can be the Microsoft Store's stub rather than an
+# interpreter, so the plain name is tried first there.
+if [ -z "$PYTHON" ]; then
+    if [ "$OS" = Windows ]; then
+        PYTHON=$(command -v python || command -v python3 || true)
+    else
+        PYTHON=$(command -v python3 || command -v python || true)
+    fi
+fi
+if [ -z "$PYTHON" ]; then
+    echo "build-wheel: no python on PATH (set PYTHON=)" >&2
     exit 1
 fi
 
@@ -44,10 +65,10 @@ if ! cmp -s "$ROOT/LICENSE" "$PKG/LICENSE"; then
 fi
 
 # The version the wheel will claim, against the version the library reports.
-WANT=$(python3 -c 'import re, sys
+WANT=$("$PYTHON" -c 'import re, sys
 print(re.search(r"^version\s*=\s*\"([^\"]+)\"", open(sys.argv[1]).read(), re.M).group(1))' "$PKG/pyproject.toml")
-HAVE=$(python3 -c 'import ctypes, sys
-lib = ctypes.CDLL(sys.argv[1]); lib.rk_version.restype = ctypes.c_char_p
+HAVE=$("$PYTHON" -c 'import ctypes, os, sys
+lib = ctypes.CDLL(os.path.abspath(sys.argv[1])); lib.rk_version.restype = ctypes.c_char_p
 print(lib.rk_version().decode())' "$SRC")
 case "$WANT" in
     "$HAVE"|"$HAVE".post*) ;;
@@ -58,7 +79,7 @@ esac
 
 # The platform tag, from the library.
 ARCH=$(uname -m)
-case "$(uname -s)" in
+case "$OS" in
     Darwin)
         MINOS=$(otool -l "$SRC" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')
         # a library built with an older toolchain records the floor differently
@@ -70,6 +91,17 @@ case "$(uname -s)" in
             *) ARCH=$ARCHS ;;
         esac
         PLAT="macosx_${MINOS}_${ARCH}"
+        ;;
+    Windows)
+        # The PE header's Machine field: IMAGE_FILE_MACHINE_AMD64 / ARM64 / I386.
+        PLAT=$("$PYTHON" -c 'import struct, sys
+with open(sys.argv[1], "rb") as f:
+    f.seek(0x3C); (off,) = struct.unpack("<I", f.read(4))
+    f.seek(off); sig = f.read(4); (machine,) = struct.unpack("<H", f.read(2))
+if sig != b"PE\0\0": sys.exit(sys.argv[1] + ": not a PE image")
+tags = {0x8664: "win_amd64", 0xAA64: "win_arm64", 0x14C: "win32"}
+if machine not in tags: sys.exit("%s: unknown PE machine 0x%X" % (sys.argv[1], machine))
+print(tags[machine])' "$SRC")
         ;;
     *)
         GLIBC=$(objdump -T "$SRC" | grep -o 'GLIBC_[0-9]*\.[0-9]*' | sed 's/GLIBC_//' \
@@ -97,8 +129,12 @@ cp -L "$SRC" "$STAGE/$LIB"
 # the retag step's `wheel` CLI is guaranteed present too.
 mkdir -p "$OUT"
 VENV="$OUT/.buildvenv"
-python3 -m venv "$VENV"
-PY="$VENV/bin/python"
+"$PYTHON" -m venv "$VENV"
+if [ "$OS" = Windows ]; then
+    PY="$VENV/Scripts/python.exe"      # a venv on Windows has Scripts/, not bin/
+else
+    PY="$VENV/bin/python"
+fi
 "$PY" -m pip install --quiet --upgrade pip setuptools wheel twine
 "$PY" -m pip wheel --no-deps --no-build-isolation -w "$OUT" "$PKG"
 rm -rf "$STAGE"

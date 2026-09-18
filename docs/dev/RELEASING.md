@@ -862,6 +862,18 @@ the CHANGELOG rather than publishing its page with a fresh timestamp. `inventory
 only change when the *documentation* does, not when Raku++ does; they are not
 per-release work.
 
+7. **Publish the Python wheels to PyPI.** Nothing does this on tagging:
+   release.yml builds the four wheels and attaches them to the GitHub
+   release, and [pypi.yml](../../.github/workflows/pypi.yml) uploads *those*
+   files when run by hand — Actions → PyPI → Run workflow, with the tag. It
+   refuses a wheel whose version is not the tag's or whose platform tag PyPI
+   would not serve, then uploads through trusted publishing: no token, PyPI
+   accepts the identity owner `ash`, repository `rakupp`, workflow `pypi.yml`,
+   environment `pypi`. A file name on PyPI can never be used twice, deleted or
+   not, so a wrong wheel is left off PyPI and the next version carries the
+   fix; a binding-only fix on an unchanged engine is `X.Y.Z.post1` in
+   `bindings/python/pyproject.toml`.
+
 ---
 
 ## The things that get forgotten
@@ -918,8 +930,8 @@ The cost is named so the list stays a record rather than a ritual.
 
 - [ ] **`--version` must name the new version and must not end in `-modified`.**
       *(v3.0.0 shipped announcing 2.0.0.)*
-- [ ] **Bump all three package files** — `CMakeLists.txt`, `.guix/…/rakupp-package.scm`,
-      `flake.nix`.
+- [ ] **Bump all four package files** — `CMakeLists.txt`, `.guix/…/rakupp-package.scm`,
+      `flake.nix`, `bindings/python/pyproject.toml`.
 - [ ] **Add the release's row to `docs/status/MILESTONES.md`.** *(Sat four
       releases stale, v2.0.0 → v3.14.0.)*
 - [ ] **`check-figures --expect=N --examples=N --version=X.Y.Z` — all three
@@ -943,6 +955,9 @@ The cost is named so the list stays a record rather than a ritual.
       `strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'`. *(v2.0.0
       shipped with `/play/` announcing 1.7.0; v3.0.0 with 2.0.0; v3.22.0's was
       built by a two-release-old compiler because "native" was never checked.)*
+- [ ] **Run the PyPI workflow against the tag** (Actions → PyPI → Run
+      workflow). *(Nothing uploads on tagging; `pip install rakulang` serves
+      the last version somebody ran it for.)*
 - [ ] **`gen-roast-map.raku`** with this release's `roast.txt`.
 - [ ] **`snapshot.raku` after gate 7's sweep and before `gen-dashboard`.**
       *(Append-only: snapshot early and the release permanently records the

@@ -546,11 +546,49 @@ jobs:
 
       # The Python platform wheel: bindings/python with librakupp bundled
       # inside, so `pip install <wheel>` works on a machine with no rakupp at
-      # all (macOS wheel carries the universal library). Publishing to PyPI
-      # is a manual decision; the wheel ships as a release asset either way.
+      # all. Four of them: macOS (the universal library), Linux x86_64 and
+      # aarch64 (manylinux_2_28, the container build's .so) and Windows x64
+      # from the MSVC leg, whose rakupp.dll carries its own C runtime (/MT).
+      # The MinGW leg builds none: its wheel would wear the same win_amd64
+      # name. Under the Visual Studio generator the DLL sits in build/Release,
+      # not build/. Publishing to PyPI is a separate, by-hand run of pypi.yml
+      # against the tag; the wheels ship as release assets either way.
       - name: Python wheel (bundled librakupp)
-        if: runner.os != 'Windows'
-        run: sh tools/build-wheel.sh build dist-wheel && cp dist-wheel/rakulang-*.whl .
+        if: matrix.mingw != true
+        shell: bash
+        run: |
+          case "$(uname -s)" in MINGW*|MSYS*) build=build/Release ;; *) build=build ;; esac
+          sh tools/build-wheel.sh "$build" dist-wheel && cp dist-wheel/rakulang-*.whl .
+
+      # The wheel just built, installed the way a user installs it: into a
+      # fresh venv, imported from a directory that is not the checkout (so
+      # the import cannot fall back to bindings/python), with no RAKUPP_*
+      # variable set -- the copy bundled in the wheel is what must load, and
+      # the assertion reads the loaded path back. On Windows this is the
+      # only place rakupp.dll is ever loaded through ctypes before a user
+      # does it.
+      - name: Smoke test the wheel (installed, bundled library)
+        if: matrix.mingw != true
+        shell: bash
+        run: |
+          case "$(uname -s)" in
+            MINGW*|MSYS*) python  -m venv wheel-venv; vpy=wheel-venv/Scripts/python.exe ;;
+            *)            python3 -m venv wheel-venv; vpy=wheel-venv/bin/python ;;
+          esac
+          "$vpy" -m pip install --quiet --no-deps dist-wheel/rakulang-*.whl
+          unset RAKUPP_LIB RAKUPP_HOME
+          mkdir -p wheel-smoke && cd wheel-smoke && "../$vpy" - <<'PY'
+          import os, rakulang
+          print("package:", rakulang.__file__)
+          assert "site-packages" in rakulang.__file__, "imported the checkout, not the wheel"
+          r = rakulang.interpreter()
+          print("library:", r._lib._name, "engine:", r.version)
+          assert os.sep + "_lib" + os.sep in r._lib._name, "loaded a library from outside the wheel"
+          assert r.eval("6 * 7") == 42
+          r.eval("sub area($w, $h) { $w * $h }")
+          assert r.call("area", 3, 4) == 12
+          print("wheel ok")
+          PY
 
       - name: Package (POSIX)
         if: runner.os != 'Windows'
@@ -659,7 +697,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # rakupp-setup-windows-x64.* exists on the windows-x64 leg alone, the way
-      # rakulang-*.whl exists only on the POSIX ones: a pattern that matches
+      # rakulang-*.whl is absent on the MinGW one: a pattern that matches
       # nothing here is a warning, and if-no-files-found fires only when the
       # whole set comes up empty.
       - name: Upload build artifact

@@ -1,0 +1,82 @@
+# Publish one release's Python wheels to PyPI, so `pip install rakulang` works.
+#
+# Run by hand from the Actions tab (workflow_dispatch) with the tag whose
+# wheels to publish. release.yml already built them and attached them to the
+# GitHub release, so this uploads THOSE files, not a rebuild: the wheel a pip
+# user gets is byte for byte the one on the release page. Publishing is a
+# decision, not a side effect of tagging — a release whose wheels turn out
+# wrong is simply left off PyPI, where a file name can never be used twice.
+#
+# No token, no secret: PyPI's trusted publishing accepts this workflow's own
+# identity — owner ash, repository rakupp, file pypi.yml, environment pypi —
+# which is what the "pending publisher" form on pypi.org was filled with. The
+# `pypi` environment (Settings → Environments) may carry a required reviewer,
+# in which case the upload waits for one click after the run has started.
+name: PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose wheels to publish, e.g. v4.0.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/rakulang/
+    permissions:
+      contents: read    # gh release download
+      id-token: write   # the OIDC token PyPI exchanges for upload rights
+    steps:
+      - name: Download the release's wheels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+             --pattern 'rakulang-*.whl' --dir dist
+          ls -l dist
+
+      # A wheel's file name is what pip and PyPI act on, so read it back before
+      # uploading: the version must be the tag's (a .postN suffix allowed — a
+      # binding-only fix on the same engine) and the platform tag one PyPI
+      # serves. v4.0.1 attached rakulang-0.1.0-py3-none-linux_x86_64.whl and a
+      # macosx_26_0_arm64 one: PyPI refuses a bare linux_ tag outright, and
+      # the macOS wheel would have installed on macOS 26 alone.
+      - name: Refuse a wheel PyPI would not serve
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          want=${TAG#v}
+          n=0
+          for whl in dist/rakulang-*.whl; do
+            n=$((n + 1))
+            name=$(basename "$whl" .whl)
+            ver=$(echo "$name" | cut -d- -f2)
+            plat=${name##*-}
+            case "$ver" in
+              "$want"|"$want".post*) ;;
+              *) echo "$name: version $ver is not the tag's ($want)"; exit 1 ;;
+            esac
+            case "$plat" in
+              manylinux_*|musllinux_*|macosx_*|win_*) ;;
+              *) echo "$name: platform tag $plat is not one PyPI serves"; exit 1 ;;
+            esac
+            echo "ok  $name"
+          done
+          if [ "$n" -lt 4 ]; then
+            echo "expected the macOS, both Linux and the Windows wheel, found $n"; exit 1
+          fi
+
+      # packages-dir defaults to dist/. Attestations (PEP 740) are generated
+      # because trusted publishing makes that possible; nothing to configure.
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
