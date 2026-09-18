@@ -323,8 +323,13 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
       # librakupp.dll, not rakupp.dll: the executable's own import library (see
       # ENABLE_EXPORTS below) is already rakupp.lib, and the DLL's import
       # library must not fight it for the name. PREFIX "" stops MinGW doubling
-      # the "lib". (The test artifact keeps its rakupp_testrt name everywhere.)
-      set_target_properties(rakupp_shared PROPERTIES OUTPUT_NAME librakupp PREFIX "")
+      # the "lib" on the DLL; IMPORT_PREFIX is a SEPARATE property and stops it
+      # doubling on the import library, which PREFIX alone did not -- the
+      # MinGW leg was installing lib/liblibrakupp.dll.a, a name no -lrakupp
+      # will ever find. (The test artifact keeps its rakupp_testrt name
+      # everywhere.)
+      set_target_properties(rakupp_shared PROPERTIES
+        OUTPUT_NAME librakupp PREFIX "" IMPORT_PREFIX "")
     endif()
     target_link_libraries(rakupp_shared PUBLIC ws2_32 bcrypt)
     target_compile_definitions(rakupp_shared PUBLIC _WIN32_WINNT=0x0602)
