@@ -5612,8 +5612,19 @@ ExprPtr Parser::parsePrimary() {
                 isOp("<") && !cur().spaceBefore) {
                 advance(); // <
                 std::vector<std::string> words = readAngleWords(">");
+                std::string pkg = name.substr(0, name.size() - 2);
+                std::string key = words.empty() ? "" : words[0];
+                // A SIGILLED key names the very variable its long name does:
+                // `A::<&foo>` and `&A::foo` are one slot, `A::<$bar>` and
+                // `$A::bar` another. Spell it the way `our` publishes it —
+                // sigil first — or the two syntaxes get a slot each, which is
+                // how `our sub foo` stayed invisible to `A::<&foo>` and how
+                // `A::<$bar> = 99` left the module's own `$bar` at 42.
+                bool sigilled = !key.empty() &&
+                    (key[0] == '$' || key[0] == '@' || key[0] == '%' || key[0] == '&');
                 auto ve = std::make_unique<VarExpr>(
-                    name.substr(0, name.size() - 2) + "::" + (words.empty() ? "" : words[0]));
+                    sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1)
+                             : pkg + "::" + key);
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
             }

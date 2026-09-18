@@ -35545,11 +35545,13 @@ Value Interpreter::eval(Expr* e) {
                 // single-letter package, and the full lookup below is what used to
                 // find the global before this branch existed.)
                 if (Value* p = tctx_.cur->find(ve->name)) return *p;
-                auto sep = ve->name.rfind("::");
-                auto it = pkgStashes_.find(ve->name.substr(0, sep));
-                if (it != pkgStashes_.end()) {
-                    auto sit = it->second->find(ve->name.substr(sep + 2));
-                    if (sit != it->second->end()) return sit->second;
+                std::string pkg, key;
+                if (splitPkgSymbol(ve->name, pkg, key)) {
+                    auto it = pkgStashes_.find(pkg);
+                    if (it != pkgStashes_.end()) {
+                        auto sit = it->second->find(key);
+                        if (sit != it->second->end()) return sit->second;
+                    }
                 }
                 return Value::any(); // an unset slot is undefined, not an error
             }
@@ -36053,6 +36055,21 @@ Value Interpreter::eval(Expr* e) {
                     }
                 }
             }
+            // A qualified name the package STASH holds: `A.WHO<$zz> = 7` and
+            // `Foo::{$key} = v` install symbols there, and the long name is how
+            // the rest of the program reads them back. (The `A::<$zz>` spelling
+            // already consulted the stash; this is the other half of the same
+            // slot.)
+            if (ve->name.find("::") != std::string::npos) {
+                std::string pkg, key;
+                if (splitPkgSymbol(ve->name, pkg, key)) {
+                    auto it = pkgStashes_.find(pkg);
+                    if (it != pkgStashes_.end()) {
+                        auto sit = it->second->find(key);
+                        if (sit != it->second->end()) return sit->second;
+                    }
+                }
+            }
             if (!isSpecialVar(ve->name) && !noStrictHere())
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");
@@ -36094,14 +36111,15 @@ Value Interpreter::eval(Expr* e) {
                 // qualified global nor the package stash holds the name; a
                 // declared-but-undefined one still reads as its value.
                 if (nm.find("::") != std::string::npos && !tctx_.cur->find(nm)) {
-                    auto sep = nm.rfind("::");
-                    auto it = pkgStashes_.find(nm.substr(1, sep - 1));
-                    bool inStash = it != pkgStashes_.end() &&
-                                   it->second->find(nm.substr(sep + 2)) != it->second->end();
-                    if (!inStash) {
-                        auto sit = pkgStashes_.find(nm.substr(0, sep));   // sigil-less package spelling
-                        inStash = sit != pkgStashes_.end() &&
-                                  sit->second->find(nm.substr(sep + 2)) != sit->second->end();
+                    std::string pkg, key;
+                    bool inStash = false;
+                    if (splitPkgSymbol(nm, pkg, key)) {
+                        auto it = pkgStashes_.find(pkg);
+                        // both stash spellings: the sigilled key Rakudo uses
+                        // (`&foo`) and the bare one an older write may have left
+                        inStash = it != pkgStashes_.end() &&
+                                  (it->second->count(key) ||
+                                   it->second->count(nm.substr(nm.rfind("::") + 2)));
                     }
                     if (!inStash) return noSuch();
                 }

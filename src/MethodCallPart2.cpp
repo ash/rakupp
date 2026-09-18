@@ -6818,12 +6818,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto& stash = pkgStashes_[pkg];
         if (!stash) stash = std::make_shared<ValueMap>();
         if (global_) { // `our`-scoped symbols live as qualified globals; show them
+            // A sigilled one is published sigil-FIRST (`&A::foo`, `$A::bar`),
+            // so a plain `A::` prefix test never saw it and `A.WHO` came back
+            // empty for every `our sub`/`our $var` a class declares. The stash
+            // key keeps the sigil, as Rakudo's does: `A.WHO<&foo>`.
             std::string pre = pkg + "::";
-            for (auto& kv : global_->vars)
-                if (kv.first.rfind(pre, 0) == 0 &&
-                    kv.first.find("::", pre.size()) == std::string::npos)
-                    (*stash)[kv.first.substr(pre.size())] = kv.second;
+            for (auto& kv : global_->vars) {
+                std::string p, k;
+                if (splitPkgSymbol(kv.first, p, k) && p == pkg &&
+                    k.find("::") == std::string::npos)
+                    (*stash)[k] = kv.second;
+            }
         }
+        // …and the packages nested INSIDE this one (`class A { class B {} }` —
+        // `A.WHO<B>`), which live in the class table rather than as globals
+        for (auto& kv : classes_)
+            if (kv.first.rfind(pkg + "::", 0) == 0 &&
+                kv.first.find("::", pkg.size() + 2) == std::string::npos)
+                (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
         // an ENUM type's stash holds its values (`Bool::.values` is (True, False))
         if (pkg == "Bool") {
             (*stash)["True"]  = Value::boolean(true);

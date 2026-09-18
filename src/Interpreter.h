@@ -120,6 +120,21 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 
+// Split a package-qualified symbol name into the package and the key a Stash
+// holds it under. A sigilled symbol has TWO spellings and one slot: `&A::foo`
+// (what `our sub foo` publishes, and what `A::<&foo>` parses to) and Rakudo's
+// stash key `&foo` under package `A` — the sigil travels with the KEY, never
+// with the package. Sigil-less names (`A::B`, `EXPORTHOW::class`) split at the
+// last `::` as before. False when the name is not qualified at all.
+inline bool splitPkgSymbol(const std::string& nm, std::string& pkg, std::string& key) {
+    size_t off = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&') ? 1 : 0;
+    size_t sep = nm.rfind("::");
+    if (sep == std::string::npos || sep < off) return false;
+    pkg = nm.substr(off, sep - off);
+    key = nm.substr(0, off) + nm.substr(sep + 2);
+    return true;
+}
+
 // What `$*RAKU.compiler.version` answers, in Rakudo's YEAR.MONTH scheme: the
 // era of the Rakudo this tree is VERIFIED against (the conformance oracle and
 // the battery's comparison engine). Bump when the oracle bumps and the gates
