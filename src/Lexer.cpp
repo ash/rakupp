@@ -3141,11 +3141,20 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             // answered the empty string.
             bool hashContext = c == '%' && !inAngle && regexContext(out) && peek(1) == '%' &&
                                (isIdentStart(peek(2)) || unicodeLetterAt(2));
-            if (!anonHash && !hashContext && (c == '%' || c == '&') &&
+            // `%<foe>` in TERM position is the named capture `%($/<foe>)`, the
+            // reading `$<foe>` and `@<foe>` already get. In OPERATOR position
+            // the same spelling is modulo by an allomorph — Rakudo makes
+            // `7 %<3>` a 1 — so the term test has to gate it.
+            bool capHash = c == '%' && !inAngle && regexContext(out) && peek(1) == '<' &&
+                           (isIdentStart(peek(2)) || unicodeLetterAt(2));
+            if (!anonHash && !hashContext && !capHash && (c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || unicodeLetterAt(1) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
-                  ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
+                  // `%:f` / `&:f` — the `:` twigil, a NAMED placeholder parameter,
+                  // which names a variable just as `?`/`=`/`~` do
+                  ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~' || peek(1) == ':') &&
+                   isIdentStart(peek(2))))) {
                 t = lexOperator(prevIsClearTerm(out));
             } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) &&
                        (refreshTermNames(out), tryQuoteForm(t))) {

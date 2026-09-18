@@ -61,8 +61,13 @@ Twigils:
 | `$.x` | public attribute accessor | `has $.x` inside a class |
 | `$!x` | private attribute | `has $!x` |
 | `$^x` | positional placeholder param | `{ $^a + $^b }` |
+| `$:x` | named placeholder param | `{ $:a + $:b }(:1a, :2b)` |
 | `$?x` | compile-time constant | `$?FILE`, `$?LINE` |
 | `$=x` | Pod data | `$=pod` |
+| `$<x>` | named capture of the last match | `$<key>`, `@<list>`, `%<pairs>` |
+
+Every one of them also writes as an adverb, where the key is the name and the
+twigil stays on the value: `:$^a` is `a => $^a`, `:$<key>` is `key => $<key>`.
 
 Declarators: `my` (lexical), `our` (package), `has` (attribute), `state`
 (persistent per-closure), `constant` (compile-time), `temp`/`let` (dynamic

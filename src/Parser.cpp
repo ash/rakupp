@@ -3469,6 +3469,17 @@ ExprPtr Parser::parseColonPair() {
         // `radius => $^radius`, `:$*foo` is `foo => $*foo`) but kept in the value.
         std::string vn = cur().text;
         advance();
+        // The `<` twigil — a MATCH CAPTURE as an adverb: `:$<fee>` is
+        // `fee => $<fee>`, and `:@<fie>` / `:%<foe>` take that capture's list
+        // / hash. The lexer leaves the bare sigil as its own Var and opens the
+        // subscript separately, so the capture NAME is the key and the whole
+        // subscript the value.
+        if ((vn == "$" || vn == "@" || vn == "%") && isOp("<") && !cur().spaceBefore &&
+            peek().kind == Tok::Ident && peek(2).kind == Tok::Op && peek(2).text == ">") {
+            pair->key = peek().text;
+            pair->value = parsePostfix(std::make_unique<VarExpr>(vn), false);
+            return pair;
+        }
         std::string key = vn.size() > 1 ? vn.substr(1) : vn;
         if (!key.empty() && std::strchr("^.!*?:=~", key[0])) key = key.substr(1);
         pair->key = key;
@@ -6818,9 +6829,16 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
             // composer mentioning one is a block too: `.map: { @_[0] =>
             // @_[1] }` builds a Pair per element, and reading it as a Hash
             // literal made the whole map produce nothing.
+            // …and the `:` twigil is a placeholder exactly as `^` is — it names
+            // the same parameter, only as a NAMED one: `{ :$:f }` is the block
+            // `-> :$f { f => $f }`, not a Hash. A NAME has to follow the twigil:
+            // the `:` in `&:<+>` opens an operator name instead.
             if (tk.kind == Tok::Var &&
                 (tk.text == "$_" || tk.text == "@_" || tk.text == "%_" ||
-                 (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
+                 (tk.text.size() > 2 &&
+                  (tk.text[1] == '^' ||
+                   (tk.text[1] == ':' &&
+                    (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_')))))) { isHash = false; break; }
             // …and the same variables reached through a STRING INTERPOLATION,
             // which is a token the scan cannot see into from the outside
             if (tk.kind == Tok::StrInterp && strInterpUsesTopic(tk.text)) { isHash = false; break; }
