@@ -1055,14 +1055,61 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                 Value key = asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v;
                 std::string ks = key.toStr();
                 if (op == "unique") {
-                    // remember seen keys as hash entries in state
-                    if (!state.hash()->count("seen")) (*state.hash())["seen"] = Value::makeHash();
-                    Value& seen = (*state.hash())["seen"];
-                    if (!seen.hash()->count(ks)) { (*seen.hash())[ks] = Value::boolean(true); next.push_back(v); }
+                    // S-35: `:expires($n)` lets a key through again once $n seconds
+                    // have passed since it was last EMITTED, so the seen-set
+                    // remembers WHEN, not merely that. `:with` replaces identity
+                    // with a comparator, and then every key seen so far has to be
+                    // asked — which is why that case keeps an ordered list and the
+                    // ordinary one keeps a hash.
+                    double exp = step.hash()->count("expires") ? (*step.hash())["expires"].toNum() : 0;
+                    Value withF = step.hash()->count("with") ? (*step.hash())["with"] : Value::nil();
+                    if (withF.t == VT::Code) {
+                        if (!state.hash()->count("list")) (*state.hash())["list"] = Value::array();
+                        ValueList* seen = (*state.hash())["list"].arr();
+                        bool emit = true;
+                        for (auto& e : *seen) {
+                            if (!callCallable(withF, ValueList{(*e.hash())["k"], key}).truthy()) continue;
+                            if (exp > 0 && epochNowSecs() - (*e.hash())["t"].toNum() >= exp) {
+                                (*e.hash())["k"] = key;
+                                (*e.hash())["t"] = Value::number(epochNowSecs());
+                            } else emit = false;
+                            break;
+                        }
+                        if (emit) {
+                            bool known = false;
+                            for (auto& e : *seen)
+                                if (callCallable(withF, ValueList{(*e.hash())["k"], key}).truthy()) { known = true; break; }
+                            if (!known) {
+                                Value e = Value::makeHash();
+                                (*e.hash())["k"] = key;
+                                (*e.hash())["t"] = Value::number(epochNowSecs());
+                                seen->push_back(e);
+                            }
+                            next.push_back(v);
+                        }
+                    } else {
+                        if (!state.hash()->count("seen")) (*state.hash())["seen"] = Value::makeHash();
+                        Value& seen = (*state.hash())["seen"];
+                        auto it = seen.hash()->find(ks);
+                        bool emit = it == seen.hash()->end();
+                        if (!emit && exp > 0) emit = epochNowSecs() - it->second.toNum() >= exp;
+                        if (emit) { (*seen.hash())[ks] = Value::number(exp > 0 ? epochNowSecs() : 0); next.push_back(v); }
+                    }
                 } else { // squish: drop only if equal to the immediately preceding key
-                    bool same = state.hash()->count("has") && (*state.hash())["prev"].toStr() == ks;
-                    if (!same) next.push_back(v);
-                    (*state.hash())["prev"] = Value::str(ks); (*state.hash())["has"] = Value::boolean(true);
+                    // …and `:with` decides sameness, called with the previously KEPT
+                    // key first and the new one second (S-36).
+                    Value withF = step.hash()->count("with") ? (*step.hash())["with"] : Value::nil();
+                    bool same = false;
+                    if (state.hash()->count("has")) {
+                        if (withF.t == VT::Code) same = callCallable(withF, ValueList{(*state.hash())["prevv"], key}).truthy();
+                        else same = (*state.hash())["prev"].toStr() == ks;
+                    }
+                    if (!same) {
+                        next.push_back(v);
+                        (*state.hash())["prev"] = Value::str(ks);
+                        (*state.hash())["prevv"] = key;
+                        (*state.hash())["has"] = Value::boolean(true);
+                    }
                 }
             }
             else if (op == "lines" || op == "words") {
@@ -1101,7 +1148,128 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                 }
                 (*state.hash())["buf"] = Value::str(buf.substr(start));
             }
+            // ---- the stateful folds, for a source whose values arrive over time
+            else if (op == "produce" || op == "reduce") {
+                if (!(state.hash()->count("has") && (*state.hash())["has"].truthy())) {
+                    (*state.hash())["acc"] = v; (*state.hash())["has"] = Value::boolean(true);
+                } else if (arg.t == VT::Code) {
+                    (*state.hash())["acc"] = callCallable(arg, ValueList{(*state.hash())["acc"], v});
+                }
+                if (op == "produce") next.push_back((*state.hash())["acc"]);
+            }
+            else if (op == "elems") {
+                long long c = sInt("c") + 1;
+                (*state.hash())["c"] = Value::integer(c);
+                double secs = arg.t != VT::Nil ? arg.toNum() : 0;
+                if (secs <= 0) { next.push_back(Value::integer(c)); }
+                else {
+                    // S-41: at most one report per `$seconds` bucket. The first
+                    // bucket is the one the SUBSCRIPTION fell in, so a source that
+                    // says everything inside it reports only at done.
+                    long long b = (long long)std::floor(epochNowSecs() / secs);
+                    long long b0 = state.hash()->count("bucket")
+                        ? (*state.hash())["bucket"].toInt()
+                        : (long long)std::floor((state.hash()->count("t0") ? (*state.hash())["t0"].toNum() : epochNowSecs()) / secs);
+                    if (b != b0) {
+                        (*state.hash())["bucket"] = Value::integer(b);
+                        (*state.hash())["rep"] = Value::integer(c);
+                        next.push_back(Value::integer(c));
+                    }
+                }
+            }
+            else if (op == "batch") {
+                // S-39: `:elems` closes a batch when it is full; `:seconds`
+                // closes it when the wall clock crosses into a new bucket
+                // (floor(now / seconds)), which is noticed when the first value
+                // of the new bucket arrives. Neither adverb means one-element
+                // batches.
+                long long want = step.hash()->count("elems") ? (*step.hash())["elems"].toInt() : 0;
+                double secs = step.hash()->count("seconds") ? (*step.hash())["seconds"].toNum() : 0;
+                if (want < 1 && secs <= 0) want = 1;
+                if (!state.hash()->count("buf")) (*state.hash())["buf"] = Value::array();
+                ValueList* buf = (*state.hash())["buf"].arr();
+                if (secs > 0) {
+                    long long bucket = (long long)std::floor(epochNowSecs() / secs);
+                    if (state.hash()->count("bucket") && (*state.hash())["bucket"].toInt() != bucket
+                        && !buf->empty()) {
+                        Value b = Value::array(); b.isList = true; *b.arr() = *buf;
+                        buf->clear();
+                        next.push_back(b);
+                    }
+                    (*state.hash())["bucket"] = Value::integer(bucket);
+                }
+                buf->push_back(v);
+                if (want > 0 && (long long)buf->size() >= want) {
+                    Value b = Value::array(); b.isList = true; *b.arr() = *buf;
+                    buf->clear();
+                    next.push_back(b);
+                }
+            }
+            else if (op == "classify" || op == "categorize") {
+                // S-31: each key seen for the first time emits `key => Supply`,
+                // and the inner supply PRESERVES, so a tap that arrives later
+                // still gets that key's values from the beginning.
+                if (!state.hash()->count("keys")) (*state.hash())["keys"] = Value::makeHash();
+                if (!state.hash()->count("sups")) (*state.hash())["sups"] = Value::array();
+                Value keys = Value::array();
+                if (arg.t == VT::Code) {
+                    Value r = callCallable(arg, ValueList{v});
+                    if (op == "categorize" && r.t == VT::Array && r.arr()) *keys.arr() = *r.arr();
+                    else keys.arr()->push_back(r);
+                } else if (arg.t == VT::Hash || arg.t == VT::Array || arg.t == VT::Range) {
+                    // an Associative mapper is `mapper{$_}` and a Positional one
+                    // `mapper[$_]` — including the container's `is default(…)`,
+                    // which is how Roast's Hash mapper names its 0 bucket
+                    Value r = rtIndexGet(arg, v, arg.t == VT::Hash);
+                    // a container declared `is default(…)` names its own missing
+                    // key — Roast's Hash mapper relies on it for the 0 bucket
+                    if (!defined(r) && arg.elemDefault()) r = *arg.elemDefault();
+                    if (op == "categorize" && r.t == VT::Array && r.arr()) *keys.arr() = *r.arr();
+                    else keys.arr()->push_back(r);
+                } else keys.arr()->push_back(v);
+                for (auto& k : *keys.arr()) {
+                    const std::string id = whichOf(k);
+                    Value& seen = (*state.hash())["keys"];
+                    Value sup;
+                    if (!seen.hash()->count(id)) {
+                        sup = Value::makeHash(); sup.hashKind = "Supplier";
+                        (*sup.hash())["taps"] = Value::array();
+                        (*sup.hash())["preserving"] = Value::boolean(true);
+                        (*sup.hash())["buffer"] = Value::array();
+                        (*seen.hash())[id] = sup;
+                        (*state.hash())["sups"].arr()->push_back(sup);
+                        Value inner = Value::makeHash(); inner.hashKind = "Supply";
+                        (*inner.hash())["supplier"] = sup;
+                        Value pr = Value::pair(k.toStr(), inner);
+                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+                        next.push_back(pr);
+                    } else sup = (*seen.hash())[id];
+                    ValueList one{v};
+                    methodCall(sup, "emit", one);
+                }
+            }
             else next.push_back(v);
+        }
+        // the stateful folds have their own last word when the source completes
+        if (flush) {
+            if (op == "reduce") {
+                next.push_back(state.hash()->count("has") && (*state.hash())["has"].truthy()
+                               ? (*state.hash())["acc"] : Value::nil());
+            }
+            else if (op == "elems" && arg.t != VT::Nil && arg.toNum() > 0) {
+                // the final count, when the last bucket did not already report it
+                long long c = sInt("c");
+                bool reported = state.hash()->count("rep") && (*state.hash())["rep"].toInt() == c;
+                if (!reported) next.push_back(Value::integer(c));
+            }
+            else if (op == "batch" && state.hash()->count("buf") && !(*state.hash())["buf"].arr()->empty()) {
+                Value b = Value::array(); b.isList = true; *b.arr() = *(*state.hash())["buf"].arr();
+                (*state.hash())["buf"].arr()->clear();
+                next.push_back(b);
+            }
+            else if ((op == "classify" || op == "categorize") && state.hash()->count("sups")) {
+                for (auto& sup : *(*state.hash())["sups"].arr()) { ValueList na; methodCall(sup, "done", na); }
+            }
         }
         // Draining: nothing can grow any more, so what was held back as ambiguous
         // is now decided. A tail like "b\r" is a TERMINATED line (the "\r" can no
@@ -1512,6 +1680,13 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             if (v.ofType() == "Str") // Str range: quoted endpoint form
                 return "\"" + cpToU8((uint32_t)v.rFrom()) + "\"" + (v.rExFrom() ? "^" : "") + ".." +
                        (v.rExTo() ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo()) + "\"";
+            // …and a range whose endpoints are objects renders THOSE, as gist
+            // does: `Supply.minmax` builds "a".."ccc", whose ends have no
+            // integer form for the fields to hold.
+            if (const RangeEnds* re = rangeEnds(v))
+                if (re->from.t == VT::Str || re->to.t == VT::Str)
+                    return rakuRepr(re->from, depth + 1, seen) + (v.rExFrom() ? "^" : "") + ".." +
+                           (v.rExTo() ? "^" : "") + rakuRepr(re->to, depth + 1, seen);
             // an endless endpoint is Inf, not the long long it is parked in, and
             // `^Inf` keeps the long form (0..^Inf) — gist already spells both
             if (v.rTo() >= 9000000000000000000LL || v.rFrom() <= -9000000000000000000LL)
@@ -5177,7 +5352,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime" ||
                                    v.hashKind == "Instant" || v.hashKind == "Duration");
     };
+    // …but a Supply TYPE object is not one item to snip: `Supply.snip` is a
+    // method that wants an instance, and Roast asks for the error (snip.t).
     if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range &&
+        !(inv.t == VT::Type && inv.s == "Supply") &&
         (inv.t != VT::Hash || dateish(inv))) {
         Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
         return methodCall(one, m, args, rwArgs);
@@ -7599,6 +7777,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             std::lock_guard<std::recursive_mutex> lk(chm);
             keepClosedIfDrained();
+            // …and a channel that FAILED raises its cause once its queue has
+            // been drained, exactly as `.receive` does: `for @$c { }` over a
+            // failed channel must not end quietly (Roast Channel.t).
+            if (inv.hash()->count("failCause")) {
+                const Value& fc = (*inv.hash())["failCause"];
+                std::string msg = "Channel failed";
+                if (fc.t == VT::Object && fc.obj()) {
+                    auto mit = fc.obj()->attrs.find("message");
+                    if (mit != fc.obj()->attrs.end()) msg = mit->second.toStr();
+                } else if (fc.t == VT::Str) msg = fc.s.str();
+                throw RakuError{fc, msg};
+            }
             return o;
         }
         if (m == "Supply") {
@@ -7664,6 +7854,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::str("Thread<" + id + ">(" + nm + ")");
         }
     }
+    // S-03: a Tap can be built directly, with an optional close hook. `.close`
+    // answers True, and calling it twice is harmless — the hook simply runs
+    // again, which is also what an `.on-close` hook does (S-12).
+    if (inv.t == VT::Type && inv.s == "Tap" && m == "new") {
+        Value t = Value::makeHash(); t.hashKind = "Tap";
+        Value hooks = Value::array();
+        for (auto& a : args) if (a.t == VT::Code) hooks.arr()->push_back(a);
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && a.s == "close" && a.pairVal()->t == VT::Code)
+            hooks.arr()->push_back(*a.pairVal());
+        (*t.hash())["closers"] = hooks;
+        return t;
+    }
     if (inv.t == VT::Type && (inv.s == "Supplier" || inv.s == "Supplier::Preserving")) {
         if (m == "new" || m == "preserving") {
             Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash())["taps"] = Value::array();
@@ -7677,91 +7879,178 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return s;
         }
     }
-    // Supplier: a live push source. Its Supply shares the taps list; emit/done fan out to them.
+    // Supplier: a live push source. Its Supply shares the taps list; emit/done
+    // fan out to the taps present at that moment (S-05).
+    //
+    // Two protocol rules of the semantics sheet live on the tap RECORD rather
+    // than on the supplier, because both are per-tap — a Supplier that is done
+    // still feeds a tap registered afterwards, which is what Roast's basic.t
+    // asserts: `ended` closes a tap to every later event (S-06, the grammar
+    // emit* [done|quit]), and `depth` +
+    // `pending` implement S-07 — a value emitted from inside a tap's own handler
+    // reaches the OTHER taps at once but is deferred for the emitting one until
+    // its handler returns, so one tap's handlers never nest.
     if (inv.t == VT::Hash && inv.hashKind == "Supplier") {
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash())["supplier"] = inv; return s; } // live (no "values")
-        if (m == "emit") { Value v = args.empty() ? Value::any() : args[0];
+        auto H = inv.hash();
+        auto tapEnded = [](const Value& t) {
+            if (t.t != VT::Hash || !t.hash()) return true;
+            auto h = t.hash();
+            auto e = h->find("ended");
+            if (e != h->end() && e->second.truthy()) return true;
+            auto c = h->find("closed");
+            return c != h->end() && c->second.truthy();
+        };
+        auto endTap = [](Value& t) { if (t.hash()) (*t.hash())["ended"] = Value::boolean(true); };
+        // Supplier::Preserving keeps the events issued while nobody is listening
+        // and replays them to the next first tap (S-09). "Listening" is what
+        // decides, so a supplier whose last tap closed starts preserving again.
+        bool preserving = H->count("preserving") && (*H)["preserving"].truthy();
+        auto anyLiveTap = [&]() {
+            auto it = H->find("taps");
+            if (it == H->end() || !it->second.arr()) return false;
+            for (auto& t : *it->second.arr()) if (!tapEnded(t)) return true;
+            return false;
+        };
+        auto preserve = [&](const char* kind, const Value& v) {
+            if (!preserving || anyLiveTap()) return false;
+            Value ev = Value::makeHash();
+            (*ev.hash())["kind"] = Value::str(kind);
+            (*ev.hash())["val"] = v;
+            if (!H->count("buffer")) (*H)["buffer"] = Value::array();
+            (*H)["buffer"].arr()->push_back(ev);
+            return true;
+        };
+        // One value through one tap: its transform chain, then its handler, with
+        // the control exceptions a whenever body can raise.
+        auto runEmitOnce = [&](Value& t, const Value& v) {
+            bool complete = false;
+            ValueList outs = applyTapChain(t, v, complete);
+            if (t.hash()->count("emit") && (*t.hash())["emit"].t == VT::Code) {
+                // push the tap's react ctx so `done` inside the whenever block
+                // closes the enclosing react (the block runs here, on whatever
+                // thread emitted — reactStack_ is thread-local, so it wasn't set)
+                std::shared_ptr<ReactCtx> rctx = t.ext() ? std::static_pointer_cast<ReactCtx>(t.ext()) : nullptr;
+                for (auto& o : outs) {
+                    ValueList one{o};
+                    if (rctx) reactStack_.push_back(rctx);
+                    // `next` in a whenever skips this value; `last` closes the tap
+                    try { callCallable((*t.hash())["emit"], one); if (rctx) reactStack_.pop_back(); }
+                    catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
+                    catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
+                    catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
+                    catch (RakuError& e) {
+                        // …but an error ABOUT THE VALUE the emitter passed is the
+                        // emitter's: `migrate` on a supply that emits something
+                        // that is not a Supply throws where the emit happened
+                        // (Roast migrate.t), not into a quit handler that would
+                        // be told about somebody else's mistake.
+                        if (e.payload.t == VT::Type && e.payload.s == "X::Supply::Migrate::Needs") {
+                            if (rctx) reactStack_.pop_back();
+                            throw;
+                        }
+                        // an exception in the tap's block QUITS the tap — the
+                        // quit handler gets the exception and the EMITTER is
+                        // not unwound (Cro's frame parser dies per malformed
+                        // frame; the test taps `quit => { when X::… }`)
+                        if (rctx) reactStack_.pop_back();
+                        (*t.hash())["closed"] = Value::boolean(true);
+                        // …but inside a REACT that rule is inverted: a die in a
+                        // whenever BODY kills the whole react and propagates,
+                        // and QUIT does NOT see it — QUIT is for the SOURCE's
+                        // own quit (issue #18). The interval path already did
+                        // this; a Supplier-fed whenever handed the body's death
+                        // to QUIT and carried on, so `react { whenever
+                        // $s.Supply { die } }` printed the QUIT message and
+                        // exited 0 where Rakudo dies.
+                        if (rctx) {
+                            std::lock_guard<std::mutex> lk(rctx->m);
+                            if (!rctx->quitFlag) {
+                                rctx->quitFlag = true;
+                                rctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload;
+                            }
+                            rctx->closed = true;
+                            if (rctx->liveSources > 0) rctx->liveSources--;
+                            rctx->cv.notify_all();
+                            break;
+                        }
+                        if (t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) {
+                            ValueList one2{exceptionFor(e)};
+                            try { callCallable((*t.hash())["quit"], one2); } catch (...) {}
+                        }
+                        if (t.ext()) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
+                        break;
+                    }
+                    catch (...) { if (rctx) reactStack_.pop_back(); throw; }
+                    if (rctx && rctx->closed) break; // `done` inside the block ended the react
+                }
+            }
+            if (complete) { // head(n)/first done → fire the tap's done and release a react source
+                (*t.hash())["closed"] = Value::boolean(true);
+                if (t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
+                if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+            }
+        };
+        // S-07's deferral, and the drain that follows the handler's return.
+        auto feed = [&](Value& t, const Value& v) {
+            if (tapEnded(t)) return;
+            auto h = t.hash();
+            auto d = h->find("depth");
+            if (d != h->end() && d->second.toInt() > 0) {
+                if (!h->count("pending")) (*h)["pending"] = Value::array();
+                (*h)["pending"].arr()->push_back(v);
+                return;
+            }
+            struct Depth {
+                ValueMap* h;
+                Depth(ValueMap* hh) : h(hh) { (*h)["depth"] = Value::integer(1); }
+                ~Depth() { (*h)["depth"] = Value::integer(0); }
+            };
+            { Depth g(h); runEmitOnce(t, v); }
+            for (;;) {
+                if (tapEnded(t)) break;
+                auto pit = h->find("pending");
+                if (pit == h->end() || !pit->second.arr() || pit->second.arr()->empty()) break;
+                Value nx = pit->second.arr()->front();
+                pit->second.arr()->erase(pit->second.arr()->begin());
+                Depth g(h); runEmitOnce(t, nx);
+            }
+        };
+        // Everything below fans out over a SNAPSHOT of the taps: S-05 says the
+        // taps present at the moment of the event receive it, and a handler that
+        // taps the same supplier must not invalidate the walk.
+        auto tapSnapshot = [&]() {
+            ValueList out;
+            auto it = H->find("taps");
+            if (it != H->end() && it->second.arr()) out = *it->second.arr();
+            return out;
+        };
+        if (m == "emit") {
+            Value v = args.empty() ? Value::any() : args[0];
             // Rakudo's contract: a Supplier's emissions are SERIALIZED per tap.
             // Under the GIL that held by accident; in parallel mode concurrent
             // emits ran the tap blocks simultaneously and interleaved into the
             // taps vector — the stress suite measured 1,694 of 2,000 arrivals.
             // The supplier's stripe serializes emit/done/quit AND registration.
-            std::lock_guard<std::recursive_mutex> emitLk(supplierMutex(inv.hash()));
-            if (inv.hash()->count("preserving") && (*inv.hash())["preserving"].truthy() && inv.hash()->count("buffer"))
-                (*inv.hash())["buffer"].arr()->push_back(v); // replayed to late taps
-            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) {
-                if (t.t != VT::Hash) continue;
-                if (t.hash()->count("closed") && (*t.hash())["closed"].truthy()) continue; // head/first already finished
-                bool complete = false;
-                ValueList outs = applyTapChain(t, v, complete);
-                if (t.hash()->count("emit") && (*t.hash())["emit"].t == VT::Code) {
-                    // push the tap's react ctx so `done` inside the whenever block
-                    // closes the enclosing react (the block runs here, on whatever
-                    // thread emitted — reactStack_ is thread-local, so it wasn't set)
-                    std::shared_ptr<ReactCtx> rctx = t.ext() ? std::static_pointer_cast<ReactCtx>(t.ext()) : nullptr;
-                    for (auto& o : outs) {
-                        ValueList one{o};
-                        if (rctx) reactStack_.push_back(rctx);
-                        // `next` in a whenever skips this value; `last` closes the tap
-                        try { callCallable((*t.hash())["emit"], one); if (rctx) reactStack_.pop_back(); }
-                        catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
-                        catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
-                        catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
-                        catch (RakuError& e) {
-                            // an exception in the tap's block QUITS the tap — the
-                            // quit handler gets the exception and the EMITTER is
-                            // not unwound (Cro's frame parser dies per malformed
-                            // frame; the test taps `quit => { when X::… }`)
-                            if (rctx) reactStack_.pop_back();
-                            (*t.hash())["closed"] = Value::boolean(true);
-                            // …but inside a REACT that rule is inverted: a die in a
-                            // whenever BODY kills the whole react and propagates,
-                            // and QUIT does NOT see it — QUIT is for the SOURCE's
-                            // own quit (issue #18). The interval path already did
-                            // this; a Supplier-fed whenever handed the body's death
-                            // to QUIT and carried on, so `react { whenever
-                            // $s.Supply { die } }` printed the QUIT message and
-                            // exited 0 where Rakudo dies.
-                            if (rctx) {
-                                std::lock_guard<std::mutex> lk(rctx->m);
-                                if (!rctx->quitFlag) {
-                                    rctx->quitFlag = true;
-                                    rctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload;
-                                }
-                                rctx->closed = true;
-                                if (rctx->liveSources > 0) rctx->liveSources--;
-                                rctx->cv.notify_all();
-                                break;
-                            }
-                            if (t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) {
-                                ValueList one2{exceptionFor(e)};
-                                try { callCallable((*t.hash())["quit"], one2); } catch (...) {}
-                            }
-                            if (t.ext()) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
-                            break;
-                        }
-                        catch (...) { if (rctx) reactStack_.pop_back(); throw; }
-                        if (rctx && rctx->closed) break; // `done` inside the block ended the react
-                    }
-                }
-                if (complete) { // head(n)/first done → fire the tap's done and release a react source
-                    (*t.hash())["closed"] = Value::boolean(true);
-                    if (t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
-                    if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
-                }
-            }
-            return Value::boolean(true); }
+            std::lock_guard<std::recursive_mutex> emitLk(supplierMutex(H));
+            if (preserve("emit", v)) return Value::boolean(true);
+            ValueList snap = tapSnapshot();
+            for (auto& t : snap) { if (t.t != VT::Hash) continue; feed(t, v); }
+            return Value::boolean(true);
+        }
         if (m == "done") {
-            std::lock_guard<std::recursive_mutex> doneLk(supplierMutex(inv.hash()));
+            std::lock_guard<std::recursive_mutex> doneLk(supplierMutex(H));
             // Remember the done state so a tap that registers LATER (an eager
             // `start { $s.emit(…); $s.done }` that ran before the react tapped it)
             // is closed immediately instead of leaving its react source live forever.
-            (*inv.hash())["done_state"] = Value::boolean(true);
-            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) {
-                if (t.t == VT::Hash && t.hash()->count("closed") && (*t.hash())["closed"].truthy()) continue; // already done (head/first)
+            (*H)["done_state"] = Value::boolean(true);
+            if (preserve("done", Value::any())) return Value::boolean(true);
+            ValueList snap = tapSnapshot();
+            for (auto& t : snap) {
+                if (t.t != VT::Hash || tapEnded(t)) continue;
                 // a `.lines`/`.words` chain may still hold an unterminated last piece:
                 // the stream ending is what completes it, so deliver it before `done`
-                if (t.t == VT::Hash && t.hash()->count("chain") &&
+                if (t.hash()->count("chain") &&
                     t.hash()->count("emit") && (*t.hash())["emit"].t == VT::Code) {
                     bool complete = false;
                     ValueList tail = applyTapChain(t, Value::any(), complete, /*flush=*/true);
@@ -7771,20 +8060,47 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
                     }
                 }
-                if (t.t == VT::Hash && t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
+                endTap(t);
+                if (t.hash()->count("done") && (*t.hash())["done"].t == VT::Code) { ValueList none; callCallable((*t.hash())["done"], none); }
                 if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
             }
-            return Value::boolean(true); }
+            return Value::boolean(true);
+        }
         if (m == "quit") {
-            std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(inv.hash()));
+            std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(H));
             // Recorded for the same reason as done_state: a Supply.wait on a
             // supplier that quits must return, not block forever.
-            (*inv.hash())["quit_state"] = Value::boolean(true);
+            (*H)["quit_state"] = Value::boolean(true);
+            // S-08: a bare string is the payload of an X::AdHoc; an exception
+            // object travels as it is.
             Value ex = args.empty() ? Value::any() : args[0];
-            if (inv.hash()->count("taps")) for (auto& t : *(*inv.hash())["taps"].arr()) { if (t.t == VT::Hash && t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash())["quit"], one); } }
-            return Value::boolean(true); }
+            if (ex.t == VT::Str) ex = exceptionFor(RakuError{Value::typeObj("X::AdHoc"), ex.s.str(), RakuError::NoCapture{}});
+            if (preserve("quit", ex)) return Value::boolean(true);
+            ValueList snap = tapSnapshot();
+            for (auto& t : snap) {
+                if (t.t != VT::Hash || tapEnded(t)) continue;
+                endTap(t);
+                if (t.hash()->count("quit") && (*t.hash())["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash())["quit"], one); }
+                else {
+                    // S-02: the default quit handler RETHROWS at the point where
+                    // the source quit, so an unhandled quit surfaces in the
+                    // emitter instead of vanishing. The fan-out stops there —
+                    // which is what Rakudo's taps observe too.
+                    if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+                    std::string qmsg = "quit";
+                    if (ex.t == VT::Object && ex.obj()) {
+                        auto mit = ex.obj()->attrs.find("message");
+                        if (mit != ex.obj()->attrs.end()) qmsg = mit->second.toStr();
+                    } else if (ex.t == VT::Str) qmsg = ex.s.str();
+                    throw RakuError{ex, qmsg};
+                }
+                if (t.ext()) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext()); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+            }
+            return Value::boolean(true);
+        }
         if (m == "Seq" || m == "list") { Value o = Value::array(); o.isList = true; return o; }
     }
+
     // Supply as a type object: constructors that build an eager, list-backed Supply.
     if (inv.t == VT::Type && inv.s == "Supply") {
         // Supply's own INSTANCE methods need a Supply, not the type object.
@@ -7793,51 +8109,110 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // of five S17-supply files — did not die. Only the methods Supply
         // actually defines: `Supply.sort` is Any.sort on a type object and must
         // keep working, as it does in Rakudo.
+        // …but `collate` is NOT one of them: Roast asks for `Supply.collate` and
+        // expects Any's one-element-list answer, `(Supply,).Seq`.
         static const std::set<std::string> kSupplyInstance = {
             "reverse", "words", "lines", "rotor", "produce", "reduce", "batch",
             "head", "tail", "skip", "squish", "unique", "elems", "min", "max",
-            "minmax", "sum", "collate", "repeated", "roll", "pick",
+            "minmax", "sum", "repeated", "roll", "pick", "snip",
         };
         if (kSupplyInstance.count(m.s))
             throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
                             "Invocant of method '" + m.s + "' must be an object instance of type "
                             "'Supply', not a type object"};
         auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = std::move(vals); (*s.hash())["values"] = v; return s; };
+        // A combinator over sources that are not all list-backed: the values do
+        // not exist yet, so the SPEC is what the method answers and every tap
+        // subscribes to each source for itself (tapSupply's "combine" arm).
+        auto mkCombine = [&](const char* op, ValueList streams, Value withOp, ValueList initial) {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash())["kind"] = Value::str("combine");
+            (*s.hash())["op"] = Value::str(op);
+            Value srcs = Value::array(); *srcs.arr() = std::move(streams);
+            (*s.hash())["sources"] = srcs;
+            if (withOp.t == VT::Code) (*s.hash())["with"] = withOp;
+            if (!initial.empty()) { Value iv = Value::array(); *iv.arr() = std::move(initial); (*s.hash())["initial"] = iv; }
+            return s;
+        };
+        // S-01: a Supply has no public constructor. It comes from a Supplier, from
+        // one of the factories, or from a `supply` block — anything else is a
+        // programming error, and Rakudo names it X::Supply::New.
+        if (m == "new")
+            throw RakuError{Value::typeObj("X::Supply::New"),
+                            "Cannot directly create a Supply. You might want:\n"
+                            " - To use a Supplier in order to get a live supply\n"
+                            " - To use Supply.on-demand to create an on-demand supply\n"
+                            " - To create a Supply using a supply block"};
         if (m == "from-list") {
-            // +@values single-arg rule: ONE array arg (from-list(@source)) emits its
-            // elements; with several args each stays whole (from-list([1,2],[3,4,5])
-            // is two list values). A Range always expands.
+            // S-16: the single-argument rule. ONE Iterable argument is flattened
+            // into values; SEVERAL arguments are each one value, even when they
+            // are themselves lists — `from-list((1,2),(3,4))` is a two-value
+            // supply, not a four-value one.
             ValueList out;
-            if (args.size() == 1 && args[0].t == VT::Array && args[0].arr() && !args[0].itemized) {
-                for (auto& x : *args[0].arr()) out.push_back(x);
-            } else for (auto& a : args) {
-                if (a.t == VT::Range) { for (auto& x : a.flatten()) out.push_back(x); }
-                else if (a.t == VT::Array && a.isList && a.arr()) { for (auto& x : *a.arr()) out.push_back(x); }
-                else out.push_back(a);
+            // Reifying the argument is part of the STREAM, not of building it:
+            // `Supply.from-list(gather { die })` is a supply that quits, and a
+            // `whenever`'s QUIT phaser is entitled to handle it. Letting the
+            // death out here would kill the caller instead (Roast syntax.t).
+            try {
+                // a lazy source is REIFIED here, inside the guard: that is where
+                // its values come from, and where a `gather { die }` dies
+                for (auto& a : args) forceLazy(a);
+                if (args.size() == 1 && args[0].t == VT::Array && args[0].arr() && !args[0].itemized) {
+                    for (auto& x : *args[0].arr()) out.push_back(x);
+                } else if (args.size() == 1 && args[0].t == VT::Range) {
+                    for (auto& x : args[0].flatten()) out.push_back(x);
+                } else for (auto& a : args) {
+                    // …a Slip is the exception the single-argument rule always
+                    // makes: it splices into the slurpy however many arguments
+                    // there are.
+                    if (a.t == VT::Array && a.arr() && a.s == "Slip") { for (auto& x : *a.arr()) out.push_back(x); }
+                    else out.push_back(a);
+                }
+            } catch (RakuError& e) {
+                Value s2 = mkSupply(out);
+                (*s2.hash())["quit-reason"] = exceptionFor(e);
+                (*s2.hash())["quit-message"] = Value::str(e.message);
+                return s2;
             }
             return mkSupply(out);
         }
         if (m == "list") { Value o = Value::array(); o.isList = true; o.arr()->push_back(inv); return o; } // Supply type → (Supply,)
-        if (m == "merge") { // list-backed supplies only — a live one was silently DROPPED; refuse it, as zip does
-            ValueList all;
+        if (m == "merge") {
+            ValueList streams;
             for (auto& a : flattenArgs(args)) {
-                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")))
-                    throw RakuError{Value::typeObj("X::Supply::Combinator"), "merge requires list-backed Supply arguments (a live supply cannot be merged yet)"};
-                for (auto& x : *(*a.hash())["values"].arr()) all.push_back(x);
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()))
+                    // S-13: the exception names the combinator that rejected it.
+                    throwTypedV("X::Supply::Combinator", {{"combinator", Value::str("merge")}},
+                                "Can only use valid Supplies with merge");
+                streams.push_back(a);
             }
-            return mkSupply(all);
+            if (streams.empty()) return mkSupply({});
+            if (streams.size() == 1) return streams[0];   // merging one supply is that supply
+            bool allListy = true;
+            for (auto& a : streams) if (!a.hash()->count("values")) { allListy = false; break; }
+            if (allListy) {   // every value is already in hand: concatenate them
+                ValueList all;
+                for (auto& a : streams) for (auto& x : *(*a.hash())["values"].arr()) all.push_back(x);
+                return mkSupply(all);
+            }
+            return mkCombine("merge", streams, Value::nil(), ValueList{});
         }
         if (m == "zip") {
-            // zip N list-backed supplies element-wise (stopping at the shortest); an
-            // optional :with(&op) combines each row instead of emitting a tuple List.
+            // zip N supplies element-wise (stopping at the shortest); an optional
+            // :with(&op) combines each row instead of emitting a tuple List.
             ValueList streams; Value withOp;
             for (auto& a : args) {
                 if (a.t == VT::Pair && (a.s == "with" || a.s == "as") && a.pairVal()) { withOp = *a.pairVal(); continue; }
-                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()->count("values")))
-                    throw RakuError{Value::typeObj("X::Supply::Combinator"), "zip requires Supply arguments"};
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()))
+                    throwTypedV("X::Supply::Combinator", {{"combinator", Value::str("zip")}},
+                                "Can only use valid Supplies with zip");
                 streams.push_back(a);
             }
-            if (streams.size() == 1) return streams[0]; // zipping one supply is a === noop
+            if (streams.size() == 1 && withOp.t != VT::Code) return streams[0]; // zipping one supply is a === noop
+            {   bool allListy = true;
+                for (auto& a : streams) if (!a.hash()->count("values")) { allListy = false; break; }
+                if (!allListy) return mkCombine("zip", streams, withOp, ValueList{});
+            }
             size_t n = SIZE_MAX;
             for (auto& s : streams) n = std::min(n, (*s.hash())["values"].arr()->size());
             if (streams.empty()) n = 0;
@@ -7845,7 +8220,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (size_t i = 0; i < n; i++) {
                 ValueList row; for (auto& s : streams) row.push_back((*(*s.hash())["values"].arr())[i]);
                 if (withOp.t == VT::Code) out.push_back(callCallable(withOp, row));
-                else { Value tup = Value::array(); tup.isList = true; *tup.arr() = std::move(row); out.push_back(tup); }
+                else {
+                    // S-45: an ITEMIZED List — `$(1, 4)`, one container holding
+                    // the row, so a consumer sees one value and not two.
+                    Value tup = Value::array(); tup.isList = true; tup.itemized = true;
+                    *tup.arr() = std::move(row); out.push_back(tup);
+                }
             }
             return mkSupply(out);
         }
@@ -7857,9 +8237,141 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (size_t i = 1; i < args.size(); i++)
                 if (args[i].t != VT::Pair) { delay = args[i].toNum(); break; }
             (*s.hash())["delay"] = Value::number(delay);
+            // …unless a SCHEDULER was named: then the ticks are its business, and
+            // the supply asks it to cue them instead of running a clock of its own
+            // (Roast interval.t drives a fake one through virtual time).
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal() && a.s == "scheduler" && a.pairVal()->t == VT::Object)
+                    (*s.hash())["scheduler"] = *a.pairVal();
             return s;
         }
         if (m == "empty") return mkSupply({});
+        // S-46: zip-latest. Once every source has emitted once, each new value
+        // from any source emits the LATEST of every source, itemized. `:initial`
+        // seeds them in source order, so fewer sources have to speak before the
+        // first output; `:with` folds instead of building the tuple. Synchronous
+        // sources are subscribed in order, which is why the first source has
+        // finished by the time the second starts.
+        if (m == "zip-latest") {
+            ValueList streams, initial; Value withOp;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "with") { withOp = *a.pairVal(); continue; }
+                    if (a.s == "initial") {
+                        const Value& iv = *a.pairVal();
+                        if (iv.t == VT::Array && iv.arr()) initial = *iv.arr();
+                        else if (iv.t == VT::Range) initial = iv.flatten();
+                        else initial.push_back(iv);
+                        continue;
+                    }
+                    continue;
+                }
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash()))
+                    throwTypedV("X::Supply::Combinator", {{"combinator", Value::str("zip-latest")}},
+                                "Can only use valid Supplies with zip-latest");
+                streams.push_back(a);
+            }
+            if (streams.empty()) return mkSupply({});
+            if (streams.size() == 1 && withOp.t != VT::Code && initial.empty()) return streams[0];
+            {   bool allListy = true;
+                for (auto& a : streams) if (!a.hash()->count("values")) { allListy = false; break; }
+                if (!allListy) return mkCombine("zip-latest", streams, withOp, initial);
+            }
+            const size_t n = streams.size();
+            std::vector<Value> latest(n);
+            std::vector<bool> have(n, false);
+            for (size_t i = 0; i < n && i < initial.size(); i++) { latest[i] = initial[i]; have[i] = true; }
+            ValueList out;
+            for (size_t i = 0; i < n; i++)
+                for (auto& v : *(*streams[i].hash())["values"].arr()) {
+                    latest[i] = v; have[i] = true;
+                    bool all = true;
+                    for (size_t k = 0; k < n; k++) if (!have[k]) { all = false; break; }
+                    if (!all) continue;
+                    ValueList row(latest.begin(), latest.end());
+                    if (withOp.t == VT::Code) out.push_back(callCallable(withOp, row));
+                    else {
+                        Value tup = Value::array(); tup.isList = true; tup.itemized = true;
+                        *tup.arr() = std::move(row); out.push_back(tup);
+                    }
+                }
+            return mkSupply(out);
+        }
+        // S-15: `Supply.on-demand(&producer, :closing)`. Every tap runs the
+        // producer afresh, with a Supplier of its own, SYNCHRONOUSLY on the
+        // tapping thread — so the values are there before `.tap` returns. It is
+        // a supply block with a generated body, which is what gives it the
+        // liveness, the completion rule and the die-becomes-quit rule for free.
+        if (m == "on-demand") {
+            Value producer = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            Value closing;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal() && a.s == "closing") closing = *a.pairVal();
+            Value blk; blk.t = VT::Code; blk.setCode(std::make_shared<Callable>());
+            blk.code()->builtin = [producer, closing](Interpreter& I, ValueList&) -> Value {
+                auto ctx = I.tctx_.tapStack.empty() ? nullptr : I.tctx_.tapStack.back();
+                // :closing belongs to the TAP: it runs once when this activation
+                // is torn down — on done, on a quit, or when the tap is closed.
+                if (closing.t == VT::Code && ctx) {
+                    if (ctx->tap) {
+                        std::lock_guard<std::mutex> lk(ctx->tap->m);
+                        if (!ctx->tap->closed) ctx->tap->closePhasers.push_back(closing);
+                    } else ctx->closers.push_back(closing);
+                }
+                Value sup = Value::makeHash(); sup.hashKind = "Supplier";
+                (*sup.hash())["taps"] = Value::array();
+                Value rec = Value::makeHash();
+                // routed at THIS activation, not at whatever the emitting thread
+                // happens to have on its stack: the producer may hand the
+                // Supplier to a `start` block and emit from there.
+                Value e; e.t = VT::Code; e.setCode(std::make_shared<Callable>());
+                e.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
+                    if (!ctx || ctx->done) return Value::boolean(true);
+                    Value v = a.empty() ? Value::any() : a[0];
+                    if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
+                    if (ctx->emitCb.t == VT::Code) {
+                        ValueList one{v};
+                        ctx->emitting++;
+                        try { I2.callCallable(ctx->emitCb, one); } catch (...) { ctx->emitting--; throw; }
+                        ctx->emitting--;
+                    }
+                    return Value::boolean(true);
+                };
+                // `$p.done` ends the SUPPLY, not the producer: the block runs on
+                // to its last statement, and its later emits go nowhere.
+                Value d; d.t = VT::Code; d.setCode(std::make_shared<Callable>());
+                d.code()->builtin = [ctx](Interpreter& I2, ValueList&) -> Value {
+                    if (ctx && !ctx->doneFired) {
+                        ctx->done = true; ctx->doneFired = true;
+                        if (!ctx->collect) {
+                            if (ctx->doneCb.t == VT::Code) { ValueList na; try { I2.callCallable(ctx->doneCb, na); } catch (...) {} }
+                            I2.closeTapHandle(ctx->tap);
+                        }
+                    }
+                    return Value::boolean(true);
+                };
+                Value q; q.t = VT::Code; q.setCode(std::make_shared<Callable>());
+                q.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
+                    Value ex = a.empty() ? Value::any() : a[0];
+                    if (ctx && !ctx->doneFired) {
+                        ctx->done = true; ctx->doneFired = true;
+                        if (!ctx->collect) {
+                            if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                            I2.closeTapHandle(ctx->tap);
+                        }
+                    }
+                    return Value::boolean(true);
+                };
+                (*rec.hash())["emit"] = e; (*rec.hash())["done"] = d; (*rec.hash())["quit"] = q;
+                (*sup.hash())["taps"].arr()->push_back(rec);
+                ValueList one{sup};
+                if (producer.t == VT::Code) I.callCallable(producer, one);
+                return Value::any();
+            };
+            Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+            (*s2.hash())["block"] = blk;
+            return s2;
+        }
     }
     if (inv.t == VT::Type && inv.s == "Promise") {
         Value p = Value::makeHash(); p.hashKind = "Promise";
@@ -8370,12 +8882,105 @@ static Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
     return v;
 }
 
+// The cause of a broken Promise (or a failed Channel) as a real Exception: a
+// plain string is the PAYLOAD of an X::AdHoc, so `.message` and `.payload` work
+// wherever the cause surfaces — a whenever's QUIT phaser, a react's rethrow,
+// the `$!` after a `try react` (S-60).
+static Value causeException(Interpreter& I, const Value& cause, const std::string& msg) {
+    if (cause.t == VT::Object) return cause;
+    std::string m = cause.t == VT::Str ? cause.s.str() : msg;
+    if (m.empty()) m = "Promise broken";
+    if (cause.t == VT::Type) return I.exceptionFor(RakuError{cause, m, RakuError::NoCapture{}});
+    return I.exceptionFor(RakuError{Value::typeObj("X::AdHoc"), m, RakuError::NoCapture{}});
+}
+
 void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     if (!ctx || ctx->doneFired || ctx->done) return;
     if (!ctx->blockDone || ctx->pending > 0) return;
     ctx->doneFired = true;
     if (ctx->doneCb.t == VT::Code) { ValueList na; try { callCallable(ctx->doneCb, na); } catch (...) {} }
     closeTapHandle(ctx->tap);
+}
+
+Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
+                                  std::function<void(Interpreter&, ValueList&)> fn) {
+    return ctxCallable(ctx, [ctx, sub, fn](Interpreter& I2, ValueList& args) -> Value {
+        if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
+        if (ctx->running > 0) {
+            Interpreter* ip = &I2;
+            auto saved = std::make_shared<ValueList>(args);
+            ctx->queue.push_back({sub, [ip, ctx, sub, fn, saved] {
+                if (ctx->done || (sub && ctx->closedSubs.count(sub))) return;
+                ip->tctx_.tapStack.push_back(ctx);
+                ctx->running++;
+                struct G {
+                    Interpreter* i; std::shared_ptr<SupplyTapCtx> c;
+                    ~G() { c->running--; i->tctx_.tapStack.pop_back(); }
+                } g{ip, ctx};
+                fn(*ip, *saved);
+            }});
+            return Value::any();
+        }
+        ctx->running++;
+        try { fn(I2, args); } catch (...) { ctx->running--; throw; }
+        ctx->running--;
+        I2.drainSupplyQueue(ctx);
+        return Value::any();
+    });
+}
+
+int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& replacement) {
+    bool consumed = false;
+    for (auto& q : quitP) {
+        if (q.t != VT::Code || !q.code() || !q.code()->body) continue;
+        // The phaser's statements run HERE rather than through callCallable: a
+        // matching `when` reports itself by unwinding, and a callable boundary
+        // absorbs that signal as the block's return value. CATCH reads its own
+        // clauses the same way. `$_` and `$!` are the exception, as in a CATCH.
+        auto scope = std::make_shared<Env>();
+        scope->parent = q.code()->closure ? q.code()->closure : tctx_.cur;
+        auto savedEnv = tctx_.cur;
+        uint64_t savedGF = tctx_.curGivenFrame;
+        tctx_.cur = scope;
+        tctx_.curGivenFrame = ExecContext::kNoFrame;
+        struct R {
+            Interpreter& I; std::shared_ptr<Env> e; uint64_t f;
+            ~R() { I.tctx_.cur = e; I.tctx_.curGivenFrame = f; }
+        } r{*this, savedEnv, savedGF};
+        scope->define("$_", ex);
+        scope->define("$!", ex);
+        try { for (auto& st : *q.code()->body) exec(st.get()); }
+        catch (BreakGivenEx&) { consumed = true; }   // a when/default matched: the quit is handled
+        // …and a `done` inside the phaser has ALREADY ended the supply: the quit
+        // is handled by definition, and must not also reach the tapper's quit
+        // handler (Roast syntax.t's `QUIT { when … { emit …; done } }`).
+        catch (DoneEx&) { return 0; }
+        catch (ResumeEx&) {
+            // a quit is long past the throw point, so it cannot be resumed —
+            // the attempt itself becomes what the tapper is told about
+            replacement = exceptionFor(RakuError{Value::typeObj("X::AdHoc"),
+                                                 "Cannot resume a Supply quit", RakuError::NoCapture{}});
+            return 2;
+        }
+        catch (RakuError& e2) { replacement = exceptionFor(e2); return 2; } // the phaser threw: that is the quit now
+        catch (...) {}
+    }
+    return consumed ? 0 : 1;
+}
+
+// S-53. Hand over what the whenevers' sources delivered while a body was
+// running, in arrival order, skipping anything whose subscription has since
+// been closed — by `last`, or by its own source completing. An explicit `done`
+// empties the queue: nothing follows it.
+void Interpreter::drainSupplyQueue(const std::shared_ptr<SupplyTapCtx>& ctx) {
+    if (!ctx || ctx->running > 0) return;
+    while (!ctx->queue.empty()) {
+        if (ctx->done) { ctx->queue.clear(); break; }
+        auto d = std::move(ctx->queue.front());
+        ctx->queue.erase(ctx->queue.begin());
+        if (d.sub && ctx->closedSubs.count(d.sub)) continue;
+        d.run();
+    }
 }
 
 void Interpreter::closeTapHandle(const std::shared_ptr<TapHandle>& h) {
@@ -8390,7 +8995,10 @@ void Interpreter::closeTapHandle(const std::shared_ptr<TapHandle>& h) {
         phasers.swap(h->closePhasers);
     }
     for (auto& f : closers) { try { f(); } catch (...) {} }
-    for (auto& p : phasers) if (p.t == VT::Code) { ValueList na; try { callCallable(p, na); } catch (...) {} }
+    // S-59: several CLOSE phasers run in REVERSE order of declaration — the
+    // innermost setup is torn down first, as with LEAVE.
+    for (auto it = phasers.rbegin(); it != phasers.rend(); ++it)
+        if (it->t == VT::Code) { ValueList na; try { callCallable(*it, na); } catch (...) {} }
 }
 
 Value Interpreter::drainSupplyBlock(const Value& s) {
@@ -8402,10 +9010,15 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     ctx->collect = &vals;
     tctx_.tapStack.push_back(ctx);
     try {
-        if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
+        // S-53 holds here too: the body runs first, then what its whenevers'
+        // sources delivered while it ran.
+        ctx->running++; ctx->inBody = true;
+        if (blk.t == VT::Code) { ValueList na; try { callCallable(blk, na); } catch (...) { ctx->running--; ctx->inBody = false; throw; } }
+        ctx->running--; ctx->inBody = false;
+        drainSupplyQueue(ctx);
     }
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
-    catch (DoneEx&) {} // `done` in the body: normal end of the stream
+    catch (DoneEx&) { ctx->queue.clear(); } // `done` in the body: normal end of the stream
     catch (...) { tctx_.tapStack.pop_back(); throw; }
     tctx_.tapStack.pop_back();
     // A whenever on a still-pending Promise holds the supply open (Cro's connector
@@ -8626,7 +9239,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     if (secs < 0) secs = 0;
     Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
         // shutdown mid-delay: release the pending hold, but never run the block
-        if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
+        if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) { ValueList one{Value::boolean(true)}; try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
         return Value::any();
@@ -8675,7 +9288,9 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
     Value chain = Value::array();
     for (auto& step : *supply.hash()->at("chain").arr()) {
         Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
-        (*s2.hash())["state"] = Value::makeHash();
+        { Value st0 = Value::makeHash();
+          (*st0.hash())["t0"] = Value::number(epochNowSecs());   // when this subscription began
+          (*s2.hash())["state"] = st0; }
         chain.arr()->push_back(s2);
     }
     (*rec->hash())["chain"] = chain;
@@ -8829,7 +9444,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     auto tick = std::make_shared<long long>(0);
     ValueList quitP;
     scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
-    Value fireW = ctxCallable(ctx, [blk, ctx, tick, quitP](Interpreter& I2, ValueList&) -> Value {
+    Value fireW = supplyDelivery(ctx, ++ctx->subSeq, [blk, ctx, tick, quitP](Interpreter& I2, ValueList&) {
         if (!ctx->done && !ctx->doneFired) {
             ValueList one{Value::integer((*tick)++)};
             try { I2.callCallable(blk, one); }
@@ -8848,7 +9463,6 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                 if (ctx->tap) I2.closeTapHandle(ctx->tap);
             }
         }
-        return Value::any();
     });
     throttleSpawn();
     addWorker(BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
@@ -8955,8 +9569,11 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         tctx_.dynStack.push_back(spawnScope.get());
         if (ctx) self->reactStack_.push_back(ctx);
         if (!stopped && !(ctx && ctx->closed)) {
-            ValueList none;
-            try { self->callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
+            // S-60: a timer Promise is kept with True, and the whenever body
+            // receives that result — it used to be called with no argument, so
+            // `$_` was Any.
+            ValueList one{Value::boolean(true)};
+            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
         }
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
@@ -8973,7 +9590,8 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
 // handle) tears the worker down promptly instead of after a whole interval.
 Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value blk,
                                          std::shared_ptr<ReactCtx> ctx,
-                                         std::shared_ptr<TapHandle> handle) {
+                                         std::shared_ptr<TapHandle> handle,
+                                         Value doneCb) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
@@ -8983,7 +9601,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
     throttleSpawn();
-    addWorker(BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope]() mutable {
+    addWorker(BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope, doneCb]() mutable {
         t_isWorker = true;
         auto closedNow = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true; // mainline done: stop ticking
@@ -9024,6 +9642,14 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
                         std::lock_guard<std::mutex> lk(ctx->m);
                         if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload; }
                         ctx->closed = true; ctx->cv.notify_all();
+                    } else {
+                        // …and with no react to carry it, an unhandled death in a
+                        // timer's tap block is the program's death: there is no
+                        // caller left to hand it to (Roast interval.t asserts the
+                        // process exits non-zero with the message on stderr).
+                        std::cerr << self->renderError(e, self->btStyleForStderr());
+                        std::cerr.flush();
+                        std::_Exit(1);
                     }
                     lastEx = true;
                 }
@@ -9033,6 +9659,18 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
             self->gilYieldNotify();
             if (closedNow() || lastEx) break;
             sleepChunked(interval);
+        }
+        // S-17: a ticker never completes on its own — but a chain on top of it
+        // does (`interval(…).head(3)` is over after three), and that is what
+        // `lastEx` records. Tell the tapper, so a consumer waiting for done
+        // stops waiting. Closing the tap is not a completion and says nothing.
+        if (lastEx && doneCb.t == VT::Code) {
+            self->gil_.lock();
+            ExecContext dctx; self->loadCtx(dctx);
+            tctx_.cur = spawnScope;
+            tctx_.dynStack.push_back(spawnScope.get());
+            { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            self->gilYieldNotify();
         }
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         self->liveWorkers_--;
@@ -9077,7 +9715,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // worker break early or miss a value, wedging every construct
             // downstream of the whenever (S17-supply/syntax.t's two-channel
             // react — the last isolation livelock of the P5 wall).
-            Value v; bool got = false, fin = false;
+            Value v, failCause; bool got = false, fin = false, failed = false;
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr() ? qi->second.arr() : nullptr;
@@ -9086,7 +9724,26 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 else {
                     auto ci = chan.hash()->find("closed");
                     fin = ci != chan.hash()->end() && ci->second.truthy();
+                    // S-60: a FAILED channel is a quit, not a quiet end — the
+                    // cause reaches the whenever's QUIT phasers, or the react.
+                    if (fin) {
+                        auto fi = chan.hash()->find("failCause");
+                        if (fi != chan.hash()->end()) { failCause = fi->second; failed = true; }
+                    }
                 }
+            }
+            if (failed) {
+                Value ex = causeException(*self, failCause, failCause.toStr());
+                ValueList quitP;
+                scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
+                if (!quitP.empty())
+                    for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
+                else if (ctx) {
+                    std::lock_guard<std::mutex> lk(ctx->m);
+                    if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = ex; }
+                    ctx->closed = true; ctx->cv.notify_all();
+                }
+                break;
             }
             if (fin) break;
             if (!got) {
@@ -9243,6 +9900,58 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
 #endif // !_WIN32
 }
 
+// S-09. The kept events are {kind, val} records: an emit runs through the
+// tap's own transform chain, a done or a quit ends the tap there and now. The
+// store is emptied FIRST, so a handler that taps again during the replay does
+// not see the same events twice.
+void Interpreter::replayPreserved(const Value& sup, Value& tapRec) {
+    if (!(sup.t == VT::Hash && sup.hash() && tapRec.hash())) return;
+    auto SH = sup.hash();
+    if (!(SH->count("preserving") && (*SH)["preserving"].truthy())) return;
+    auto bit = SH->find("buffer");
+    if (bit == SH->end() || !bit->second.arr() || bit->second.arr()->empty()) return;
+    ValueList evs = *bit->second.arr();
+    bit->second.arr()->clear();
+    auto TH = tapRec.hash();
+    Value emitCb = TH->count("emit") ? (*TH)["emit"] : Value::nil();
+    Value doneCb = TH->count("done") ? (*TH)["done"] : Value::nil();
+    Value quitCb = TH->count("quit") ? (*TH)["quit"] : Value::nil();
+    for (auto& ev : evs) {
+        if (!(ev.t == VT::Hash && ev.hash())) continue;
+        const std::string k = (*ev.hash())["kind"].toStr();
+        if (k == "emit") {
+            bool complete = false;
+            ValueList outs = applyTapChain(tapRec, (*ev.hash())["val"], complete);
+            if (emitCb.t == VT::Code)
+                for (auto& o : outs) {
+                    ValueList one{o};
+                    try { callCallable(emitCb, one); }
+                    catch (NextEx&) {}
+                    catch (LastEx&) { complete = true; break; }
+                    catch (DoneEx&) { complete = true; break; }
+                }
+            if (complete) { (*TH)["closed"] = Value::boolean(true); (*TH)["ended"] = Value::boolean(true); return; }
+        } else if (k == "done") {
+            (*TH)["ended"] = Value::boolean(true);
+            if (doneCb.t == VT::Code) { ValueList none; callCallable(doneCb, none); }
+            return;
+        } else if (k == "quit") {
+            (*TH)["ended"] = Value::boolean(true);
+            Value ex = (*ev.hash())["val"];
+            if (quitCb.t == VT::Code) { ValueList one{ex}; callCallable(quitCb, one); }
+            else {
+                std::string qmsg = "quit";
+                if (ex.t == VT::Object && ex.obj()) {
+                    auto mit = ex.obj()->attrs.find("message");
+                    if (mit != ex.obj()->attrs.end()) qmsg = mit->second.toStr();
+                }
+                throw RakuError{ex, qmsg};
+            }
+            return;
+        }
+    }
+}
+
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
     if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash())) {
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -9265,7 +9974,14 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         noCycleBreak_++;
         struct CBGuard { int& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
         try {
-            if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
+            ctx->running++; ctx->inBody = true;
+            if (blk.t == VT::Code) { ValueList na; try { callCallable(blk, na); } catch (...) { ctx->running--; ctx->inBody = false; throw; } }
+            ctx->running--; ctx->inBody = false;
+            tctx_.tapStack.pop_back();
+            // S-53: the body has returned — now hand over what its whenevers'
+            // sources delivered while it ran.
+            tctx_.tapStack.push_back(ctx);
+            try { drainSupplyQueue(ctx); } catch (...) { tctx_.tapStack.pop_back(); throw; }
             tctx_.tapStack.pop_back();
             // the block returned: with no live inner taps the supply is done
             ctx->blockDone = true;
@@ -9283,6 +9999,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         catch (DoneEx&) { // `done` in the supply body: normal end (its bookkeeping already ran)
             tctx_.tapStack.pop_back();
             ctx->blockDone = true;
+            ctx->queue.clear();   // nothing follows an explicit done (S-54)
         }
         catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
@@ -9297,28 +10014,29 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             Value chain = Value::array();
             for (auto& step : *h.at("chain").arr()) {
                 Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
-                (*s2.hash())["state"] = Value::makeHash();
+                { Value st0 = Value::makeHash();
+          (*st0.hash())["t0"] = Value::number(epochNowSecs());   // when this subscription began
+          (*s2.hash())["state"] = st0; }
                 chain.arr()->push_back(s2);
             }
             (*tapRec.hash())["chain"] = chain;
         }
         Value sup = h.at("supplier");
-        if (sup.t == VT::Hash && sup.hash()->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash())); (*sup.hash())["taps"].arr()->push_back(tapRec); }
-        // Supplier::Preserving: replay every buffered value to this fresh tap (through
-        // its own transform chain), so a tap that connects after the emits still sees
-        // them (Cro's request-into-$!in-before-connect pattern).
-        if (sup.t == VT::Hash && sup.hash()->count("preserving") && (*sup.hash())["preserving"].truthy() &&
-            sup.hash()->count("buffer") && emitCb.t == VT::Code) {
-            for (auto& bv : *(*sup.hash())["buffer"].arr()) {
-                bool complete = false;
-                ValueList outs = applyTapChain(tapRec, bv, complete);
-                for (auto& o : outs) { ValueList one{o}; try { callCallable(emitCb, one); } catch (NextEx&) {} catch (LastEx&) { complete = true; break; } catch (DoneEx&) { complete = true; break; } }
-                if (complete) break;
-            }
+        // Supplier::Preserving: hand this fresh tap the events kept while nobody
+        // was listening (Cro's request-into-$!in-before-connect pattern), and
+        // empty the store — S-09's "resumes preserving for the next first tap".
+        // Under the supplier's own stripe, so no live value overtakes the replay.
+        if (sup.t == VT::Hash && sup.hash()->count("taps")) {
+            std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+            (*sup.hash())["taps"].arr()->push_back(tapRec);
+            replayPreserved(sup, tapRec);
         }
         // already-done supplier: fire done immediately so wiring completes
         if (sup.t == VT::Hash && sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy() &&
-            doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
+            !(tapRec.hash()->count("ended") && (*tapRec.hash())["ended"].truthy())) {
+            (*tapRec.hash())["ended"] = Value::boolean(true);
+            if (doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
+        }
         tapRec.hashKind = "Tap";
         return tapRec;
     }
@@ -9341,14 +10059,490 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             for (auto& n : *h.at("signals").arr()) sigs.push_back((int)n.toInt());
         return tapSignal(sigs, emitCb, doneCb, nullptr);
     }
+    // S-26/S-30: `flat` and `migrate` over a source that is not list-backed.
+    //   flat    — every inner supply is subscribed AS IT ARRIVES and all of its
+    //             values are emitted; an Iterable value is spread instead; done
+    //             when the outer and every inner are done.
+    //   migrate — each new inner REPLACES the previous one, whose subscription
+    //             is closed; a value that is not a Supply is an error raised at
+    //             the emitter (X::Supply::Migrate::Needs).
+    if (h.count("kind") && (h.at("kind").toStr() == "flatten" || h.at("kind").toStr() == "migrate")) {
+        const bool migrate = h.at("kind").toStr() == "migrate";
+        Value src = h.at("src");
+        auto handle = std::make_shared<TapHandle>();
+        struct InnerState {
+            int pending = 0;          // inner supplies not yet done
+            bool outerDone = false;
+            bool finished = false;
+            Value current;            // migrate: the inner tap in force
+        };
+        auto st = std::make_shared<InnerState>();
+        Interpreter* self = this;
+        auto finish = [self, st, doneCb, handle]() {
+            if (st->finished) return;
+            st->finished = true;
+            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            self->closeTapHandle(handle);
+        };
+        auto maybeFinish = [st, finish]() { if (st->outerDone && st->pending == 0) finish(); };
+        auto fail = [self, st, quitCb, handle](const Value& ex) {
+            if (st->finished) return;
+            st->finished = true;
+            if (quitCb.t == VT::Code) { ValueList one{ex}; try { self->callCallable(quitCb, one); } catch (...) {} }
+            self->closeTapHandle(handle);
+        };
+        // close a tap VALUE, whichever shape tapSupply handed back
+        auto closeInner = [self](Value t) {
+            if (!(t.t == VT::Hash && t.hash())) return;
+            if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
+                self->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
+            else { (*t.hash())["closed"] = Value::boolean(true); (*t.hash())["ended"] = Value::boolean(true); }
+        };
+        Value outerEmit; outerEmit.t = VT::Code; outerEmit.setCode(std::make_shared<Callable>());
+        outerEmit.code()->builtin =
+            [self, st, emitCb, fail, maybeFinish, closeInner, migrate](Interpreter& I, ValueList& a) -> Value {
+            if (st->finished) return Value::any();
+            Value v = a.empty() ? Value::any() : a[0];
+            if (!(v.t == VT::Hash && v.hashKind == "Supply")) {
+                if (migrate)
+                    throw RakuError{Value::typeObj("X::Supply::Migrate::Needs"),
+                                    "Can only migrate to a Supply"};
+                // flat: an Iterable value is spread, anything else passes through
+                if (emitCb.t == VT::Code) {
+                    if (v.t == VT::Array && v.arr()) { for (auto& x : *v.arr()) { ValueList one{x}; try { I.callCallable(emitCb, one); } catch (...) {} } }
+                    else if (v.t == VT::Range) { for (auto& x : v.flatten()) { ValueList one{x}; try { I.callCallable(emitCb, one); } catch (...) {} } }
+                    else { ValueList one{v}; try { I.callCallable(emitCb, one); } catch (...) {} }
+                }
+                return Value::any();
+            }
+            if (migrate && st->current.t == VT::Hash) { closeInner(st->current); st->current = Value(); if (st->pending > 0) st->pending--; }
+            st->pending++;
+            Value ie; ie.t = VT::Code; ie.setCode(std::make_shared<Callable>());
+            ie.code()->builtin = [st, emitCb](Interpreter& I2, ValueList& b) -> Value {
+                if (st->finished || emitCb.t != VT::Code) return Value::any();
+                ValueList one{b.empty() ? Value::any() : b[0]};
+                try { I2.callCallable(emitCb, one); } catch (...) {}
+                return Value::any();
+            };
+            Value id; id.t = VT::Code; id.setCode(std::make_shared<Callable>());
+            id.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
+                if (st->pending > 0) st->pending--;
+                maybeFinish();
+                return Value::any();
+            };
+            Value iq; iq.t = VT::Code; iq.setCode(std::make_shared<Callable>());
+            iq.code()->builtin = [fail](Interpreter&, ValueList& b) -> Value {
+                fail(b.empty() ? Value::any() : b[0]); return Value::any();
+            };
+            Value it = self->tapSupply(v, ie, id, iq);
+            if (migrate) st->current = it;
+            return Value::any();
+        };
+        Value outerDone; outerDone.t = VT::Code; outerDone.setCode(std::make_shared<Callable>());
+        outerDone.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
+            st->outerDone = true; maybeFinish(); return Value::any();
+        };
+        Value outerQuit; outerQuit.t = VT::Code; outerQuit.setCode(std::make_shared<Callable>());
+        outerQuit.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
+            fail(a.empty() ? Value::any() : a[0]); return Value::any();
+        };
+        Value outerTap = tapSupply(src, outerEmit, outerDone, outerQuit);
+        {
+            std::lock_guard<std::mutex> lk(handle->m);
+            if (!handle->closed) {
+                Value ot = outerTap;
+                Interpreter* ip = this;
+                handle->closers.push_back([ip, ot] {
+                    Value t = ot;
+                    if (!(t.t == VT::Hash && t.hash())) return;
+                    if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
+                        ip->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
+                    else { (*t.hash())["closed"] = Value::boolean(true); (*t.hash())["ended"] = Value::boolean(true); }
+                });
+            }
+        }
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
+    // S-27/S-45/S-46: a combinator over sources that are not all list-backed.
+    // Every tap subscribes to every source for itself and folds their events:
+    //   merge       — every value as it comes; done when all sources are done
+    //   zip         — a row once every source has an unconsumed value; done as
+    //                 soon as a source is done and the others have caught up
+    //   zip-latest  — once every source has spoken, each new value emits the
+    //                 latest of all of them; done when all sources are done
+    if (h.count("kind") && h.at("kind").toStr() == "combine") {
+        const std::string op = h.at("op").toStr();
+        ValueList srcs;
+        if (h.count("sources") && h.at("sources").arr()) srcs = *h.at("sources").arr();
+        Value withOp = h.count("with") ? h.at("with") : Value::nil();
+        ValueList initial;
+        if (h.count("initial") && h.at("initial").arr()) initial = *h.at("initial").arr();
+        const size_t n = srcs.size();
+        auto handle = std::make_shared<TapHandle>();
+        struct CombineState {
+            std::vector<ValueList> queues;   // zip: what each source is holding
+            std::vector<Value> latest;       // zip-latest: its most recent value
+            std::vector<char> have, ended;
+            int liveCount = 0;
+            bool finished = false;
+        };
+        auto st = std::make_shared<CombineState>();
+        st->queues.resize(n);
+        st->latest.resize(n);
+        st->have.assign(n, 0);
+        st->ended.assign(n, 0);
+        for (size_t i = 0; i < n && i < initial.size(); i++) { st->latest[i] = initial[i]; st->have[i] = 1; }
+        st->liveCount = (int)n;
+        Interpreter* self = this;
+        auto finish = [self, st, doneCb, handle]() {
+            if (st->finished) return;
+            st->finished = true;
+            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            self->closeTapHandle(handle);
+        };
+        auto fail = [self, st, quitCb, handle](const Value& ex) {
+            if (st->finished) return;
+            st->finished = true;
+            if (quitCb.t == VT::Code) { ValueList one{ex}; try { self->callCallable(quitCb, one); } catch (...) {} }
+            self->closeTapHandle(handle);
+        };
+        auto push = [self, st, emitCb](Value v) {
+            if (st->finished || emitCb.t != VT::Code) return;
+            ValueList one{std::move(v)};
+            try { self->callCallable(emitCb, one); } catch (...) {}
+        };
+        auto row = [self, withOp](ValueList vs) -> Value {
+            if (withOp.t == VT::Code) return self->callCallable(withOp, vs);
+            Value tup = Value::array(); tup.isList = true; tup.itemized = true;
+            *tup.arr() = std::move(vs);
+            return tup;
+        };
+        for (size_t i = 0; i < n; i++) {
+            Value e; e.t = VT::Code; e.setCode(std::make_shared<Callable>());
+            e.code()->builtin = [i, n, op, st, push, row, finish](Interpreter&, ValueList& a) -> Value {
+                if (st->finished) return Value::any();
+                Value v = a.empty() ? Value::any() : a[0];
+                if (op == "merge") { push(v); return Value::any(); }
+                if (op == "zip") {
+                    st->queues[i].push_back(v);
+                    for (;;) {
+                        for (size_t k = 0; k < n; k++) if (st->queues[k].empty()) return Value::any();
+                        ValueList vs;
+                        for (size_t k = 0; k < n; k++) { vs.push_back(st->queues[k].front()); st->queues[k].erase(st->queues[k].begin()); }
+                        push(row(std::move(vs)));
+                        if (st->finished) return Value::any();
+                        // a source that has already finished and has nothing left
+                        // to give ends the zip: the others cannot be paired again
+                        for (size_t k = 0; k < n; k++)
+                            if (st->ended[k] && st->queues[k].empty()) { finish(); return Value::any(); }
+                    }
+                }
+                if (op == "zip-latest") {
+                    st->latest[i] = v; st->have[i] = 1;
+                    for (size_t k = 0; k < n; k++) if (!st->have[k]) return Value::any();
+                    ValueList vs(st->latest.begin(), st->latest.end());
+                    push(row(std::move(vs)));
+                }
+                return Value::any();
+            };
+            Value d; d.t = VT::Code; d.setCode(std::make_shared<Callable>());
+            d.code()->builtin = [i, op, st, finish](Interpreter&, ValueList&) -> Value {
+                if (st->finished || st->ended[i]) return Value::any();
+                st->ended[i] = 1;
+                if (st->liveCount > 0) st->liveCount--;
+                if (op == "zip") { if (st->queues[i].empty()) finish(); }
+                else if (st->liveCount == 0) finish();
+                return Value::any();
+            };
+            Value q; q.t = VT::Code; q.setCode(std::make_shared<Callable>());
+            q.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
+                fail(a.empty() ? Value::any() : a[0]); return Value::any();
+            };
+            Value innerTap = tapSupply(srcs[i], e, d, q);
+            // closing this tap closes the subscriptions it made
+            if (innerTap.t == VT::Hash && innerTap.hash()) {
+                std::lock_guard<std::mutex> lk(handle->m);
+                if (!handle->closed) {
+                    if (innerTap.ext() && innerTap.hash()->count("wired") && (*innerTap.hash())["wired"].truthy()) {
+                        auto ih = std::static_pointer_cast<TapHandle>(innerTap.ext());
+                        Interpreter* ip = this;
+                        handle->closers.push_back([ip, ih] { ip->closeTapHandle(ih); });
+                    } else if (innerTap.hashKind == "Tap") {
+                        auto rec = innerTap.hashS();
+                        handle->closers.push_back([rec] {
+                            (*rec)["closed"] = Value::boolean(true);
+                            (*rec)["ended"] = Value::boolean(true);
+                        });
+                    }
+                }
+            }
+            if (st->finished) break;   // a synchronous source may have ended it already
+        }
+        if (n == 0) finish();
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
+    // S-47, the concurrency form. At most `limit` calls of process(value) are in
+    // flight; the supply emits the PROMISE of each as it is started, in value
+    // order. `:control` changes the limit while the stream runs, and `:status`
+    // receives a report when everything has finished.
+    if (h.count("kind") && h.at("kind").toStr() == "throttle-run") {
+        Value src = h.at("src");
+        Value process = h.at("process");
+        auto handle = std::make_shared<TapHandle>();
+        struct RunState {
+            ValueList pending;
+            long long limit = 0, running = 0, emitted = 0;
+            bool srcDone = false, finished = false;
+        };
+        auto st = std::make_shared<RunState>();
+        st->limit = h.count("elems") ? h.at("elems").toInt() : 1;
+        if (st->limit < 0) st->limit = 0;
+        Value statusSup = h.count("status") ? h.at("status") : Value::nil();
+        Interpreter* self = this;
+        auto report = [self, st, statusSup](const char* id) {
+            if (statusSup.t != VT::Hash) return;
+            Value r = Value::makeHash();
+            (*r.hash())["allowed"] = Value::integer(st->limit - st->running);
+            (*r.hash())["bled"] = Value::integer(0);
+            (*r.hash())["buffered"] = Value::integer((long long)st->pending.size());
+            (*r.hash())["emitted"] = Value::integer(st->emitted);
+            (*r.hash())["id"] = Value::str(id);
+            (*r.hash())["limit"] = Value::integer(st->limit);
+            (*r.hash())["running"] = Value::integer(st->running);
+            (*r.hash())["vent-at"] = Value::integer(0);
+            Value sup = statusSup;
+            ValueList one{r};
+            try { self->methodCall(sup, "emit", one); } catch (...) {}
+        };
+        auto finish = [self, st, doneCb, handle, report]() {
+            if (st->finished) return;
+            st->finished = true;
+            report("done");
+            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            self->closeTapHandle(handle);
+        };
+        // pump() starts as much as the allowance permits, and is called again
+        // whenever something changes: a new value, a raised limit, a finish.
+        auto pump = std::make_shared<std::function<void()>>();
+        *pump = [self, st, process, emitCb, pump, finish]() {
+            while (!st->finished && st->running < st->limit && !st->pending.empty()) {
+                Value v = st->pending.front();
+                st->pending.erase(st->pending.begin());
+                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                Value pv = v, pf = process;
+                body.code()->builtin = [pv, pf](Interpreter& I2, ValueList&) -> Value {
+                    ValueList one{pv}; return I2.callCallable(pf, one);
+                };
+                Value pr = self->spawnPromise(body);
+                st->running++;
+                st->emitted++;
+                if (pr.t == VT::Hash && pr.ext()) {
+                    auto ps = std::static_pointer_cast<PromiseState>(pr.ext());
+                    std::function<void()> whenDone = [st, pump, finish]() {
+                        if (st->running > 0) st->running--;
+                        (*pump)();
+                        if (st->srcDone && st->pending.empty() && st->running == 0) finish();
+                    };
+                    bool now = false;
+                    { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(whenDone); }
+                    if (now) whenDone();
+                }
+                if (emitCb.t == VT::Code) { ValueList one{pr}; try { self->callCallable(emitCb, one); } catch (...) {} }
+            }
+        };
+        if (h.count("control")) {
+            Value ctl = h.at("control");
+            if (ctl.t == VT::Hash && ctl.hashKind == "Supplier") { ValueList na; ctl = methodCall(ctl, "Supply", na); }
+            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(std::make_shared<Callable>());
+            ctlEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
+                if (a.empty()) return Value::any();
+                const std::string cmd = a[0].toStr();
+                auto colon = cmd.find(':');
+                if (colon == std::string::npos) return Value::any();
+                std::string key = cmd.substr(0, colon), val = cmd.substr(colon + 1);
+                while (!key.empty() && key.back() == ' ') key.pop_back();
+                while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+                if (key == "limit") { try { st->limit = std::stoll(val); } catch (...) {} (*pump)(); }
+                return Value::any();
+            };
+            tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
+        }
+        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(std::make_shared<Callable>());
+        inEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
+            st->pending.push_back(a.empty() ? Value::any() : a[0]);
+            (*pump)();
+            return Value::any();
+        };
+        Value inDone; inDone.t = VT::Code; inDone.setCode(std::make_shared<Callable>());
+        inDone.code()->builtin = [st, finish](Interpreter&, ValueList&) -> Value {
+            st->srcDone = true;
+            if (st->pending.empty() && st->running == 0) finish();
+            return Value::any();
+        };
+        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(std::make_shared<Callable>());
+        Value qc = quitCb;
+        inQuit.code()->builtin = [self, st, qc, handle](Interpreter&, ValueList& a) -> Value {
+            if (st->finished) return Value::any();
+            st->finished = true;
+            if (qc.t == VT::Code) { ValueList one{a.empty() ? Value::any() : a[0]}; try { self->callCallable(qc, one); } catch (...) {} }
+            self->closeTapHandle(handle);
+            return Value::any();
+        };
+        tapSupply(src, inEmit, inDone, inQuit);
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
+    // S-47: a throttled supply, tapped. The source feeds a buffer; a worker
+    // releases at most `elems` of it per `seconds` tick, and the stream is done
+    // only when the source is done AND the buffer has drained.
+    if (h.count("kind") && h.at("kind").toStr() == "throttle") {
+        Value src = h.at("src");
+        // the allowance is LIVE: a `:control` supply may raise or lower it while
+        // the stream runs, so it is a shared counter rather than a constant
+        auto elemsP = std::make_shared<std::atomic<long long>>(
+            h.count("elems") ? h.at("elems").toInt() : 1);
+        if (elemsP->load() < 0) elemsP->store(0);
+        double secs = h.count("seconds") ? h.at("seconds").toNum() : 0;
+        double delay = h.count("delay") ? h.at("delay").toNum() : 0;
+        if (secs < 0.001) secs = 0.001;
+        if (h.count("control")) {
+            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(std::make_shared<Callable>());
+            ctlEmit.code()->builtin = [elemsP](Interpreter&, ValueList& a) -> Value {
+                if (a.empty()) return Value::any();
+                const std::string cmd = a[0].toStr();
+                auto colon = cmd.find(':');
+                if (colon == std::string::npos) return Value::any();
+                std::string key = cmd.substr(0, colon), val = cmd.substr(colon + 1);
+                while (!key.empty() && key.back() == ' ') key.pop_back();
+                while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+                if (key == "limit") { try { elemsP->store(std::stoll(val)); } catch (...) {} }
+                return Value::any();
+            };
+            // `:control` is usually written `:$control` over a Supplier, which
+            // is what a whenever would coerce for itself
+            Value ctl = h.at("control");
+            if (ctl.t == VT::Hash && ctl.hashKind == "Supplier") { ValueList na; ctl = methodCall(ctl, "Supply", na); }
+            tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
+        }
+        auto handle = std::make_shared<TapHandle>();
+        auto buf = std::make_shared<ValueList>();
+        auto srcDone = std::make_shared<std::atomic<bool>>(false);
+        auto quitEx = std::make_shared<Value>();
+        auto quitSet = std::make_shared<std::atomic<bool>>(false);
+        // A token bucket: `elems` values may pass in each tick, and one that
+        // finds a token left goes through AT ONCE — waiting for the tick
+        // boundary would delay the first values for no reason. The rest queue.
+        auto spent = std::make_shared<std::atomic<long long>>(0);
+        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(std::make_shared<Callable>());
+        Value emitOut = emitCb;
+        inEmit.code()->builtin = [buf, spent, elemsP, emitOut](Interpreter& I, ValueList& a) -> Value {
+            Value v = a.empty() ? Value::any() : a[0];
+            if (spent->load() < elemsP->load() && emitOut.t == VT::Code) {
+                spent->fetch_add(1);
+                ValueList one{v};
+                try { I.callCallable(emitOut, one); } catch (...) {}
+                return Value::any();
+            }
+            buf->push_back(v);
+            return Value::any();
+        };
+        Value inDone; inDone.t = VT::Code; inDone.setCode(std::make_shared<Callable>());
+        inDone.code()->builtin = [srcDone](Interpreter&, ValueList&) -> Value {
+            srcDone->store(true); return Value::any();
+        };
+        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(std::make_shared<Callable>());
+        inQuit.code()->builtin = [srcDone, quitEx, quitSet](Interpreter&, ValueList& a) -> Value {
+            *quitEx = a.empty() ? Value::any() : a[0]; quitSet->store(true); srcDone->store(true);
+            return Value::any();
+        };
+        tapSupply(src, inEmit, inDone, inQuit);
+        engageGil();
+        liveWorkers_++;
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        Interpreter* self = this;
+        throttleSpawn();
+        addWorker(BigStackThread([self, buf, srcDone, quitEx, quitSet, elemsP, secs, delay, spent,
+                                  emitCb, doneCb, quitCb, handle, fin, spawnScope]() mutable {
+            t_isWorker = true;
+            auto stopped = [&] {
+                if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
+                std::lock_guard<std::mutex> lk(handle->m); return handle->closed;
+            };
+            auto nap = [&](double d) {
+                double left = d;
+                while (left > 0 && !stopped()) {
+                    double c = left < 0.05 ? left : 0.05;
+                    std::this_thread::sleep_for(std::chrono::duration<double>(c));
+                    left -= c;
+                }
+            };
+            nap(delay);
+            bool firstPass = true;                  // the bucket starts FULL: the
+            for (;;) {                              // first refill is one tick later
+                if (stopped()) break;
+                self->gil_.lock();
+                ExecContext wctx; self->loadCtx(wctx);
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                if (!firstPass) spent->store(0);    // a new tick refills the bucket
+                while (!firstPass && spent->load() < elemsP->load() && !buf->empty()) {
+                    Value v = buf->front(); buf->erase(buf->begin());
+                    spent->fetch_add(1);
+                    if (emitCb.t == VT::Code) { ValueList one{v}; try { self->callCallable(emitCb, one); } catch (...) {} }
+                }
+                bool over = srcDone->load() && buf->empty();
+                if (over) {
+                    if (quitSet->load()) {
+                        if (quitCb.t == VT::Code) { ValueList one{*quitEx}; try { self->callCallable(quitCb, one); } catch (...) {} }
+                    } else if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+                }
+                self->gilYieldNotify();
+                if (over) break;
+                firstPass = false;
+                nap(secs);
+            }
+            self->liveWorkers_--;
+            fin->store(true, std::memory_order_release);
+        }), fin);
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
     // Supply.interval(N) tapped directly (.tap, or inside a supply {…} block):
     // each tap gets its OWN ticker; the returned Tap's handle stops it on .close.
     if (h.count("kind") && h.at("kind").toStr() == "interval") {
         double iv = h.count("interval") ? h.at("interval").toNum() : 1;
         double dl = h.count("delay") ? h.at("delay").toNum() : 0;
+        // A scheduler of the caller's own: hand it one cue and let it decide when
+        // the ticks happen. Each call of the cued code is one tick.
+        if (h.count("scheduler") && h.at("scheduler").t == VT::Object) {
+            auto tick = std::make_shared<long long>(0);
+            Value cb; cb.t = VT::Code; cb.setCode(std::make_shared<Callable>());
+            Value em = emitCb;
+            cb.code()->builtin = [tick, em](Interpreter& I2, ValueList&) -> Value {
+                if (em.t != VT::Code) return Value::any();
+                ValueList one{Value::integer((*tick)++)};
+                try { I2.callCallable(em, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                return Value::any();
+            };
+            Value sched = h.at("scheduler");
+            Value every = Value::number(iv); every.hashKind = "Duration";
+            Value in = Value::number(dl); in.hashKind = "Duration";
+            Value pEvery = Value::pair("every", every); pEvery.namedArg = true;
+            Value pIn = Value::pair("in", in); pIn.namedArg = true;
+            ValueList ca{cb, pEvery, pIn};
+            methodCall(sched, "cue", ca);
+            Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+        }
         auto handle = std::make_shared<TapHandle>();
         std::shared_ptr<ReactCtx> rctx = reactStack_.empty() ? nullptr : reactStack_.back();
-        return spawnIntervalWhenever(iv, dl, emitCb, rctx, handle);
+        return spawnIntervalWhenever(iv, dl, emitCb, rctx, handle, doneCb);
     }
     if (h.count("kind") && h.at("kind").toStr() == "async-listen") {
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
@@ -12662,11 +13856,36 @@ void Interpreter::registerBuiltins() {
         if (ctx->quitFlag) { // a whenever'd supply quit unhandled: the react dies with it
             std::string qm = "Supply quit";
             try { ValueList na; Value mv = I.methodCall(ctx->quitErr, "message", na); if (mv.t == VT::Str) qm = mv.s; } catch (...) {}
-            throw RakuError{ctx->quitErr, qm};
+            // …and the exception says so: the original is handed on with
+            // X::React::Died mixed in, so a CATCH can tell a death that came out
+            // of a react from one raised where it stands (Roast
+            // syntax-nonblocking-await.t asks `.does(X::React::Died)`).
+            Value err = ctx->quitErr;
+            if (err.t == VT::Object)
+                try { err = I.mixinValue(err, Value::typeObj("X::React::Died"), /*copy=*/true); } catch (...) {}
+            throw RakuError{err, qm};
         }
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
+        // S-60: `whenever` coerces its argument with `Supply()`. An Iterable is
+        // one event per element; a Str, an Int or any other single value is one
+        // event. Coercing to a from-list Supply (rather than running the body
+        // inline) is what puts those events behind the body, as S-53 requires.
+        auto coerceToSupply = [](Value v) -> Value {
+            ValueList vs;
+            if (v.t == VT::Range) vs = v.flatten();
+            else if (v.t == VT::Array && v.arr()) vs = *v.arr();
+            else if (v.t == VT::Hash && v.hashKind.empty() && v.hash()) {
+                for (auto& kv : *v.hash()) { Value pr = Value::pair(kv.first, kv.second); vs.push_back(pr); }
+            }
+            else vs.push_back(v);
+            Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+            Value a2 = Value::array(); *a2.arr() = std::move(vs);
+            (*s2.hash())["values"] = a2;
+            return s2;
+        };
+
         // `whenever $supplier` coerces via .Supply (Rakudo does the same): a raw
         // Supplier used to fall through to the run-once-with-the-value arm, which
         // ran the handler EAGERLY with the Supplier as topic. That deadlock was
@@ -12736,7 +13955,7 @@ void Interpreter::registerBuiltins() {
                 // fire under the supply activation so the body's emits reach downstream
                 Value fireW = ctxCallable(ctx, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) -> Value {
                     if (ps->broken) {
-                        Value ex = ps->cause.t == VT::Nil ? Value::str(ps->causeMsg) : ps->cause;
+                        Value ex = causeException(I2, ps->cause, ps->causeMsg);
                         for (auto& q : quitP) { ValueList one{ex}; try { I2.callCallable(q, one); } catch (...) {} }
                         if (quitP.empty()) {
                             // no QUIT phaser: the break QUITS the enclosing supply —
@@ -12761,46 +13980,79 @@ void Interpreter::registerBuiltins() {
                 if (now) run();
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
-            // whenever over a plain (non-Supply, non-Promise) value: run once with it
+            // whenever over a plain (non-Supply, non-Promise) value: Supply() it
             if (!(src.t == VT::Hash && src.hashKind == "Supply")) {
-                Value rv = src;
-                if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash()->count("result")) rv = (*src.hash())["result"];
-                ValueList one{rv};
-                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
-                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash()->count("result"))
+                    src = (*src.hash())["result"];
+                src = coerceToSupply(src);
             }
             ValueList lastP, quitP;
             scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
-            Value emitW = ctxCallable(ctx, [blk](Interpreter& I2, ValueList& args) -> Value {
-                try { ValueList one = args; return I2.callCallable(blk, one); }
-                catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
-                return Value::any();
+            // S-53: the subscription is made here and now, but a source that
+            // delivers SYNCHRONOUSLY does so while this body is still running —
+            // and one whenever's handler must never nest inside another body.
+            // Each of the three callbacks therefore either runs straight away
+            // (nothing is running) or joins the activation's queue, tagged with
+            // this subscription so `last` can drop its backlog alone.
+            const long long subId = ++ctx->subSeq;
+            auto wrap = [&I, ctx, subId](std::function<void(Interpreter&, ValueList&)> fn) -> Value {
+                return I.supplyDelivery(ctx, subId, std::move(fn));
+            };
+            Value emitW = wrap([blk, ctx, subId, lastP](Interpreter& I2, ValueList& args) {
+                try { ValueList one = args; I2.callCallable(blk, one); }
+                catch (NextEx&) {}
+                catch (LastEx&) {
+                    // S-55: `last` closes THIS whenever — its LAST phasers run,
+                    // its backlog is dropped, and when no whenever is left the
+                    // supply is done.
+                    ctx->closedSubs.insert(subId);
+                    I2.runLastPhasers(lastP, nullptr);
+                    if (ctx->pending > 0) ctx->pending--;
+                    I2.maybeFinishSupply(ctx);
+                }
+                catch (DoneEx&) {}
+                catch (RakuError& e) {
+                    // S-57: an exception raised by the whenever BODY is not a
+                    // source quit. The QUIT phasers — this whenever's or the
+                    // supply block's — do not see it; it ends the supply and
+                    // reaches the TAPPER's quit handler (Cro's frame parser
+                    // dies per malformed frame and its test reads it there).
+                    ctx->closedSubs.insert(subId);
+                    Value ex = I2.exceptionFor(e);
+                    if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                    ctx->done = true;
+                    if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                }
             });
             // every inner tap holds the supply open until its done fires; the
             // done hook runs LAST phasers, then releases this activation's hold
             ctx->pending++;
-            Value doneW = ctxCallable(ctx, [lastP, ctx](Interpreter& I2, ValueList&) -> Value {
+            Value doneW = wrap([lastP, ctx, subId](Interpreter& I2, ValueList&) {
+                ctx->closedSubs.insert(subId);
                 I2.runLastPhasers(lastP, nullptr);
-                ctx->pending--;
+                if (ctx->pending > 0) ctx->pending--;
                 I2.maybeFinishSupply(ctx);
-                return Value::any();
             });
-            Value quitW;
-            if (!quitP.empty())
-                quitW = ctxCallable(ctx, [quitP](Interpreter& I2, ValueList& args) -> Value {
-                    for (auto& p : quitP) { ValueList one = args; try { I2.callCallable(p, one); } catch (...) {} }
-                    return Value::any();
-                });
-            else
-                // no QUIT phaser: an exception in the whenever body QUITS the
-                // ENCLOSING supply — forward to the downstream tap's quit and
-                // close (Cro's frame parser dies per malformed frame and the
-                // test observes it on the OUTER tap's quit handler)
-                quitW = ctxCallable(ctx, [ctx](Interpreter& I2, ValueList& args) -> Value {
-                    if (ctx->quitCb.t == VT::Code) { ValueList one = args; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
-                    if (ctx->tap) I2.closeTapHandle(ctx->tap);
-                    return Value::any();
-                });
+            // S-57: the SOURCE quitting is what a QUIT phaser is for. It works
+            // like CATCH — a matching `when`/`default` consumes the quit and
+            // this whenever simply counts as done; otherwise the quit travels
+            // on to the tapper once the phaser body has run, and ends the
+            // supply, because nothing may follow a quit (S-06).
+            Value quitW = wrap([quitP, ctx, subId](Interpreter& I2, ValueList& args) {
+                ctx->closedSubs.insert(subId);
+                Value ex = args.empty() ? Value::nil() : args[0];
+                Value repl;
+                int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
+                if (r == 0) {
+                    if (ctx->pending > 0) ctx->pending--;
+                    I2.maybeFinishSupply(ctx);
+                    return;
+                }
+                Value out = r == 2 ? repl : ex;
+                if (ctx->quitCb.t == VT::Code) { ValueList one{out}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                ctx->done = true;
+                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+            });
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);
             // closing the outer tap closes this inner one
             if (ctx->tap && tapV.t == VT::Hash && tapV.ext() &&
@@ -12809,6 +14061,17 @@ void Interpreter::registerBuiltins() {
                 Interpreter* ip = &I;
                 std::lock_guard<std::mutex> lk(ctx->tap->m);
                 if (!ctx->tap->closed) ctx->tap->closers.push_back([ip, ih] { ip->closeTapHandle(ih); });
+            }
+            // …and a plain (Supplier-fed) inner tap is closed the same way:
+            // S-54's `done` and S-61's outer close must stop the source feeding
+            // this activation, not just stop the body from running.
+            else if (ctx->tap && tapV.t == VT::Hash && tapV.hashKind == "Tap" && tapV.hash()) {
+                auto rec = tapV.hashS();
+                std::lock_guard<std::mutex> lk(ctx->tap->m);
+                if (!ctx->tap->closed) ctx->tap->closers.push_back([rec] {
+                    (*rec)["closed"] = Value::boolean(true);
+                    (*rec)["ended"] = Value::boolean(true);
+                });
             }
             return tapV;
         }
@@ -12911,7 +14174,9 @@ void Interpreter::registerBuiltins() {
                         Value chain = Value::array();
                         for (auto& step : *(*s.hash())["chain"].arr()) {
                             Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
-                            (*s2.hash())["state"] = Value::makeHash();
+                            { Value st0 = Value::makeHash();
+          (*st0.hash())["t0"] = Value::number(epochNowSecs());   // when this subscription began
+          (*s2.hash())["state"] = st0; }
                             chain.arr()->push_back(s2);
                         }
                         (*tapRec.hash())["chain"] = chain;
@@ -12959,7 +14224,42 @@ void Interpreter::registerBuiltins() {
                         (*tapRec.hash())["quit"] = quitW;
                     }
                     Value sup = (*s.hash())["supplier"];
-                    if (sup.t == VT::Hash && sup.hash()->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash())); (*sup.hash())["taps"].arr()->push_back(tapRec); }
+                    // an `.on-close` hook on the supply belongs to each of its taps
+                    if (s.hash()->count("closers")) (*tapRec.hash())["closers"] = (*s.hash())["closers"];
+                    // S-09: registration and the replay of what a
+                    // Supplier::Preserving kept are ONE step. Between them a
+                    // producer on another thread would slip a live value in front
+                    // of the replay, and the tap would see the stream out of
+                    // order (Roast supplier-preserving.t emits from a `start`).
+                    if (sup.t == VT::Hash && sup.hash()->count("taps")) {
+                        std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                        (*sup.hash())["taps"].arr()->push_back(tapRec);
+                        I.replayPreserved(sup, tapRec);
+                    }
+                    // …and when the react is over, this tap is closed: its
+                    // `on-close` hooks run, and the source stops feeding it.
+                    if (rctx) {
+                        auto rec = tapRec.hashS();
+                        Value closeCb; closeCb.t = VT::Code; closeCb.setCode(std::make_shared<Callable>());
+                        closeCb.code()->builtin = [rec](Interpreter& I2, ValueList&) -> Value {
+                            // its own flag: `done` inside the whenever marks the
+                            // tap `closed` from the emit fan-out, and the hooks
+                            // would then never run
+                            if ((*rec)["on-closed"].truthy()) return Value::any();
+                            (*rec)["on-closed"] = Value::boolean(true);
+                            (*rec)["closed"] = Value::boolean(true);
+                            (*rec)["ended"] = Value::boolean(true);
+                            auto cit = rec->find("closers");
+                            if (cit != rec->end() && cit->second.arr()) {
+                                ValueList hooks = *cit->second.arr();
+                                for (auto& h : hooks)
+                                    if (h.t == VT::Code) { ValueList na; try { I2.callCallable(h, na); } catch (...) {} }
+                            }
+                            return Value::any();
+                        };
+                        std::lock_guard<std::mutex> lk(rctx->m);
+                        rctx->closers.push_back(closeCb);
+                    }
                     // The supplier already signalled done before this tap registered
                     // (eager worker ran first): close the tap now, so runReactLoop
                     // doesn't wait on a source that will never complete.
@@ -13057,10 +14357,33 @@ void Interpreter::registerBuiltins() {
                     };
                     Interpreter* self = &I;
                     Value sCopy = s, blkCopy = shim;
-                    auto drain = [self, sCopy, blkCopy, lastP, rctx]() {
+                    auto drain = [self, sCopy, blkCopy, lastP, quitP, rctx]() {
                         if (rctx) { std::lock_guard<std::mutex> lk(rctx->m); if (rctx->closed) return; }
                         if (rctx) self->reactStack_.push_back(rctx);
-                        try { Value sv = sCopy; ValueList ta{blkCopy}; self->methodCall(sv, "tap", ta); }
+                        // S-57: the source QUITTING is what this whenever's QUIT
+                        // phasers are for — hand them the tap's quit rather than
+                        // letting it unwind the react (Roast syntax.t's
+                        // `whenever Supply.from-list(gather { die })`).
+                        Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+                        quitCb.code()->builtin = [quitP, rctx](Interpreter& I2, ValueList& a) -> Value {
+                            Value ex = a.empty() ? Value::any() : a[0];
+                            Value repl;
+                            int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
+                            if (r == 0) return Value::any();          // a when/default consumed it
+                            Value out = r == 2 ? repl : ex;
+                            if (rctx) {
+                                std::lock_guard<std::mutex> lk(rctx->m);
+                                if (!rctx->quitFlag) { rctx->quitFlag = true; rctx->quitErr = out; }
+                                rctx->closed = true; rctx->cv.notify_all();
+                            }
+                            return Value::any();
+                        };
+                        try {
+                            Value sv = sCopy;
+                            ValueList ta{blkCopy, Value::pair("quit", quitCb)};
+                            ta[1].namedArg = true;
+                            self->methodCall(sv, "tap", ta);
+                        }
                         catch (...) { if (rctx) self->reactStack_.pop_back(); throw; }
                         if (rctx) self->reactStack_.pop_back();
                         self->runLastPhasers(lastP, rctx);
@@ -13135,7 +14458,7 @@ void Interpreter::registerBuiltins() {
                         // block handles it, otherwise the react itself dies with the
                         // cause (a refused .connect must fail the react, not run the
                         // block with Any — Cro::TCP's dies-ok relies on it)
-                        Value ex = cause.t == VT::Nil ? Value::str(causeMsg) : cause;
+                        Value ex = causeException(I, cause, causeMsg);
                         ValueList quitP;
                         scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
                         if (!quitP.empty()) {
@@ -13163,7 +14486,7 @@ void Interpreter::registerBuiltins() {
                         self->reactStack_.push_back(rctx);
                         if (!rctx->closed) {
                             if (ps->broken) {
-                                Value ex = ps->cause.t == VT::Nil ? Value::str(ps->causeMsg) : ps->cause;
+                                Value ex = causeException(*self, ps->cause, ps->causeMsg);
                                 if (!quitP.empty()) {
                                     for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
                                 } else {
@@ -13186,8 +14509,14 @@ void Interpreter::registerBuiltins() {
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
             }
-            // whenever over a Promise/plain value: run the block once with it
-            ValueList one{s}; return I.callCallable(blk, one);
+            // S-60: any other value is coerced with Supply() — an Iterable is one
+            // event per element, anything else one event — and then tapped, so
+            // the react's own ordering rules apply to it like any other source.
+            {
+                Value coerced = coerceToSupply(s);
+                ValueList a2{coerced, blk};
+                return I.callBuiltin("whenever", a2);
+            }
         }
         return Value::nil();
     };
@@ -13228,9 +14557,30 @@ void Interpreter::registerBuiltins() {
         // downstream done callback and close the activation's inner taps.
         if (!I.tctx_.tapStack.empty()) {
             auto ctx = I.tctx_.tapStack.back();
+            // S-63: a `done` reached from the TAPPER's callback while the supply
+            // BODY is running has no supply of its own to end — the tap block is
+            // not lexically inside one. Rakudo makes that a run-time error, and
+            // so do we; the same call during a whenever's delivery is S-64, and
+            // ends the supply.
+            // …but only when there is no react to belong to: a `whenever` body in
+            // a react is fed BY a supply block's own emit, and its `done` ends
+            // that react (Roast syntax.t's synchronously-emitting source).
+            if (ctx->emitting > 0 && ctx->inBody && !ctx->collect && I.reactStack_.empty())
+                I.throwTypedV("X::ControlFlow",
+                              {{"illegal", Value::str("done")}, {"enclosing", Value::str("supply or react")}},
+                              "done without supply or react");
             ctx->done = true;
+            ctx->queue.clear();   // S-54: nothing that was waiting still happens
             if (!ctx->collect) {
-                if (ctx->doneCb.t == VT::Code) { ValueList na; try { I.callCallable(ctx->doneCb, na); } catch (...) {} }
+                // S-64: `done` from inside the TAPPER's own callback ends the
+                // supply but does not call that tapper's done callback — it is
+                // already inside the tap, and the stream stops under it. Inside a
+                // REACT the "tapper" is the react's own plumbing, which must be
+                // told, or the react waits for a source that has already stopped.
+                if ((ctx->emitting == 0 || !I.reactStack_.empty()) && ctx->doneCb.t == VT::Code) {
+                    ValueList na; try { I.callCallable(ctx->doneCb, na); } catch (...) {}
+                }
+                ctx->doneFired = true;
                 I.closeTapHandle(ctx->tap);
             }
             throw DoneEx{}; // done also EXITS the enclosing whenever block / supply body (Rakudo)
@@ -13241,7 +14591,10 @@ void Interpreter::registerBuiltins() {
             { std::lock_guard<std::mutex> lk(ctx->m); ctx->closed = true; ctx->cv.notify_all(); }
             throw DoneEx{}; // …and the enclosing whenever/react body
         }
-        return Value::boolean(true);
+        // outside a supply or a react there is nothing to end
+        I.throwTypedV("X::ControlFlow",
+                      {{"illegal", Value::str("done")}, {"enclosing", Value::str("supply or react")}},
+                      "done without supply or react");
     };
     B["supply"] = [](Interpreter& I, ValueList& a) -> Value {
         // supply { … } is ON-DEMAND: the block runs when the supply is tapped
@@ -13262,12 +14615,32 @@ void Interpreter::registerBuiltins() {
                     I.tctx_.tapStack.empty() ? -1 : (int)(I.tctx_.tapStack.back()->emitCb.t == VT::Code));
         if (!I.tctx_.tapStack.empty()) {
             auto ctx = I.tctx_.tapStack.back();
+            // Nothing follows done (S-66) — and a body that goes on emitting is a
+            // body that has not noticed: `supply { loop { emit … } }` ends when
+            // its consumer says done, so the emit that comes next is where the
+            // block is unwound. (The on-demand producer of S-15 keeps running:
+            // its Supplier has its own emit route, not this one.)
+            if (ctx->done) throw DoneEx{};
             if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
-            if (ctx->emitCb.t == VT::Code) { ValueList one{v}; I.callCallable(ctx->emitCb, one); }
+            if (ctx->emitCb.t == VT::Code) {
+                ValueList one{v};
+                ctx->emitting++;
+                try { I.callCallable(ctx->emitCb, one); } catch (...) { ctx->emitting--; throw; }
+                ctx->emitting--;
+            }
             return Value::boolean(true);
         }
         if (!I.tctx_.supplyStack.empty()) { I.tctx_.supplyStack.back()->push_back(v); return Value::boolean(true); }
-        throw RakuError{Value::typeObj("X::ControlFlow"), "emit without supply or react"};
+        // S-62: inside a react there IS a block, but nothing downstream to emit
+        // into — Rakudo warns and carries on rather than dying.
+        if (!I.reactStack_.empty()) {
+            ValueList wa{Value::str("Useless use of emit in react")};
+            I.callBuiltin("warn", wa);
+            return Value::boolean(true);
+        }
+        I.throwTypedV("X::ControlFlow",
+                      {{"illegal", Value::str("emit")}, {"enclosing", Value::str("supply or react")}},
+                      "emit without supply or react");
     };
     // printf/sprintf take **@args — a list/array argument flattens into the values,
     // so `printf $fmt, $x, f()` where f returns (a, b) fills three directives.
@@ -13899,10 +15272,20 @@ void Interpreter::registerBuiltins() {
                 try { return I.methodCall(p, "result", {}); } catch (RakuError&) {}
                 return p;
             }
-            // `await` a Supply drains it and yields its LAST emitted value
-            if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash()->count("values")) {
-                auto& vals = *(*p.hash())["values"].arr();
-                return vals.empty() ? Value::any() : vals.back();
+            // `await` a Supply drains it and yields its LAST emitted value.
+            // S-52: a supply that QUIT has no value to give — the exception that
+            // ended it is what `await` raises. (Rakudo hands back Any and sets
+            // no `$!` when the quit happens while it is still subscribing; the
+            // sheet flags that as a bug and it is not imitated here.)
+            if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash()) {
+                if (p.hash()->count("quit-reason"))
+                    throw RakuError{(*p.hash())["quit-reason"],
+                                    p.hash()->count("quit-message") ? (*p.hash())["quit-message"].toStr() : "Supply quit"};
+                if (p.hash()->count("values")) {
+                    auto& vals = *(*p.hash())["values"].arr();
+                    return vals.empty() ? Value::any() : vals.back();
+                }
+                ValueList na; return I.methodCall(p, "wait", na);
             }
             if (p.t != VT::Hash || p.hashKind != "Promise") return p;
             // PromiseState-backed promise (start / spawnPromise): block until it

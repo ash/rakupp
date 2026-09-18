@@ -473,6 +473,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
          m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
          m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" ||
          m == "rotor" || m == "unique" || m == "squish" || m == "antipairs" ||
+         m == "collate" ||     // `Supply.collate` is `(Supply,).collate` (Roast collate.t)
          m == "combinations" || m == "permutations")) {
         // toList keeps the scalar as one item, but a Blob/Buf expands to its
         // BYTES (`$blob.rotor(3, :partial)` in Base64 chunks byte-wise)
@@ -1140,7 +1141,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             std::stable_sort(sorted.begin(), sorted.end(), [&](const Value& a, const Value& b) {
                 return applyArith("coll", a, b).i < 0;
             });
-            Value outv = Value::array(); outv.isList = true; *outv.arr() = std::move(sorted);
+            // a Seq, as `.sort` answers — Roast collate.t reads `.raku` of it
+            Value outv = Value::array(); outv.isList = true; outv.s = "Seq";
+            *outv.arr() = std::move(sorted);
             return outv;
         }
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
@@ -1574,10 +1577,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true;
             for (size_t i = 0, k = 0; i < items.size(); k++) {
                 const RotorSpec& sp = specs[k % specs.size()];
-                if (i + (size_t)sp.n > items.size() && !partial) break;
+                const bool short_ = i + (size_t)sp.n > items.size();
+                if (short_ && !partial) break;
                 Value chunk = Value::array(); chunk.isList = true;
                 for (size_t j = i; j < i + (size_t)sp.n && j < items.size(); j++) chunk.arr()->push_back(items[j]);
                 out.arr()->push_back(chunk);
+                // `:partial` emits THE final partial batch — one, and then the
+                // walk is over. With a negative gap the windows overlap, so
+                // carrying on produced a tail of ever-shorter leftovers
+                // ((1..5).rotor(3 => -2, :partial) ended …(4,5),(5,)).
+                if (short_) break;
                 i += (size_t)(sp.step < 1 ? 1 : sp.step); // step is clamped, so this terminates
             }
             return out;

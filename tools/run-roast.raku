@@ -49,7 +49,11 @@ my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // 10).Int; # parallel-mode legs need headro
 # Values are seconds; everything else keeps $TIMEOUT.
 my %SLOW-FILES =
     'S29-context/sleep.t'  => 30,  # mainline sleep 3 × asserted-real, 4 blocks
-    'S17-supply/batch.t'   => 30,  # batch(:seconds(5)): aligns to 5 s periods, twice
+    'S17-supply/batch.t'   => 60,  # batch(:seconds(5)): aligns to 5 s periods, four
+                                   # times — ~36 s here, and ~38 s on Rakudo
+    'S17-supply/throttle.t' => 30, # sleep 6 + sleep 3 of mainline, then a 10 × .5 s
+                                   # paced stream: ~13 s on Rakudo here too
+    'S17-supply/unique.t'  => 45,  # :expires(2) asserted against real sleeps, ×8
 ;
 
 # The I/O tests write RELATIVE paths, so they land in whatever directory the

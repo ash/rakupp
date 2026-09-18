@@ -31463,6 +31463,15 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
                 Value a = Value::array(v.blobList()); a.isList = true; return a;
             }
+            // A Channel is not a Hash to list the fields of: `@$c` DRAINS it,
+            // which is how `for @$c { … }` reads a channel (Roast Channel.t).
+            // The same goes for a Supply, whose values are what it lists.
+            if (v.t == VT::Hash && (v.hashKind == "Channel" || v.hashKind == "Supply")) {
+                ValueList na;
+                Value l = methodCall(v, "list", na);
+                if (l.t == VT::Array && l.arr()) { Value a = Value::array(*l.arr()); a.isList = true; return a; }
+                Value a = Value::array(); a.isList = true; a.arr()->push_back(l); return a;
+            }
             // `@%h` / `@$hash` lists the hash's Pairs (zef: `for @$node -> $sub-node`)
             if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = true; return a; }
             Value a = Value::array(); a.arr()->push_back(v); a.isList = true; return a;
@@ -31711,8 +31720,28 @@ Value Interpreter::evalUnary(Unary* u) {
         const size_t INITIAL = 64;
         const long long PROBE_US = 20000;   // 20ms — a generator this slow is not one to probe
         ValueList prefix;
+        bool capped = false, died = false;
+        RakuError probeErr;
+        try { capped = runGather(INITIAL, PROBE_US, prefix); }
+        catch (RakuError& e) { died = true; probeErr = e; }
+        if (died) {
+            // The block DIED during the probe. A gather is LAZY, so that death
+            // belongs to whoever pulls from the sequence — not to whoever wrote
+            // the `gather`. Parking it here is what lets `Supply.from-list(gather
+            // { die })` be a supply that QUITS (its whenever's QUIT phaser then
+            // handles it), and lets a caller that never reads the sequence carry
+            // on untouched. The probe is an optimisation; it must not move where
+            // an exception is observed.
+            Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq";
+            auto st = std::make_shared<LazySeqState>();
+            st->gatherSeq = true;
+            auto err = std::make_shared<RakuError>(probeErr);
+            st->appendNext = [err](ValueList&) -> bool { throw *err; };
+            a.extM() = st;
+            return a;
+        }
         // finite gather (terminates within the caps): eager, exactly as before
-        if (!runGather(INITIAL, PROBE_US, prefix)) { // finite: eager, but a Seq (gists with parens)
+        if (!capped) { // finite: eager, but a Seq (gists with parens)
             Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
         }
         // hit a cap → treat as lazy: keep the prefix and extend on demand by

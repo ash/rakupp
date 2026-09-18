@@ -716,6 +716,27 @@ struct SupplyTapCtx {
     bool blockDone = false;         // the supply block returned
     bool doneFired = false;         // downstream done already delivered
     ValueList closers;              // Supply.on-close callbacks for THIS activation
+    // S-53: a `whenever` subscribes the instant its statement runs, but the
+    // events its source delivers WHILE the block body — or an enclosing
+    // whenever body — is still running are queued here and handed over when
+    // that body returns. `running` counts the bodies on the stack (0 = nothing
+    // is running, so the queue may be drained); each entry carries the id of
+    // the subscription it came from, so `last` can drop that subscription's
+    // backlog without disturbing the others.
+    struct Deferred { long long sub; std::function<void()> run; };
+    std::vector<Deferred> queue;
+    std::set<long long> closedSubs; // whenevers whose source is finished or `last`-ed
+    long long subSeq = 0;           // ids for this activation's subscriptions
+    int running = 0;
+    // >0 while a value is being handed to the DOWNSTREAM tap. `done` called
+    // from inside a tapper's own callback ends the supply without invoking that
+    // tapper's done callback (S-64).
+    int emitting = 0;
+    // …and true only while the BLOCK BODY itself is running, which is what
+    // separates S-63 (`done` from a tapper's callback while the body emits: a
+    // run-time error) from S-64 (the same call during a whenever's delivery:
+    // the supply ends, quietly).
+    bool inBody = false;
 };
 
 // Per-thread execution "registers": the state that belongs to a single thread
@@ -1125,7 +1146,8 @@ public:
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
     Value spawnIntervalWhenever(double interval, double delay, Value blk,
                                 std::shared_ptr<ReactCtx> ctx,
-                                std::shared_ptr<TapHandle> handle); // Supply.interval ticker
+                                std::shared_ptr<TapHandle> handle,
+                                Value doneCb = Value()); // Supply.interval ticker
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
     void spawnDelayedNative(double secs, std::function<void()> fn); // run fn on a worker after a real delay (Promise.in(N).then)
@@ -2070,6 +2092,10 @@ public:
     // downstream; live Suppliers register a tap record; async-socket supplies
     // spawn their I/O worker. Returns a Tap value (ext = TapHandle when wired).
     Value tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb);
+    // Supplier::Preserving: hand a fresh tap the events kept while nobody was
+    // listening, in order, and empty the store so the next quiet period starts
+    // clean (S-09). Called from both tap-registration paths.
+    void replayPreserved(const Value& sup, Value& tapRec);
     // Park a {emit, done, quit, bin} record on a Proc::Async stream Supply's
     // proc ({proc, stream, split?…}), wrapping emit in the .lines splitter when
     // marked; runProcPromise feeds the record when the process runs. Shared by
@@ -2093,6 +2119,19 @@ public:
     Value drainSupplyBlock(const Value& s);
     void closeTapHandle(const std::shared_ptr<TapHandle>& h); // run closers + CLOSE phasers once
     void maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx); // fire done when block returned + no live inner taps
+    // Hand over the events S-53 deferred, in arrival order. Only the outermost
+    // body drains; a nested one returns and lets its caller carry on.
+    void drainSupplyQueue(const std::shared_ptr<SupplyTapCtx>& ctx);
+    // S-57: run a whenever's QUIT phasers over a source quit. They behave like
+    // CATCH — only a `when`/`default` that MATCHES consumes the quit; anything
+    // else lets it travel on to the tapper once the body has run.
+    // 0 = consumed, 1 = propagate the original, 2 = propagate `replacement`.
+    int runQuitPhasers(const ValueList& quitP, const Value& ex, Value& replacement);
+    // One delivery into a supply activation, wrapped for S-53: it runs now when
+    // no body is running, and otherwise joins the queue behind the body that
+    // is. `sub` tags the entry with its subscription.
+    Value supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
+                         std::function<void(Interpreter&, ValueList&)> fn);
     int noCycleBreak_ = 0; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);

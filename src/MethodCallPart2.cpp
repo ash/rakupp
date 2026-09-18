@@ -43,6 +43,20 @@ static void sinkBuildResult(const rakupp::Value& r) {
     }
 }
 
+// S-43/S-35/S-36: several Supply combinators take a `&by` that means one thing
+// with one parameter and another with two — a KEY EXTRACTOR (`*.chars`) versus a
+// COMPARATOR (`-> $a, $b { … }`). This is that count.
+static long long supplyByArity(const rakupp::Value& c) {
+    using namespace rakupp;
+    if (c.t != VT::Code || !c.code()) return 1;
+    const Callable* k = c.code();
+    if (k->isWhateverCode) return k->whateverArity > 1 ? k->whateverArity : 1;
+    long long n = 0;
+    if (k->params) { for (auto& pp : *k->params) if (!pp.slurpy && !pp.named && !pp.optional) n++; }
+    else n = (long long)k->placeholders.size();
+    return n ? n : 1;
+}
+
 namespace rakupp {
 
 // The per-class step alone, least-derived first down the primary parent chain
@@ -780,7 +794,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // silently return an empty Tap and never start the worker).
         if ((m == "tap" || m == "act") && inv.hash()->count("kind")) {
             std::string k = inv.hash()->at("kind").toStr();
-            if (k == "async-read" || k == "async-listen" || k == "signal" || k == "interval") {
+            if (k == "async-read" || k == "async-listen" || k == "signal" ||
+                k == "interval" || k == "throttle" || k == "throttle-run" ||
+                k == "combine" || k == "flatten" || k == "migrate") {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
                 for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
@@ -876,6 +892,99 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::boolean(live);
         }
         if (m == "Supply") return inv;
+        // S-04: every Supply rakupp hands out delivers its events one at a time
+        // to a given tap — that is what `.serial` promises, and it holds for the
+        // live, list-backed, block and kind-based shapes alike.
+        if (m == "serial") return Value::boolean(true);
+        // ---- S-24  start: each value becomes a SUPPLY of its own that runs
+        //      code(value) on the thread pool and emits the single result, then
+        //      is done; an exception there is that inner supply's quit. Consume
+        //      it with `.flat` or `.migrate`. It is `map` to a promise-backed
+        //      supply, which is what makes it work on a live source as well as a
+        //      list-backed one — and what lets the started blocks overlap.
+        // On a LIVE source the started blocks must not be waited for: the test
+        // that drives them has one block waiting on a Promise that a LATER value
+        // keeps, so tapping the inner supply has to return at once and the value
+        // arrive when it arrives. The inner supply is therefore a PRESERVING
+        // supplier the settled Promise emits into — hot enough to be async, kept
+        // enough that a tap which arrives after the result still sees it.
+        if (!listy && m == "start" && !args.empty() && args[0].t == VT::Code) {
+            Value code = args[0];
+            Value mapper; mapper.t = VT::Code; mapper.setCode(std::make_shared<Callable>());
+            mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
+                Value v = a.empty() ? Value::any() : a[0];
+                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
+                    ValueList one{v}; return I2.callCallable(code, one);
+                };
+                Value pr = I.spawnPromise(body);
+                Value sup = Value::makeHash(); sup.hashKind = "Supplier";
+                (*sup.hash())["taps"] = Value::array();
+                (*sup.hash())["preserving"] = Value::boolean(true);
+                (*sup.hash())["buffer"] = Value::array();
+                Value inner = Value::makeHash(); inner.hashKind = "Supply";
+                (*inner.hash())["supplier"] = sup;
+                if (pr.t == VT::Hash && pr.ext()) {
+                    auto ps = std::static_pointer_cast<PromiseState>(pr.ext());
+                    Interpreter* ip = &I;
+                    std::function<void()> settle = [ip, sup, ps]() {
+                        Value s2 = sup;
+                        bool broke; Value cause; std::string cm; Value res;
+                        { std::lock_guard<std::mutex> lk(ps->m);
+                          broke = ps->broken; cause = ps->cause; cm = ps->causeMsg; res = ps->result; }
+                        try {
+                            if (broke) {
+                                ValueList one{cause.t == VT::Nil ? Value::str(cm) : cause};
+                                ip->methodCall(s2, "quit", one);
+                            } else {
+                                ValueList one{res};
+                                ip->methodCall(s2, "emit", one);
+                                ValueList na; ip->methodCall(s2, "done", na);
+                            }
+                        } catch (...) {}
+                    };
+                    bool now = false;
+                    { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(settle); }
+                    if (now) settle();
+                }
+                return inner;
+            };
+            ValueList margs{mapper};
+            return methodCall(inv, "map", margs, nullptr);
+        }
+        if (listy && m == "start" && !args.empty() && args[0].t == VT::Code) {
+            // (a list-backed source has every value in hand, so the started
+            // blocks can be awaited where their results are asked for)
+            Value code = args[0];
+            Value mapper; mapper.t = VT::Code; mapper.setCode(std::make_shared<Callable>());
+            mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
+                Value v = a.empty() ? Value::any() : a[0];
+                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
+                    ValueList one{v}; return I2.callCallable(code, one);
+                };
+                Value pr = I.spawnPromise(body);
+                Value blk; blk.t = VT::Code; blk.setCode(std::make_shared<Callable>());
+                blk.code()->builtin = [pr](Interpreter& I2, ValueList&) -> Value {
+                    Value p = pr; ValueList na;
+                    Value r = I2.methodCall(p, "result", na);   // waits; raises if broken
+                    ValueList one{r};
+                    return I2.callBuiltin("emit", one);
+                };
+                Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+                (*s2.hash())["block"] = blk;
+                return s2;
+            };
+            ValueList margs{mapper};
+            return methodCall(inv, "map", margs, nullptr);
+        }
+
+        // S-10: `.serialize` promises no two events are delivered at once and
+        // `.sanitize` additionally enforces the emit* [done|quit] grammar. Both
+        // return the invocant when it already has the property — which, given
+        // `.serial` above and the per-tap `ended` flag on the Supplier, it does.
+        if (m == "serialize" || m == "sanitize") return inv;
+        if (m == "Tappable") return Value::typeObj("Supply::Sanitize");
         if (m == "on-close") { // callback fires when the tapping supply/react block ends
             // inside a REAL supply activation the callback belongs to that
             // activation's tap: it runs when the tap closes (e.g. via `done`)
@@ -891,10 +1000,82 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto ctx = reactStack_.back();
                 std::lock_guard<std::mutex> lk(ctx->m);
                 ctx->closers.push_back(args[0]);
+                return inv;
+            }
+            // S-12: outside any activation `.on-close` is a COMBINATOR — it
+            // answers a supply whose every tap carries the hook, and the hook
+            // runs each time that tap is closed (not once, and not on a natural
+            // done). A fresh Supply value, so the invocant keeps its own hooks.
+            if (!args.empty() && args[0].t == VT::Code) {
+                Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+                *s2.hash() = *inv.hash();
+                if (inv.ext()) s2.extM() = inv.extM();
+                Value hooks = Value::array();
+                auto old = inv.hash()->find("closers");
+                if (old != inv.hash()->end() && old->second.arr()) *hooks.arr() = *old->second.arr();
+                hooks.arr()->push_back(args[0]);
+                (*s2.hash())["closers"] = hooks;
+                return s2;
             }
             return inv;
         }
-        if (m == "list" || m == "List" || m == "Seq" || m == "eager") { Value o = Value::array(); *o.arr() = vals(); o.isList = true; return o; }
+        // S-17: a kind-based live supply (an interval ticker, a socket read, an
+        // OS-signal stream) has no values until something drives it. Asking for
+        // its list taps it and waits for the stream to finish — which, for
+        // `Supply.interval(0.02).head(3)`, is when the chain has had its three.
+        // S-50: on a LIVE supply the subscription is made HERE, and the list is
+        // filled as the events arrive — so values emitted between this call and
+        // the moment the list is read are kept, not lost. The Array handed back
+        // shares its storage with the tap, which is what makes that work without
+        // blocking the thread that is about to do the emitting.
+        if ((m == "list" || m == "List" || m == "Seq" || m == "eager") &&
+            !listy && inv.hash()->count("supplier") && !inv.hash()->count("kind")) {
+            Value o = Value::array(); o.isList = true;
+            if (m == "Seq") o.s = "Seq";
+            auto cell = o.arrS();
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+                if (!a.empty()) cell->push_back(a[0]);
+                return Value::any();
+            };
+            tapSupply(inv, emitCb, Value::nil(), Value::nil());
+            return o;
+        }
+        if ((m == "list" || m == "List" || m == "Seq" || m == "eager") &&
+            !listy && inv.hash()->count("kind")) {
+            auto out = std::make_shared<ValueList>();
+            auto fin = std::make_shared<int>(0);          // 0 running, 1 done, 2 quit
+            auto err = std::make_shared<Value>();
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            emitCb.code()->builtin = [out](Interpreter&, ValueList& a) -> Value {
+                if (!a.empty()) out->push_back(a[0]);
+                return Value::any();
+            };
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            doneCb.code()->builtin = [fin](Interpreter&, ValueList&) -> Value { if (!*fin) *fin = 1; return Value::any(); };
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            quitCb.code()->builtin = [fin, err](Interpreter&, ValueList& a) -> Value {
+                if (!*fin) { *fin = 2; *err = a.empty() ? Value::any() : a[0]; }
+                return Value::any();
+            };
+            Value tapV = tapSupply(inv, emitCb, doneCb, quitCb);
+            while (!*fin) sleepYield(0.001);             // releases the GIL: the ticker runs
+            if (tapV.t == VT::Hash && tapV.hashKind == "Tap") { ValueList na; methodCall(tapV, "close", na); }
+            if (*fin == 2) throw RakuError{*err, err->toStr()};
+            Value o = Value::array(); *o.arr() = *out; o.isList = true;
+            if (m == "Seq") o.s = "Seq";
+            return o;
+        }
+        if (m == "list" || m == "List" || m == "Seq" || m == "eager") {
+            // S-56: a supply that QUIT has no list — the exception that ended it
+            // surfaces here, where the values are asked for.
+            if (inv.hash()->count("quit-reason"))
+                throw RakuError{(*inv.hash())["quit-reason"],
+                                inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit"};
+            Value o = Value::array(); *o.arr() = vals(); o.isList = true;
+            if (m == "Seq") o.s = "Seq";
+            return o;
+        }
         // .comb/.words/.lines all concatenate the stream FIRST and then run the Str
         // method. Applied per MESSAGE instead, `.words` over "Hello Word!".comb
         // yielded one "word" per character.
@@ -910,6 +1091,112 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.s == "chomp")
                     (*s.hash())["split-chomp"] = Value::boolean(a.pairVal() && a.pairVal()->truthy());
             return s;
+        }
+        // ---- S-32  comb, per chunk with a carry. The stream is not one string:
+        //      a piece that straddles a chunk boundary is completed by the next
+        //      chunk, and what follows the last piece is carried forward — so a
+        //      regex match never grows across a boundary.
+        if (m == "comb" && listy) {
+            Value what; bool haveWhat = false, haveLimit = false;
+            double limit = 0;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;                 // :match changes nothing here
+                if (!haveWhat) { what = a; haveWhat = true; }
+                // `*` (and Inf) is "no limit", not a limit of zero
+                else if (a.t == VT::Whatever) continue;
+                else if (!haveLimit) {
+                    double lv = a.toNum();
+                    if (std::isinf(lv)) continue;
+                    limit = lv; haveLimit = true;
+                }
+            }
+            const bool byCount = haveWhat && (what.t == VT::Int || what.t == VT::Num);
+            const long long n   = byCount ? what.toInt() : 0;
+            const bool byRegex  = haveWhat && what.t == VT::Regex;
+            const bool byNeedle = haveWhat && what.t == VT::Str && !what.s.empty();
+            auto strCall = [&](Value inv2, const char* meth, ValueList a2) {
+                return methodCall(inv2, meth, a2);
+            };
+            auto charsOf = [&](const std::string& t) {
+                Value sv = Value::str(t); ValueList na;
+                return strCall(sv, "chars", na).toInt();
+            };
+            auto substrFrom = [&](const std::string& t, long long from) {
+                if (from <= 0) return t;
+                Value sv = Value::str(t); ValueList a2{Value::integer(from)};
+                return strCall(sv, "substr", a2).toStr();
+            };
+            ValueList out; std::string carry;
+            bool full = false;
+            auto push = [&](Value v) {
+                if (full) return;
+                out.push_back(std::move(v));
+                if (haveLimit && (double)out.size() >= limit) full = true;
+            };
+            for (auto& v : vals()) {
+                if (full) break;
+                std::string text = carry + v.toStr();
+                carry.clear();
+                if (byRegex) {
+                    Value sv = Value::str(text);
+                    Value gAdv = Value::pair("g", Value::boolean(true));
+                    gAdv.namedArg = true;               // an adverb, not a positional Pair
+                    ValueList a2{what, gAdv};
+                    Value ms = strCall(sv, "match", a2);
+                    ValueList matches;
+                    if (ms.t == VT::Array && ms.arr()) matches = *ms.arr();
+                    else if (ms.t == VT::Match) matches.push_back(ms);
+                    if (matches.empty()) { carry = text; continue; }
+                    long long endPos = 0;
+                    for (auto& mm : matches) {
+                        ValueList na;
+                        Value mv = mm;
+                        push(Value::str(strCall(mv, "Str", na).toStr()));
+                        ValueList na2; Value mv2 = mm;
+                        endPos = strCall(mv2, "pos", na2).toInt();
+                    }
+                    carry = substrFrom(text, endPos);
+                    continue;
+                }
+                if (byNeedle) {
+                    Value sv = Value::str(text);
+                    ValueList a2{what};
+                    Value pieces = strCall(sv, "comb", a2);
+                    if (pieces.t == VT::Array && pieces.arr()) for (auto& pc : *pieces.arr()) push(pc);
+                    ValueList a3{what};
+                    Value sv2 = Value::str(text);
+                    Value ri = strCall(sv2, "rindex", a3);
+                    long long nlen = charsOf(what.s.str());
+                    std::string tail = defined(ri) ? substrFrom(text, ri.toInt() + nlen) : text;
+                    long long keep = nlen - 1;
+                    long long tlen = charsOf(tail);
+                    carry = keep <= 0 ? std::string() : substrFrom(tail, tlen - keep < 0 ? 0 : tlen - keep);
+                    continue;
+                }
+                if (byCount && n > 1) {
+                    long long tlen = charsOf(text);
+                    long long whole = (tlen / n) * n;
+                    std::string head = substrFrom(text, 0);
+                    {   // the part that divides evenly; the rest is carried
+                        Value sv = Value::str(text);
+                        ValueList a2{Value::integer(0), Value::integer(whole)};
+                        head = strCall(sv, "substr", a2).toStr();
+                    }
+                    carry = substrFrom(text, whole);
+                    Value hv = Value::str(head); ValueList a4{Value::integer(n)};
+                    Value pieces = strCall(hv, "comb", a4);
+                    if (pieces.t == VT::Array && pieces.arr()) for (auto& pc : *pieces.arr()) push(pc);
+                    continue;
+                }
+                // no argument, an Int of 1 or less, or the empty string: characters
+                Value sv = Value::str(text); ValueList na;
+                Value pieces = strCall(sv, "comb", na);
+                if (pieces.t == VT::Array && pieces.arr()) for (auto& pc : *pieces.arr()) push(pc);
+            }
+            // an n-character comb emits the leftover when the stream ends; a
+            // regex or needle comb drops what never matched
+            if (byCount && n > 1 && !carry.empty()) push(Value::str(carry));
+            return mkSupply(std::move(out));
         }
         if ((m == "comb" || m == "words" || m == "lines") && listy) {
             std::string all; for (auto& v : vals()) all += v.toStr();
@@ -959,6 +1246,39 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return Value::any();
             };
             (*tapRec.hash())["emit"] = emitCb;
+            // S-49: the stream's END is part of the coercion — done closes the
+            // channel, quit fails it. Without these the reader of `for @$c` hung
+            // on a finished supply, and an unhandled quit had no handler to go
+            // to and unwound the emitter instead.
+            auto ps = std::make_shared<PromiseState>();
+            c.extM() = ps;
+            Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.extM() = ps;
+            (*cp.hash())["status"] = Value::str("Planned");
+            (*c.hash())["closedPromise"] = cp;
+            auto ch = c.hashS();
+            auto settle = [ch, ps](bool failed, Value cause) {
+                std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                (*ch)["closed"] = Value::boolean(true);
+                if (failed) (*ch)["failCause"] = cause;
+                if ((*ch)["queue"].arr()->empty()) {
+                    std::lock_guard<std::mutex> plk(ps->m);
+                    if (!ps->done) {
+                        if (failed) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); }
+                        else ps->result = Value::boolean(true);
+                        ps->done = true;
+                    }
+                    ps->cv.notify_all();
+                    (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
+                }
+            };
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            doneCb.code()->builtin = [settle](Interpreter&, ValueList&) -> Value { settle(false, Value::any()); return Value::any(); };
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value {
+                settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
+            };
+            (*tapRec.hash())["done"] = doneCb;
+            (*tapRec.hash())["quit"] = quitCb;
             Value sup = (*inv.hash())["supplier"];
             if (sup.t == VT::Hash && sup.hash()->count("taps")) (*sup.hash())["taps"].arr()->push_back(tapRec);
             return c;
@@ -972,11 +1292,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*c.hash())["closedPromise"] = cp;
             return c;
         }
-        if (m == "elems") return Value::integer((long long)vals().size());
+        // (`.elems` is S-41's running-count SUPPLY, handled with the other
+        // combinators below — not the plain count it used to answer.)
         if (m == "tap" || m == "act") {
             Value emit = args.empty() ? Value::nil() : args[0];
-            Value done, quit;
-            for (auto& a : args) if (a.t == VT::Pair) { if (a.s == "done" && a.pairVal()) done = *a.pairVal(); else if (a.s == "quit" && a.pairVal()) quit = *a.pairVal(); }
+            Value done, quit, tapCb;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
+                if (a.s == "done") done = *a.pairVal();
+                else if (a.s == "quit") quit = *a.pairVal();
+                else if (a.s == "emit") emit = *a.pairVal();
+                else if (a.s == "tap") tapCb = *a.pairVal();   // S-02: sees the Tap before any value flows
+            }
+            // (Rakudo also rejects a tap block that cannot ACCEPT a value —
+            // `-> { … }` as against `{ … }`, Roast basic.t. rakupp's parser
+            // records both as a block with an empty parameter list, so the two
+            // are indistinguishable here; telling them apart is a parser change.)
             if (inv.hash()->count("supplier")) {
                 // live Supply: register the callbacks with the Supplier; emit/done fan out later
                 Value tapRec = Value::makeHash();
@@ -986,15 +1316,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value chain = Value::array();
                     for (auto& step : *(*inv.hash())["chain"].arr()) {
                         Value s2 = Value::makeHash(); *s2.hash() = *step.hash();
-                        (*s2.hash())["state"] = Value::makeHash();
+                        Value st0 = Value::makeHash();
+                        // when this subscription began: a bucketed step (`.elems($s)`)
+                        // measures its first bucket from here, not from its first value
+                        (*st0.hash())["t0"] = Value::number(epochNowSecs());
+                        (*s2.hash())["state"] = st0;
                         chain.arr()->push_back(s2);
                     }
                     (*tapRec.hash())["chain"] = chain;
                 }
+                if (inv.hash()->count("closers")) (*tapRec.hash())["closers"] = (*inv.hash())["closers"];
                 Value sup = (*inv.hash())["supplier"];
-                if (sup.t == VT::Hash && sup.hash()->count("taps")) (*sup.hash())["taps"].arr()->push_back(tapRec);
-                tapRec.hashKind = "Tap"; return tapRec; // shares the record's hash so .close can mark it closed
+                bool registered = false;
+                if (sup.t == VT::Hash && sup.hash()->count("taps")) {
+                    // registration and replay are one step (see tapSupply)
+                    std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                    (*sup.hash())["taps"].arr()->push_back(tapRec);
+                    replayPreserved(sup, tapRec);
+                    registered = true;
+                }
+                Value tapVal = tapRec; tapVal.hashKind = "Tap"; // shares the record's hash so .close can mark it closed
+                if (tapCb.t == VT::Code) { ValueList one{tapVal}; callCallable(tapCb, one); }
+                (void)registered;   // the replay happened with the registration
+                return tapVal;
             }
+            // S-02: the :tap callback receives the Tap before any value flows,
+            // so it is built here rather than at the bottom of this arm.
+            Value eagerTap = Value::makeHash(); eagerTap.hashKind = "Tap";
+            if (inv.hash()->count("closers")) (*eagerTap.hash())["closers"] = (*inv.hash())["closers"];
+            if (tapCb.t == VT::Code) { ValueList one{eagerTap}; callCallable(tapCb, one); }
             // eager: push every value to the emit callback, then run the done phaser
             // (or, if the supply block died, the quit callback with the reason).
             if (listy) {
@@ -1020,24 +1370,32 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // {emit, done, quit, bin} record on the proc for runProcPromise
                 registerProcStreamTap(inv, args[0], done, quit);
             }
-            Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+            return eagerTap;
         }
         if (listy && (m == "min" || m == "max")) {
-            // Supply.min/max is a *running* extreme: emit each value that is a new
-            // minimum/maximum of the stream so far (compared by an optional &mapper).
+            // Supply.min/max is a *running* extreme: every value that strictly
+            // improves on what came before. S-43: a one-parameter `&by` is a KEY
+            // EXTRACTOR and the keys are compared with cmp; a two-parameter one
+            // is the COMPARATOR itself. An undefined value is skipped.
             bool wantMax = (m == "max");
-            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
-            ValueList out; bool have = false; Value bestKey;
+            Value by = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            bool cmpFn = by.t == VT::Code && supplyByArity(by) >= 2;
+            ValueList out; bool have = false; Value best, bestKey;
             for (auto& v : vals()) {
+                if (!defined(v)) continue;
+                bool better;
+                if (cmpFn) {
+                    if (!have) better = true;
+                    else { ValueList two{v, best}; long long c = callCallable(by, two).toInt(); better = wantMax ? c > 0 : c < 0; }
+                    if (better) { out.push_back(v); best = v; have = true; }
+                    continue;
+                }
                 Value key = v;
-                if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
-                if (!have || (wantMax ? valueCmp(key, bestKey) > 0 : valueCmp(key, bestKey) < 0)) { out.push_back(v); bestKey = key; have = true; }
+                if (by.t == VT::Code) { ValueList one{v}; key = callCallable(by, one); }
+                better = !have || (wantMax ? valueCmp(key, bestKey) > 0 : valueCmp(key, bestKey) < 0);
+                if (better) { out.push_back(v); best = v; bestKey = key; have = true; }
             }
             return mkSupply(out);
-        }
-        if (listy && m == "do") { // run a block per value for its side effect; pass values through
-            if (!args.empty() && args[0].t == VT::Code) for (auto& v : vals()) { ValueList one{v}; callCallable(args[0], one); }
-            return mkSupply(vals());
         }
         if (listy && m == "grab") { // hand the whole stream (as $_) to a collector, emit its result
             if (!args.empty() && args[0].t == VT::Code) {
@@ -1055,37 +1413,412 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 else if (op.t == VT::Code) { ValueList two{acc, v}; acc = callCallable(op, two); }
                 if (m == "produce") out.push_back(acc);
             }
-            if (m == "reduce") return mkSupply(first ? ValueList{} : ValueList{acc});
+            // S-28: an empty source still emits ONE value — Nil, as List.reduce
+            // answers for an empty list.
+            if (m == "reduce") return mkSupply(first ? ValueList{Value::nil()} : ValueList{acc});
             return mkSupply(out);
         }
         if (listy && m == "minmax") { // emit the running (min..max) Range after each value
-            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            Value by = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            bool cmpFn = by.t == VT::Code && supplyByArity(by) >= 2;
             ValueList out; Value mn, mx, mnK, mxK; bool first = true;
+            auto worse = [&](const Value& a, const Value& b) {   // a sorts before b
+                if (cmpFn) { ValueList two{a, b}; return callCallable(by, two).toInt() < 0; }
+                return valueCmp(a, b) < 0;
+            };
             for (auto& v : vals()) {
                 Value key = v;
-                if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
+                if (by.t == VT::Code && !cmpFn) { ValueList one{v}; key = callCallable(by, one); }
+                else if (cmpFn) key = v;
                 bool changed = first;
                 if (first) { mn = mx = v; mnK = mxK = key; first = false; }
-                else { if (valueCmp(key, mnK) < 0) { mn = v; mnK = key; changed = true; } if (valueCmp(key, mxK) > 0) { mx = v; mxK = key; changed = true; } }
+                else {
+                    if (worse(key, mnK)) { mn = v; mnK = key; changed = true; }
+                    if (worse(mxK, key)) { mx = v; mxK = key; changed = true; }
+                }
                 if (!changed) continue; // only emit when the running min..max actually widens
-                // build the running Range from the actual endpoint values (Str or Int).
-                // rakupp has no string-Range value, so a string range is emitted eagerly
-                // flattened — matching how a `"a".."e"` literal evaluates on the other side.
+                // The endpoints are the VALUES, kept as the objects they are —
+                // a Str range of more than one character has no integer form to
+                // walk, but `.min`, `.max` and `.raku` all read the endpoints.
                 if (mn.t == VT::Str || mx.t == VT::Str) {
-                    Value rg = Value::array();
-                    std::string cur = mn.toStr(), end = mx.toStr();
-                    for (int g = 0; g < 100000; g++) {
-                        if (cur.length() > end.length() || (cur.length() == end.length() && cur > end)) break;
-                        rg.arr()->push_back(Value::str(cur));
-                        if (cur == end) break;
-                        cur = strSucc(cur);
-                    }
+                    Value rg = Value::range(0, 0, false, false);
+                    attachRangeEnds(rg, mn, mx);
                     out.push_back(rg);
-                } else out.push_back(Value::range(mn.toInt(), mx.toInt(), false, false));
+                } else {
+                    Value rg = Value::range(mn.toInt(), mx.toInt(), false, false);
+                    out.push_back(rg);
+                }
             }
             return mkSupply(out);
         }
-        if (listy && (m == "zip" || m == "merge")) {
+        // ---- S-47  throttle, in its two forms.
+        //   throttle($elems, &process, …): at most $elems calls of process(value)
+        //     run at a time, and the supply emits the finished PROMISES, not
+        //     their results — so the consumer decides when to await them.
+        //   throttle($elems, $seconds, $delay = 0, …): at most $elems values pass
+        //     per $seconds tick; the rest wait their turn, and the supply is done
+        //     only once the waiting ones have gone through.
+        if (m == "throttle" && !args.empty()) {
+            Value process;
+            double seconds = 0, delay = 0;
+            long long elems = args[0].toInt();
+            size_t pos = 0;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;
+                pos++;
+                if (pos == 2) { if (a.t == VT::Code) process = a; else seconds = a.toNum(); }
+                else if (pos == 3) delay = a.toNum();
+            }
+            if (process.t == VT::Code) {
+                // The concurrency form: at most `$elems` calls of process(value)
+                // run at a time, and the supply emits the PROMISES, in value
+                // order, as each is started. A `:control` supply may change the
+                // allowance while it runs — a throttle started at 0 does nothing
+                // until it is let go — and `:status` receives a report at the end.
+                Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+                (*s2.hash())["kind"] = Value::str("throttle-run");
+                (*s2.hash())["src"] = inv;
+                (*s2.hash())["elems"] = Value::integer(elems > 0 ? elems : 0);
+                (*s2.hash())["process"] = process;
+                (*s2.hash())["delay"] = Value::number(delay);
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.pairVal() && (a.s == "control" || a.s == "status"))
+                        (*s2.hash())[a.s] = *a.pairVal();
+                return s2;
+            }
+            if (seconds <= 0) return inv;          // no tick: nothing to pace
+            Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+            (*s2.hash())["kind"] = Value::str("throttle");
+            (*s2.hash())["src"] = inv;
+            (*s2.hash())["elems"] = Value::integer(elems > 0 ? elems : 0);
+            (*s2.hash())["seconds"] = Value::number(seconds);
+            (*s2.hash())["delay"] = Value::number(delay);
+            // `:control` is a Supply of commands — "limit:N" raises or lowers how
+            // many may pass per tick while the stream is running, which is how a
+            // throttle started at 0 is let go later.
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal() && (a.s == "control" || a.s == "status"))
+                    (*s2.hash())[a.s] = *a.pairVal();
+            return s2;
+        }
+        // ---- S-48  share: a HOT supply. It subscribes to the source at once and
+        //      hands the events to every tap of the result, so whatever the
+        //      source produced before a tap existed — including its done — is
+        //      lost to that tap. On a finished list-backed source that means
+        //      everything, and `.share.list` never completes; a Supplier-backed
+        //      one fans out live to all the taps, which is the point of it.
+        if (m == "share") {
+            Value sup = Value::makeHash(); sup.hashKind = "Supplier";
+            (*sup.hash())["taps"] = Value::array();
+            Value out = Value::makeHash(); out.hashKind = "Supply";
+            (*out.hash())["supplier"] = sup;
+            // subscribe NOW: the events start flowing into a Supplier that so
+            // far has no taps, and are dropped
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value supCopy = sup;
+            emitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
+                ValueList one{a.empty() ? Value::any() : a[0]};
+                Value s2 = supCopy; return I.methodCall(s2, "emit", one);
+            };
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            doneCb.code()->builtin = [supCopy](Interpreter& I, ValueList&) -> Value {
+                ValueList na; Value s2 = supCopy; return I.methodCall(s2, "done", na);
+            };
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            quitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
+                ValueList one{a.empty() ? Value::any() : a[0]};
+                Value s2 = supCopy; try { return I.methodCall(s2, "quit", one); } catch (...) { return Value::any(); }
+            };
+            tapSupply(inv, emitCb, doneCb, quitCb);
+            return out;
+        }
+        // ---- S-34  encode / decode. `.encode` turns each Str into a Blob of the
+        //      named encoding. `.decode` goes the other way and HOLDS BACK the
+        //      last character of each decoded chunk until the next chunk or the
+        //      end, so a grapheme split across two chunks is never emitted in
+        //      halves — which means a one-chunk stream emits nothing until it
+        //      completes.
+        if (listy && (m == "encode" || m == "decode")) {
+            ValueList out;
+            if (m == "encode") {
+                for (auto& v : vals()) {
+                    Value sv = v;
+                    out.push_back(methodCall(sv, "encode", args, rwArgs));
+                }
+                return mkSupply(std::move(out));
+            }
+            std::string held;
+            for (auto& v : vals()) {
+                Value bv = v;
+                Value dv = methodCall(bv, "decode", args, rwArgs);
+                std::string text = held + dv.toStr();
+                held.clear();
+                Value tv = Value::str(text);
+                ValueList na;
+                Value chs = methodCall(tv, "comb", na);
+                if (!(chs.t == VT::Array && chs.arr()) || chs.arr()->empty()) continue;
+                auto& cs = *chs.arr();
+                std::string head;
+                for (size_t i = 0; i + 1 < cs.size(); i++) head += cs[i].toStr();
+                held = cs.back().toStr();               // the last character waits
+                if (!head.empty()) out.push_back(Value::str(head));   // the chunk, one value
+            }
+            if (!held.empty()) out.push_back(Value::str(held));
+            return mkSupply(std::move(out));
+        }
+        // ---- snip: cut the stream into sublists. Each test in turn is the
+        //      boundary that ENDS the current piece — the value that matches it
+        //      starts the next one, and the test is then spent. What is left
+        //      after the last test is one final piece, emitted when the stream
+        //      completes.
+        if (listy && m == "snip") {
+            ValueList tests;
+            for (auto& a : args) if (a.t != VT::Pair) tests.push_back(a);
+            ValueList out, chunk;
+            size_t ti = 0;
+            auto hits = [&](const Value& t, const Value& v) {
+                ValueList one{v};
+                if (t.t == VT::Code) return predAnswerTruthy(*this, callCallable(t, one), v);
+                if (t.t == VT::Regex) return regexMatch(v.toStr(), t.s.str()).truthy();
+                return applyArith("~~", v, t).truthy();
+            };
+            for (auto& v : vals()) {
+                if (ti < tests.size() && hits(tests[ti], v)) {
+                    Value b = Value::array(); b.isList = true; *b.arr() = chunk;
+                    out.push_back(b);
+                    chunk.clear();
+                    ti++;
+                }
+                chunk.push_back(v);
+            }
+            if (!chunk.empty()) { Value b = Value::array(); b.isList = true; *b.arr() = chunk; out.push_back(b); }
+            return mkSupply(std::move(out));
+        }
+        // ---- S-26  flat: a supply of supplies. Every inner supply contributes
+        //      all of its values, in the order the outer one hands them over.
+        if (listy && m == "flat") {
+            ValueList out;
+            bool anySupply = false;
+            for (auto& v : vals()) if (v.t == VT::Hash && v.hashKind == "Supply") { anySupply = true; break; }
+            if (!anySupply) {
+                Value arr = Value::array(); *arr.arr() = vals(); arr.isList = true;
+                Value r = methodCall(arr, "flat", args, rwArgs);
+                return mkSupply(r.t == VT::Array && r.arr() ? *r.arr() : ValueList{r});
+            }
+            for (auto& v : vals()) {
+                if (v.t == VT::Hash && v.hashKind == "Supply") {
+                    // an inner supply that quit ends the flattened stream there:
+                    // its reason becomes this supply's (S-06 again — nothing
+                    // follows a quit)
+                    if (v.hash() && v.hash()->count("quit-reason")) {
+                        Value s3 = mkSupply(std::move(out));
+                        (*s3.hash())["quit-reason"] = (*v.hash())["quit-reason"];
+                        if (v.hash()->count("quit-message")) (*s3.hash())["quit-message"] = (*v.hash())["quit-message"];
+                        return s3;
+                    }
+                    ValueList na; Value iv = v;
+                    Value l;
+                    try { l = methodCall(iv, "list", na); }
+                    catch (RakuError& e) {          // the inner supply quit as it ran
+                        Value s3 = mkSupply(std::move(out));
+                        (*s3.hash())["quit-reason"] = exceptionFor(e);
+                        (*s3.hash())["quit-message"] = Value::str(e.message);
+                        return s3;
+                    }
+                    if (l.t == VT::Array && l.arr()) for (auto& x : *l.arr()) out.push_back(x);
+                } else out.push_back(v);
+            }
+            return mkSupply(std::move(out));
+        }
+        // ---- S-20  first: `.first` is `.head`, `.first(test)` is
+        //      `.grep(test).head`, and `:end` takes the last match instead. An
+        //      empty source yields an EMPTY supply, not one holding Nil.
+        if (listy && m == "first") {
+            ValueList src = vals();
+            bool wantEnd = false; Value test; bool haveTest = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) { if (a.s == "end") wantEnd = !a.pairVal() || a.pairVal()->truthy(); continue; }
+                if (!haveTest) { test = a; haveTest = true; }
+            }
+            ValueList hits;
+            for (auto& v : src) {
+                if (!haveTest) { hits.push_back(v); continue; }
+                ValueList one{v};
+                bool ok = test.t == VT::Code  ? predAnswerTruthy(*this, callCallable(test, one), v)
+                        : test.t == VT::Regex ? regexMatch(v.toStr(), test.s.str()).truthy()
+                                              : applyArith("~~", v, test).truthy();
+                if (ok) hits.push_back(v);
+            }
+            if (hits.empty()) return mkSupply({});
+            return mkSupply(ValueList{wantEnd ? hits.back() : hits.front()});
+        }
+        // ---- S-44  collate: a grab that sorts by the collation order
+        if (listy && m == "collate") {
+            Value arr = Value::array(); *arr.arr() = vals(); arr.isList = true;
+            Value r = methodCall(arr, "collate", args, rwArgs);
+            return mkSupply(r.t == VT::Array && r.arr() ? *r.arr() : ValueList{r});
+        }
+        // ---- S-42  tail on an EMPTY source emits Any (a quirk, but a caller
+        //      asking for the last value of nothing is told "nothing", not Nil)
+        if (listy && m == "tail" && args.empty() && vals().empty())
+            return mkSupply(ValueList{Value::any()});
+        // ---- S-30  migrate: the values must be Supplies. Each new one replaces
+        //      the previous, whose subscription is dropped; on a list-backed
+        //      source the inner supplies have all finished, so every value of
+        //      each of them is emitted in turn.
+        if (listy && m == "migrate") {
+            ValueList out;
+            for (auto& v : vals()) {
+                if (!(v.t == VT::Hash && v.hashKind == "Supply"))
+                    throw RakuError{Value::typeObj("X::Supply::Migrate::Needs"),
+                                    "migrate expects Supply values"};
+                ValueList na;
+                Value l = methodCall(const_cast<Value&>(v), "list", na);
+                if (l.t == VT::Array && l.arr()) for (auto& x : *l.arr()) out.push_back(x);
+            }
+            return mkSupply(out);
+        }
+        // ---- S-31  classify / categorize emit `key => Supply` PAIRS, one per key
+        //      in order of first appearance. The inner supplies replay to a late
+        //      tapper, which a list-backed one does by construction. Keys are
+        //      compared by identity, so 1 and "1" are different keys.
+        if (listy && (m == "classify" || m == "categorize") && !args.empty() && args[0].t == VT::Code) {
+            std::vector<std::string> order;
+            std::map<std::string, std::pair<Value, ValueList>> groups;  // WHICH -> (key, values)
+            for (auto& v : vals()) {
+                ValueList one{v};
+                Value r = callCallable(args[0], one);
+                ValueList keys;
+                if (m == "categorize") { if (r.t == VT::Array && r.arr()) keys = *r.arr(); else keys.push_back(r); }
+                else keys.push_back(r);
+                for (auto& k : keys) {
+                    std::string id = whichOf(k);
+                    auto it = groups.find(id);
+                    if (it == groups.end()) { order.push_back(id); groups.emplace(id, std::make_pair(k, ValueList{v})); }
+                    else it->second.second.push_back(v);
+                }
+            }
+            ValueList out;
+            for (auto& id : order) {
+                auto& g = groups[id];
+                Value inner = mkSupply(g.second);
+                Value pr = Value::pair(g.first.toStr(), inner);
+                // a key that is not a Str keeps its object: `1 => …` and
+                // `"1" => …` are different pairs (S-31's identity rule)
+                if (g.first.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(g.first);
+                out.push_back(pr);
+            }
+            return mkSupply(out);
+        }
+        // ---- S-37  repeated: a value on its second and every later occurrence
+        if (listy && m == "repeated") {
+            Value asFn, withFn;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "as") asFn = *a.pairVal();
+                    else if (a.s == "with") withFn = *a.pairVal();
+                } else if (a.t == VT::Code && asFn.t != VT::Code) asFn = a;
+            }
+            ValueList seen, out;
+            for (auto& v : vals()) {
+                Value key = v;
+                if (asFn.t == VT::Code) { ValueList one{v}; key = callCallable(asFn, one); }
+                bool known = false;
+                for (auto& k : seen) {
+                    if (withFn.t == VT::Code) { ValueList two{k, key}; if (callCallable(withFn, two).truthy()) { known = true; break; } }
+                    else if (whichOf(k) == whichOf(key)) { known = true; break; }
+                }
+                if (known) out.push_back(v); else seen.push_back(key);
+            }
+            return mkSupply(out);
+        }
+        // ---- S-36  squish: :with is called with the previously KEPT value first
+        if (listy && m == "squish") {
+            Value asFn, withFn;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "as") asFn = *a.pairVal();
+                    else if (a.s == "with") withFn = *a.pairVal();
+                } else if (a.t == VT::Code && asFn.t != VT::Code) asFn = a;
+            }
+            ValueList out; Value lastKey; bool have = false;
+            for (auto& v : vals()) {
+                Value key = v;
+                if (asFn.t == VT::Code) { ValueList one{v}; key = callCallable(asFn, one); }
+                bool same = false;
+                if (have) {
+                    if (withFn.t == VT::Code) { ValueList two{lastKey, key}; same = callCallable(withFn, two).truthy(); }
+                    else same = whichOf(lastKey) == whichOf(key);
+                }
+                if (!same) { out.push_back(v); lastKey = key; have = true; }
+            }
+            return mkSupply(out);
+        }
+        // ---- S-38  rotor: the batches are ARRAYS, and the cycle repeats
+        if (listy && m == "rotor") {
+            Value arr = Value::array(); *arr.arr() = vals(); arr.isList = true;
+            Value r = methodCall(arr, m, args, rwArgs);
+            ValueList out;
+            if (r.t == VT::Array && r.arr())
+                for (auto& b : *r.arr()) {
+                    Value a2 = Value::array();
+                    if (b.t == VT::Array && b.arr()) *a2.arr() = *b.arr(); else a2.arr()->push_back(b);
+                    out.push_back(a2);          // an Array, not a List
+                }
+            return mkSupply(out);
+        }
+        // ---- S-39  batch: one-element batches by default; :elems groups
+        if (listy && m == "batch") {
+            long long n = 0; bool timed = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "elems") n = a.pairVal()->toInt();
+                    // :seconds and :emit-timed close a batch on the wall clock;
+                    // a list-backed source arrives all at once, so one batch.
+                    else if (a.s == "seconds" || a.s == "emit-timed") timed = true;
+                } else if (a.t == VT::Int) n = a.toInt();
+            }
+            ValueList src = vals(), out;
+            if (timed && n < 1) {               // a timed batch of a finished list: one batch
+                if (!src.empty()) { Value b = Value::array(); *b.arr() = src; b.isList = true; out.push_back(b); }
+                return mkSupply(out);
+            }
+            if (n < 1) n = 1;                   // no :elems, or :elems(0) or less
+            for (size_t i = 0; i < src.size(); i += (size_t)n) {
+                Value b = Value::array(); b.isList = true;
+                for (size_t j = i; j < src.size() && j < i + (size_t)n; j++) b.arr()->push_back(src[j]);
+                out.push_back(b);
+            }
+            return mkSupply(out);
+        }
+        // ---- S-41  elems: the RUNNING count after every value. `elems($seconds)`
+        //      reports at most once per bucket and, at done, the final count when
+        //      it has not been reported — Rakudo never emits that last one (the
+        //      sheet flags it as a bug); a list-backed source finishes inside one
+        //      bucket, so the total is exactly what it owes.
+        if (listy && m == "elems") {
+            ValueList src = vals(), out;
+            bool timed = !args.empty() && args[0].t != VT::Pair && args[0].toNum() > 0;
+            if (timed) { if (!src.empty()) out.push_back(Value::integer((long long)src.size())); }
+            else for (size_t i = 0; i < src.size(); i++) out.push_back(Value::integer((long long)i + 1));
+            return mkSupply(out);
+        }
+        // `produce`/`reduce` fold with an OPERATOR: anything else is a signature
+        // error, not a value to fold with (Roast produce.t, reduce.t).
+        if ((m == "produce" || m == "reduce") && !args.empty() && args[0].t != VT::Code
+            && args[0].t != VT::Pair)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                            "Type check failed in binding to parameter '&with'; "
+                            "expected Callable but got " + args[0].typeName()};
+        // S-26/S-30 on a source whose values do not exist yet: hand back the spec
+        // and let each tap subscribe for itself (tapSupply's flatten/migrate arm).
+        if (!listy && (m == "flat" || m == "migrate")) {
+            Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+            (*s2.hash())["kind"] = Value::str(m == "flat" ? "flatten" : "migrate");
+            (*s2.hash())["src"] = inv;
+            return s2;
+        }
+        if (m == "zip" || m == "merge" || m == "zip-latest") {
             // $s.zip($other, …) — the invocant is the first stream; reuse the class-method logic.
             ValueList a2; a2.push_back(inv); for (auto& a : args) a2.push_back(a);
             return methodCall(Value::typeObj("Supply"), m, a2, rwArgs);
@@ -1095,7 +1828,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!listy && inv.hash()->count("supplier") &&
             (m == "map" || m == "grep" || m == "head" || m == "skip" ||
              m == "first" || m == "unique" || m == "squish" ||
-             m == "lines" || m == "words")) {
+             m == "lines" || m == "words" ||
+             m == "produce" || m == "reduce" || m == "elems" ||
+             m == "batch" || m == "classify" || m == "categorize")) {
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["supplier"] = (*inv.hash())["supplier"];
             Value chain = Value::array();
@@ -1103,7 +1838,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value step = Value::makeHash();
             (*step.hash())["op"] = Value::str(m);
             for (auto& a : args) if (a.t != VT::Pair) { (*step.hash())["arg"] = a; break; }
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp")) (*step.hash())[a.s] = *a.pairVal();
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp" || a.s == "expires" || a.s == "elems" || a.s == "seconds")) (*step.hash())[a.s] = *a.pairVal();
             (*step.hash())["state"] = Value::makeHash();
             chain.arr()->push_back(step);
             (*s.hash())["chain"] = chain;
@@ -1118,7 +1853,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!listy && !inv.hash()->count("supplier") && inv.hash()->count("kind") &&
             (m == "map" || m == "grep" || m == "head" || m == "skip" ||
              m == "first" || m == "unique" || m == "squish" ||
-             m == "lines" || m == "words")) {
+             m == "lines" || m == "words" ||
+             m == "produce" || m == "reduce" || m == "elems" ||
+             m == "batch" || m == "classify" || m == "categorize")) {
             Value s = Value::makeHash(); s.hashKind = "Supply";
             *s.hash() = *inv.hash();
             Value chain = Value::array();
@@ -1126,12 +1863,38 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value step = Value::makeHash();
             (*step.hash())["op"] = Value::str(m);
             for (auto& a : args) if (a.t != VT::Pair) { (*step.hash())["arg"] = a; break; }
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp")) (*step.hash())[a.s] = *a.pairVal();
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && (a.s == "as" || a.s == "with" || a.s == "chomp" || a.s == "expires" || a.s == "elems" || a.s == "seconds")) (*step.hash())[a.s] = *a.pairVal();
             (*step.hash())["state"] = Value::makeHash();
             chain.arr()->push_back(step);
             (*s.hash())["chain"] = chain;
             return s;
         }
+        // S-14/S-18/S-25: a one-source operator whose user code dies turns that
+        // death into the supply's QUIT — and NOTHING follows a quit. Rakudo lets
+        // the values after the failing one through (its own grammar says it
+        // should not: the sheet flags that as a bug); here the stream stops.
+        // The values produced before the death are kept, so a tapper sees
+        // `1`, then the quit.
+        if (listy && (m == "map" || m == "grep" || m == "do") &&
+            !args.empty() && args[0].t == VT::Code &&
+            !inv.hash()->count("quit-reason")) {
+            ValueList src = vals(), out;
+            bool quit = false; Value quitReason; std::string quitMsg;
+            for (auto& v : src) {
+                ValueList one{v};
+                try {
+                    if (m == "map") { Value r = callCallable(args[0], one); out.push_back(r); }
+                    else if (m == "do") { callCallable(args[0], one); out.push_back(v); }
+                    else if (callCallable(args[0], one).truthy()) out.push_back(v);
+                } catch (RakuError& e) {
+                    quit = true; quitReason = exceptionFor(e); quitMsg = e.message; break;
+                }
+            }
+            Value s2 = mkSupply(std::move(out));
+            if (quit) { (*s2.hash())["quit-reason"] = quitReason; (*s2.hash())["quit-message"] = Value::str(quitMsg); }
+            return s2;
+        }
+        if (listy && m == "do") return mkSupply(vals()); // side-effect-free arg: pass through
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
                       m == "first" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
@@ -1157,6 +1920,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // Supplier that feeds it.
             if (!listy && inv.hash()->count("supplier")) {
                 Value sup = (*inv.hash())["supplier"];
+                // subscribe BEFORE waiting, so the values that arrive during the
+                // wait are the ones the answer is drawn from
+                Value seen = Value::array(); seen.isList = true;
+                auto cell = seen.arrS();
+                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+                emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+                    if (!a.empty()) cell->push_back(a[0]);
+                    return Value::any();
+                };
+                tapSupply(inv, emitCb, Value::nil(), Value::nil());
                 if (sup.t == VT::Hash && sup.hash()) {
                     for (;;) {
                         bool finished;
@@ -1168,9 +1941,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (finished) break;
                         sleepYield(0.001);   // releases the GIL, so the emitter can run
                     }
+                    if (sup.hash()->count("quit_state") && (*sup.hash())["quit_state"].truthy())
+                        throw RakuError{Value::typeObj("X::AdHoc"), "Supply quit"};
                 }
+                return cell->empty() ? Value::nil() : cell->back();
             }
-            return Value::boolean(true);
+            // S-51: the answer is the LAST value, Nil when there was none.
+            if (inv.hash()->count("quit-reason"))
+                throw RakuError{(*inv.hash())["quit-reason"],
+                                inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit"};
+            ValueList vs = listy ? vals() : ValueList{};
+            if (!listy) { ValueList na; Value l = methodCall(inv, "list", na);
+                          if (l.t == VT::Array && l.arr()) vs = *l.arr(); }
+            return vs.empty() ? Value::nil() : vs.back();
         }
         if (m == "done" || m == "close" || m == "quit") return Value::boolean(true);
     }
@@ -1179,7 +1962,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a wired tap (on-demand supply / async socket) also tears down its
         // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
         if (m == "close") {
-            if (inv.hash()) (*inv.hash())["closed"] = Value::boolean(true);
+            if (inv.hash()) {
+                (*inv.hash())["closed"] = Value::boolean(true);
+                (*inv.hash())["ended"] = Value::boolean(true);   // S-06: no event reaches a closed tap
+                // S-03/S-12: the close hooks run on EVERY close call. A copy of
+                // the list, so a hook that closes again cannot walk it twice.
+                auto cit = inv.hash()->find("closers");
+                if (cit != inv.hash()->end() && cit->second.arr()) {
+                    ValueList hooks = *cit->second.arr();
+                    for (auto& h : hooks) if (h.t == VT::Code) { ValueList none; callCallable(h, none); }
+                }
+            }
             if (inv.ext() && inv.hash() && inv.hash()->count("wired") && (*inv.hash())["wired"].truthy())
                 closeTapHandle(std::static_pointer_cast<TapHandle>(inv.ext()));
             return Value::boolean(true);
