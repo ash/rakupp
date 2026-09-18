@@ -86,6 +86,22 @@ logs and the reviews. This page is the complete list.
   `when`/`proceed`/`succeed`, `CATCH` in closures — and lifting Roast
   fully-passing from 224 to 249 with no regressions.
 
+## Knowledge sheets — Rakudo's sources read at the release tag
+
+- **[semantics/](semantics/README.md)** *(started 2026-09-17, Rakudo tag
+  2026.08)* — behaviour that neither docs.raku.org nor Roast states, extracted
+  from Rakudo's setting one type at a time as executable probes with the
+  oracle's output recorded verbatim, for a later session to implement without
+  the source open. The rule: features and semantics, never internals. Sheets so far:
+  [Supply.md](semantics/Supply.md) — 69 items, 38 neither fully documented
+  nor fully Roast-asserted, three Rakudo bugs flagged so that nobody copies
+  them; IMPLEMENTED 2026-09-18 (rakupp differs on 7, four of them on purpose;
+  Roast S17-supply went 27 → 55 of 58 files); [Nil-Any.md](semantics/Nil-Any.md) —
+  Nil and Any as a one-element list, 50 items, 16 undeclared, rakupp
+  differs on 43; [Str.md](semantics/Str.md) — Str, Stringy,
+  the string half of Cool and the allomorphs, 66 items, 12 undeclared,
+  rakupp differs on 60, ten Rakudo bugs flagged (three of them hangs).
+
 ## Reviews — before and after a release
 
 - **[REVIEW-1.0.md](REVIEW-1.0.md)** *(2026-07-12, updated 07-13)* — eight finder
