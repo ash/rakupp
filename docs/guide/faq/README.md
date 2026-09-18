@@ -73,6 +73,11 @@ trips over.
   two places that differ from Rakudo (whole-file rather than lexical scope), the
   one declarator that cannot be translated and why, and `.AST($lang)` for
   turning a localized program back into ordinary Raku.
+- **[what-kind-of-compiler.md](what-kind-of-compiler.md)** — the compiler-theory
+  questions, one at a time: one-pass or multi-pass, LL(1) or LR, recursive
+  descent and Pratt, is the grammar a CFG, is there an IR or a bytecode VM or a
+  JIT, tree-walk vs transpile, garbage collection, and whether it is
+  self-hosted. Short answers; Chapter 3 of the Internals book has the reasoning.
 - **[hand-written.md](hand-written.md)** — "hand-written lexer and parser"
   vs. written by a human: what the compiler term of art claims (no parser
   generator — the sense GCC, Clang and Go use of themselves, with receipts),
