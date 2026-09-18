@@ -152,12 +152,32 @@ At the real widths the gain is 1.5x and only when the match is early — `5 ~~ 1
 matches the LAST eigenstate and so is flat, which is the honest headline for this
 phase.
 
-A correction: an earlier reading of this had us beating Rakudo on the early hit.
-That came from `shortcircuit.raku`, whose W=2000 rows run only 500 reps — too few
-for MoarVM to warm up, which inflated Rakudo to 1.8 us. Warm, Rakudo does the
-early hit in 0.37 us against our 1.10. We are still 3x behind there and ~8x behind
-on every row that cannot short-circuit (818 against 104), which is phase 2's
-remaining ground.
+Read as distance from Rakudo rather than as our own before/after, which is the
+measure that says what actually changed:
+
+| case | gap before | gap after |
+|---|---|---|
+| `any` w=2000 hit first | 2190x | **2.99x** |
+| `none` w=2000 hit first | 1000x | **1.36x** |
+| `one` w=2000 two hits | 798x | **1.49x** |
+| `all` w=2000 fails first | 779x | **1.46x** |
+| `bool any(2000 True)` | 14.6x | **0.91x — we lead** |
+| `bool all(2000 False)` | 14.4x | **0.89x — we lead** |
+| `any` w=2000 hit last | 7.68x | 7.87x |
+| `any` w=2000 no hit | 8.41x | 8.69x |
+
+Every case that can settle early went from hundreds or thousands of times behind
+to within 1.4-3x, and boolification now runs slightly ahead of Rakudo. What
+remains on those rows is not a junction deficit: `prebuilt any(1,3,5)` sits at
+2.31x with no width involved at all, which is simply what this interpreter costs
+against MoarVM. The rows that did NOT move are the ones where no short-circuit
+is possible, and they sit at the ~8x that is phase 2's actual target.
+
+One methodological note, since it produced a wrong reading once: an earlier
+version of this table had us *beating* Rakudo on the early hit. That came from
+`shortcircuit.raku`, whose W=2000 rows run only 500 reps — plenty for us, too few
+for MoarVM to warm up, which reported Rakudo at 1.8 us on a case that measures
+0.37 us warm. Cross-engine ratios need `compare.raku`'s rep counts or higher.
 
 Verification, each against a real before/after baseline built from the same
 tree: `t/run.raku` 4 failures before and after, the SAME four (proven by
