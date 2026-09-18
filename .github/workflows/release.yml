@@ -270,6 +270,13 @@ jobs:
         if: runner.os == 'Windows' && matrix.mingw != true
         shell: pwsh
         run: |
+          Write-Host "--- the generated export list"
+          if (Test-Path build\rakupp_exports.def) {
+            $def = @(Select-String -Path build\rakupp_exports.def -Pattern '^\s+rk_')
+            Write-Host "    rakupp_exports.def names $($def.Count) entry points"
+          } else {
+            Write-Host "    build\rakupp_exports.def is absent"
+          }
           Write-Host "--- .lib produced beside the DLL"
           Get-ChildItem build\Release\*.lib -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host ("    {0,-28} {1}" -f $_.Name, $_.Length) }
@@ -283,6 +290,12 @@ jobs:
             $d = @(Select-String -Path directives.txt -Pattern '/EXPORT:rk_')
             Write-Host "    /EXPORT:rk_* directives: $($d.Count)"
             $d | Select-Object -First 5 | ForEach-Object { Write-Host "      $($_.Line.Trim())" }
+            # A dumpbin that refused the file would also count zero, and the two
+            # must not read alike -- show what it actually said.
+            if ($d.Count -lt 1) {
+              Get-Content directives.txt | Select-Object -First 12 |
+                ForEach-Object { Write-Host "      | $_" }
+            }
           } else {
             Write-Host "    EmbedApi.obj not found under build\ (searched rakupp_shared dirs)"
           }

@@ -373,6 +373,62 @@ if(WIN32)
   set_target_properties(rakupp PROPERTIES ENABLE_EXPORTS ON)
 endif()
 
+# ---- Windows: the export list is STATED, not inferred -----------------------
+# ELF takes its list from include/rakupp/rakupp_ext.dynlist ({ rk_*; }), because
+# a plain ELF executable keeps its symbols out of .dynsym. Windows was left to
+# RK_API's __declspec(dllexport) alone, and that was not reaching the images:
+# every release shipped librakupp.dll and rakupp.exe with ZERO rk_* exports, so
+# MSVC emitted no import library, and nothing on Windows -- ctypes, bun:ffi, a
+# C++ host, a dlopen'ed extension -- could use either. The bindings gate on the
+# MSVC leg is what finally said so, with `function 'rk_new' not found`.
+#
+# The source is not at fault: the preprocessed EmbedApi.cpp carries dllexport on
+# the declaration, MSVC honours exactly that shape in an isolated probe, and
+# RAKUPP_BUILDING is in the generated project file. What eats it in the full
+# compile is still unexplained -- so the list stops depending on inference and
+# is handed to the linker, which is what the ELF side has always done. /EXPORT
+# also forces the defining object into the link, which a static-library link
+# (rakupp.exe -> rakupp_rt) otherwise has no reason to pull in at all.
+#
+# One source of truth: the names are read from the RK_API declarations in the
+# two public headers -- the same set the dynlist glob covers -- so a new entry
+# point needs no edit here.
+set(RAKUPP_DEF "${CMAKE_CURRENT_BINARY_DIR}/rakupp_exports.def")
+set(RAKUPP_EXPORT_NAMES "")
+foreach(hdr rakupp.h rakupp_ext.h)
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/${hdr}"
+       _rk_lines REGEX "RK_API")
+  foreach(_rk_line IN LISTS _rk_lines)
+    if(_rk_line MATCHES "(rk_[A-Za-z0-9_]+)[ \t]*\\(")
+      list(APPEND RAKUPP_EXPORT_NAMES "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+endforeach()
+list(REMOVE_DUPLICATES RAKUPP_EXPORT_NAMES)
+list(SORT RAKUPP_EXPORT_NAMES)
+list(LENGTH RAKUPP_EXPORT_NAMES RAKUPP_EXPORT_COUNT)
+# An empty .def exports nothing and looks exactly like success, which is the
+# failure this whole thing exists to end. 48 today; the floor catches a header
+# reformat that stops the regex matching, without pinning the exact number.
+if(RAKUPP_EXPORT_COUNT LESS 40)
+  message(FATAL_ERROR
+    "rakupp: only ${RAKUPP_EXPORT_COUNT} rk_* entry points found in the public "
+    "headers -- the export-list pattern no longer matches how they are declared")
+endif()
+string(REPLACE ";" "\n  " RAKUPP_EXPORT_BODY "${RAKUPP_EXPORT_NAMES}")
+file(WRITE "${RAKUPP_DEF}"
+     "; Generated from the RK_API declarations in include/rakupp/rakupp.h and\n"
+     "; include/rakupp/rakupp_ext.h. Do not edit; see CMakeLists.txt.\n"
+     "EXPORTS\n  ${RAKUPP_EXPORT_BODY}\n")
+message(STATUS
+  "rakupp: ${RAKUPP_EXPORT_COUNT} rk_* entry points in the Windows export list")
+if(WIN32)
+  target_sources(rakupp PRIVATE "${RAKUPP_DEF}")
+  if(RAKUPP_BUILD_SHARED)
+    target_sources(rakupp_shared PRIVATE "${RAKUPP_DEF}")
+  endif()
+endif()
+
 # Install layout (so `--exe` works after `cmake --install`): the binary in bin/,
 # the runtime static library in lib/, and every header in include/rakupp/ — the
 # `--exe` compile step needs the headers to build the generated C++. findRuntime()
