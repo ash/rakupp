@@ -116,21 +116,48 @@ and folded paths. Both pairs need the same change, and they are not shared code.
 
 ### 1. Short-circuit the collapse — DONE (2026-09-19)
 
-Landed on 292af2e. All nine loops now feed a `JunctionCollapse` (src/Value.h)
-and break as soon as the verdict is settled. Measured, W=2000 `any`, best of
-five on a loaded machine:
+Landed as d34120f. All nine loops now feed a `JunctionCollapse` (src/Value.h)
+and break as soon as the verdict is settled.
 
-| needle | before | after |
-|---|---|---|
-| matches eigenstate 1 | 802.8 us | **0.9 us** |
-| matches eigenstate 1000 | 800.8 us | **407.4 us** |
-| matches eigenstate 2000 | 803.0 us | 812.7 us |
-| matches nothing | 924.5 us | 813.0 us |
+Measured with [`tools/bench/junction/compare.raku`](../../../tools/bench/junction),
+which interleaves the cases inside one run; the two binaries were then alternated
+three times and the best of each cell taken. 292af2e against d34120f, both built
+Release, Rakudo 2026.08 alongside, load average ~4, 2026-09-19. All three engines
+agree on every checksum.
 
-Early hit ~890x, mid 1.97x, and the two cases where no short-circuit is possible
-are unchanged — which is the shape the position table predicted, so the
-falsifier at the foot of this plan did not fire. The early-hit case now beats
-Rakudo's 1.8 us.
+| case | before | after | change | rakudo |
+|---|---|---|---|---|
+| `any` w=2000 hit first | 806.61 | **1.10** | **732x** | 0.37 |
+| `any` w=2000 hit middle | 799.46 | **414.23** | 1.93x | 52.18 |
+| `any` w=2000 hit last | 799.00 | 818.82 | — | 104.02 |
+| `any` w=2000 no hit | 800.64 | 826.95 | — | 95.15 |
+| `all` w=2000 fails first | 811.64 | **1.52** | **534x** | 1.04 |
+| `none` w=2000 hit first | 808.24 | **1.10** | **735x** | 0.81 |
+| `one` w=2000 single hit | 804.02 | 823.12 | — | 278.24 |
+| `one` w=2000 two hits | 801.32 | **1.50** | **535x** | 1.00 |
+| `bool any(2000 True)` | 9.38 | **0.59** | **16.0x** | 0.64 |
+| `bool all(2000 False)` | 9.34 | **0.58** | **16.2x** | 0.65 |
+| `5 ~~ 1\|3\|5` (hits last) | 2.39 | 2.42 | — | 0.81 |
+| `1 ~~ 1\|3\|5` (hits first) | 2.40 | **1.56** | 1.54x | 0.69 |
+| `'a' ~~ any(<a b c>)` | 2.26 | **1.42** | 1.59x | 0.76 |
+| `grep any(2,4,6)` over 200 | 247.54 | 252.19 | — | 79.81 |
+
+us per operation. Every case where the verdict can settle early moves by two to
+three orders of magnitude; every case where it cannot is unchanged, which is the
+shape the position table predicted, so the falsifier at the foot of this plan did
+not fire. Boolification gains 16x because `?any(2000 True)` settles on the first
+eigenstate.
+
+At the real widths the gain is 1.5x and only when the match is early — `5 ~~ 1|3|5`
+matches the LAST eigenstate and so is flat, which is the honest headline for this
+phase.
+
+A correction: an earlier reading of this had us beating Rakudo on the early hit.
+That came from `shortcircuit.raku`, whose W=2000 rows run only 500 reps — too few
+for MoarVM to warm up, which inflated Rakudo to 1.8 us. Warm, Rakudo does the
+early hit in 0.37 us against our 1.10. We are still 3x behind there and ~8x behind
+on every row that cannot short-circuit (818 against 104), which is phase 2's
+remaining ground.
 
 Verification, each against a real before/after baseline built from the same
 tree: `t/run.raku` 4 failures before and after, the SAME four (proven by
