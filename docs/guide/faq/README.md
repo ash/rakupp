@@ -14,22 +14,14 @@ Where the two genuinely differ, the page says so and explains why — those
 differences are the most useful thing here, since they are what a Rakudo user
 trips over.
 
-## Pages
+The groups below are the ones [raku.online/faq](https://raku.online/faq/)
+shows, and they are defined there rather than here — in
+`sites/faq/src/site.raku` of the raku.online repo. Adding an article in one
+place and not the other leaves the two indexes disagreeing, which is the
+only way these can drift.
 
-- **[shell.md](shell.md)** — running external commands: `run` vs `shell`,
-  capturing output, feeding input, exit codes, and what a `Proc` shows you.
-- **[buffering.md](buffering.md)** — why output does not appear when you
-  expect it: `.out-buffer` and `.flush`, the three places output can sit (your
-  own handles, a file you opened, a child's stdout), the child's own buffer
-  that you cannot set from outside, and how to tell which one is holding it.
-- **[background-processes.md](background-processes.md)** — `Proc::Async`:
-  fire-and-forget processes that outlive the program (and where Raku's own
-  documentation stands on that), when `.start` spawns, taps, `bind-stdin`
-  pipelines, `.kill`, and reading the exit status.
-- **[http.md](http.md)** — is HTTP built into the engine? Sockets are and HTTP
-  is not: what `IO::Socket::Async` gives you with no `use`, writing a request
-  and a response by hand, which HTTP modules work on each engine today, TLS,
-  and why even the installer shells out to `curl`.
+## Writing Raku
+
 - **[containers.md](containers.md)** — "why does my list have one element?":
   itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
   routine.
@@ -39,6 +31,36 @@ trips over.
   places searched (the failure message is the list), pointing `-I` at a store
   somewhere else, what the SHA-named files are, why "Could not find Foo" is
   usually a distribution name, and running a module you are still writing.
+- **[l10n.md](l10n.md)** — writing Raku in your own language: the `L10N::*`
+  modules, why Rakudo needs `RAKUDO_RAKUAST=1` for them and Raku++ does not, how
+  a slang with no grammar to mix into is done as a token rewrite instead, the
+  two places that differ from Rakudo (whole-file rather than lexical scope), the
+  one declarator that cannot be translated and why, and `.AST($lang)` for
+  turning a localized program back into ordinary Raku.
+- **[6e.md](6e.md)** — what the 6.e language revision adds to 6.d, and what
+  `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
+  behaviour changes that bite, the new compile-time errors — each with both
+  outputs, plus where Raku++ matches and where it does not.
+
+## Talking to the outside world
+
+- **[shell.md](shell.md)** — running external commands: `run` vs `shell`,
+  capturing output, feeding input, exit codes, and what a `Proc` shows you.
+- **[background-processes.md](background-processes.md)** — `Proc::Async`:
+  fire-and-forget processes that outlive the program (and where Raku's own
+  documentation stands on that), when `.start` spawns, taps, `bind-stdin`
+  pipelines, `.kill`, and reading the exit status.
+- **[http.md](http.md)** — is HTTP built into the engine? Sockets are and HTTP
+  is not: what `IO::Socket::Async` gives you with no `use`, writing a request
+  and a response by hand, which HTTP modules work on each engine today, TLS,
+  and why even the installer shells out to `curl`.
+- **[buffering.md](buffering.md)** — why output does not appear when you
+  expect it: `.out-buffer` and `.flush`, the three places output can sit (your
+  own handles, a file you opened, a child's stdout), the child's own buffer
+  that you cannot set from outside, and how to tell which one is holding it.
+
+## Compiling, and making it fast
+
 - **[compiling.md](compiling.md)** — turning a program into a binary: `--exe`
   vs `--aot` vs `--bundle`, what `-O` buys, and why `--exe` needs a C++ compiler
   on the machine that runs it.
@@ -48,31 +70,19 @@ trips over.
 - **[performance.md](performance.md)** — "my program is slow": what compiling
   does and does not speed up, with measured numbers, and the things that are slow
   in any Raku.
+
+## When something goes wrong
+
+- **[debugging.md](debugging.md)** — what a `die` tells you, `--lint`, `--ast`
+  and `--cpp`, telling your bug from ours, and what to put in a report.
 - **[garbage-collection.md](garbage-collection.md)** — there isn't one:
   `shared_ptr` refcounting, what that buys (a 1.5 MB floor, no stop-the-world
   pause) and what it costs (cycles are never reclaimed, and the free is on your
   clock), when `DESTROY` actually runs, why a dropped filehandle is not closed,
   and how to tell a leak from a materialised list.
-- **[debugging.md](debugging.md)** — when something goes wrong: what a `die`
-  tells you, `--lint`, `--ast`, `--cpp`, telling your bug from ours, and what
-  to put in a report.
-- **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
-  directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
-  the handful you will actually run into.
-- **[implementations.md](implementations.md)** — Raku++, Rakudo and mutsu: how
-  the three are built and what follows from it — tree-walk vs bytecode VM, JIT
-  vs ahead-of-time compilation, refcounting vs a collector, and what each can
-  ship. Structural, not a scoreboard.
-- **[6e.md](6e.md)** — what the 6.e language revision adds to 6.d, and what
-  `use v6.e.PREVIEW` actually turns on: new syntax, subs and methods, the
-  behaviour changes that bite, the new compile-time errors — each with both
-  outputs, plus where Raku++ matches and where it does not.
-- **[l10n.md](l10n.md)** — writing Raku in your own language: the `L10N::*`
-  modules, why Rakudo needs `RAKUDO_RAKUAST=1` for them and Raku++ does not, how
-  a slang with no grammar to mix into is done as a token rewrite instead, the
-  two places that differ from Rakudo (whole-file rather than lexical scope), the
-  one declarator that cannot be translated and why, and `.AST($lang)` for
-  turning a localized program back into ordinary Raku.
+
+## How Raku++ works
+
 - **[what-kind-of-compiler.md](what-kind-of-compiler.md)** — the compiler-theory
   questions, one at a time: one-pass or multi-pass, LL(1) or LR, recursive
   descent and Pratt, is the grammar a CFG, is there an IR or a bytecode VM or a
@@ -82,6 +92,13 @@ trips over.
   vs. written by a human: what the compiler term of art claims (no parser
   generator — the sense GCC, Clang and Go use of themselves, with receipts),
   and who wrote this code.
+- **[implementations.md](implementations.md)** — Raku++, Rakudo and mutsu: how
+  the three are built and what follows from it — tree-walk vs bytecode VM, JIT
+  vs ahead-of-time compilation, refcounting vs a collector, and what each can
+  ship. Structural, not a scoreboard.
+- **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
+  directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
+  the handful you will actually run into.
 
 ## Adding one
 
@@ -89,3 +106,9 @@ Answer a question someone actually asked, in the shape they asked it. Verify
 every snippet against both engines before it goes in — a FAQ that is wrong is
 worse than no FAQ, because it is what people copy. If Raku++ and Rakudo differ,
 say so plainly rather than quietly writing to whichever one is convenient.
+
+Then place it twice: here, under the group it belongs to, and in the raku.online
+repo's `sites/faq/src/site.raku`, which wants the slug in one of those same
+groups and a one-line blurb for the index. An article missing from that file is
+still built and published — it just lands under the catch-all heading with no
+blurb under its title.
