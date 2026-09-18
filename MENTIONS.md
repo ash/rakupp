@@ -96,15 +96,6 @@ perl's 81.8 in the same sitting. `perl` is now a column in
 An outside remark became a kernel, and the kernel reached perl. That is what
 this file is for.
 
-## What is not here yet
-
-No independent review — nobody outside the project has yet sat down with
-Raku++, used it for their own work, and written up what they found. No
-coverage outside the Perl and Raku press. Nothing from a conference, which is
-expected: the [talks](TALKS.md) are proposed, not given. The honest shape of
-this file today is one newsletter that follows the project closely and one
-remark that turned into a benchmark.
-
 ## Adding an entry
 
 Keep it dated, linked and attributed, keep the note to what the source
