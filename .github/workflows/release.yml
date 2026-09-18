@@ -370,6 +370,23 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/bindings-smoke.raku build
 
+      # The same gate on Windows, where it had never run. That is how a wrong
+      # DLL file name sat in four bindings undetected until the Python wheel
+      # step tried to load one: every binding gate here is POSIX-only, so
+      # nothing on this platform had ever opened librakupp at all. Python and
+      # C++ are the legs with a toolchain on this runner -- it goes after the
+      # MSVC developer environment above, which is what puts `cl` on PATH --
+      # and Go, Rust, JS and Wolfram skip loudly, as they do on any machine
+      # missing a toolchain. It complements the wheel smoke test rather than
+      # repeating it: that one proves an INSTALLED wheel finds the library it
+      # carries, this one proves a CHECKOUT's documented examples still print
+      # what the guides say they print, and that a named library which cannot
+      # load is an error rather than a silent fallback.
+      - name: Bindings example gate (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: bash
+        run: build/Release/rakupp.exe tools/bindings-smoke.raku build/Release
+
       # The MCP gate: `rakupp --mcp` driven exactly as an MCP client drives
       # it -- the initialize handshake, both tools, session state across
       # calls, the parse tree and failure diagnosis, and the watchdog's

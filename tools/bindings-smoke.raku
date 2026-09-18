@@ -18,10 +18,14 @@
 #   build/rakupp tools/bindings-smoke.raku --record
 #
 # Run:  build/rakupp tools/bindings-smoke.raku [build-dir]   (default: build)
+#       build/Release/rakupp.exe tools/bindings-smoke.raku build/Release
+#                                                   (Windows, MSVC layout)
 #
 # Hosts whose toolchain is missing — or whose toolchain is an x86_64 build
 # that cannot load an arm64 librakupp — skip loudly rather than failing, the
-# same convention grammar-smoke.raku and embed-smoke.raku use. For the deep
+# same convention grammar-smoke.raku and embed-smoke.raku use. On Windows that
+# is Go, Rust, JS and Wolfram; Python and C++ (MSVC) are the legs that run,
+# and they are the ones a Windows user actually has. For the deep
 # gate (the same grammar and a 2000-line corpus through every binding,
 # byte-compared against plain rakupp) run tools/grammar-smoke.raku.
 
@@ -44,12 +48,37 @@ sub check(Bool $ok, $desc, $detail = '') {
     }
 }
 
+my $WIN = $*KERNEL.name eq 'win32';
+
 my $libname = do given $*KERNEL.name {
     when 'darwin' { 'librakupp.dylib' }
     when 'win32'  { 'librakupp.dll' }   # rakupp.lib is the EXE's import library
     default       { 'librakupp.so' }
 };
 my $lib = $BUILD.add($libname);
+
+# `python3` on Windows is as often the Microsoft Store's stub as an
+# interpreter, and the stub answers --version by opening the Store.
+my $PYTHON = $WIN ?? 'python' !! 'python3';
+
+# One child process. Every command used to be a string handed to `sh -c`
+# ("cd DIR && VAR=VAL prog args"), which assumed a POSIX shell is installed
+# and pasted paths into a double-quoted word — so a Windows C:\Users\... lost
+# its backslashes before the program ever saw it. The argument list, the
+# working directory and the environment are DATA now, and nothing on any
+# platform re-parses them.
+sub spawn(@args, :$cwd = $ROOT.absolute, :%env) {
+    my %e = %*ENV;
+    %e{.key} = .value for %env;
+    my $p = run |@args, :$cwd, :env(%e), :out, :err;
+    ($p.exitcode, $p.out.slurp(:close), $p.err.slurp(:close))
+}
+
+# A line ending is a platform convention, not a binding difference: the same
+# print reaches us as \r\n through a Windows C runtime and \n everywhere
+# else. Comparing and recording in \n keeps ONE recorded expectation good for
+# every host on every platform, which is the whole claim calc.txt makes.
+sub lf(Str() $s) { $s.subst("\r\n", "\n", :g) }
 
 unless $lib.e {
     say "skip - $lib is not built; configure with -DRAKUPP_BUILD_SHARED=ON";
@@ -73,59 +102,107 @@ sub have($tool) {   # go and wolframscript spell the flag their own way;
                     # a crashing toolchain = absent
     my $flag = $tool eq 'go'            ?? 'version'
             !! $tool eq 'wolframscript' ?? '-version'
+            !! $tool eq 'cl'            ?? '/?'        # MSVC: no --version
             !! '--version';
     my $p = try run $tool, $flag, :out, :err;
     so $p && $p.exitcode == 0
 }
 
+# The C++ leg is the one with a real prerequisite on Windows: MSVC on PATH
+# (which means a developer environment) and librakupp.lib, the DLL's import
+# library, beside the DLL. Name the missing one rather than skipping mutely —
+# a silent skip on this platform is exactly what hid the wrong DLL name.
+my $cpp-why = do {
+    my $implib = $BUILD.add('librakupp.lib');
+    !$WIN          ?? ''
+    !! !have('cl') ?? 'no MSVC cl on PATH (run inside a developer environment)'
+    !! !$implib.e  ?? "no {$implib.basename} beside the DLL to link against"
+    !!                ''
+};
+
 # Each host: how to run one example, and whether its toolchain is here. The
 # commands are the ones the guides print — if a guide's command rots, so does
-# this gate, which is the point.
+# this gate, which is the point. Each `run` returns (exitcode, stdout, stderr).
 my @hosts =
     %(  name => 'python', label => 'Python',
-        run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB={$lib} python3 bindings/python/examples/$ex.py"] },
-        here => have('python3') ),
+        run  => -> $ex { spawn [$PYTHON, "bindings/python/examples/$ex.py"],
+                               env => %( RAKUPP_LIB => $lib.absolute ) },
+        here => have($PYTHON) ),
 
     %(  name => 'js', label => 'JS',
-        run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB={$lib} bun bindings/js/examples/$ex.mjs"] },
+        run  => -> $ex { spawn ['bun', "bindings/js/examples/$ex.mjs"],
+                               env => %( RAKUPP_LIB => $lib.absolute ) },
         here => have('bun') ),
 
     %(  name => 'go', label => 'Go',
-        run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT.add('bindings/go')} && " ~
-            "CGO_LDFLAGS='-L{$BUILD} -Wl,-rpath,{$BUILD}' go run ./examples/$ex"] },
-        here => $*KERNEL.name ne 'win32' && have('go') ),
+        run  => -> $ex { spawn ['go', 'run', "./examples/$ex"],
+                               cwd => $ROOT.add('bindings/go').absolute,
+                               env => %( CGO_LDFLAGS =>
+                                         "-L{$BUILD.absolute} -Wl,-rpath,{$BUILD.absolute}" ) },
+        here => !$WIN && have('go') ),
 
     %(  name => 'rust', label => 'Rust',
-        run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB_DIR={$BUILD} cargo run --quiet " ~
-            "--manifest-path bindings/rust/Cargo.toml --example $ex"] },
-        here => $*KERNEL.name ne 'win32' && have('cargo') ),
+        run  => -> $ex { spawn ['cargo', 'run', '--quiet',
+                                '--manifest-path', 'bindings/rust/Cargo.toml',
+                                '--example', $ex],
+                               env => %( RAKUPP_LIB_DIR => $BUILD.absolute ) },
+        here => !$WIN && have('cargo') ),
 
     %(  name => 'cpp', label => 'C++',
-        run  => -> $ex { ['sh', '-c', cpp-command($ex)] },
-        here => True ),
+        run  => -> $ex { cpp-run($ex) },
+        here => $cpp-why eq '', why => $cpp-why ),
 
     # wolframscript -version answers without a kernel, so `here` is true on an
     # installed-but-unactivated Engine too — running an example then stops on
     # the activation prompt, which is the right loud failure for that state.
     %(  name => 'wolfram', label => 'Wolfram',
-        run  => -> $ex { ['sh', '-c',
-            "cd {$ROOT} && RAKUPP_LIB={$lib} wolframscript -file bindings/wolfram/examples/$ex.wls"] },
+        run  => -> $ex { spawn ['wolframscript', '-file',
+                                "bindings/wolfram/examples/$ex.wls"],
+                               env => %( RAKUPP_LIB => $lib.absolute ) },
         here => have('wolframscript') ),
 ;
 
-# C++ is the odd one: it compiles first, and links rather than dlopen'ing.
-sub cpp-command($ex) {
-    my $cxx = %*ENV<CXX> // 'c++';
-    my $exe = $*TMPDIR.add("bindings-smoke-$ex-$*PID");
-    my $link = $*KERNEL.name eq 'darwin'
-        ?? "{$lib} -Wl,-rpath,{$BUILD}"
-        !! "-L{$BUILD} -lrakupp -Wl,-rpath,{$BUILD} -lpthread";
-    "cd {$ROOT} && $cxx -std=c++17 -Iinclude bindings/cpp/examples/$ex.cpp $link " ~
-    "-o {$exe} && {$exe}; rc=\$?; rm -f {$exe}; exit \$rc"
+# C++ is the odd one: it compiles first, and LINKS rather than dlopen'ing.
+# Every flag here has two spellings, and the run step differs too — a Windows
+# executable has no rpath, so it finds librakupp.dll beside itself or on PATH.
+sub cpp-run($ex) {
+    my $src = "bindings/cpp/examples/$ex.cpp";
+    my $exe = $*TMPDIR.add("bindings-smoke-$ex-$*PID" ~ ($WIN ?? '.exe' !! ''));
+    my ($rc, $out, $err);
+
+    if $WIN {
+        my $cxx = %*ENV<CXX> // 'cl';
+        # cl drops its .obj in the CURRENT directory, so the current directory
+        # is a scratch one and everything else is absolute. Steering the object
+        # with /Fo instead would need a trailing backslash, and a trailing
+        # backslash inside a quoted argument escapes the quote.
+        my $obj = $*TMPDIR.add("bindings-smoke-obj-$ex-$*PID");
+        $obj.mkdir;
+        ($rc, $out, $err) = spawn [$cxx, '/nologo', '/std:c++17', '/EHsc',
+                                   '/I', $ROOT.add('include').absolute,
+                                   $ROOT.add($src).absolute,
+                                   '/Fe' ~ $exe.absolute,
+                                   '/link', '/LIBPATH:' ~ $BUILD.absolute,
+                                   'librakupp.lib'],
+                                  cwd => $obj.absolute;
+        .unlink for $obj.dir;
+        $obj.rmdir;
+    }
+    else {
+        my $cxx  = %*ENV<CXX> // 'c++';
+        my @link = $*KERNEL.name eq 'darwin'
+            ?? ($lib.absolute, '-Wl,-rpath,' ~ $BUILD.absolute)
+            !! ('-L' ~ $BUILD.absolute, '-lrakupp',
+                '-Wl,-rpath,' ~ $BUILD.absolute, '-lpthread');
+        ($rc, $out, $err) = spawn [$cxx, '-std=c++17', '-Iinclude', $src,
+                                   |@link, '-o', $exe.absolute];
+    }
+    return ($rc, $out, $err) unless $rc == 0;
+
+    my %env = $WIN ?? %( PATH => $BUILD.absolute ~ ';' ~ (%*ENV<PATH> // '') ) !! %();
+    my @ran = spawn [$exe.absolute], :%env;
+    $exe.unlink;
+    |@ran
 }
 
 # An example IS its Raku: bindings/examples/<name>.raku names it, and each
@@ -141,22 +218,23 @@ for @examples -> $ex {
     my %got;                        # host name -> its output, for --record
     for @hosts -> %h {
         unless %h<here> {
-            say "skip - no toolchain for the {%h<label>} leg";
+            my $why = %h<why> // '';
+            say "skip - no toolchain for the {%h<label>} leg"
+                ~ ($why ?? ": $why" !! '');
             next;
         }
         my $shared = $EXPECT.add("{$ex}.txt");
         my $mine   = $EXPECT.add("{$ex}.{%h<name>}.txt");
         my $file   = $mine.e ?? $mine !! $shared;
 
-        my $p   = run |%h<run>($ex), :out, :err;
-        my $out = $p.out.slurp(:close);
-        my $err = $p.err.slurp(:close);
+        my ($rc, $raw, $err) = %h<run>($ex);
+        my $out = lf($raw);
 
-        if $p.exitcode != 0 && arch-skip($err) {
+        if $rc != 0 && arch-skip($err) {
             say "skip - $ex/{%h<label>}: toolchain architecture cannot load $lib";
             next;
         }
-        unless $p.exitcode == 0 {
+        unless $rc == 0 {
             check False, "$ex runs under {%h<label>}", $err;
             next;
         }
@@ -171,7 +249,7 @@ for @examples -> $ex {
                   "no {$file.basename}; run with --record";
             next;
         }
-        my $want = $file.slurp;
+        my $want = lf($file.slurp);
         if $want eq $out {
             check True, "$ex under {%h<label>} matches {$file.basename}";
         }
@@ -231,19 +309,18 @@ unless $record {
         interpreter();
         JS
 
-    my %probe = python => ['python3', $py.Str], js => ['bun', $js.Str];
+    my %probe = python => [$PYTHON, $py.Str], js => ['bun', $js.Str];
     for @hosts.grep({ %probe{.<name>}:exists }) -> %h {
         next unless %h<here>;
-        my $p = run 'sh', '-c',
-                "cd {$ROOT} && RAKUPP_LIB={$notalib} {%probe{%h<name>}.join(' ')}",
-                :out, :err;
-        my $err = $p.err.slurp(:close) ~ $p.out.slurp(:close);
+        my ($rc, $o, $e) = spawn %probe{%h<name>},
+                                 env => %( RAKUPP_LIB => $notalib.absolute );
+        my $err = $e ~ $o;
         # The exact phrasing matters: the fall-back path's own "librakupp not
         # found" message also mentions RAKUPP_LIB, so only naming the offending
         # file distinguishes "used as given and failed" from "searched and
         # found nothing".
-        check $p.exitcode != 0 && $err.contains('which could not be loaded')
-                               && $err.contains('calc.raku'),
+        check $rc != 0 && $err.contains('which could not be loaded')
+                       && $err.contains('calc.raku'),
               "{%h<label>}: a named library that cannot load is an error, not a fallback",
               $err;
     }
