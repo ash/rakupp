@@ -84,6 +84,41 @@ static bool statOrFailure(const std::string& path, const std::string& shown,
     return false;
 }
 
+// `.comb`'s optional LIMIT counts the pieces it may yield. `*` and `Inf` mean
+// all of them; anything else is `.Int`-coerced toward zero, and zero or less
+// means none at all. A limit that cannot be a count — NaN, a non-numeric Str,
+// or a value past what an Int64 can hold — is a misuse the REGEX and Str forms
+// raise on, while the chunk-size form simply yields nothing or everything
+// (Str sheet ST-38). Returns -1 for "no limit"; sets `none` for "yield nothing".
+static long long combLimit(Interpreter& I, const Value& v, bool strict, bool& none) {
+    none = false;
+    if (v.t == VT::Whatever || v.t == VT::Type) return -1;
+    if (v.isNumeric()) {
+        const double d = v.toNum();
+        if (std::isnan(d)) {
+            if (strict) throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot coerce NaN to an Int"};
+            none = true; return -1;
+        }
+        if (std::isinf(d)) { if (d < 0) { none = true; } return -1; }
+        if (v.big() || d > 9.2e18 || d < -9.2e18) {
+            if (strict) throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot coerce " + v.gist() + " to an Int: it is too large"};
+            if (d < 0) none = true;
+            return -1;
+        }
+    } else if (v.t == VT::Str) {
+        Value n = numifyStr(v.s.str());
+        if (n.t == VT::Any || n.t == VT::Nil)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot convert string to number: " + v.s.str()};
+        return combLimit(I, n, strict, none);
+    } else return -1;
+    long long n = (long long)v.toNum();   // `.Int` truncates toward zero
+    if (n <= 0) { none = true; return -1; }
+    return n;
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -3071,31 +3106,131 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "lc") return Value::str(mapCase(inv.toStr(), 0, 0));
     if (m == "tc") return Value::str(mapCase(inv.toStr(), 0, 1));
     if (m == "tclc") return Value::str(mapCase(inv.toStr(), 0, 2));
-    if (m == "indent" && !args.empty()) { // add (negative: remove) indentation, AFTER existing leading whitespace
-        // the amount is a real number, not whatever toInt() makes of it:
-        // `.indent("a")` is X::Str::Numeric, not an indent of zero
-        long long amt = args[0].t == VT::Str && !args[0].isAllomorph() && args[0].hashKind.empty()
-                      ? numifyStrOrThrow(args[0].s).toInt() : args[0].toInt();
-        auto isWs = [](uint32_t c) {
-            return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x0D || c == 0x20 || c == 0x85 || c == 0xA0 ||
-                   c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
+    if (m == "indent" && !args.empty()) {
+        // `.indent($n)` adds $n columns to every line, `.indent(-$n)` removes
+        // them, and `.indent(*)` removes the shortest indent every line shares.
+        // The whole of Str sheet ST-58 and ST-59 lives here: the count's
+        // coercion and its refusals, the TAB arithmetic on both sides, which
+        // lines are exempt, and the warning for asking for more than there is.
+        const Value& amtV = args[0];
+        const bool wantCommon = amtV.t == VT::Whatever;
+        long long amt = 0;
+        if (!wantCommon) {
+            // A type object is a misuse; Nil is zero (and warns on the way, as
+            // any Nil in numeric context does); NaN and +-Inf cannot be a
+            // column count at all, and neither can a number past what an Int
+            // can hold -- both used to reach the allocation below and abort the
+            // process with an internal error.
+            if (amtV.t == VT::Type)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot call indent with a " + amtV.typeName() + " type object"};
+            Value n = amtV;
+            if (amtV.t == VT::Str && !amtV.isAllomorph() && amtV.hashKind.empty())
+                n = numifyStrOrThrow(amtV.s.str());
+            if (n.t == VT::Nil) n = Value::integer(0);
+            const double d = n.toNum();
+            if (std::isnan(d) || std::isinf(d))
+                throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                    "Cannot convert " + n.gist() + " to Int"};
+            if (n.big() || d > 4.6e18 || d < -4.6e18)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot indent by " + n.gist() + ": the count does not fit an Int"};
+            amt = (long long)d;   // `Int()` truncates toward zero
+        }
+        const int kTabStop = 8;
+        // A line ends at \n (with \r\n as one), \r, U+85 or U+2028 -- the same
+        // set `.lines` splits on (ST-39).
+        // EVERY horizontal whitespace character counts as indent, not only the
+        // ASCII two: roast's indent.t indents a line that begins with an EN QUAD
+        // and expects that character repeated.
+        auto isIndentWs = [](uint32_t c) {
+            return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x20 || c == 0xA0 ||
+                   c == 0x1680 || (c >= 0x2000 && c <= 0x200A) ||
                    c == 0x202F || c == 0x205F || c == 0x3000;
         };
-        std::string s = inv.toStr(), out; size_t i = 0;
-        while (i <= s.size()) {
-            size_t nl = s.find('\n', i);
-            std::string line = s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
-            auto cps = utf8cp(line);
-            size_t lead = 0; while (lead < cps.size() && isWs(cps[lead])) lead++;
-            std::string leadStr, rest;
-            for (size_t k = 0; k < lead; k++) leadStr += cpToUtf8(cps[k]);
-            for (size_t k = lead; k < cps.size(); k++) rest += cpToUtf8(cps[k]);
-            if (amt >= 0) { if (!line.empty()) out += leadStr + std::string((size_t)amt, ' ') + rest; }
-            else { size_t drop = std::min((size_t)(-amt), lead);
-                   std::string kept; for (size_t k = 0; k < lead - drop; k++) kept += cpToUtf8(cps[k]);
-                   out += kept + rest; }
-            if (nl == std::string::npos) break;
-            out += '\n'; i = nl + 1;
+        struct Piece { std::string indent, rest, term; std::vector<uint32_t> ind; };
+        std::vector<Piece> lines;
+        {
+            auto cps = utf8cp(inv.toStr());
+            size_t k = 0;
+            while (true) {
+                size_t st = k;
+                while (k < cps.size() && cps[k] != 0x0A && cps[k] != 0x0D &&
+                       cps[k] != 0x85 && cps[k] != 0x2028) k++;
+                Piece pc;
+                size_t lead = st;
+                while (lead < k && isIndentWs(cps[lead])) lead++;
+                for (size_t j = st; j < lead; j++) { pc.indent += cpToUtf8(cps[j]); pc.ind.push_back(cps[j]); }
+                for (size_t j = lead; j < k; j++) pc.rest += cpToUtf8(cps[j]);
+                if (k < cps.size()) {
+                    if (cps[k] == 0x0D && k + 1 < cps.size() && cps[k + 1] == 0x0A) { pc.term = "\r\n"; k += 2; }
+                    else { pc.term = cpToUtf8(cps[k]); k++; }
+                }
+                lines.push_back(std::move(pc));
+                if (k >= cps.size()) break;
+            }
+            // a trailing terminator does not open one more line
+            if (!lines.empty() && lines.back().indent.empty() && lines.back().rest.empty() &&
+                lines.back().term.empty() && lines.size() > 1)
+                lines.pop_back();
+        }
+        // the column width of an indent, with tabs advancing to the next stop
+        auto widthOf = [&](const std::string& ind) {
+            long long w = 0;
+            for (char c : ind) { if (c == '\t') w += kTabStop - (w % kTabStop); else w++; }
+            return w;
+        };
+        // …and back: as many whole tabs as fit, then spaces
+        auto renderCols = [&](long long w) {
+            std::string r;
+            for (long long t = 0; t + kTabStop <= w; t += kTabStop) r += '\t';
+            r.append((size_t)(w % kTabStop), ' ');
+            return r;
+        };
+        std::string out;
+        if (amt >= 0 && !wantCommon) {
+            for (auto& pc : lines) {
+                // a line that is EXACTLY empty is left alone; a whitespace-only
+                // one is indented like any other
+                if (pc.indent.empty() && pc.rest.empty()) { out += pc.term; continue; }
+                std::string add;
+                bool uniform = !pc.ind.empty();
+                for (size_t k2 = 1; uniform && k2 < pc.ind.size(); k2++)
+                    if (pc.ind[k2] != pc.ind[0]) uniform = false;
+                if (uniform && pc.ind[0] == '\t') {
+                    // an all-tab indent grows in TABS first, then the remainder
+                    add.append((size_t)(amt / kTabStop), '\t');
+                    add.append((size_t)(amt % kTabStop), ' ');
+                } else if (uniform) {
+                    // a run of ONE character grows in that character, whatever
+                    // it is — an EN QUAD indent gains EN QUADs
+                    for (long long k2 = 0; k2 < amt; k2++) add += cpToUtf8(pc.ind[0]);
+                } else {
+                    add.assign((size_t)amt, ' ');   // a mixed indent gains spaces
+                }
+                out += pc.indent + add + pc.rest + pc.term;
+            }
+            return Value::str(out);
+        }
+        // removing: how many columns, and from where
+        long long shortest = -1;
+        for (auto& pc : lines) {
+            if (pc.indent.empty() && pc.rest.empty()) continue; // an empty line does not count
+            long long w = widthOf(pc.indent);
+            if (shortest < 0 || w < shortest) shortest = w;
+        }
+        if (shortest < 0) shortest = 0;
+        long long want = wantCommon ? shortest : -amt;
+        if (!wantCommon && want > shortest) {
+            const std::string msg = "Asked to remove " + std::to_string(want) +
+                " spaces, but the shortest indent is " + std::to_string(shortest) + " spaces";
+            if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        }
+        for (auto& pc : lines) {
+            if (pc.indent.empty() && pc.rest.empty()) { out += pc.term; continue; }
+            long long w = widthOf(pc.indent);
+            long long keep = w - want; if (keep < 0) keep = 0;
+            out += renderCols(keep) + pc.rest + pc.term;
         }
         return Value::str(out);
     }
@@ -3314,22 +3449,36 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             ValueList wa{Value::integer(n)}; start = callCallable(args[0], wa).toInt();
         }
         else start = a0().toInt();
-        if (start < 0) // Rakudo: X::OutOfRange, with the *-N hint (this wrapped from the end)
+        // A start PAST the end is out of range too, not a silent "" — `0..chars`
+        // is the range, and `chars` itself is in it (Str sheet ST-35).
+        if (start < 0 || start > n)
             return armedFailure("X::OutOfRange", "Start argument to substr out of range. Is: " +
                 std::to_string(start) + ", should be in 0.." + std::to_string(n) +
-                "; use *" + std::to_string(start) + " if you want to index relative to the end");
-        if (start > n) start = n;
+                (start < 0 ? "; use *" + std::to_string(start) +
+                             " if you want to index relative to the end"
+                           : ""));
         // The length may be a Whatever/WhateverCode: `*` means "to the end" and
         // `*-1` etc. is called with the max available length (n - start).
         long long len;
         if (args.size() <= 1) len = n - start;
         else if (args[1].t == VT::Whatever) len = n - start;
         else if (args[1].t == VT::Code) {
-            // `*-1` as a LENGTH counts back from the END of the string, not from
-            // the remaining tail — `substr($s, *-3, *-1)` keeps all but the last
-            ValueList wa{Value::integer(n)}; len = callCallable(args[1], wa).toInt() - start;
+            // A LENGTH callable is handed the length still AVAILABLE and its
+            // answer IS the length: `*-1` over the remaining tail keeps all but
+            // the last, and a constant block `{2}` means two characters. It used
+            // to be called with the whole string's length and have the start
+            // subtracted, which is the same answer for `*-k` and wrong for
+            // everything else (roast substr.t "substr coerces from/to to Ints").
+            ValueList wa{Value::integer(n - start)}; len = callCallable(args[1], wa).toInt();
         }
+        // an INFINITE length is "to the end", like `*` — `"abcd".substr(2, Inf)`
+        // is "cd" (roast substr.t); NaN and -Inf are out of range below.
+        else if (args[1].isNumeric() && std::isinf(args[1].toNum()) && args[1].toNum() > 0)
+            len = n - start;
         else len = args[1].toInt();
+        if (args.size() > 1 && args[1].isNumeric() && std::isnan(args[1].toNum()))
+            return armedFailure("X::OutOfRange",
+                "Number of characters argument to substr out of range. Is: NaN, should be in 0..^Inf");
         if (len < 0) // Rakudo: X::OutOfRange (this counted back from the end)
             return armedFailure("X::OutOfRange", "Length argument to substr out of range. Is: " +
                 std::to_string(len) + ", should be in 0.." + std::to_string(n - start) +
@@ -3457,7 +3606,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return f;
             }
             from = args[1].toInt();
-            if (m == "rindex" && from > n) from = n; // rindex clamps the rightmost start
+            // A start PAST the end finds nothing — `rindex("Hello", "", 999)` is
+            // Nil, not 5 (roast rindex.t). It used to clamp to the end, which
+            // made the empty needle match there.
+            if (m == "rindex" && from > n) return Value::nil();
         }
         auto eq = [&](long long at) { // `at` is a grapheme index into the haystack
             if (at < 0 || at + k > n) return false;
@@ -3559,8 +3711,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "contains") { // an optional second positional is where to start
             long from = 0;
             for (size_t i = 0; i < args.size(); i++)
-                if ((int)i != rxIdx && args[i].t != VT::Pair)
-                    { from = (long)charToByte(subj, args[i].toInt()); break; }
+                if ((int)i != rxIdx && args[i].t != VT::Pair) {
+                    if (args[i].isNumeric()) {
+                        double fd = args[i].toNum();
+                        if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "contains", args[i], subj);
+                    }
+                    from = (long)charToByte(subj, args[i].toInt());
+                    break;
+                }
             Regex re(pat); RxMatch mm;
             return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
         }
@@ -3586,12 +3744,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 Value g = Value::pair("g", Value::boolean(true)); g.namedArg = true;
                 sargs.push_back(g);
                 substSelect(subj, pat, nullptr, sargs, nsub, false, &keep, &mres);
-                long long limit = -1;
+                long long limit = -1; bool none = false;
                 for (size_t i = 0; i < args.size(); i++)
-                    if ((int)i != rxIdx && args[i].t != VT::Pair && args[i].t != VT::Whatever)
-                        { limit = args[i].toInt(); break; }
-                if (limit >= 0 && mres.t == VT::Array && mres.arr() &&
-                    (long long)mres.arr()->size() > limit)
+                    if ((int)i != rxIdx && args[i].t != VT::Pair)
+                        { limit = combLimit(*this, args[i], true, none); break; }
+                if (none && mres.t == VT::Array && mres.arr()) mres.arr()->clear();
+                else if (limit >= 0 && mres.t == VT::Array && mres.arr() &&
+                         (long long)mres.arr()->size() > limit)
                     mres.arr()->resize(limit);
                 return mres;
             }
@@ -3599,7 +3758,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // a `<?{…}>` in the pattern must run, here as much as in `~~`
             GrammarHooks ch = codeAssertHooks();
             if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            // the optional positional LIMIT caps how many matches are yielded;
+            // it was read only on the `:match` path (Str sheet ST-38)
+            long long limit = -1; bool none = false;
+            for (size_t i = 0; i < args.size(); i++)
+                if ((int)i != rxIdx && args[i].t != VT::Pair)
+                    { limit = combLimit(*this, args[i], true, none); break; }
+            if (none) return out;
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
+                if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 out.arr()->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
             }
@@ -3917,7 +4084,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         size_t from = 0;
         if (m == "contains") {
             for (size_t i = 1; i < args.size(); i++)
-                if (args[i].t != VT::Pair) { from = charToByte(s, args[i].toInt()); break; }
+                if (args[i].t != VT::Pair) {
+                    // a NEGATIVE or overflowing start is out of range; one merely
+                    // past the end simply finds nothing (Str sheet ST-27)
+                    if (args[i].isNumeric()) {
+                        double fd = args[i].toNum();
+                        if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "contains", args[i], s);
+                    }
+                    from = charToByte(s, args[i].toInt());
+                    if (args[i].toInt() > (long long)graphemeCount(s)) return Value::boolean(false);
+                    break;
+                }
             return Value::boolean(from <= s.size() && s.find(n, from) != std::string::npos);
         }
         if (m == "starts-with") return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0);
@@ -4197,18 +4374,33 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // .comb($needle): every non-overlapping occurrence of the literal substring
         // (a regex needle is handled earlier); .comb() with no arg: one entry per codepoint.
+        // A CALLABLE is not a needle: `.comb({…})` has no candidate and dies
+        // without ever calling the block (roast comb.t asserts both halves).
+        if (!args.empty() && args[0].t == VT::Code)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                "Cannot resolve caller comb(" + inv.typeName() + ": Block); "
+                "none of these signatures match"};
         if (!args.empty() && args[0].t != VT::Int && !args[0].toStr().empty()) {
             // an EMPTY needle falls through to the no-arg form (Rakudo:
             // "abc".comb("") is ("a","b","c"))
             std::string subj = inv.toStr(), needle = args[0].toStr();
-            for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
+            long long limit = -1; bool none = false;
+            if (args.size() > 1 && args[1].t != VT::Pair)
+                limit = combLimit(*this, args[1], true, none);
+            if (none) return out;
+            for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size())) {
+                if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 out.arr()->push_back(Value::str(needle));
+            }
             return out;
         }
         if (!args.empty() && args[0].t == VT::Int) {
             // .comb($n [, $limit]): consecutive chunks of $n graphemes
             long long chunk = args[0].toInt(); if (chunk < 1) chunk = 1;
-            long long limit = (args.size() > 1 && args[1].isNumeric() && args[1].t != VT::Whatever) ? args[1].toInt() : -1;
+            long long limit = -1; bool none = false;
+            if (args.size() > 1 && args[1].t != VT::Pair)
+                limit = combLimit(*this, args[1], false, none);
+            if (none) return out;
             auto cps = utf8cp(inv.toStr());
             auto starts = uniGraphemeStarts(cps);
             for (size_t gi = 0; gi < starts.size(); gi += (size_t)chunk) {

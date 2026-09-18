@@ -42,6 +42,24 @@ struct RotorSpec { long long n, step; };
 // `.map` (Nil-Any sheet NA-20).
 [[noreturn]] void throwCannotMap(Interpreter& I, const std::string& what, const Value& using_);
 
+// A START POSITION that is negative, or past what an Int can hold, is out of
+// range for every string search that takes one — index, rindex, indices,
+// contains, substr-eq — and the answer is a RETURNED Failure naming the method,
+// the value and the range (Str sheet ST-27; roast asserts it with fails-like).
+// A position merely past the END of the string is not an error.
+Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
+                    const std::string& subject) {
+    const std::string range = "0.." + std::to_string(graphemeCount(subject));
+    const std::string msg = "start argument to " + what + " out of range. Is: " +
+                            got.gist() + "; should be in " + range;
+    Value f = rakuppNewFailure();
+    (*f.hash())["exception"] = I.makeTypedEx("X::OutOfRange",
+        {{"got", got}, {"what", Value::str("start argument to " + what)},
+         {"range", Value::str(range)}}, msg);
+    (*f.hash())["message"] = Value::str(msg);
+    return f;
+}
+
 static void parseRotorSpecs(const ValueList& args, bool isBatch,
                             std::vector<RotorSpec>& specs, bool& partial) {
     for (auto& a : args)
@@ -152,6 +170,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat
     if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
         std::string s = inv.toStr(); long long base = a0().toInt();
+        // The digits and the sign may be written in any script Unicode gives a
+        // value to: U+2212 MINUS is a minus, and an Nd digit is its value
+        // (roast parse-base.t parses "๕๖๗۶۷៤៥１２３"). The parse below is
+        // byte-oriented, so both are folded to ASCII first — the same step
+        // numifyStr takes.
+        {
+            for (size_t k = 0; (k = s.find("\xE2\x88\x92", k)) != std::string::npos; )
+                s.replace(k, 3, "-");
+            bool anyHigh = false;
+            for (unsigned char c : s) if (c >= 0x80) { anyHigh = true; break; }
+            if (anyHigh) {
+                std::string t;
+                for (uint32_t cp : utf8cp(s)) {
+                    int dv = cp >= 0x80 ? uniDigitValue(cp) : -1;
+                    if (dv >= 0) t += (char)('0' + dv); else t += cpToU8(cp);
+                }
+                s = std::move(t);
+            }
+        }
         if (base < 2 || base > 36)
             return armedFailure("X::Syntax::Number::RadixOutOfRange",
                                 "Radix " + std::to_string(base) + " out of range (allowed: 2..36)");
@@ -204,10 +241,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 icase = (!a.pairVal() || a.pairVal()->truthy()) && strHasNoUpper(args[0].toStr()); // 6.e
             else if (a.s == "m" || a.s == "ignoremark") imark = !a.pairVal() || a.pairVal()->truthy();
         }
-        // a second positional is the CHARACTER position to start looking from
+        // a second positional is the CHARACTER position to start looking from.
+        // A NEGATIVE one, or one past what an Int can hold, is out of range and
+        // answers a Failure rather than searching from the start
+        // (Str sheet ST-27).
         size_t from = 0;
         for (size_t i = 1; i < args.size(); i++)
-            if (args[i].t != VT::Pair) { from = charToByte(s, args[i].toInt()); break; }
+            if (args[i].t != VT::Pair) {
+                if (args[i].isNumeric()) {
+                    double fd = args[i].toNum();
+                    if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "indices", args[i], s);
+                }
+                from = charToByte(s, args[i].toInt());
+                break;
+            }
         if (imark) { s = markFold(s); needle = markFold(needle); }
         if (icase) {
             auto fold = [](const std::string& in) {
@@ -220,7 +267,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto charPos = [&](size_t byte) { // GRAPHEME positions, as .index answers (this counted codepoints)
             return graphemeCount(s.substr(0, std::min(byte, s.size())));
         };
-        if (!needle.empty() && from <= s.size())
+        // An EMPTY needle is found at EVERY position, the one past the end
+        // included: `"foo".indices("")` is (0, 1, 2, 3) (roast indices.t).
+        if (needle.empty()) {
+            if (from <= s.size())
+                for (size_t g = charPos(from); g <= graphemeCount(s); g++)
+                    out.arr()->push_back(Value::integer((long long)g));
+            return out;
+        }
+        if (from <= s.size())
             for (size_t p = s.find(needle, from); p != std::string::npos;
                  p = s.find(needle, p + (overlap ? 1 : needle.size())))
                 out.arr()->push_back(Value::integer(charPos(p)));

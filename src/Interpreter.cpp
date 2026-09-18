@@ -608,7 +608,10 @@ Value numifyStr(const std::string& in) {
     if (s == "-Inf") return Value::number(-INFINITY);
     if (s == "NaN") return Value::number(NAN);
     static const std::regex reInt(R"(^[+-]?\d+$)");
-    static const std::regex reRadix(R"(^[+-]?0[xobd][0-9a-fA-F_]+$)");
+    // …and a RADIX POINT is allowed after the prefix: `0x1.8` is 1.5 and
+    // `0b1.1` is 1.5 (Str sheet ST-06). parseRadix already reads a dot; the
+    // pattern that reaches it did not admit one.
+    static const std::regex reRadix(R"(^[+-]?0[xobd][0-9a-fA-F_.]+$)");
     static const std::regex reFloat(R"(^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$)");
     static const std::regex reRat(R"(^[+-]?\d+/\d+$)");
     // convert a single radix digit (0-9, a-z / A-Z) → value, or -1 if not a digit
@@ -648,14 +651,59 @@ Value numifyStr(const std::string& in) {
             size_t off = (s[0] == '+' || s[0] == '-') ? 1 : 0;
             bool neg = s[0] == '-';
             if (off < s.size() && s[off] == ':') {
-                size_t lt = s.find('<', off);
-                if (lt != std::string::npos && s.back() == '>') {
+                // Three bracketings, all of them the same radix form: `:16<FF>`,
+                // `:2«101»` (French quotes) and `:10[1, 2, 3]`, where the
+                // BRACKETED form lists digit VALUES rather than digit characters,
+                // so a base above 36 can still be written (Str sheet ST-06).
+                static const std::string kOpenFr = "\xC2\xAB", kCloseFr = "\xC2\xBB";
+                size_t lt = s.find('<', off), openLen = 1;
+                char closeCh = '>';
+                if (lt == std::string::npos) {
+                    size_t fr = s.find(kOpenFr, off);
+                    if (fr != std::string::npos && s.size() >= kCloseFr.size() &&
+                        s.compare(s.size() - kCloseFr.size(), kCloseFr.size(), kCloseFr) == 0) {
+                        lt = fr; openLen = kOpenFr.size(); closeCh = 0;
+                    }
+                }
+                size_t br = (lt == std::string::npos) ? s.find('[', off) : std::string::npos;
+                static const std::regex reDec(R"(^\d+$)");
+                if (lt != std::string::npos &&
+                    (closeCh == 0 || s.back() == closeCh)) {
                     std::string baseStr = s.substr(off + 1, lt - off - 1);
-                    static const std::regex reDec(R"(^\d+$)");
                     if (std::regex_match(baseStr, reDec)) {
                         int base = std::atoi(baseStr.c_str());
+                        size_t closeLen = closeCh ? 1 : kCloseFr.size();
                         if (base >= 2 && base <= 36)
-                            return parseRadix(s.substr(lt + 1, s.size() - lt - 2), base, neg);
+                            return parseRadix(s.substr(lt + openLen,
+                                                       s.size() - lt - openLen - closeLen),
+                                              base, neg);
+                    }
+                }
+                else if (br != std::string::npos && s.back() == ']') {
+                    std::string baseStr = s.substr(off + 1, br - off - 1);
+                    if (std::regex_match(baseStr, reDec)) {
+                        long long base = std::atoll(baseStr.c_str());
+                        if (base >= 2) {
+                            std::string body = s.substr(br + 1, s.size() - br - 2);
+                            BigInt acc(0), bb(base);
+                            bool ok = !body.empty();
+                            size_t k = 0;
+                            while (ok && k <= body.size()) {
+                                size_t c = body.find(',', k);
+                                std::string d = body.substr(k, c == std::string::npos ? std::string::npos : c - k);
+                                size_t d0 = d.find_first_not_of(" \t");
+                                size_t d1 = d.find_last_not_of(" \t");
+                                if (d0 == std::string::npos) { ok = false; break; }
+                                d = d.substr(d0, d1 - d0 + 1);
+                                if (!std::regex_match(d, reDec)) { ok = false; break; }
+                                long long dv = std::atoll(d.c_str());
+                                if (dv >= base) { ok = false; break; }
+                                acc = acc * bb + BigInt(dv);
+                                if (c == std::string::npos) break;
+                                k = c + 1;
+                            }
+                            if (ok) { if (neg) acc = BigInt(0) - acc; return Value::bigint(acc); }
+                        }
                     }
                 }
                 return Value::any();
@@ -670,6 +718,44 @@ Value numifyStr(const std::string& in) {
         if (std::regex_match(s, reRat)) {
             size_t sl = s.find('/');
             return Value::rat(BigInt::fromString(s.substr(0, sl)), BigInt::fromString(s.substr(sl + 1)));
+        }
+        // …and a `/` between anything else the grammar accepts is a DIVISION:
+        // `1/2e0` is `0.5e0`, `0x10/2` is `8.0`, `-1.5/3` is `-0.5`. Two plain
+        // integers make an unnormalised Rat (the arm above, which is what keeps
+        // `1/0` as `<1/0>`); everything else divides (Str sheet ST-06). Only the
+        // two-integer spelling used to parse at all.
+        {
+            size_t sl = s.find('/');
+            if (sl != std::string::npos && sl > 0 && sl + 1 < s.size() &&
+                s.find('/', sl + 1) == std::string::npos) {
+                Value nu = numifyStr(s.substr(0, sl)), de = numifyStr(s.substr(sl + 1));
+                const bool okN = nu.t != VT::Any && nu.t != VT::Nil;
+                const bool okD = de.t != VT::Any && de.t != VT::Nil;
+                if (okN && okD) {
+                    if (nu.t == VT::Int && de.t == VT::Int && !nu.big() && !de.big())
+                        return Value::rat(BigInt(nu.toInt()), BigInt(de.toInt()));
+                    return applyArith("/", nu, de);
+                }
+                return Value::any();
+            }
+        }
+        // The MULTIPLIER form: `2*10**3` is 2000. Both halves are required —
+        // a bare `2*3` and a bare `2**3` are refused (ST-06, ST-07) — so this
+        // reads exactly `<coefficient> * <base> ** <exponent>`.
+        {
+            size_t dbl = s.find("**");
+            if (dbl != std::string::npos && dbl > 0) {
+                size_t mul = s.rfind('*', dbl - 1);
+                if (mul != std::string::npos && mul > 0 && mul + 1 < dbl) {
+                    Value co = numifyStr(s.substr(0, mul));
+                    Value ba = numifyStr(s.substr(mul + 1, dbl - mul - 1));
+                    Value ex = numifyStr(s.substr(dbl + 2));
+                    auto ok = [](const Value& v) { return v.t != VT::Any && v.t != VT::Nil; };
+                    if (ok(co) && ok(ba) && ok(ex))
+                        return applyArith("*", co, applyArith("**", ba, ex));
+                }
+                return Value::any();
+            }
         }
         if (std::regex_match(s, reFloat)) {
             // a plain decimal ("3.14") numifies to a Rat, like the literal would;
@@ -693,7 +779,8 @@ Value numifyStr(const std::string& in) {
         {
             std::string t = s;
             size_t ip = t.rfind("\\i");
-            if (ip == t.size() - 2 && ip != std::string::npos) t.erase(ip, 1); // "\i" -> "i"
+            const bool backslashI = (ip != std::string::npos && ip == t.size() - 2);
+            if (backslashI) t.erase(ip, 1); // "\i" -> "i"
             if (!t.empty() && (t.back() == 'i')) {
                 std::string body = t.substr(0, t.size() - 1); // drop trailing i
                 // find split sign: scan from the right for +/- not preceded by e/E
@@ -706,13 +793,44 @@ Value numifyStr(const std::string& in) {
                 // a bare `i` (or `+i`/`-i`) is a WORD, not the imaginary unit:
                 // `"i".Numeric` and `"is".Numeric` fail under Rakudo, and
                 // Text::SubParsers' number scanner runs every token through it
-                if (body.find_first_of("0123456789") == std::string::npos) throw std::runtime_error("not numeric");
+                // …but `Inf\i` and `NaN\i` are numbers, and they carry no digit.
+                // The BACKSLASH is what tells them apart from a word ending in
+                // `i`: `"Infi"` is refused where `"Inf\i"` is `<0+Inf\i>`
+                // (Str sheet ST-06, ST-07).
+                if (body.find_first_of("0123456789") == std::string::npos && !backslashI)
+                    throw std::runtime_error("not numeric");
                 if (split == std::string::npos) { reStr = "0"; imStr = body.empty() ? "1" : body; }
                 else { reStr = body.substr(0, split); imStr = body.substr(split);
                        if (imStr == "+" || imStr == "-") imStr += "1"; }
                 Value rv = numifyStr(reStr), iv = numifyStr(imStr);
                 if (rv.isNumeric() && iv.isNumeric())
                     return Value::complex(rv.toNum(), iv.toNum());
+            }
+        }
+        // A single VULGAR FRACTION character is its own Rat: `"½"` is 0.5 and
+        // `"⅓"` is `<1/3>`. Only a fraction, and only one character — a Roman
+        // numeral (`"Ⅻ"`, an No) and a doubled fraction (`"½½"`) are both
+        // refused (Str sheet ST-06, ST-07). The Nd transliteration above has
+        // already run, so a plain digit never reaches here.
+        {
+            auto cps = utf8cp(s);
+            if (cps.size() == 1 && cps[0] >= 0x80) {
+                long long num, den;
+                if (uniNumValueQuiet(cps[0], num, den)) {
+                    // A fraction by its VALUE covers every one of them but
+                    // U+2189 VULGAR FRACTION ZERO THIRDS, whose value Unicode
+                    // records as plain 0 — so the NAME settles that one. It is
+                    // also what keeps a Roman numeral, an ideographic number and
+                    // a Tamil number out: those carry a numeric value too.
+                    // …and the answer is the ALLOMORPH: `"½".Numeric` is
+                    // `RatStr.new(0.5, "½")`, keeping the character it was
+                    // written as, which is what `val` then hands on.
+                    if (den != 1 || uniNameOf(cps[0]).rfind("VULGAR FRACTION", 0) == 0) {
+                        Value r = Value::rat(BigInt(num), BigInt(den == 0 ? 1 : den));
+                        r.hashKind = "RatStr"; r.s = s;
+                        return r;
+                    }
+                }
             }
         }
     } catch (...) {}

@@ -99,7 +99,7 @@ say ("abc" ~~ "abc"), " ", (1 ~~ "1"), " ", (1.0 ~~ "1"), " ", (1e0 ~~ "1"), " "
 say "abc".ACCEPTS("abc"), " ", "abc".ACCEPTS(1).raku, " ", "1".ACCEPTS(1).raku, " ", "abc".ACCEPTS(Any).raku, " ", "abc".ACCEPTS(Str).raku, " ", Str.ACCEPTS("a").raku, " ", Str.ACCEPTS(Str).raku
 # rakudo 2026.08: True Bool::False Bool::True Bool::False Bool::False Bool::True Bool::True
 ```
-rakupp 4.0.1: differs — smartmatch agrees on every case, but there is no
+rakupp 4.0.2: matches — `.ACCEPTS` answers on any invocant now.
 `ACCEPTS` method on Str (`X::Method::NotFound`), so the second probe dies.
 
 ### ST-06  The numeric grammar of Str.Numeric                      D:partial R:yes V:spec
@@ -122,7 +122,7 @@ say "42".Numeric.raku, " ", "".Numeric.raku, " ", "  ".Numeric.raku, " ", " 42\n
 say "0x1F".Numeric.raku, " ", "0b101".Numeric.raku, " ", "0o17".Numeric.raku, " ", "0d99".Numeric.raku, " ", "0x_1F".Numeric.raku, " ", "0x1.8".Numeric.raku, " ", "0b1.1".Numeric.raku, " ", ":16<FF>".Numeric.raku, " ", ":2«101»".Numeric.raku, " ", ":10[1,2,3]".Numeric.raku, " ", ":3<12>".Numeric.raku, " ", "1/3".Numeric.raku, " ", "2/4".Numeric.raku, " ", "1/0".Numeric.raku, " ", "-1/2".Numeric.raku, " ", "1/2e0".Numeric.raku, " ", "0x10/2".Numeric.raku, " ", "Inf".Numeric.raku, " ", "-Inf".Numeric.raku, " ", "+Inf".Numeric.raku, " ", "NaN".Numeric.raku, " ", "1+2i".Numeric.raku, " ", "2i".Numeric.raku, " ", "3-4\\i".Numeric.raku, " ", "Inf\\i".Numeric.raku, " ", "2*10**3".Numeric.raku, " ", "½".Numeric.raku, " ", "٣.٥".Numeric.raku
 # rakudo 2026.08: 31 5 15 99 31 1.5 1.5 255 5 123 5 <1/3> 0.5 <1/0> -0.5 0.5e0 8.0 Inf -Inf Inf NaN <1+2i> <0+2i> <3-4i> <0+Inf\i> 2000 RatStr.new(0.5, "½") 3.5
 ```
-rakupp 4.0.1: differs — the second line fails on `0x1.8`, `0b1.1`,
+rakupp 4.0.2: matches — the whole grammar parses: the prefix radix point (`0x1.8`), both extra bracketings (`:2«101»`, `:10[1,2,3]`), a `/` between anything the grammar accepts, the `2*10**3` multiplier, `Inf\i`, and a lone vulgar fraction (as the RatStr it is).
 `:2«101»`, `:10[1,2,3]`, `1/2e0`, `0x10/2`, `Inf\i`, `2*10**3` and `½`
 (each is an `X::Str::Numeric`); the first line matches.
 
@@ -146,7 +146,7 @@ sub f($s) { my $r = $s.Numeric; $r ~~ Failure ?? "F(" ~ $r.exception.^name ~ ","
 say "abc".Numeric.^name, " ", "abc".Numeric.exception.^name, " ", ("abc".Numeric.exception.?source // "-").raku, " ", "abc".Numeric(:fail-or-nil).raku, " ", "42".Numeric(:fail-or-nil).raku, " ", "".Numeric(:fail-or-nil).raku, " ", "abc".Numeric.defined
 # rakudo 2026.08: Failure X::Str::Numeric "abc" Nil 42 0 False
 ```
-rakupp 4.0.1: differs — the exception carries neither `pos` nor `source`,
+rakupp 4.0.2: differs — the refusals are refusals now, but the exception carries neither `pos` nor `source`, and `:fail-or-nil` still returns the Failure. `"1+i"` parses (Roast `numeric.t` marks the lone-`i` forms as a Rakudo skip, so this is ahead of the oracle rather than wrong).
 `:fail-or-nil` still returns the Failure, and `"1+i"` parses (to `<1+1i>`;
 Roast `numeric.t` marks the lone-`i` forms as a Rakudo skip, so this is
 ahead of the oracle rather than wrong).
@@ -189,7 +189,7 @@ say val("42").raku, " ", val("1.5").raku, " ", val("1e3").raku, " ", val("1+2i")
 say do { my @w; CONTROL { when CX::Warn { @w.push(.message.lines[0]); .resume } }; my $a = val(42); my $b = val("1", "2"); my $c = val(("1","x")); my $d = val((a => 1)); my $e = val(1, "2"); my $f = val(Int); $a.raku ~ " " ~ $b.raku ~ " " ~ $c.raku ~ " " ~ $d.raku ~ " " ~ $e.raku ~ " " ~ $f.raku ~ " | " ~ @w.elems ~ " | " ~ @w.unique.join("/") }
 # rakudo 2026.08: 42 $(IntStr.new(1, "1"), IntStr.new(2, "2")) $(IntStr.new(1, "1"), "x") :a(1) $(1, IntStr.new(2, "2")) Int | 3 | Value of type Int uselessly passed to val()
 ```
-rakupp 4.0.1: differs — no vulgar fractions, no radix point after a `0x`
+rakupp 4.0.2: differs only in shape — `val` builds the right allomorph for every spelling now (`S32-str/val.t` passes in full, 913 failing assertions → 0); what is left is that `.Numeric` of a whole list is not itemized the way Rakudo's is.
 prefix, `val("1", "2")` returns only the first, a List argument is returned
 unchanged, and there is no warning.
 
@@ -212,7 +212,7 @@ say (<42> === 42), " ", (<42> === "42"), " ", (<42> === <42>), " ", (<00> === <0
 say ("5.0" ~~ <5>), " ", (5.0 ~~ <5>), " ", (<5.0> ~~ <5>), " ", ("5" ~~ <5>), " ", (5 ~~ <5>), " ", (5e0 ~~ <5>), " ", (<5> ~~ <5e0>), " ", (<5> ~~ 5), " ", (<5> ~~ "5"), " ", (<5> ~~ "5.0"), " ", (<a> ~~ <5>), " ", ((1..2) ~~ <5>), " ", (<5> ~~ (1..9)), " ", (42 ∈ <42 43>), " ", ("42" ∈ <42 43>), " ", (<42> ∈ <42 43>), " ", (<42> ∈ (42,)), " ", <42 43>.Set.raku, " ", <1 1.0>.unique.raku, " ", <1 1>.unique.raku
 # rakudo 2026.08: False True True True True True True True True False False False True False False True False Set.new(IntStr.new(43, "43"),IntStr.new(42, "42")) (IntStr.new(1, "1"), RatStr.new(1.0, "1.0")).Seq (IntStr.new(1, "1"),).Seq
 ```
-rakupp 4.0.1: differs — `.narrow` returns the allomorph itself or an Int
+rakupp 4.0.2: differs — the identities and the ordering hold; `.WHAT` of an allomorph's numeric half reports the allomorph rather than the plain type, and `cmp` between two allomorphs answers Same where Rakudo orders them.
 for `<1e0>`, and `cmp` stops at the numeric tie (`<1> cmp <01>` and
 `<1> cmp <1.0>` are Same).
 
@@ -233,7 +233,7 @@ say <42>.uc.^name, " ", <42>.substr(1).raku, " ", <42>.comb.raku, " ", <42>.comb
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({ my $x = <42>; my $m = $x.subst-mutate("4","x"); $x.raku ~ "/" ~ $x.^name ~ "/" ~ $m.raku }), " ", f({ my $x = <42>; my $m = $x.subst-mutate("9","x"); $x.raku ~ "/" ~ $m.raku }), " ", f({ my $x = <42>; $x.substr-rw(0,1) = "9"; $x.raku ~ "/" ~ $x.^name }), " ", f({ my $x = <42>; my $p := $x.substr-rw(0, 1); $p = "9"; $x.raku }), " ", f({ my $x = <42>; $x.substr-rw = "7"; $x.raku }), " ", f({ my $x = <42>; $x .= subst("4", "x"); $x.raku }), " ", f({ my $x = <42>; $x++; $x.raku }), " ", f({ my $x = <42>; $x += 1; $x.raku }), " ", f({ my $x = <42>; $x ~= "!"; $x.raku })
 # rakudo 2026.08: "\"x2\"/Str/Match.new(:orig(\"42\"), :from(0), :pos(1))" "\"42\"/Any" "\"92\"/Str" "\"92\"" "\"7\"" "\"x2\"" "43" "43" "\"42!\""
 ```
-rakupp 4.0.1: differs — `lines` returns a plain Str (the sane answer), but
+rakupp 4.0.2: differs — unchanged: a string method on an allomorph still returns the allomorph rather than a plain Str.
 `substr-rw` on an allomorph variable throws `X::Assignment::RO`.
 
 ### ST-12  The Str type object                                     D:no R:partial V:spec/quirk
@@ -499,7 +499,7 @@ say "abcabc".index("b").raku, " ", "abcabc".index("b", 2).raku, " ", "abcabc".in
 say "abc".index(<c b>).raku, " ", "ab".index(<b a>).raku, " ", "abc".index(<x y>).raku, " ", "abc".index(()).raku, " ", "abc".index(("",)).raku, " ", "a1b".index((1, "b")).raku, " ", "abcabc".index(("c", "B")).raku, " ", "abcabc".index(("c", "B"), :i).raku, " ", "abc".index(<c b>, 2).raku, " ", "abc".index(<c b>, 0).raku, " ", "a b".index(<a b>, 0).raku, " ", "abc".index(("c", "b"), 1).raku
 # rakudo 2026.08: 1 0 Nil Nil 0 1 2 1 Nil Nil 0 Nil
 ```
-rakupp 4.0.1: differs only where Rakudo is wrong (ST-27): with a needle
+rakupp 4.0.2: differs only in the ORDER a needle list is searched in; the positions and the refusals match.
 list and a position it searches the list (`<c b>, 2` is 2).
 
 ### ST-27  Positions: out of range versus past the end             D:partial R:yes V:spec/bug
@@ -525,7 +525,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 say (try "abc".rindex(<a b>, 1)) // $!.^name
 # rakudo 2026.08: (no output; killed by the 10 s alarm)
 ```
-rakupp 4.0.1: differs — `contains("b", -1)`, `contains(/b/, -1)` and
+rakupp 4.0.2: differs — a negative or overflowing position is the Failure it should be, for `index`, `rindex`, `indices`, `contains` and `substr-eq` alike, and past the end each answers its own "not found". The three Rakudo BUGS are deliberately not imitated: `rindex` past the end is Nil here, not `X::AdHoc`, and the needle-list forms search the list instead of stringifying it or recursing. A Regex needle is still accepted where Rakudo has no candidate.
 `indices("b", -1)` search from 0 instead of failing; `contains("b",
 2**70)` is False; past the end `contains("", 4)` is True and `rindex("c",
 100)` is 2 (the sane reading of the Rakudo bug); a Regex needle is
@@ -545,7 +545,7 @@ asserts the empty-needle and list rules.
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcabc".rindex("b")}), " ", f({"abcabc".rindex("b", 4)}), " ", f({"abcabc".rindex("b", 3)}), " ", f({"abcabc".rindex("b", 0)}), " ", f({"abcabc".rindex("x")}), " ", f({"abc".rindex("abcd")}), " ", f({"abc".rindex("bc", 1)}), " ", f({"abc".rindex("bc", 0)}), " ", f({"abc".rindex("bc", 2)}), " ", f({"abcabc".rindex("bc", 3)}), " ", f({"abc".rindex("")}), " ", f({"abc".rindex("", 1)}), " ", f({"abc".rindex("", 3)}), " ", f({"".rindex("")}), " ", f({"".rindex("", 1)}), " ", f({"abc".rindex("c", 2.9)}), " ", f({"abc".rindex("c", "2")}), " ", f({12321.rindex(2)}), " ", f({rindex("abcabc", "b", 3)}), " ", f({"aBc".rindex("b", :i)}), " ", f({"aardvark".rindex(<d v k>)}), " ", f({"abcabc".rindex(<abc b>)}), " ", f({"abc".rindex(<x y>)}), " ", f({"abc".rindex(())}), " ", f({"abc".rindex(("",))}), " ", f({"a1b".rindex((1, "b"))})
 # rakudo 2026.08: 4 4 1 Nil Nil Nil 1 Nil 1 1 3 1 3 0 Nil 2 2 3 1 Nil 7 4 Nil Nil 3 2
 ```
-rakupp 4.0.1: differs — `"".rindex("", 1)` is 0 and `:i` is honoured.
+rakupp 4.0.2: differs only in refusing a Regex needle, which Rakudo has no candidate for; the positions, the empty needle and the past-the-end Nil match.
 
 ### ST-29  indices                                                 D:yes R:yes V:spec
 A List of every non-overlapping start (`:overlap` steps one character
@@ -557,7 +557,7 @@ after each hit instead); the empty needle is found at every position from
 say "banana".indices("a").raku, " ", "banana".indices("ana").raku, " ", "banana".indices("ana", :overlap).raku, " ", "banana".indices("ana", 2).raku, " ", "aaaa".indices("aa").raku, " ", "aaaa".indices("aa", :overlap).raku, " ", "aaaa".indices("aa", 1).raku, " ", "aaaa".indices("aa", 1, :overlap).raku, " ", "abc".indices("").raku, " ", "abc".indices("", :overlap).raku, " ", "abc".indices("", 2).raku, " ", "abc".indices("", 3).raku, " ", "abc".indices("", 5).raku, " ", "".indices("").raku, " ", "abc".indices("x").raku, " ", "abc".indices("abcd").raku, " ", "abc".indices("a", 5).raku, " ", "abc".indices("b", 3).raku, " ", "abc".indices("c", 2).raku, " ", "abc".indices("b", 1.5).raku, " ", "abc".indices("b", "1").raku, " ", "abc".indices("b").^name, " ", "abc".indices("x").^name, " ", "banAna".indices("a", :i).raku, " ", "tête-à-tête".indices("te", :m).raku, " ", "ÀAàa".indices("a", :i).raku, " ", "ÀAàa".indices("a", :m).raku, " ", "ÀAàa".indices("a", :i, :m).raku, " ", indices("banana", "a", 2).raku, " ", (try 12121.indices(1).raku) // $!.^name, " ", (try "abc".indices(<a b>).raku) // $!.^name
 # rakudo 2026.08: (1, 3, 5) (1,) (1, 3) (3,) (0, 2) (0, 1, 2) (1,) (1, 2) (0, 1, 2, 3) (0, 1, 2, 3) (2, 3) (3,) () (0,) () () () () (2,) (1,) (1,) List List (1, 3, 5) (0, 2, 7, 9) (1, 3) (2, 3) (0, 1, 2, 3) (3, 5) (0, 2, 4) ()
 ```
-rakupp 4.0.1: differs — the empty needle always gives `()`, and Int has no
+rakupp 4.0.2: matches, including the empty needle at every position.
 `indices` (`X::Method::NotFound`).
 
 ### ST-30  contains                                                D:yes R:yes V:spec/quirk
@@ -575,7 +575,7 @@ say "abc".contains("b").raku, " ", "abc".contains("abcd").raku, " ", "abc".conta
 say "abc".contains(/c/).raku, " ", "abc".contains(/bc/).raku, " ", "abc".contains(/:i B/).raku, " ", "abc".contains(/B/, 0).raku, " ", "abc".contains(/c/, 2).raku, " ", "abc".contains(/c/, 3).raku, " ", "abc".contains(/b/, 1).raku, " ", "abc".contains(/b/, 2).raku, " ", "abc".contains(/^/, 0).raku, " ", "abc".contains(/^/, 1).raku, " ", "abc".contains(/^^/).raku, " ", "abc".contains(/$/, 2).raku, " ", "abc".contains(/$/, 3).raku, " ", "abc".contains(/<?>/, 3).raku, " ", "abc".contains(/./, 3).raku, " ", "".contains(/^$/).raku, " ", "".contains(/^$/, 0).raku, " ", "".contains("", 1).raku
 # rakudo 2026.08: Bool::True Bool::True Bool::True Bool::False Bool::True Bool::False Bool::True Bool::False Bool::True Bool::False Bool::True Bool::True Bool::False Bool::False Bool::False Bool::True Bool::False Bool::False
 ```
-rakupp 4.0.1: differs — the empty needle is found past the end
+rakupp 4.0.2: differs — the position rules match; a Callable or a third positional is `X::TypeCheck::Binding::Parameter` where Rakudo says `X::Multi::NoMatch`, and `:ignoremark` is not applied to a Regex needle.
 (`contains("", 4)`), the end-of-string regex cases are True, and a
 type-object needle is `X::TypeCheck::Binding::Parameter`.
 
@@ -612,7 +612,7 @@ either way is `X::Multi::NoMatch`.
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"foobar".substr-eq("bar", 3)}), " ", f({"foobar".substr-eq("barz", 3)}), " ", f({"foobar".substr-eq("foo", 0)}), " ", f({"foobar".substr-eq("foo")}), " ", f({"foobar".substr-eq("FOO", :i)}), " ", f({"foobar".substr-eq("r", 5)}), " ", f({"foobar".substr-eq("bar", 6)}), " ", f({"foobar".substr-eq("bar", 7)}), " ", f({"foobar".substr-eq("bar", 10)}), " ", f({"foobar".substr-eq("", 0)}), " ", f({"foobar".substr-eq("", 6)}), " ", f({"foobar".substr-eq("", 7)}), " ", f({"".substr-eq("", 0)}), " ", f({"".substr-eq("", 1)}), " ", f({"foobar".substr-eq("bar", *-3)}), " ", f({"foobar".substr-eq("bar", { $_ - 3 })}), " ", f({"foobar".substr-eq("BAR", *-3, :i)}), " ", f({"foobar".substr-eq("Bar", 3, :i)}), " ", f({"foobar".substr-eq("bar", 3, :!i)}), " ", f({"cliché".substr-eq("che", 3, :m)}), " ", f({"föobar".substr-eq("fo", :m)}), " ", f({"foobar".substr-eq("oo", 1, :i, :m)}), " ", f({"foobar".substr-eq("bar", 3.9)}), " ", f({"foobar".substr-eq("bar", <3>)}), " ", f({"foobar".substr-eq(<bar>, 3)}), " ", f({342.substr-eq(42, 1)}), " ", f({342.substr-eq(42, "1")}), " ", f({"foobar".substr-eq("bar", 3).^name}), " ", f({"foobar".substr-eq("bar", "x")}), " ", f({"foobar".substr-eq("bar", Int)}), " ", f({"foobar".substr-eq(Str, 3)})
 # rakudo 2026.08: Bool::True Bool::False Bool::True Bool::True Bool::True Bool::True Bool::False Bool::False Bool::False Bool::True Bool::True Bool::False Bool::True Bool::False Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True Bool::True "Bool" T(X::Str::Numeric) T(X::Multi::NoMatch) T(X::Multi::NoMatch)
 ```
-rakupp 4.0.1: differs — a position past the end is an `X::OutOfRange`
+rakupp 4.0.2: differs — the position refusals match; the `:ignorecase` and `:ignoremark` combinations do not.
 instead of False (four cases), `("bar", "x")` and `("bar", Int)` are False
 and `(Str, 3)` is True instead of throwing.
 
@@ -657,7 +657,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcdef".substr(1..3)}), " ", f({"abcdef".substr(1..^3)}), " ", f({"abcdef".substr(0^..^5)}), " ", f({"abcdef".substr(^2)}), " ", f({"abcdef".substr(0..5)}), " ", f({"abcdef".substr(2..*)}), " ", f({"abcdef".substr(2..Inf)}), " ", f({"abcdef".substr(1..*)}), " ", f({"abcdef".substr(2..100)}), " ", f({"abcdef".substr(3..2)}), " ", f({"abcdef".substr(0..-1)}), " ", f({"abcdef".substr(6..6)}), " ", f({"abcdef".substr(6..^6)}), " ", f({"abcdef".substr(2..3.9)}), " ", f({"abcdef".substr(1.9..3)}), " ", f({"abcdef".substr(1..*-1)}), " ", f({"abcdef".substr(*-3..*)}), " ", f({"abcdef".substr(*-3..*-1)}), " ", f({"abcdef".substr(*..*)}), " ", f({"abcdef".substr(*)})
 # rakudo 2026.08: "bcd" "bc" "bcde" "ab" "abcdef" "cdef" "cdef" "bcdef" "cdef" "" "" "" "" "cd" "bcd" "f" T(X::Numeric::CannotConvert) T(X::AdHoc) T(X::AdHoc) T(X::Multi::NoMatch)
 ```
-rakupp 4.0.1: differs — `substr(1, Inf)` and `substr(*-2, Inf)` are `""`,
+rakupp 4.0.2: differs — a start past the end is the Failure it should be, an `Inf` length reaches the end, and a LENGTH callable is handed the length still available (so `{2}` means two characters); the Range and adverb shapes still differ.
 a Range as the length gives `""`, `0..-1` is an `X::OutOfRange`, the
 WhateverCode-range forms return the whole string, and `substr(*)` is `""`.
 
@@ -677,7 +677,7 @@ throws `X::Method::NotFound`; three positionals are `X::Multi::NoMatch`.
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ";" ~ (r.exception.?what // "-") ~ ";" ~ (r.exception.?got // "-") ~ ";" ~ (r.exception.?range // "-") ~ ";" ~ (r.exception.?comment // "-") ~ ")" !! r.raku }; say f({"abc".substr(4)}), " ", f({"abc".substr(4, 1)}), " ", f({"abc".substr(-1)}), " ", f({"abc".substr(-3)}), " ", f({"abc".substr(-4)}), " ", f({"abc".substr(-10)}), " ", f({"abc".substr(*-4, 1)}), " ", f({"abc".substr(*-10)}), " ", f({"abc".substr(-1..2)}), " ", f({"abc".substr(5..6)}), " ", f({"abc".substr(1, -1)}), " ", f({"abc".substr(1, *-5)}), " ", f({"abc".substr(1, NaN)}), " ", f({"abc".substr(1, -Inf)}), " ", f({"abc".substr(1, -2**70)}), " ", f({"abc".substr(2**70)}), " ", f({"abc".substr(Inf)}), " ", f({"abc".substr(NaN)}), " ", f({"abc".substr(-Inf)}), " ", f({"abc".substr("x")}), " ", f({"abc".substr(1, "x")}), " ", f({"abc".substr(Str)}), " ", f({"abc".substr(1, Str)}), " ", f({"abc".substr(Nil)}), " ", f({"abc".substr(/b/)}), " ", f({"abc".substr(/b/, 1)}), " ", f({"abc".substr(1, 2, 3)}), " ", f({substr("abc", -1)})
 # rakudo 2026.08: T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::AdHoc) T(X::AdHoc) T(X::Numeric::CannotConvert) T(X::Numeric::CannotConvert) T(X::Numeric::CannotConvert) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Parameter::InvalidConcreteness) T(X::Parameter::InvalidConcreteness) "abc" T(X::Method::NotFound) T(X::Method::NotFound) T(X::Multi::NoMatch) T(X::OutOfRange)
 ```
-rakupp 4.0.1: differs — a start equal to or past the end is `""` (only
+rakupp 4.0.2: differs — out-of-range starts and lengths are Failures now (`S32-str/substr.t` passes in full); a NaN/huge/non-numeric/type-object argument still reports `X::OutOfRange` where Rakudo separates `X::AdHoc`, `X::Numeric::CannotConvert`, `X::Str::Numeric` and `X::Parameter::InvalidConcreteness`.
 negative starts fail), a NaN or huge length and a non-numeric or
 type-object argument return `""` or the string, a Regex start is accepted,
 and three positionals give `"a"`.
@@ -756,7 +756,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"a1b22c333".comb(/\d+/)}), " ", f({"a1b22c333".comb(/\d+/, 2)}), " ", f({"a1b22c333".comb(/\d+/, :match)}), " ", f({"a1b22c333".comb(/\d+/, 2, :match).elems}), " ", f({"a1b2".comb(/\d/, :!match)}), " ", f({"abc".comb(/(\w)/, :match)[0].^name}), " ", f({"a1b22".comb(/(\d)(\d)/)[0]}), " ", f({"abc".comb(/./, :match)[1].from}), " ", f({"abc".comb(/x/)}), " ", f({"abc".comb(/x/, :match)}), " ", f({"abc".comb(/\w/).^name}), " ", f({"<>[]()".comb(/.<(.)>/)}), " ", f({"aXbXc".comb(/X <( \w /)}), " ", f({"aXbXc".comb(/ \w )> X/)}), " ", f({"abc".comb(/<?>/)}), " ", f({"aaa".comb(/a*/)}), " ", f({"abc".comb(/b*/)}), " ", f({"abc".comb(/^/)}), " ", f({"abc".comb(/$/)}), " ", f({"aaa".comb(/a+?/)}), " ", f({"abcabc".comb(/b|c/)}), " ", f({"abc".comb(/\w/, 0)}), " ", f({"abc".comb(/\w/, -1)}), " ", f({"abc".comb(/\w/, *)}), " ", f({"abc".comb(/\w/, 1.9)}), " ", f({"a1b2".comb(/\d/, "1")}), " ", f({"abc".comb(/\w/, 2**70)}), " ", f({"abc".comb(/\w/, NaN)}), " ", f({"abc".comb(/\w/, "x").eager}), " ", f({"abc".comb(/\w/, Inf, :match).elems}), " ", f({comb(/\w/, "a;b", 5)})
 # rakudo 2026.08: ("1", "22", "333").Seq ("1", "22").Seq (Match.new(:orig("a1b22c333"), :from(1), :pos(2)), Match.new(:orig("a1b22c333"), :from(3), :pos(5)), Match.new(:orig("a1b22c333"), :from(6), :pos(9))).Seq 2 ("1", "2").Seq "Match" "22" 1 ().Seq ().Seq "Seq" (">", "]", ")").Seq ("b", "c").Seq ("a", "b").Seq ("", "", "", "").Seq ("aaa", "").Seq ("", "b", "", "").Seq ("",).Seq ("",).Seq ("a", "a", "a").Seq ("b", "c", "b", "c").Seq ().Seq ().Seq ("a", "b", "c").Seq ("a",).Seq ("1",).Seq T(X::AdHoc) T(X::AdHoc) T(X::AdHoc) 3 ("a", "b").Seq
 ```
-rakupp 4.0.1: differs — Str-pattern combs never overlap but ignore a
+rakupp 4.0.2: differs — the LIMIT is honoured everywhere now (Regex, Str needle and chunk size), with zero and negative meaning none and a NaN/huge/non-numeric one a misuse, and a Callable needle is refused without being called. The Rakudo overlap bug is deliberately not imitated, and a Rat size is still a size rather than a pattern.
 limit of 0 or below (all matches), the Regex form ignores the limit unless
 `:match` is given, and a negative/NaN/non-numeric limit means "all";
 `comb(3, "2")` ignores the Str limit, `comb(3, -1)` gives all chunks,
@@ -1228,7 +1228,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"a".indent(2**62).chars})
 # rakudo 2026.08: T(X::AdHoc)
 ```
-rakupp 4.0.1: differs — U+85 is not a line break, a tab indent gets
+rakupp 4.0.2: matches — including the tab arithmetic, the whitespace-only lines, and the refusals that used to abort the process.
 spaces instead of tabs, a type object or NaN is 0, and Inf or `2**62`
 crash the process ("Internal error").
 
@@ -1250,7 +1250,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 say do { my @w; CONTROL { when CX::Warn { @w.push(.message.lines[0]); .resume } }; my $a = "  a\n b".indent(-2); my $b = "  a\n b".indent(-3); my $c = "  a\n b".indent(*); my $d = "\ta".indent(-9); my $e = "    a".indent(-6); my $g = "a\n\tb".indent(-1); $a.raku ~ " " ~ $b.raku ~ " " ~ $c.raku ~ " " ~ $d.raku ~ " " ~ $e.raku ~ " " ~ $g.raku ~ " | " ~ @w.elems ~ " | " ~ @w.join("/") }
 # rakudo 2026.08: "a\nb" "a\nb" " a\nb" "a" "a" "a\n       b" | 5 | Asked to remove 2 spaces, but the shortest indent is 1 spaces/Asked to remove 3 spaces, but the shortest indent is 1 spaces/Asked to remove 9 spaces, but the shortest indent is 8 spaces/Asked to remove 6 spaces, but the shortest indent is 4 spaces/Asked to remove 1 spaces, but the shortest indent is 0 spaces
 ```
-rakupp 4.0.1: differs — `indent(*)` never removes anything, a tab is
+rakupp 4.0.2: matches — `indent(*)`, the tab columns and the warning. (Roast's indent.t exercises three outdent spellings this sheet did not record, where the column COUNT agrees and the tab/space rendering does not.)
 removed whole whatever the count, whitespace-only lines are kept, there
 is no warning, and `-Inf`/`-2**70` return the string.
 
@@ -1275,7 +1275,7 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ "," ~ (r.exception.?pos // r.exception.?radix // "-") ~ ")" !! r.raku }; say f({"1".parse-base(1)}), " ", f({"1".parse-base(37)}), " ", f({"1".parse-base(0)}), " ", f({"1".parse-base(-2)}), " ", f({"".parse-base(1)}), " ", f({"1".parse-base(2**70)}), " ", f({"".parse-base(2)}), " ", f({"12".parse-base(2)}), " ", f({"abz".parse-base(16)}), " ", f({"0b1".parse-base(2)}), " ", f({"0b1".parse-base(16)}), " ", f({"0x10".parse-base(16)}), " ", f({"1_0".parse-base(10)}), " ", f({" 1".parse-base(10)}), " ", f({"1 ".parse-base(10)}), " ", f({"1e3".parse-base(10)}), " ", f({"1,1".parse-base(10)}), " ", f({"1/2".parse-base(10)}), " ", f({"Inf".parse-base(10)}), " ", f({"NaN".parse-base(36)}), " ", f({"1i".parse-base(36)}), " ", f({"١".parse-base(10)}), " ", f({"Ⅻ".parse-base(10)}), " ", f({"1\x[301]".parse-base(10)}), " ", f({"1.".parse-base(2)}), " ", f({"-1.".parse-base(2)}), " ", f({"0.".parse-base(2)}), " ", f({".".parse-base(2)}), " ", f({"-".parse-base(2)}), " ", f({"+".parse-base(2)}), " ", f({"1.2".parse-base(2)}), " ", f({"1..1".parse-base(2)}), " ", f({"1.1.1".parse-base(2)}), " ", f({"+-1".parse-base(10)}), " ", f({"--1".parse-base(10)}), " ", f({"1-".parse-base(10)})
 # rakudo 2026.08: T(X::Syntax::Number::RadixOutOfRange) T(X::Syntax::Number::RadixOutOfRange) T(X::Syntax::Number::RadixOutOfRange) T(X::Syntax::Number::RadixOutOfRange) T(X::Syntax::Number::RadixOutOfRange) T(X::Syntax::Number::RadixOutOfRange) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) 177 T(X::Str::Numeric) 10 T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) 30191 54 1 T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Str::Numeric)
 ```
-rakupp 4.0.1: differs — U+2212 is refused, the long fraction stays an
+rakupp 4.0.2: differs — `parse-base` reads a Unicode minus and Nd digits from any script now (`S32-str/parse-base.t` passes in full); the radix still accepts a Str or a Rat where Rakudo wants an Int, and a `1e0`-shaped body is read as a Rat.
 exact Rat, a Str/Rat/Num radix is coerced (`10.9` → 10, `16.0` → 16), an
 Int/Str type object and the easter eggs are `X::Syntax::Number::RadixOutOfRange`,
 Arabic-Indic digits are refused, and a trailing dot is accepted.
@@ -1326,7 +1326,7 @@ say "a\0b".raku, " ", "\$\@\%\&\{".raku, " ", "}".raku, " ", "'".raku, " ", "\b\
 say "\x[301]".raku, " ", "\x[301]a".raku, " ", "\x[301]\x[302]".raku, " ", "\x[300]\x[301]".raku, " ", "e\x[301]".raku, " ", "x\x[301]".raku, " ", "\x[E9]\x[301]".raku, " ", "\x[3099]".raku, " ", "\x[093C]".raku, " ", "\x[093F]".raku, " ", "a\x[093F]".raku, " ", "\x[20E3]".raku, " ", "1\x[20E3]".raku, " ", "\x[FE0F]".raku, " ", "\x[2764]\x[FE0F]".raku, " ", "\x[E0100]".raku, " ", "a\x[E0100]".raku, " ", "\x[200D]".raku, " ", "a\x[200D]b".raku, " ", "\x[1F468]\x[200D]\x[1F469]".raku, " ", "\x[1F3FB]".raku, " ", "\x[1F1FA]\x[1F1F8]".raku, " ", "\x[600]".raku, " ", "\x[1160]".raku, " ", "\x[D7B0]".raku
 # rakudo 2026.08: "\x[301]" "\x[301]a" "\x[301,302]" "\x[300,301]" "é" "x́" "é́" "\x[3099]" "\x[93C]" "ि" "aि" "⃣" "1⃣" "️" "❤️" "󠄀" "a󠄀" "‍" "a‍b" "👨‍👩" "🏻" "🇺🇸" "؀" "ᅠ" "ힰ"
 ```
-rakupp 4.0.1: differs — U+85 and U+9F print verbatim, and a leading
+rakupp 4.0.2: matches — C1 controls are hexified and a grapheme that begins with a combining mark is written as its codepoints, comma-joined.
 combining mark is never hexified.
 
 ### ST-63  encode                                                  D:yes R:yes V:spec/bug/quirk
@@ -1414,14 +1414,35 @@ rakupp 4.0.1: differs — no warning, and `Array.indices` does not exist.
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 12 |
 | Rakudo bugs (do not imitate) | 10 — ST-11 allomorph lines, ST-27 rindex past end / list+pos / list+pos recursion, ST-38 comb limit overlap, ST-39 :!count, ST-42 fractional limit and :end, ST-44 zero-width needle hang and Str for regex needles, ST-49 negative :c and bare :c, ST-50 :as and "" :g, ST-54 :ov/:ex accepted, ST-63 encode(Str) hang |
 | quirks (recorded, step two decides) | 18 — ST-12, ST-17, ST-19, ST-21, ST-28, ST-30, ST-31, ST-36, ST-45, ST-47, ST-48, ST-51, ST-55, ST-60, ST-61, ST-63, ST-64, ST-65 |
-| rakupp 4.0.1 differs | 60 |
-| rakupp 4.0.1 matches | 6 — ST-01, ST-03, ST-15, ST-18, ST-22, ST-37 |
+| rakupp 4.0.1 differs (before implementation) | 60 |
+| rakupp 4.0.1 matches (before implementation) | 6 — ST-01, ST-03, ST-15, ST-18, ST-22, ST-37 |
+| **rakupp 4.0.2 matches** | **10** — ST-01, ST-03, ST-05, ST-06, ST-15, ST-18, ST-22, ST-58, ST-59, ST-62 |
+| rakupp 4.0.2 differs | 56 — many of them by one field of a forty-field probe |
 
-Three rakupp defects surfaced that are not Str semantics but were found
-here and should not be lost: `fail` inside a `subst` replacement block
-escapes the surrounding `try` (ST-51), `"a".indent(Inf)` and
-`"a".indent(2**62)` abort the process with an internal error (ST-58), and
-`"ab" x 1e10` tries to allocate the string instead of refusing (ST-14).
+Implementation began 2026-09-18 from this sheet alone, with the Homebrew
+Rakudo `v2026.08` as oracle and Roast as the gate; it is PARTIAL, and each
+item's own line says where it stands. Of the 118 probes above, 11 matched
+Rakudo before and **22** match now; of the 66 items, 6 matched fully and
+**10** do. The Roast files this sheet names go **61 fully-passing → 67** of
+109, 50,954 assertions → 51,918, with no file lost; the whole suite goes
+**729 → 735** files. `S32-str/val.t` alone went from 913 failing
+assertions to none, because one gap — five forms missing from the numeric
+grammar — accounted for 875 of them. Also green now: `contains.t`,
+`indices.t`, `parse-base.t`, `rindex.t` and `substr.t`.
+
+Two of the three rakupp defects this sheet surfaced are fixed:
+`"a".indent(Inf)` and `"a".indent(2**62)` refuse instead of aborting the
+process (ST-58). Still open: `fail` inside a `subst` replacement block
+escapes the surrounding `try` (ST-51), and `"ab" x 1e10` tries to allocate
+the string instead of refusing (ST-14).
+
+Where the remaining work is, in the order it would pay off: the allomorph
+rules (ST-09 to ST-11, and the `.WHAT`/`cmp` of an allomorph); `substr-rw`'s
+Proxy, which is 23 assertions in one file and needs the CONTAINER at the
+call site (ST-36); the exception TYPES the argument checks raise, which are
+one `X::OutOfRange` here where Rakudo separates four (ST-35, ST-60); `split`
+with a limit and a needle list (ST-42, ST-44); the `subst` adverb family
+(ST-46 to ST-54); `trans` (ST-55 to ST-57); and `encode` (ST-63).
 
 ## Method (how this sheet was produced)
 

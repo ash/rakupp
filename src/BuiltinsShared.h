@@ -139,6 +139,10 @@ std::string joinValues(const ValueList& items, const std::string& sep);
 Value makeInfArray(long long start);
 std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
+// A negative (or int64-overflowing) START POSITION for a string search is out of
+// range: a returned X::OutOfRange Failure naming the method (Str sheet ST-27).
+Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
+                    const std::string& subject);
 std::vector<uint32_t> utf8cp(const std::string& s);
 // Leading ASCII bytes of `s`, capped at `limit`; over such a run a codepoint
 // index and a byte index are the same thing, so utf8cp() can be skipped.

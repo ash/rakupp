@@ -1524,8 +1524,26 @@ void rejectNulPath(const std::string& path) {
             "Cannot use null character (U+0000) as part of the path"};
 }
 static std::string rakuStrLit(const std::string& s) {
+    static const char* H = "0123456789ABCDEF";
+    auto hex = [&](uint32_t cp) {
+        std::string r; bool lead = false;
+        for (int sh = 28; sh >= 0; sh -= 4) {
+            int d = (cp >> sh) & 0xF;
+            if (d || lead || sh == 0) { r += H[d]; lead = true; }
+        }
+        return r;
+    };
+    // ASCII is a byte walk; anything above it has to be read as CODEPOINTS,
+    // because two of the rules are not byte-shaped: a C1 control (U+80..U+9F)
+    // is hexified like a C0 one, and a GRAPHEME that begins with a combining
+    // mark is written as its codepoints, comma-joined, so that it reads back
+    // (Str sheet ST-62). Everything else — a spacing mark, a keycap, a
+    // variation selector, ZWJ, a tag, a jamo filler — has combining class 0
+    // and goes out verbatim, which is exactly the line Rakudo draws.
+    bool high = false;
+    for (unsigned char c : s) if (c >= 0x80) { high = true; break; }
     std::string o = "\"";
-    for (unsigned char c : s) {
+    auto ascii1 = [&](unsigned char c) {
         if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
         else if (c == '\n') o += "\\n";
         else if (c == '\t') o += "\\t";
@@ -1536,14 +1554,26 @@ static std::string rakuStrLit(const std::string& s) {
         // any other C0 control (and DEL) has no literal spelling — it went out
         // RAW, so `"\x[3]".raku` printed a string that looked empty and could
         // not be read back. Rakudo's form is `\x[1B]`, hex digits upper-case.
-        else if (c < 0x20 || c == 0x7F) {
-            static const char* H = "0123456789ABCDEF";
-            o += "\\x[";
-            if (c >= 0x10) o += H[c >> 4];
-            o += H[c & 0xF];
-            o += ']';
-        }
+        else if (c < 0x20 || c == 0x7F) { o += "\\x["; o += hex(c); o += ']'; }
         else o += (char)c;
+    };
+    if (!high) { for (unsigned char c : s) ascii1(c); return o + "\""; }
+    auto cps = utf8cp(s);
+    auto starts = uniGraphemeStarts(cps);
+    for (size_t g = 0; g < starts.size(); g++) {
+        size_t from = starts[g], to = g + 1 < starts.size() ? starts[g + 1] : cps.size();
+        if (to - from == 1 && cps[from] < 0x80) { ascii1((unsigned char)cps[from]); continue; }
+        if (uniCombiningClass(cps[from]) > 0) {
+            o += "\\x[";
+            for (size_t k = from; k < to; k++) { if (k > from) o += ','; o += hex(cps[k]); }
+            o += ']';
+            continue;
+        }
+        for (size_t k = from; k < to; k++) {
+            if (cps[k] >= 0x80 && cps[k] <= 0x9F) { o += "\\x["; o += hex(cps[k]); o += ']'; }
+            else if (cps[k] < 0x80) ascii1((unsigned char)cps[k]);
+            else o += cpToU8(cps[k]);
+        }
     }
     return o + "\"";
 }
@@ -1689,7 +1719,15 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
         }
         case VT::Regex:
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
-        case VT::Complex: return "<" + v.gist() + ">";
+        case VT::Complex: {
+            // An INFINITE or NaN imaginary part needs the `\i` spelling to read
+            // back: `Infi` is a word, `Inf\i` is the number (Str sheet ST-06).
+            std::string g = v.gist();
+            const double im = v.im();
+            if ((std::isinf(im) || std::isnan(im)) && !g.empty() && g.back() == 'i')
+                g.insert(g.size() - 1, "\\");
+            return "<" + g + ">";
+        }
         case VT::Range:
             if (v.ofType() == "Str") // Str range: quoted endpoint form
                 return "\"" + cpToU8((uint32_t)v.rFrom()) + "\"" + (v.rExFrom() ? "^" : "") + ".." +
@@ -12098,6 +12136,13 @@ void Interpreter::registerBuiltins() {
                 // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
                 if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
                 else if (a[0].t == VT::Str) I.sinkValue(I.evalString(a[0].s, /*mainlinePH=*/true));
+                // …and anything else has ALREADY been evaluated, so what arrived
+                // is whatever it produced: a Failure that has not detonated yet
+                // is the throw this is asking about. Roast calls
+                // `throws-like rindex(…), X::OutOfRange` in exactly that shape,
+                // where Rakudo's own throws-like reaches the death by
+                // stringifying the argument (Str sheet ST-27).
+                else I.sinkValue(a[0]);
             } catch (RakuError& e) { threw = true; if (strict) thrown = I.exceptionFor(e); }
         }
         if (strict && threw && a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
