@@ -1973,12 +1973,9 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
     if (mt.t == VT::Array && mt.arr() &&
         (mt.enumName == "any" || mt.enumName == "all" ||
          mt.enumName == "one" || mt.enumName == "none")) {
-        size_t hits = 0;
-        for (auto& e : *mt.arr()) if (matcherAccepts(I, v, e)) hits++;
-        if (mt.enumName == "any")  return hits > 0;
-        if (mt.enumName == "all")  return hits == mt.arr()->size();
-        if (mt.enumName == "one")  return hits == 1;
-        return hits == 0;                                     // none
+        JunctionCollapse jc(mt.enumName);          // short-circuits; see Value.h
+        for (auto& e : *mt.arr()) { jc.feed(matcherAccepts(I, v, e)); if (jc.done()) break; }
+        return jc.verdict();
     }
     if (mt.t == VT::Code) return predAnswerTruthy(I, I.callCallable(const_cast<Value&>(mt), ValueList{v}), v);
     // A matcher OBJECT (one whose class defines ACCEPTS) is what `.grep`/`.first`
@@ -2757,16 +2754,14 @@ bool deepEq(const Value& a, const Value& b) {
                (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
     };
     if (junct(b)) {
-        int t = 0;
-        for (auto& e : *b.arr()) if (deepEq(a, e)) t++;
-        return b.enumName == "any" ? t > 0 : b.enumName == "all" ? t == (int)b.arr()->size()
-             : b.enumName == "one" ? t == 1 : t == 0;
+        JunctionCollapse jc(b.enumName);           // short-circuits; see Value.h
+        for (auto& e : *b.arr()) { jc.feed(deepEq(a, e)); if (jc.done()) break; }
+        return jc.verdict();
     }
     if (junct(a)) {
-        int t = 0;
-        for (auto& e : *a.arr()) if (deepEq(e, b)) t++;
-        return a.enumName == "any" ? t > 0 : a.enumName == "all" ? t == (int)a.arr()->size()
-             : a.enumName == "one" ? t == 1 : t == 0;
+        JunctionCollapse jc(a.enumName);
+        for (auto& e : *a.arr()) { jc.feed(deepEq(e, b)); if (jc.done()) break; }
+        return jc.verdict();
     }
     if (a.t == VT::Array && b.t == VT::Array) {
         if (a.arr()->size() != b.arr()->size()) return false;
@@ -11762,19 +11757,17 @@ void Interpreter::registerBuiltins() {
         };
         if (exp.t == VT::Array && exp.arr() &&
             (exp.enumName == "any" || exp.enumName == "all" || exp.enumName == "one" || exp.enumName == "none")) {
-            int t = 0, total = (int)exp.arr()->size();
-            for (auto& br : *exp.arr()) if (scalarEq(got, br)) t++;
-            return exp.enumName == "any" ? t > 0 : exp.enumName == "all" ? t == total
-                 : exp.enumName == "one" ? t == 1 : t == 0;
+            JunctionCollapse jc(exp.enumName);     // short-circuits; see Value.h
+            for (auto& br : *exp.arr()) { jc.feed(scalarEq(got, br)); if (jc.done()) break; }
+            return jc.verdict();
         }
         // …and a junction GOT autothreads the same way: `is any(@names), 'a'`
         // collapses per the junction's kind (HTTP::UserAgent's header tests)
         if (got.t == VT::Array && got.arr() &&
             (got.enumName == "any" || got.enumName == "all" || got.enumName == "one" || got.enumName == "none")) {
-            int t = 0, total = (int)got.arr()->size();
-            for (auto& br : *got.arr()) if (scalarEq(br, exp)) t++;
-            return got.enumName == "any" ? t > 0 : got.enumName == "all" ? t == total
-                 : got.enumName == "one" ? t == 1 : t == 0;
+            JunctionCollapse jc(got.enumName);
+            for (auto& br : *got.arr()) { jc.feed(scalarEq(br, exp)); if (jc.done()) break; }
+            return jc.verdict();
         }
         return scalarEq(got, exp);
     };

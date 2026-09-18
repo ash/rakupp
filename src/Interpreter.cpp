@@ -15098,11 +15098,10 @@ bool Interpreter::boolify(const Value& v) {
         if (Value* br = v.obj()->cls->findMethod("Bridge")) // a Real bridges to its numeric value
             return invokeMethod(*br, v, {}).truthy();
     }
-    if (isJunction(v)) { // collapse a junction to Bool per its kind
-        int t = 0, total = 0;
-        for (auto& e : *v.arr()) { total++; if (boolify(e)) t++; }
-        return v.enumName == "any" ? t > 0 : v.enumName == "all" ? t == total
-             : v.enumName == "one" ? t == 1 : t == 0;
+    if (isJunction(v)) { // collapse a junction to Bool per its kind, short-circuiting
+        JunctionCollapse jc(v.enumName);            // see Value.h
+        for (auto& e : *v.arr()) { jc.feed(boolify(e)); if (jc.done()) break; }
+        return jc.verdict();
     }
     // A TYPE OBJECT with a `Bool` method of its own answers that method, exactly
     // as an instance does: `class C { method Bool { True } }; so C` is True in
@@ -25175,27 +25174,26 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // negation applies to the COLLAPSED verdict: `2 !~~ (Int|Str)` is
             // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
             // any(False, True) = True
-            int t = 0, total = 0;
+            JunctionCollapse jc(j.enumName);        // short-circuits; see Value.h
             for (auto& e : *j.arr()) { // each eigenstate match inherits the value-smartmatch rule
-                total++;
                 if (valueMatch) Interpreter::valueSmartmatch_ = true;
-                if (applyArith("~~", l, e).truthy()) t++;
+                jc.feed(applyArith("~~", l, e).truthy());
+                if (jc.done()) break;
             }
-            bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
+            bool res = jc.verdict();
             return Value::boolean(op == "~~" ? res : !res);
         }
         // A junction TOPIC collapses too — see the evalBinary arm for why. It
         // threads OUTSIDE a junction matcher, and a regex matcher keeps its
         // junction of Matches.
         if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
-            int t = 0, total = 0;
+            JunctionCollapse jc(l.enumName);        // short-circuits; see Value.h
             for (auto& e : *l.arr()) {
-                total++;
                 if (valueMatch) Interpreter::valueSmartmatch_ = true;
-                if (applyArith("~~", e, r).truthy()) t++;
+                jc.feed(applyArith("~~", e, r).truthy());
+                if (jc.done()) break;
             }
-            bool res = l.enumName == "any" ? t > 0 : l.enumName == "all" ? t == total
-                     : l.enumName == "one" ? t == 1 : t == 0;
+            bool res = jc.verdict();
             return Value::boolean(op == "~~" ? res : !res);
         }
         Value out = Value::array(); out.enumName = j.enumName;
@@ -30615,18 +30613,17 @@ Value Interpreter::evalBinary(Binary* b) {
         // A REGEX matcher is the exception: there Rakudo hands back the junction
         // of Match objects rather than a verdict.
         if (isJunction(lTopic) && r.t != VT::Regex && b->lhs->kind != NK::RegexLit) {
-            int t = 0, total = 0;
+            JunctionCollapse jc(lTopic.enumName);   // short-circuits; see Value.h
             for (auto& e : *lTopic.arr()) {
-                total++;
                 // the same matcher rules the eigenstate loop below uses, with the
                 // roles the other way round: one matcher, many topics
                 bool m = r.t == VT::Code ? boolify(callCallable(r, ValueList{e}))
                        : (r.t == VT::Pair && e.hashKind == "IO" && !r.s.empty()) ? fileTest(r)
                        : applyArith("~~", e, r).truthy();
-                if (m) t++;
+                jc.feed(m);
+                if (jc.done()) break;
             }
-            bool res = lTopic.enumName == "any" ? t > 0 : lTopic.enumName == "all" ? t == total
-                     : lTopic.enumName == "one" ? t == 1 : t == 0;
+            bool res = jc.verdict();
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (isJunction(r)) {
@@ -30651,9 +30648,8 @@ Value Interpreter::evalBinary(Binary* b) {
             }
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)
-            int t = 0, total = 0;
+            JunctionCollapse jc(r.enumName);        // short-circuits; see Value.h
             for (auto& e : *r.arr()) {
-                total++;
                 bool m;
                 if (e.t == VT::Regex) m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); // &e: an interpolating eigenstate resolves vars from ITS captured env
                 else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
@@ -30662,10 +30658,10 @@ Value Interpreter::evalBinary(Binary* b) {
                 // False for every one of them, so the whole junction was False.
                 else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
                 else m = applyArith("~~", lTopic, e).truthy();
-                if (m) t++;
+                jc.feed(m);
+                if (jc.done()) break;
             }
-            bool res = r.enumName == "any" ? t > 0 : r.enumName == "all" ? t == total
-                     : r.enumName == "one" ? t == 1 : t == 0;
+            bool res = jc.verdict();
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Regex) {

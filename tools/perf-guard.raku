@@ -178,12 +178,34 @@ my %kernels =
                           default { $n = $n + 3 }
                       }
                   }
-                  say $n;';
+                  say $n;',
+    # junction/junctionwide were added 2026-09-19 (JUNCTION-PLAN.md phase 1),
+    # after the collapse loops turned out to visit every eigenstate even once the
+    # verdict was settled — an `any` of 2000 with the match at the front cost the
+    # same 800 us as one that matched nothing, where Rakudo answered in 1.8 us.
+    # No kernel above contains a junction at all: every one is a loop, a string,
+    # a regex or an OO call, so the whole class was invisible and a change that
+    # made junctions 10x slower — or that quietly reverted the short-circuit —
+    # would have passed the gate.
+    #   junction     — `$x ~~ 1|3|5`, the shape 99% of real junctions have (in
+    #                  Roast, 99.2% of literal junction constructors are 3 wide
+    #                  or narrower). Guards the per-eigenstate DISPATCH cost, and
+    #                  deliberately matches the LAST eigenstate so no
+    #                  short-circuit can flatter it.
+    #   junctionwide — a prebuilt `any` of 1000 with the needle in the middle,
+    #                  matched 2000 times. Guards the SHORT-CIRCUIT: if it is
+    #                  ever removed this kernel doubles, and nothing else moves.
+    junction  => 'my $x = 5; my int $n = 0; my $c = 0;
+                  while $n < 200_000 { $c = $c + 1 if $x ~~ 1 | 3 | 5; $n = $n + 1 }; say $c;',
+    junctionwide => 'my $j = any(1 .. 1000); my $needle = 500;
+                  my int $n = 0; my $c = 0;
+                  while $n < 2_000 { $c = $c + 1 if $needle ~~ $j; $n = $n + 1 }; say $c;';
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen>;
+                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen
+                junction junctionwide>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as

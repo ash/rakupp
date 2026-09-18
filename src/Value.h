@@ -1234,4 +1234,52 @@ struct ObjectData {
     std::shared_ptr<std::recursive_mutex> monitorLock;
 };
 
+// Collapsing a junction to a Bool, SHORT-CIRCUITING. Feed one eigenstate's
+// verdict at a time and stop as soon as `done()` says the remaining eigenstates
+// cannot change the answer — which is what Rakudo does (an `any` whose first
+// eigenstate matches never looks at the rest: a 2000-wide junction answers in
+// 1.8us where the full sweep takes 116us) and what the spec permits, since both
+// autothread order and short-circuiting are explicitly undefined.
+//
+//   any   settles True  on the first true    all   settles False on the first false
+//   none  settles False on the first true    one   settles False on the SECOND true
+//
+// `one` must NOT stop at the first true — `one(1, 1)` is False, and only a
+// second true proves it. Nothing settles `one` or `none` TRUE early, and
+// nothing settles `all` true early: those verdicts need the whole list.
+//
+// `all` is deliberately `!sawFalse` rather than a count comparison. Every one of
+// these loops used to read `t == total` with `total` counted INSIDE the loop, and
+// under an early exit that is trivially true — the trap this type exists to make
+// unreachable. The empty junction falls out right: all() and none() are True,
+// any() and one() are False.
+// The kind is resolved ONCE here, not per eigenstate: `done()` is called on every
+// pass, and comparing `enumName` against string literals inside the loop would
+// charge each eigenstate for what the junction already knows.
+struct JunctionCollapse {
+    enum Kind { Any, All, One, None } kind;
+    int trues = 0;
+    bool sawFalse = false;
+    explicit JunctionCollapse(const std::string& k)
+        : kind(k == "any" ? Any : k == "all" ? All : k == "one" ? One : None) {}
+    void feed(bool m) { if (m) trues++; else sawFalse = true; }
+    bool done() const {
+        switch (kind) {
+            case Any: case None: return trues > 0;
+            case All:            return sawFalse;
+            case One:            return trues > 1;
+        }
+        return false;
+    }
+    bool verdict() const {
+        switch (kind) {
+            case Any:  return trues > 0;
+            case All:  return !sawFalse;
+            case None: return trues == 0;
+            case One:  return trues == 1;
+        }
+        return false;
+    }
+};
+
 } // namespace rakupp

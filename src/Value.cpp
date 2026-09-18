@@ -114,10 +114,9 @@ bool Value::truthy() const {
             // into PRESERVED junctions, every truthiness site must collapse
             if (arr() && (enumName == "any" || enumName == "all" ||
                         enumName == "one" || enumName == "none")) {
-                int t2 = 0, total = 0;
-                for (auto& e : *arr()) { total++; if (e.truthy()) t2++; }
-                return enumName == "any" ? t2 > 0 : enumName == "all" ? t2 == total
-                     : enumName == "one" ? t2 == 1 : t2 == 0;
+                JunctionCollapse jc(enumName);      // short-circuits; see Value.h
+                for (auto& e : *arr()) { jc.feed(e.truthy()); if (jc.done()) break; }
+                return jc.verdict();
             }
             return arr() && !arr()->empty();
         case VT::Hash:
