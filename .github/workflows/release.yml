@@ -247,6 +247,66 @@ jobs:
         with:
           arch: x64
 
+      # The export table, and the import library that follows from it. This
+      # runs HERE, right after the developer environment that puts dumpbin on
+      # PATH and before every gate that needs the result, because the first
+      # run of it sat after the bindings gate and never executed at all.
+      #
+      # What is already known, from that bindings gate: librakupp.dll loads and
+      # then answers `AttributeError: function 'rk_new' not found`, and no
+      # librakupp.lib is produced beside it. The DLL exports NOTHING, so MSVC
+      # emits no import library, so nothing on Windows -- ctypes, bun:ffi, a
+      # C++ host, an extension -- can use it. That has been true of every
+      # Windows release; CMake skips a missing import library's install rule in
+      # silence, and no gate here had ever opened the DLL.
+      #
+      # rakupp_ext.h marks the rk_* surface __declspec(dllexport) under
+      # RAKUPP_BUILDING, and rakupp_shared is built with that definition, so
+      # the question this answers is which half is not holding up its end:
+      # /directives on the object file shows whether the COMPILER emitted the
+      # export records, and /exports on the DLL shows whether the LINKER kept
+      # them. One of those two is empty and the log now says which.
+      - name: Export surface + import library (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          Write-Host "--- .lib produced beside the DLL"
+          Get-ChildItem build\Release\*.lib -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ("    {0,-28} {1}" -f $_.Name, $_.Length) }
+
+          Write-Host "--- does the COMPILER emit export records into the object?"
+          $obj = Get-ChildItem -Recurse -Filter EmbedApi.obj build -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match 'rakupp_shared' } | Select-Object -First 1
+          if ($obj) {
+            Write-Host "    $($obj.FullName)"
+            dumpbin /directives $obj.FullName > directives.txt
+            $d = @(Select-String -Path directives.txt -Pattern '/EXPORT:rk_')
+            Write-Host "    /EXPORT:rk_* directives: $($d.Count)"
+            $d | Select-Object -First 5 | ForEach-Object { Write-Host "      $($_.Line.Trim())" }
+          } else {
+            Write-Host "    EmbedApi.obj not found under build\ (searched rakupp_shared dirs)"
+          }
+
+          Write-Host "--- does the LINKER keep them in the image?"
+          $bad = @()
+          foreach ($t in @(
+              @{ image = "build\Release\librakupp.dll"; implib = "build\Release\librakupp.lib" },
+              @{ image = "build\Release\rakupp.exe";    implib = "build\Release\rakupp.lib"    })) {
+            if (-not (Test-Path $t.image)) { Write-Host "    $($t.image) absent"; continue }
+            dumpbin /exports $t.image > exports.txt
+            # @(...) so an empty result still answers .Count rather than $null
+            $n = @(Select-String -Path exports.txt -Pattern 'rk_[a-z_]+').Count
+            Write-Host "    $($t.image): $n rk_* exports"
+            if ($n -lt 1) { $bad += "$($t.image) exports no rk_* symbol" }
+            if (Test-Path $t.implib) { Write-Host "    ok       $($t.implib)" }
+            else { Write-Host "    MISSING  $($t.implib)"; $bad += "$($t.implib) was never produced" }
+          }
+          if ($bad.Count -gt 0) {
+            foreach ($b in $bad) { Write-Host "FAIL: $b" }
+            Write-Error "the Windows export surface is empty: nothing here can be loaded or linked"
+            exit 1
+          }
+
       - name: Smoke test --exe (Windows, MSVC)
         if: runner.os == 'Windows' && matrix.mingw != true
         shell: pwsh
@@ -486,59 +546,6 @@ jobs:
           $out = .\dist-native.exe | Out-String
           Write-Host "got: [$out]"
           if ($out.Trim() -ne "42") { exit 1 }
-
-      # The export table, and the import library that follows from it.
-      # rakupp_ext.h marks the rk_* C ABI __declspec(dllexport) under
-      # RAKUPP_BUILDING, which both rakupp_rt and rakupp_shared are built with,
-      # so librakupp.dll and rakupp.exe should each carry an export table --
-      # and MSVC emits an import library for anything that exports. That
-      # import library is the only way a C++ host links against either one,
-      # and it is what the C++ leg of tools/bindings-smoke.raku looks for
-      # before it will run on this platform.
-      #
-      # The v4.0.1 layout shipped bin/librakupp.dll and bin/rakupp.exe with NO
-      # lib/librakupp.lib and no lib/rakupp.lib, while every genuine static
-      # archive installed beside them. CMake marks an import library's install
-      # rule OPTIONAL, because a DLL that exports nothing has none, so a
-      # missing one is skipped in silence -- which is why a release shipped
-      # for months with nothing on Windows able to link against it, and why
-      # this step reads the facts back rather than trusting the build.
-      - name: Export surface + import library (Windows, MSVC)
-        if: runner.os == 'Windows' && matrix.mingw != true
-        shell: pwsh
-        run: |
-          Write-Host "--- .lib produced in the build tree"
-          Get-ChildItem build\Release\*.lib -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host ("    {0,-28} {1}" -f $_.Name, $_.Length) }
-          Write-Host "--- .lib that reached the install prefix"
-          Get-ChildItem dist\rakupp\lib\*.lib -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host ("    {0,-28} {1}" -f $_.Name, $_.Length) }
-
-          $bad = @()
-          foreach ($t in @(
-              @{ image = "build\Release\librakupp.dll"; implib = "librakupp.lib" },
-              @{ image = "build\Release\rakupp.exe";    implib = "rakupp.lib"    })) {
-            $img = $t.image
-            dumpbin /exports $img > exports.txt
-            # @(...) so an empty result still answers .Count rather than $null
-            $n = @(Select-String -Path exports.txt -Pattern 'rk_[a-z_]+').Count
-            Write-Host "--- $img exports $n rk_* symbols"
-            if ($n -lt 1) {
-              Get-Content exports.txt | Select-Object -First 30
-              $bad += "$img exports no rk_* symbol"
-              continue
-            }
-            foreach ($d in @("build\Release", "dist\rakupp\lib")) {
-              $lib = Join-Path $d $t.implib
-              if (Test-Path $lib) { Write-Host "    ok       $lib" }
-              else { Write-Host "    MISSING  $lib"; $bad += "$lib is missing" }
-            }
-          }
-          if ($bad.Count -gt 0) {
-            foreach ($b in $bad) { Write-Host "FAIL: $b" }
-            Write-Error "the Windows export surface is incomplete: nothing here can be linked against"
-            exit 1
-          }
 
       - name: Smoke test --exe from install layout (Windows, MinGW-w64)
         if: matrix.mingw == true
