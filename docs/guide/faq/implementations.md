@@ -31,8 +31,13 @@ and the code generator walk. There is no bytecode and no VM: the interpreter
 walks the tree directly. What it has instead is **four output modes** — interpret,
 `--bundle` (embed the source), `--aot` (embed the rebuilt tree), and `--exe`,
 which transpiles the program to C++ and links a native binary with no interpreter
-inside it. Memory is `shared_ptr` reference counting with no collector. See
-[ARCHITECTURE.md](../../internals/ARCHITECTURE.md).
+inside it. Memory is `shared_ptr` reference counting with no collector. The
+module manager is built in as well: `rakupp install` resolves against the same
+ecosystem index zef uses and writes into the same store, so a distribution put
+there by either tool is visible to both engines, and getting one does not need
+zef or a Rakudo to run it. See
+[ARCHITECTURE.md](../../internals/ARCHITECTURE.md) and
+[MODULES.md](../MODULES.md).
 
 **mutsu** is a Raku implementation in Rust, started in February 2026 and
 developed at a high tempo. It parses to an AST, compiles that to bytecode
