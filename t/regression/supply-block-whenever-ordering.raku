@@ -209,6 +209,69 @@ check ((try react { whenever Promise.broken("bad") { } }) // $!.message), 'bad',
     check ((try react { whenever $c { } }) // $!.message), 'cf', 'a failed Channel is a quit';
 }
 
+# --- S-57 over a Promise source: a body that dies still quits ---------------
+# Every row above that dies inside a whenever uses a SUPPLY source, and those
+# worked. Over a PROMISE source the death was swallowed whole — no emit, no
+# done, no quit, nothing on stderr — and the activation was never released, so
+# the supply hung for ever. That is the shape Cro raises an error status in
+# (`die X::Cro::HTTP::Error::Client` inside `whenever` over the response
+# Promise), so any 4xx/5xx blocked `await Cro::HTTP::Client.get($url)` instead
+# of throwing. Four branches carried the same gap: the supply and react timer
+# workers, the supply one-shot, and the react async registration.
+check ((try react { whenever Promise.kept(1) { die "in-whenever" } }) // $!.message),
+      'in-whenever', 'a die over a kept Promise ends the react';
+check ((try react { whenever Promise.in(0.01) { die "in-whenever" } }) // $!.message),
+      'in-whenever', 'a die over a timer Promise ends the react';
+check ((try react { whenever start { 7 } { die "in-whenever" } }) // $!.message),
+      'in-whenever', 'a die over a start Promise ends the react';
+{
+    my $p = Promise(supply { whenever Promise.kept(1) { die "in-whenever" } });
+    await Promise.anyof($p, Promise.in(10));
+    check ($p.status ~~ Broken ?? $p.cause.message !! $p.status.gist), 'in-whenever',
+          'Promise(supply {…}) breaks instead of staying Planned';
+}
+{
+    my @o;
+    my $d = Promise.new;
+    (supply { whenever Promise.in(0.01) { emit 1; die "after-emit" } })
+        .tap({ @o.push($_) },
+             quit => { @o.push('quit:' ~ .message); $d.keep unless $d },
+             done => { @o.push('done'); $d.keep unless $d });
+    await Promise.anyof($d, Promise.in(10));
+    check @o, [1, 'quit:after-emit'], 'what was emitted stands, and the quit follows it';
+}
+{
+    my @o;
+    my $d = Promise.new;
+    (supply { whenever Promise.in(0.01) { CATCH { default { @o.push('caught') } }; die "handled" } })
+        .tap({;}, quit => { @o.push('quit:' ~ .message); $d.keep unless $d },
+                  done => { @o.push('done'); $d.keep unless $d });
+    await Promise.anyof($d, Promise.in(10));
+    check @o, ['caught', 'done'], 'a CATCH inside the body still consumes the death';
+}
+
+# S-57's other half over a Promise source: only a QUIT phaser that MATCHES
+# consumes the break. Merely HAVING one swallowed it, so Cro's redirect arm —
+# a bare `QUIT { $request-log.end }` — dropped the quit and left the supply
+# unfinished even once a dying body quit correctly; and with no phaser at all a
+# `done` still followed the quit, which S-06 forbids.
+sub quit-rows(&mk) {
+    my @o; my $d = Promise.new;
+    mk().tap({ @o.push("emit:$_") },
+             quit => { @o.push('quit:' ~ .message); $d.keep unless $d },
+             done => { @o.push('done');            $d.keep unless $d });
+    await Promise.anyof($d, Promise.in(10));
+    @o
+}
+check quit-rows({ supply { whenever Promise.broken("bad") { QUIT { my $x = 1 } } } }), ['quit:bad'],
+      'a bare QUIT phaser runs and the break still reaches the tapper';
+check quit-rows({ supply { whenever Promise.broken("bad") { } } }), ['quit:bad'],
+      'a break with no QUIT phaser quits once, with no done after it';
+check quit-rows({ supply { whenever Promise.broken("bad") { QUIT { default { } } } } }), ['done'],
+      'a matching default consumes the break and the whenever counts as done';
+check ((try react { whenever Promise.broken("bad") { QUIT { my $x = 1 } } }) // $!.message), 'bad',
+      'the same rule inside react';
+
 # --- S-61  closing the tap of a supply block stops everything ---------------
 {
     my $s = Supplier.new;

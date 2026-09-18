@@ -8894,6 +8894,26 @@ static Value causeException(Interpreter& I, const Value& cause, const std::strin
     return I.exceptionFor(RakuError{Value::typeObj("X::AdHoc"), m, RakuError::NoCapture{}});
 }
 
+// The readable text of a broken Promise's cause. When the cause is a real
+// exception object, its OWN `.message` (or `.Str`) is authoritative — the same
+// accessors `die` consults — and it beats the string stored alongside it, which
+// is only ever that object's gist. Reporting the stored one is why an uncaught
+// `await` on a broken Promise said `X::Cro::HTTP::Error::Client<…>` where the
+// class's own message() says "Server responded with 404 Not Found". A cause
+// that is a plain string (`$p.break("text")`) has no accessors and keeps it.
+static std::string causeMessageOf(Interpreter& I, const Value& cause, const std::string& stored) {
+    if (cause.t == VT::Object && cause.obj()) {
+        for (const char* acc : {"message", "Str"}) {
+            try {
+                ValueList none;
+                Value m = I.methodCall(cause, acc, none);
+                if (m.t == VT::Str && !m.s.empty()) return m.s.str();
+            } catch (...) {}
+        }
+    }
+    return stored.empty() ? std::string("Promise broken") : stored;
+}
+
 void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     if (!ctx || ctx->doneFired || ctx->done) return;
     if (!ctx->blockDone || ctx->pending > 0) return;
@@ -9239,7 +9259,24 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     if (secs < 0) secs = 0;
     Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
         // shutdown mid-delay: release the pending hold, but never run the block
-        if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) { ValueList one{Value::boolean(true)}; try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
+        if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) {
+            ValueList one{Value::boolean(true)};
+            try { I2.callCallable(blk, one); }
+            catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+            catch (RakuError& e) {
+                // S-57, as in the `whenever` Promise arm: a body that dies ends the
+                // supply and reaches the TAPPER's quit handler. Without this the
+                // throw escaped the worker's catch(...) below and the pending hold
+                // was never released, so the supply hung instead of quitting.
+                Value ex = I2.exceptionFor(e);
+                if (ctx->quitCb.t == VT::Code) {
+                    ValueList qa{ex};
+                    try { I2.callCallable(ctx->quitCb, qa); } catch (...) {}
+                }
+                ctx->done = true;
+                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+            }
+        }
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
         return Value::any();
@@ -9573,7 +9610,20 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
             // receives that result — it used to be called with no argument, so
             // `$_` was Any.
             ValueList one{Value::boolean(true)};
-            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
+            try { self->callCallable(blk, one); }
+            catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+            catch (RakuError& e) {
+                // a body that dies ends the react and rethrows at the `react`,
+                // the same way a broken source Promise does. Ahead of catch(...),
+                // which used to swallow it and leave the react waiting.
+                Value ex = self->exceptionFor(e);
+                if (ctx) {
+                    std::lock_guard<std::mutex> lk(ctx->m);
+                    if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = ex; }
+                    ctx->closed = true; ctx->cv.notify_all();
+                }
+            }
+            catch (...) {}
         }
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
@@ -13955,19 +14005,53 @@ void Interpreter::registerBuiltins() {
                 // fire under the supply activation so the body's emits reach downstream
                 Value fireW = ctxCallable(ctx, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) -> Value {
                     if (ps->broken) {
+                        // S-57, the same rule the Supply path's quitW follows: a QUIT
+                        // phaser works like CATCH. A matching when/default consumes
+                        // the break and this whenever merely counts as done; a phaser
+                        // with no matching branch runs and then lets the quit travel
+                        // on to the tapper. Running the phasers and then dropping the
+                        // quit whenever one existed left the supply unfinished —
+                        // Cro's redirect arm is a bare `QUIT { $request-log.end }`,
+                        // so a redirect onto a 4xx hung even once the die below
+                        // quit correctly.
                         Value ex = causeException(I2, ps->cause, ps->causeMsg);
-                        for (auto& q : quitP) { ValueList one{ex}; try { I2.callCallable(q, one); } catch (...) {} }
-                        if (quitP.empty()) {
-                            // no QUIT phaser: the break QUITS the enclosing supply —
-                            // forward downstream and close (a refused connect inside
-                            // Connector.establish must fail the whole pipeline)
-                            if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                        Value repl;
+                        int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
+                        if (r != 0) {
+                            Value out = r == 2 ? repl : ex;
+                            if (ctx->quitCb.t == VT::Code) { ValueList one{out}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                            // nothing may follow a quit (S-06); `done` also stops the
+                            // maybeFinishSupply below emitting one after it.
+                            ctx->done = true;
                             if (ctx->tap) I2.closeTapHandle(ctx->tap);
                         }
                     } else {
                         ValueList one{ ps->result };
-                        try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
-                        I2.runLastPhasers(lastP, nullptr);
+                        bool died = false;
+                        try { I2.callCallable(blk, one); }
+                        catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                        catch (RakuError& e) {
+                            // S-57: an exception raised by the whenever BODY is not a
+                            // source quit — no QUIT phaser sees it; it ends the supply
+                            // and reaches the TAPPER's quit handler, exactly as the
+                            // Supply path below already does. Without this arm the
+                            // throw escaped PAST the pending-- underneath and was
+                            // swallowed by `run`'s catch(...), so the activation was
+                            // never released: `Promise(supply {…})` stayed Planned for
+                            // ever. Cro raises every 4xx/5xx as a `die` inside exactly
+                            // this shape, so a 404 hung the client instead of throwing.
+                            died = true;
+                            Value ex = I2.exceptionFor(e);
+                            if (ctx->quitCb.t == VT::Code) {
+                                ValueList qa{ex};
+                                try { I2.callCallable(ctx->quitCb, qa); } catch (...) {}
+                            }
+                            // nothing may follow a quit (S-06); `done` also makes the
+                            // maybeFinishSupply below a no-op, so no done is emitted.
+                            ctx->done = true;
+                            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                        }
+                        if (!died) I2.runLastPhasers(lastP, nullptr);
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
@@ -14461,11 +14545,14 @@ void Interpreter::registerBuiltins() {
                         Value ex = causeException(I, cause, causeMsg);
                         ValueList quitP;
                         scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
-                        if (!quitP.empty()) {
-                            for (auto& q : quitP) { ValueList one{ex}; try { I.callCallable(q, one); } catch (...) {} }
-                            Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
-                        }
-                        throw RakuError{ex, causeMsg.empty() ? std::string("Promise broken") : causeMsg};
+                        // S-57: only a QUIT phaser whose when/default MATCHES consumes
+                        // the break. A bare one runs and the react still dies with the
+                        // cause — merely HAVING a phaser used to swallow it.
+                        Value repl;
+                        int r = quitP.empty() ? 1 : I.runQuitPhasers(quitP, ex, repl);
+                        if (r == 0) { Value t = Value::makeHash(); t.hashKind = "Tap"; return t; }
+                        throw RakuError{r == 2 ? repl : ex,
+                                        causeMsg.empty() ? std::string("Promise broken") : causeMsg};
                     }
                     ValueList one{ps->result}; return I.callCallable(blk, one);
                 }
@@ -14486,18 +14573,33 @@ void Interpreter::registerBuiltins() {
                         self->reactStack_.push_back(rctx);
                         if (!rctx->closed) {
                             if (ps->broken) {
+                                // S-57 again: only a QUIT phaser that MATCHES consumes
+                                // the break. A bare one runs and the quit still ends
+                                // the react.
                                 Value ex = causeException(*self, ps->cause, ps->causeMsg);
-                                if (!quitP.empty()) {
-                                    for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
-                                } else {
+                                Value repl;
+                                int r = quitP.empty() ? 1 : self->runQuitPhasers(quitP, ex, repl);
+                                if (r != 0) {
+                                    Value out = r == 2 ? repl : ex;
                                     std::lock_guard<std::mutex> lk(rctx->m);
-                                    if (!rctx->quitFlag) { rctx->quitFlag = true; rctx->quitErr = ex; }
+                                    if (!rctx->quitFlag) { rctx->quitFlag = true; rctx->quitErr = out; }
                                     rctx->closed = true; rctx->cv.notify_all();
                                 }
                             } else {
                                 ValueList one{ps->result};
                                 try { self->callCallable(blkCopy, one); }
-                                catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
+                                catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                                catch (RakuError& e) {
+                                    // a body that dies ends the react and rethrows
+                                    // at the `react`, exactly as the broken-promise
+                                    // arm above does. Ahead of catch(...), which
+                                    // used to swallow it (`whenever start {…}`).
+                                    Value ex = self->exceptionFor(e);
+                                    std::lock_guard<std::mutex> lk(rctx->m);
+                                    if (!rctx->quitFlag) { rctx->quitFlag = true; rctx->quitErr = ex; }
+                                    rctx->closed = true; rctx->cv.notify_all();
+                                }
+                                catch (...) {}
                             }
                         }
                         self->reactStack_.pop_back();
@@ -15294,7 +15396,7 @@ void Interpreter::registerBuiltins() {
                 auto ps = std::static_pointer_cast<PromiseState>(p.ext());
                 I.awaitPromise(ps);
                 if (ps->broken) {
-                    RakuError err{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg };
+                    RakuError err{ ps->cause, causeMessageOf(I, ps->cause, ps->causeMsg) };
                     // the error happened in the WORKER; this thread's chain is
                     // merely where it was collected, so it goes under a label
                     if (ps->causeBt && !ps->causeBt->frames.empty()) {
