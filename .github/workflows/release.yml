@@ -287,6 +287,31 @@ jobs:
             Write-Host "    EmbedApi.obj not found under build\ (searched rakupp_shared dirs)"
           }
 
+          # Zero directives on the first run means the COMPILER never applied
+          # the attribute, so these two separate the only ways that happens:
+          # the definition never arrived, or MSVC does not honour it in this
+          # shape. EmbedApi.cpp declares rk_version through the header (which
+          # carries RK_API) and defines it plainly, inside extern "C" -- the
+          # probe reproduces exactly that, with the define supplied by hand.
+          Write-Host "--- why: does RAKUPP_BUILDING reach the project file?"
+          $vcx = @(Select-String -Path build\rakupp_shared.vcxproj -Pattern 'RAKUPP_BUILDING' -ErrorAction SilentlyContinue)
+          Write-Host "    RAKUPP_BUILDING in rakupp_shared.vcxproj: $($vcx.Count)"
+
+          Write-Host "--- why: does MSVC honour a header dllexport on a plain definition?"
+          Set-Content probe.cpp @(
+            '#include <rakupp/rakupp.h>',
+            'extern "C" { const char* rk_version(void) { return "probe"; } }')
+          cl /nologo /c /EHsc /permissive- /Zc:__cplusplus /DRAKUPP_BUILDING /I include /I include\rakupp probe.cpp /Foprobe.obj > probe-cl.txt 2>&1
+          if (Test-Path probe.obj) {
+            dumpbin /directives probe.obj > probe-dir.txt
+            $pd = @(Select-String -Path probe-dir.txt -Pattern '/EXPORT:')
+            Write-Host "    probe.obj /EXPORT: directives: $($pd.Count)"
+            $pd | Select-Object -First 3 | ForEach-Object { Write-Host "      $($_.Line.Trim())" }
+          } else {
+            Write-Host "    the probe did not compile:"
+            Get-Content probe-cl.txt | Select-Object -First 15 | ForEach-Object { Write-Host "      $_" }
+          }
+
           Write-Host "--- does the LINKER keep them in the image?"
           $bad = @()
           foreach ($t in @(
