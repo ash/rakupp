@@ -114,6 +114,12 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
     } catch (...) {
         ok_ = false;
     }
+    topCaps_.swap(scopeCaps_);   // whatever the outermost scope collected is `$0 $1 …`
+    // Perl 5 numbers every group from one flat counter, nested or not, and its
+    // front-end never opened a scope — so there every slot is a top-level one.
+    if (p5_) { topCaps_.clear(); for (int i = 0; i < ncaps_; i++) topCaps_.push_back(i); }
+    capsFlat_ = (long)topCaps_.size() == (long)ncaps_;
+    for (size_t i = 0; capsFlat_ && i < topCaps_.size(); i++) capsFlat_ = topCaps_[i] == (int)i;
     markRepeatedNames();
 }
 
@@ -858,9 +864,22 @@ Regex::NodePtr Regex::parseAlt() {
     // second branch read `$0` as unset and `$2`/`$3` as its own captures. (P5
     // mode numbers straight through and keeps its own parser, p5Alt.)
     int capBase = ncaps_, capWidest = ncaps_;
+    // …and the scope bookkeeping restarts with it: each branch numbers its own
+    // captures from where the alternation began, and the scope ends up holding
+    // the widest branch's, exactly as the slot count does.
+    const std::vector<int> scopeBase = scopeCaps_;
+    const int localBase = scopeLocal_;
+    std::vector<int> scopeWidest = scopeBase;
+    int localWidest = localBase;
+    auto widen = [&]() {
+        if (scopeCaps_.size() > scopeWidest.size()) scopeWidest = scopeCaps_;
+        if (scopeLocal_ > localWidest) localWidest = scopeLocal_;
+    };
+    auto rewind = [&]() { scopeCaps_ = scopeBase; scopeLocal_ = localBase; };
     auto first = parseConj();
     if (peek() != '|') return first;
     capWidest = std::max(capWidest, ncaps_);
+    widen();
     // `|` binds tighter than `||`: `a | ab || c` is `[a | ab] || c` — each
     // `||`-separated group is its own LTM alternation, and the groups are tried
     // first-match in order. (One `||` used to make the WHOLE bracket first-match,
@@ -882,12 +901,15 @@ Regex::NodePtr Regex::parseAlt() {
             cur = std::make_unique<Node>(); cur->k = K::Alt; cur->firstMatch = false;
         }
         ncaps_ = capBase;
+        rewind();
         auto branch = parseConj();
         capWidest = std::max(capWidest, ncaps_);
+        widen();
         if (!isEmpty(branch)) cur->kids.push_back(std::move(branch));
     }
     flush(std::move(cur));
     ncaps_ = capWidest;
+    scopeCaps_ = scopeWidest; scopeLocal_ = localWidest;
     if (groups.size() == 1) return std::move(groups[0]);
     auto alt = std::make_unique<Node>();
     alt->k = K::Alt; alt->firstMatch = true; // the `||` level: sequential
@@ -1034,6 +1056,62 @@ void Regex::markRepeatedNames() {
     }
 }
 
+void Regex::localizeCaps(std::vector<std::pair<long, long>>& caps,
+                         std::set<int>& listCaps,
+                         std::map<int, std::vector<std::pair<long, long>>>& capReps) const {
+    if (capsFlat_) return;
+    std::vector<std::pair<long, long>> lc(topCaps_.size(), {-1, -1});
+    std::set<int> ll;
+    std::map<int, std::vector<std::pair<long, long>>> lr;
+    for (size_t i = 0; i < topCaps_.size(); i++) {
+        int g = topCaps_[i];
+        if (g < 0 || g >= (long)caps.size()) continue;
+        lc[i] = caps[g];
+        if (!listCaps.count(g)) continue;
+        ll.insert((int)i);
+        auto it = capReps.find(g);
+        if (it != capReps.end()) lr[(int)i] = it->second;
+    }
+    caps.swap(lc); listCaps.swap(ll); capReps.swap(lr);
+}
+
+// A called rule reports the captures of ITS OWN body, so the same re-reading the
+// whole-match path does applies to every sub-match recorded for it. Costs nothing
+// for a body where no capture nests inside another, which is nearly all of them.
+using CapRepsPtr = std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>>;
+static void localizeFrame(const Regex* re, std::vector<std::pair<long, long>>& caps,
+                          std::shared_ptr<const std::set<int>>& listCaps, CapRepsPtr& capReps) {
+    if (re->capsFlat()) return;
+    std::set<int> lc = listCaps ? *listCaps : std::set<int>();
+    std::map<int, std::vector<std::pair<long, long>>> lr;
+    if (capReps) lr = *capReps;
+    re->localizeCaps(caps, lc, lr);
+    listCaps = lc.empty() ? nullptr : std::make_shared<const std::set<int>>(std::move(lc));
+    capReps  = lr.empty() ? nullptr : std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(std::move(lr));
+}
+static void localizeNode(const Regex* re, ParseNode& pn,
+                         const std::vector<std::pair<long, long>>& caps,
+                         const std::map<int, std::vector<std::pair<long, long>>>& reps) {
+    pn.caps = caps;
+    pn.listCaps = re->listCapsPtr();
+    if (!reps.empty())
+        pn.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(reps);
+    localizeFrame(re, pn.caps, pn.listCaps, pn.capReps);
+}
+
+// Does anything inside this subtree CAPTURE — a positional group, a named one,
+// or a subrule that binds its name? That is what makes a capture a scope worth
+// keeping books for; a capture with nothing but literals under it is its span
+// and nothing else, and stays on the cheap path.
+bool Regex::subtreeCaptures(const Node* n) {
+    if (!n) return false;
+    if (n->k == K::Group && (n->capIndex >= 0 || !n->capName.empty())) return true;
+    if (n->k == K::Subrule && n->ruleCapture &&
+        !(n->ruleAlias.empty() ? n->ruleName : n->ruleAlias).empty()) return true;
+    for (auto& kd : n->kids) if (subtreeCaptures(kd.get())) return true;
+    return subtreeCaptures(n->sep.get());
+}
+
 void Regex::collectListNames(const Node* n) {
     if (!n || n->k == K::Look) return;
     if (n->k == K::Subrule && n->ruleCapture && !n->ruleName.empty()) {
@@ -1056,6 +1134,12 @@ void Regex::collectListNames(const Node* n) {
         const_cast<Node*>(n)->listCap = true;
         listCaps_.insert(n->capIndex);
     }
+    // …but the walk stops at a CAPTURE. `( (a) (b) )+` collates the OUTER
+    // capture's occurrences, and each of them holds one `(a)` and one `(b)` —
+    // the quantifier is not theirs to collate. `[ (a) ]+` has no capture between
+    // the quantifier and `(a)`, so there the walk goes through and `$0` is the
+    // list, as before.
+    if (n->k == K::Group && (n->capIndex >= 0 || !n->capName.empty())) return;
     for (auto& kd : n->kids) collectListNames(kd.get());
 }
 
@@ -1247,17 +1331,60 @@ Regex::NodePtr Regex::parseAtom() {
                 Node* inner = child.get();
                 if (inner->k == K::Rep && !inner->kids.empty() && inner->kids[0]->k == K::Group)
                     inner = inner->kids[0].get();
-                if (inner->k == K::Group) { inner->capName = name; return child; }
+                if (inner->k == K::Group) {
+                    inner->capName = name;
+                    // the name takes the parens' capture here too, so the parens
+                    // give their number back to the enclosing scope
+                    if (inner->capIndex >= 0 && inner->capLocal >= 0) {
+                        inner->capLocal = -1;
+                        scopeLocal_--;
+                        if (!scopeCaps_.empty() && scopeCaps_.back() == inner->capIndex)
+                            scopeCaps_.pop_back();
+                    }
+                    // A HASH alias keeps only the keys — each occurrence's
+                    // matched text, with an undefined value — so there is no
+                    // per-occurrence Match for an inner capture to hang off and
+                    // it stays where it was written. The ARRAY alias does answer
+                    // a Match per occurrence, and each one carries what it
+                    // matched. Rakudo implements `@<x>=` and agrees:
+                    // `@<chars>=( @<spaces>=[\s+] (\S+))+` answers
+                    // `@<chars>».<spaces>` and `@<chars>[0][1]` there too
+                    // (checked against 2026.08 directly — S05-capture/array-alias.t
+                    // itself does not run under Rakudo, it dies compiling with
+                    // "QAST::Block with cuid 12 has not appeared"). `%<x>=` it
+                    // RESERVES outright — "The use of hash variables in regexes
+                    // is reserved" — so for that half S05-capture/hash.t is the
+                    // only spec there is, and it reads `$<spaces>` of the same
+                    // shape off the whole match.
+                    if (hashCap) {
+                        inner->nestNames = false;
+                        inner->scopeKey.clear();
+                        inner->scopeCaps.clear();
+                    }
+                    return child;
+                }
             }
             auto g = std::make_unique<Node>();
             g->k = K::Group; g->capIndex = -1; g->capName = name;
-            {   // `$<a>=( … )` opens a capture, and a capture scopes the names
-                // matched inside it: they hang off `$<a>` rather than off the
+            {   // `$<a>=( … )` opens a capture, and a capture scopes what is
+                // matched inside it: it hangs off `$<a>` rather than off the
                 // enclosing match. The bracket form `$<a>=[ … ]` does not
                 // capture, so its contents stay where they were written.
-                const Node* inner = child.get();
+                Node* inner = child.get();
                 if (inner->k == K::Rep && !inner->kids.empty()) inner = inner->kids[0].get();
                 g->nestNames = inner->k == K::Group && inner->capIndex >= 0;
+                if (g->nestNames) {
+                    // The NAME took the parens' capture, so the parens take no
+                    // number: `$<x>=(a) (b)` makes `(b)` $0, not $1. The scope
+                    // the parens opened is this named capture's scope, so its
+                    // children keep the numbers they were given inside it.
+                    g->scopeCaps.swap(inner->scopeCaps);
+                    inner->capLocal = -1;
+                    inner->nestNames = false;
+                    scopeLocal_--;               // give back the number the parens took
+                    if (!scopeCaps_.empty() && scopeCaps_.back() == inner->capIndex)
+                        scopeCaps_.pop_back();
+                }
             }
             g->kids.push_back(std::move(child));
             return g;
@@ -1277,12 +1404,28 @@ Regex::NodePtr Regex::parseAtom() {
         pos_++;
         int idx = ncaps_++;
         bool savedI = curIcase_, savedS = sigspace_, savedM = curImark_;
+        // This capture takes the next number in the scope it stands in, and then
+        // OPENS a scope of its own: whatever it captures inside is numbered from
+        // 0 again and hangs off this match, not off the enclosing one.
+        int local = scopeLocal_++;
+        scopeCaps_.push_back(idx);
+        int savedLocal = scopeLocal_;
+        std::vector<int> savedScope;
+        savedScope.swap(scopeCaps_);
+        scopeLocal_ = 0;
         auto child = parseAlt();
         curIcase_ = savedI; sigspace_ = savedS; curImark_ = savedM;
         if (peek() == ')') pos_++;
         auto g = std::make_unique<Node>();
-        g->k = K::Group; g->capIndex = idx;
+        g->k = K::Group; g->capIndex = idx; g->capLocal = local;
+        g->scopeCaps.swap(scopeCaps_);
+        scopeCaps_.swap(savedScope);
+        scopeLocal_ = savedLocal;
         g->kids.push_back(std::move(child));
+        // Only a capture with something captured inside it pays for the scope
+        // bookkeeping; a leaf capture is just its span, as it always was.
+        g->nestNames = !g->scopeCaps.empty() || subtreeCaptures(g->kids[0].get());
+        if (g->nestNames) g->scopeKey = "\x01" + std::to_string(idx);
         return g;
     }
     if (c == '[') {
@@ -1937,12 +2080,27 @@ Regex::NodePtr Regex::parseAtom() {
                 int idx = std::atoi(num.c_str());
                 for (int t = 0; t < j + 2; t++) pos_++; // consume `$N=(`
                 bool savedI = curIcase_, savedS = sigspace_, savedM = curImark_;
+                // `$N=( … )` says which number it takes; it is a capture like any
+                // other otherwise, so it opens a scope and its slot goes to
+                // position N of the enclosing one.
+                int savedLocal = scopeLocal_;
+                std::vector<int> savedScope;
+                savedScope.swap(scopeCaps_);
+                scopeLocal_ = 0;
                 auto child = parseAlt();
                 curIcase_ = savedI; sigspace_ = savedS; curImark_ = savedM;
                 if (peek() == ')') pos_++;
                 auto g = std::make_unique<Node>();
-                g->k = K::Group; g->capIndex = idx;
+                g->k = K::Group; g->capIndex = idx; g->capLocal = idx;
+                g->scopeCaps.swap(scopeCaps_);
+                scopeCaps_.swap(savedScope);
+                scopeLocal_ = savedLocal > idx + 1 ? savedLocal : idx + 1;
+                while ((int)scopeCaps_.size() < idx) scopeCaps_.push_back(-1);
+                if ((int)scopeCaps_.size() == idx) scopeCaps_.push_back(idx);
+                else scopeCaps_[idx] = idx;
                 g->kids.push_back(std::move(child));
+                g->nestNames = !g->scopeCaps.empty() || subtreeCaptures(g->kids[0].get());
+                if (g->nestNames) g->scopeKey = "\x01" + std::to_string(idx);
                 if (idx + 1 > ncaps_) ncaps_ = idx + 1; // auto-numbering resumes after N
                 return g;
             }
@@ -1992,7 +2150,20 @@ Regex::NodePtr Regex::parseAtom() {
             else if (p == '-' && (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
             else break;
         }
-        auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = var; return vm;
+        auto vm = std::make_unique<Node>(); vm->k = K::VarMatch;
+        // `$0` is a backreference to THIS SCOPE's first capture, the same `$0`
+        // the finished match answers there: inside `( (\w) $0 )` it is the
+        // `(\w)` beside it, not the pattern's own first capture. Resolve it to
+        // that capture's flat slot now — a forward reference (nothing captured
+        // under that number yet) keeps the number and simply does not match.
+        size_t d = 1;
+        while (d < var.size() && ascii::isdigit((unsigned char)var[d])) d++;
+        if (!p5_ && d > 1 && d == var.size()) {
+            size_t local = (size_t)std::stoul(var.substr(1));
+            if (local < scopeCaps_.size() && scopeCaps_[local] >= 0)
+                var = "$" + std::to_string(scopeCaps_[local]);
+        }
+        vm->lit = var; return vm;
     }
     if (c == '\\') {
         pos_++;
@@ -2745,7 +2916,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 st.named[capKey] = {sub.from, sub.to};
                 ParseNode leaf; leaf.name = rn; leaf.from = sub.from; leaf.to = sub.to;
                 for (auto& kv : sub.named) leaf.named[kv.first] = kv.second;
-                leaf.caps = sub.caps;
+                leaf.caps = sub.caps;   // the resolver already reported the callee's own `$0 $1 …`
                 // …and the sub-match TREE. A `my regex` whose body captures through
                 // subrules records children, not just named spans; dropping them left
                 // `$<ps>.hash` empty, so URI::Path could not find which of
@@ -3335,10 +3506,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         case K::Group: {
             const Node* child = n->kids[0].get();
             int ci = n->capIndex;
-            const std::string& cn = n->capName;
-            // For a name-scoping group (`$<a>=( … )`): how many occurrences each
-            // name had on the way IN. Anything past that count when the child is
-            // done was matched inside this group and belongs to it.
+            // An unnamed capture that captured something of its own records
+            // itself under its synthetic key, so one code path scopes both kinds.
+            const std::string& cn = n->capName.empty() ? n->scopeKey : n->capName;
+            const bool synth = n->capName.empty();
+            // For a capture-scoping group: how many occurrences each name had on
+            // the way IN. Anything past that count when the child is done was
+            // matched inside this group and belongs to it.
             std::vector<std::pair<std::string, size_t>> pre;
             if (n->nestNames && !cn.empty()) {
                 pre.reserve(st.children.size());
@@ -3355,10 +3529,37 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 // into a list (`(\d)+` → $0 is an Array), matching Rakudo
                 if (n->listCap && ci >= 0) st.capReps[ci].push_back({pos, np});
                 if (!cn.empty()) {
-                    hadN = st.named.count(cn); if (hadN) savedN = st.named[cn]; st.named[cn] = {pos, np};
+                    // A synthetic key stands for a NUMBER, so it never joins the
+                    // named captures — only the child map, which presentation
+                    // reads back by `capLocal`.
+                    if (!synth) {
+                        hadN = st.named.count(cn); if (hadN) savedN = st.named[cn]; st.named[cn] = {pos, np};
+                    }
                     // also collate the occurrence (empty name = plain capture, not a rule),
                     // so a capture repeated under a quantifier yields a list like Rakudo's
                     ParseNode leaf; leaf.from = pos; leaf.to = np;
+                    leaf.capLocal = n->capLocal;
+                    // This capture's OWN positional children, in its own numbering:
+                    // the spans are already in the flat slots, which stay as they
+                    // are — nothing reads them for presentation but this.
+                    if (!n->scopeCaps.empty()) {
+                        leaf.caps.assign(n->scopeCaps.size(), {-1, -1});
+                        std::set<int> lcaps;
+                        std::map<int, std::vector<std::pair<long, long>>> lreps;
+                        for (size_t i = 0; i < n->scopeCaps.size(); i++) {
+                            int g = n->scopeCaps[i];
+                            if (g < 0 || g >= (long)st.caps.size()) continue;
+                            leaf.caps[i] = st.caps[g];
+                            if (!listCaps_.count(g)) continue;
+                            lcaps.insert((int)i);            // `( (a)+ )` — the inner is a list
+                            auto rit = st.capReps.find(g);
+                            if (rit != st.capReps.end()) lreps[(int)i] = rit->second;
+                        }
+                        if (!lcaps.empty()) {
+                            leaf.listCaps = std::make_shared<const std::set<int>>(std::move(lcaps));
+                            leaf.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(std::move(lreps));
+                        }
+                    }
                     // A capture-scoping group takes the names matched inside it
                     // out of the enclosing match and hangs them off itself —
                     // `$<header>=( $<lang>=… )` answers `$<header><lang>`, and
@@ -3424,7 +3625,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (it != st.capReps.end()) { it->second.pop_back(); if (it->second.empty()) st.capReps.erase(it); }
                 }
                 if (!cn.empty()) {
-                    if (hadN) st.named[cn] = savedN; else st.named.erase(cn);
+                    if (!synth) { if (hadN) st.named[cn] = savedN; else st.named.erase(cn); }
                     st.children[cn].pop_back();
                     if (st.children[cn].empty()) st.children.erase(cn);
                     // …and everything this group scoped out goes back where it was
@@ -3454,11 +3655,10 @@ bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos,
         // a `<( … )>` inside the callee trims what the SUB-MATCH reports
         long cf = sub.capFrom >= 0 ? sub.capFrom : pos, ct = sub.capFrom >= 0 ? sub.capTo : end;
         ParseNode pn; pn.name = capKey; pn.from = cf; pn.to = ct;
-        pn.caps = sub.caps; pn.named = sub.named;
+        pn.named = sub.named;
         if (!sub.children.empty()) pn.kids = std::make_shared<const ChildMap>(sub.children);
-        pn.listNames = re->listNamesPtr(); pn.listCaps = re->listCapsPtr();
-        if (!sub.capReps.empty())
-            pn.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(sub.capReps);
+        pn.listNames = re->listNamesPtr();
+        localizeNode(re, pn, sub.caps, sub.capReps);
         bool had = st.named.count(capKey);
         auto saved = had ? st.named[capKey] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {cf, ct};
@@ -3495,6 +3695,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = st.capTo >= 0 ? st.capTo : endPos;
                 out.caps = st.caps; out.named = st.named;
                 out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
+                localizeCaps(out.caps, out.listCaps, out.capReps);
                 return true;
             }
         } catch (const StepLimitExceeded&) { return false; } // pathological pattern: give up (no match)
@@ -3524,6 +3725,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
                 out.caps = st.caps; out.named = st.named;
                 out.children = st.children; out.capReps = st.capReps;
                 out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
+                localizeCaps(out.caps, out.listCaps, out.capReps);
                 results.push_back(std::move(out));
                 return false;
             });
@@ -3546,6 +3748,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
             out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = st.capTo >= 0 ? st.capTo : endPos;
             out.caps = st.caps; out.named = st.named;
             out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
+            localizeCaps(out.caps, out.listCaps, out.capReps);
             return true;
         }
     } catch (const StepLimitExceeded&) { return false; }
@@ -4102,6 +4305,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             me.caps = sub.caps; me.named = sub.named;
             if (!sub.capReps.empty())
                 me.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(std::move(sub.capReps));
+            // the frame reports the rule body's OWN `$0 $1 …`
+            localizeFrame(re, me.caps, me.listCaps, me.capReps);
             // the frame is committed (ratchet) — freeze its subtree without copying
             me.kids = sub.children.empty() ? nullptr
                     : std::make_shared<const ChildMap>(std::move(sub.children));
@@ -4162,21 +4367,23 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         auto kidsCopy = sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children);
         // fresh completion: fire the action (each re-completion after a backtrack
         // fires again, as Rakudo's non-ratchet regexes do)
+        // this completion's captures, re-read as the rule body's own `$0 $1 …`
+        std::vector<std::pair<long, long>> myCaps = sub.caps;
+        std::shared_ptr<const std::set<int>> myList = re->listCapsPtr();
+        CapRepsPtr myReps = sub.capReps.empty() ? nullptr
+            : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps);
+        localizeFrame(re, myCaps, myList, myReps);
         if (st.hooks && st.hooks->onRule && st.hooks->hasAction && st.hooks->hasAction(name)) {
             ParseNode fp; fp.name = name;
             fp.from = sub.capFrom >= 0 ? sub.capFrom : pos;
             fp.to = sub.capFrom >= 0 ? sub.capTo : end;
-            fp.caps = sub.caps; fp.named = sub.named; fp.kids = kidsCopy;
-            fp.listNames = re->listNamesPtr(); fp.listCaps = re->listCapsPtr();
-            if (!sub.capReps.empty())
-                fp.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps);
+            fp.caps = myCaps; fp.named = sub.named; fp.kids = kidsCopy;
+            fp.listNames = re->listNamesPtr(); fp.listCaps = myList; fp.capReps = myReps;
             st.hooks->onRule(std::move(fp));
         }
-        return finish(record(end, sub.caps, sub.named,
+        return finish(record(end, myCaps, sub.named,
                              kidsCopy,
-                             re->listNamesPtr(), re->listCapsPtr(),
-                             sub.capReps.empty() ? nullptr
-                               : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps),
+                             re->listNamesPtr(), myList, myReps,
                              sub.capFrom, sub.capTo)); // rule-body `<( … )>` trims the capture
     });
     if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
@@ -4272,9 +4479,16 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     // a quantified group in the ENTRY rule (`token TOP { ( <normal> | <placeholder> )* }`)
     // reported $0 as its LAST occurrence instead of the list of all of them, so
     // DBDish::Pg's placeholder tokenizer rebuilt every query as the empty string.
-    out.listCaps = re->listCapsPtr();
-    if (!st.capReps.empty())
-        out.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(std::move(st.capReps));
+    // The rule body's own `$0 $1 …` is its OUTERMOST scope, so a group nested in
+    // another group is presented by that group and not here.
+    {
+        std::set<int> lc = re->listCapsPtr() ? *re->listCapsPtr() : std::set<int>();
+        std::map<int, std::vector<std::pair<long, long>>> lr = std::move(st.capReps);
+        re->localizeCaps(out.caps, lc, lr);
+        if (!lc.empty()) out.listCaps = std::make_shared<const std::set<int>>(std::move(lc));
+        if (!lr.empty())
+            out.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long, long>>>>(std::move(lr));
+    }
     endOut = endPos;
     return true;
 }

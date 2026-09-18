@@ -167,6 +167,10 @@ struct ParseNode {
     std::string name;
     std::string actualRule; // proto entry: the winning `name:sym<…>` candidate (else empty)
     long from = 0, to = 0;
+    // Which `$n` of its PARENT's scope this node is, when it is a positional
+    // capture that captured something itself (-1 = a named capture or a rule,
+    // which the parent files under its name instead).
+    int capLocal = -1;
     std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
     GrammarHooks::NamedMap named;                         // named-capture spans ($<x>)
     std::shared_ptr<const ChildMap> kids;                 // frozen sub-trees (null = leaf); a vector collates repeated captures
@@ -193,6 +197,13 @@ struct RxMatch {
     std::shared_ptr<const std::set<std::string>> listNames; // subrule keys under a quantifier → always list-valued
     std::shared_ptr<const std::set<std::string>> hashNames; // `%<name>=…` keys → built as a Hash of matched strings
 };
+
+// A capture that captured something of its own is recorded as a child under this
+// key plus its flat slot, so the one map carries both kinds of child and the
+// collation/backtracking already written for names serves positional captures
+// too. The prefix cannot collide with a capture NAME: no Raku identifier holds a
+// control character. Presentation reads `ParseNode::capLocal`, not the key.
+inline bool isPositionalKey(const std::string& k) { return !k.empty() && k[0] == '\x01'; }
 
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
 // anchored at `pos`; on success fill `out` (with out.to = end offset) and return true.
@@ -303,6 +314,18 @@ private:
                                          // so the LTM prefix model must union it, not take kid 0
         // Group
         int capIndex = -1;               // -1 => non-capturing
+        // Which `$n` this group is INSIDE ITS OWN SCOPE. Capture numbering
+        // restarts at 0 in every capture, so the `(b)` of `( (a) (b) )` is the
+        // outer capture's `$1` and has no top-level number at all; `capIndex`
+        // stays the flat slot the matcher indexes `st.caps` by. -1 = never
+        // presented positionally (a group whose slot a NAME took).
+        int capLocal = -1;
+        // The direct positional children of this group's scope, as flat slots in
+        // local order — what `ParseNode::caps` is filled from when the group closes.
+        std::vector<int> scopeCaps;
+        // The child-map key an UNNAMED capture records itself under (empty = it
+        // captures nothing itself and needs no record). See isPositionalKey.
+        std::string scopeKey;
         std::string capName;
         bool listCap = false;            // capture is under a repetition quantifier (*/+/**) → $n is a list
         // `$<a>=( … )`: the parens are a CAPTURE, and a capture is its own
@@ -344,10 +367,19 @@ private:
     std::string pat_;
     size_t pos_ = 0;
     int ncaps_ = 0;
+    // Capture numbering is per SCOPE, and every capture opens one: `$0` inside
+    // `( … )` is that capture's own first child, not the pattern's. These track
+    // the scope being parsed — how many captures it has taken so far, and their
+    // flat slots in order — and are saved/restored around each capturing group.
+    int scopeLocal_ = 0;
+    std::vector<int> scopeCaps_;
+    std::vector<int> topCaps_;           // the OUTERMOST scope's slots, in `$0 $1 …` order
+    bool capsFlat_ = true;               // topCaps_ is 0,1,2,… — no capture nests in another
     std::set<int> listCaps_;             // positional capture indices under a repetition quantifier
     mutable std::shared_ptr<const std::set<int>> listCapsFrozen_; // lazily frozen copy for ParseNode sharing
     std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
     std::shared_ptr<std::set<std::string>> hashNames_; // `%<name>=…` hash-valued capture keys
+    static bool subtreeCaptures(const Node* n); // does anything under here capture?
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
     void markRepeatedNames();             // …and the names a single path can reach twice
     static void countCaptureNames(const Node* n, std::map<std::string, int>& out);
@@ -452,6 +484,16 @@ public:
     std::pair<long, long> nodeWidth(const Node* n, MState& st) const;
     const Node* root() const { return root_.get(); }
     int ncaps() const { return ncaps_; }
+    // The common case: no capture nests inside another, so the flat slots ARE
+    // `$0 $1 …` and nothing below needs re-reading.
+    bool capsFlat() const { return capsFlat_; }
+    // Re-read a finished frame's flat capture slots as this pattern's own
+    // `$0 $1 …`: the slots the outermost scope owns, in its order, with the
+    // list-capture bookkeeping renumbered to match. A capture nested inside
+    // another is left out — the capture that owns it presents it.
+    void localizeCaps(std::vector<std::pair<long, long>>& caps,
+                      std::set<int>& listCaps,
+                      std::map<int, std::vector<std::pair<long, long>>>& capReps) const;
     // Subrule capture keys under a repetition quantifier (null = none) — shared
     // into ParseNode/RxMatch so Match building can honour Rakudo's list arity.
     std::shared_ptr<const std::set<std::string>> listNamesPtr() const { return listNames_; }

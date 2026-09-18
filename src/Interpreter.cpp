@@ -27371,7 +27371,24 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     };
     auto build = [&](const RxMatch& m) {
         Value v = mk(m.from, m.to);
+        // A capture that captured something ITSELF was recorded as a child, and
+        // that record — not the bare span — is what `$n` answers, so `$0[0]` of
+        // `( (a) (b) )` reaches the inner captures.
+        std::map<int, const std::vector<ParseNode>*> capKids;
+        for (auto& kv : m.children)
+            if (isPositionalKey(kv.first) && !kv.second.empty() && kv.second[0].capLocal >= 0)
+                capKids[kv.second[0].capLocal] = &kv.second;
         for (size_t ci = 0; ci < m.caps.size(); ci++) {
+            auto kit = capKids.find((int)ci);
+            if (kit != capKids.end()) {
+                const std::vector<ParseNode>& occ = *kit->second;
+                if (occ.size() > 1 || m.listCaps.count((int)ci)) { // every iteration of a quantified capture
+                    Value lst = Value::array();
+                    for (auto& o : occ) lst.arrRef().push_back(matchFromNode(o, subject, origStr));
+                    v.arrRef().push_back(lst);
+                } else v.arrRef().push_back(matchFromNode(occ[0], subject, origStr));
+                continue;
+            }
             if (m.listCaps.count((int)ci)) { // `(…)+`/`(…)*`/`(…)**n` → $ci is an Array of every occurrence
                 Value lst = Value::array();
                 auto it = m.capReps.find((int)ci);
@@ -27393,6 +27410,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (!m.children.count(kv.first))
                 v.hashRef()[kv.first] = mk(kv.second.first, kv.second.second);
         for (auto& kv : m.children) {
+            if (isPositionalKey(kv.first)) continue;   // a NUMBER — presented above
             // `%<name>=…` — each occurrence's matched text is a Hash KEY (value undefined)
             if (m.hashNames && m.hashNames->count(kv.first)) {
                 Value h = Value::makeHash();
@@ -27408,7 +27426,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             // as a bare span. `my regex ps { $<pr> = <Grammar::rule> }` matched
             // through `<ps>` produced a Match with an empty .hash, so URI::Path
             // could not tell which alternative had matched.
-            auto childMatch = [&](const ParseNode& c) { return matchFromNode(c, subject); };
+            auto childMatch = [&](const ParseNode& c) { return matchFromNode(c, subject, origStr); };
             if (!asList) {
                 v.hashRef()[kv.first] = childMatch(kv.second[0]);
             } else {
@@ -27938,15 +27956,48 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
     // `.orig`/.prematch/.postmatch read the WHOLE subject when the builder has
     // it to share; the callers that never did keep not doing it.
     if (orig) cv.extM() = orig;
-    for (auto& p : c.caps)
-        cv.arrRef().push_back(p.first < 0 ? Value::nil()
-            : Value::matchVal(subject.substr(p.first, p.second - p.first), p.first, p.second));
+    auto span = [&](long f, long t) {
+        Value m = Value::matchVal(subject.substr(f, t - f), f, t);
+        if (orig) m.extM() = orig;
+        return m;
+    };
+    // The positional captures this one owns: a capture that captured something
+    // itself was recorded as a child and is built from that record, so nesting
+    // goes all the way down.
+    std::map<int, const std::vector<ParseNode>*> capKids;
+    if (c.kids) for (auto& ck : *c.kids)
+        if (isPositionalKey(ck.first) && !ck.second.empty() && ck.second[0].capLocal >= 0)
+            capKids[ck.second[0].capLocal] = &ck.second;
+    for (size_t i = 0; i < c.caps.size(); i++) {
+        auto kit = capKids.find((int)i);
+        if (kit != capKids.end()) {
+            const std::vector<ParseNode>& occ = *kit->second;
+            if (occ.size() > 1 || (c.listCaps && c.listCaps->count((int)i))) {
+                Value lst = Value::array();
+                for (auto& o : occ) lst.arrRef().push_back(matchFromNode(o, subject, orig));
+                cv.arrRef().push_back(lst);
+            } else cv.arrRef().push_back(matchFromNode(occ[0], subject, orig));
+            continue;
+        }
+        if (c.listCaps && c.listCaps->count((int)i)) { // `( (a)+ )` — every occurrence
+            Value lst = Value::array();
+            if (c.capReps) {
+                auto rit = c.capReps->find((int)i);
+                if (rit != c.capReps->end())
+                    for (auto& o : rit->second) lst.arrRef().push_back(span(o.first, o.second));
+            }
+            cv.arrRef().push_back(lst);
+            continue;
+        }
+        auto& p = c.caps[i];
+        cv.arrRef().push_back(p.first < 0 ? Value::nil() : span(p.first, p.second));
+    }
+    while (cv.arr() && !cv.arr()->empty() && cv.arr()->back().t == VT::Nil) cv.arrRef().pop_back();
     for (auto& nm : c.named)
         if (!c.kids || !c.kids->count(nm.first))
-            cv.hashRef()[nm.first] = Value::matchVal(
-                subject.substr(nm.second.first, nm.second.second - nm.second.first),
-                nm.second.first, nm.second.second);
+            cv.hashRef()[nm.first] = span(nm.second.first, nm.second.second);
     if (c.kids) for (auto& ck : *c.kids) {
+        if (isPositionalKey(ck.first)) continue;   // a NUMBER — presented above
         bool many = ck.second.size() > 1 || (c.listNames && c.listNames->count(ck.first));
         if (!many) { cv.hashRef()[ck.first] = matchFromNode(ck.second[0], subject, orig); continue; }
         Value a2 = Value::array(); a2.isList = true;
@@ -28874,7 +28925,24 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // PLUS a hoisted one — which is what DBDish::Pg walks to rebuild a
         // Postgres array literal, and it read every array as a single element.
         std::map<std::string, size_t> consumedByGroup;
+        // A capture that captured something ITSELF was recorded as a child node,
+        // and that record is what `$n` answers — nesting, rather than the span
+        // alone, so `$0[0]` and `$0<name>` reach inside the group.
+        std::map<int, const std::vector<ParseNode>*> capKids;
+        if (pn.kids) for (auto& ck : *pn.kids)
+            if (isPositionalKey(ck.first) && !ck.second.empty() && ck.second[0].capLocal >= 0)
+                capKids[ck.second[0].capLocal] = &ck.second;
         for (size_t ci = 0; ci < pn.caps.size(); ci++) {
+            auto kit = capKids.find((int)ci);
+            if (kit != capKids.end()) {
+                const std::vector<ParseNode>& occ = *kit->second;
+                if (occ.size() > 1 || (pn.listCaps && pn.listCaps->count((int)ci))) {
+                    Value lst = Value::array(); lst.isList = true;
+                    for (auto& o : occ) lst.arr()->push_back(build(o));
+                    mv.arrRef().push_back(std::move(lst));
+                } else mv.arrRef().push_back(build(occ[0]));
+                continue;
+            }
             // a positional capture under a repetition quantifier is an ARRAY of
             // every occurrence (`(...)+` → @$0), as in Rakudo — Cro::Uri's pchars
             // action concatenates `@$0` chunks to rebuild a path segment
@@ -28921,6 +28989,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             return build(child);
         };
         if (pn.kids) for (auto& kv : *pn.kids) {
+            if (isPositionalKey(kv.first)) continue;   // a NUMBER — presented above
             {   // wholly inside a positional group: it is the GROUP's capture, not ours
                 auto cg = consumedByGroup.find(kv.first);
                 if (cg != consumedByGroup.end() && cg->second >= kv.second.size()) continue;
@@ -31636,14 +31705,14 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%" || u->op == "ctx%{}") {
         Value v = eval(u->operand.get());
         if (u->op == "ctx@") {
-            // `@<name>` (a single named capture in list context) is that match as a
-            // 1-element list, not its positional sub-captures — so `@<x>».ast` works.
-            // Dereferencing a match VARIABLE is the other question: `@$/` is the
-            // POSITIONAL CAPTURES, which is how `~« @$/` reads $0 $1 $2 at once.
+            // A Match in list context is its POSITIONAL CAPTURES — `.list` — and
+            // that is the same question however the match was reached: `@$/`
+            // reads $0 $1 $2 at once, and `@<x>` reads the captures of `$<x>`
+            // (empty when it has none). Answering `($match,)` for the subscript
+            // form made `:@<x>` a one-element list of the whole match.
             if (v.t == VT::Match) {
                 Value a = Value::array(); a.isList = true;
-                if (u->operand->kind == NK::VarExpr && v.arr()) *a.arr() = *v.arr();
-                else a.arr()->push_back(v);
+                if (v.arr()) *a.arr() = *v.arr();
                 return a;
             }
             if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; return a; } // @<undefined> = ()
@@ -31676,6 +31745,14 @@ Value Interpreter::evalUnary(Unary* u) {
             // `@%h` / `@$hash` lists the hash's Pairs (zef: `for @$node -> $sub-node`)
             if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = true; return a; }
             Value a = Value::array(); a.arr()->push_back(v); a.isList = true; return a;
+        }
+        // …and a Match in hash context is its NAMED captures — `.hash` — which is
+        // what `%<x>` reads. Coercing the match itself built a hash of its
+        // stringification instead, so `%<x>` came back empty.
+        if (u->op == "ctx%" && v.t == VT::Match) {
+            Value h = Value::makeHash();
+            if (v.hash()) *h.hash() = *v.hash();
+            return h;
         }
         if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
         if (u->op == "ctx%{}") {                        // :{ ... } object-hash composer
