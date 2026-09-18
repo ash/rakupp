@@ -100,7 +100,10 @@ logs and the reviews. This page is the complete list.
   Nil and Any as a one-element list, 50 items, 16 undeclared, rakupp
   differs on 43; [Str.md](semantics/Str.md) — Str, Stringy,
   the string half of Cool and the allomorphs, 66 items, 12 undeclared,
-  rakupp differs on 60, ten Rakudo bugs flagged (three of them hangs).
+  rakupp differs on 60, ten Rakudo bugs flagged (three of them hangs);
+  [List-Array.md](semantics/List-Array.md) — List, Array, Seq and Slip, 36
+  items, 4 undeclared, rakupp differs on 29; [Hash-Map-Pair.md](semantics/Hash-Map-Pair.md)
+  — Hash, Map and Pair, 20 items, 2 undeclared, rakupp differs on 16.
 
 ## Reviews — before and after a release
 

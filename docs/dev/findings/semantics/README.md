@@ -66,14 +66,15 @@ buckets or thread timing says so.
 | [Supply.md](Supply.md) | Supply, Supply-factories, Supply-coercers, Supplier, Rakudo/Supply | 69 | 38 | 7 | implemented 2026-09-18 (Roast S17-supply 27→55 of 58) |
 | [Nil-Any.md](Nil-Any.md) | Nil, Any, Any-iterable-methods | 50 | 16 | 22 | implemented 2026-09-18 (Roast 725→729 files; sheet items 6→28 of 50) |
 | [Str.md](Str.md) | Str, Stringy, Cool (string half), allomorphs | 66 | 12 | 56 | implementing 2026-09-18 (Roast 729→735 files; `val.t` 913 failing → 0) |
+| [List-Array.md](List-Array.md) | List, Array, Seq, Slip | 36 | 4 | 29 | extracted 2026-09-18 |
+| [Hash-Map-Pair.md](Hash-Map-Pair.md) | Hash, Map, Hash/Object, Pair | 20 | 2 | 16 | extracted 2026-09-18 |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
 
 Candidates, in the order the method-surface probe of 2026-09-17 ranked them
 (the probe is described in the memory of that day and in the Supply sheet's
-method section): List and Array; Hash
-and Map; Range; Int, Num, Rat; IO::Path; Proc::Async; Promise; Routine, Code,
+method section): Range; Int, Num, Rat; IO::Path; Proc::Async; Promise; Routine, Code,
 Parameter, Block, Attribute introspection; Instant, Duration, Date, DateTime;
 Set, Bag, Mix; Blob and Buf; Exception and Backtrace; Grammar and Match; then
 the compiler side: the precedence table, quote adverbs, sink context.
