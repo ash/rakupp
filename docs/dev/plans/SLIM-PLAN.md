@@ -40,6 +40,17 @@ beside the REPL. Re-pinned at ≤ 7.0 MB for `-all`, bare `--slim`
 one (6,557,736 on the same tree) — the wider slice had passed both old
 budgets only because CI never builds it.*
 
+*Update 2026-09-18: a batch of one-assertion Roast fixes added a single
+16,544-byte page step, CI's arm64 hello-all reached 7,350,920, and the
+7.0 MB line had 5,656 bytes left — so one page turned macos-universal red
+for three pushes. The growth is interpreter core with nothing CLI-only to
+carve. Rather than move the line another page, the gate is re-pinned loose:
+≤ 8.0 MB for `-all`, bare `--slim` ≤ 8.25 MB, about a megabyte of headroom
+on arm64 and ≈525 KB over a DERIVED x86_64 figure (arm64 plus the
+512,200-byte spread above; no current x86_64 build existed to measure).
+The absolute budgets are a runaway check; the gate that cannot go stale is
+the relative one, full − slim ≥ 2 MB.*
+
 ---
 
 ## Where we are — measured
