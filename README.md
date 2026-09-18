@@ -339,6 +339,7 @@ cover and the slides, is **[TALKS.md](TALKS.md)**.
 Raku++ is created by [Andrew Shitov](https://andrewshitov.com). Read the
 announcement:
 [Raku++ — the fastest Raku compiler](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/).
+More posts about Raku and Raku++: **[BLOG.md](BLOG.md)**.
 
 ## License
 
