@@ -5,7 +5,9 @@ produces a `Program`. It is recursive descent for statements and precedence
 climbing for expressions — the classic pairing, chosen because it is the one
 that survives contact with an irregular grammar.
 
-It is a **single forward pass**, and it executes nothing.
+It is a **single forward pass**, and on every path but one it executes nothing.
+The exception is a `use` that activates a slang, which runs that module and then
+re-lexes what is left of the unit (Chapter 3).
 
 ## Statement dispatch
 
@@ -196,7 +198,7 @@ sub.userPostcircumfix_ = userPostcircumfix_;
 
 so `"{ 5! }"` sees the program's own `postfix:<!>`.
 
-## Compile time: the parser runs nothing
+## Compile time: what the parser runs, and what it does not
 
 This is a real divergence from Rakudo and it shapes what Raku++ can support.
 
@@ -204,23 +206,26 @@ This is a real divergence from Rakudo and it shapes what Raku++ can support.
   not executed during parsing; the interpreter schedules it after the parse.
 - **`constant`** is not folded. It becomes a declaring `VarExpr` that the
   interpreter binds.
-- **`use` and `no`** become `UseStmt` nodes. No module is loaded, and even
-  `no strict` is handled at run time rather than by toggling a parser mode.
-  There is one exception, and it has to be one: `use v6.X` sets `Parser::langRev_`
+- **`use` and `no`** become `UseStmt` nodes. No ordinary module is loaded, and
+  even `no strict` is handled at run time rather than by toggling a parser mode.
+  There are two exceptions, and both have to be. `use v6.X` sets `Parser::langRev_`
   as it is parsed, because a language revision changes what the *rest of the
   file* means. `langRev_ >= 2` is what makes prefix `//` a defined-check rather
   than an empty regex, and what the module search consults for 6.e resolution
   rules. A pragma that decides how the following tokens parse cannot wait for
-  run time.
+  run time. And `use` of a module that registers a *slang* does load and run it,
+  in a scratch interpreter of its own, because there is no way to learn what a
+  slang registered without running the code that registers it; the rest of the
+  unit is then re-lexed through the tokens it handed back (Chapter 3).
 - **Named subs are hoisted** — but by the *interpreter*, not the parser.
   `hoistSubs` pre-registers every named `SubDecl` in a scope before running its
   statements, which is why subs need not be declared before use.
 
-The one parse-time side effect in the entire front end is registering a
-user-declared operator, which is lexical bookkeeping rather than execution.
-`use Foo` participates in exactly that much: `scanModuleOps` finds the module's
-source and *text-scans* it for operator declarations, so the rest of the
-importing file parses. It does not lex or parse the module (Chapter 33).
+Apart from a slang, the one parse-time side effect in the entire front end is
+registering a user-declared operator, which is lexical bookkeeping rather than
+execution. `use Foo` participates in exactly that much: `scanModuleOps` finds
+the module's source and *text-scans* it for operator declarations, so the rest
+of the importing file parses. It does not lex or parse the module (Chapter 32).
 
 ## Errors
 
@@ -257,6 +262,8 @@ happens before anything runs.
 - **The block/hash rule is a heuristic.** It implements Raku's documented rules,
   but pathological cases a backtracking grammar would resolve can still surprise
   it.
-- **No compile-time execution**, which is why a `BEGIN` block cannot influence
-  how later source parses — and, ultimately, why macros and slangs are out of
-  scope.
+- **No compile-time execution on the ordinary path**, which is why a `BEGIN`
+  block cannot influence how later source parses, and why macros are out of
+  scope. A slang is the exception, and it is a narrow one: `use` of a module
+  that registers a slang runs that module in an interpreter of its own and
+  re-lexes the rest of the unit through the tokens it registered (Chapter 3).

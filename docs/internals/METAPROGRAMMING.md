@@ -94,13 +94,13 @@ carries **72.9%** of the nodes (`rakupp --rakuast` prints ours,
 means for a module written against Rakudo's RakuAST is set out in
 [RAKUAST-VS-RAKUDO](../dev/RAKUAST-VS-RAKUDO.md).
 
-Macros and general slangs are still out.
+Macros are still out. Slangs run at a fixed set of seams — see the row below.
 
 | Feature | Status | Notes |
 |---|:---:|---|
 | `macro` / `quasi { … }` | ✗ | AST macros (`use experimental :macros`) |
 | `RakuAST::…`            | ✓ | the classes behind `use experimental :rakuast` (or 6.e) — constructible, with Rakudo's own `.^mro`/`.^parents`/`~~`/`.does` — plus `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` and `.rakudoc`, and `rakupp --rakuast` to print the tree ([RAKUAST-PLAN](../dev/plans/RAKUAST-PLAN.md)) |
-| slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse. One family works anyway: `use L10N::DE;` writes a whole program in German, because that slang renames keywords rather than changing the grammar ([SLANG-PLAN](../dev/plans/SLANG-PLAN.md), [FAQ](../guide/faq/l10n.md)) |
+| slangs — `$~MAIN`, grammar derivation | ◑ | `use` of a module that registers a slang runs it in a scratch `Interpreter` with a compile-time `$*LANG`, and the productions its roles override become **seams**: the lexer runs the slang's own `token` where it would have started a number, a value, an identifier, a sigilless variable, a pointy block or a routine declarator, plus two parser modes for `Slang::Tuxic`. The eight self-contained published slangs run this way. It is not a general grammar mixin — a slang that overrides a host production, or that changes only the actions, is refused by name. `use L10N::DE;` needs none of it: that one renames keywords ([SLANG-PLAN](../dev/plans/SLANG-PLAN.md), [Slang.h](../../src/Slang.h), [FAQ](../guide/faq/l10n.md)) |
 | `no strict` / relaxing pragmas | ◑ | `strict` is lexical and both directions work (`no strict` auto-vivifies undeclared variables, `use strict` turns the check back on); the other relaxing pragmas are accepted and ignored |
 | `use experimental :…`  | ◑ | accepted syntactically; the feature itself is usually a no-op |
 
@@ -125,12 +125,15 @@ The remaining gaps:
 
 - **Small, self-contained**: the word-form of a user op inside a meta-operator
   (`Zpl`, which lexes as one identifier).
-- **Large frontier** (compiler internals): `macro`/`quasi` and slangs — the
-  mechanisms by which a Raku program rewrites its own grammar. RakuAST used to
-  sit here and no longer does. One family of slangs works anyway: `use
-  L10N::XX;` writes a whole program in German or Japanese, because an L10N slang
-  renames keywords rather than changing the grammar, and a rename is a rewrite
-  of the token stream ([the FAQ article](../guide/faq/l10n.md)).
+- **Large frontier** (compiler internals): `macro`/`quasi` — running user code
+  mid-parse *and* substituting the AST it builds for the call site. RakuAST used
+  to sit here and no longer does; slangs moved out in September 2026 and now sit
+  at the seams described above, with the general grammar mixin still out of
+  reach. `use L10N::XX;` writes a whole program in German or Japanese without
+  either, because an L10N slang renames keywords rather than changing the
+  grammar, and a rename is a rewrite of the token stream
+  ([the FAQ article](../guide/faq/l10n.md)).
 
 _Snapshot taken against the current build (2026-09-12) on Darwin 24.6; statuses verified by_
-_one-liner._
+_one-liner. The slang row was rewritten on 2026-09-19 to match the seam mechanism_
+_that landed in `f8d2092`, read from the source rather than re-verified by running it._

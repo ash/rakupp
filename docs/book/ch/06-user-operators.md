@@ -178,8 +178,10 @@ push and pop at each registration site.
 
 ## Two escape hatches
 
-The single-pass rule has exactly two ways out, and both are about *another*
-parse seeing the current one's tables.
+The single-pass rule has exactly two ways out *for operators*, and both are
+about another parse seeing the current one's tables. (`use` has an escape of its
+own — it can rebuild the token stream from the cursor onward — but that is the
+lexer's business rather than the operator table's, and Chapter 3 has it.)
 
 **`EVAL`.** A snippet is parsed by a fresh `Parser`, which would know nothing
 about the enclosing program's operators. So the evaluator pre-seeds them:
@@ -239,21 +241,39 @@ without this file changing at all. Chapter 30 uses that list as a cache key.
 ## The line this draws
 
 Everything above is table manipulation: cheap, local, and reversible. That is
-why all six operator categories work, with precedence and associativity, in a
-parser that runs no user code.
+why all six operator categories work, with precedence and associativity, without
+the parser running a line of the user's code to make them.
 
 The features on the other side of the line — `macro`, `quasi`, slangs — need the
 parser to *execute user code mid-parse and then rewrite its own grammar with the
-result*. None of them are implemented, and the reason is structural rather than
-a matter of effort.
+result*. `macro` and `quasi` are still not implemented, and the reason is
+structural rather than a matter of effort: the second half of that sentence,
+substituting a user-built AST for the call site, has nowhere to happen in a
+parser with no compile-time evaluator.
+
+Slangs crossed the line in September 2026, and it is worth being exact about how
+far. `use` of a module that registers one runs the module in a scratch
+interpreter with a compile-time `$*LANG`, collects the grammar productions its
+roles override, and re-lexes the remainder of the unit with the slang's own
+`token` running wherever the built-in lexer would have started one of those
+productions. That is user code executing mid-parse, and the first half of the
+sentence above no longer describes this parser.
+
+What it is still not is a grammar rewrite. Only the productions `src/Slang.h`
+enumerates — number, value, identifier, sigilless variable, pointy block,
+routine declarator, plus two parser modes — have a seam to hang a token on, and
+a slang that overrides a host production, or that changes only the actions, is
+refused by name rather than half-applied. Rakudo mixes a role into the grammar
+and every production in it is fair game; that difference is the whole of the gap
+that remains. Chapter 3 places the mechanism in the taxonomy, and
+`docs/dev/plans/SLANG-PLAN.md` is the full account.
 
 `RakuAST` was on that list until the line was drawn properly. Asking for a
 program's syntax tree does not require running user code mid-parse; it requires
 being able to *describe* the parse that already happened. So it is a view over
-the existing tree, and it is implemented. The exception that proves the rule is
-`use L10N::DE;`, which is a slang upstream and works here — because what that
-particular slang carries is a table of keyword spellings, and renaming a token
-is not rewriting a grammar.
+the existing tree, and it is implemented. `use L10N::DE;` predates the seams and
+never needed them: what that particular slang carries is a table of keyword
+spellings, and renaming a token is not rewriting a grammar.
 
 There is a compensation. Because the language Raku++ accepts stays static
 enough to know in full at build time, the whole program can be compiled ahead

@@ -169,9 +169,9 @@ void runNextPhasers(const std::vector<StmtPtr>& stmts,
 The program-level phasers — `BEGIN`, `CHECK`, `INIT`, `END` — are scheduled by
 `run()` rather than by a block: `BEGIN` in source order after the parse, `CHECK`
 reversed, `INIT` immediately before the mainline, `END` at process exit. This is
-where the "the parser runs nothing" decision from Chapter 5 becomes visible: a
-`BEGIN` block runs *after* the whole file has been parsed, so it cannot
-influence how later source is read.
+where Chapter 5's compile-time decision becomes visible: a `BEGIN` block runs
+*after* the whole file has been parsed, so it cannot influence how later source
+is read.
 
 ## Loop bodies
 

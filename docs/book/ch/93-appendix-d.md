@@ -570,16 +570,19 @@ Implemented by wrapping atoms with a `<ws>` subrule at compile time
 (Chapter 20).
 
 **Single-pass** — reading the source once and doing the work on the way
-through, with no separate analysis pass over the tree afterwards. The front end
-here is single-pass, which is also why there is no whole-program analysis
-(Chapter 3).
+through, rather than in separate analysis passes over the tree. The parse here
+is single-pass, with three qualifications — a lexer pre-scan, two seams that
+re-lex the unread tail, and a slang's code running mid-parse — and it remains
+the reason there is no whole-program analysis to optimise from (Chapter 3).
 
 **Sink context** — a statement whose value is discarded, signalled down the
 evaluation so that an assignment need not materialise its result (Chapter 13).
 
 **Slang** — in Raku, a swapped-in sublanguage that changes how later source is
-parsed. It requires user code to run during the parse, and is not implemented
-here (Chapters 3 and 6).
+parsed. It requires user code to run during the parse, which here happens at a
+fixed set of seams: the module runs in an interpreter of its own, and its tokens
+are called where the lexer would have started the productions it overrode. A
+slang that reaches past those seams is refused by name (Chapters 3 and 6).
 
 **Slip** — `|@a`: a list that splices into the surrounding list or argument
 list instead of nesting inside it (Chapter 12).

@@ -83,13 +83,15 @@ This makes the implementation small and makes native recursion depth the Raku
 recursion budget, which is why the entry point runs the program on a thread
 with a very large stack.
 
-**Compile time runs nothing.** The parser executes no user code. `BEGIN`
-becomes a tagged block that the interpreter schedules after the parse;
-`constant` is not folded; `use` does not load anything during parsing. There is
-exactly one parse-time side effect — registering a user-declared operator in the
-parser's own tables — and Chapter 6 is about why that one is enough to support
-custom operators with real precedence in a single forward pass, and why it is
-also the reason macros and slangs are not supported.
+**Compile time runs almost nothing.** `BEGIN` becomes a tagged block that the
+interpreter schedules after the parse; `constant` is not folded; `use` loads no
+ordinary module during parsing. There are two parse-time side effects. The first
+is registering a user-declared operator in the parser's own tables, and Chapter 6
+is about why that one is enough to support custom operators with real precedence
+in a single forward pass. The second is `use` of a *slang*: that module alone is
+run during the parse, so that the tokens it registers can be spliced into the
+lexer for the rest of the unit. Macros need a third thing neither provides — a
+user-built AST substituted for the call site — and are not supported.
 
 ## What it deliberately is not
 
@@ -103,9 +105,11 @@ counting, which means a reference cycle leaks; the interpreter breaks the
 specific cycle that a self-closured nested sub would create, and otherwise the
 process is short-lived enough for this to be a real but tolerable limitation.
 
-It does not implement compile-time metaprogramming. `macro`, `quasi` and
-swapping the grammar for a lexical scope are absent, for the structural reason
-given above. `RakuAST` turned out not to belong in that group: the tree a
+It implements compile-time metaprogramming only in part. `macro` and `quasi`
+are absent, for the structural reason given above. Swapping the grammar for a
+lexical scope — a slang — works at a fixed set of seams: the module is run and
+its tokens are called where the lexer would have started the productions it
+overrode, and a slang that reaches past them is refused by name. `RakuAST` turned out not to belong in that group: the tree a
 program asks for is a **view** built over the parse that has already happened,
 so nothing has to run mid-parse and nothing has to rewrite a grammar. It is
 implemented — the classes, `.AST`, `.DEPARSE`, `.EVAL`, `visit-children` and

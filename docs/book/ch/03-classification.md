@@ -23,7 +23,15 @@ Nothing in that sentence is generated. There is no grammar file, no parser
 generator, no state table, and no dependency — which is the same constraint
 Chapter 1 opened with, seen from the compiler-theory side.
 
-## The lexer: separate, complete, no feedback
+*Single-pass* is the load-bearing word in that sentence, and it is the one with
+exceptions. The parse proper reads the token vector once; the lexer scans the
+source once before it, two seams throw the unread tail away and lex it again,
+and one of those runs the user's own code to do it. They are set out under
+"The pass structure" below, because a reader who takes the one-liner unqualified
+will predict the wrong limitation list — which is the opposite of what this
+chapter is for.
+
+## The lexer: separate, complete, run more than once
 
 `Lexer::tokenize()` is a character-level scanner that runs to completion and
 returns a flat `std::vector<Token>`. Only then is a parser built over it:
@@ -34,12 +42,28 @@ Lexer lx(src);
 Parser p(lx.tokenize());
 ```
 
-The two phases are therefore **fully decoupled**. That is worth stating
+The lexer therefore never asks the parser anything. That is worth stating
 explicitly because the opposite arrangement is so common: C compilers famously
 need the parser's symbol table to decide whether an identifier is a type name,
 and the resulting parser-to-lexer feedback loop is known in the trade as the
-lexer hack. Raku++ has nothing of the sort. The lexer never asks the parser
-anything, because by the time the parser exists the lexer has finished.
+lexer hack. Raku++ has nothing of the sort; by the time the parser exists the
+lexer has finished.
+
+The *other* direction is not empty, though, and this chapter used to say it was.
+A parser that reaches a `use` can discard the tokens it has not read yet and lex
+the remaining source again: `relexForQuoteWords` and `activateSlang` in
+`src/Parser.cpp` both truncate `toks_` at the cursor and splice on a freshly
+lexed tail. The lexer is still closed over its input and still answers no
+questions — it is simply run more than once. What forces that is always the same
+shape of event: a `use` teaches the *lexer* something, and the lexer is already
+past.
+
+`tokenize()` also opens with a scan of its own. Before a single token exists it
+reads the source for `sub q`, `sub s` and `sub tr` declarations
+(`scanQuoteWordSubs`), because a routine of that name beats the quote form of
+the same name from its declaration onward, and the lexer has no scopes to ask.
+It is textual and deliberately narrow — a comment is skipped, quoted text is not
+code — but it is a pre-scan by any reasonable definition.
 
 Raku's context-sensitivity is real, so the work has to happen somewhere; here it
 is resolved from the lexer's **own one-token history**. A bare `/` opens a regex
@@ -83,22 +107,53 @@ which is why `parseExpr` fits on a page (Chapter 5).
 Placing it in the LL/LR hierarchy: it is **top-down, LL family, and neither
 LL(1) nor any fixed LL(k)**. The honest description is *recursive descent with
 bounded local backtracking*. The parser walks the token vector once, left to
-right, and rewinds at exactly four places in seven and a half thousand lines,
+right, and rewinds at exactly four places in ten and a half thousand lines,
 each a short speculative probe that restores the position on failure. Because it
 memoizes nothing, it is not a packrat or PEG parser; because it builds no parse
 forest, it is not GLR or Earley. Ambiguity is resolved where it is met, not
 afterwards.
 
-The pass structure is equally plain: there is no pre-scan, and **no user code
-runs during the parse**. `BEGIN`, `constant`, `use` and `no` all become AST
-nodes that the interpreter acts on later. Named subs are hoisted — but by the
-interpreter, which is the reason a sub needs no forward declaration while an
-operator does.
+## The pass structure
+
+The staging is mostly as plain as the one-liner suggests. `BEGIN`, `constant`,
+`use` and `no` all become AST nodes that the interpreter acts on later; named
+subs are hoisted, but by the interpreter, which is the reason a sub needs no
+forward declaration while an operator does. Nothing is memoized, nothing is
+revisited, and the AST that comes out is the only representation there will
+ever be.
+
+Three things qualify that, and together they are the honest answer to *is it
+one-pass?*
+
+**The lexer pre-scans.** `Lexer::tokenize()` reads the source for quote-word
+`sub` declarations before it tokenizes, as above. Nothing pre-scans it for
+*operators* — that is the pre-scan the limitation list further down is about,
+and the two are easy to conflate.
+
+**Two seams re-lex the tail.** A `use` of a module that declares `sub tr`, or of
+a slang, rebuilds the token stream from the cursor on. The parse is still a
+single left-to-right walk; the tape under it was replaced mid-walk.
+
+**A slang runs user code during the parse.** This is the one that changed.
+`rakuppActivateSlang` (`src/MethodCallPart3.cpp`) builds a scratch `Interpreter`
+with a compile-time `$*LANG`, *runs the slang module for real*, and keeps it
+alive alongside the parse; the grammar productions its roles override come back
+as seams, and the lexer then **runs the slang's own `token`** at the position it
+would itself have started a number, a value, an identifier, a sigilless
+variable, a pointy block or a routine declarator. `src/Slang.h` is the
+enumeration. Until September 2026 this chapter said flatly that no user code
+runs during the parse; for everything that is not a slang, it still does not.
+
+One further pass sits between the parser and every back end, and it is not part
+of the parse at all: `DeclCheck` (Chapter 38) asks whether each variable the
+unit mentions is declared anywhere in its lexical chain, and refuses the program
+before it starts. It is a gate rather than an analysis — it computes nothing a
+later stage consumes, beyond the list of `no strict` names the native back end
+needs in order to emit no local for them.
 
 ## The part with no textbook box
 
-One thing does happen at parse time: the **operator table is mutated while
-parsing**. Declaring `sub postfix:<!>` registers a new operator with its own
+The central case is the **operator table, mutated while parsing**. Declaring `sub postfix:<!>` registers a new operator with its own
 precedence and associativity, taken from `is tighter`, `is looser` and
 `is equiv`, and tokens after that point parse differently from tokens before it.
 
@@ -117,7 +172,17 @@ The extension mechanism is deliberately narrow, and Chapter 6 is about exactly
 how narrow. `use Foo` does not parse the module at compile time: the parser
 *text-scans* the module source for declarations of `infix:<…>` and its
 relatives, and registers those names so the importing file can parse them. That
-is lexical bookkeeping, not execution — the distinction Chapter 33 returns to.
+is lexical bookkeeping, not execution — the distinction Chapter 32 returns to.
+
+One kind of module is the exception. If the source registers a slang — `use
+Slangify`, or a direct `define_slang` — bookkeeping cannot answer what it
+registered, so the module is run, in an interpreter of its own, to find out.
+That is a second adaptive mechanism sitting beside the operator table, and it is
+narrower than Rakudo's in a specific way. Rakudo mixes a role into the grammar
+and every production in it is fair game; here only a production with a seam can
+be overridden at all, and a slang that reaches past them — one that overrides a
+host production, or that changes only the actions — is refused by name rather
+than silently half-applied.
 
 ## The regex engine, classified separately
 
@@ -191,7 +256,7 @@ Stated plainly, since these are the usual guesses:
 
 | | Front end | Grammar fixed? | Back end |
 |---|---|---|---|
-| **Raku++** | Recursive descent + Pratt, hand-written | No — live operator table | AST tree-walk; `--exe` emits C++ |
+| **Raku++** | Recursive descent + Pratt, hand-written | No — live operator table, plus slang seams | AST tree-walk; `--exe` emits C++ |
 | **Rakudo** | Self-hosted NQP grammars, code runs at parse time | No — slangs and macros | Bytecode, IR, JIT on MoarVM |
 | **CPython** | Generated PEG parser | Yes | AST → bytecode → VM |
 | **Clang** | Recursive descent, hand-written | Yes | LLVM IR, SSA, full pipeline |
@@ -207,8 +272,10 @@ context-sensitivity.
 And it shares its *grammar not fixed* column with Rakudo alone — which is a
 property of the Raku language rather than a choice either implementation made.
 Any Raku implementation has to solve it. The two solved it differently, and the
-difference explains most of what Chapter 6 says is missing here: Rakudo runs the
-program's own code during the parse, and Raku++ does not.
+difference explains most of what Chapter 6 says is missing here: Rakudo's front
+end *is* a Raku grammar, so running the program's own code during the parse is
+its ordinary case. Here it is the exception, bought at six named seams and two
+modes, and everything outside them parses with no user code running at all.
 
 ## Honest limitations
 
@@ -216,16 +283,21 @@ Nearly every front-end limitation in this book is downstream of the
 classification above, and worth reading as a consequence rather than a bug list:
 
 - **Operators must be declared before use.** The only way the parser learns of
-  one is by reaching its declaration, and nothing pre-scans the file. Subs are
-  exempt only because the interpreter hoists them.
-- **No macros and no slangs.** Both require user code to run during the parse and
-  change how later source is parsed. A parser that executes nothing cannot offer
-  them, and no amount of work short of restructuring the pass would.
+  one is by reaching its declaration, and nothing pre-scans the file *for
+  operators* — the lexer's own pre-scan looks for quote-word subs and nothing
+  else. Subs are exempt only because the interpreter hoists them.
+- **No macros, and slangs only where there is a seam.** A macro needs user code
+  to run during the parse *and* to yield the AST that replaces the call; the
+  first half now exists and the second does not. A slang works only at the
+  productions `src/Slang.h` enumerates: the eight self-contained ones run their
+  own tokens, Tuxic runs as a pair of parser modes, and one that reaches past
+  both is refused by name.
 - **Block versus hash stays a heuristic.** It follows Raku's documented rules,
   but a case a backtracking full grammar would settle by trying both can still be
   decided wrongly here.
-- **No whole-program analysis.** With no IR and no separate pass over the tree
-  before execution, an `--exe` optimization has to be expressible as a local
+- **No whole-program analysis.** `DeclCheck` does walk the tree before execution,
+  but it answers one question and hands the back end nothing to optimize with;
+  with no IR, an `--exe` optimization still has to be expressible as a local
   rewrite during emission.
 
 The other side of the ledger is the reason the design holds. One AST serves all
