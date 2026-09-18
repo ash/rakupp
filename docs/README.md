@@ -149,6 +149,7 @@ See **[dev/README.md](dev/README.md)** for the annotated list. In short:
 - **[../CHANGELOG.md](../CHANGELOG.md)** — every release, with what changed.
 - **[../LONGREAD.md](../LONGREAD.md)** — the round-by-round story of the build.
 - **[../BLOG.md](../BLOG.md)** — the blog posts and the dev.to series about Raku and Raku++.
+- **[../MENTIONS.md](../MENTIONS.md)** — where other people write about Raku++.
 - **[../examples/README.md](../examples/README.md)** — the example programs.
 - **[../showcase/README.md](../showcase/README.md)** — the mid-size showcase programs.
 - **[../t/README.md](../t/README.md)** — the example + showcase regression suite.

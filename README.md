@@ -341,6 +341,10 @@ announcement:
 [Raku++ — the fastest Raku compiler](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/).
 More posts about Raku and Raku++: **[BLOG.md](BLOG.md)**.
 
+What other people write about Raku++ — the newsletters, posts and remarks —
+is collected in **[MENTIONS.md](MENTIONS.md)**; other people's software that
+reached for the engine is in **[live/ADOPTIONS.md](live/ADOPTIONS.md)**.
+
 ## License
 
 [Artistic License 2.0](LICENSE) — the same license Raku itself uses.

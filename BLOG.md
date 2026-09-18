@@ -5,6 +5,9 @@ from the announcement on. The posts about the language itself are also
 published on dev.to as the series
 [What you can do with Raku and Raku++](https://dev.to/andrewshitov/series/42194).
 
+What other people write about Raku++ is a different file:
+[MENTIONS.md](MENTIONS.md).
+
 ## On andrewshitov.com
 
 | Date | Post | About |
