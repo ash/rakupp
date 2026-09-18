@@ -208,6 +208,11 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Str",     {"Str","Stringy","Cool","Any","Mu"}},              // Str does Stringy
         {"Bool",    {"Bool","Int","Real","Numeric","Cool","Any","Mu"}}, // Bool IS an Int (an Int-backed enum): True.isa(Int), Bool.^mro
         {"Cool",    {"Cool","Any","Mu"}},
+        // Nil is a Cool — which is what makes its inherited list and string
+        // methods real — and Failure is a Nil, so `Failure.new ~~ Nil` is True
+        // (Nil-Any sheet NA-02, NA-10).
+        {"Nil",     {"Nil","Cool","Any","Mu"}},
+        {"Failure", {"Failure","Nil","Cool","Any","Mu"}},
         {"Date",    {"Date","Dateish","Any","Mu"}},
         {"DateTime",{"DateTime","Dateish","Any","Mu"}},
         // the grammar/match family: a grammar IS a Match (that is how `self`
@@ -240,6 +245,15 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"buf32", {"buf32","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
         {"buf64", {"buf64","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
         {"utf8",  {"utf8","Blob","Positional","Stringy","Any","Mu"}},
+        // The list family is Cool — `(1, 2, 3, (1, 2, 3)).are` is Cool, not Any
+        // (Nil-Any sheet NA-31, roast S32-list/are.t) — and Mu is the ROOT, so
+        // it has no ancestors of its own to fall back through.
+        {"List",  {"List","Cool","Positional","Iterable","Any","Mu"}},
+        {"Array", {"Array","List","Cool","Positional","Iterable","Any","Mu"}},
+        {"Seq",   {"Seq","Cool","Iterable","Any","Mu"}},
+        {"Slip",  {"Slip","List","Cool","Positional","Iterable","Any","Mu"}},
+        {"Mu",    {"Mu"}},
+        {"Any",   {"Any","Mu"}},
         {"Uni",  {"Uni","Positional","Iterable","Any","Mu"}},
         {"NFC",  {"NFC","Uni","Positional","Iterable","Any","Mu"}},
         {"NFD",  {"NFD","Uni","Positional","Iterable","Any","Mu"}},
@@ -2332,6 +2346,20 @@ Value makeInfArray(long long start) {
     return a;
 }
 
+// `+values`: ONE non-itemized Iterable argument IS the list; anything else is
+// an element, and an ITEMIZED list counts as one element rather than
+// flattening. `skip(5, @a)` skips the array's elements while `skip(5, $a)`
+// skips over the single item the `$` holds (Nil-Any sheet NA-49; roast
+// S32-list/skip.t and head.t assert both readings side by side).
+static Value slurpyValues(const ValueList& vs) {
+    if (vs.size() == 1 && !vs[0].itemized &&
+        (vs[0].t == VT::Array || vs[0].t == VT::Range))
+        return vs[0];
+    Value l = Value::array(); l.isList = true;
+    *l.arr() = vs;
+    return l;
+}
+
 ValueList toList(const Value& v) {
     if (v.t == VT::Array && v.arr()) return *v.arr();
     if (v.t == VT::Range) return v.flatten();
@@ -4351,6 +4379,27 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
 // `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.
+// The key/value family answers a LIST, not a Seq, whenever the invocant is not
+// a collection: `42.values` is `(42,)` and `Any.keys` is `()` — both Lists,
+// while `(1, 2).values` and `42.keys` are Seqs (Nil-Any sheet NA-04, NA-16,
+// NA-18). Rakudo reaches the first through `Any.list`, which is a List, and the
+// second through an iterator. An ENUM is a collection of its table and keeps
+// its Seq, so Bool is excluded.
+static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
+    // An enum VALUE's `.kv` is its own (name, number) List — see the arm that
+    // builds it. Only the enum TABLE views (keys/values/pairs) are Seqs.
+    if (m == "kv" && !inv.enumName.empty() && inv.t != VT::Array) return true;
+    const bool enumish = !inv.enumName.empty() || inv.t == VT::Bool ||
+                         (inv.t == VT::Type && inv.s == "Bool");
+    if (enumish) return false;
+    if (m == "values")
+        return inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash &&
+               inv.t != VT::Match && inv.t != VT::Object;
+    if (m == "keys" || m == "kv" || m == "pairs" || m == "antipairs" || m == "invert")
+        return inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil;
+    return false;
+}
+
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
     // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
@@ -4382,8 +4431,15 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
          m == "antipairs" || m == "invert" ||
          m == "reverse" || m == "sort" || m == "unique" || m == "squish" ||
-         m == "head" || m == "tail" || m == "skip" || m == "rotor" || m == "batch"))
+         m == "head" || m == "tail" || m == "skip" || m == "rotor" || m == "batch" ||
+         m == "toggle" || m == "collate" || m == "repeated") &&
+        !kvFamilyAnswersList(inv, m))
         r.s = "Seq";
+    // …and when the answer is a List, say so even if an inner delegation
+    // already marked it: `42.values` reaches List.values, which IS a Seq, but
+    // the answer to `42.values` is the one-element List (Nil-Any sheet NA-18).
+    else if (r.t == VT::Array && r.isList && r.s == "Seq" && kvFamilyAnswersList(inv, m))
+        r.s.clear();
     return r;
 }
 
@@ -5361,21 +5417,70 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return methodCall(one, m, args, rwArgs);
     }
 
-    // an undefined invocant in list context is an empty list (e.g. an unmatched
-    // named capture used as `@<x>».ast` or `@<x>.map(...)`).
+    // Nil REFUSES to be mutated, and says so with the type Rakudo names
+    // (Nil-Any sheet NA-06; roast S02-types/nil.t asserts that each throws).
+    // `.STORE` and the assigning subscripts are read-only targets; the
+    // list mutators are an outright misuse; the BINDING subscripts hand back a
+    // Failure carrying X::Bind, so they only detonate when the value is used.
+    if (inv.t == VT::Nil) {
+        // Nil is a Cool, so the STRING methods it inherits run on the empty
+        // string — and every one of them answers a Str, `chars` and `contains`
+        // included (Nil-Any sheet NA-07). Before the list rules below, or
+        // `.comb`/`.words` would answer the one-element list instead.
+        static const std::set<std::string> kStrOnNil = {
+            "chars", "chomp", "chop", "codes", "comb", "contains", "ends-with",
+            "flip", "indent", "index", "indices", "lc", "lines", "tc", "tclc",
+            "rindex", "starts-with", "trans", "substr", "subst", "substr-eq",
+            "substr-rw", "wordcase", "words", "uc"};
+        if (kStrOnNil.count(m)) {
+            const std::string msg = "Use of Nil." + (const std::string&)m +
+                                    " coerced to empty string";
+            if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+            return Value::str("");
+        }
+        // Nil numifies to the INT zero, as `.Int` already did — `.Numeric` went
+        // through the generic Num path and answered `0e0` (Nil-Any sheet NA-08).
+        if (m == "Numeric" || m == "Real") return Value::integer(0);
+        // Reading through Nil is Nil, however many indices are handed over:
+        // `Nil.AT-POS(0, 1, 2)` is one Nil, not a slice (NA-15).
+        if (m == "AT-POS" || m == "AT-KEY" || m == "DELETE-POS" || m == "DELETE-KEY")
+            return Value::nil();
+        if (m == "STORE" || m == "ASSIGN-POS" || m == "ASSIGN-KEY")
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot modify an immutable Nil"};
+        if (m == "push" || m == "append" || m == "unshift" || m == "prepend")
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Use of Nil." + (const std::string&)m + " not allowed"};
+        if (m == "BIND-POS" || m == "BIND-KEY") {
+            Value f = rakuppNewFailure();
+            const std::string msg = "Cannot use bind operator with this left-hand side";
+            (*f.hash())["exception"] =
+                // X::Bind's .target NAMES what was bound to, as a phrase
+                // ("a call", "Nil") — it is not the value itself.
+                makeTypedEx("X::Bind", {{"target", Value::str("Nil")}}, msg);
+            (*f.hash())["message"] = Value::str(msg);
+            return f;
+        }
+    }
+    // An undefined invocant — Any, or Nil — IS a list: the ONE-element list
+    // holding itself. `Any.map({$_})` is `((Any),)` and `Nil.sort` is `(Nil,)`,
+    // because Rakudo reaches these through Any's iterable methods and an
+    // undefined invocant iterates as one element (Nil-Any sheet NA-03, NA-04,
+    // NA-16). The key/value family is the one exception: a value with no
+    // ELEMENTS has nothing to pair up, so those six answer the empty list
+    // (NA-04, NA-18) — which is also what an unmatched named capture used as
+    // `@<x>.kv` wants.
     if ((inv.t == VT::Any || inv.t == VT::Nil) &&
-        (m == "map" || m == "grep" || m == "list" || m == "flat" || m == "values" ||
-         m == "keys" || m == "kv" || m == "pairs" || m == "reverse" || m == "sort")) {
+        (m == "keys" || m == "values" || m == "kv" || m == "pairs" ||
+         m == "antipairs" || m == "invert")) {
         Value o = Value::array(); o.isList = true; return o;
     }
-    // …and the same undefined invocant answers the list methods that REDUCE a
-    // list rather than return one. Rakudo reaches these through Any's
-    // iterable methods (an undefined invocant iterates as one Any element),
-    // so `%h<missing>.first({…})` is Nil, not a "no such method" death.
     if ((inv.t == VT::Any || inv.t == VT::Nil) &&
-        (m == "first" || m == "head" || m == "tail" || m == "join" ||
-         m == "sum" || m == "min" || m == "max" || m == "skip" || m == "unique")) {
-        Value o = Value::array(); o.isList = true;
+        (m == "map" || m == "grep" || m == "list" || m == "flat" || m == "reverse" ||
+         m == "sort" || m == "first" || m == "head" || m == "tail" || m == "join" ||
+         m == "skip" || m == "unique")) { // sum/min/max/minmax want a DEFINED
+                                          // invocant — see NA-05, NA-23
+        Value o = Value::array(); o.isList = true; o.arr()->push_back(inv);
         return methodCall(o, m, args, rwArgs);
     }
     // `.ast`/`.made` on an undefined capture (e.g. `$<optional><tag>.ast`) degrades to Nil.
@@ -5509,6 +5614,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj() && inv.obj()->cls) ? Value::typeObj(inv.obj()->cls->name) : inv;
+        // …and the LINEARISATION questions resolve against the type object for a
+        // plain value too: `42.^mro` is `(Int, Cool, Any, Mu)` and `Nil.^mro` is
+        // `(Nil, Cool, Any, Mu)`. They used to be "no such method" on anything
+        // that was not already a type object (Nil-Any sheet NA-02).
+        if ((mm == "mro" || mm == "parents") && inv.t != VT::Type && inv.t != VT::Object)
+            return methodCall(Value::typeObj(inv.typeName()), m, std::move(args), rwArgs);
         if ((mm == "lookup" || mm == "find_method") &&
             !(tobj.t == VT::Type && classes_.count(tobj.s))) {
             // builtin-type invocant (`().^lookup('elems')`): a "method object" —
@@ -13012,6 +13123,34 @@ void Interpreter::registerBuiltins() {
                 if (x.t == VT::Pair && adv.count(x.s)) opts.push_back(x);
                 else items.push_back(x);
             }
+            // `permutations($n)` and `combinations($n, $k)` name the RANGE `^$n`,
+            // not an element: `combinations(3, 2)` is ((0,1),(0,2),(1,2)) and
+            // `permutations(3)` the six orderings of 0,1,2. A negative count is
+            // the empty range (Nil-Any sheet NA-49; roast permutations.t,
+            // combinations.t). The Iterable form below is unchanged.
+            // The bound keeps a huge `$n` from being materialised: nothing we
+            // could build would be an answer, and the old reading is at least
+            // instant. (`+permutations(30)` wants the COUNT without the lists,
+            // which is a separate, lazy answer we do not have yet.)
+            const long long kMax = std::string(nm) == "permutations" ? 9 : 16;
+            if ((std::string(nm) == "permutations" || std::string(nm) == "combinations") &&
+                !items.empty() &&
+                (items[0].t == VT::Int || items[0].t == VT::Num || items[0].t == VT::Rat) &&
+                items[0].toInt() <= kMax) {
+                long long n = std::max(0LL, items[0].toInt());
+                Value src = Value::array(); src.isList = true;
+                for (long long k = 0; k < n; k++) src.arr()->push_back(Value::integer(k));
+                ValueList rest(items.begin() + 1, items.end());
+                for (auto& o : opts) rest.push_back(o);
+                return I.methodCall(src, nm, rest);
+            }
+            // `combinations(@list, $k)` — an ITERABLE first argument is the list
+            // and what follows is the argument, not more elements. The other
+            // four (`unique(1, 1, 2)`, `squish(…)`, …) take `+values`, so their
+            // several arguments ARE the list.
+            if (std::string(nm) == "combinations" && items.size() > 1 &&
+                (items[0].t == VT::Array || items[0].t == VT::Range))
+                return I.methodCall(items[0], nm, ValueList(items.begin() + 1, items.end()));
             Value v = items.size() == 1 ? items[0] : Value::array(items);
             return I.methodCall(v, nm, opts);
         };
@@ -13032,17 +13171,35 @@ void Interpreter::registerBuiltins() {
             if (a.empty()) return Value::nil();
             if (a.size() == 1) { ValueList none; return I.methodCall(a[0], nm, none); }
             Value n = a[0];
-            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
-            ValueList ma{n}; return I.methodCall(list, nm, ma);
+            ValueList rest(a.begin() + 1, a.end());
+            ValueList ma{n}; return I.methodCall(slurpyValues(rest), nm, ma);
         };
     // pick/roll sub forms take the count FIRST: pick(3, @list) → @list.pick(3).
     for (auto nm : {"pick", "roll"})
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
             if (a.empty()) return Value::any();
             Value n = a[0];
-            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
-            ValueList ma{n}; return I.methodCall(list, nm, ma);
+            ValueList rest(a.begin() + 1, a.end());
+            ValueList ma{n}; return I.methodCall(slurpyValues(rest), nm, ma);
         };
+    // …and `skip` is BOTH a list sub and Test's skip-this-many-tests. Rakudo
+    // tells them apart by signature: Test's takes a reason and a count, the
+    // list one a count and `+values`. A numeric first argument with anything
+    // after it is the LIST form — roast S32-list/skip.t calls `skip(5, @a)`
+    // with `use Test` in scope and wants the list (Nil-Any sheet NA-49).
+    {
+        auto testSkip = B["skip"];
+        B["skip"] = [testSkip](Interpreter& I, ValueList& a) -> Value {
+            const bool listForm =
+                a.size() >= 2 &&
+                (a[0].t == VT::Int || a[0].t == VT::Num || a[0].t == VT::Rat ||
+                 a[0].t == VT::Whatever || a[0].t == VT::Code);
+            if (!listForm) return testSkip(I, a);
+            Value n = a[0];
+            ValueList rest(a.begin() + 1, a.end());
+            ValueList ma{n}; return I.methodCall(slurpyValues(rest), "skip", ma);
+        };
+    }
     B["srand"] = [](Interpreter&, ValueList& a) -> Value { // reseed the RNG; returns the seed
         long long seed = a.empty() ? (long long)::time(nullptr) : a[0].toInt();
         srandSeed(seed);
@@ -13809,6 +13966,10 @@ void Interpreter::registerBuiltins() {
         // `sort {comparator}, @list` / `sort &by, @list`: a leading Code is the
         // comparator/key extractor, not an element. `:by(&f)` names it; other
         // adverbs (:k) are forwarded. All such forms delegate to List.sort.
+        // `sort()` with nothing to sort is a mistake, not the empty list
+        // (Nil-Any sheet NA-24).
+        if (a.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"), "Must specify something to sort"};
         Value cmp; bool haveCmp = false;
         ValueList named, pos;
         for (auto& v : a) {
@@ -13857,18 +14018,16 @@ void Interpreter::registerBuiltins() {
         if (!sawRange) return rest;
         return items.empty() ? ranges : applyArith("+", rest, ranges);
     };
-    B["keys"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array();
-        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash()) out.arr()->push_back(Value::str(kv.first));
-        else if (!a.empty()) { ValueList l = toList(a[0]); for (size_t i = 0; i < l.size(); i++) out.arr()->push_back(Value::integer((long long)i)); }
-        return out;
-    };
-    B["values"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array();
-        if (!a.empty() && a[0].t == VT::Hash) for (auto& kv : *a[0].hash()) out.arr()->push_back(kv.second);
-        else if (!a.empty()) { ValueList l = toList(a[0]); for (auto& v : l) out.arr()->push_back(v); }
-        return out;
-    };
+    // `keys(…)` / `values(…)` ARE the methods: they answered a fresh ARRAY, so
+    // `keys(42)` was `[0]` where the method says `(0,).Seq` and `values(42)`
+    // `[42]` where it says `(42,)` — the same list, three shapes apart
+    // (Nil-Any sheet NA-49).
+    for (auto nm : {"keys", "values"})
+        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::nil();
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(inv, nm, rest);
+        };
     // Synchronous react/whenever/supply: eager, deterministic model.
     B["react"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty() || a.back().t != VT::Code) return Value::nil();
@@ -15033,7 +15192,10 @@ void Interpreter::registerBuiltins() {
     // `item($x)` is `$x.item` — a container becomes ONE non-flattening thing
     B["item"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::any();
-        Value v = a[0];
+        // SEVERAL arguments itemize as ONE list — `item(1, 2)` is `$(1, 2)`,
+        // not 1 (Nil-Any sheet NA-50). One argument itemizes that value.
+        Value v = a.size() == 1 ? a[0] : Value::array(a);
+        if (a.size() > 1) v.isList = true;
         if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v;
     };

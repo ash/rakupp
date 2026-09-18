@@ -6209,8 +6209,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Match && m == "Capture") return inv; // a Match already IS one
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
-        if (inv.t == VT::Range) { Value r = Value::array(); *r.arr() = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }
-        return inv;
+        // Everything else slips the list it STANDS for, which for a non-Iterable
+        // is the one-element list: `42.Slip` is `slip(42,)`, `Nil.Slip` is
+        // `slip(Nil,)`, a Hash slips its pairs (Nil-Any sheet NA-04, NA-16).
+        // It used to hand the invocant back unslipped, so `42.Slip` was `42`
+        // and spliced nothing.
+        Value r = Value::array(); r.isList = true; r.s = "Slip";
+        *r.arr() = toList(inv);
+        return r;
     }
     // IO::Special: the .path of the standard streams ("<STDOUT>" etc.)
     if (inv.t == VT::Str && inv.hashKind == "IO::Special") {
@@ -6257,7 +6263,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
          inv.t == VT::Any || inv.t == VT::Nil)) {
         Value o = Value::array(); o.isList = true; o.arr()->push_back(inv);
-        if (m == "Seq") o.s = "Seq";
+        // `.flat` of a non-Iterable is a Seq over the one element, not a List:
+        // `42.flat.raku` is `(42,).Seq` while `42.list` is `(42,)` (NA-16).
+        if (m == "Seq" || m == "flat") o.s = "Seq";
         return o;
     }
     // .deepmap/.duckmap/.nodemap on a non-Iterable map the one element it stands
@@ -6323,6 +6331,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         };
         if (m == "value") return plain();
         if (m == "pair") return Value::pair(inv.enumName, plain());
+        // An enum VALUE's `.kv` is its OWN name and number — `foo.kv` is
+        // `("foo", 0)`, a two-element List, not the index/value pair the
+        // one-element-list view would give (Nil-Any sheet NA-18; roast
+        // S12-enums/basic.t's "Enumeration:D.kv").
+        if (m == "kv") {
+            Value o = Value::array(); o.isList = true;
+            o.arr()->push_back(Value::str(inv.enumName.str()));
+            o.arr()->push_back(plain());
+            return o;
+        }
         // TYPE-level queries reach the enum type object — the tagged pair-list the
         // declaration built. `.enums` was implemented only there, so `Mass.enums`
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
@@ -6575,7 +6593,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // a hash has no promised order, so neither has its iterator
             (*it.hash())["nondeterministic"] = Value::boolean(true);
         }
-        else if (inv.t != VT::Nil && inv.t != VT::Any) items.arr()->push_back(inv);
+        // An undefined value is not an EMPTY sequence — it is a one-element one
+        // holding itself: `Nil.iterator.pull-one` is Nil and only the SECOND
+        // pull is IterationEnd (Nil-Any sheet NA-03, NA-17).
+        else items.arr()->push_back(inv);
         (*it.hash())["items"] = items;
         (*it.hash())["pos"] = Value::integer(0);
         if (lazy) (*it.hash())["lazy"] = Value::boolean(true);

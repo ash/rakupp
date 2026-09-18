@@ -1258,6 +1258,7 @@ struct Codegen {
                 if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
                 if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
                 if (u->op == "ctx%") return "rtCoerceHash(" + x + ")"; // %(...) hash composer
+                if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
                 if (u->op == "decont") // `$x<>` — the value, out of its item container
                     return "([&]()->Value{ Value _v = " + x +
                            "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";

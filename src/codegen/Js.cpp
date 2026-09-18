@@ -942,7 +942,7 @@ struct JsGen {
         if (op == "+^") return "R.bitneg(" + v + ")";
         if (op == "?^") return "!R.truthy(" + v + ")";
         if (op == "^") return "R.upto(" + v + ")";
-        if (op == "ctx%") return "R.newHash(" + v + ")";
+        if (op == "ctx%" || op == "ctx%{}") return "R.newHash(" + v + ")";
         if (op == "ctx@") return "R.mkList(R.itemsOf(R.decont(" + v + ")).slice())";
         if (op == "ctx$") return v;
         if (op == "decont") return v;

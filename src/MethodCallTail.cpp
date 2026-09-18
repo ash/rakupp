@@ -36,6 +36,12 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
 // `size => gap` starts the next window size+gap later (negative overlaps);
 // batch implies :partial, rotor drops a short final window unless :partial.
 struct RotorSpec { long long n, step; };
+// `.map` needs a Callable. Anything else is X::Cannot::Map, which carries what
+// was being mapped, how it was spelled, and the mistake it usually is — a
+// Whatever swallowed by a list, a missing block, a `.classify` written as a
+// `.map` (Nil-Any sheet NA-20).
+[[noreturn]] void throwCannotMap(Interpreter& I, const std::string& what, const Value& using_);
+
 static void parseRotorSpecs(const ValueList& args, bool isBatch,
                             std::vector<RotorSpec>& specs, bool& partial) {
     for (auto& a : args)
@@ -54,6 +60,14 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
     }
     for (auto& a : flatArgs) {
         if (a.t == VT::Pair && a.s == "partial") { if (!a.pairVal() || a.pairVal()->truthy()) partial = true; }
+        // `.batch(:2elems)` names the batch SIZE. It fell into the `size => gap`
+        // arm below, where the key "elems" numified to 0 and the size became 1
+        // with a gap of 1 + 2 — so `(1..5).batch(:2elems)` was `((1,), (4,))`
+        // (Nil-Any sheet NA-30).
+        else if (a.t == VT::Pair && !a.pairKey() && a.s == "elems" && a.pairVal()) {
+            long long n = a.pairVal()->toInt(); if (n < 1) n = 1;
+            specs.push_back({n, n});
+        }
         else if (a.t == VT::Pair && a.pairVal()) {
             long long n = a.pairKey() ? a.pairKey()->toInt() : std::atoll(a.s.c_str());
             if (n < 1) n = 1;
@@ -62,6 +76,22 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
         else if (a.isNumeric()) { long long n = a.toInt(); if (n < 1) n = 1; specs.push_back({n, n}); }
     }
     if (specs.empty()) specs.push_back({1, 1});
+}
+
+[[noreturn]] void throwCannotMap(Interpreter& I, const std::string& what, const Value& u) {
+    const bool listy = u.t == VT::Array || u.t == VT::Range;
+    const bool hashy = u.t == VT::Hash;
+    std::string using_ = listy ? "a List" : hashy ? "a Hash"
+                                                  : "'" + I.methodCall(u, "raku", ValueList{}).toStr() + "'";
+    std::string suggestion =
+        hashy ? "Did you mean to add a stub ({ ... }) or did you mean to .classify?"
+      : listy ? "Did a * (Whatever) get absorbed by a comma, range, series, or list repetition?\n"
+                "Consider using a block if any of these are necessary for your mapping code."
+              : "Did a * (Whatever) get absorbed by a list?";
+    I.throwTypedV("X::Cannot::Map",
+                  {{"what", Value::str(what)}, {"using", Value::str(using_)},
+                   {"suggestion", Value::str(suggestion)}},
+                  "Cannot map a " + what + " using " + using_);
 }
 
 } // namespace rakupp
@@ -384,8 +414,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // copies rather than binding, so the pair is frozen the moment it is built —
         // if Pair ever holds a real container this has to copy pairVal explicitly.
         if (m == "freeze") return inv;
-        // `.Hash` / `.Map` on a Pair is the one-entry hash it describes
-        if (m == "Hash" || m == "Map") {
+        // `.hash` / `.Hash` / `.Map` on a Pair is the one-entry hash it describes
+        if (m == "hash" || m == "Hash" || m == "Map") {
             Value h = Value::makeHash();
             h.hashRef()[inv.s] = inv.pairVal() ? *inv.pairVal() : Value::any();
             if (m == "Map") h.hashKind = "Map";
@@ -433,11 +463,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // already answered: `Any.Array` is [(Any)], not an error. Coercing an
     // absent hash lookup with `.Array` is how one Weekly Challenge solution
     // reads a graph's missing edges.
-    if (m == "Array" && (inv.t == VT::Type || inv.t == VT::Any)) {
-        Value one = Value::array(); one.arr()->push_back(inv);
+    // …and Nil is one element too — but an ARRAY ELEMENT cannot hold Nil: a
+    // stored Nil becomes the element default, so `Nil.Array` is `[Any]`
+    // (Nil-Any sheet NA-04, and the same rule NA-11 gives `[Nil]`).
+    if (m == "Array" && (inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil)) {
+        Value one = Value::array();
+        one.arr()->push_back(inv.t == VT::Nil ? Value::any() : inv);
         return one;
     }
-    if (m == "Hash" && (inv.t == VT::Type || inv.t == VT::Any)) return Value::makeHash();
+    if ((m == "Hash" || m == "hash") && (inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil))
+        return Value::makeHash();
     // scalar .Array / .List — a 1-element container: "LLL".Array is ["LLL"]
     if ((m == "Array" || m == "List") &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
@@ -449,14 +484,28 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // A TYPE OBJECT is an EMPTY list, not a one-element one: `Num.pairs` is (),
     // `Range.reduce(&[+])` is Nil. (An INSTANCE of the same type is one element —
     // that is the branch just below.)
-    if (inv.t == VT::Type) {
+    if (inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil) {
         // …but only for the KEY/VALUE family. `.map`/`.sort`/`.grep` still see a
         // ONE-element list (`Int.map({$_})` is `((Int))`) — a type object has no
         // ELEMENTS to pair up, yet it is still a single thing to iterate.
+        // `.pairup` joins them: it PAIRS the elements, and there are none.
         static const std::set<std::string> emptyList = {
-            "pairs", "antipairs", "kv", "keys", "values", "invert"};
+            "pairs", "antipairs", "kv", "keys", "values", "invert", "pairup"};
         if (emptyList.count(m)) { Value o = Value::array(); o.isList = true; return o; }
+        // Neither reducer has a seed to start from, and neither dies: both
+        // answer Nil (NA-25). `.tree` and `.are` answer the invocant itself
+        // (NA-44, NA-31) — there is no structure to descend into.
         if (m == "reduce" || m == "produce") return Value::nil();
+        // Methods Rakudo declares only for a DEFINED invocant have no candidate
+        // here, and a missing candidate is X::Multi::NoMatch, not a quiet
+        // answer (NA-05, NA-28, NA-30, NA-45).
+        static const std::set<std::string> needsDefined = {
+            "batch", "rotor", "toggle", "slice", "splice",
+            "minmax", "min", "max", "sum"};
+        if (needsDefined.count(m))
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " + (const std::string&)m +
+                                "(" + inv.typeName() + ":U: ...); none of these signatures matches"};
     }
     // list methods on a lone scalar treat it as a 1-element list: 42.grep(*>3), 'x'.map(...)
     // (a Code is one too — `(&say).kv` is `(0, &say)`)
@@ -467,14 +516,36 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
          inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair ||
-         inv.t == VT::Type) && // a type object is one item to ITERATE (see above)
+         inv.t == VT::Type ||  // a type object is one item to ITERATE (see above)
+         inv.t == VT::Any || inv.t == VT::Nil) && // …and so is an undefined value
         (m == "grep" || m == "map" || m == "flatmap" || m == "first" || m == "sort" || m == "reverse" ||
          m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply" ||
          m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
          m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" ||
          m == "rotor" || m == "unique" || m == "squish" || m == "antipairs" ||
          m == "collate" ||     // `Supply.collate` is `(Supply,).collate` (Roast collate.t)
+         m == "repeated" || m == "produce" || m == "pairup" ||
+         // …but an ENUM type object picks from its VALUES, which a later arm
+         // knows how to enumerate: `Order.pick` is one of Less/Same/More, not
+         // the type object itself.
+         ((m == "pick" || m == "roll") && !(inv.t == VT::Type && inv.s == "Order")) ||
+         m == "slice" || m == "Slip" || m == "chrs" ||
+         // `.hash`/`.Hash`/`.Map` read the invocant as a hash INITIALIZER, so a
+         // lone non-Pair is an odd-element store: `42.hash` and `Any.Map` are
+         // X::Hash::Store::OddNumber, which the list arm already raises.
+         // (`.hash`/`.Hash` on an undefined invocant answered `{}` above.)
+         m == "hash" || m == "Hash" || m == "Map" ||
+         // …but Supply declares classify/categorize for an INSTANCE only, and
+         // roast (S17-supply/classify.t) asks for the death: a class-method call
+         // must not quietly classify the one-element list `(Supply,)`.
+         ((m == "classify" || m == "categorize") && !(inv.t == VT::Type && inv.s == "Supply")) ||
          m == "combinations" || m == "permutations")) {
+        // …but a bad `.map` argument is reported against the SCALAR, not the
+        // one-element list it is about to become: `42.map(1)` says "Cannot map
+        // a Int" (Nil-Any sheet NA-20).
+        if (m == "map" && !args.empty() && args[0].t != VT::Code &&
+            !(args[0].t == VT::Pair && args[0].namedArg))
+            throwCannotMap(*this, inv.typeName(), args[0]);
         // toList keeps the scalar as one item, but a Blob/Buf expands to its
         // BYTES (`$blob.rotor(3, :partial)` in Base64 chunks byte-wise)
         Value one = Value::array(); *one.arr() = toList(inv); one.isList = true;
@@ -498,8 +569,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
             // — in their own arms below, as in Rakudo)
+            // …and `.sum` hands the refusal back as a FAILURE rather than
+            // throwing it, so `my $t = @lazy.sum` only detonates when $t is used
+            // (Nil-Any sheet NA-23). The rest still throw, as Rakudo's do.
+            if (m == "sum")
+                return armedFailure("X::Cannot::Lazy", "Cannot sum a lazy list onto an Array");
             if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
-                m == "sort" || m == "eager" || m == "sum" ||
+                m == "sort" || m == "eager" ||
                 m == "min" || m == "max" || m == "join" || m == "Str" ||
                 m == "reduce")
                 throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
@@ -1206,8 +1282,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (size_t i = 0; i < items.size(); i++) {
                 if (items[i].t == VT::Pair) { out.arr()->push_back(items[i]); continue; }
+                // A non-itemized Map contributes its OWN pairs rather than
+                // standing in as one key: `({a => 1}, 2, 3).pairup` is
+                // `(:a(1), 2 => 3)`. An itemized `$(…)` stays a key
+                // (Nil-Any sheet NA-27).
+                if (items[i].t == VT::Hash && items[i].hash() && !items[i].itemized &&
+                    items[i].hashKind.empty()) {
+                    for (auto& kv : *items[i].hash())
+                        out.arr()->push_back(Value::pair(kv.first, kv.second));
+                    continue;
+                }
                 if (i + 1 >= items.size())
-                    throw RakuError{Value::typeObj("X::AdHoc"),
+                    throw RakuError{Value::typeObj("X::Pairup::OddNumber"),
                                     "Odd number of elements found for .pairup()"};
                 Value p = Value::pair(items[i].toStr(), items[i + 1]);
                 // a non-Str key keeps its own value (`1 => 2`, not `"1" => 2`)
@@ -1276,7 +1362,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             long long lo = 0, hi = (long long)items.size();
             if (!args.empty()) {
                 Value k = a0();
-                if (k.t == VT::Range) { lo = k.rFrom(); hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
+                // a Range of SIZES, with both endpoints' exclusivity honoured:
+                // `1^..3` is sizes 2 through 3, `0^..0` none at all. The low
+                // `^` was ignored, so every such call also produced the sizes
+                // below it (roast S32-list/combinations.t).
+                if (k.t == VT::Range) { lo = k.rFrom() + (k.rExFrom() ? 1 : 0);
+                                        hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
                 else { lo = hi = k.toInt(); }
             }
             if (hi > (long long)items.size()) hi = (long long)items.size();
@@ -1388,7 +1479,30 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList none;
                     return applyReduce(cn.substr(7, cn.size() - 8), none);
                 }
-                return Value::any();
+                // …but a plain BLOCK has no identity to fall back on, so folding
+                // nothing with one is an error, not a quiet Any (Nil-Any sheet
+                // NA-25).
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Too few positionals passed; expected 2 arguments but got 0"};
+            }
+            // A ONE-element list still CALLS the reducer with that single
+            // element — an operator answers it, a two-parameter block without a
+            // default dies "Too few positionals" (NA-25). Handing the element
+            // straight back skipped the call, so the error never happened and a
+            // reducer with a side effect never ran.
+            if (items.size() == 1) {
+                size_t req = 0;
+                if (args[0].code()) {
+                    if (args[0].code()->params && !args[0].code()->params->empty()) {
+                        for (auto& pp : *args[0].code()->params)
+                            if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
+                    } else req = args[0].code()->placeholders.size();
+                }
+                if (req > 1)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Too few positionals passed; expected " + std::to_string(req) +
+                            " arguments but got 1"};
+                return callCallable(args[0], ValueList{items[0]});
             }
             // `last` in the folding block ENDS THE FOLD and answers the
             // accumulator built so far — it is a loop from the block's point of
@@ -1433,7 +1547,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // answers it. A list-valued key NESTS — `("1a","1b")` files the value
         // under %h<1a><1b> — which is what separates it from plain `.classify`.
         // `.categorize-list` files under EVERY key the mapper yields instead.
-        if ((m == "classify-list" || m == "categorize-list") && !args.empty()) {
+        // …but only for an invocant that is NOT a Hash. A Hash (and a Baggy) has
+        // a fuller implementation further down — `:as`, `:into`, the mixed-level
+        // check, object-hash keys — and this arm, reached first, silently filed
+        // the `as => &code` adverb away as one of the VALUES to classify
+        // (roast S32-list/classify-list.t and categorize-list.t, every `&as` case).
+        if ((m == "classify-list" || m == "categorize-list") && !args.empty() &&
+            inv.t != VT::Hash) {
             bool cat = (m == "categorize-list");
             Value self = inv.t == VT::Hash && inv.hash() ? inv : Value::makeHash();
             Value mapper = args[0];
@@ -1480,8 +1600,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (x.s == "into")   into = x.pairVal();
                 else if (x.s == "as") asF = x.pairVal();  // what gets STORED, vs what is classified BY
             }
-            Value mapper = args.empty() ? Value::nil() : args[0];
+            // The classifier is the first POSITIONAL argument — `:as` and
+            // `:into` may be written before it (`classify(:as(*  * 2), * % 2)`),
+            // and reading args[0] blindly took the adverb for the classifier and
+            // keyed by the element itself (Nil-Any sheet NA-33).
+            Value mapper; bool haveMapper = false;
+            for (auto& x : args)
+                if (!(x.t == VT::Pair && (x.s == "into" || x.s == "as"))) {
+                    mapper = x; haveMapper = true; break;
+                }
+            if (!haveMapper)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Must specify something to " + (const std::string&)m +
+                        " with, a Callable, Hash or List"};
             Value h = Value::makeHash();
+            // …and the result is an OBJECT hash (Rakudo's `Hash[Mu,Mu]`), so a
+            // key keeps the classifier's own type instead of stringifying.
+            h.ofTypeM() = "Mu,Mu";
             // A key that is itself a LIST is a multi-LEVEL path: the element lands
             // in a hash of hashes, one level per key (`classify { [.&odd, .&big] }`
             // is %h<odd><big>), not under the keys joined into one string.
@@ -1505,12 +1640,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto add = [&](const ValueList& path, const Value& vIn) {
                 // `:as` maps the STORED value; the key still comes from the classifier
                 Value v = asF ? callCallable(*asF, {vIn}) : vIn;
+                // …and the bucket is an ARRAY, whose elements cannot hold Nil:
+                // `Nil.classify({$_})` files `[Any]` under the key Nil (NA-14).
+                if (v.t == VT::Nil) v = Value::any();
                 Value* level = &h;
                 for (size_t d = 0; d + 1 < path.size(); d++) {
                     std::string ks = keyOf(path[d]);
                     auto it = level->hash()->find(ks);
                     if (it == level->hash()->end() || it->second.t != VT::Hash || !it->second.hash()) {
                         Value nested = Value::makeHash();
+                        nested.ofTypeM() = "Mu,Mu"; // a nested level is an object hash too
                         nested.pairKeyM() = keyObj(path[d]);
                         (*level->hash())[ks] = std::move(nested);
                     }
@@ -1625,11 +1764,55 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // nothing about a Pair (or a Match, or a junction), so a list of
                 // Pairs was reported as not being Pairs at all.
                 std::string t = typeOfVal(args[0]);
-                for (auto& el : items) if (!applyArith("~~", el, args[0]).truthy())
-                    throw RakuError{Value::typeObj("X::AdHoc"), "Not all list elements are of type " + t};
+                // A mismatch is a FAILURE, not a throw: `.are(T)` answers True or
+                // hands back a Failure naming the first element that does not
+                // conform, so `if @a.are(Int) { }` reads it without a `try`
+                // (Nil-Any sheet NA-31; roast S32-list/are.t asserts the message).
+                for (size_t k = 0; k < items.size(); k++)
+                    if (!applyArith("~~", items[k], args[0]).truthy()) {
+                        Value f = rakuppNewFailure();
+                        const std::string msg = "Expected '" + t + "' but got '" +
+                                                typeOfVal(items[k]) + "' in element " +
+                                                std::to_string(k);
+                        (*f.hash())["exception"] = Value::typeObj("X::TypeCheck");
+                        (*f.hash())["message"]   = Value::str(msg);
+                        return f;
+                    }
                 return Value::boolean(true);
             }
             if (items.empty()) return Value::nil();
+            // The narrowest type or ROLE every element matches, found by walking
+            // the FIRST element's own linearisation (roles included) and taking
+            // the first entry the rest conform to: `(1, 2.5)` is Real, `(1, "a")`
+            // is Cool, `("foo", MyStr.new)` is Str (Nil-Any sheet NA-31). Folding
+            // pairwise over a table of built-in ancestries could not see a user
+            // class's chain at all, so anything home-made collapsed to Any.
+            // Membership is decided on the other elements' linearisations too,
+            // not by smartmatch: `~~` is deliberately loose in places (a tagged
+            // value answers Cool), and that looseness would report Cool for a
+            // list of Ints and a Date, where Rakudo says Any.
+            std::map<std::string, std::set<std::string>> mroCache;
+            auto mroOf = [&](const Value& v) -> const std::set<std::string>& {
+                std::string key = typeOfVal(v);
+                auto it = mroCache.find(key);
+                if (it != mroCache.end()) return it->second;
+                ValueList mroArgs{Value::pair("roles", Value::boolean(true))};
+                Value mro = methodCall(v, "^mro", mroArgs);
+                std::set<std::string> names;
+                if (mro.t == VT::Array && mro.arr())
+                    for (auto& t : *mro.arr()) names.insert(typeOfVal(t));
+                return mroCache.emplace(std::move(key), std::move(names)).first->second;
+            };
+            ValueList mroArgs0{Value::pair("roles", Value::boolean(true))};
+            Value mro0 = methodCall(items[0], "^mro", mroArgs0);
+            if (mro0.t == VT::Array && mro0.arr())
+                for (auto& cand : *mro0.arr()) {
+                    const std::string cn = typeOfVal(cand);
+                    bool all = true;
+                    for (size_t k = 1; k < items.size() && all; k++)
+                        all = mroOf(items[k]).count(cn) > 0;
+                    if (all) return cand;
+                }
             std::string lub = typeOfVal(items[0]);
             for (size_t k = 1; k < items.size(); k++) lub = lubType(lub, typeOfVal(items[k]));
             return Value::typeObj(lub);
@@ -1761,7 +1944,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return a.toInt();
         };
         if (m == "head") {
-            if (args.empty()) return items.empty() ? Value::any() : items.front();
+            // NIL when there is nothing to take, for the same reason `.tail`
+            // below answers Nil: an empty list has no first element, and Nil
+            // (not Any) is Rakudo's word for that (Nil-Any sheet NA-29).
+            if (args.empty()) return items.empty() ? Value::nil() : items.front();
             long long n = resolveCount(a0(), (long long)items.size());
             if (n < 0) n = 0;
             Value o = Value::array(); o.isList = true;
@@ -1826,14 +2012,29 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // :k → index; :v → value (the default); :kv → both; :p → index => value;
             // :end → search backwards for the LAST match
             char want = 0; bool wantEnd = false;
+            ValueList firstSel;
             for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
                 // :!v is an error — "not the value" has nothing to return
                 if (a.s == "v" && !a.pairVal()->truthy())
                     throw RakuError{Value::typeObj("X::Adverb"), "Specified a negated :v adverb"};
                 if (!a.pairVal()->truthy()) continue;
                 if (a.s == "end") wantEnd = true;
-                else if (a.s == "k" || a.s == "v" || a.s == "p") want = a.s[0];
-                else if (a.s == "kv") want = 'm';
+                else if (a.s == "k" || a.s == "v" || a.s == "p") { want = a.s[0]; firstSel.push_back(Value::str(a.s.str())); }
+                else if (a.s == "kv") { want = 'm'; firstSel.push_back(Value::str("kv")); }
+            }
+            // Two shape adverbs at once is X::Adverb — but `.first` hands it back
+            // as a FAILURE rather than throwing, so `my $r = @a.first(…, :k, :v)`
+            // only detonates when $r is used (Nil-Any sheet NA-22).
+            if (firstSel.size() > 1) {
+                Value o = Value::array(firstSel); o.isList = true; o.s = "Seq";
+                Value f = rakuppNewFailure();
+                const std::string msg = "Cannot use both adverbs at the same time";
+                Value none = Value::array(); none.isList = true; none.s = "Seq";
+                (*f.hash())["exception"] = makeTypedEx(
+                    "X::Adverb", {{"what", Value::str("first")}, {"source", Value::str("a List")},
+                                  {"nogo", o}, {"unexpected", none}}, msg);
+                (*f.hash())["message"] = Value::str(msg);
+                return f;
             }
             auto answer = [&](size_t i) -> Value {
                 if (want == 'k') return Value::integer((long long)i);
@@ -1842,8 +2043,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
                     return pr;
                 }
-                if (want == 'm') {
-                    Value o = Value::array(); o.isList = true; o.s = "Seq";
+                if (want == 'm') { // `.first(:kv)` answers a LIST of two, not a Seq
+                    Value o = Value::array(); o.isList = true;
                     o.arr()->push_back(Value::integer((long long)i));
                     o.arr()->push_back(items[i]);
                     return o;
@@ -1852,9 +2053,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             Value pred; bool havePred = false;
             for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
-            if (havePred && pred.t == VT::Bool)
-                throw RakuError{Value::typeObj("X::Match::Bool"),
-                    "Cannot use Bool as Matcher with '.first'.  Did you mean to use $_ inside a block?"};
+            // A Bool matcher is a mistake, and `.first` reports it as a FAILURE:
+            // `.grep` throws, `.first` hands one back (Nil-Any sheet NA-22).
+            if (havePred && pred.t == VT::Bool) {
+                const std::string msg =
+                    "Cannot use Bool as Matcher with '.first'.  Did you mean to use $_ inside a block?";
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::Match::Bool");
+                (*f.hash())["message"]   = Value::str(msg);
+                return f;
+            }
             auto match = [&](const Value& v) {
                 if (!havePred) return true;
                 return matcherAccepts(*this, v, pred);
@@ -2037,7 +2245,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return out;
             }
             const ValueList& pool0 = inv.enumType.empty() ? items : enumVals;
-            if (pool0.empty()) return args.empty() ? Value::nil() : Value::array();
+            // Nothing to draw from: a bare `.pick`/`.roll` is Nil, and the
+            // counted form is the empty LIST (`.roll(n)` a Seq) — not an empty
+            // ARRAY, which compared unequal to `()` (Nil-Any sheet NA-43).
+            if (pool0.empty()) {
+                if (args.empty()) return Value::nil();
+                Value o = Value::array(); o.isList = true;
+                if (m == "roll") o.s = "Seq";
+                return o;
+            }
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
                        (args[0].t == VT::Type && args[0].s == "Whatever") || // .pick(Whatever) == .pick(*)
                        (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
@@ -2145,7 +2361,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             bool first = true; Value prevKey;
             for (auto& v : items) {
                 Value k = keyOf(v); bool same = false;
-                if (!first) same = withF.t == VT::Code ? callCallable(withF, ValueList{k, prevKey}).truthy()
+                // `:with` is called (PREVIOUS, CURRENT) — the operands were the
+                // other way round, so an asymmetric test like
+                // `-> $prev, $cur { $cur == $prev + 1 }` read backwards and
+                // squished nothing (Nil-Any sheet NA-26; roast squish.t
+                // asserts the call sequence as well as the result).
+                if (!first) same = withF.t == VT::Code ? callCallable(withF, ValueList{prevKey, k}).truthy()
                                                       : applyArith("===", k, prevKey).truthy();
                 if (first || !same) out.arr()->push_back(v);
                 prevKey = k; first = false;
@@ -2282,6 +2503,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // source); nodemap applies per top-level node without descending;
             // duckmap applies where the fn "quacks", descending on failure.
             const Value& fn = args[0];
+            // All three walk ONE element at a time, so a mapper that wants more
+            // than one parameter can never be called (Nil-Any sheet NA-32).
+            if (codeArity(fn) > 1)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "." + (const std::string&)m + " only supports Callables with a single parameter, got " +
+                        std::to_string(codeArity(fn))};
+            // A SLIP result splices into the level it was produced at, and Empty
+            // — the empty Slip — vanishes (NA-32). Anything else is one element.
+            auto pushResult = [](Value& o, Value r) {
+                if (r.t == VT::Array && r.isList && r.s == "Slip") {
+                    if (r.arr()) for (auto& y : *r.arr()) o.arr()->push_back(y);
+                    return;
+                }
+                o.arr()->push_back(std::move(r));
+            };
             auto leaf = [&](Value& slot) -> Value {
                 topicWriteback_ = &slot; // $_/placeholder mutations alias the node
                 Value r;
@@ -2295,7 +2531,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // "b"; $_ })` is `a c`. duckmap's catch-all below took the control
             // exception for "does not quack" and kept the element.
             auto pushEl = [&](Value& o, Value& x, const std::function<Value(Value&)>& f) -> bool {
-                try { o.arr()->push_back(f(x)); }
+                try { pushResult(o, f(x)); }
                 catch (NextEx&) { }
                 catch (LastEx&) { return false; }
                 return true;
@@ -2303,7 +2539,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             std::function<Value(Value&)> deepEl = [&](Value& e) -> Value {
                 if (e.t == VT::Array && e.arr()) {
                     Value o = Value::array(); o.isList = e.isList;
-                    for (auto& x : *e.arr()) o.arr()->push_back(deepEl(x));
+                    for (auto& x : *e.arr()) pushResult(o, deepEl(x));
+                    // An INNER result is itemized, so it stays one element of the
+                    // level above: `(1, (2, 3)).deepmap(* * 10)` is
+                    // `(10, $(20, 30))`, not a flattened `(10, 20, 30)` (NA-32).
+                    o.itemized = true;
                     return o;
                 }
                 if (e.t == VT::Hash && e.hash() && e.hashKind.empty()) {
@@ -2350,10 +2590,42 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
-            // the mapper must be a Callable — `%h.map(Hash)` (a type object) dies
-            if (!args.empty() && args[0].t == VT::Type)
-                throw RakuError{Value::typeObj("X::Cannot::Map"),
-                    "Cannot map a " + inv.typeName() + " with a " + args[0].s};
+            // the mapper must be a Callable — `%h.map(Hash)` (a type object),
+            // `.map(1)`, `.map((3,4))` and `.map({a => 1})` all die (NA-20).
+            // The named-only forms delegate instead: `map(flat => &f)` is
+            // flatmap, and node/deep/duck are the three walkers.
+            {
+                Value namedFn; std::string namedTo;
+                bool positional = false, wantItem = false;
+                for (auto& a : args) {
+                    if (a.t == VT::Pair && a.namedArg) {
+                        const std::string& k = a.s.str();
+                        if (k == "item") { if (!a.pairVal() || a.pairVal()->truthy()) wantItem = true; }
+                        else if ((k == "flat" || k == "node" || k == "deep" || k == "duck") &&
+                                 a.pairVal() && a.pairVal()->t == VT::Code) {
+                            namedFn = *a.pairVal();
+                            namedTo = k == "flat" ? "flatmap" : k + "map";
+                        }
+                    } else positional = true;
+                }
+                if (!positional && !namedTo.empty())
+                    return methodCall(inv, namedTo, ValueList{namedFn});
+                // `:item` maps the invocant as ONE item: the block sees the whole
+                // list as `$_`, so `(1, 2).map(:item, *.elems)` is `(2,)`.
+                if (wantItem && positional) {
+                    Value fn;
+                    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { fn = a; break; }
+                    Value o = Value::array(); o.isList = true; o.s = "Seq";
+                    if (fn.t == VT::Code) {
+                        Value self = inv; if (self.t == VT::Array) self.itemized = true;
+                        o.arr()->push_back(callCallable(fn, ValueList{self}));
+                    }
+                    return o;
+                }
+                if (!args.empty() && args[0].t != VT::Code &&
+                    !(args[0].t == VT::Pair && args[0].namedArg))
+                    throwCannotMap(*this, inv.typeName(), args[0]);
+            }
             Value out = Value::array();
             if (!args.empty() && args[0].t == VT::Code) {
                 // A block of arity N consumes N elements per iteration
@@ -2371,9 +2643,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             const std::string& ph = static_cast<Block*>(s.get())->phaser;
                             if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") { loopPh = true; break; }
                         }
+                // …and a chunk SHORTER than the arity is an error, not a call
+                // with the tail repeated: `(1,2,3).map(-> $a, $b {…})` dies
+                // "Too few positionals passed" on its last chunk, while
+                // `-> $a, $b?` takes the short one happily (Nil-Any sheet
+                // NA-20; roast S32-list/map.t asserts the death).
+                size_t required = ar;
+                if (args[0].code() && args[0].code()->params) {
+                    size_t req = 0;
+                    for (auto& pp : *args[0].code()->params)
+                        if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
+                    if (req <= ar) required = req;
+                }
                 for (size_t i = 0; i < items.size(); i += ar) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && i + k < items.size(); k++) ca.push_back(items[i + k]);
+                    if (ca.size() < required)
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Too few positionals passed; expected " + std::to_string(required) +
+                                " arguments but got " + std::to_string(ca.size())};
                     if (aliasable) topicWriteback_ = &(*inv.arr())[i]; // $_ mutations alias the element
                     if (loopPh)
                         loopPhaserCtl_ = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
@@ -2405,17 +2693,43 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "grep") {
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo: .grep is lazy
             if (args.empty()) return out;
-            // adverbs: :v values (default), :k indices, :kv, :p pairs
+            // adverbs: :v values (default), :k indices, :kv, :p pairs. Exactly
+            // ONE may select the shape — two at once is X::Adverb with `.nogo`
+            // naming both — and any other named argument is X::Adverb with
+            // `.unexpected` naming it. A NEGATED selector (`:!k`) simply means
+            // plain values. Unknown adverbs used to be swallowed silently, and a
+            // second selector quietly replaced the first (Nil-Any sheet NA-21;
+            // roast S32-list/grep.t asserts the unexpected-adverb throw).
             std::string adv = "v";
             Value mt; bool haveMt = false;
+            ValueList selected, unexpected;
             for (auto& a : args) {
-                if (a.t == VT::Pair && (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p")) {
-                    if (!a.pairVal() || a.pairVal()->truthy()) adv = a.s;
-                    else if (a.s == "v") // :!v is an error (specifying "not values" is meaningless)
-                        throw RakuError{Value::typeObj("X::Adverb"), "Cannot use :!v adverb with grep"};
+                if (a.t == VT::Pair && a.namedArg &&
+                    (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p")) {
+                    if (!a.pairVal() || a.pairVal()->truthy()) {
+                        adv = a.s; selected.push_back(Value::str(a.s));
+                    }
+                    // `:!v` asks for "not the values", which names no shape at
+                    // all — Rakudo reports it as an unexpected adverb.
+                    else if (a.s == "v") unexpected.push_back(Value::str(a.s));
                 }
+                else if (a.t == VT::Pair && a.namedArg) unexpected.push_back(Value::str(a.s.str()));
                 else if (!haveMt) { mt = a; haveMt = true; }
             }
+            auto adverbList = [](const ValueList& names) {
+                Value o = Value::array(names); o.isList = true; o.s = "Seq"; return o;
+            };
+            if (!unexpected.empty())
+                throwTypedV("X::Adverb",
+                            {{"what", Value::str("grep")}, {"source", Value::str("a List")},
+                             {"unexpected", adverbList(unexpected)}, {"nogo", adverbList({})}},
+                            "Unexpected adverb" + std::string(unexpected.size() > 1 ? "s" : "") +
+                                " '" + unexpected[0].toStr() + "'");
+            if (selected.size() > 1)
+                throwTypedV("X::Adverb",
+                            {{"what", Value::str("grep")}, {"source", Value::str("a List")},
+                             {"nogo", adverbList(selected)}, {"unexpected", adverbList({})}},
+                            "Cannot use both adverbs at the same time");
             if (!haveMt) return out;
             if (mt.t == VT::Bool)
                 throw RakuError{Value::typeObj("X::Match::Bool"),
@@ -2651,10 +2965,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (mode == 1) {
                         Value& slot = (*inv.hash())[c.toStr()];
                         if (baggy) {
-                            if (inv.hashKind == "BagHash")
+                            // A MixHash's weights are Real, not necessarily Num:
+                            // adding one to an Int weight (or to nothing) keeps
+                            // the Int, so the mix reads `"cat2" => 2`, not
+                            // `2e0` (roast S32-list/classify-list.t).
+                            if (inv.hashKind == "BagHash" ||
+                                slot.t == VT::Int || !slot.isNumeric())
                                 slot = Value::integer((slot.t == VT::Int ? slot.i : 0) + 1);
                             else
-                                slot = Value::number((slot.isNumeric() ? slot.toNum() : 0.0) + 1.0);
+                                slot = applyArith("+", slot, Value::integer(1));
                         } else {
                             if (slot.t != VT::Array || !slot.arr()) { slot = Value::array(); slot.itemized = true; }
                             slot.arr()->push_back(sv);
@@ -3079,9 +3398,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Universal fallbacks from Mu/Any, reached only once nothing above claimed
     // the name — so a real .join/.Capture/.bless still wins.
     //
+    // `.tree` of a non-Iterable — a scalar, a type object, Nil — is the value
+    // itself: there is nothing to descend into (Nil-Any sheet NA-44).
+    if (m == "tree" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
+        return inv;
+    // `.ACCEPTS` is the smartmatch's right-hand side asking about its left, so
+    // `$x.ACCEPTS($y)` IS `$y ~~ $x`. Every built-in matcher (Bool, the
+    // numerics, a type object, a Regex) has its own arm earlier; this is Mu's,
+    // reached only when nothing claimed the name, and it is how an instance of
+    // a user class answers at all — it used to be a missing method
+    // (Nil-Any sheet NA-46). Nil keeps its own answer: roast's nil.t asserts
+    // `Nil.ACCEPTS(Any) === Nil`, and the trailing Nil fallback gives it.
+    if (m == "ACCEPTS" && !args.empty() && inv.t != VT::Nil)
+        return smartmatchValue("~~", args[0], inv);
     // `Any.join` treats the invocant as the ONE-element list it is: `3.join("-")`
     // is "3", and the separator never gets a chance to appear.
-    if (m == "join" && inv.t != VT::Type) {
+    // …and a TYPE OBJECT joins to the empty string (with the uninitialized
+    // warning strOf raises), exactly as the one-element list of it would:
+    // `Any.join` is "" (Nil-Any sheet NA-41). It used to be a missing method.
+    if (m == "join") {
         if (!args.empty() && (args[0].t == VT::Type || args[0].t == VT::Any || args[0].t == VT::Nil))
             throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                 "Type check failed in binding to parameter '$separator'; expected Str but got " +

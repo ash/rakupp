@@ -347,6 +347,13 @@ struct Callable {
     PublishedOnce<signed char> endsScan{-1};       // 1 = endsWithin is set
     std::shared_ptr<const std::vector<Block*>> endsWithin;
     DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
+    // …and the body's CONTROL block, which is a DIFFERENT thing: it handles
+    // control exceptions (warn, take, emit) and must not swallow an ordinary
+    // throw the way a CATCH does. execBlock has always told the two apart; the
+    // callable paths lumped them together, so a `CONTROL` declared in a `do {}`
+    // or a sub body was registered nowhere and its warnings went to stderr.
+    PublishedOnce<signed char> controlScan{-1};    // 1 = body holds an inline CONTROL block
+    DecidedOnce<Stmt*> controlBlkCache{nullptr};   // …which one (valid when controlScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     int declLine = 0;                              // …and the line, for `&foo.line`
     // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),

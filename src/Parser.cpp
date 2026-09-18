@@ -3440,12 +3440,14 @@ void Parser::takeTrailingAdverbs(std::vector<ExprPtr>& args) {
 ExprPtr Parser::parseColonPair() {
     // ':' already current
     advance();
-    // object-hash literal `:{ :42a, ... }` — parse the brace content as a hash
-    // composer (keys typed Any; representation-wise a plain Hash for now)
+    // object-hash literal `:{ :42a, ... }` — the brace content is a hash
+    // composer, but the result is an OBJECT hash: its keys keep their own type,
+    // so `:{ 1 => "a" }.keys[0]` is the Int 1 and not "1" (Nil-Any sheet NA-33,
+    // which needs `classify`'s result to compare equal to one of these).
     if (isKind(Tok::LBrace) && !cur().spaceBefore) {
         advance();
         auto u = std::make_unique<Unary>();
-        u->op = "ctx%";
+        u->op = "ctx%{}";
         u->operand = isKind(Tok::RBrace) ? ExprPtr(std::make_unique<ListExpr>())
                                          : parseExpression();
         expectKind(Tok::RBrace, "}");

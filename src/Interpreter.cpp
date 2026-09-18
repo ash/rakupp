@@ -2752,6 +2752,9 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
                 for (auto& eig : *pk->arr()) (*h.hash())[keyStr(eig, eig.toStr())] = pv;
                 continue;
             }
+            // …and an object hash keeps the key AS STORED, so `:{ 1 => "a" }.keys`
+            // answers the Int 1. Only the flat k,v branch below did this.
+            if (objKeyed && pk && pk->t != VT::Str) pv.pairKeyM() = std::make_shared<Value>(*pk);
             (*h.hash())[keyStr(pk ? *pk : items[i], items[i].s)] = pv;
         } else if (items[i].t == VT::Hash && items[i].hash() && items[i].hashKind.empty() &&
                    !items[i].itemized) {
@@ -3497,7 +3500,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // not listed (gather, start, lazy, supply, react, …) is not entered.
     static const std::set<std::string> kNowUnary = {
         "-", "+", "!", "?", "~", "not", "so", "++", "--", "^", "|",
-        "ctx$", "ctx@", "ctx%", "item", "decont", "?^", "+^", "~^"};
+        "ctx$", "ctx@", "ctx%", "ctx%{}", "item", "decont", "?^", "+^", "~^"};
 
     auto annE = [&](auto&& self, const Expr* e) -> void {
         if (!e) return;
@@ -11328,7 +11331,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw ReturnEx{v};
                 }
             }
-            Value v = r->value ? eval(r->value.get()) : Value::any();
+            // A BARE `return` returns Nil, not Any: `sub d { return }` is Nil,
+            // like an empty routine's own tail (Nil-Any sheet NA-13, and
+            // roast S02-types/nil.t "bare return returns Nil").
+            Value v = r->value ? eval(r->value.get()) : Value::nil();
             // An EXPLICIT `return $p` hands the container on; only a routine's
             // implicit tail value is decontainerized (below, at the tail exit).
             tctx_.valContained = exprYieldsContainer(r->value.get());
@@ -12499,6 +12505,19 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
     // out of Getopt::Long's `store-direct(Int:D $value)` for a `--count x`,
     // in place of the module's own "Cannot convert" report.
     const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
+    // NIL is a type object of its OWN type, not of whatever the parameter asks
+    // for: `Int $x`, `Int $x?` and `Int:D $x` all refuse it, exactly as
+    // `Nil ~~ Int` is False, while Cool/Any/Mu and an unconstrained parameter
+    // take it (Nil-Any sheet NA-12). The bypass further down treats every type
+    // object as satisfying any constraint — right for `f(Int)` into an Int
+    // parameter, wrong for Nil — and it is checked here, ahead of the smiley,
+    // because a failed TYPE check is what Rakudo reports for `Int:D $x` too.
+    if (v.t == VT::Nil && !p.type.empty() &&
+        (classes_.count(p.type) || subsets_.count(p.type) || isKnownTypeName(p.type)) &&
+        !typeOrSubsetMatches(v, p.type))
+        throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+            "Type check failed in binding to parameter '" + p.name +
+            "'; expected " + p.type + " but got Nil (Nil)"};
     if (p.defConstraint == 1 && !isDefined(v) && !failure)
         throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
             "Parameter '" + p.name + "' must be an object instance of type '" +
@@ -13812,13 +13831,14 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             };
             return !(known(ln) && known(type));
         }
-        // Nil stays lenient for a NOMINAL constraint (a Nil rakupp produces
-        // where Rakudo has a value must not cost a candidate) — but UInt is a
-        // CONSTRAINED subset of Int and Nil is no Int, so `Nil ~~ UInt` is
-        // False, as on Rakudo. Being lenient here sent a Nil Pair value down the
-        // `when UInt` arm of Mathematica::Serializer's encoder, whose handler
-        // is `$i.Str`: Rule["condo",] where Rule["condo",NULL] was due.
-        case VT::Nil: return type != "UInt";
+        // NIL is undefined of its OWN type: it conforms to Nil and to Cool (and
+        // to Any/Mu, answered at the top) and to nothing else, which is what
+        // makes `sub f(Int $x)` refuse it and `Nil ~~ UInt` False
+        // (Nil-Any sheet NA-02, NA-12). This used to be lenient for every
+        // NOMINAL constraint, to protect candidates from a Nil rakupp produced
+        // where Rakudo had a value; those Nils are the bug, and the leniency
+        // hid `Int $x` accepting one.
+        case VT::Nil: return type == "Nil" || type == "Cool";
         default: return true; // unknown subset/enum: lenient
     }
 }
@@ -15846,8 +15866,11 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         // type error rather than a silent Any
         if (base.t == VT::Str || base.t == VT::Int || base.t == VT::Num ||
             base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex)
-            throw RakuError{Value::typeObj("X::AdHoc"),
-                            "Type " + base.typeName() + " does not support associative indexing."};
+            // …as a FAILURE, which is what Rakudo hands back: it still detonates
+            // the moment the value is used (which is what caught the broken
+            // template) but can be tested for (Nil-Any sheet NA-37).
+            return armedFailure("X::AdHoc",
+                "Type " + base.typeName() + " does not support associative indexing.");
         return typedElemDefault(base);
     }
     if (base.t == VT::Range) {
@@ -15924,6 +15947,9 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
     // malformed number, and the tag was never consulted here
     if (!v.hashKind.empty() && (type == v.hashKind || type == v.typeName())) return true;
+    // …and a Failure IS a Nil (that is why `$f // $default` works on one), so it
+    // matches Nil and Nil's own ancestors (Nil-Any sheet NA-10).
+    if (v.hashKind == "Failure" && (type == "Nil" || type == "Cool")) return true;
     // …and the QuantHash roles: a Set is Setty, a Bag Baggy, a Mix Mixy (CBOR::Simple
     // encodes a Set with the set tag by exactly this test)
     if (v.t == VT::Hash && !v.hashKind.empty()) {
@@ -16539,6 +16565,13 @@ Value rtSlurpyNamed(const ValueList& a) {
 // It also never knew about object-hash keys or junction keys, which coerceHash
 // has handled all along.
 Value rtCoerceHash(const Value& v) { return coerceHash(v, /*store=*/true); }
+// `:{ ... }` for the compiling backend: the same composer, object-keyed.
+Value rtObjHash(const Value& v) {
+    Value h = v.t == VT::Hash && v.hashKind.empty() ? v
+                                                    : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
+    h.ofTypeM() = "Mu,Mu";
+    return h;
+}
 
 // Writable element reference for native codegen (autovivifies base and slot).
 Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
@@ -18444,15 +18477,29 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // (which statement, if any, is a static property — this used to rescan the
     // whole statement list on every call, for a body that almost never has one)
     if (c.catchScan < 0) {
-        Stmt* found = nullptr;
+        Stmt* found = nullptr, *ctrl = nullptr;
         if (c.body) for (auto& s : *c.body)
-            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) found = s.get();
+            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) {
+                if (static_cast<Block*>(s.get())->phaser == "CONTROL") ctrl = s.get();
+                else found = s.get();
+            }
         c.catchBlkCache = found;
         c.catchScan = found ? 1 : 0;
+        c.controlBlkCache = ctrl;
+        c.controlScan = ctrl ? 1 : 0;
     }
     // (Stmt*) first: catchBlkCache is an atomic cache slot, so the load has to
     // happen before the downcast rather than through it.
     Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>((Stmt*)c.catchBlkCache) : nullptr;
+    // A CONTROL block in the body is registered for the whole call, as
+    // execBlock registers a block's own: `do { CONTROL { when CX::Warn {…} };
+    // ~Nil }` must SEE the warning rather than let it reach stderr.
+    struct CtlReg {
+        ExecContext& t; bool on;
+        CtlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        ~CtlReg() { if (on) t.controlHandlers.pop_back(); }
+    } ctlReg{tcx, c.controlScan == 1 ? static_cast<Block*>((Stmt*)c.controlBlkCache) : nullptr, tcx.cur};
     try {
         // Loop-phaser control from an iterating driver (.map over a block with
         // FIRST/NEXT/LAST): FIRST fires only on the first iteration (and must not
@@ -18504,7 +18551,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                         try { tcx.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
-                         : r->value ? eval(r->value.get()) : Value::any();
+                         : r->value ? eval(r->value.get()) : Value::nil(); // bare `return` is Nil (NA-13)
                     // …and, as at the exec-site `return` arm, an explicit
                     // `return $p` hands the CONTAINER on. This fast path is the
                     // routine's last statement, so the tail-decontainerizing
@@ -19637,13 +19684,24 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // (decided once per routine — the sub path's catchScan idiom; this rescanned
     // the whole statement list on every call of "the hottest call shape there is")
     if (c.catchScan < 0) {
-        Stmt* found = nullptr;
+        Stmt* found = nullptr, *ctrl = nullptr;
         if (c.body) for (auto& st : *c.body)
-            if (st->kind == NK::Block && static_cast<Block*>(st.get())->isCatch) found = st.get();
+            if (st->kind == NK::Block && static_cast<Block*>(st.get())->isCatch) {
+                if (static_cast<Block*>(st.get())->phaser == "CONTROL") ctrl = st.get();
+                else found = st.get();
+            }
         c.catchBlkCache = found;
         c.catchScan = found ? 1 : 0;
+        c.controlBlkCache = ctrl;
+        c.controlScan = ctrl ? 1 : 0;
     }
     Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>((Stmt*)c.catchBlkCache) : nullptr;
+    struct CtlReg { // as in callCallable: a method body's CONTROL is registered too
+        ExecContext& t; bool on;
+        CtlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        ~CtlReg() { if (on) t.controlHandlers.pop_back(); }
+    } ctlReg{tcx, c.controlScan == 1 ? static_cast<Block*>((Stmt*)c.controlBlkCache) : nullptr, tcx.cur};
     // ENTER/LEAVE/KEEP/UNDO in a method body are PHASERS, not statements. This
     // loop ran them inline, so a LEAVE fired at its declaration point instead of
     // on the way out — cleaning up before the body it guards had even run. The
@@ -19706,7 +19764,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         try { tcx.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
-                         : r->value ? eval(r->value.get()) : Value::any();
+                         : r->value ? eval(r->value.get()) : Value::nil(); // bare `return` is Nil (NA-13)
                     // …and, as at the exec-site `return` arm, an explicit
                     // `return $p` hands the CONTAINER on. This fast path is the
                     // routine's last statement, so the tail-decontainerizing
@@ -20355,6 +20413,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 pairMiss = Value::any();
                 return &pairMiss;
             }
+            // A DEFINED immutable value is not a container waiting to be
+            // vivified — `my $y = 42; $y<a> = 1` dies rather than REPLACING the
+            // 42 with a Hash (Nil-Any sheet NA-36). Only an undefined slot
+            // vivifies, which is what the assignment paths below rely on.
+            if (base->t == VT::Int || base->t == VT::Num || base->t == VT::Rat ||
+                base->t == VT::Str || base->t == VT::Bool || base->t == VT::Complex)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Type " + base->typeName() + " does not support associative indexing."};
             // …and a Hash TAG with no map behind it is not a hash either: the
             // tag-only test walked into ValueHash::operator[] on nothing. A
             // `return-rw` that resolves to no container hands back exactly that.
@@ -20465,6 +20531,23 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 static thread_local Value listMiss;
                 listMiss = Value::any();
                 return &listMiss;
+            }
+            // …and the same for a positional write: index 0 of a defined scalar is
+            // the value itself, which is read-only, and any other index is out of
+            // range. Replacing the value with an Array was the divergence the
+            // Nil-Any sheet closes with (NA-36).
+            if (base->t == VT::Int || base->t == VT::Num || base->t == VT::Rat ||
+                base->t == VT::Str || base->t == VT::Bool || base->t == VT::Complex) {
+                Value kx = eval(idx->index.get());
+                long long ki = (kx.t == VT::Code && kx.code() && kx.code()->isWhateverCode)
+                                 ? whateverPos(kx, 1).toInt() : kx.toInt();
+                if (ki == 0 || ki == -1)
+                    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable " + base->typeName() + " (" + base->gist() + ")"};
+                throwTypedV("X::OutOfRange",
+                    {{"what", Value::str("Index")}, {"got", Value::integer(ki)},
+                     {"range", Value::str("0..0")}},
+                    "Index out of range. Is: " + std::to_string(ki) + ", should be in 0..0");
             }
             if (base->t != VT::Array) *base = Value::array();
             // `@a[*-1] = v` / `@a[*-1]++`: a WhateverCode index resolves against the
@@ -22282,7 +22365,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // is how LCS::All rebuilds a row (`@($R) = @temp`).
     if (a->op == "=" && a->target && a->target->kind == NK::Unary) {
         auto* cu = static_cast<Unary*>(a->target.get());
-        if ((cu->op == "ctx@" || cu->op == "ctx%") && cu->operand) {
+        if ((cu->op == "ctx@" || cu->op == "ctx%" || cu->op == "ctx%{}") && cu->operand) {
             Value* lv = nullptr;
             try { lv = lvalue(cu->operand.get()); } catch (RakuError&) {}
             if (lv) {
@@ -31169,7 +31252,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 throw ReturnEx{v};
             }
         }
-        Value v = u->operand ? eval(u->operand.get()) : Value::any();
+        Value v = u->operand ? eval(u->operand.get()) : Value::nil(); // bare `return` is Nil (NA-13)
         // The cooperative form — set a flag, hand back Any, let the statement
         // loop see it — is only right when nothing between this `return` and the
         // statement does further work with that Any: the statement itself, or a
@@ -31432,7 +31515,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Array || v.t == VT::Hash) v.itemized = false;
         return v;
     }
-    if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {
+    if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%" || u->op == "ctx%{}") {
         Value v = eval(u->operand.get());
         if (u->op == "ctx@") {
             // `@<name>` (a single named capture in list context) is that match as a
@@ -31477,6 +31560,12 @@ Value Interpreter::evalUnary(Unary* u) {
             Value a = Value::array(); a.arr()->push_back(v); a.isList = true; return a;
         }
         if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
+        if (u->op == "ctx%{}") {                        // :{ ... } object-hash composer
+            Value h = v.t == VT::Hash && v.hashKind.empty() ? v
+                                                           : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
+            h.ofTypeM() = "Mu,Mu";                      // Rakudo's `Hash[Mu,Mu]`
+            return h;
+        }
         // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
         if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v; // item context
@@ -32516,6 +32605,15 @@ std::string Interpreter::strOf(const Value& v) {
         if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
         return "";
     }
+    // Nil has its own, shorter wording, and it fires wherever Nil reaches
+    // string context: `~Nil`, an interpolation, `"x" ~ Nil`, and a Nil ELEMENT
+    // of a list being joined (Nil-Any sheet NA-08, NA-41). `.gist` and `.raku`
+    // still answer "Nil" silently — they never come through here.
+    if (v.t == VT::Nil) {
+        static const std::string msg = "Use of Nil in string context";
+        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        return "";
+    }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
         // through the CHAIN, as gistOf does: a user `method Str` that defers
         // (`nextsame` for the built-in stringification, as CSS::Writer's does
@@ -33071,6 +33169,17 @@ Value Interpreter::evalCall(Call* c) {
             Value acc = args[0];
             for (size_t k = 1; k < args.size(); k++) acc = applyBinOp(op, acc, args[k]);
             return acc;
+        }
+        // A CHAINING comparison called with ONE argument is vacuously True —
+        // there is no second operand to disagree with — while a folding
+        // operator's one-argument form is that argument: `infix:<===>(5)` is
+        // True, `infix:<+>(5)` is 5 (Nil-Any sheet NA-47).
+        if (args.size() == 1) {
+            static const std::set<std::string> kChaining = {
+                "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
+                "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
+                "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
+            if (kChaining.count(op)) return Value::boolean(true);
         }
         return args.size() == 1 ? args[0] : Value::any();
     }
@@ -33886,14 +33995,20 @@ Value Interpreter::evalIndex(Index* idx) {
     // its trailing `return Value::any()` and answers (Any). A SLICE answers one Nil
     // per index, so `(Nil)[0,1]` is `(Nil Nil)`, not a lone Nil.
     if (base.t == VT::Nil) {
-        if (!idx->index) return Value::nil();
+        // …but `:exists` is a QUESTION, and the answer is a Bool from Any:
+        // `(Nil)[0]:exists` is False, not Nil (Nil-Any sheet NA-15).
+        std::string nadv = idx->adverb;
+        if (!nadv.empty() && nadv[0] == '!') nadv = nadv.substr(1);
+        const bool existsQ = nadv == "exists";
+        Value miss = existsQ ? Value::boolean(false) : Value::nil();
+        if (!idx->index) return miss;
         Value k = eval(idx->index.get());
         if (k.t == VT::Array && k.arr()) {
             Value out = Value::array(); out.isList = true;
-            for (size_t j = 0; j < k.arr()->size(); j++) out.arr()->push_back(Value::nil());
+            for (size_t j = 0; j < k.arr()->size(); j++) out.arr()->push_back(miss);
             return out;
         }
-        return Value::nil();
+        return miss;
     }
     // An UNDEFINED base slices like an empty array: `my $x; $x[1..3]` is three
     // (Any)s, not one. Terminal::ANSI renders its virtual screen by slicing rows
@@ -34593,6 +34708,14 @@ Value Interpreter::evalIndex(Index* idx) {
                     // a negative index is out of range (no from-the-end wraparound)
                     if (ai >= 0 && ai < (long long)base.arr()->size()) { inBounds = true; exists = isDefined((*base.arr())[ai]); val = (*base.arr())[ai]; }
                 }
+                // …and a plain SCALAR is the ONE-element list it stands for, so
+                // `42[0]:exists` is True and every other index False
+                // (Nil-Any sheet NA-35). It used to answer False for both.
+                else if (base.t == VT::Int || base.t == VT::Num || base.t == VT::Rat ||
+                         base.t == VT::Str || base.t == VT::Bool || base.t == VT::Complex) {
+                    if (kres.t == VT::Whatever) ai = 0;
+                    if (ai == 0 || ai == -1) { inBounds = true; exists = true; val = base; ai = 0; }
+                }
                 if (lazySlice && !inBounds) break; // lazy slice stops at the first hole
                 keyV = Value::integer(ai);
             }
@@ -34693,9 +34816,20 @@ Value Interpreter::evalIndex(Index* idx) {
         // rendered with pieces silently missing. Type objects and undefined
         // values keep Rakudo's quiet Any; an Array keeps its own message below.
         if (base.t == VT::Str || base.t == VT::Int || base.t == VT::Num ||
-            base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex)
-            throw RakuError{Value::typeObj("X::AdHoc"),
-                            "Type " + base.typeName() + " does not support associative indexing."};
+            base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
+            // …as a FAILURE, which is what Rakudo hands back: it still detonates
+            // the moment the value is used (which is what caught the broken
+            // template), but `$x<k>:exists` can answer False without dying
+            // (Nil-Any sheet NA-37).
+            std::string hadv = idx->adverb;
+            if (!hadv.empty() && hadv[0] == '!') hadv = hadv.substr(1);
+            if (hadv == "exists") return Value::boolean(false);
+            if (hadv == "delete")
+                return armedFailure("X::AdHoc",
+                    "Can not remove values from a " + base.typeName());
+            return armedFailure("X::AdHoc",
+                "Type " + base.typeName() + " does not support associative indexing.");
+        }
         // Associative indexing on an array-backed value: a Capture (`\(1, :i)`) is
         // stored as an Array of positionals + Pairs, and `c<i>` finds the named part.
         // On a plain Array with no such named element it's a type error (`$aref<0>`).
@@ -34928,27 +35062,59 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // An Array, Str or Range base never reaches this tail: the slice/scalar block
     // above returns on every path for those. What is left is the scalar-as-list case.
-    long long i = eval(idx->index.get()).toInt();
+    Value ivRaw = eval(idx->index.get());
     if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
                base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex ||
+               base.t == VT::Any || base.t == VT::Type ||
                // …and so is a REGEX or a plain OBJECT: `/ ^ (\w+) /[0]` is that
                // very regex, which is how Getopt::Long spells the match it wants
                // (`.key ~~ / ^ (\w+) /[0]`). Answering Any there made the
                // smartmatch `$key ~~ Any` — True — and the option's name became
                // "True". An object with its own AT-POS never reaches here.
                base.t == VT::Regex || base.t == VT::Object) {
-        // a scalar is a one-item list: $b.grabpairs[0] indexes the single Pair.
-        //
-        // Rakudo THROWS X::OutOfRange for any other index (`42[2]`), and the Str
-        // one-item arm above already does. That change was made and BACKED OUT: it
-        // is correct in isolation but it converts a pre-existing soft failure into
-        // a hard death. S03-operators/assign.t line 230 reads `@p[0][1]` where
-        // rakupp wrongly makes `@p[0]` a scalar rather than a list — under Nil that
-        // is one failing assertion, under a throw the file dies and takes 201 more
-        // with it. Fix the list-assignment bug behind `@p = $a or= 3, 4` first; the
-        // throw is a one-line change once nothing depends on the soft Nil.
-        if (i == 0 || i == -1) return base;
-        return Value::nil();
+        // A scalar is a ONE-item list: index 0 (and `*-1`) is the value itself
+        // and every other index is out of range, with `0..0` for the range
+        // (Nil-Any sheet NA-35). The answer is an ARMED FAILURE, not a throw:
+        // Rakudo's is a Failure too, and the soft form is what keeps
+        // S03-operators/assign.t alive where rakupp wrongly makes `@p[0]` a
+        // scalar — a hard death there took 201 further assertions with it.
+        std::string sadv = idx->adverb;
+        if (!sadv.empty() && sadv[0] == '!') sadv = sadv.substr(1);
+        auto one = [&](const Value& ixv) -> Value {
+            // `*-1` resolves against the one element this stands for
+            long long i = (ixv.t == VT::Code && ixv.code() && ixv.code()->isWhateverCode)
+                            ? callCallable(ixv, ValueList{Value::integer(1)}).toInt()
+                            : ixv.toInt();
+            if (sadv == "exists") return Value::boolean(i == 0 || i == -1);
+            if (sadv == "delete")
+                return armedFailure("X::AdHoc",
+                    "Can not remove elements from a " + base.typeName());
+            if (i == 0 || i == -1) return base;
+            // The Failure carries the exception's OWN attributes — `.what`,
+            // `.got`, `.range` — not just a message, because that is what a
+            // caller inspects (Nil-Any sheet NA-35).
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            const std::string msg =
+                "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0";
+            (*f.hash())["exception"] = makeTypedEx(
+                "X::OutOfRange",
+                {{"what", Value::str("Index")}, {"got", Value::integer(i)},
+                 {"range", Value::str("0..0")}}, msg);
+            (*f.hash())["message"] = Value::str(msg);
+            return f;
+        };
+        // `42[*]` is the whole one-element list; `42[()]` is the empty slice and
+        // `42[0, 0]` two copies — a LIST index slices here as anywhere else.
+        if (ivRaw.t == VT::Whatever) {
+            Value out = Value::array(); out.isList = true; out.arr()->push_back(base);
+            return out;
+        }
+        if (ivRaw.t == VT::Array || ivRaw.t == VT::Range) {
+            Value out = Value::array(); out.isList = true;
+            for (auto& e : ivRaw.flatten()) out.arr()->push_back(one(e));
+            return out;
+        }
+        return one(ivRaw);
     }
     return Value::any();
 }
@@ -36149,6 +36315,14 @@ Value Interpreter::eval(Expr* e) {
             auto* l = static_cast<ArrayLit*>(e);
             Value a = Value::array();
             a.isList = l->isList; // word-lists are Lists (flatten in list context)
+            // An ARRAY element cannot hold Nil — a stored Nil becomes the
+            // element's default — so `[Nil]` is `[Any]` while the LIST `(Nil,)`
+            // keeps it (Nil-Any sheet NA-11). `@a.push(Nil)` and `%h<a> = Nil`
+            // already reset; only the literal did not.
+            auto storeSlot = [&](Value v) {
+                if (v.t == VT::Nil && !a.isList) v = Value::any();
+                a.arr()->push_back(std::move(v));
+            };
             for (auto& it : l->items) {
                 // an element is a VALUE: a bare `/pat/` in `["a", /b+/, 4]` is the
                 // Regex itself, not an immediate match against $_
@@ -36260,7 +36434,7 @@ Value Interpreter::eval(Expr* e) {
                     // a hyper result kept as one element is itemized, so it stays nested
                     // through later list contexts (`@(...)`, list-assignment) rather than re-spreading.
                     if (isHyper && v.t == VT::Array) v.isList = false;
-                    a.arr()->push_back(v);
+                    storeSlot(std::move(v));
                 }
             }
             return a;
@@ -36664,7 +36838,11 @@ Value Interpreter::eval(Expr* e) {
             }
             // mutators autovivify an undefined container: `my $x; $x.push(1)` → [1],
             // `%h<k>.push(v)` fills the slot. Rakudo: Any.push vivifies an Array.
-            if ((inv.t == VT::Any || inv.t == VT::Nil) && !mc->meta && !mc->methodExpr &&
+            // NIL does not: it is not a container waiting to be filled but a
+            // refusal, and `Nil.push` is an outright misuse (Nil-Any sheet
+            // NA-06). A slot that has never been written reads as Any, not Nil,
+            // so nothing that used to vivify here stops.
+            if (inv.t == VT::Any && !mc->meta && !mc->methodExpr &&
                 (mc->method == "push" || mc->method == "append" ||
                  mc->method == "unshift" || mc->method == "prepend")) {
                 if (Value* lv = lvalue(mc->inv.get())) {

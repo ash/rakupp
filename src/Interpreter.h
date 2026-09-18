@@ -2934,6 +2934,7 @@ bool   rtHasNamed(const ValueList& a, const std::string& key); // is a named arg
 Value  rtSlurpyPos(const ValueList& a, size_t from);           // positional args [from..] as an Array
 Value  rtSlurpyNamed(const ValueList& a);                      // all named args as a Hash
 Value  rtCoerceHash(const Value& v);                           // pair/kv list → Hash (`my %h = a=>1,…`)
+Value  rtObjHash(const Value& v);                              // `:{ … }` → object hash (keys keep their type)
 
 // IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
 // algorithms. Returns true (and sets `out`) when (cls, m) is handled.
