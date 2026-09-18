@@ -29,7 +29,12 @@ def _library_name():
     if sys.platform == "darwin":
         return "librakupp.dylib"
     if sys.platform in ("win32", "cygwin"):
-        return "rakupp.dll"
+        # librakupp.dll, not rakupp.dll: rakupp.exe's own import library is
+        # already rakupp.lib, so CMakeLists gives the DLL the lib- name to
+        # keep the two apart (OUTPUT_NAME librakupp, PREFIX ""). Every
+        # binding had this wrong until the Windows wheel first tried to load
+        # one, because every binding gate ran POSIX-only.
+        return "librakupp.dll"
     return "librakupp.so"
 
 

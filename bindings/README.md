@@ -43,7 +43,7 @@ cmake --build build -j
 ```
 
 That produces `build/rakupp` (the CLI) and `build/librakupp.dylib` on macOS —
-`librakupp.so` on Linux, `rakupp.dll` on Windows. **A build directory
+`librakupp.so` on Linux, `librakupp.dll` on Windows. **A build directory
 configured without `-DRAKUPP_BUILD_SHARED=ON` is static-only and no binding
 can use it**; that is the single most common first failure.
 

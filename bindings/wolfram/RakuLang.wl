@@ -132,7 +132,7 @@ public[body_] := Catch[body, "RakuLang"];
 
 libraryFileName[] := Switch[$OperatingSystem,
   "MacOSX", "librakupp.dylib",
-  "Windows", "rakupp.dll",
+  "Windows", "librakupp.dll",
   _, "librakupp.so"];
 
 explicitCandidate[given_] := Which[

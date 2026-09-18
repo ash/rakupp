@@ -7,7 +7,7 @@
 #
 # Run by release.yml on the macOS, Linux and Windows (MSVC) legs — on Windows
 # under Git Bash, with <build-dir> the multi-config output directory that
-# holds rakupp.dll (build/Release). A wheel's file name is a promise pip
+# holds librakupp.dll (build/Release). A wheel's file name is a promise pip
 # enforces, so three things are read off the library itself rather than
 # assumed:
 #
@@ -35,7 +35,7 @@ PKG="$ROOT/bindings/python"
 OS=$(uname -s)
 case "$OS" in
     Darwin)               LIB=librakupp.dylib ;;
-    MINGW*|MSYS*|CYGWIN*) LIB=rakupp.dll; OS=Windows ;;
+    MINGW*|MSYS*|CYGWIN*) LIB=librakupp.dll; OS=Windows ;;
     *)                    LIB=librakupp.so ;;
 esac
 SRC="$BUILD/$LIB"

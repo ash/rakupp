@@ -46,7 +46,7 @@ sub check(Bool $ok, $desc, $detail = '') {
 
 my $libname = do given $*KERNEL.name {
     when 'darwin' { 'librakupp.dylib' }
-    when 'win32'  { 'rakupp.dll' }
+    when 'win32'  { 'librakupp.dll' }   # rakupp.lib is the EXE's import library
     default       { 'librakupp.so' }
 };
 my $lib = $BUILD.add($libname);

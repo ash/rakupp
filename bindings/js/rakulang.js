@@ -39,7 +39,9 @@ const RK_ANY = 0, RK_BOOL = 1, RK_INT = 2, RK_NUM = 3, RK_RAT = 4,
 
 function libraryName() {
   if (process.platform === "darwin") return "librakupp.dylib";
-  if (process.platform === "win32") return "rakupp.dll";
+  // librakupp.dll: rakupp.exe already owns rakupp.lib, so the DLL wears
+  // the lib- name (CMakeLists, OUTPUT_NAME librakupp + PREFIX "").
+  if (process.platform === "win32") return "librakupp.dll";
   return "librakupp.so";
 }
 

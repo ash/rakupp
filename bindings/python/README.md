@@ -319,7 +319,8 @@ python3 -m pip install --force-reinstall --no-deps dist-wheel/rakulang-*.whl
 ```
 
 On Windows run it under Git Bash, and name the configuration directory the
-Visual Studio generator writes to, `build/Release`, where `rakupp.dll` is.
+Visual Studio generator writes to, `build/Release`, where `librakupp.dll`
+is.
 
 **`rk_new refused: an interpreter is already live in this process`.**
 Something already created an interpreter in this process. Use

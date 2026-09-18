@@ -548,7 +548,7 @@ jobs:
       # inside, so `pip install <wheel>` works on a machine with no rakupp at
       # all. Four of them: macOS (the universal library), Linux x86_64 and
       # aarch64 (manylinux_2_28, the container build's .so) and Windows x64
-      # from the MSVC leg, whose rakupp.dll carries its own C runtime (/MT).
+      # from the MSVC leg, whose librakupp.dll carries its own C runtime (/MT).
       # The MinGW leg builds none: its wheel would wear the same win_amd64
       # name. Under the Visual Studio generator the DLL sits in build/Release,
       # not build/. Publishing to PyPI is a separate, by-hand run of pypi.yml
@@ -565,7 +565,7 @@ jobs:
       # the import cannot fall back to bindings/python), with no RAKUPP_*
       # variable set -- the copy bundled in the wheel is what must load, and
       # the assertion reads the loaded path back. On Windows this is the
-      # only place rakupp.dll is ever loaded through ctypes before a user
+      # only place librakupp.dll is ever loaded through ctypes before a user
       # does it.
       - name: Smoke test the wheel (installed, bundled library)
         if: matrix.mingw != true
