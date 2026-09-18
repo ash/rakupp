@@ -14,7 +14,10 @@ the reasoning left in.
 > **source-to-source back end** that emits C++.
 
 Nothing in that sentence is generated, and every clause in it has a question
-below.
+below. The first word carries the most freight: *hand-written* is a compiler
+term of art about parser generators, not a claim about whose hands —
+[hand-written.md](hand-written.md) is what it does and does not assert, and who
+wrote this code.
 
 ---
 
