@@ -29,8 +29,6 @@ set -e
 
 BUILD=${1:?usage: build-wheel.sh <build-dir> [out-dir]}
 OUT=${2:-dist-wheel}
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PKG="$ROOT/bindings/python"
 
 OS=$(uname -s)
 case "$OS" in
@@ -38,6 +36,18 @@ case "$OS" in
     MINGW*|MSYS*|CYGWIN*) LIB=librakupp.dll; OS=Windows ;;
     *)                    LIB=librakupp.so ;;
 esac
+
+# Git Bash is MSYS2 and `pwd` there prints /d/a/rakupp/..., which the NATIVE
+# Windows python this script drives cannot open. `pwd -W` prints D:/a/rakupp/...,
+# which both understand, so the absolute paths handed to python (pyproject.toml,
+# the package directory) cross the boundary intact rather than relying on MSYS
+# argument mangling to rewrite them.
+if [ "$OS" = Windows ]; then
+    ROOT=$(cd "$(dirname "$0")/.." && pwd -W)
+else
+    ROOT=$(cd "$(dirname "$0")/.." && pwd)
+fi
+PKG="$ROOT/bindings/python"
 SRC="$BUILD/$LIB"
 if [ ! -e "$SRC" ]; then
     echo "build-wheel: $SRC not found (configure with -DRAKUPP_BUILD_SHARED=ON)" >&2
