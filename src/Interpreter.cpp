@@ -2343,7 +2343,12 @@ Value rtSlipVal(const Value& v) {
 void rtXxAppend(ValueList& out, Value one) {
     if (one.t == VT::Array && one.arr() && one.isList && one.s == "Slip")
         for (auto& e : *one.arr()) out.push_back(e);
-    else out.push_back(std::move(one));
+    else {
+        // a Seq replication is CACHED: the copies are plain lists, not Seqs
+        // that would each be consumable on their own (sheet LA-32)
+        if (one.t == VT::Array && one.isList && one.s == "Seq") one.s.clear();
+        out.push_back(std::move(one));
+    }
 }
 
 // A bareword term for native codegen — the interpreter's NameTerm tail: an
@@ -2628,7 +2633,9 @@ static void deproxyElems(Value& a) {
 Value rtArrayVal(const Value& v) {
     // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
     if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
-    if (v.t == VT::Hash && v.hash()) return hashToPairs(v);
+    // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
+    // builds the List form its other callers want, so untag it here (LA-04).
+    if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
     if (v.t == VT::Array && v.arr()) {
         if (v.ext()) { // a lazy seq stays lazy; a finite gather does not
             Value r = reifyIfFinite(v);
@@ -2754,7 +2761,9 @@ static Value coerceArray(const Value& v, bool nativeTarget = false) {
     // (Rakudo: Array[Bool].new(Bool)). `()` still empties. (issue #37)
     if (v.t == VT::Nil) { Value a = Value::array(); a.arr()->push_back(Value::any()); return a; }
     if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
-    if (v.t == VT::Hash && v.hash()) return hashToPairs(v);
+    // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
+    // builds the List form its other callers want, so untag it here (LA-04).
+    if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
     // a Blob/Buf assigns to an @-array as its elements (`my uint32 @W = $M`
     // in Digest::SHA1 — 32-bit words for blob32)
     // …but only into a NATIVE array: `my @a = "hi".encode` is ONE element under
@@ -5062,8 +5071,14 @@ int Interpreter::run(Program& prog) {
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
                             if (ve0->name[0] == '@' || ve0->name[0] == '%') {
-                                // container stays empty; v is the ELEMENT default
-                                Value c = ve0->name[0] == '@' ? Value::array() : Value::makeHash();
+                                // container stays empty; v is the ELEMENT default —
+                                // but the DECLARED type still applies, so build the
+                                // container declInitial would have built (`my Int @a
+                                // is default(0)` is an Array[Int]; a bare one here
+                                // left `.of` at Mu and `.raku` without its type)
+                                Value c = declInitial(ve0, ve0->name[0]);
+                                if (c.t != VT::Array && c.t != VT::Hash)
+                                    c = ve0->name[0] == '@' ? Value::array() : Value::makeHash();
                                 c.elemDefaultM() = std::make_shared<Value>(dv);
                                 global_->vars[ve0->name] = c;
                             } else {
@@ -15292,6 +15307,17 @@ static void forceLazyImpl(const Value& v) {
 }
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 
+// The g_makeTypedEx hook (Value.h): the free runtime helpers that raise a typed
+// exception build it through the running interpreter's class registry, so the
+// object carries its attributes ($!.range and friends).
+static Value makeTypedExImpl(const std::string& type,
+                             std::vector<std::pair<std::string, Value>> attrs,
+                             const std::string& message) {
+    if (!g_cbInterp) return Value::typeObj(type);
+    return g_cbInterp->makeTypedEx(type, std::move(attrs), message);
+}
+static const bool g_makeTypedExInstalled = ((g_makeTypedEx = &makeTypedExImpl), true);
+
 // The g_dateFormat hook (Value.h): render a Date/DateTime through its stored
 // `:formatter`. A formatter that stringifies its OWN argument is unbounded —
 // Rakudo loops forever on one — and unbounded recursion HERE is a stack
@@ -15547,11 +15573,27 @@ Value Interpreter::dynVar(const std::string& name) {
 // Failure — quiet in a boolean test, fatal on use — because Roast's
 // nested_arrays.t stores such reads and asserts their type, and Cro's
 // `@empty[*-1]` needs the soft form; a write throws.
-Value negIndexFailure(long long i) {
-    return armedFailure("X::OutOfRange", "Index out of range. Is: " + std::to_string(i) + ", should be in 0..^Inf");
+// The X::OutOfRange a negative subscript raises, with the attributes roast
+// reads off it — $!.what, $!.got and $!.range (`0..^Inf`) — built through the
+// hook so these free helpers reach the class registry (sheet LA-15).
+static Value outOfRangeEx(long long i, const std::string& msg) {
+    if (!g_makeTypedEx) return Value::typeObj("X::OutOfRange");
+    return g_makeTypedEx("X::OutOfRange",
+        {{"what", Value::str("Index")}, {"got", Value::integer(i)},
+         {"range", Value::str("0..^Inf")}}, msg);   // Rakudo's is a Str
 }
+Value negIndexFailure(long long i) {
+    const std::string msg = "Index out of range. Is: " + std::to_string(i) + ", should be in 0..^Inf";
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    (*f.hash())["exception"] = outOfRangeEx(i, msg);
+    (*f.hash())["message"] = Value::str(msg);
+    return f;
+}
+// A negative index carries its RANGE on the exception — $!.range is `0..^Inf`,
+// which roast reads (sheet LA-15). A bare payload had no attributes at all.
 [[noreturn]] void negIndexThrow(long long i) {
-    throw RakuError{Value::typeObj("X::OutOfRange"), "Index out of range. Is: " + std::to_string(i) + ", should be in 0..^Inf"};
+    const std::string msg = "Index out of range. Is: " + std::to_string(i) + ", should be in 0..^Inf";
+    throw RakuError{outOfRangeEx(i, msg), msg};
 }
 
 Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb) {
@@ -15986,6 +16028,22 @@ static Value nilElemDefault(const Value& v, const Value& container) {
 static Value arrayMissingDefault(const Value& base) {
     if (base.elemDefault()) return *base.elemDefault(); // `is default(v)`
     return typedElemDefault(base);
+}
+// What a freshly GROWN slot of a container starts as. `is default(v)` wins over
+// the element type: `my Int @a is default(0); @a[1] = 5` leaves @a[0] at 0, not
+// at the (Int) type object — and `.raku` prints what a read would give
+// (sheet LA-21). An untyped container grows empty holes.
+static Value containerFill(const Value& base) {
+    // A NATIVE element type has no holes — its slots really are zero — so it
+    // fills eagerly. Everything else grows an empty HOLE, and the read path
+    // turns that into `is default(v)` or the element type object when it is
+    // asked for. Filling eagerly there made a deleted trailing slot
+    // indistinguishable from a stored value, so the array stopped shrinking.
+    if (!base.ofType().empty() && ascii::islower((unsigned char)base.ofType()[0])) {
+        Value d = typedElemDefault(base);
+        if (d.t != VT::Nil) return d;
+    }
+    return Value::any();
 }
 
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
@@ -16722,7 +16780,9 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     long long i = key.toInt();
     if (i < 0) negIndexThrow(i);
     if (i >= (long long)base.arr()->size())
-        base.arr()->resize(i + 1, base.ofType().empty() ? Value::any() : typedElemDefault(base));
+        // the gaps read as the container's own default — `is default(v)` first,
+        // then the element type's object (sheet LA-21)
+        base.arr()->resize(i + 1, containerFill(base));
     return (*base.arr())[i];
 }
 
@@ -20455,12 +20515,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // a shaped array's dimensions are FIXED — an out-of-range index dies
                 // rather than growing the array (`my @a[2;2]; @a[1;2] = 5` throws)
                 if (shape && d < shape->size() && (i < 0 || i >= (*shape)[d]))
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "Index " + std::to_string(kv.toInt()) + " out of range for dimension " +
-                        std::to_string(d) + " (0.." + std::to_string((*shape)[d] - 1) + ")"};
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Index " + std::to_string(kv.toInt()) + " for dimension " +
+                        std::to_string(d + 1) + " out of range (must be 0.." +
+                        std::to_string((*shape)[d] - 1) + ")"};
                 if (i < 0) i = 0;
                 while ((long long)node->arr()->size() <= i)
-                    node->arr()->push_back(node->ofType().empty() ? Value::any() : typedElemDefault(*node));
+                    node->arr()->push_back(containerFill(*node));
                 node = &(*node->arr())[i];
                 d++;
             }
@@ -20697,8 +20758,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             long long i = keyV.toInt();
             if (i < 0) negIndexThrow(i);
             if (i < 0) i = 0;
+            // a ONE-dimensional shaped array is fixed too: an index outside the
+            // shape dies rather than growing it (sheet LA-20)
+            if (base->shape() && base->shape()->size() == 1 && i >= (*base->shape())[0])
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Index " + std::to_string(i) + " for dimension 1 out of range (must be 0.." +
+                    std::to_string((*base->shape())[0] - 1) + ")"};
             while ((long long)base->arr()->size() <= i)
-                base->arr()->push_back(base->ofType().empty() ? Value::any() : typedElemDefault(*base));
+                base->arr()->push_back(containerFill(*base));
             return &(*base->arr())[i];
         }
     }
@@ -20733,6 +20800,39 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             if (base && base->t == VT::Array && base->arr() && !base->arr()->empty() && !base->isList)
                 return mcName == "head" ? &base->arr()->front() : &base->arr()->back();
+        }
+        // …and so does `.first`, with or without a matcher: it names ONE of the
+        // array's own slots, so `@a.first = 42` and `@a.first(* %% 2).++` write
+        // through it (sheet LA-08; roast's typed-array files and
+        // S32-list/first.t both end on this).
+        if (mcName == "first" && !mc->meta && !mc->hyper) {
+            Value* base = nullptr;
+            try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            if (base && base->t == VT::Array && base->arr() && !base->isList) {
+                ValueList fargs;
+                for (auto& ae : mc->args) fargs.push_back(eval(ae.get()));
+                // only the plain value-answering forms name a slot; :k/:p/:kv
+                // build something new, and an `:end` search runs backwards
+                bool shaped = false, fromEnd = false;
+                for (auto& fa : fargs)
+                    if (fa.t == VT::Pair && fa.namedArg) {
+                        if (fa.s == "end") fromEnd = !fa.pairVal() || fa.pairVal()->truthy();
+                        else if (fa.s != "v") shaped = true;
+                    }
+                if (!shaped) {
+                    Value pred;
+                    for (auto& fa : fargs) if (!(fa.t == VT::Pair && fa.namedArg)) { pred = fa; break; }
+                    ValueList& es = *base->arr();
+                    for (size_t k = 0; k < es.size(); k++) {
+                        size_t i = fromEnd ? es.size() - 1 - k : k;
+                        bool hit = pred.t == VT::Any ? true
+                                 : pred.t == VT::Code ? callCallable(pred, ValueList{es[i]}).truthy()
+                                 : smartmatchValue("~~", es[i], pred).truthy();
+                        if (hit)
+                            return &es[i];
+                    }
+                }
+            }
         }
         // A method declared `is rw` / `is raw` hands back a CONTAINER, so a call to
         // it is an assignment target: `$obj.meth(…) = v`, and `self.AT-KEY($k) =
@@ -22394,8 +22494,14 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
             for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr())) {
                 if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
-                else if (it.t == VT::Array && it.isList && it.arr()) { for (auto& e : *it.arr()) vals.push_back(e); }
-                else vals.push_back(it);
+                else {
+                    // ONE level, and one level only: an inner list is ONE value,
+                    // itemized — `my ($a, $b, $c) = (1, 2), 3` is
+                    // `($(1, 2), 3, Any)`, not three loose values (sheet LA-31).
+                    Value e = it;
+                    if (e.t == VT::Array || e.t == VT::Hash) e.itemized = true;
+                    vals.push_back(std::move(e));
+                }
             }
         } else if (r.t == VT::Range) vals = r.flatten();
         else vals.push_back(r);
@@ -22443,7 +22549,15 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     }
                     // an @/% target slurps every remaining value; later targets get Any
                     Value rest = Value::array();
-                    for (size_t j = vi; j < vals.size(); j++) rest.arr()->push_back(vals[j]);
+                    for (size_t j = vi; j < vals.size(); j++) {
+                        Value e = vals[j];
+                        // A `%` target takes the PAIRS of what it slurps, so the
+                        // itemization the value carries as a list element (it is
+                        // in a container) must not survive into the coercion:
+                        // `my ($a, %h) = "x", {:k<v>}` fills %h from the hash.
+                        if (nm[0] == '%' && e.t == VT::Hash) e.itemized = false;
+                        rest.arr()->push_back(std::move(e));
+                    }
                     vi = vals.size();
                     Value* lv = lvalue(tgt);
                     if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest); }
@@ -22478,6 +22592,36 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+    // `* *= 2` / `* = 5` / `*.=succ` — a bare `*` on the LEFT of an assignment
+    // curries, exactly as `++*` does: the result is a WhateverCode that mutates
+    // the argument it is handed. What makes the mutation visible is the driver's
+    // aliased element slot, which reaches a builtin through builtinTopicWB_, so
+    // `@a.map(* *= 2)` doubles @a in place (sheet LA-08; roast's typed-array
+    // files lean on it at `is (@arr.map(* *= 2)), …`).
+    if (a->target && a->target->kind == NK::Whatever && a->value) {
+        std::string op = a->op;                 // "=", "*=", ".=", …
+        Expr* rhsE = a->value.get();
+        // The RHS is evaluated per CALL, not here: `* = $i++` must step once an
+        // iteration. Keeping the expression means keeping the scope it reads,
+        // so capture the environment the curry was written in.
+        auto scope = tctx_.cur;
+        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        code.code()->isWhateverCode = true;
+        code.code()->whateverArity = 1;
+        code.code()->builtin = [op, rhsE, scope](Interpreter& I, ValueList& as) -> Value {
+            Value cur = as.empty() ? Value::any() : as[0];
+            auto saved = Interpreter::tctx_.cur;
+            Interpreter::tctx_.cur = scope;
+            struct Restore { std::shared_ptr<Env> v;
+                             ~Restore() { Interpreter::tctx_.cur = v; } } r{saved};
+            Value rhs = I.eval(rhsE);
+            Value nv = op == "=" ? rhs : I.applyBinOp(op.substr(0, op.size() - 1), cur, rhs);
+            if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
+            if (!as.empty()) as[0] = nv;
+            return nv;
+        };
+        return code;
+    }
     // `(temp $indent) += 2` — `temp` yields the CONTAINER it just snapshotted,
     // so a compound assignment writes through it. Only the `temp $x = …`
     // spelling was handled, and the parenthesised one died "Target is not
@@ -22776,7 +22920,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return o == ".." || o == "..^" || o == "^.." || o == "^..^";
         };
         return ix->index && !ix->multiDim &&
-            (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+            // `@a[*] = …` (and the zen slice `@a[]`, which parses to it)
+            // selects every current slot — a SLICE assignment, not a write to
+            // element 0 (sheet LA-18)
+            (ix->index->kind == NK::Whatever ||
+             ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
              isRangeOp(ix->index.get()) ||
              ix->index->kind == NK::ArrayLit ||
              ix->index->kind == NK::MethodCall || ix->index->kind == NK::Call ||
@@ -23291,7 +23439,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // result falls through to the ordinary path below, which is what keeps
             // `%h{ $obj.name } = …` a single-key assignment.
             if (sliceSubscript(ix)) {
-                Value keys = eval(ix->index.get());
+                // `@a[*]` names every slot the container has right now — but
+                // the count is only known once the base is resolved, so mark it
+                // and fill the key list below.
+                bool wholeSlice = ix->index->kind == NK::Whatever;
+                Value keys = wholeSlice ? Value::array() : eval(ix->index.get());
+                if (wholeSlice) keys.isList = true;
                 if (!(keys.t == VT::Array || keys.t == VT::Range)) {
                     // not a slice after all — hand this answer to the ordinary
                     // path below rather than running the subscript a second time
@@ -23327,6 +23480,23 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                         : 0;
                             ks = dimKeysAt(keys, n);
                         }
+                        if (wholeSlice) {   // `@a[*]` / `@a[]`: the current indices
+                            ks.clear();
+                            // …but a HASH has no order to distribute across, so
+                            // Rakudo refuses `%h{*} = …` outright
+                            if (ix->isHash)
+                                throw RakuError{Value::typeObj("X::AdHoc"),
+                                    "Cannot assign to *, as the order of keys is non-deterministic"};
+                            if (bp->t == VT::Array && bp->arr())
+                                for (size_t k = 0; k < bp->arr()->size(); k++)
+                                    ks.push_back(Value::integer((long long)k));
+                        }
+                        // a WhateverCode index inside the list (`@a[*-1, 0]`)
+                        // resolves against the size, exactly as the read path does
+                        if (bp->t == VT::Array && bp->arr())
+                            for (auto& k : ks)
+                                if (k.t == VT::Code && k.code() && k.code()->isWhateverCode)
+                                    k = whateverPos(k, (long long)bp->arr()->size());
                         // a Blob/Buf slice-assign writes the BYTES in place —
                         // `$new-state[$_ ..^ $_+8] = store64 $lane` is how
                         // Digest::SHA3 serialises each Keccak lane
@@ -23575,7 +23745,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (i >= 0) {
                         // `my $x := @a[5]` on a shorter array autovivifies the slot,
                         // so the later `$x = 9` lands at 5 and not past the end
-                        Value fill = base->ofType().empty() ? Value::any() : typedElemDefault(*base);
+                        Value fill = containerFill(*base);
                         while ((long long)arr->size() <= i) arr->push_back(fill);
                         size_t at = (size_t)i;
                         // the slot may ALREADY hold an alias (BIND-POS put one
@@ -30364,7 +30534,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // element a FRESH array. Repeating one unit made every key of
             // `my %rows = @!column-name Z=> [] xx *` share a single array, so
             // DBDish's allrows(:hash-of-array) pushed every column into all of them.
-            Value a = Value::array(); a.isList = true;
+            Value a = Value::seq();   // `EXPR xx *` is a Seq too (sheet LA-32)
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
             Expr* le = b->lhs.get();
             auto env = tctx_.cur;   // the thunk keeps the scope it was written in
@@ -32645,16 +32815,12 @@ static void failureDetonate(const Value& v) {
 }
 std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     failureDetonate(v);
-    // An ENDLESS lazy sequence gists as Rakudo's "(...)" — a lazy ARRAY shows
-    // its reified prefix and marks the rest. say/print must not pretend the
-    // cached prefix is the whole list.
+    // An ENDLESS lazy sequence gists as Rakudo's "(...)", and a lazy ARRAY as
+    // "[...]" — neither shows what happens to be reified, because say/print
+    // must not pretend the cached prefix is the whole list (sheet LA-02).
     if (v.t == VT::Array && v.arr() && v.ext() &&
-        std::static_pointer_cast<LazySeqState>(v.ext())->infinite) {
-        if (v.isList) return "(...)";
-        std::string out = "[";
-        for (auto& e : *v.arr()) { out += gistOf(e); out += ' '; }
-        return out + "...]";
-    }
+        std::static_pointer_cast<LazySeqState>(v.ext())->infinite)
+        return v.isList ? "(...)" : "[...]";
     // Gisting a container READS it, so a Proxy runs FETCH — `say $q<baz>` must
     // show the value, not the Proxy's own FETCH/STORE pair. The subscript path
     // still hands back the container so a write can reach STORE.
@@ -33408,12 +33574,37 @@ Value Interpreter::evalCall(Call* c) {
             if (args.empty()) return setWrap({}, setOpMinTier(op));
             return setCoerceOne(op, args[0]);
         }
+        // The list infixes are n-ary in their own right and take a `:with`
+        // named argument that folds each tuple — `infix:<X>((1,2),(3,4),
+        // :with(&[+]))` is (4, 5, 5, 6), not a left fold with the Pair as an
+        // operand. Route them to the n-ary builder and apply :with after.
+        if (op == "Z" || op == "X" || (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
+            Value with; ValueList rows;
+            for (auto& v : args) {
+                if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal()) { with = *v.pairVal(); continue; }
+                rows.push_back(v);
+            }
+            Value z = applyReduce(op, rows);
+            if (with.t != VT::Code || !z.arr()) return z;
+            Value out = Value::seq();
+            for (auto& t : *z.arr()) {
+                ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
+                Value acc = parts.empty() ? Value::any() : parts[0];
+                for (size_t k = 1; k < parts.size(); k++) acc = callCallable(with, {acc, parts[k]});
+                out.arr()->push_back(acc);
+            }
+            return out;
+        }
         if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
             if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(args); // ⊖ is variadic, not a fold
             Value acc = args[0];
             for (size_t k = 1; k < args.size(); k++) acc = applyBinOp(op, acc, args[k]);
             return acc;
         }
+        // No operands at all: the zero-arg identities, including the operators
+        // that HAVE none — `infix:<xx>()` is X::NoZeroArgMeaning, and
+        // applyReduce is where that table already lives.
+        if (args.empty()) { ValueList none; return applyReduce(op, none); }
         // A CHAINING comparison called with ONE argument is vacuously True —
         // there is no second operand to disagree with — while a folding
         // operator's one-argument form is that argument: `infix:<===>(5)` is
@@ -33786,10 +33977,10 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<" + op + ">");
         if (op == "(^)" || op == "\xE2\x8A\x96") return setWrap({}, setOpMinTier(op)); // [⊖] () is set()
         // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
-        if (op == "Z" || op == "X" || op == "," ||
-            (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
-            Value o = Value::array(); o.isList = true; return o;
-        }
+        if (op == "," ) { Value o = Value::array(); o.isList = true; return o; }
+        if (op == "Z" || op == "X" ||
+            (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')))
+            return Value::seq();
         if (chainOps.count(base)) return Value::boolean(true); // [<] () is vacuously True
         return Value::any();
     }
@@ -33835,7 +34026,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             else if (it.t == VT::Str && (it.hashKind == "Blob" || it.hashKind == "Buf")) rows.push_back(it.blobList());
             else rows.push_back(ValueList{it});
         }
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::seq();
         if (!rows.empty()) {
             size_t n = rows[0].size();
             for (auto& r : rows) n = std::min(n, r.size());
@@ -33855,7 +34046,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             else if (it.t == VT::Str && (it.hashKind == "Blob" || it.hashKind == "Buf")) rows.push_back(it.blobList());
             else rows.push_back(ValueList{it});
         }
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::seq();
         bool any = !rows.empty();
         for (auto& r : rows) if (r.empty()) any = false;
         if (any) {
@@ -34118,6 +34309,10 @@ Value Interpreter::evalIndex(Index* idx) {
                         auto it = node.hash()->find(k.toStr());
                         walk(it != node.hash()->end() ? it->second : Value::any(), d + 1);
                     }
+                    // Indexing a SCALAR element again is the element itself —
+                    // a non-Iterable is a one-item list, so `@a[0;0]` on
+                    // `my @a = 1, 2` is 1, not Any (sheet LA-19).
+                    else if (k.isNumeric() && k.toInt() == 0) walk(node, d + 1);
                     else walk(Value::any(), d + 1);
                 }
             };
@@ -34168,9 +34363,7 @@ Value Interpreter::evalIndex(Index* idx) {
                             // Failure detonates on use/sink, which is what made a
                             // bare `try { my $v = @a[$neg] }` LOOK like an eager
                             // throw when probing Rakudo (the block sinks $v).
-                            return armedFailure("X::OutOfRange",
-                                "Index out of range. Is: " + std::to_string(ix) +
-                                ", should be in 0..^Inf");
+                            return negIndexFailure(ix);
                         }
                         if (ix < (long long)arr->size()) {
                             Value el = (*arr)[ix];
@@ -34698,7 +34891,11 @@ Value Interpreter::evalIndex(Index* idx) {
         if (!unknownAdv.empty()) {
             std::string list;
             for (auto& u : unknownAdv) { if (!list.empty()) list += " "; list += u; }
-            throw RakuError{Value::typeObj("X::Adverb"),
+            // A HASH subscript reports X::Adverb; a POSITIONAL one is a plain
+            // dispatch failure, because Rakudo's postcircumfix candidates for
+            // an array take named adverbs it knows and nothing else — the two
+            // differ, and roast reads the type (sheet LA-17).
+            throw RakuError{Value::typeObj(idx->isHash ? "X::Adverb" : "X::Multi::NoMatch"),
                 "Unexpected adverbs passed to subscript: " + list};
         }
         if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
@@ -34980,6 +35177,13 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantDelete && base.t == VT::Array && base.isList && base.s != "Seq" &&
             base.enumName.empty())
             throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove elements from a List"};
+        // A NEGATIVE index is out of range for a delete too, and the answer is
+        // the same armed Failure a read gives (sheet LA-15).
+        if (wantDelete && !idx->isHash)
+            for (auto& h : hits) {
+                long long ai = h.keyV.toInt();
+                if (h.keyV.isNumeric() && ai < 0) return negIndexFailure(ai);
+            }
         if (wantDelete) for (auto& h : hits) if (h.exists) {
             if (idx->isHash) base.hash()->erase(h.keyV.toStr());
             else { long long ai = h.keyV.toInt();
@@ -35228,6 +35432,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
                 else for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
+                // A TYPE OBJECT is not an index — there is nothing to index BY.
+                // It numified to 0 here and quietly answered element 0
+                // (sheet LA-15).
+                if (iv.t == VT::Type || iv.t == VT::Any)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Unable to call postcircumfix [ (" + iv.typeName() +
+                        ") ] with a type object\nIndexing requires a defined object"};
                 long long i = iv.toInt();
                 if (base.t == VT::Str) {
                     if (base.hashKind == "Blob" || base.hashKind == "Buf") { // element view
@@ -35252,9 +35463,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 // so an eager throw here killed the file (and Cro's
                 // last-chunk-if-any `@empty[*-1]` needs the soft form too).
                 if (i < 0) {
-                    return armedFailure("X::OutOfRange",
-                        "Index out of range. Is: " + std::to_string(i) +
-                        ", should be in 0..^Inf");
+                    return negIndexFailure(i);
                 }
                 if (i >= 0 && i < n) {
                     // a hole (deleted slot) in a defaulted/typed array reads as the default
@@ -35845,7 +36054,14 @@ Value Interpreter::eval(Expr* e) {
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                     Value dv = eval(ve->declDefault.get());
                     if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
-                        Value c = sigil == '@' ? Value::array() : Value::makeHash();
+                        // …but the DECLARED type still applies: `my Int @a is
+                        // default(0)` is an Array[Int], and building a bare
+                        // container here dropped it (only the form WITH an
+                        // initialiser kept it), so `.of` was Mu and `.raku`
+                        // printed a plain `[…]`.
+                        Value c = declInitial(ve, sigil);
+                        if (c.t != VT::Array && c.t != VT::Hash)
+                            c = sigil == '@' ? Value::array() : Value::makeHash();
                         c.elemDefaultM() = std::make_shared<Value>(dv);
                         return de->define(ve->name, c); // define() routes a pad name into
                                                         // its slot; vars[] would split it
@@ -36194,8 +36410,12 @@ Value Interpreter::eval(Expr* e) {
             return *p;
         }
         case NK::NameTerm: {
-            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) { // the Empty term: an empty Slip (a user `class Empty` shadows it)
-                Value es = Value::array(); es.isList = true; es.s = "Slip"; return es;
+            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) {
+                // the Empty term: an empty Slip (a user `class Empty` shadows
+                // it). It is a SINGLETON — `Empty === Empty` is True, and `===`
+                // on a list is reference identity, so every mention has to hand
+                // back the same storage (sheet LA-06).
+                return emptySlipSingleton();
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
@@ -36812,6 +37032,15 @@ Value Interpreter::eval(Expr* e) {
             // container dynamic and the NAME carries that; `is dynamic` does the same
             // without a twigil, and is recorded per scope at declaration time.
             // `$x.VAR.dynamic` asks the same question, so unwrap a `.VAR` first.
+            // `.name` on a DECLARED container is the variable's own name —
+            // `my @foo; @foo.name` is "@foo" (sheet LA-21). Only the name knows
+            // it: an anonymous `[1, 2].name` is the generic "element", which is
+            // what the value-level arm still answers.
+            if (mc->inv && mc->inv->kind == NK::VarExpr && mc->args.empty() &&
+                !mc->meta && !mc->hyper && !mc->methodExpr && mc->method == "name") {
+                const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
+                if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%')) return Value::str(vn);
+            }
             {
                 Expr* dynInv = nullptr;
                 if (mc->method == "dynamic" && mc->args.empty() && mc->inv) {
@@ -37218,7 +37447,12 @@ Value Interpreter::eval(Expr* e) {
             // literal `*` composes — `my $d = * * 2; $d.^name` calls the method on
             // the stored WhateverCode instead. On a BARE `*` even metamethods curry
             // (`.map(*.^name)`); on a composed WhateverCode the macros answer directly.
-            static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "WHICH", "VAR", "WHY"};
+            // …except `.WHICH`, which DOES curry on a bare `*`: `.map(*.WHICH)`
+            // is how a program asks for each element's identity, and answering
+            // the Whatever's own identity handed `map` a Str (sheet LA-32).
+            // Measured on Rakudo 2026.08: `*.WHAT`, `*.WHO`, `*.HOW`, `*.VAR`
+            // answer directly; `*.WHICH` is a WhateverCode.
+            static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHY"};
             if (((inv.t == VT::Whatever &&
                   (mc->meta || !kMetaMacros.count(mc->method))) ||
                  (inv.t == VT::Code && inv.code() && inv.code()->isWhateverCode &&

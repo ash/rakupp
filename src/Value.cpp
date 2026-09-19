@@ -49,6 +49,7 @@ namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
+MakeTypedExFn g_makeTypedEx = nullptr; // installed by Interpreter.cpp (see Value.h)
 EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 DateFormatFn g_dateFormat = nullptr; // installed by Interpreter.cpp (see Value.h)
 
@@ -118,7 +119,13 @@ bool Value::truthy() const {
                 for (auto& e : *arr()) { jc.feed(e.truthy()); if (jc.done()) break; }
                 return jc.verdict();
             }
-            return arr() && !arr()->empty();
+            // A non-empty buffer is true without asking anything else. Only an
+            // EMPTY one has to check whether it is merely unpulled: a LAZY list
+            // is True whether or not it has reified anything, because its Bool
+            // asks whether there is a first element and an endless source always
+            // has one (sheet LA-27). Ordering it this way keeps `if @a` free.
+            if (arr() && !arr()->empty()) return true;
+            return endlessLazy(*this);
         case VT::Hash:
             // A Proc / Proc::Async is true iff it exited successfully: exit code 0
             // AND no signal (a SIGKILLed child has exitcode 0 — Rakudo's split).
@@ -619,10 +626,10 @@ std::string Value::gist() const {
     // reified and marks the rest — nested elements included (this is the one
     // renderer every container's gist recurses through)
     if (endlessLazy(*this)) {
-        if (isList) return "(...)";
-        std::string out = "[";
-        for (auto& e : *arr()) { out += e.gist(); out += ' '; }
-        return out + "...]";
+        // Neither form shows what happens to be reified: Rakudo prints `(...)`
+        // for a lazy Seq or List and `[...]` for a lazy Array, whatever has
+        // been pulled (sheet LA-02).
+        return isList ? "(...)" : "[...]";
     }
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
     // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
@@ -919,7 +926,7 @@ std::string Value::typeName() const {
         // A CArray is stored as raw bytes in a Str, and reported itself as "Str" —
         // so `.^name` lied and `$c ~~ CArray` was False. The element type lives in
         // enumName, which is what makes the parameterized spelling possible.
-        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? std::string("Blob") : enumName.str()) : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : "Str";
+        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? std::string("Blob") : enumName.str()) : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : hashKind == "ObjAt" ? "ObjAt" : hashKind == "ValueObjAt" ? "ValueObjAt" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";

@@ -3762,8 +3762,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofTypeM() = inv.ofType();
         std::vector<long long> dims;
         ValueList seed;
+        bool lazySeed = false; Value lazyFrom;   // `Array.new(1..*)` stays lazy
+        size_t posCount = 0;   // positional arguments — `:shape` is not one
+        for (auto& a : args)
+            if (!(a.t == VT::Pair && a.s == "shape")) posCount++;
         for (auto& a : args) {
             if (a.t == VT::Pair && a.s == "shape") {
+                // Only a definite integer (or a list of them) is a shape. A
+                // Range is refused outright, and a TYPE OBJECT warns and is
+                // ignored — the array comes back unshaped (sheet LA-20).
+                if (a.pairVal() && a.pairVal()->t == VT::Range)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Setting a shape with a Range not allowed: " + a.pairVal()->gist()};
+                if (a.pairVal() && a.pairVal()->t == VT::Type) {
+                    { const std::string wm = "Useless use of :shape(" + a.pairVal()->gist() + ")";
+                      if (!runControlWarn(wm)) std::cerr << wm << "\n"; }
+                    continue;
+                }
                 if (a.pairVal()) for (auto& d : a.pairVal()->flatten()) dims.push_back(d.toInt());
                 continue;
             }
@@ -3775,13 +3790,43 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // Pairs; the caller then sorted a flat pair soup and every path in
             // the answer was separated from its value (issue #69).
             if (inv.s == "List") seed.push_back(a);
+            // `Array.new` follows the SINGLE-ARGUMENT RULE, not a blanket
+            // flatten: one Iterable argument is the list of elements, several
+            // are each one element — `Array.new((1,2),(3,4))` has two, and an
+            // ITEMIZED one is a single element whatever its company (LA-04).
+            else if (a.itemized || posCount > 1 ||
+                     (a.t == VT::Pair && a.namedArg)) seed.push_back(a);
+            // …and an ENDLESS source is not walked at all: `Array.new(1..*)`
+            // is a LAZY array, and toList would try to reify it (sheet LA-04).
+            else if (a.t == VT::Range && !a.rNum() && a.rTo() >= 9223372036854775807LL) {
+                Value lz = a; lazySeed = true; lazyFrom = lz;
+            }
             else for (auto& x : toList(a)) seed.push_back(x);
         }
+        // A PARAMETERIZED constructor type-checks what it is given, exactly as
+        // an assignment into the container would: `Array[Int].new("a")` is
+        // X::TypeCheck::Assignment, not an Array holding a Str (sheet LA-21).
+        if (!v.ofType().empty() && v.ofType() != "Mu" && v.ofType() != "Any" &&
+            v.ofType().find(',') == std::string::npos &&
+            !ascii::islower((unsigned char)v.ofType()[0]))
+            for (auto& x : seed) {
+                if (x.t == VT::Nil || typeOrSubsetMatches(x, v.ofType())) continue;
+                throwTypedV("X::TypeCheck::Assignment",
+                    {{"got", x}, {"expected", Value::typeObj(v.ofType())}},
+                    "Type check failed in assignment; expected " + v.ofType() +
+                        " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
+            }
         if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
             std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();
             Value s = makeShapedContainer(dims, et, seed.empty() ? nullptr : &seed);
             s.isList = v.isList;
             return s;
+        }
+        if (lazySeed) {
+            ValueList none;
+            Value lz = methodCall(lazyFrom, "list", none);
+            lz.isList = v.isList;   // Array.new keeps the Array face
+            return lz;
         }
         *v.arr() = seed;
         return v;
@@ -5838,6 +5883,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // type objects stringify empty (with a warning in Rakudo) — but
         // IterationEnd is a SENTINEL, and stringifies to its own name
         if (inv.t == VT::Type) return Value::str(inv.s == "IterationEnd" ? inv.s.str() : std::string());
+        // An ENDLESS lazy list stringifies its REIFIED PREFIX and marks the
+        // rest: `my @a = 1..*; @a[2]; ~@a` is "1 2 3 ...", and one nothing has
+        // pulled from is just "..." (sheet LA-02). The generic path below
+        // passed the prefix off as the whole list.
+        if (inv.t == VT::Array && inv.arr() && inv.ext() &&
+            std::static_pointer_cast<LazySeqState>(inv.ext())->infinite) {
+            std::string out;
+            for (auto& e : *inv.arr()) { out += e.toStr(); out += ' '; }
+            return Value::str(out + "...");
+        }
         // `Int.Str(:superscript)` / `(:subscript)` render the digits (and a leading
         // minus) in the Unicode super/subscript forms. Note ¹²³ are NOT in the
         // U+2070 run — a `0x2070 + d` table is wrong for exactly those three.
@@ -6186,13 +6241,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         std::static_pointer_cast<LazySeqState>(inv.ext())->infinite) {
         // .raku of an endless sequence: Rakudo shows the first 100 elements,
         // then marks the rest (the string still must not claim to be complete)
+        // …and a lazy ARRAY shows nothing at all — just `[...]` (sheet LA-02)
+        if (!inv.isList) return Value::str("[...]");
         materializeLazy(inv, 100);
         std::string out = "(";
         for (size_t i = 0; i < inv.arr()->size() && i < 100; i++) {
             if (i) out += ", ";
             out += rakuRepr((*inv.arr())[i]);
         }
-        return Value::str(out + "...).lazy.Seq");
+        out += "...).lazy";
+        if (inv.s == "Seq") out += ".Seq";   // only a Seq names one
+        return Value::str(out);
     }
     if (m == "raku") return Value::str(rakuRepr(inv));
     // A Match is Iterable over its POSITIONAL CAPTURES, so its list coercions answer
@@ -6868,7 +6927,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value st; st.t = VT::Hash; st.setHash(stash); st.hashKind = "Stash"; st.s = pkg;
         return st;
     }
-    if (m == "WHICH") return Value::str(whichOf(inv)); // whichOf is the one home for identity
+    if (m == "WHICH") {
+        // whichOf is the one home for identity; the object it comes back in
+        // names WHICH KIND of identity it is — an immutable value compares by
+        // its content (ValueObjAt), everything else by being itself (ObjAt).
+        // Measured against Rakudo 2026.08: Array, List, Seq, Hash, Buf,
+        // Instant, IO::Path, Code and every user object are ObjAt; Int, Rat,
+        // Num, Str, Bool, Range, Pair, the Setty/Baggy family, Date, Complex,
+        // a type object and Nil are ValueObjAt (sheet LA-36).
+        Value w = Value::str(whichOf(inv));
+        bool objAt =
+            (inv.t == VT::Array && inv.hashKind != "Capture" && inv.enumName.empty()) ||
+            (inv.t == VT::Hash && inv.hashKind.empty()) ||
+            (inv.t == VT::Hash && (inv.hashKind == "Hash" || inv.hashKind == "SetHash" ||
+                                   inv.hashKind == "BagHash" || inv.hashKind == "MixHash")) ||
+            (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "IO")) ||
+            (inv.t == VT::Num && inv.hashKind == "Instant") ||
+            inv.t == VT::Code || inv.t == VT::Object;
+        w.hashKind = objAt ? "ObjAt" : "ValueObjAt";
+        return w;
+    }
     if (m == "WHERE") { // memory address of the value (an Int)
         const void* p = inv.t == VT::Object && inv.obj() ? (const void*)inv.obj()
                       : inv.t == VT::Array && inv.arr()  ? (const void*)inv.arr()
@@ -6966,6 +7044,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "name" && !args.empty()) return Value::str(args[0].typeName());
             return Value::str("Perl6::" + std::string(inv.s.str()));
         }
+        // A typed container names its PARAMETER: `my Int @a; @a.^name` is
+        // `Array[Int]`, and `my Int %h` is `Hash[Int]` (sheet LA-21). Only
+        // `.^name` — typeName() stays the bare `Array`, because that is the
+        // name every type check and error message is written against.
+        if (m == "^name" && (inv.t == VT::Array || inv.t == VT::Hash) && !inv.isList &&
+            !inv.ofType().empty() && inv.ofType() != "Mu" &&
+            inv.typeName().find('[') == std::string::npos)
+            return Value::str(inv.typeName() + "[" + inv.ofType() + "]");
         // plain .name is NOT a universal method: a user-class instance with no
         // name method/attr dies X::Method::NotFound like Rakudo ($.name typo)
         if (m == "^name" || !(inv.t == VT::Object && inv.obj() && inv.obj()->cls))

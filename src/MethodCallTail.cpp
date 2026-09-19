@@ -28,7 +28,13 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
         for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
     else if (!ofArray && x.t == VT::Range)
         for (auto& e : x.flatten()) out.push_back(e);
-    else out.push_back(x);
+    else {
+        // What stays whole stays whole BECAUSE it is in a container, and
+        // `.raku` says so: `[1, (2, 3)].flat` is `(1, $(2, 3))` (sheet LA-34).
+        Value keep = x;
+        if (ofArray && (keep.t == VT::Array || keep.t == VT::Hash)) keep.itemized = true;
+        out.push_back(std::move(keep));
+    }
 }
 
 // .rotor/.batch argument parsing, shared by the eager arm and the lazy view
@@ -624,16 +630,39 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
             // — in their own arms below, as in Rakudo)
-            // …and `.sum` hands the refusal back as a FAILURE rather than
-            // throwing it, so `my $t = @lazy.sum` only detonates when $t is used
-            // (Nil-Any sheet NA-23). The rest still throw, as Rakudo's do.
-            if (m == "sum")
-                return armedFailure("X::Cannot::Lazy", "Cannot sum a lazy list onto an Array");
-            if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
-                m == "sort" || m == "eager" ||
-                m == "min" || m == "max" || m == "join" || m == "Str" ||
-                m == "reduce")
-                throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
+            // Rakudo splits the refusals two ways, and which way it goes is
+            // observable: some hand back an ARMED FAILURE, so `my $t =
+            // @lazy.sum` only detonates when $t is used, and the rest THROW at
+            // once (sheets NA-23, LA-27, LA-23). Measured against the 2026.08
+            // binary for both a lazy List and a lazy Array; the two agree
+            // except for `pop`, which a List refuses as X::Immutable instead.
+            static const std::set<std::string> kLazyFailure = {
+                "elems", "reverse", "sum", "pick", "roll", "Capture", "rotate",
+                "Numeric", "Int", "pop"};
+            static const std::set<std::string> kLazyThrow = {
+                "end", "tail", "sort", "min", "max", "eager", "reduce",
+                "push", "append", "grab"};
+            // …but `.roll($n)` and `.List` of a lazy ARRAY throw where the
+            // no-argument forms fail, and a lazy LIST answers `.List` with
+            // itself.
+            if (m == "roll" && !args.empty())
+                throwTyped("X::Cannot::Lazy", {{"action", "roll"}}, "Cannot roll a lazy list");
+            if (m == "List" && !inv.isList)
+                throwTyped("X::Cannot::Lazy", {{"action", "List"}}, "Cannot List a lazy list");
+            if (kLazyFailure.count(m))
+                return armedFailure("X::Cannot::Lazy", "Cannot " + m + " a lazy list");
+            if (kLazyThrow.count(m))
+                throwTyped("X::Cannot::Lazy", {{"action", m.s}}, "Cannot " + m + " a lazy list");
+            // `join` and `Str` answer the REIFIED PREFIX with `...` for the
+            // rest — `my @a = 1..*; @a[2]; @a.join(",")` is `1,2,3,...`, and a
+            // list nothing has pulled from yet is just `...` (sheet LA-14).
+            if (m == "join" || m == "Str") {
+                std::string sep = m == "join" && !args.empty() ? args[0].toStr()
+                                : m == "join" ? "" : " ";
+                std::string out;
+                if (inv.arr()) for (auto& e : *inv.arr()) { out += e.toStr(); out += sep; }
+                return Value::str(out + "...");
+            }
             if (m == "shift") { materializeLazy(inv, 1); if (inv.arr()->empty()) return Value::nil(); Value v = inv.arr()->front(); inv.arr()->erase(inv.arr()->begin()); return v; }
         } else {
             // FINITE lazy (a gather that outgrew its probe, a lazy map over a finite
@@ -1380,12 +1409,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         // `.eager` on a concrete Array is the identity — it keeps the same
         // container (and its element type: `my int @a` stays array[int]); only a
-        // lazy Seq needs forcing (its elements are already materialised in `items`)
-        if (m == "eager" && inv.t == VT::Array && !inv.ext())
+        // lazy Seq needs forcing (its elements are already materialised in `items`).
+        // A SEQ is the exception: eager answers the List it reified to, not
+        // another Seq (sheet LA-10).
+        if (m == "eager" && inv.t == VT::Array && !inv.ext() && inv.s != "Seq")
             return inv;
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
             Value out = Value::list(items);
             if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
+            // `.eager` answers a LIST — `(1..*).list.head(3).eager` is `(1, 2, 3)`,
+            // not a Seq (sheet LA-10). `.cache` keeps the invocant's own type.
             if (m == "lazy") out.b = true; // `.lazy` MARKS it: `.is-lazy` says True after
             return out;
         }
@@ -1458,8 +1491,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // each element through ITS OWN .Str, so a user `method Str` is honoured —
             // except a Str-ish one, which contributes its VALUE (Str:D candidate)
             const std::string sep = args.empty() ? "" : a0().toStr();
+            // A HOLE stringifies as what READING it would give: "" for a plain
+            // array, the `is default(v)` value where there is one, and the
+            // element type's object for a typed array (sheet LA-14).
+            const Value* dflt = inv.t == VT::Array && inv.elemDefault()
+                                    ? inv.elemDefault().get() : nullptr;
             std::string out;
-            for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += strInStrContext(items[k]); }
+            for (size_t k = 0; k < items.size(); k++) {
+                if (k) out += sep;
+                out += (dflt && items[k].t == VT::Any) ? strInStrContext(*dflt)
+                                                       : strInStrContext(items[k]);
+            }
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         if (m == "fmt") {
@@ -1479,6 +1521,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 return Value::str(out);
             }
+            // Each element is formatted ON ITS OWN, so a format wanting two
+            // arguments can never be satisfied by a plain element — Rakudo
+            // reports the sprintf arity failure as X::AdHoc (sheet LA-12). A
+            // Pair (and a Setty/Baggy entry, handled above) supplies two, so
+            // the count is only checked where one is supplied.
+            {
+                size_t directives = 0;
+                for (size_t i = 0; i + 1 < fmt.size(); i++)
+                    if (fmt[i] == '%') { if (fmt[i + 1] == '%') i++; else directives++; }
+                bool allPlain = true;
+                for (auto& it : items) if (it.t == VT::Pair) { allPlain = false; break; }
+                if (directives > 1 && allPlain && !items.empty())
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Your printf-style directives specify " + std::to_string(directives) +
+                        " arguments, but 1 argument was supplied to format '" + fmt + "'"};
+            }
             for (size_t k = 0; k < items.size(); k++) {
                 if (k) out += sep;
                 // a Pair element formats as its (key, value) — `@pairs.fmt('%s: %s', ', ')`
@@ -1486,6 +1544,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (items[k].t == VT::Pair)
                     out += doSprintf(fmt, {Value::str(items[k].s),
                                            items[k].pairVal() ? *items[k].pairVal() : Value::any()});
+                // an ITERABLE element is formatted RECURSIVELY with the same
+                // format and separator, so a nested list spreads:
+                // `(1, (2, 3)).fmt("<%s>", ",")` is "<1>,<2>,<3>" (LA-12)
+                else if ((items[k].t == VT::Array && items[k].arr() && !items[k].itemized) ||
+                         items[k].t == VT::Range) {
+                    ValueList fa{Value::str(fmt), Value::str(sep)};
+                    out += methodCall(items[k], "fmt", fa).toStr();
+                }
                 else out += doSprintf(fmt, {items[k]});
             }
             return Value::str(out);
@@ -3223,8 +3289,34 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // how Text::CSV builds a column range, and appending the Range
                 // itself failed the element type check.
                 if (args.size() == 1 && args[0].t == VT::Range) return args[0].flatten();
+                // …and a sole HASH contributes its PAIRS — a Hash is Iterable,
+                // so the single-argument rule spreads it exactly as it spreads
+                // a list: `@a.append(%h)` adds one element per key (LA-22).
+                if (args.size() == 1 && args[0].t == VT::Hash && args[0].hash() &&
+                    (args[0].hashKind.empty() || args[0].hashKind == "Map")) {
+                    ValueList out;
+                    for (auto& kv : *args[0].hash()) {
+                        Value p = Value::pair(kv.first, kv.second);
+                        p.pairKeyM() = kv.second.pairKey();
+                        out.push_back(p);
+                    }
+                    return out;
+                }
                 return args;               // 2+ args: each as-is
             };
+            // An ENDLESS argument can never finish being appended: Rakudo
+            // refuses `append` with X::Cannot::Lazy (sheet LA-22), and this
+            // extends the same refusal to `prepend`, where Rakudo 2026.08
+            // simply hangs — a hang is not a behaviour worth imitating
+            // (REVIEW-GRAND's precedent for choosing the sane answer).
+            // `push` is exempt: it adds the Range itself, unflattened.
+            if (m == "append" || m == "push" || m == "prepend")
+                for (auto& a : args)
+                    if (isEndlessLazy(a) ||
+                        (a.t == VT::Range && !a.rNum() && a.rTo() >= 9000000000000000000LL &&
+                         (m != "push")))   // push adds the Range itself, unflattened
+                        throwTyped("X::Cannot::Lazy", {{"action", m.s}},
+                                   "Cannot " + m + " a lazy list onto an Array");
             if (m == "append") { for (auto& a : appendValues(args)) { elemCheck(a); inv.arr()->push_back(elemDef(a)); } return inv; }
             if (m == "unshift") { ValueList u; for (auto& a : slipped(args)) { elemCheck(a); u.push_back(elemDef(a)); }
                                   inv.arr()->insert(inv.arr()->begin(), u.begin(), u.end()); return inv; }
@@ -3250,7 +3342,36 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value v = m == "pop" ? inv.arr()->back() : inv.arr()->front();
                 if (m == "pop") inv.arr()->pop_back(); else inv.arr()->erase(inv.arr()->begin());
                 if (v.t == VT::Array) v.itemized = true;
+                // a HOLE pops or shifts as the container's default, the same
+                // value reading that slot would have given (sheet LA-23)
+                if (v.t == VT::Any && inv.elemDefault()) return *inv.elemDefault();
                 return v;
+            }
+            // `.grab` is `.pick` that CONSUMES: the drawn elements leave the
+            // array. A bare grab answers one element (Nil on an empty array);
+            // `.grab($n)`, `.grab(*)` and `.grab({…})` answer a Seq of up to
+            // that many (sheet LA-25).
+            if (m == "grab") {
+                if (inv.ext() && isEndlessLazy(inv))
+                    throwTyped("X::Cannot::Lazy", {{"action", "grab"}},
+                               "Cannot grab from a lazy list");
+                bool one = args.empty();
+                bool all = !one && (args[0].t == VT::Whatever ||
+                                    (args[0].t == VT::Type && args[0].s == "Whatever") ||
+                                    (args[0].isNumeric() && std::isinf(args[0].toNum())));
+                long long have = (long long)inv.arr()->size();
+                long long n = one ? 1 : all ? have
+                            : args[0].t == VT::Code
+                                ? callCallable(args[0], ValueList{Value::integer(have)}).toInt()
+                                : args[0].toInt();
+                Value out = Value::seq();
+                for (long long k = 0; k < n && !inv.arr()->empty(); k++) {
+                    size_t j = (size_t)(randDouble() * inv.arr()->size());
+                    out.arr()->push_back((*inv.arr())[j]);
+                    inv.arr()->erase(inv.arr()->begin() + j);
+                }
+                if (one) return out.arr()->empty() ? Value::nil() : (*out.arr())[0];
+                return out;
             }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
                 // a lazy array only holds a prefix — materialize enough to cover the window
@@ -3268,12 +3389,28 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return (long)a.toInt();
                 };
                 long start = args.size() > 0 ? resolve(args[0], n) : 0;
-                if (start < 0) start += n;
-                start = std::max(0L, std::min(start, n));
+                // Both arguments are VALIDATED, and a bad one is THROWN, not
+                // clamped: an offset outside 0..elems and a negative size are
+                // each X::OutOfRange, named for the argument (sheet LA-24).
+                if (start < 0 || start > n)
+                    throwTypedV("X::OutOfRange",
+                        {{"what", Value::str("Offset argument to splice")},
+                         {"got", Value::integer(start)},
+                         {"range", Value::str("0.." + std::to_string(n))}},   // Rakudo's is a Str
+                        "Offset argument to splice out of range. Is: " + std::to_string(start) +
+                            ", should be in 0.." + std::to_string(n));
                 // the COUNT resolves against what is left after the start
                 long count = args.size() > 1 ? resolve(args[1], n - start) : (n - start);
-                count = std::max(0L, std::min(count, n - start));
+                if (count < 0)
+                    throwTypedV("X::OutOfRange",
+                        {{"what", Value::str("Size argument to splice")},
+                         {"got", Value::integer(count)},
+                         {"range", Value::str("0..^" + std::to_string(n - start))}},
+                        "Size argument to splice out of range. Is: " + std::to_string(count) +
+                            ", should be in 0..^" + std::to_string(n - start));
+                count = std::min(count, n - start);   // a size past the end clamps
                 Value removed = Value::array(); // the removed elements are an Array
+                removed.ofTypeM() = inv.ofType(); // …of the SAME type as the source
                 for (long k = 0; k < count; k++) removed.arr()->push_back((*inv.arr())[start + k]);
                 ValueList repl;
                 for (size_t k = 2; k < args.size(); k++) {
@@ -3289,6 +3426,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // record across the array — Crane's positional `add` splices a
                     // `$value` holding a Hash exactly this way.
                     if (args[k].t == VT::Hash) { repl.push_back(args[k]); continue; }
+                    // an ENDLESS replacement can never be spliced in
+                    if (isEndlessLazy(args[k]) ||
+                        (args[k].t == VT::Range && !args[k].rNum() &&
+                         args[k].rTo() >= 9000000000000000000LL))
+                        throwTyped("X::Cannot::Lazy", {{"action", "splice in"}},
+                                   "Cannot splice in a lazy list");
                     for (auto& x : toList(args[k])) repl.push_back(x);
                 }
                 // a typed array checks its REPLACEMENTS before any of them lands

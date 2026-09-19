@@ -11,11 +11,11 @@ sub ok($cond, $what) { $fails++ unless $cond; note "not ok - $what" unless $cond
 # `+lol`: ONE iterable argument is the list of lists, not itself a list.
 # text-columns transposes its rows with `zip @fitted.map(*.[^$max])`, and the
 # one-block case handed `("",)` to a Str:D parameter.
-ok(zip(((1,2),(3,4))).raku eq '((1, 3), (2, 4))', 'zip of ONE list-of-lists zips its elements');
-ok(zip((1,2,3)).raku eq '((1, 2, 3),)', 'zip of one flat list is one row');
+ok(zip(((1,2),(3,4))).raku eq '((1, 3), (2, 4)).Seq', 'zip of ONE list-of-lists zips its elements');
+ok(zip((1,2,3)).raku eq '((1, 2, 3),).Seq', 'zip of one flat list is one row');
 my $one = ((("",),).Seq);
-ok(zip($one).raku eq '(("",),)', 'zip of a one-list Seq is a one-element row');
-ok(zip((1,2),(3,4)).raku eq '((1, 3), (2, 4))', 'two arguments zip as before');
+ok(zip($one).raku eq '(("",),).Seq', 'zip of a one-list Seq is a one-element row');
+ok(zip((1,2),(3,4)).raku eq '((1, 3), (2, 4)).Seq', 'two arguments zip as before');
 
 # --- Color::Names: the dot-hyper SUBSCRIPT spelling ----------------------------
 my @h = ({n => 1}, {n => 2});

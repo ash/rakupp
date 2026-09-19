@@ -778,6 +778,11 @@ struct Value {
     static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(std::make_shared<ValueList>(std::move(items))); return v; }
     // a List/Seq: same storage as Array but gists with (..) instead of [..]
     static Value list(ValueList items) { Value v = array(std::move(items)); v.isList = true; return v; }
+    // a Seq: a List whose `s` carries the Seq tag, so `.raku` renders `(…).Seq`
+    // and `.^name` answers Seq. The list-building operators (Z, X, zip, cross,
+    // roundrobin, flat, rotate, reverse, xx …) all answer one in Rakudo.
+    static Value seq(ValueList items) { Value v = list(std::move(items)); v.s = "Seq"; return v; }
+    static Value seq() { return seq(ValueList{}); }
     // Wrap a C++ callable as a Raku Code value (used by native codegen for closures / WhateverCode).
     static Value closure(std::function<Value(ValueList&)> fn) {
         Value v; v.t = VT::Code;
@@ -978,6 +983,15 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// Building a TYPED exception object (with its attributes, so `$!.range` answers)
+// needs the class registry, which lives on the Interpreter. The free runtime
+// helpers that raise one — a negative subscript, for instance — reach it
+// through this hook, installed when the Interpreter is constructed. Null before
+// then, and the caller falls back to the bare type object.
+using MakeTypedExFn = Value (*)(const std::string&,
+                                std::vector<std::pair<std::string, Value>>,
+                                const std::string&);
+extern MakeTypedExFn g_makeTypedEx;
 // A lazy sequence that has not been pulled from yet — a `gather`, which is not
 // run until something asks — has an EMPTY element buffer, so anything reading
 // that buffer to RENDER or COMPARE the whole value has to fill it first or it

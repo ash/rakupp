@@ -1633,6 +1633,21 @@ static bool rakuIdentKey(const std::string& s) {
     for (unsigned char c : s) if (!(ascii::isalnum(c) || c == '_' || c == '-')) return false;
     return true;
 }
+// An unfilled slot of an array reads as that array's DEFAULT, and `.raku`
+// prints what a read would give: `my @a is default(7); @a[2] = 1` renders
+// `[7, 7, 1]`, and a typed `my Int @a` renders its holes as `Int` (sheet
+// LA-21). A hole is an undefined Any; a stored Any type object looks the same
+// to a reader, which is how Rakudo prints those too.
+static Value arrayHoleFill(const Value& arr, const Value& e) {
+    if (e.t != VT::Any) return e;
+    if (arr.elemDefault()) return *arr.elemDefault();
+    if (!arr.ofType().empty() && arr.ofType() != "Mu" &&
+        arr.ofType().find(',') == std::string::npos &&
+        !ascii::islower((unsigned char)arr.ofType()[0]))
+        return Value::typeObj(arr.ofType());
+    return e;
+}
+
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
@@ -1640,12 +1655,18 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
     // 100 elements for the top-level call; a nested one shows what is cached.)
     if (v.t == VT::Array && v.arr() && v.ext() &&
         std::static_pointer_cast<LazySeqState>(v.ext())->infinite) {
+        // A lazy ARRAY says only that it is one — `[...]` — whatever it has
+        // reified; a lazy List or Seq shows up to 100 of its elements and then
+        // the marker, with `.Seq` only when it IS one (sheet LA-02).
+        if (!v.isList) return "[...]";
         std::string out = "(";
         for (size_t i = 0; i < v.arr()->size() && i < 100; i++) {
             if (i) out += ", ";
             out += rakuRepr((*v.arr())[i], depth + 1, seen);
         }
-        return out + "...).lazy.Seq";
+        out += "...).lazy";
+        if (v.s == "Seq") out += ".Seq";
+        return out;
     }
     // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
     // URI::Query hands back lists of Proxy containers to keep them immutable.
@@ -1834,12 +1855,39 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 return o + ")";
             }
             if (v.arr() && !seen.insert(v.arr()).second) return v.isList ? "(...)" : "[...]"; // cycle
+            // A TYPED array round-trips through its parameterized constructor:
+            // `my Int @a = 1, 2` is `Array[Int].new(1, 2)`, a native one
+            // `array[int].new(1, 2)`, and an empty one still names its type.
+            // Only .raku carries it — .gist stays `[1 2]` (sheet LA-21).
+            if (!v.isList && !v.ofType().empty() && v.ofType() != "Mu" &&
+                v.ofType().find(',') == std::string::npos && !v.shape()) {
+                std::string ctor = ascii::islower((unsigned char)v.ofType()[0])
+                                       ? "array[" + v.ofType() + "]" : "Array[" + v.ofType() + "]";
+                std::string ty = ctor + ".new(";
+                bool wasTyElem = g_reprInArrayElem;
+                g_reprInArrayElem = true;
+                bool tyFirst = true;
+                if (v.arr()) for (auto& e : *v.arr()) {
+                    if (!tyFirst) ty += ", ";
+                    tyFirst = false;
+                    ty += rakuRepr(arrayHoleFill(v, e), depth + 1, seen);
+                }
+                g_reprInArrayElem = wasTyElem;
+                if (v.arr()) seen.erase(v.arr());
+                ty += ")";
+                return v.itemized && !wasTyElem ? "$(" + ty + ")" : ty;
+            }
             std::string o(1, v.isList ? '(' : '[');
             bool wasElem = g_reprInArrayElem;
             if (v.arr()) {
                 bool first = true;
                 g_reprInArrayElem = !v.isList;
-                for (auto& e : *v.arr()) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
+                for (auto& e : *v.arr()) {
+                    if (!first) o += ", ";
+                    first = false;
+                    // an `is default(7)` array shows its holes as 7, not Any
+                    o += rakuRepr(v.isList ? e : arrayHoleFill(v, e), depth + 1, seen);
+                }
                 g_reprInArrayElem = wasElem;
                 if (v.isList && v.arr()->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
@@ -4510,11 +4558,25 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         }
         return jr;
     }
+    // `.sort(:k)` is the one member of this family that answers a LIST — it
+    // reports positions, not a re-ordered sequence (List-Array sheet LA-35).
+    bool sortK = false;
+    if (!args.empty() && m == "sort")
+        for (auto& av : args)
+            if (av.t == VT::Pair && av.namedArg && av.s == "k")
+                sortK = !av.pairVal() || av.pairVal()->truthy();
+    // `Empty` short-circuits the list methods that keep their invocant's type:
+    // `Empty.map({…})` is Empty, not `().Seq` (sheet LA-06). Measured against
+    // Rakudo 2026.08 — map/grep/sort/list/unique answer Empty, while
+    // reverse/flat/values/kv/Seq answer a plain empty Seq and .List answers ().
+    if (inv.t == VT::Array && inv.arr() && inv.arr()->empty() && inv.s == "Slip" &&
+        (m == "map" || m == "grep" || m == "sort" || m == "list" || m == "unique"))
+        return emptySlipSingleton();
     Value r = methodCallInner(inv, m, std::move(args), rwArgs, skipOwn);
-    if (r.t == VT::Array && r.isList && r.s.empty() &&
+    if (r.t == VT::Array && r.isList && r.s.empty() && !sortK &&
         (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
          m == "antipairs" || m == "invert" ||
-         m == "reverse" || m == "sort" || m == "unique" || m == "squish" ||
+         m == "reverse" || m == "rotate" || m == "sort" || m == "unique" || m == "squish" ||
          m == "head" || m == "tail" || m == "skip" || m == "rotor" || m == "batch" ||
          m == "toggle" || m == "collate" || m == "repeated") &&
         !kvFamilyAnswersList(inv, m))
@@ -5268,8 +5330,25 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // A multi-dim shaped array renders its structure: rows on their own lines for
     // .gist, and a `Array.new(:shape(…), row, …)` constructor for .raku.
-    if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && inv.arr() &&
+    if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr() &&
         (m == "gist" || m == "raku")) {
+        // A ONE-dimensional shaped array has no rows to lay out, but it still
+        // round-trips through the shaped constructor: `my @a[2]` is
+        // `Array.new(:shape(2,), [1, Any])` (sheet LA-20).
+        if (inv.shape()->size() == 1) {
+            if (m == "gist") return Value::str(gistOf(inv));
+            std::string ctor1;
+            if (inv.ofType().empty() || inv.ofType() == "Any" || inv.ofType() == "Mu") ctor1 = "Array";
+            else if (ascii::islower((unsigned char)inv.ofType()[0])) ctor1 = "array[" + inv.ofType() + "]";
+            else ctor1 = "Array[" + inv.ofType() + "]";
+            std::string o1 = ctor1 + ".new(:shape(" + std::to_string((*inv.shape())[0]) + ",), [";
+            for (size_t i = 0; i < inv.arr()->size(); i++) {
+                if (i) o1 += ", ";
+                ValueList none;
+                o1 += methodCall((*inv.arr())[i], "raku", none).toStr();
+            }
+            return Value::str(o1 + "])");
+        }
         if (m == "gist") {
             std::string out = "[";
             for (size_t i = 0; i < inv.arr()->size(); i++) { if (i) out += "\n "; out += gistOf((*inv.arr())[i]); }
@@ -5282,7 +5361,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::string out = ctor + ".new(:shape(";
         for (size_t i = 0; i < inv.shape()->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape())[i]); }
         out += ")";
-        for (auto& row : *inv.arr()) { ValueList none; out += ", " + methodCall(row, "raku", none).toStr(); }
+        // The ROWS render as plain brackets: the element type is named ONCE, by
+        // the constructor. (A row is an Array carrying the same ofType, and
+        // letting it answer for itself printed a nested `array[int].new(…)`
+        // inside the shaped one.)
+        std::function<void(const Value&)> strip = [&](const Value& n) {
+            const_cast<Value&>(n).ofTypeM().clear();
+            if (n.t == VT::Array && n.arr()) for (auto& e : *n.arr()) strip(e);
+        };
+        for (auto& row : *inv.arr()) {
+            Value r = row;
+            if (r.t == VT::Array && r.arr()) { r.setArr(std::make_shared<ValueList>(*r.arr())); strip(r); }
+            ValueList none;
+            out += ", " + methodCall(r, "raku", none).toStr();
+        }
         return Value::str(out + ")");
     }
     if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr() && m == "clone") {
@@ -5617,6 +5709,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // Hash[Int,Str]. Only the name carries the parameters — typeName()
             // stays "Hash", because dispatch and error messages key on it.
             if (!objHashKeyType(inv).empty()) return Value::str("Hash[" + inv.ofType() + "]");
+            // …and so is a typed Array or Hash: `my Int @a; @a.^name` is
+            // `Array[Int]` (sheet LA-21). Same rule — the parameter shows in
+            // the NAME only, and a parameterized TYPE OBJECT already carries it
+            // in typeName().
+            if ((inv.t == VT::Array || inv.t == VT::Hash) && !inv.isList &&
+                !inv.ofType().empty() && inv.ofType() != "Mu" &&
+                inv.typeName().find('[') == std::string::npos)
+                return Value::str(inv.typeName() + "[" + inv.ofType() + "]");
             // a DEFINITENESS-constrained type reports its smiley: `Any:D.^name`
             if (inv.t == VT::Type && inv.i)
                 return Value::str(inv.typeName() + (inv.i == 1 ? ":D" : ":U"));
@@ -6032,6 +6132,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return inv.hashKind.rfind("Set", 0) == 0 ? Value::boolean(false) : Value::integer(0);
         if (inv.t == VT::Hash && !inv.hashKind.empty() && inv.hashKind != "Map")
             return Value::any(); // not a container — fall through below
+        // A TYPED container with no `is default` defaults to its own type
+        // object: `my Int @a; @a.default` is Int, not Any (sheet LA-21).
+        if (!inv.ofType().empty() && inv.ofType() != "Mu" &&
+            inv.ofType().find(',') == std::string::npos &&
+            !ascii::islower((unsigned char)inv.ofType()[0]))
+            return Value::typeObj(inv.ofType());
         return Value::any();
     }
 
@@ -14054,10 +14160,22 @@ void Interpreter::registerBuiltins() {
         for (size_t i = 2; i < a.size(); i++) margs.push_back(a[i]);
         return I.methodCall(a[1], "split", margs, nullptr);
     };
+    // The single-argument rule: ONE Iterable argument is the list to reverse,
+    // SEVERAL are each one element — `reverse((1,2), 3)` is `(3, $(1, 2))`, the
+    // inner list kept whole. With nothing at all there is no meaning to give
+    // (List-Array sheet LA-35).
     B["reverse"] = [](Interpreter&, ValueList& a) -> Value {
-        ValueList items; for (auto& v : a) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
+        if (a.empty())
+            return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<reverse>");
+        ValueList items;
+        if (a.size() == 1) items = toList(a[0]);
+        else for (auto& v : a) {
+            Value e = v;
+            if (e.t == VT::Array || e.t == VT::Hash) e.itemized = true; // an argument slot is a container
+            items.push_back(e);
+        }
         std::reverse(items.begin(), items.end());
-        Value o = Value::array(items); o.isList = true; o.s = "Seq"; return o;
+        return Value::seq(items);
     };
     B["sort"] = [](Interpreter& I, ValueList& a) -> Value {
         // `sort {comparator}, @list` / `sort &by, @list`: a leading Code is the
@@ -15193,7 +15311,7 @@ void Interpreter::registerBuiltins() {
     // that rule never opens an Array below the top level, which is what Cro's
     // router walks.
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::seq();   // flat answers a Seq (Rakudo)
         // Same rule as `.flat`, and it is about the SLOT: a bare list slot
         // spreads its Iterable, an ARRAY's slot never does — array assignment
         // itemises each element. `flat [[1,2],[3]]` stays two elements, and so
@@ -15202,7 +15320,12 @@ void Interpreter::registerBuiltins() {
             if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
                 for (auto& e : *x.arr()) deeper(e, !x.isList);
             else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr()->push_back(e);
-            else out.arr()->push_back(x);
+            else {
+                // an element kept whole was kept BECAUSE it is in a container
+                Value keep = x;
+                if (ofArray && (keep.t == VT::Array || keep.t == VT::Hash)) keep.itemized = true;
+                out.arr()->push_back(std::move(keep));
+            }
         };
         for (auto& v : a) {
             if (v.itemized) { out.arr()->push_back(v); continue; }
@@ -15222,15 +15345,24 @@ void Interpreter::registerBuiltins() {
         }
         return out;
     };
-    B["cache"] = [](Interpreter&, ValueList& a) -> Value { // cache(list) — like .cache, a no-op for our eager values
-        if (a.size() == 1) { if (a[0].t == VT::Range) return Value::array(a[0].flatten()); return a[0]; }
-        Value out = Value::array(); out.isList = true;
+    // `cache(…)` the SUB always answers an Array — unlike `.cache` the method,
+    // which keeps the invocant's own type (List-Array sheet LA-04).
+    B["cache"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() == 1) {
+            if (a[0].t == VT::Range) return Value::array(a[0].flatten());
+            if (a[0].t == VT::Array && a[0].arr() && !a[0].itemized) return Value::array(*a[0].arr());
+            return Value::array(ValueList{a[0]});
+        }
+        Value out = Value::array();
         for (auto& v : a) out.arr()->push_back(v);
         return out;
     };
     B["slip"] = [](Interpreter&, ValueList& a) -> Value { // slip(4,5) spreads into the enclosing list
+        // `slip()` with nothing to slip IS Empty, the singleton (sheet LA-06)
+        if (a.empty()) return emptySlipSingleton();
         Value out = Value::array(); out.isList = true; out.s = "Slip";
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr()->push_back(x); }
+        if (out.arr()->empty()) return emptySlipSingleton();
         return out;
     };
     // NB: no B["Slip"] — a bareword `Slip` must stay a type object (Slip.new);
@@ -15245,7 +15377,7 @@ void Interpreter::registerBuiltins() {
             lists.push_back(l);
         }
         size_t maxLen = 0; for (auto& l : lists) maxLen = std::max(maxLen, l.size());
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::seq();   // roundrobin answers a Seq (Rakudo)
         for (size_t i = 0; i < maxLen; i++) {
             if (slip) { for (auto& l : lists) if (i < l.size()) out.arr()->push_back(l[i]); continue; }
             Value round = Value::array(); round.isList = true;
@@ -15324,7 +15456,7 @@ void Interpreter::registerBuiltins() {
             items = *items[0].arr();
         Value z = I.applyReduce("Z", items);
         if (with.t == VT::Code && z.arr()) { // zip(:with(&f)) folds each tuple with &f
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::seq();
             for (auto& t : *z.arr()) {
                 ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
                 Value acc = parts.empty() ? Value::any() : parts[0];

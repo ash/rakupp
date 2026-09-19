@@ -98,6 +98,16 @@ Value numifyStrFailure(const std::string& in);
 // A negative subscript is out of range (see the definitions in Interpreter.cpp).
 Value negIndexFailure(long long i);            // reads: the armed X::OutOfRange Failure
 [[noreturn]] void negIndexThrow(long long i);   // writes: throw it
+// `Empty` is a SINGLETON empty Slip: `Empty === Empty` and `slip() === Empty`
+// are both True, and `===` on a list compares storage, so every mention must
+// hand back the same one (sheet LA-06). Its buffer stays empty — nothing can
+// push into an Empty, and the Slip that `slip(1, 2)` builds is a fresh value.
+inline const Value& emptySlipSingleton() {
+    static const Value kEmpty = [] {
+        Value e = Value::array(); e.isList = true; e.s = "Slip"; return e;
+    }();
+    return kEmpty;
+}
 // The bare Failure TYPE OBJECT is never the right return for a refusal — it
 // slid through arithmetic as 0 where Rakudo's Failure detonates.
 inline Value armedFailure(const char* type, const std::string& msg) {
