@@ -237,27 +237,76 @@ so this matches the reference implementation rather than taking liberties. The
 observable difference is how many times a side-effecting eigenstate runs, and
 the side-effect check above confirms those counts now agree with Rakudo's.
 
-### 2. Hoist the per-eigenstate dispatch
+### 2. Hoist the per-eigenstate dispatch — DONE (2026-09-19)
 
-The 397 ns is not comparison, it is `applyArith` re-deciding what `~~` means on
-every pass. The shape of the fix is the one DISPATCH-PERF-PLAN phase 0 used:
-decide once above the loop, then run the decided thing W times.
+Three lines, and not the extraction this plan expected. `sample` over
+`5 ~~ any(1 .. 2000)`, as the falsifier demanded, before writing anything:
 
-In the `evalBinary` loops the per-eigenstate `if` ladder (Regex / Code / Pair
-filetest / else `applyArith`) is already written out — but the `else` arm throws
-the decision away and re-enters `applyArith` from the top. Resolve the *topic*
-side once (it does not change across eigenstates), and call the smartmatch
-kernel directly rather than the operator-string front door.
+| | samples | % |
+|---|---|---|
+| `strlen` (platform + stub) | 1657 | 24.6% |
+| `memcmp` (platform + stub) | 1405 | 20.9% |
+| `std::operator==<char>` | 929 | 13.8% |
+| `isSetOpStr` | 156 | 2.3% |
+| `applyArith`'s own frame | 286 | 4.3% |
 
-This is the phase with design risk, because "the smartmatch kernel" is not
-currently a function — it is the tail of `applyArith`. Extracting it is the
-work. Do it as a prototype and measure before committing to a shape: if the
-`junction` kernel (below) does not move by at least a third, the cost is
-somewhere other than the dispatch ladder and this phase should be re-scoped
-rather than pushed through.
+**59% of the loop was comparing the operator NAME against string literals**, and
+not one allocation frame appears in the top eighteen — the opposite of
+DISPATCH-PERF-PLAN's profile, so the falsifier did not fire and the work belonged
+here.
 
-Target: Rakudo's 50 ns, or near it. That is 7.9x on wide junctions and on
-misses, where phase 1 buys nothing.
+The cause turned out to be smaller than "extract a kernel". `applyArith` already
+opens with a char-dispatched Int/Int fast path — `+ - * < <= > >= == != %` — and
+`~~` was simply not in it. So every eigenstate fell through and walked the ~200
+lines of operator string-matching below to reach what is an integer comparison.
+`Int ~~ Int` is numeric identity (`Any.ACCEPTS` is `===`, which on two plain Ints
+is `==`; verified against Rakudo over a grid including negatives, zero and values
+past 2**32), so it answers in the fast path. It sits deliberately AFTER the
+`valueSmartmatch_` consumption: the collapse arms re-arm that one-shot before each
+eigenstate, and an early return that skipped it would leak the flag into the next
+operation.
+
+d34120f against this change, both built Release in a worktree, interleaved by
+`drive.raku`, best of 3, Rakudo 2026.08 alongside, all three agreeing on every
+checksum:
+
+| case | phase 1 | phase 2 | change | rakudo |
+|---|---|---|---|---|
+| `any` w=2000 no hit | 802.94 | **34.55** | **23.2x** | 93.54 |
+| `any` w=2000 hit last | 802.24 | **35.06** | **22.9x** | 104.03 |
+| `one` w=2000 single hit | 801.79 | **34.40** | **23.3x** | 273.07 |
+| `any` w=2000 hit middle | 401.53 | **17.72** | **22.7x** | 52.17 |
+| `grep any(2,4,6)` over 200 | 247.48 | **16.58** | **14.9x** | 77.23 |
+| `any` w=200 no hit | 81.08 | **4.14** | **19.6x** | 10.17 |
+| `prebuilt any(1,3,5)` | 1.95 | **0.74** | 2.62x | 0.83 |
+| `5 ~~ 1\|3\|5` | 2.41 | **1.22** | 1.98x | 0.80 |
+| `str any 3-wide` | 2.30 | 2.33 | — | 0.99 |
+| `bool any(2000 True)` | 0.58 | 0.57 | — | 0.63 |
+
+As distance from Rakudo, which is what phase 2 set out to close:
+
+| case | gap after phase 1 | gap after phase 2 |
+|---|---|---|
+| `any` w=2000 no hit | 8.58x | **0.37x — we lead** |
+| `any` w=2000 hit last | 7.71x | **0.34x — we lead** |
+| `one` w=2000 single hit | 2.94x | **0.13x — we lead** |
+| `grep any(2,4,6)` | 3.20x | **0.21x — we lead** |
+| `prebuilt any(1,3,5)` | 2.35x | **0.89x — we lead** |
+| `5 ~~ 1\|3\|5` | 3.01x | 1.53x |
+
+The ~8x this phase existed to close is gone, and on wide Int junctions we now run
+2.7x to 7.9x faster than Rakudo. At the widths real code writes, the gain is about
+2x.
+
+Two cases deliberately untouched. Str eigenstates (`$x ~~ any(<a b c>)`) still go
+the long way: the fast path is Int/Int, and the Str equivalent needs guards for
+allomorphs, enums and hashKind that each risk a miss — it never showed an 8x gap
+anyway, sitting at 2.3x, which is this interpreter's general overhead rather than
+junction dispatch. And the boolification rows do not move, because they settle on
+the first eigenstate and never reach the dispatch.
+
+The obvious next increment is the same trick for Str, measured at ~2x on a 3-wide
+string junction; it is a separate change with a separate risk profile.
 
 ### 3. List-associative `|`, `&`, `^`
 

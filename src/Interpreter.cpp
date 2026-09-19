@@ -24987,6 +24987,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // as they always did. After the fast path: a Whatever is never VT::Int.
     const bool valueMatch = Interpreter::valueSmartmatch_;
     if (valueMatch) Interpreter::valueSmartmatch_ = false;
+    // `Int ~~ Int` is numeric identity (Any.ACCEPTS is `===`, and on two plain
+    // Ints that is `==`), but `~~` is not in the char-dispatched fast path above
+    // — so reaching that comparison meant walking the ~200 lines of operator
+    // string-matching below it. The junction collapse pays that PER EIGENSTATE:
+    // a `sample` of `5 ~~ any(1 .. 2000)` put 59% of the loop in strlen, memcmp
+    // and std::string::operator==, and only 4% in applyArith's own frame.
+    // Deliberately AFTER the valueSmartmatch_ consumption above: the collapse
+    // arms re-arm that one-shot before each eigenstate, and an early return that
+    // skipped it would leak the flag into the next operation.
+    if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() &&
+        op.size() == 2 && op[0] == '~' && op[1] == '~')
+        return Value::boolean(l.i == r.i);
     // An operand that is a Proxy is being READ — FETCH through it, or the
     // machinery below would see the carrier hash (numifying to its pair count)
     // instead of the value it stands for. The Binary EVAL path deproxies its
