@@ -446,6 +446,21 @@ One binary, no compiler and no rakupp on the machine running it.
 
 ## What it does NOT claim
 
+- **It reaches about one loop in eight, and that is the limit that decides
+  whether the flag does anything at all.** Everything else in this list applies
+  only once a loop has been *counted*, and only `while`/`until` and C-style
+  `loop` are — `siteFor` is called from two places in `Interpreter.cpp`, the
+  `WhileStmt` case and the `LoopStmt` case, and from nowhere else. A `for` is
+  not refused; it is never examined, however hot it gets, and neither is `.map`
+  or `repeat`. Across the Raku in this repo those three are 3,248 of the 3,741
+  iteration constructs. Measured with `--cnp=stats` over the 40 runnable
+  programs in `examples/` and `tools/bench/`: **33 have no countable loop at
+  all**, 12 sites are examined, 3 pass the whitelist, 2 programs enter a kernel,
+  and one (`parmap.raku`) builds a kernel it never enters because another thread
+  is live. The same 5M-iteration sum takes 0.99 s written as a `for` and 0.03 s
+  written as a `while`. `for` over a `Range` is the first widening item in
+  [JIT-PLAN.md](JIT-PLAN.md)'s "What tiers up, in v1"; `tools/run-engines.raku`
+  is the standing measurement.
 - **It is not more general than `--jit`.** The 53 stencils are the ceiling. Where
   `--jit` can in principle compile whatever `--exe -O` emits, this refuses and
   leaves the loop interpreted.

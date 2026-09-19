@@ -305,6 +305,15 @@ second, from the cache.
 
 ## What it does NOT claim
 
+- **The counter, not the whitelist, is what most programs hit first.** A loop is
+  only ever a candidate if it is a `while`/`until` or a C-style `loop`: those are
+  the two `siteFor` call sites in `Interpreter.cpp`. A `for`, a `.map` and a
+  `repeat` are never counted, so `--jit=verbose` says nothing about them — they
+  do not appear as refusals because they were never examined. Across the Raku in
+  this repo that is 3,248 of 3,741 iteration constructs, and over the 40 runnable
+  programs in `examples/` and `tools/bench/`, 33 have no countable loop at all.
+  Widening the whitelist does not move that number; `for` over a Range (above) is
+  what does.
 - **It is not faster than `--exe -O`.** v1 is the same emission, so a tiered
   loop lands on the `--exe -O` row and not below it. It can be marginally
   *slower* on a call-heavy loop, since a v1 kernel stops at the loop boundary

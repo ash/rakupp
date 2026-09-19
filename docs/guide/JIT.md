@@ -24,8 +24,12 @@ pointed at one loop instead of a whole program.
 
 ## What happens
 
-1. **Counting.** Every `while` and C-style `loop` counts its iterations. The
-   default threshold is 1000.
+1. **Counting.** Every `while`, `until` and C-style `loop` counts its
+   iterations. Nothing else does — a `for`, a `.map` and a `repeat` have no
+   counter, so they are never candidates, however hot they get. That is the
+   limit that decides whether either flag does anything at all on a given
+   program: see [How much of a program it reaches](#how-much-of-a-program-it-reaches)
+   below. The default threshold is 1000.
 2. **Checking.** A loop that goes hot is checked against a whitelist (below).
    A loop that fails it is marked and never looked at again.
 3. **Emitting.** The loop becomes a small C++ function, the same one `rakupp
@@ -70,6 +74,59 @@ dispatch, object construction, hash and array work, regexes and anything that
 calls a routine are untouched — they are not eligible, and the loop around them
 is not either.
 
+## How much of a program it reaches
+
+The factors above are what a tiered loop is worth. This is how often a program
+has one. `--cnp=stats` over the 40 programs in `examples/` and `tools/bench/`
+that run without an argument:
+
+| | |
+|---|---:|
+| programs with no countable loop at all | 33 of 40 |
+| loops examined | 12 |
+| loops that passed the whitelist | 3 |
+| programs that entered a kernel | 2 |
+
+The 33 are step 1 above, not the whitelist: those programs iterate with `for`
+and `.map`, which are never counted. Counting the keywords across the Raku in
+this repo — `examples/`, `tools/`, `rakulib/`, `lib/` and `t/`, 904 files — by
+grep over source text, so proportions rather than exact loop counts:
+
+| form | | counted? |
+|---|---:|---|
+| `for` | 2256 | no |
+| `.map` / `.grep` | 966 | no |
+| `while` | 378 | yes, unless it is a statement modifier |
+| `until` | 72 | yes |
+| `loop (…)` | 43 | yes |
+| `repeat` | 26 | no |
+
+So roughly one iteration construct in eight is even looked at, and the
+whitelist below then refused 9 of the 12 that were. The same arithmetic written
+both ways is the whole of it:
+
+| a 5M-iteration sum, same answer | plain | `--cnp` |
+|---|---:|---:|
+| `for 1 .. 5_000_000 { … }` | 0.98 s | 0.99 s |
+| `while $i <= 5_000_000 { … }` | 1.37 s | **0.03 s** |
+
+None of this makes a tiered loop worth less. Where one is built it is worth the
+factors in the table above, and on `tools/optbench/nummath.raku` — a `Num`
+kernel, which the `-O` lanes do not reach — `--cnp` runs the whole program in
+57 ms against `--exe -O`'s 178 ms. This is a statement about the trigger, not
+about the kernel.
+
+Widening the trigger is ordinary work, and `for` over a `Range` is the first
+item on that list ([JIT-PLAN.md](../dev/plans/JIT-PLAN.md), "What tiers up, in
+v1"): a `for` over an Int range with one loop variable is a counted loop wearing
+different syntax, where a `for` over an arbitrary iterable is not. Until that
+lands, a program that iterates the way Raku programs usually iterate gets
+nothing from either flag, and `--cnp=stats` is how to tell in one line.
+
+`tools/run-engines.raku` prints the per-kernel version of this across every
+engine, with a column saying whether each kernel was refused, never counted, or
+built.
+
 ## What tiers up
 
 A `while`, `until` or C-style `loop`, unlabelled, not in expression position,
@@ -83,9 +140,13 @@ whose body contains only:
 - `if`/`elsif`/`else`, bare blocks, nested loops, unlabelled `last` and `next`.
 
 Anything else refuses the loop: a call of any kind, a method, an index, a
-regex, `for`, `return`, `die`, a phaser, `state`, a closure. `--jit=verbose`
+regex, a `for`, `return`, `die`, a phaser, `state`, a closure. `--jit=verbose`
 names the construct that refused each loop, which is also the work queue for
 widening the list.
+
+A `for` **around** an eligible loop is a different matter, and costs nothing: it
+is not refused, it is simply not a candidate itself, so the inner loop still
+tiers up and is re-entered once per outer iteration.
 
 There is a second gate at the moment of entry. A variable the kernel would
 **write** is refused if its container has behaviour a direct assignment would

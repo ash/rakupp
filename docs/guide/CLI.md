@@ -682,12 +682,17 @@ and `rakupp --jit-clean` empties it.
 | `pch` | a precompiled header: each compile 0.83 s → 0.55 s, at ~30 MB per build of rakupp |
 | `threshold=N` | iterations before a loop counts as hot (default 1000) |
 
-**What tiers up today is deliberately narrow.** A `while` or C-style `loop`
-whose body is arithmetic, comparisons, string operators, assignments, `if`,
-nested loops and unlabelled `last`/`next`. A body that calls anything — a sub, a
-method, a builtin — is left alone, and so is `for`. `--jit=verbose` names the
-construct that refused each loop. Widening that list is ordinary work with a
-gate behind each step; the design and the measurements are in
+**What tiers up today is deliberately narrow.** A `while`, `until` or C-style
+`loop` whose body is arithmetic, comparisons, string operators, assignments,
+`if`, nested loops and unlabelled `last`/`next`. A body that calls anything — a
+sub, a method, a builtin — is left alone. A `for` is not narrowed but
+*invisible*: only those three forms are counted at all, so a `for` or a `.map`
+never becomes a candidate and `--jit=verbose` will not mention it — on the 40
+runnable programs in `examples/` and `tools/bench/`, 33 have no countable loop
+at all, and [JIT.md](JIT.md#how-much-of-a-program-it-reaches) has that
+measurement. `--jit=verbose` names the construct that refused each loop that
+*was* examined. Widening the list is ordinary work with a gate behind each
+step; the design and the measurements are in
 [JIT-PLAN.md](../dev/plans/JIT-PLAN.md).
 
 The flag is accepted by every mode, as `-q` is, but only a *run* acts on it:
@@ -724,9 +729,10 @@ rakupp --cnp prog.raku
 `threshold=N`. There is no `sync` (there is no background compile to wait for)
 and no `nocache` (there is no cache).
 
-**It is narrower than `--jit`.** The two share one eligibility list, but the
-copy-and-patch backend can only build what its snippets cover, and a loop it
-cannot build stays interpreted — which costs nothing. `--cnp=verbose` says which
+**It is narrower than `--jit`.** The two share one eligibility list — and one
+counter, so the `for` limit above applies to both — but the copy-and-patch
+backend can only build what its snippets cover, and a loop it cannot build stays
+interpreted, which costs nothing. `--cnp=verbose` says which
 loops it took and which it turned down. One case it always turns down: a loop
 running **while another thread is live**, because it keeps the loop's variables
 in registers for the loop's duration and another thread's write would not be
