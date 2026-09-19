@@ -103,7 +103,10 @@ logs and the reviews. This page is the complete list.
   rakupp differs on 60, ten Rakudo bugs flagged (three of them hangs);
   [List-Array.md](semantics/List-Array.md) — List, Array, Seq and Slip, 36
   items, 4 undeclared, rakupp differs on 29; [Hash-Map-Pair.md](semantics/Hash-Map-Pair.md)
-  — Hash, Map and Pair, 20 items, 2 undeclared, rakupp differs on 16.
+  — Hash, Map and Pair, 20 items, 2 undeclared, rakupp differs on 16;
+  [IO.md](semantics/IO.md) — IO::Path, IO::Handle, IO::Spec::Unix,
+  IO::Special, IO::Pipe and IO::CatHandle, 26 items, 7 undeclared, rakupp
+  differs on 24, one quirk (slurp throws where the docs say fail).
 
 ## Reviews — before and after a release
 
