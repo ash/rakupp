@@ -42,6 +42,11 @@ my %skip =
     # A CSPRNG test that PRINTS its measured statistics: two plain runs of it
     # disagree with each other, so the comparison says nothing about the JIT.
     'data-native-random.raku' => 'prints measured randomness statistics',
+    # Hard-links a fixture into $TMPDIR and reports a SKIP line when the link
+    # cannot be made — which depends on which filesystem $TMPDIR happens to be
+    # on and varies between consecutive runs of the same binary. Measured: the
+    # line appears in one plain interpreter run out of five.
+    'rakupp-upgrade.raku' => 'a filesystem-dependent skip line, nondeterministic run to run',
     ;
 
 my @dirs = @args ?? @args.map(*.IO)

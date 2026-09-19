@@ -68,7 +68,18 @@ container widths are not honoured anywhere in `Codegen`. This is
 NATIVE-MATH-PLAN phase 3's territory and a prerequisite for ever laning a
 declared native.
 
-## The worst one: a nested loop that redeclares a name shares one C++ variable
+## The worst one: a nested loop that redeclares a name shared one C++ variable
+
+**FIXED 2026-09-19**, same day, in `Codegen::block`: the records of which names
+already have a C++ variable — `hoisted` for expression-position declarations and
+`topVars_`/`atTopLevel_` for top-level ones — are now per C++ SCOPE rather than
+per function body, so an inner declaration emits its own variable and shadows the
+outer exactly as Raku scopes it. `t/regression/loop-header-my-shadows.raku`
+pins it, and `t/exe/fuzz.raku` now generates the same-name nested variant of
+every loop shape alongside the distinct-name one. What follows is what it cost
+while it was live.
+
+### The report
 
 Found by enumerating loop shapes while building the unboxed lanes, not by any
 gate — and the gate above **cannot** find it, because both compiled lanes are
@@ -99,11 +110,44 @@ nothing in the output to suggest it. Shadowing a loop variable is not exotic —
 `$i` inside `$i` is what a person writes when the two loops were written at
 different times.
 
-The fix belongs in the hoist: a declaration that shadows a name already hoisted
-in an enclosing scope needs a distinct C++ name and a scope to live in. The
-unboxed lanes refuse to lane a loop whose header redeclares a name the lane
-already holds, which is the same rule one level down, but that only protects the
-lane — the boxed emission underneath it is what is wrong.
+The fix turned out not to need a distinct C++ name at all. The inner
+declaration is emitted inside the outer loop body's own braces, so plain C++
+shadowing gives precisely Raku's scoping — an inner `my` that shadows within the
+body, an outer that survives the loop. All that was wrong was the bookkeeping:
+`hoisted` answered "does a C++ variable for this name exist anywhere in this
+function body" where every one of its five readers wanted "…in the current
+scope". Scoping that set to `block()` was the whole change.
+
+(The unboxed lanes already refused to lane a loop whose header redeclares a name
+the lane holds, which is the same rule one level down — but that only ever
+protected the lane, and the boxed emission underneath it was what was wrong.)
+
+### And the same defect in the other set, found while checking the fix
+
+`topVars_` answers the identical question about top-level `my` variables, which
+become C++ globals, and `atTopLevel_` stayed true through every nested block of
+the mainline. So a `my` inside any block that happened to share a name with a
+top-level one assigned the GLOBAL rather than declaring a local:
+
+```raku
+my $j = 7;
+{ my $j = 100; say "inner $j" }   # inner 100 — correct
+say "outer $j";                   # 7 interpreted and under Rakudo, 100 compiled
+```
+
+**The JavaScript backend does not have either bug.** `--target=js` answers 9 on
+the loop repro, because it emits `let`, which JavaScript scopes to the block —
+so Raku's scoping comes for free there. Both bugs were the C++ backend's alone,
+where block scoping has to be modelled by hand and the model was one level too
+coarse. That is worth knowing before the next backend: this is a class of defect
+a language with block-scoped declarations cannot have and a hand-rolled emitter
+into C++ has to earn.
+
+Worse than the loop case in one way, because it needs no loop and no nesting
+beyond a single block — `for 1 .. 3 { my $i = $_ * 10; … }` in a program that
+also has a top-level `$i` writes the program's own variable. Fixed in the same
+place, by clearing `atTopLevel_` at a block boundary, and pinned by the same
+regression file.
 
 ## And one interpreter divergence from Rakudo, also pre-existing
 

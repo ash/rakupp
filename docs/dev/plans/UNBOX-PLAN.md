@@ -155,12 +155,28 @@ re-measures anywhere in that band — the ROW is the result, not the digit. The
 probes at the top of this file are the sub-millisecond version of the same two
 numbers.
 
-| | interp | `--exe` | `--exe -O` | Rakudo |
-|---|---:|---:|---:|---:|
-| 50M-iteration integer `while` | — | 230 ms | **10 ms** | — |
-| `loopsum` × 60 (`for 1 .. 60_000_000`) | 7 870 ms | 750 ms | **20 ms** | 7 660 ms |
-| Mandelbrot 1200×1040, `Num` throughout | 26 510 ms | — | **40 ms** | 7 530 ms |
-| 5M-iteration integer `while`, under `--jit` | 1 020 ms | | **20 ms** | |
+| | interp | `--exe` | `--exe -O`, before | `--exe -O`, after | Rakudo |
+|---|---:|---:|---:|---:|---:|
+| 50M-iteration integer `while` | — | 1 110 ms | 230 ms | **10 ms** | — |
+| `loopsum` × 60 (`for 1 .. 60_000_000`) | 7 310 ms | 700 ms | — | **20 ms** | 7 030 ms |
+| Mandelbrot 1200×1040, `Num` throughout | 26 400 ms | — | — | **40 ms** | 7 440 ms |
+| 5M-iteration integer `while`, under `--jit` | 1 020 ms | | 50 ms | **20 ms** | |
+
+The 50M row is the one with a before-and-after column, because a binary built
+with `-O` *before* this pass was kept and re-timed beside the new one: 230 ms
+against 10 ms, so the pass is worth **23×** on top of what `-O` already did, and
+lands on the hand-written C kernel's 10 ms. The unoptimized compile is 1 110 ms,
+which is the column the other rows' `--exe` figures belong to.
+
+**A correction, recorded rather than quietly fixed.** The first version of this
+table put 230 ms in the `--exe` column. That figure was `--exe -O` from before
+the pass, not the unoptimized compile, so the row understated both what `-O`
+already did and what this pass added. Found by re-measuring after a runaway
+process — a scratch program from an early, broken version of the fuzz generator
+that looped forever — was discovered pinning a core for 2h41m, which covers the
+window the original figures were taken in. The ratios were unaffected (every
+comparison is interleaved and minimum-of-N), the absolute numbers moved by a few
+percent, and the mislabelled column was the real error.
 
 **`--jit` inherits all of it**, which is the last row: a JIT kernel is emitted by
 this same code, so a `while` loop tiered up at run time went from 50 ms to 20 ms
@@ -169,9 +185,9 @@ step. (A C-style `loop` kernel does not yet: `emitJitKernel` writes that loop's
 header itself, to drop the init the interpreter has already run, so it does not
 pass through the `stmt()` case the lane hooks into. Worth closing, and small.)
 
-The integer loop lands on the hand-written C kernel's 10 ms. `loopsum` is 37×
-its own unoptimized compile and 383× Rakudo. The Mandelbrot is 663× the
-interpreter and 188× Rakudo, and every one of them prints what Rakudo prints.
+`loopsum` is 35× its own unoptimized compile and 352× Rakudo. The Mandelbrot is
+660× the interpreter and 186× Rakudo. Every one of them prints what Rakudo
+prints.
 
 ### The finding that shaped the batch, and it is not a good one
 
@@ -280,15 +296,19 @@ from outside. A generator that can hang is worse than no generator.
 
 `t/exe/run.raku` compares the two compiled lanes with each other, which is what
 isolates the optimizer — and it therefore **cannot see a bug that is in both**.
-Exactly such a bug turned up while shape-fuzzing, and it is not this pass's:
-a nested loop that redeclares a name shares one C++ variable, so the outer loop
-runs once and the answer is silently a fraction of the right one, with `-O` and
-without. It is written up in
-[findings/EXE-O-DIVERGENCES-2026-09-19.md](../findings/EXE-O-DIVERGENCES-2026-09-19.md)
-and filed as its own task. Catching that class needs a compiled-against-
-interpreted comparison on a corpus that contains the shape, and the naive
-version of that comparison produces 122 false positives — see the header comment
-in the gate for why.
+Exactly such a bug turned up while shape-fuzzing, and it was not this pass's: a
+nested loop that redeclared a name shared one C++ variable, so the outer loop
+ran once and the answer was silently a fraction of the right one, with `-O` and
+without. **Fixed the same day** — the hoist record is now per C++ scope rather
+than per function body, `t/regression/loop-header-my-shadows.raku` pins it, and
+`t/exe/fuzz.raku` now generates the same-name nested variant of every loop shape
+beside the distinct-name one. Written up in
+[findings/EXE-O-DIVERGENCES-2026-09-19.md](../findings/EXE-O-DIVERGENCES-2026-09-19.md).
+
+The lesson about the gate stands even though the bug is gone: catching that
+class needs a compiled-against-interpreted comparison on a corpus containing the
+shape, the naive version of that comparison produces 122 false positives (see
+the header comment in the gate), and what actually caught it was a generator.
 
 ## Phases
 

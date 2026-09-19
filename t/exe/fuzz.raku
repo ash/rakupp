@@ -16,8 +16,10 @@
 #   shapes      every loop kind (while / until / C-style / for over an
 #               inclusive range / for over an exclusive one) against every body
 #               shape (plain, next, last, both, if-else, elsif, postfix unless,
-#               a nested block, a float temporary, an integer overflow), each
-#               of them also one level nested inside itself
+#               a nested block, a float temporary, an integer overflow), each of
+#               them also nested one level inside itself TWICE — once with
+#               distinct loop-variable names and once with the SAME name in both
+#               headers, which is the shape that caught the shadowing bug
 #
 # Every generated program is run interpreted and compiled with `-O`, and the two
 # are compared. The interpreter is the oracle. A program that fails to COMPILE
@@ -145,12 +147,22 @@ unless $onlyOps {
             my $b = %bodies{$bn};
             my $inner = $b.subst('$V', '$a', :g).subst('N', '1', :g).lines.map({ '    ' ~ $_ }).join("\n");
             @progs.push: "$k-{$bn}" => "my \$t = 0;\n{mkloop($k, 'a', $inner)}\nsay \"\$t\";\n";
-            # ...and one level deeper, with DISTINCT names: a nested loop that
-            # reuses a name is miscompiled by the backend itself, with -O and
-            # without, so it belongs in its own finding and not in this gate.
+            # ...one level deeper with DISTINCT names...
             my $deep = $b.subst('$V', '$b', :g).subst('N', '2', :g).lines.map({ '    ' ~ $_ }).join("\n");
             my $mid  = mkloop($k, 'b', $deep).lines.map({ '    ' ~ $_ }).join("\n");
             @progs.push: "$k-{$bn}-nested" => "my \$t = 0;\n{mkloop($k, 'a', $mid)}\nsay \"\$t\";\n";
+
+            # ...and one level deeper with the SAME name in both headers, which
+            # is the shape that found the worst bug either of these gates has
+            # caught. A loop-header `my` is scoped to the ENCLOSING block, so
+            # these are two variables and the inner shadows the outer only inside
+            # the outer body — where the hoist keyed them by name across the
+            # whole function body, the inner reused the outer's C++ variable, its
+            # init reset the outer counter, and the outer loop ran exactly once.
+            # Silently, in the default compile.
+            my $same = $b.subst('$V', '$a', :g).subst('N', '3', :g).lines.map({ '    ' ~ $_ }).join("\n");
+            my $smid = mkloop($k, 'a', $same).lines.map({ '    ' ~ $_ }).join("\n");
+            @progs.push: "$k-{$bn}-shadow" => "my \$t = 0;\n{mkloop($k, 'a', $smid)}\nsay \"\$t\";\n";
         }
     }
 }

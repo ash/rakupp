@@ -29,7 +29,7 @@ and stopped by the suite itself.
 |---|---|
 | `rakupp t/jit/run.raku` | every program in `t/regression/` and `examples/`, run twice by the same binary — plain against `--jit=sync,threshold=0,nocache` — byte for byte. The interpreter is the oracle. Plus `t/jit/cases/`, whose twelve programs exist to tier up, and which the gate checks actually did |
 | `rakupp t/exe/run.raku` | every program the native backend accepts, compiled **with `-O` and without**, the two BINARIES against each other. That axis isolates the optimizer: everything a compiled program legitimately answers differently from an interpreted one (`$*EXECUTABLE`, `$*PROGRAM`, a spawned child) is in both lanes and cancels |
-| `rakupp t/exe/fuzz.raku` | 182 GENERATED programs — every operator against every Int/Num pairing, and every loop kind against every body shape, each also nested — interpreted against `-O`. The ordinary corpus cannot test the unboxed loop lanes: one of its 701 programs carries one |
+| `rakupp t/exe/fuzz.raku` | 232 GENERATED programs — every operator against every Int/Num pairing, and every loop kind against every body shape, each also nested twice: once with distinct loop-variable names and once with the SAME name in both headers. Interpreted against `-O`. The ordinary corpus cannot test the unboxed loop lanes (one of its 701 programs carries one), and the same-name variant is what caught the backend miscompiling shadowed declarations |
 
 It is deliberately one file rather than many `.t` files: rakupp's module
 `is export` is still unreliable for many-sub helper modules, so the helpers live

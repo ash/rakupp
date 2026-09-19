@@ -1681,7 +1681,53 @@ struct Codegen {
         ~CellScope() { if (g->cellsLive_.size() > mark) g->cellsLive_.resize(mark); }
     };
 
-    void block(Block* b, int ind) { CellScope __cs{this}; emitSeq(b->stmts, ind); }
+    // A `my` in EXPRESSION position — `loop (my $i = 0; …)`, `while (my $l = …)`,
+    // `if my $m = …` — is pre-declared as a C++ variable where the statement is
+    // emitted, and `hoisted` records which names already have one so that a
+    // later mention assigns into it instead of declaring a second.
+    //
+    // That question is per C++ SCOPE, not per function body, and treating it as
+    // body-wide was a silent wrong answer. Raku scopes a loop-header `my` to the
+    // ENCLOSING BLOCK, so
+    //
+    //     loop (my $i = 0; $i < 3; $i++) { loop (my $i = 0; $i < 3; $i++) { … } }
+    //
+    // is two variables in two blocks. Keyed by name across the whole body, the
+    // inner `my $i` found `$i` already hoisted, emitted no declaration of its
+    // own, and reused the OUTER loop's C++ variable — so the inner init reset the
+    // outer counter, the outer loop ran exactly once, and the answer came out a
+    // third of the right one. With no diagnostic, in the DEFAULT compile.
+    //
+    // A nested block now starts with an empty set, so an inner declaration emits
+    // its own C++ variable inside that block's braces and shadows the outer one
+    // exactly as Raku says it should — while a plain REFERENCE, which never
+    // consults this set, still resolves outward to whatever C++ has in scope.
+    // `topVars_` is the same question about the OTHER set. A top-level `my`
+    // becomes a C++ global, and `atTopLevel_` stayed true through every nested
+    // block of the mainline — so a `my` inside a block that happened to share a
+    // name with a top-level one emitted an assignment to the GLOBAL instead of
+    // declaring a local:
+    //
+    //     my $j = 7;
+    //     { my $j = 100; say "inner $j" }   # inner 100, correctly
+    //     say "outer $j";                   # 7 interpreted, 100 compiled
+    //
+    // Clearing it at a block boundary is the same rule: `topVars_` answers
+    // "declare or assign" only where the top-level scope actually is.
+    struct DeclScope {
+        Codegen* g;
+        std::set<std::string> savedHoist;
+        bool savedTop;
+        explicit DeclScope(Codegen* c) : g(c), savedHoist(c->hoisted), savedTop(c->atTopLevel_) {
+            c->hoisted.clear();
+            c->atTopLevel_ = false;
+        }
+        ~DeclScope() { g->hoisted = std::move(savedHoist); g->atTopLevel_ = savedTop; }
+        DeclScope(const DeclScope&) = delete;
+        DeclScope& operator=(const DeclScope&) = delete;
+    };
+
+    void block(Block* b, int ind) { CellScope __cs{this}; DeclScope __ds{this}; emitSeq(b->stmts, ind); }
 
     std::set<std::string> hoisted; // expression-position `my` names pre-declared in this body
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
