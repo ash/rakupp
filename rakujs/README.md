@@ -32,6 +32,13 @@ so nobody's CSS leaks either way, and `data-auto` on the script tag makes the
 `<pre><code class="language-raku">` blocks your Markdown *already* emits
 runnable without touching them.
 
+Every part of what the editor draws around your code is on by default and can be
+left out by name: `data-hide="playground exit"` drops the ↗ playground button and
+the `— exit 0 · 5 ms —` footer, and the same attribute on the script tag sets it
+for a whole page. The parts are `run`, `status`, `copy-code`, `copy-output`,
+`playground`, `exit` and `stdin`, plus `bar` and `copy` for the groups; a `-`
+prefix on one block takes a part back from a page-wide list.
+
 | | |
 |---|---|
 | **[raku.online/embed/](https://raku.online/embed/)** | The guide — every option, in order |

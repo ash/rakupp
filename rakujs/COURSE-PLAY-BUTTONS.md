@@ -129,4 +129,4 @@ say @totals;   # my @numbers = 2,4,6,8; my @totals = @numbers.map({ $sum += $_ }
   `RakuJS()` API; `rakujs/INTERNALS.md` — how the WASM build works.
 - `rakujs/TUTORIAL.md` — writing real browser Raku programs (input/output, no fs).
 - raku.online `README.md` — the `raku.js` widget: `data-raku`, `data-auto`,
-  `data-selector`, share links, and the embed builder.
+  `data-selector`, `data-hide`, share links, and the embed builder.
