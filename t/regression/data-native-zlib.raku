@@ -151,7 +151,7 @@ throws-like { compress(''.encode, 6, :gzip, :raw) }, X::AdHoc, message => /'not 
     ':gzip and :raw are mutually exclusive';
 throws-like { compress(''.encode, :gzipp) }, X::AdHoc, message => /'no such adverb'/,
     'a misspelled adverb is refused, not silently ignored';
-throws-like { uncompress(Buf.new(1, 2, 3)) }, X::AdHoc, message => /'header'/,
+throws-like { uncompress(Buf.new(1, 2, 3)) }, X::AdHoc, message => /'at least six bytes'/,
     'a stream that is not zlib at all is refused';
 throws-like { uncompress(Buf.new(0x1f, 0x8b), :gzip) }, X::AdHoc, message => /'eighteen bytes'/,
     'and one too short to hold a gzip trailer';

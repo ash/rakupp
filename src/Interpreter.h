@@ -2477,6 +2477,10 @@ private:
 
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "",
                   const std::string& extraDiag = "");
+    // The subtest frame: banner, nested plan + numbering, and the one ok that
+    // reports the verdict upward. `subtest` and `throws-like` both run through it
+    // (in Rakudo a throws-like IS a subtest), so the two cannot drift apart.
+    bool runSubtestFrame(const std::string& desc, const std::function<void()>& body);
 
 public:
     // DESTROY protocol. Timely destruction is not guaranteed in Raku — DESTROY

@@ -94,6 +94,57 @@ std::recursive_mutex& supplierMutex(const void* key) {
     return *p;
 }
 
+// The subtest frame Test.rakumod wraps around a block: the "# Subtest:" banner,
+// a plan and numbering of its own, and the single ok that carries the verdict to
+// the enclosing level. `subtest` and `throws-like` share it because in Rakudo a
+// throws-like IS a subtest — reporting it as one flat ok hid every assertion
+// inside it (20 of S03-operators/arith.t's 184) and printed the wrong name.
+bool Interpreter::runSubtestFrame(const std::string& desc,
+                                 const std::function<void()>& body) {
+    Interpreter& I = *this;
+    // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
+    bool todod = false; std::string todoReason;
+    if (I.todoRemaining_ > 0) { todod = true; todoReason = I.todoReason_; I.todoRemaining_--; }
+    bool savedFailed = I.subtestFailed_;
+    long savedPlanned = I.planned_, savedTestNum = I.testNum_; // a subtest has its own plan + numbering
+    long savedFailCount = I.failCount_;
+    // the "# Subtest: <name>" banner, at the ENCLOSING level's indent —
+    // the TAP module's strict Sub-Test parser keys nested blocks off it
+    std::cout << std::string(4 * I.subtestDepth_, ' ')
+              << "# Subtest" << (desc.empty() ? "" : ": " + desc) << "\n";
+    I.subtestDepth_++;
+    if (todod) I.todoSubtestDepth_++;
+    I.subtestFailed_ = false;
+    I.planned_ = -1; I.testNum_ = 0;
+    try { body(); }
+    catch (RakuError& e) {
+        // the exception is the subtest's failure — but it must be SEEN:
+        // silently marking the subtest failed hid a "No such private
+        // method '!cursor_init'" for a whole String::Utils run
+        I.subtestFailed_ = true;
+        std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# " << e.message << "\n";
+    }
+    // …and a plan that was not met fails the subtest, as Test.pm6's does
+    // ("planned 3 tests, but ran 0" is how a loop that never ran shows)
+    if (I.planned_ >= 0 && I.testNum_ != I.planned_) {
+        std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# Looks like you planned "
+                  << I.planned_ << " test" << (I.planned_ == 1 ? "" : "s") << ", but ran "
+                  << I.testNum_ << "\n";
+        I.subtestFailed_ = true;
+    }
+    bool ok = !I.subtestFailed_;
+    // no plan declared inside: the subtest's own trailing plan line closes
+    // its block ("    1..N"), exactly as done-testing would have printed it
+    if (I.planned_ < 0)
+        std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n";
+    if (todod) I.todoSubtestDepth_--;
+    I.subtestDepth_--;
+    I.subtestFailed_ = savedFailed;
+    I.planned_ = savedPlanned; I.testNum_ = savedTestNum; I.failCount_ = savedFailCount;
+    I.emitTest(ok, desc, todod ? ("TODO" + (todoReason.empty() ? "" : " " + todoReason)) : "");
+    return ok;
+}
+
 
 // A CORE type name — the set `.^add_method` may extend. isKnownTypeName is too
 // loose for that: it blanket-accepts any X::, Metamodel:: or IO:: prefix, so a
@@ -12113,21 +12164,43 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(c);
     };
     B["throws-like"] = [](Interpreter& I, ValueList& a) -> Value {
-        // throws-like BLOCK|Str, TYPE?, matchers…, desc? — measures "it threw".
-        // The TYPE and the named matchers (`message => /…/`) are NOT checked:
-        // doing so is honest and moves ~40 Roast files out of fully-passing
-        // (our exception objects lack many of Rakudo's attributes) — a policy
-        // decision on the published numbers, held for the user (REVIEW-GRAND).
-        // …and RAKUPP_STRICT_THROWS_LIKE turns the type check ON, so a run can
-        // SAY what that policy costs instead of leaving it to be guessed. Read
-        // once: off, the shipped path does not even build the exception value.
-        static const bool strict = std::getenv("RAKUPP_STRICT_THROWS_LIKE") != nullptr;
-        bool threw = false;
-        Value thrown;
-        if (!a.empty()) {
+        // throws-like BLOCK|Str, TYPE, matchers…, reason? — a SUBTEST in
+        // Test.rakumod, and one here too: "code dies", "right exception type
+        // (T)", then one ".KEY matches VALUE" per named matcher.
+        //
+        // It used to emit a single flat ok that measured only "something threw".
+        // That cost twice over: the type and matcher assertions were never made
+        // (20 of the 184 S03-operators/arith.t runs under Rakudo), and the
+        // description came from a[2] — the slot the FIRST named matcher occupies
+        // — so `numerator => 3, 'Modulo zero…'` reported itself as "numerator\t3".
+        //
+        // RAKUPP_LOOSE_THROWS_LIKE restores the measure-nothing behaviour for
+        // pricing that policy against the Roast numbers. It still prints the
+        // sub-TAP, but the type and matcher lines go out as SKIPs rather than as
+        // claims — a run says what it did not check instead of implying it did.
+        static const bool loose = std::getenv("RAKUPP_LOOSE_THROWS_LIKE") != nullptr;
+        Value type; bool haveType = false;
+        std::string reason;
+        ValueList matchers;
+        for (size_t i = 1; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && a[i].namedArg) matchers.push_back(a[i]);
+            else if (!haveType && a[i].t == VT::Type) { type = a[i]; haveType = true; }
+            else if (a[i].t == VT::Str && reason.empty()) reason = a[i].s;
+        }
+        const std::string tname = haveType ? type.s : std::string("Exception");
+        if (reason.empty()) reason = "did we throws-like " + tname + "?";
+        // Rakudo's skip puts the marker in the DESCRIPTION slot ("ok 2 - # SKIP …"),
+        // which is why these do not go through emitTest's directive argument.
+        auto skipLine = [&](const std::string& why) { I.emitTest(true, "# SKIP " + why); };
+        bool verdict = I.runSubtestFrame(reason, [&]() {
+            const int n = 2 + (int)matchers.size();
+            I.planned_ = n;   // the plan is printed BEFORE the code runs, as Test.rakumod's is
+            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << n << "\n";
+            bool threw = false; Value thrown;
             try {
                 // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
-                if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
+                if (a.empty()) {}
+                else if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
                 else if (a[0].t == VT::Str) I.sinkValue(I.evalString(a[0].s, /*mainlinePH=*/true));
                 // …and anything else has ALREADY been evaluated, so what arrived
                 // is whatever it produced: a Failure that has not detonated yet
@@ -12136,13 +12209,36 @@ void Interpreter::registerBuiltins() {
                 // where Rakudo's own throws-like reaches the death by
                 // stringifying the argument (Str sheet ST-27).
                 else I.sinkValue(a[0]);
-            } catch (RakuError& e) { threw = true; if (strict) thrown = I.exceptionFor(e); }
-        }
-        if (strict && threw && a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
-            threw = applyArith("~~", thrown, a[1]).truthy();
-        std::string desc = a.size() > 2 ? a[2].toStr() : (a.size() > 1 && a[1].t == VT::Str ? a[1].toStr() : "");
-        I.emitTest(threw, desc);
-        return Value::boolean(threw);
+            } catch (RakuError& e) { threw = true; thrown = I.exceptionFor(e); }
+            I.emitTest(threw, !a.empty() && a[0].t == VT::Str ? "'" + a[0].s + "' died" : "code dies");
+            if (!threw) {  // nothing to inspect: every later assertion is skipped, not failed
+                for (int k = 1; k < n; k++) skipLine("Code did not die, can not check exception");
+                return;
+            }
+            // `Exception` matches whatever was thrown, so it is not worth a smartmatch.
+            bool typeOk = true;
+            if (loose) skipLine("right exception type (" + tname + ") not checked");
+            else {
+                typeOk = !haveType || tname == "Exception" || applyArith("~~", thrown, type).truthy();
+                I.emitTest(typeOk, "right exception type (" + tname + ")");
+            }
+            for (auto& mp : matchers) {
+                Value want = mp.pairVal() ? *mp.pairVal() : Value::any();
+                std::string mdesc = "." + mp.s + " matches " + I.gistOf(want);
+                if (!typeOk)  { skipLine("wrong exception type"); continue; }
+                if (loose)    { skipLine(mdesc + " not checked"); continue; }
+                // Rakudo lets a matcher naming an attribute the exception lacks
+                // blow the whole subtest up ("No such method"); failing that one
+                // assertion says the same thing and still fails the subtest, but
+                // leaves the remaining matchers legible.
+                Value got; bool have = true;
+                try { got = I.methodCall(thrown, mp.s, ValueList{}); }
+                catch (RakuError&) { have = false; }
+                I.emitTest(have && (want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
+                                                       : I.smartmatchValue("~~", got, want).truthy()), mdesc);
+            }
+        });
+        return Value::boolean(verdict);
     };
     B["fails-like"] = [](Interpreter& I, ValueList& a) -> Value {
         // Like throws-like, but the code is expected to RETURN a Failure (a soft
@@ -12184,8 +12280,11 @@ void Interpreter::registerBuiltins() {
                     catch (RakuError&) { have = false; }
                 }
                 if (!have) { ok = false; break; }
+                // a Regex matcher (`message => /…/`) needs the regex ENGINE, which
+                // the value-only applyArith cannot reach — it answered False for
+                // every one of them, so `fails-like …, message => /…/` never passed.
                 ok = want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
-                                        : applyArith("~~", got, want).truthy();
+                                        : I.smartmatchValue("~~", got, want).truthy();
             }
             return ok;
         };
@@ -13068,49 +13167,9 @@ void Interpreter::registerBuiltins() {
                 if (v.pairVal()->t == VT::Code) code = *v.pairVal();
             }
         }
-        // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
-        bool todod = false; std::string todoReason;
-        if (I.todoRemaining_ > 0) { todod = true; todoReason = I.todoReason_; I.todoRemaining_--; }
-        bool savedFailed = I.subtestFailed_;
-        int savedPlanned = I.planned_, savedTestNum = I.testNum_; // a subtest has its own plan + numbering
-        long savedFailCount = I.failCount_;
-        // the "# Subtest: <name>" banner, at the ENCLOSING level's indent —
-        // the TAP module's strict Sub-Test parser keys nested blocks off it
-        std::cout << std::string(4 * I.subtestDepth_, ' ')
-                  << "# Subtest" << (desc.empty() ? "" : ": " + desc) << "\n";
-        I.subtestDepth_++;
-        if (todod) I.todoSubtestDepth_++;
-        I.subtestFailed_ = false;
-        I.planned_ = -1; I.testNum_ = 0;
-        if (code.t == VT::Code) {
-            try { I.callCallable(code, {}); }
-            catch (RakuError& e) {
-                // the exception is the subtest's failure — but it must be SEEN:
-                // silently marking the subtest failed hid a "No such private
-                // method '!cursor_init'" for a whole String::Utils run
-                I.subtestFailed_ = true;
-                std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# " << e.message << "\n";
-            }
-        }
-        // …and a plan that was not met fails the subtest, as Test.pm6's does
-        // ("planned 3 tests, but ran 0" is how a loop that never ran shows)
-        if (I.planned_ >= 0 && I.testNum_ != I.planned_) {
-            std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# Looks like you planned "
-                      << I.planned_ << " test" << (I.planned_ == 1 ? "" : "s") << ", but ran "
-                      << I.testNum_ << "\n";
-            I.subtestFailed_ = true;
-        }
-        bool ok = !I.subtestFailed_;
-        // no plan declared inside: the subtest's own trailing plan line closes
-        // its block ("    1..N"), exactly as done-testing would have printed it
-        if (I.planned_ < 0)
-            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n";
-        if (todod) I.todoSubtestDepth_--;
-        I.subtestDepth_--;
-        I.subtestFailed_ = savedFailed;
-        I.planned_ = savedPlanned; I.testNum_ = savedTestNum; I.failCount_ = savedFailCount;
-        I.emitTest(ok, desc, todod ? ("TODO" + (todoReason.empty() ? "" : " " + todoReason)) : "");
-        return Value::boolean(ok);
+        return Value::boolean(I.runSubtestFrame(desc, [&]() {
+            if (code.t == VT::Code) I.callCallable(code, {});
+        }));
     };
     B["done-testing"] = [](Interpreter& I, ValueList&) -> Value {
         if (I.planned_ < 0) { std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n"; I.planned_ = I.testNum_; }
