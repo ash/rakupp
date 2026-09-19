@@ -1,6 +1,7 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Interpreter.h"
+#include "Jit.h"
 #include "Digest.h"
 #include "Runtime.h"           // consoleAnsi: does an escape sequence reach a terminal that obeys it
 #include <functional>
@@ -11567,7 +11568,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             const bool bareCond = ws->params.empty() && ws->var.empty();
+            // --jit (JIT-PLAN.md). Everything below is unreachable without the
+            // flag: jit::on() is a plain bool that is false in every default
+            // run, so the loop pays one never-taken branch per iteration.
+            jit::LoopGuard __jg(jit::on() ? jit::siteFor(s) : nullptr);
             for (;;) {
+                if (__jg.site) {
+                    // A while loop keeps its whole state in variables, so the
+                    // top of an iteration — before the condition — is a valid
+                    // entry point for a kernel. That is on-stack replacement
+                    // for free: entering here IS entering at the top.
+                    if (jit::runIfReady(__jg.site, *this, tctx_.cur.get())) break;
+                    jit::tick(__jg.site);
+                }
                 Value cv;
                 bool c;
                 int fb = bareCond ? tryCondBool(ws->cond.get()) : -1; // TARG lever B
@@ -12382,7 +12395,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 bool firstIter = true;
                 std::shared_ptr<Env> scope; // reused across iterations unless captured
                 const bool flatB = flatLoopBody(ls->body.get());
+                // --jit (JIT-PLAN.md) — as in WhileStmt, and unreachable without
+                // the flag. The kernel for a C-style loop carries `cond` and
+                // `incr` but NOT `init`: the init has just run above, and the
+                // variables it declared are bound as slots instead.
+                jit::LoopGuard __jg(jit::on() ? jit::siteFor(s) : nullptr);
                 for (;;) {
+                    if (__jg.site) {
+                        if (jit::runIfReady(__jg.site, *this, tctx_.cur.get())) break;
+                        jit::tick(__jg.site);
+                    }
                     if (ls->cond) {
                         int fb = tryCondBool(ls->cond.get()); // TARG lever B
                         bool c = fb >= 0 ? fb != 0 : boolify(eval(ls->cond.get()));

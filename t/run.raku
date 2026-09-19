@@ -1545,6 +1545,41 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '--json outside -c and --lint is illegal');
     }
 
+    # --jit: the flag surface. Whether a loop actually tiers up is t/jit/run.raku's
+    # job; what is pinned HERE is that the option parses the same way everywhere,
+    # that a bad spec word teaches the grammar rather than being ignored, and —
+    # the one that matters most — that the DEFAULT is off, so a plain run reaches
+    # none of it.
+    {
+        my $jdir = $work.add('jitcache');
+        my %e = %*ENV; %e<RAKUPP_JIT_DIR> = $jdir.Str;
+        sub jit-run(*@a) {
+            my $p = run($*EXECUTABLE, |@a, :out, :err, :env(%e));
+            ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
+        }
+        my $prog = 'my $s = 0; my $i = 0; while $i < 20000 { $s = $s + $i; $i = $i + 1 }; say $s';
+        my ($o0, $e0, $x0) = jit-run('-e', $prog);
+        ok($x0 == 0 && $o0 eq "199990000\n" && $e0 eq '',
+           '--jit: the default run says nothing about a JIT and is not one');
+        ok(!$jdir.e, 'and writes nothing to the cache directory unasked');
+
+        my ($o1, $e1, $x1) = jit-run('--jit=sync,threshold=0,stats', '-e', $prog);
+        ok($x1 == 0 && $o1 eq $o0, '--jit: a tiered loop answers what the interpreter answered');
+        ok($e1 ~~ / 'kernels entered ' <[1..9]> /, 'and --jit=stats says a kernel ran');
+
+        ok(jit-run('--jit=bogus', '-e', '1')[1].contains("unknown spec word 'bogus'"),
+           '--jit: an unknown spec word names the ones that exist');
+        ok(jit-run('--jit=threshold=x', '-e', '1')[1].contains('wants a number'),
+           '--jit: threshold= refuses a non-number');
+        ok(jit-run('--jit=off', '-e', $prog)[0] eq $o0, '--jit=off runs the program plainly');
+
+        # ONE option, every mode, either side of the command — the -q rule.
+        ok(jit-run('--jit', '-c', '-e', '1')[0].contains('Syntax OK'), '--jit before a mode is legal');
+        ok(jit-run('-c', '--jit', '-e', '1')[0].contains('Syntax OK'), '--jit after a mode is legal');
+        ok(jit-run('--jit', '--cpp', '-e', 'say 1')[0].contains('#include'),
+           '--jit is accepted, and ignored, by a mode that never runs the program');
+    }
+
     # --stagestats: the phases, and every module load
     {
         my ($o, $e, $x) = run-rakupp-err('--stagestats', '-I', $mlib.Str, '-e', 'use CliM; say cli-m()');

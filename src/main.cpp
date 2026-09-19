@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "Codegen.h"
+#include "Jit.h"
 #include "codegen/Js.h"
 #ifdef _WIN32
 #include <io.h>         // _isatty
@@ -291,6 +292,15 @@ static bool g_static = false;
 // A mode with nothing informational to say accepts the flag and changes
 // nothing, the way -l does.
 static bool g_quiet = false;
+
+// --jit[=SPEC] — the tier-up JIT (docs/dev/plans/JIT-PLAN.md). OFF unless asked
+// for. Like -q it is ONE option accepted by every mode and position-
+// independently, but it is only ACTED on where a program is interpreted: the
+// compile modes and the source tools never tier-walk anything, so they parse it
+// and ignore it. `g_jitAsked` keeps "the user typed --jit" apart from "the spec
+// turned it on", so `--jit=off` is not mistaken for silence.
+static rakupp::jit::Options g_jitOpt;
+static bool g_jitAsked = false;
 // Whether stdout is a terminal rather than a pipe, a file or a CI log. A line
 // written only when this is true is addressed to the person reading it, and
 // cannot change what a script captures.
@@ -1728,6 +1738,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
     {"-o", 2, "FILE", "output file (compile modes, --target=js, --cpp)"},
     {"-O", 0, nullptr, "optimize (compile modes)"},
+    {"--jit", 1, "off on sync verbose stats nocache threshold=", "compile hot loops while the program runs (off by default)"},
     {"-h", 0, nullptr, "help"},
     {"--help", 0, nullptr, "help"},
     {"-v", 0, nullptr, "version, build and platform, on one line"},
@@ -2445,6 +2456,11 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (a == "--quiet" || a == "-q") { quiet = g_quiet = true; continue; }
+            if (a == "--jit" || a.rfind("--jit=", 0) == 0) {
+                std::string err = rakupp::jit::parseSpec(a.size() > 5 ? a.substr(6) : "", g_jitOpt);
+                if (!err.empty()) { std::cerr << err << "\n"; return 4; }
+                g_jitAsked = true; continue;
+            }
             if (a == "-o") { if (i + 1 < argc) outPath = argv[++i]; continue; }
             if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); continue; }
             // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
@@ -2750,6 +2766,12 @@ int main(int argc, char** argv) {
 "  --profile[=FILE]             Routine-level wall-time profile after the run\n"
 "                               (stderr by default; a .json FILE gets JSON).\n"
 "                               Builtins are attributed to their caller\n"
+"  --jit[=SPEC]                 Compile hot loops to native code WHILE the program\n"
+"                               runs, and enter them mid-loop. Off by default; needs\n"
+"                               a C++ compiler, as --exe does. SPEC is a comma list:\n"
+"                               off, sync, verbose, stats, nocache, threshold=N.\n"
+"                               Kernels cache under ~/.cache/rakupp/jit, so it is\n"
+"                               the SECOND run of a program that starts fast\n"
 "  -q, --quiet                  Drop the lines a mode prints about itself: `Syntax\n"
 "                               OK`, the lint summary, `Compiled …`, the installer's\n"
 "                               progress and `already installed:`, the REPL banner.\n"
@@ -3545,6 +3567,15 @@ int main(int argc, char** argv) {
         }
     }
     if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
+    // --jit: hand the JIT the same compiler and headers `--exe` uses. Only a
+    // RUN reaches here, which is the whole of where the flag means anything —
+    // the compile modes and the source tools returned long before this point.
+    if (g_jitAsked && g_jitOpt.on) {
+        std::string jlib, jinc;
+        if (!findRuntime(exePath, jlib, jinc)) jinc.clear();
+        rakupp::jit::configure(g_jitOpt, jinc.empty() ? std::string() : nativeCxx(jlib),
+                               jinc, exePath);
+    }
     if (replAfter) {
         // python -i: the program runs in the session's own interpreter, and the
         // prompt opens on whatever it left behind (see Repl.cpp)
@@ -3554,5 +3585,6 @@ int main(int argc, char** argv) {
     }
     int rc = rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
     rakupp::prof::report(); // no-op unless --profile was given
+    rakupp::jit::report();  // no-op unless --jit=stats was given
     return rc;
 }

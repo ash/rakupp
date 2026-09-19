@@ -96,7 +96,21 @@ using NodePtr = std::unique_ptr<Node>;
 struct Expr : Node { using Node::Node; };
 using ExprPtr = std::unique_ptr<Expr>;
 
-struct Stmt : Node { using Node::Node; std::string label; };
+struct Stmt : Node {
+    using Node::Node;
+    std::string label;
+    // --jit only (docs/dev/plans/JIT-PLAN.md): the tier-up site for a loop
+    // statement, created on the loop's first execution and owned by the JIT
+    // manager, which never frees one. Null in every run without `--jit`, and
+    // only ever set on a WhileStmt or a LoopStmt. Not serialized — it is a
+    // property of one run, like Block::initHoisted.
+    //
+    // PublishedOnce, not DecidedOnce: the pointer is only half of it. A reader
+    // that sees the pointer must also see the Site it was constructed from, and
+    // under RAKUPP_PARALLEL two threads can meet the same loop node at once.
+    // The Site is built, THEN released here; a reader acquires it.
+    PublishedOnce<void*> jitSite{nullptr};
+};
 using StmtPtr = std::unique_ptr<Stmt>;
 
 // ---- Expressions ----

@@ -3315,4 +3315,65 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     return g.out.str();
 }
 
+// ---- the tier-up JIT's kernel emitter (docs/dev/plans/JIT-PLAN.md) ---------
+//
+// One loop statement, one `extern "C"` function, the same `-O` emission the
+// `--exe` backend produces for that subtree. The kernel is compiled to a shared
+// object with UNDEFINED runtime symbols and dlopen'd into the running
+// interpreter, so `rtAdd`, `applyArith` and friends bind to the host
+// executable's own copies: a tiered loop and an interpreted one cannot disagree
+// about semantics, because they run the identical runtime code.
+//
+// What makes a whole-program transpile unnecessary here is that a `while`/`loop`
+// keeps its entire state in variables. Outer variables arrive as `Value*` into
+// the live frame and are bound as references under the names `mangleVar` gives
+// them, which is exactly what the emitter already writes for a local — so the
+// body needs no rewriting at all. Variables the loop DECLARES stay C++ locals,
+// as they are in a compiled program.
+std::string emitJitKernel(Stmt* loop, const std::string& fnName,
+                          const std::vector<std::string>& slots) {
+    Codegen g;
+    g.optimize_ = true;   // a kernel exists to be fast; the `-O` lanes are the point
+    std::ostringstream h;
+    h << "// rakupp JIT kernel — generated, do not edit\n"
+      << "#include \"Interpreter.h\"\n"
+      << "#include \"Value.h\"\n"
+      << "using namespace rakupp;\n\n"
+      << "extern \"C\" int " << fnName << "(rakupp::Interpreter* __I, rakupp::Value** __slots) {\n"
+      << "    Interpreter& RT = *__I; (void)RT; (void)__slots;\n";
+    // The slot bindings. A reference, not a copy: a write inside the kernel has
+    // to land in the container the interpreter will read afterwards.
+    for (size_t i = 0; i < slots.size(); i++)
+        h << "    Value& " << mangleVar(slots[i]) << " = *__slots[" << i << "];\n";
+    g.out << h.str();
+    // loopDepth_ is 0 here, which is what makes an unlabelled `last`/`next`
+    // directly inside this loop compile to `break`/`continue` rather than to a
+    // throw: the kernel's own C++ loop is the nearest enclosing one, exactly as
+    // it is in a compiled program.
+    //
+    // A C-style `loop (init; cond; incr)` is emitted WITHOUT its init, because a
+    // kernel is entered at an iteration boundary — the interpreter has already
+    // run the init, and re-running it would restart the loop. The `for` header
+    // is written out here rather than delegated to `stmt()` so that the init can
+    // be dropped without mutating the shared AST node, which another thread may
+    // be executing. Everything else about the emission, `incr` included, is the
+    // `stmt()` case verbatim: `next` has to reach `incr`, which is what a C++
+    // `continue` in a three-clause `for` does and what rewriting the loop as a
+    // `while` would silently break.
+    if (loop->kind == NK::LoopStmt) {
+        auto* l = static_cast<LoopStmt*>(loop);
+        g.line(1, "{");
+        std::string c = l->cond ? g.exBool(l->cond.get()) : "true";
+        g.line(2, "for (; " + c + "; " + (l->incr ? g.ex(l->incr.get()) : std::string()) + ") {");
+        g.loopBody(l->body.get(), 3, l->label);
+        g.line(2, "}");
+        g.line(1, "}");
+    } else {
+        g.stmt(loop, 1);
+    }
+    g.line(1, "return 0;");
+    g.line(0, "}");
+    return g.out.str();
+}
+
 }
