@@ -1,0 +1,40 @@
+/* Symbols a `--jit` KERNEL resolves against the rakupp executable that
+ * dlopen'd it. See docs/dev/plans/JIT-PLAN.md and src/Jit.cpp.
+ *
+ * ELF only, and a separate file from rakupp_ext.dynlist on purpose. That one
+ * is the extension ABI: a promise to code outside this tree, kept narrow
+ * because breaking it breaks someone else's build. This one is a promise to
+ * nobody. A kernel is compiled by the SAME build of rakupp that loads it, from
+ * the same headers, and dies with the process — so what it binds to is an
+ * internal detail that may change in any commit.
+ *
+ * Without this, `--jit` cannot work on ELF at all: a plain ELF executable
+ * keeps its symbols out of .dynsym, so a kernel's first call to
+ * rakupp::applyArith fails at dlopen with "undefined symbol". Mach-O exports
+ * its globals by default, which is why the backend ran on macOS from the start
+ * and had never once entered a kernel on Linux.
+ *
+ * Why a glob over the namespace, rather than the three names a kernel needs
+ * today (rakupp::applyArith, Interpreter::boolify, Value::truthy): a kernel
+ * calls whatever the codegen emits, that codegen is shared with `--exe`, and
+ * an enumerated list would go stale in silence. The miss would surface only on
+ * ELF, only at dlopen, and only for the loop shape that reached the new call —
+ * which is exactly the shape of the bug this file exists to fix. The glob
+ * costs about a thousand .dynsym entries and cannot go stale.
+ *
+ * This is still not -rdynamic, which would also export the statically linked
+ * libstdc++ and everything else this binary absorbs.
+ *
+ * _ZN  a name inside a namespace        _ZTV  vtable
+ * _ZNK a const member function          _ZTI  typeinfo
+ *                                       _ZTS  typeinfo name
+ * The last three are what an exception thrown through a kernel needs to find
+ * its handler back in the interpreter. Understood by GNU ld, gold and lld.
+ */
+{
+  _ZN6rakupp*;
+  _ZNK6rakupp*;
+  _ZTVN6rakupp*;
+  _ZTIN6rakupp*;
+  _ZTSN6rakupp*;
+};

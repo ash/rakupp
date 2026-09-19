@@ -19,9 +19,16 @@ arrived at.
 **P0 and P1 landed 2026-09-19** — `--jit[=SPEC]`, the eligibility walk,
 `emitJitKernel`, the background compile, the PCH, the on-disk kernel cache, and
 the gate `t/jit/run.raku` with twelve cases of its own. Where the code decided
-differently from the draft below it says so there. What did NOT land: Linux
-(P2), unboxed slot hoisting (P3), any widening of the whitelist (P4), and
-speculation (P5).
+differently from the draft below it says so there. What did NOT land: unboxed
+slot hoisting (P3), any widening of the whitelist (P4), and speculation (P5).
+
+**P2 landed 2026-09-19**, and CI is what asked for it. The backend was written
+on macOS, where Mach-O exports an executable's globals by default, so the
+question below never came up in development — and on Linux every `--jit` run
+since P0 had been compiling a kernel, failing to load it, and falling silently
+back to the interpreter. The gate said so on the first run it was part of:
+`a tiered loop answers what the interpreter answered` and `--jit=stats says a
+kernel ran`, both red on linux-x86_64 and linux-aarch64 and green on macOS.
 
 **The number a stranger can re-measure:**
 
@@ -84,8 +91,23 @@ running `rakupp` through NativeCall, and returned the right answer:
 `nm -u` shows exactly two unresolved `rakupp::` symbols, both bound at load
 time to the host executable's own copies. Mach-O exports executable globals by
 default. ELF does not — Linux needs the `--dynamic-list` treatment
-`CMakeLists.txt` already applies for the `rk_*` glob, widened or replaced with
-`-rdynamic`. That is the one portability item this plan carries.
+`CMakeLists.txt` already applies for the `rk_*` glob.
+
+**Done, as a second list rather than a wider first one.**
+`include/rakupp/rakupp_jit.dynlist` exports the `rakupp` namespace by mangled
+glob and is passed alongside `rakupp_ext.dynlist`; ld unions them. Two files
+because they mean different things: the `rk_*` list is an ABI promise to code
+outside this tree, and this one is a promise to nobody — a kernel is built by
+the same rakupp that loads it, from the same headers, and dies with the
+process.
+
+A glob rather than the three names a kernel needs today, because a kernel calls
+whatever the codegen emits, that codegen is shared with `--exe`, and an
+enumerated list would go stale in silence: the miss shows up only on ELF, only
+at `dlopen`, and only for the loop shape that reached the new call — which is
+the exact shape of the bug this fixes. It costs about a thousand `.dynsym`
+entries. Still narrower than `-rdynamic`, which would additionally export the
+statically linked libstdc++ and everything else the binary absorbs.
 
 **2. Is the compile fast enough to be a JIT rather than a build?**
 
@@ -430,20 +452,26 @@ iteration, and which a per-node fast path cannot remove.
 |---|---|---|
 | **P0** | the switch, the counter, the whitelist, emission, sync compile, `dlopen`, the `t/jit` gate | **DONE** |
 | **P1** | background compile, the on-disk cache, the PCH | **DONE** |
-| **P2** | Linux: the dynamic-list widening, and the gate leg | next |
+| **P2** | Linux: the dynamic-list widening, and the gate leg | **DONE** |
 | **P3** | unboxed slot hoisting — the 100× step, shared with `--exe -O` | its own plan |
 | **P4** | whitelist widening: `for` over a Range, then calls to user subs (which reopens the pointer-stability question), then sub kernels | per-item gates |
 | **P5** | type feedback and a deopt path | needs P3 |
 
 ### What P2–P5 inherit from this batch
 
-- **Linux (P2).** The kernel resolves its runtime symbols against the
-  executable. Mach-O exports them by default; ELF does not, and
-  `CMakeLists.txt` already narrows rakupp's dynamic list to the `rk_*` glob for
-  the extension loader. That list has to grow to cover what a kernel calls, or
-  the kernel has to link `librakupp_rt.a` instead of borrowing the host's copy —
-  the second is simpler and costs binary size per kernel. Untested either way;
-  nothing here has run on Linux.
+- **Linux (P2), done.** The kernel resolves its runtime symbols against the
+  executable, and on ELF it now finds them: a second dynamic list
+  (`include/rakupp/rakupp_jit.dynlist`) exports the `rakupp` namespace, next to
+  the `rk_*` list the extension loader uses. The alternative — linking
+  `librakupp_rt.a` into every kernel rather than borrowing the host's copy — was
+  not taken: it costs binary size and a link per kernel on the hot path, to
+  avoid exports that nothing outside this tree can see anyway.
+
+  One thing the same CI run turned up alongside it: the PCH lane is clang-only
+  (`-include-pch`), so a machine whose `c++` is GCC builds no header however
+  loudly it is asked. That is by design and was simply never stated, and the
+  gate asserted the header unconditionally. It now asks the run which lane it
+  is on and pins both sides.
 - **The whitelist is one function** (`Scan` in [src/Jit.cpp](../../../src/Jit.cpp))
   and every widening is a case added to it plus a case in `t/jit/cases`. The
   ordering of value comes from `--jit=verbose` over a real corpus, which nobody

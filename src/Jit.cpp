@@ -27,7 +27,9 @@
 #include <cstring>
 #include <cctype>
 #include <sys/stat.h>
-#include <dirent.h>
+#if !defined(_WIN32)
+#include <dirent.h>   // Windows gets the FindFirstFile-based shim from Platform.h
+#endif
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -794,12 +796,23 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
         return;
     }
     // Which compiler this is decides whether the PCH lane is available.
+    // msvcrt spells the pair with an underscore, as every other capture in this
+    // tree already accounts for (see __qx__ in Builtins.cpp).
     {
         std::string probe = shq(g_cxx) + " --version 2>/dev/null";
-        if (FILE* p = ::popen(probe.c_str(), "r")) {
+#if defined(_WIN32)
+        FILE* p = _popen(probe.c_str(), "r");
+#else
+        FILE* p = ::popen(probe.c_str(), "r");
+#endif
+        if (p) {
             char buf[256] = {0};
             size_t n = std::fread(buf, 1, sizeof buf - 1, p);
+#if defined(_WIN32)
+            _pclose(p);
+#else
             ::pclose(p);
+#endif
             g_clang = std::string(buf, n).find("clang") != std::string::npos;
         }
     }

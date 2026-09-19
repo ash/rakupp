@@ -94,10 +94,23 @@ else has to know both halves.
 ### 1. Two instruction sets
 
 Real, and only half paid. The patcher implements arm64 and x86-64; **arm64 is
-the one that has been run**. The x86-64 encodings are written from the manual
-and have not executed a single instruction. That is stated rather than hedged
+the one that has been run**. The x86-64 encodings were written from the manual
+and had not executed a single instruction. That is stated rather than hedged
 because it is the first thing a reader on an Intel Mac or a Linux box needs to
 know.
+
+CI has now run them, and the answer is worse than "untested": on linux-x86_64 a
+kernel **is** entered and returns the **wrong answer**. The gate saw it as one
+failing check and one passing one — the tiered loop disagreed with the
+interpreter while `--cnp=stats` cheerfully reported a kernel had run — which is
+the single outcome worse than not compiling at all, because nothing about it
+looks like a failure from outside.
+
+So `--cnp` now refuses x86-64 at startup (`checkTable()` in CnpEmit.cpp), names
+this plan in the reason, and runs the loop interpreted: the answer the machine
+would have given anyway, a little slower. `RAKUPP_CNP_X86=1` lifts the gate,
+because P1 cannot be done by anyone who cannot run the thing being fixed. The
+gate comes out when P1 lands, and not before.
 
 ### 2. Two object formats
 
@@ -436,8 +449,9 @@ One binary, no compiler and no rakupp on the machine running it.
 - **It is not more general than `--jit`.** The 53 stencils are the ceiling. Where
   `--jit` can in principle compile whatever `--exe -O` emits, this refuses and
   leaves the loop interpreted.
-- **It has run on one platform.** arm64 macOS. The x86-64 and ELF paths are
-  written and unexercised.
+- **It has run on one platform.** arm64 macOS. The x86-64 patcher is written,
+  is now known to be *wrong* rather than merely unexercised, and is refused at
+  startup until P1 (see above). ELF is exercised on aarch64 and works.
 - **It does not tier up threaded code.** Any loop reached while another Raku
   thread is live stays interpreted, for the reason above. That is a real
   functional gap against `--jit`, which has no such restriction because it does
@@ -456,7 +470,7 @@ One binary, no compiler and no rakupp on the machine running it.
 | | | |
 |---|---|---|
 | **P0** | the ABI, the stencils, the extractor, the patcher, the lowering, `--cnp`, the gate | **DONE** |
-| **P1** | x86-64: run the paths that are written but untested, on both object formats | next |
+| **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **next, and now a known defect rather than a gap** |
 | **P2** | arena allocation, so kernels share pages instead of taking one each | |
 | **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | per-item gates |
 | | *and*: re-read read-only slots per iteration instead of refusing a threaded program outright, if the measured cost of one inline reload turns out to be worth the generality | |
@@ -469,8 +483,9 @@ interpreter does. Three things stand between here and there, and the first is
 the only large one.
 
 1. **P1, a platform matrix.** Making a backend the default that has run on one
-   instruction set would be making it the default on trust. x86-64 and ELF are
-   written; they have to be exercised, in CI, on both.
+   instruction set would be making it the default on trust. ELF is exercised on
+   aarch64 now and passes; x86-64 is exercised and *fails*, which is why it is
+   refused rather than shipped.
 2. **The threaded gap closed or accepted.** Today a loop reached while another
    Raku thread is live stays interpreted (see the register file above). As a
    flag, that is a documented limitation; as the default, it is a silent cliff

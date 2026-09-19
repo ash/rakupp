@@ -19,6 +19,7 @@
 #include "cnp/CnpTable.h"
 #include "cnp/CnpAbi.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -78,6 +79,24 @@ std::string g_why;
 bool checkTable() {
     if (kCount == 0) { g_why = "this build carries no stencils (see the build log for cnp-extract)"; return false; }
     if (!kArm64 && !kX86_64) { g_why = "no patcher for this instruction set"; return false; }
+    // x86-64 is WRITTEN but not CORRECT. CNP-PLAN.md has said since the backend
+    // landed that the encodings came off the manual and had never executed an
+    // instruction; CI then ran them, and they do execute -- a kernel is entered
+    // and returns the WRONG ANSWER, which is the one outcome worse than not
+    // running at all. Until P1 verifies the patcher, saying so and running
+    // interpreted is the honest answer: the same result the machine would have
+    // given anyway, a little slower.
+    //
+    // RAKUPP_CNP_X86=1 lifts the gate, because P1 cannot be done by anyone who
+    // cannot run the thing being fixed.
+    if (kX86_64) {
+        const char* e = std::getenv("RAKUPP_CNP_X86");
+        if (!(e && *e == '1')) {
+            g_why = "the x86-64 patcher is unverified and gives wrong answers "
+                    "(CNP-PLAN.md P1; set RAKUPP_CNP_X86=1 to run it anyway)";
+            return false;
+        }
+    }
     for (unsigned i = 0; i < kHelperCount; i++)
         if (!helperAddr(kHelperNames[i])) {
             g_why = std::string("the stencils call a helper this build does not have: ") + kHelperNames[i];

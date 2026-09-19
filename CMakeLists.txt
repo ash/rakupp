@@ -257,18 +257,15 @@ if(RAKUPP_CNP_ON AND NOT (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|In
   set(RAKUPP_CNP_WHY "the stencils need a GCC- or Clang-style driver")
 endif()
 
+# The flags are load-bearing, not taste:
+#   -fno-*-unwind-tables   a code buffer has no unwind info and needs none,
+#                          because no stencil may let an exception through
+#   -fomit-frame-pointer   the fast stencils are leaves; a frame would be six
+#                          stack operations per op for nothing
+#   -fno-stack-protector   a guard would be one more global to relocate
+#   -fPIC                  makes every reference to a hole go through the GOT
+#                          form the patcher knows how to rewrite
 if(RAKUPP_CNP_ON)
-  add_executable(cnp_extract "${CMAKE_CURRENT_SOURCE_DIR}/tools/cnp-extract.cpp")
-  target_include_directories(cnp_extract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  set(RAKUPP_CNP_OBJ "${CMAKE_CURRENT_BINARY_DIR}/generated/cnp_stencils.o")
-  # The flags are load-bearing, not taste:
-  #   -fno-*-unwind-tables   a code buffer has no unwind info and needs none,
-  #                          because no stencil may let an exception through
-  #   -fomit-frame-pointer   the fast stencils are leaves; a frame would be six
-  #                          stack operations per op for nothing
-  #   -fno-stack-protector   a guard would be one more global to relocate
-  #   -fPIC                  makes every reference to a hole go through the GOT
-  #                          form the patcher knows how to rewrite
   set(RAKUPP_CNP_CFLAGS -O2 -std=c11 -fno-asynchronous-unwind-tables -fno-unwind-tables
                         -fomit-frame-pointer -fno-stack-protector -fPIC)
   if(APPLE)
@@ -279,6 +276,42 @@ if(RAKUPP_CNP_ON)
       list(APPEND RAKUPP_CNP_CFLAGS -isysroot ${CMAKE_OSX_SYSROOT})
     endif()
   endif()
+endif()
+
+# A GCC- or Clang-style driver is necessary but not sufficient: every stencil
+# ends in a `musttail` call, and a compiler without that attribute rejects the
+# file line by line. GCC grew `musttail` only in 15, so the compiler-ID test
+# above let every older one straight through to a hard build failure -- which
+# this section promises above it will never cause.
+#
+# So ask, rather than predict. Compiling the real file with the real flags is a
+# quarter of a second at configure time and it answers for every reason a
+# toolchain might refuse them, not just the one that was caught the hard way.
+# Anything that says no takes the empty-table path, like any other platform
+# that cannot carry stencils.
+if(RAKUPP_CNP_ON)
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" -x c ${RAKUPP_CNP_CFLAGS} -c
+            -o "${CMAKE_CURRENT_BINARY_DIR}/generated/cnp-probe.o"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/cnp/stencils.c"
+    RESULT_VARIABLE RAKUPP_CNP_PROBE_RC
+    ERROR_VARIABLE  RAKUPP_CNP_PROBE_ERR
+    OUTPUT_QUIET)
+  file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/generated/cnp-probe.o")
+  if(NOT RAKUPP_CNP_PROBE_RC EQUAL 0)
+    set(RAKUPP_CNP_ON OFF)
+    set(RAKUPP_CNP_WHY "this compiler will not compile the stencils")
+    string(REGEX MATCH "[^\n]*error[^\n]*" RAKUPP_CNP_PROBE_FIRST "${RAKUPP_CNP_PROBE_ERR}")
+    if(RAKUPP_CNP_PROBE_FIRST)
+      message(STATUS "rakupp: the stencils did not compile: ${RAKUPP_CNP_PROBE_FIRST}")
+    endif()
+  endif()
+endif()
+
+if(RAKUPP_CNP_ON)
+  add_executable(cnp_extract "${CMAKE_CURRENT_SOURCE_DIR}/tools/cnp-extract.cpp")
+  target_include_directories(cnp_extract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  set(RAKUPP_CNP_OBJ "${CMAKE_CURRENT_BINARY_DIR}/generated/cnp_stencils.o")
   # Compiled by the C++ driver with `-x c`, not by CMAKE_C_COMPILER: the project
   # declares only CXX, and making it need a second toolchain to build one object
   # file would be a new way for a configure to fail on a machine that was fine
@@ -303,7 +336,10 @@ else()
 "// GENERATED at configure time. ${RAKUPP_CNP_WHY}\n"
 "#include \"cnp/CnpTable.h\"\n"
 "namespace rakupp { namespace cnp {\n"
-"const Stencil     kStencils[]     = {};\n"
+"// One placeholder element, never read: kCount is 0 and CnpEmit bails on that\n"
+"// before it indexes anything. A zero-length array is a GCC/Clang extension\n"
+"// that MSVC rejects outright, and this file has to compile everywhere.\n"
+"const Stencil     kStencils[]     = { { nullptr, nullptr, 0, 0 } };\n"
 "const char* const kStencilNames[] = { nullptr };\n"
 "const char* const kHelperNames[]  = { nullptr };\n"
 "const unsigned    kCount          = 0;\n"
@@ -450,11 +486,25 @@ endif()
 # default; ELF ones do not — without the dynamic-list an extension's first rk_*
 # call dies with an "undefined symbol" error on Linux and the BSDs. The list
 # exports exactly the rk_* glob, where -rdynamic would export every C++ symbol.
+#
+# A second list next to it, for a different reader. A `--jit` kernel is a shared
+# object the running rakupp compiles and dlopens, and it resolves the runtime it
+# calls against THIS executable -- so on ELF it needs the same treatment, over a
+# far wider set of names than rk_*. Without it `--jit` cannot enter a kernel on
+# Linux at all, which is what it had been quietly doing since it landed: the
+# backend was developed on macOS, where Mach-O exports its globals and the
+# question never came up. The two lists are kept apart because they mean
+# different things -- rakupp_ext.dynlist is an ABI promise and
+# rakupp_jit.dynlist is not -- and each says so in its own header comment.
+# ld unions every --dynamic-list it is given.
 if(UNIX AND NOT APPLE)
-  target_link_options(rakupp PRIVATE
-    "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_ext.dynlist")
-  set_target_properties(rakupp PROPERTIES
-    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_ext.dynlist")
+  set(RAKUPP_DYNLISTS
+      "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_ext.dynlist"
+      "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp/rakupp_jit.dynlist")
+  foreach(lst IN LISTS RAKUPP_DYNLISTS)
+    target_link_options(rakupp PRIVATE "-Wl,--dynamic-list=${lst}")
+  endforeach()
+  set_target_properties(rakupp PROPERTIES LINK_DEPENDS "${RAKUPP_DYNLISTS}")
 endif()
 # On Windows the RK_API dllexports (via rakupp_rt) put rk_* in rakupp.exe's
 # export table; ENABLE_EXPORTS makes CMake treat the generated import library
