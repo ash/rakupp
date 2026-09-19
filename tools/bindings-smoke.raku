@@ -235,7 +235,17 @@ for @examples -> $ex {
             next;
         }
         unless $rc == 0 {
-            check False, "$ex runs under {%h<label>}", $err;
+            # A CRASH writes nothing to stderr, and the detail was $err alone:
+            # the Windows C++ leg failed with an empty one, so the log said only
+            # that it had failed. The exit code is the part that is always there,
+            # and on Windows an abnormal exit IS its status code — hence the hex,
+            # where 0xC0000005 is an access violation and 0xC00000FD a stack
+            # overflow. Whatever the run did manage to print comes with it.
+            my $detail = "exit code $rc"
+                       ~ ($WIN ?? " (0x{ ($rc +& 0xFFFFFFFF).base(16) })" !! '');
+            $detail ~= "\nstderr:\n" ~ $err.trim-trailing.indent(2) if $err.trim;
+            $detail ~= "\nstdout:\n" ~ $out.trim-trailing.indent(2) if $out.trim;
+            check False, "$ex runs under {%h<label>}", $detail;
             next;
         }
 

@@ -116,6 +116,19 @@ inline Value armedFailure(const char* type, const std::string& msg) {
     (*f.hash())["message"] = Value::str(msg);
     return f;
 }
+// A subscript that REFUSED: `$str<k>` on a non-Associative never reached a slot,
+// so the Failure standing in for it is NOT in a container and sinking the
+// statement detonates it. Rakudo draws the line at where the value came from
+// rather than what it is — `$s<k>;` throws, while the same Failure STORED in a
+// slot and read back (`my @a = $f,; @a[0];`) stays quiet — so this is counted per
+// evaluation instead of flagged on the value: the sink site compares the count
+// across its own expression, and a later read of a stored Failure raises none.
+// (Thread-local because the count is only ever read on the thread that bumped it.)
+extern thread_local unsigned long long g_subscriptRefusals;
+inline Value refusedSubscript(const char* type, const std::string& msg) {
+    ++g_subscriptRefusals;
+    return armedFailure(type, msg);
+}
 // `val()`: a fully-numeric string becomes the matching allomorph (IntStr/RatStr/
 // NumStr/ComplexStr — the number AND its source spelling); anything else passes
 // through unchanged. Shared by the `val` builtin, prompt(), and MAIN's argv.

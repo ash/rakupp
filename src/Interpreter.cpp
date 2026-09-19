@@ -346,6 +346,8 @@ static inline bool isAnyTypeObject(const Value& v) {
 
 static int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
 static bool valueEqv(const Value& a, const Value& b);
+static bool isSetOpStr(const std::string& o);
+thread_local unsigned long long g_subscriptRefusals = 0;
 
 // eqv for a `repr('CStruct')`/CUnion instance. Such an object holds NO Raku
 // attributes — only `__native_ptr`, the address of its native body — so the
@@ -9327,6 +9329,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     return regexMatch(rxSubject(topic), rl->pattern);
                 }
             }
+            const unsigned long long refusalsBefore = g_subscriptRefusals;
             Value r = eval(e);
             // Rakudo sink semantics: a discarded FRESH object with a user-defined
             // `sink` method has it invoked (HTTP::Status registers each instance in
@@ -9358,6 +9361,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // container killed the test instead.
             bool contained = exprYieldsContainer(e) ||
                              ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
+            // …except that a subscript which REFUSED never reached a container:
+            // `$str<k>` on a non-Associative is a Failure standing in for the
+            // element slot, not the slot itself, so sinking it detonates the way
+            // Rakudo does. Counting it as contained kept `"<div>$x$y</div>"` — a
+            // template whose `$y</div>` the parser reads as a subscript — quiet,
+            // and the truncated markup went out. The refusal has to have happened
+            // in THIS statement: `@a[0]` that reads back a Failure somebody stored
+            // there earlier is a real slot, and stays quiet (both verified against
+            // Rakudo). `@a[9]` past the end is a real element too, not a Failure.
+            if (contained && e->kind == NK::Index &&
+                g_subscriptRefusals != refusalsBefore &&
+                r.t == VT::Hash && r.hashKind == "Failure")
+                contained = false;
             // Whatever this statement produced is now the most recent value a
             // caller could sink — record how it arrived for the frame above.
             tctx_.valContained = contained;
@@ -16066,7 +16082,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // …as a FAILURE, which is what Rakudo hands back: it still detonates
             // the moment the value is used (which is what caught the broken
             // template) but can be tested for (Nil-Any sheet NA-37).
-            return armedFailure("X::AdHoc",
+            return refusedSubscript("X::AdHoc",
                 "Type " + base.typeName() + " does not support associative indexing.");
         return typedElemDefault(base);
     }
@@ -18415,6 +18431,30 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 *lv = (op == "=") ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
                 return *lv;
             }
+        }
+    }
+    // A ONE-ARGUMENT call to an infix operator is its REDUCTION form. Rakudo
+    // gives every infix a one-arg candidate precisely so that folding a single
+    // element has something to call, and it answers that element: `&infix:<->(10)`
+    // is 10, not -10. The two-arg builtin falls into the PREFIX reading instead —
+    // `(10,).reduce(&infix:<->)` reported it as -10, and `&infix:</>(10)` as 0.1.
+    // A CHAINING comparison is vacuously True: there is no second operand to
+    // disagree with (Nil-Any sheet NA-47). The Call-node spelling `infix:<->(10)`
+    // already had this rule; this is the same one for the Callable. Set operators
+    // keep theirs — a one-argument set op COERCES, which the builtin does — and so
+    // do the list infixes, whose one-argument form is a one-row list.
+    if (c.builtin && args.size() == 1 && c.name.rfind("infix:<", 0) == 0 &&
+        c.name.size() > 8 && c.name.back() == '>') {
+        std::string op = c.name.substr(7, c.name.size() - 8);
+        bool isAssign = op == "=" ||
+            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+        if (!isAssign && !isSetOpStr(op) && op != "," && op[0] != 'Z' && op[0] != 'X') {
+            static const std::set<std::string> kChaining = {
+                "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
+                "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
+                "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
+            return kChaining.count(op) ? Value::boolean(true) : args[0];
         }
     }
     if (c.builtin) {
@@ -35273,9 +35313,9 @@ Value Interpreter::evalIndex(Index* idx) {
             if (!hadv.empty() && hadv[0] == '!') hadv = hadv.substr(1);
             if (hadv == "exists") return Value::boolean(false);
             if (hadv == "delete")
-                return armedFailure("X::AdHoc",
+                return refusedSubscript("X::AdHoc",
                     "Can not remove values from a " + base.typeName());
-            return armedFailure("X::AdHoc",
+            return refusedSubscript("X::AdHoc",
                 "Type " + base.typeName() + " does not support associative indexing.");
         }
         // Associative indexing on an array-backed value: a Capture (`\(1, :i)`) is

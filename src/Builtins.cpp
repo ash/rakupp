@@ -4524,9 +4524,24 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
     const bool enumish = !inv.enumName.empty() || inv.t == VT::Bool ||
                          (inv.t == VT::Type && inv.s == "Bool");
     if (enumish) return false;
-    if (m == "values")
-        return inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash &&
-               inv.t != VT::Match && inv.t != VT::Object;
+    // `.values` is the narrowest of the family: it is a Seq only where the type
+    // OVERRIDES it with an iterator — List/Array/Slip, a Capture, a real Hash or
+    // QuantHash, a Pair, a Match. Everything ELSE reaches `Any.values`, which is
+    // `self.list`, so it is a List — and that includes three kinds that look like
+    // collections and are not: a SEQ (Seq is not a List subclass, so it inherits
+    // Any's), a RANGE, and any object carrying a hash inside (Date, DateTime,
+    // Supply, Promise) or none at all (a plain class instance, whose `.values` is
+    // the one-element list of itself).
+    if (m == "values") {
+        if (inv.t == VT::Array) return inv.s == "Seq";
+        if (inv.t == VT::Hash) {
+            static const std::set<std::string> hashy = {
+                "", "Hash", "Map", "Stash", "Set", "SetHash",
+                "Bag", "BagHash", "Mix", "MixHash"};
+            return !hashy.count(inv.hashKind);
+        }
+        return inv.t != VT::Pair && inv.t != VT::Match;
+    }
     if (m == "keys" || m == "kv" || m == "pairs" || m == "antipairs" || m == "invert")
         return inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil;
     return false;
