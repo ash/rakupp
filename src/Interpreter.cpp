@@ -30400,6 +30400,25 @@ Value Interpreter::evalBinary(Binary* b) {
             auto bit = builtins_.find(fname);
             if (bit != builtins_.end() && builtinVisible(fname)) return bit->second(*this, one);
         }
+        // `… ==> §2` — the target written as a PREFIX OPERATOR. A user-defined
+        // prefix parses as a Unary, not a Call, so the feed had no arm for it
+        // and fell through to the container arm: "Target is not assignable".
+        // It is the same call as every other feed target, and the fed value
+        // joins its argument list at the end — `5 ==> §2` is `prefix:<§>(2, 5)`.
+        // (A user-defined POSTFIX already parses as a Call named `postfix:<!>`,
+        // so `5 ==> 2!` came out right all along.)
+        if (dstE->kind == NK::Unary && !static_cast<Unary*>(dstE)->postfix) {
+            auto* u = static_cast<Unary*>(dstE);
+            if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">")) {
+                ValueList args{eval(u->operand.get()), src};
+                return callCallable(*f, std::move(args));
+            }
+            // Every BUILT-IN prefix is unary, so the fed value is one positional
+            // too many — which is the complaint Rakudo makes for `4 ==> -2`, and
+            // a truer one than the container arm's.
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Too many positionals passed; expected 1 argument but got 2"};
+        }
         if (dstE->kind == NK::Call) { // append the fed value as the trailing argument
             auto* c = static_cast<Call*>(dstE);
             ValueList args = evalArgs(c->args);
