@@ -1738,7 +1738,9 @@ static const FlagDoc kFlagDocs[] = {
     {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
     {"-o", 2, "FILE", "output file (compile modes, --target=js, --cpp)"},
     {"-O", 0, nullptr, "optimize (compile modes)"},
-    {"--jit", 1, "off on sync verbose stats nocache threshold=", "compile hot loops while the program runs (off by default)"},
+    {"--jit", 1, "off on sync verbose stats nocache pch threshold=", "compile hot loops while the program runs (off by default)"},
+    {"--jit-info", 0, nullptr, "what is in the JIT kernel cache"},
+    {"--jit-clean", 0, nullptr, "empty the JIT kernel cache"},
     {"-h", 0, nullptr, "help"},
     {"--help", 0, nullptr, "help"},
     {"-v", 0, nullptr, "version, build and platform, on one line"},
@@ -2151,7 +2153,7 @@ int main(int argc, char** argv) {
     // wherever they appear and validated once the mode is known, so
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, VersionFull, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
-                      PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
+                      PrecompSetting, PrecompInfo, PrecompClean, JitInfo, JitClean, Check, Lint,
                       Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Fmt };
     Mode mode = Mode::Run;
     // --rakuast=tree drops the source column; =attrs adds the scalar
@@ -2410,6 +2412,8 @@ int main(int argc, char** argv) {
             }
             if (a == "--precomp-info")  { if (!setMode(Mode::PrecompInfo, a)) return 4; continue; }
             if (a == "--precomp-clean") { if (!setMode(Mode::PrecompClean, a)) return 4; continue; }
+            if (a == "--jit-info")  { if (!setMode(Mode::JitInfo, a)) return 4; continue; }
+            if (a == "--jit-clean") { if (!setMode(Mode::JitClean, a)) return 4; continue; }
             if (a == "-c")     { if (!setMode(Mode::Check, a)) return 4; continue; }
             if (a == "--lint") { if (!setMode(Mode::Lint, a)) return 4; continue; }
             if (a == "--cpp" || a == "--emit-cpp") { if (!setMode(Mode::Cpp, "--cpp")) return 4; continue; }
@@ -2638,7 +2642,8 @@ int main(int argc, char** argv) {
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
             (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::RakuAst || mode == Mode::AstRoundtrip ||
-             mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean))
+             mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean ||
+             mode == Mode::JitInfo || mode == Mode::JitClean))
             return illegalOpt("-M");
         if (haveF && mode != Mode::Run) return illegalOpt("-F");
         // --profile is for interpreted runs; a compiled binary has no
@@ -2769,9 +2774,11 @@ int main(int argc, char** argv) {
 "  --jit[=SPEC]                 Compile hot loops to native code WHILE the program\n"
 "                               runs, and enter them mid-loop. Off by default; needs\n"
 "                               a C++ compiler, as --exe does. SPEC is a comma list:\n"
-"                               off, sync, verbose, stats, nocache, threshold=N.\n"
-"                               Kernels cache under ~/.cache/rakupp/jit, so it is\n"
-"                               the SECOND run of a program that starts fast\n"
+"                               off, sync, verbose, stats, nocache, pch,\n"
+"                               threshold=N. Kernels cache under\n"
+"                               ~/.cache/rakupp/jit (~50 KB each), so it is the\n"
+"                               SECOND run of a program that starts fast\n"
+"  --jit-info / --jit-clean     What is in the JIT kernel cache / empty it\n"
 "  -q, --quiet                  Drop the lines a mode prints about itself: `Syntax\n"
 "                               OK`, the lint summary, `Compiled …`, the installer's\n"
 "                               progress and `already installed:`, the REPL banner.\n"
@@ -3242,6 +3249,15 @@ int main(int argc, char** argv) {
         if (!g_quiet)
             std::cout << key << " = " << (on ? "on" : "off")
                       << "   (saved in " << precompConfigPath() << ")\n";
+        return 0;
+    }
+    if (mode == Mode::JitInfo || mode == Mode::JitClean) {
+        if (mode == Mode::JitInfo) { rakupp::jit::info(); return 0; }
+        std::string dir = rakupp::jit::cacheDir();
+        auto [n, bytes] = rakupp::jit::clean();
+        if (!g_quiet)
+            std::cout << "removed " << n << " file" << (n == 1 ? "" : "s")
+                      << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
         return 0;
     }
     if (mode == Mode::PrecompInfo || mode == Mode::PrecompClean) {

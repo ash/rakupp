@@ -12,6 +12,7 @@
 // given, and every call site in the interpreter tests it first, so a default run
 // reaches none of this code and pays one never-taken branch per loop iteration.
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rakupp {
@@ -30,6 +31,7 @@ struct Options {
     bool verbose = false;     // narrate decisions to stderr
     bool stats = false;       // one summary line at exit
     bool cache = true;        // read/write ~/.cache/rakupp/jit
+    bool pch = false;         // build a precompiled header (31 MB, halves each compile)
     unsigned threshold = 1000;// iterations before a loop is considered hot
 };
 
@@ -91,6 +93,12 @@ bool runIfReady(Site* s, Interpreter& I, Env* env);
 
 // Print the `--jit=stats` summary. Called at exit.
 void report();
+
+// `--jit-info` / `--jit-clean`. Neither needs configure() to have run: they are
+// about the directory on disk, not about a run. `clean` returns (files, bytes).
+std::string cacheDir();
+void info();
+std::pair<unsigned long long, unsigned long long> clean();
 
 }  // namespace jit
 }  // namespace rakupp

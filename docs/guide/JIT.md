@@ -89,14 +89,30 @@ a program that finishes faster than that gets no benefit from its own first
 run — the cache is what makes the *second* run fast. Programs get faster the
 more often you run them.
 
-Nothing is written to your disk unless you pass the flag. `--jit=nocache`
-bypasses the cache at both ends; deleting the directory is always safe.
+Nothing is written to your disk unless you pass the flag. A kernel is about
+50 KB; the 710-program test corpus leaves 40 of them, just under 2 MB in total.
 
-**Most of what is in there is the precompiled header, not your kernels** — one
-file of about 30 MB per build of rakupp, against roughly 50 KB for a kernel. It
-is what halves every compile, and an old one becomes dead weight the moment you
-rebuild rakupp, so the directory is worth emptying occasionally if you build
-often.
+```bash
+rakupp --jit-info      # what is in there
+rakupp --jit-clean     # empty it; always safe, it is rebuilt on demand
+```
+
+`--jit=nocache` bypasses the cache at both ends.
+
+### The precompiled header is opt-in, and why
+
+`--jit=pch` builds a compiled snapshot of the runtime headers and reuses it for
+every later compile, which takes a kernel from 0.83 s to 0.55 s. It costs
+**about 30 MB, per build of rakupp**, which is a poor trade for a program with
+one hot loop: the saving is taken once, in the background, where nobody is
+waiting for it. So it is off unless you ask.
+
+Ask for it when you are compiling *many* kernels at once — a test sweep, a
+batch of programs — where 0.28 s each adds up to minutes.
+
+A header belongs to one build of rakupp and is never read again after you
+rebuild. Building a new one removes the old, so the directory holds at most one,
+and `--jit-clean` removes that.
 
 ## The spec words
 
@@ -108,6 +124,7 @@ often.
 | `--jit=verbose` | narrate every decision to stderr |
 | `--jit=stats` | one summary line at exit |
 | `--jit=nocache` | never read or write the kernel cache |
+| `--jit=pch` | build a precompiled header: each compile 0.83 s → 0.55 s, at ~30 MB per build of rakupp |
 | `--jit=threshold=N` | iterations before a loop counts as hot |
 
 They combine: `--jit=sync,verbose,threshold=0` compiles every eligible loop on
@@ -139,9 +156,8 @@ the compiled backends' shared limit, answered a little more usefully here.
   found the same way (`$CXX`, else `c++`/`clang++`/`g++`). Without one, rakupp
   says so once and runs interpreted.
 - **macOS and Linux.** Windows needs its own loader path and is not done.
-- The first compile of a session also builds a precompiled header, once per
-  build of rakupp, which takes about a second in the background.
 - One compile runs at a time.
+- A kernel takes about 0.83 s to compile, or 0.55 s with `--jit=pch`.
 
 ## Seeing what it did
 

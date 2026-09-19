@@ -1578,6 +1578,22 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ok(jit-run('-c', '--jit', '-e', '1')[0].contains('Syntax OK'), '--jit after a mode is legal');
         ok(jit-run('--jit', '--cpp', '-e', 'say 1')[0].contains('#include'),
            '--jit is accepted, and ignored, by a mode that never runs the program');
+
+        # The cache is small by DEFAULT. The precompiled header halves every
+        # kernel compile and costs 31 MB per build of rakupp, which is the wrong
+        # trade for a program with one hot loop — so it is opt-in, and this is
+        # the check that keeps it that way.
+        my @f = $jdir.e ?? $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat !! ();
+        ok(!@f.grep(*.extension eq 'pch'), '--jit writes no precompiled header unless asked');
+        jit-run('--jit=sync,pch,nocache,threshold=0', '-e', $prog);
+        my @g = $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat;
+        ok(?@g.grep(*.extension eq 'pch'), '--jit=pch builds one when it is');
+
+        my ($io, $ie, $ix) = jit-run('--jit-info');
+        ok($ix == 0 && $io.contains('precompiled header'), '--jit-info reports what is cached');
+        my ($co, $ce, $cx) = jit-run('--jit-clean');
+        ok($cx == 0 && $co.contains('removed'), '--jit-clean empties it');
+        ok(!$jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat.elems, 'and leaves nothing behind');
     }
 
     # --stagestats: the phases, and every module load

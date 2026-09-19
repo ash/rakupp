@@ -90,6 +90,7 @@ checking exit status. Re-measured with the status checked:
 | `-O2` compile of a kernel TU, no PCH | 0.81 s |
 | build a PCH of `Interpreter.h` (once per version+compiler) | 0.80 s |
 | `-O2` compile of a kernel TU against that PCH | **0.40 s** |
+| the same, measured again at the end of the batch: without / with | 0.83 s / 0.55 s |
 | link the object into a `.dylib` | 0.03 s |
 | a TRIVIAL TU against the same PCH — the floor | 0.36 s |
 | the same kernel at `-O0` | 0.01 s |
@@ -150,6 +151,7 @@ below measures that cost against zero.
 | `stats` | one summary line at exit |
 | `threshold=N` | iterations before a loop is considered hot |
 | `nocache` | never read or write the on-disk kernel cache |
+| `pch` | build a precompiled header — opt-in, see *The header is opt-in* |
 
 Per [[rakupp-cli-flags]] the flag is accepted by every mode and position-
 independently; it is *acted on* only where a program is interpreted. In
@@ -164,6 +166,13 @@ subtree must pass a whitelist walk:
 
 - **Statements:** `ExprStmt`, `IfStmt` (with `elsif`/`else`), `Block`,
   nested `WhileStmt`/`LoopStmt`, unlabelled `LastStmt`/`NextStmt`.
+- **A comma list in a C-style loop's header only** — `loop ($r = $c, $i = $C,
+  $k = 0; …; …)`, where the comma is a sequence of side effects and the list
+  value is discarded. Added after the first landing, because it was the single
+  thing keeping `examples/mandel.raku` entirely interpreted: with it, that
+  file's innermost loop tiers up (90 → 60 ms whole-program, output byte-identical
+  to both the interpreter and Rakudo). A `ListExpr` anywhere else is still
+  refused — nothing here admits a list into a scalar slot.
 - **Expressions:** integer/number/string literals, plain `$`-sigil variable
   references with no twigil, assignment and compound assignment to those,
   binary and unary operators, `++`/`--`, ternary.
@@ -284,6 +293,30 @@ second, from the cache.
   hoisted variable static analysis cannot prove numeric, a monomorphic multi
   call turned into a guarded direct call — that is where a JIT passes an AOT
   compiler on a dynamic language, and it needs the deopt path v1 does without.
+
+### The header is opt-in, and the default cache is small
+
+A precompiled header of `Interpreter.h` takes a kernel compile from 0.83 s to
+0.55 s. It is also **31 MB, per build of rakupp**, and the first version of this
+work had it on by default. One afternoon of rebuilding left three of them —
+91 MB — in `~/.cache/rakupp/jit`, which is how the defect was found: the user
+saw the directory, not a benchmark.
+
+The trade is bad for the ordinary case and good for the unusual one. A program
+with one hot loop pays 31 MB to save 0.28 s, once, in the background, where
+nobody is waiting. A sweep that compiles hundreds of kernels saves minutes. So
+it is `--jit=pch`, off unless asked, and building one now removes any header an
+earlier build left, so the directory holds at most one.
+
+What the default leaves behind is a kernel per hot loop at about 50 KB: the
+710-program gate corpus produces 40 of them, just under 2 MB. `--jit-info`
+reports it and `--jit-clean` empties it, mirroring `--precomp-info` /
+`--precomp-clean`.
+
+The general lesson is worth keeping separate from the specific one. **An
+optimisation that spends the user's disk is not free just because it is
+measured in time**, and the measurement that justified this one — halve the
+compile — never looked at what it cost.
 
 ## Where it stands
 

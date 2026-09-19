@@ -26,9 +26,11 @@
 #include <cstring>
 #include <cctype>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <utility>
 #include <set>
 #include <sstream>
 #include <string>
@@ -174,6 +176,7 @@ struct Scan {
         if (seen.insert(n).second) slots.push_back(n);
     }
     void expr(Expr* e);
+    void headerExpr(Expr* e);
     void stmt(Stmt* s);
     void block(Block* b, bool ownScope);
 };
@@ -255,6 +258,22 @@ void Scan::expr(Expr* e) {
     }
 }
 
+// A C-style loop's init and step, where a COMMA is a sequence of side effects
+// rather than a list value: `loop ($r = $c, $i = $C, $k = 0; …; …)`. The list
+// itself is discarded in both positions, so what has to be whitelisted is each
+// element, and nothing here admits a list into a scalar slot — a `ListExpr`
+// anywhere else is still refused. This is the shape the Parrot-descended
+// Mandelbrot in examples/ is written in, and it was the only thing standing
+// between its innermost loop (where nearly all of its time goes) and a kernel.
+void Scan::headerExpr(Expr* e) {
+    if (!err.empty() || !e) return;
+    if (e->kind == NK::ListExpr) {
+        for (auto& it : static_cast<ListExpr*>(e)->items) { expr(it.get()); if (!err.empty()) return; }
+        return;
+    }
+    expr(e);
+}
+
 void Scan::block(Block* b, bool ownScope) {
     if (!b) return;
     if (!b->phaser.empty() || b->isCatch) { fail("a phaser or CATCH block"); return; }
@@ -311,9 +330,9 @@ void Scan::stmt(Stmt* s) {
             // interpreter has already run it) — see emitJitKernel — but its
             // names are still locals of the kernel, which this models correctly.
             scopes.push_back({});
-            expr(l->init.get());
+            headerExpr(l->init.get());
             expr(l->cond.get());
-            expr(l->incr.get());
+            headerExpr(l->incr.get());
             block(l->body.get(), true);
             scopes.pop_back();
             return;
@@ -387,12 +406,74 @@ const std::string& buildId() {
     return id;
 }
 
+// Every regular file under the cache, as (path, bytes). One level of fan-out
+// directories plus the headers at the top, which is the whole layout.
+std::vector<std::pair<std::string, unsigned long long>> cacheFiles() {
+    std::vector<std::pair<std::string, unsigned long long>> out;
+    std::string dir = jitDir();
+    if (dir.empty()) return out;
+    auto add = [&](const std::string& path) {
+        struct stat st {};
+        if (::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            out.push_back({path, (unsigned long long)st.st_size});
+    };
+    auto walk = [&](const std::string& d, bool descend) {
+        DIR* h = ::opendir(d.c_str());
+        if (!h) return;
+        while (struct dirent* e = ::readdir(h)) {
+            std::string n = e->d_name;
+            if (n == "." || n == "..") continue;
+            std::string full = d + "/" + n;
+            struct stat st {};
+            if (::stat(full.c_str(), &st) != 0) continue;
+            if (S_ISDIR(st.st_mode)) { if (descend) { DIR* h2 = ::opendir(full.c_str());
+                    if (h2) { while (struct dirent* e2 = ::readdir(h2)) {
+                            std::string n2 = e2->d_name;
+                            if (n2 == "." || n2 == "..") continue;
+                            add(full + "/" + n2);
+                        } ::closedir(h2); } } }
+            else add(full);
+        }
+        ::closedir(h);
+    };
+    walk(dir, true);
+    return out;
+}
+
+// A header belongs to ONE build of rakupp, and a rebuild orphans it. Nothing
+// ever reads an orphan again, so it is removed when its replacement is built —
+// which keeps the directory at one header rather than one per build ever run.
+void pruneStalePch(const std::string& keep) {
+    std::string dir = jitDir();
+    if (dir.empty()) return;
+    DIR* h = ::opendir(dir.c_str());
+    if (!h) return;
+    while (struct dirent* e = ::readdir(h)) {
+        std::string n = e->d_name;
+        if (n.rfind("rt-", 0) != 0) continue;
+        if (n.size() < 5 || n.substr(n.size() - 4) != ".pch") continue;
+        std::string full = dir + "/" + n;
+        if (full == keep) continue;
+        ::remove(full.c_str());
+        note("removed a precompiled header left by an earlier build: " + n);
+    }
+    ::closedir(h);
+}
+
 // The precompiled header. Built once per (compiler, headers, binary) and reused
 // by every kernel afterwards: it is what turns a 1.2 s compile into a 30 ms one,
 // which is the difference between a build step and a JIT. clang only — GCC's
 // PCH works by a different rule, and without one a kernel still compiles, just
 // slower, so the lane is skipped rather than emulated.
 std::string pchPath() {
+    // OPT-IN, and the reason is the size. A header is 31 MB and saves 0.28 s on
+    // each kernel compile — worth it for a sweep that compiles hundreds of
+    // kernels, and a very poor trade for someone whose program has one hot loop
+    // and who would be left with 31 MB per build of rakupp for a saving taken
+    // once, in the background, where nobody is waiting for it. The first draft
+    // of this file had it on by default and left THREE headers, 91 MB, in one
+    // afternoon of rebuilding.
+    if (!g_opt.pch) return "";
     if (!g_clang) return "";
     std::string dir = jitDir();
     if (dir.empty()) return "";
@@ -406,6 +487,7 @@ std::string ensurePch() {
     if (p.empty()) return "";
     if (fileThere(p)) return p;
     mkdirs(jitDir());
+    pruneStalePch(p);
     std::string tmp = p + "." + std::to_string((long long)::getpid()) + ".tmp";
     // As with a kernel, the publish belongs to the shell command: a program that
     // exits before this 0.8 s build finishes would otherwise leave the .tmp
@@ -504,11 +586,11 @@ void examine(Site* s) {
             // kernel was entered — so the variables it declared already exist
             // in the frame and the kernel binds them as slots.
             sc.declIsSlot = true;
-            sc.expr(l->init.get());
+            sc.headerExpr(l->init.get());
             sc.declIsSlot = false;
             sc.declRefused = true;
             sc.expr(l->cond.get());
-            sc.expr(l->incr.get());
+            sc.headerExpr(l->incr.get());
             sc.declRefused = false;
             sc.block(l->body.get(), true);
         }
@@ -593,6 +675,8 @@ std::string parseSpec(const std::string& spec, Options& out) {
             else if (w == "verbose") out.verbose = true;
             else if (w == "stats") out.stats = true;
             else if (w == "nocache") out.cache = false;
+            else if (w == "pch") out.pch = true;
+            else if (w == "nopch") out.pch = false;
             else if (w.rfind("threshold=", 0) == 0) {
                 std::string n = w.substr(10);
                 if (n.empty() || n.find_first_not_of("0123456789") != std::string::npos)
@@ -600,7 +684,7 @@ std::string parseSpec(const std::string& spec, Options& out) {
                 out.threshold = (unsigned)std::strtoul(n.c_str(), nullptr, 10);
             } else {
                 return "--jit: unknown spec word '" + w +
-                       "' (known: off, on, sync, verbose, stats, nocache, threshold=N)";
+                       "' (known: off, on, sync, verbose, stats, nocache, pch, threshold=N)";
             }
         }
         if (j == std::string::npos) break;
@@ -759,6 +843,58 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
     I.restoreTestLine(s->loop->line);
     fn(&I, slots.empty() ? nullptr : slots.data());
     return true;
+}
+
+std::string cacheDir() { return jitDir(); }
+
+std::pair<unsigned long long, unsigned long long> clean() {
+    unsigned long long n = 0, bytes = 0;
+    for (auto& f : cacheFiles()) { if (::remove(f.first.c_str()) == 0) { n++; bytes += f.second; } }
+    // The fan-out directories are empty now; leave the root, which is where the
+    // next run will write.
+    std::string dir = jitDir();
+    if (!dir.empty()) {
+        if (DIR* h = ::opendir(dir.c_str())) {
+            while (struct dirent* e = ::readdir(h)) {
+                std::string nm = e->d_name;
+                if (nm == "." || nm == "..") continue;
+                ::rmdir((dir + "/" + nm).c_str());   // fails harmlessly on a file
+            }
+            ::closedir(h);
+        }
+    }
+    return {n, bytes};
+}
+
+void info() {
+    std::string dir = jitDir();
+    if (dir.empty()) { std::cout << "JIT kernel cache unavailable: no HOME, so there is nowhere to put one\n"; return; }
+    auto files = cacheFiles();
+    unsigned long long kernels = 0, kBytes = 0, heads = 0, hBytes = 0, other = 0, oBytes = 0;
+    for (auto& f : files) {
+        const std::string& p2 = f.first;
+        bool isPch = p2.size() > 4 && p2.substr(p2.size() - 4) == ".pch";
+        bool isKernel = p2.size() > 3 && (p2.find(".dylib") != std::string::npos ||
+                                          p2.find(".so") != std::string::npos ||
+                                          p2.find(".dll") != std::string::npos);
+        if (isPch)         { heads++;   hBytes += f.second; }
+        else if (isKernel) { kernels++; kBytes += f.second; }
+        else               { other++;   oBytes += f.second; }
+    }
+    auto kb = [](unsigned long long b) { return (b + 1023) / 1024; };
+    std::cout << dir << "\n";
+    if (files.empty()) { std::cout << "empty\n"; return; }
+    std::cout << "  kernels:            " << kernels << "  (" << kb(kBytes) << " KB)\n"
+              << "  precompiled header: " << heads << "  (" << kb(hBytes) << " KB)\n";
+    if (other) std::cout << "  other:              " << other << "  (" << kb(oBytes) << " KB)\n";
+    std::cout << "\n" << files.size() << " file" << (files.size() == 1 ? "" : "s") << ", "
+              << kb(kBytes + hBytes + oBytes) << " KB total\n";
+    if (heads > 1)
+        std::cout << heads << " headers means " << (heads - 1) << " left by earlier builds of rakupp. "
+                     "Each belongs to one build and is never read again; --jit-clean removes them.\n";
+    else if (heads == 1)
+        std::cout << "The header is most of that. It is optional (--jit=pch) and halves each "
+                     "kernel compile; --jit-clean removes it and it is rebuilt only if asked for again.\n";
 }
 
 void report() {

@@ -661,7 +661,8 @@ it cannot disagree with it about what your program means.
 The first run of a program pays for the compile and usually finishes before it
 arrives; the kernel is cached under `~/.cache/rakupp/jit`, so it is the second
 and later runs that get faster. Nothing is written to your disk unless you pass
-the flag.
+the flag, and a kernel is about 50 KB. `rakupp --jit-info` says what is cached
+and `rakupp --jit-clean` empties it.
 
 `--jit=SPEC` takes a comma-separated list:
 
@@ -672,6 +673,7 @@ the flag.
 | `verbose` | say what tiered up, and why a loop did not |
 | `stats` | one summary line at exit |
 | `nocache` | never read or write the kernel cache |
+| `pch` | a precompiled header: each compile 0.83 s → 0.55 s, at ~30 MB per build of rakupp |
 | `threshold=N` | iterations before a loop counts as hot (default 1000) |
 
 **What tiers up today is deliberately narrow.** A `while` or C-style `loop`
