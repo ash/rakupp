@@ -79,6 +79,11 @@ struct Site;
 
 // The site for this loop node, or null when the loop is not a candidate. The
 // eligibility walk runs once per node; the answer is remembered on the site.
+//
+// A `while`, a C-style `loop`, and a `for` whose iteration source is an Int
+// Range — the interpreter asks about the third only from the counted fast path
+// that already walks a machine integer from `lo` to `hi`, so what tiers up is
+// that counter and not the general `for`.
 Site* siteFor(Stmt* loop);
 
 // Entering / leaving a candidate loop, so a tripped counter can attribute the
@@ -101,6 +106,16 @@ struct LoopGuard {
 
 // One iteration went by. Trips the threshold and requests a compile.
 void tick(Site* s);
+
+// Is a kernel published and ready to enter? A cheap atomic load, for the one
+// call site that must build a frame before it can call `runIfReady` at all.
+bool isReady(Site* s);
+
+// The name a counted `for`'s kernel reads its end bound from. The interpreter
+// defines it, with the loop variable, in the frame it hands to `runIfReady`.
+// See the comment on it in Jit.cpp: a `for` over an Int Range is lowered as the
+// C-style loop it already is, and that loop needs its limit from somewhere.
+const char* countedForEndSlot();
 
 // A kernel is published for this site: bind its slots against `env` and run it.
 // Returns true when the kernel ran the loop to completion and the interpreter

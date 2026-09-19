@@ -85,6 +85,14 @@ enum State : int { StNew = 0, StEligible = 1, StCompiling = 2, StReady = 3,
 
 struct Site {
     Stmt* loop = nullptr;
+    // What the EMITTER and the lowerer walk. For a `while` or a C-style `loop`
+    // it is `loop` itself. For a `for` over an Int Range it is the synthetic
+    // counted loop built below: the interpreter is standing in a ForStmt, but
+    // what tiers up is the `loop (; $i <= END; $i++)` that its fast path is
+    // already running. Line numbers and every message stay with `loop`, so
+    // `--jit=verbose` names the line the user wrote.
+    Stmt* emit = nullptr;
+    bool countedFor = false;          // `emit` is synthetic; entry binds two extra names
     std::atomic<unsigned> count{0};
     std::atomic<int> state{StNew};
     std::atomic<KernelFn> fn{nullptr};
@@ -99,6 +107,15 @@ struct Site {
     std::atomic<cnp::Kernel*> cnpKernel{nullptr};
     std::atomic<bool> notedThreads{false};   // the "a worker is live" line, said once
 };
+
+// The name a counted `for`'s synthetic condition reads its end bound from. It
+// is defined by the interpreter in a frame of its own at kernel entry and dies
+// with that frame, so it shadows anything of the same name for the kernel's
+// duration and is invisible before and after. A body that spells this name
+// itself would bind to the bound instead of its own variable — which is why it
+// is spelled like nothing anyone writes.
+const char* kCountedForEnd = "$__jit_for_end";
+const char* countedForEndSlot() { return kCountedForEnd; }
 
 namespace {
 
@@ -173,6 +190,13 @@ struct Scan {
     // parameter is the single most common shape there is — `sub f($n) { while
     // $i < $n {…} }` — and refusing it cost every loop in a routine.
     std::set<std::string> written;
+    // The counted `for`'s loop variable. `$_` is refused everywhere else —
+    // plainScalar says so, because the topic is frame state and not a lexical —
+    // but for `for 1 .. N { … $_ … }` the interpreter hands the kernel a frame
+    // of its own with the topic defined in it, and nothing else can reach that
+    // frame, because the whitelist admits no calls. So here, and only here, the
+    // topic IS a lexical. Empty for every other loop shape.
+    std::string countedVar;
 
     void fail(const std::string& m) { if (err.empty()) err = m; }
     bool declaredHere(const std::string& n) const {
@@ -208,7 +232,8 @@ void Scan::expr(Expr* e) {
         }
         case NK::VarExpr: {
             auto* v = static_cast<VarExpr*>(e);
-            if (!plainScalar(v->name)) { fail("variable " + v->name); return; }
+            const bool isCounted = !countedVar.empty() && v->name == countedVar;
+            if (!plainScalar(v->name) && !isCounted) { fail("variable " + v->name); return; }
             if (v->declare && declRefused) { fail("a declaration in this loop's header"); return; }
             if (v->declare && declIsSlot) { useName(v->name); return; }
             if (v->declare) {
@@ -573,6 +598,44 @@ KernelFn buildAndLoad(const std::string& src, const std::string& fnName) {
     return fn;
 }
 
+// `for 1 .. N -> $i { … }` is `loop (; $i <= N; $i++) { … }` with the init
+// already run: the interpreter's own Range fast path walks a `long long` from
+// `lo` to `hi`, which is a counted loop in every respect but its spelling. This
+// builds that spelling once per loop node, so the scan, the C++ emitter and the
+// copy-and-patch lowerer all see a shape they already handle and none of the
+// three needs to learn a new statement kind.
+//
+// The node is LEAKED, exactly as the Site that owns it is, and that is what
+// makes the borrowed body safe: `body` points at the real ForStmt's block, and
+// running ~LoopStmt would free a block the interpreter is still executing. No
+// destructor ever runs, so it never happens. Anything that later gives Sites a
+// destructor has to release this pointer first.
+LoopStmt* synthCountedLoop(ForStmt* fs, const std::string& var) {
+    // VarExpr's constructor takes the name: it primes the attribute cache from
+    // it, which assigning to `name` afterwards would not.
+    auto mkVar = [&](const std::string& n) {
+        auto* v = new VarExpr(n);
+        v->line = fs->line;
+        return v;
+    };
+    auto* cond = new Binary();
+    cond->op = "<=";
+    cond->line = fs->line;
+    cond->lhs.reset(mkVar(var));
+    cond->rhs.reset(mkVar(kCountedForEnd));
+    auto* incr = new Unary();
+    incr->op = "++";
+    incr->postfix = true;
+    incr->line = fs->line;
+    incr->operand.reset(mkVar(var));
+    auto* lp = new LoopStmt();
+    lp->line = fs->line;
+    lp->cond.reset(cond);
+    lp->incr.reset(incr);
+    lp->body.reset(fs->body.get());   // BORROWED — see above
+    return lp;
+}
+
 // ---- eligibility + emission (interpreter thread) ---------------------------
 
 // Walk a candidate loop and, if it passes, emit its kernel source. Runs on the
@@ -613,6 +676,55 @@ void examine(Site* s) {
             sc.declRefused = false;
             sc.block(l->body.get(), true);
         }
+    } else if (loop->kind == NK::ForStmt) {
+        // The interpreter installs a site here ONLY from its counted Int-Range
+        // fast path, so the source of the iteration is already known to be a
+        // range of machine integers. What is left to ask about is the BINDING.
+        auto* fs = static_cast<ForStmt*>(loop);
+        const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+        if (!loop->label.empty() || fs->asExpr || fs->modifier || fs->destructure ||
+            fs->rwVars || !fs->params.empty() || fs->vars.size() > 1)
+            sc.fail("a loop shape the JIT does not take");
+        else if (var != "$_" && !plainScalar(var))
+            sc.fail("loop variable " + var);
+        // The topic form, `for 1 .. N { … $_ … }`, is the copy-and-patch
+        // backend's alone. The two share this whitelist in every other respect,
+        // and this is the one place they cannot: the C++ backend emits a kernel
+        // through the SAME Codegen `--exe` uses, and Codegen does not resolve
+        // `$_` to a lexical at all — it emits the enclosing topic, or
+        // `RT.dynVarRef("$_")` when there is no enclosing topic to emit, which
+        // in a kernel there never is. So the slot bound under that name is
+        // written by the synthetic `$_++` and read by nothing, while the body
+        // reads whatever the interpreter's live topic happens to hold.
+        //
+        // That answers WRONG rather than failing: `for 1 .. 20 { $u = $u + $_ }`
+        // printed 211 against the interpreter's 210, because the kernel picked
+        // up the topic the last interpreted iteration left behind and ran the
+        // whole range again from there. The differential gate caught it; nothing
+        // about it looks like a failure from outside, which is the outcome this
+        // whitelist exists to make impossible. Lowering `$_` for that backend
+        // means giving Codegen a way to bind a topic to a name, and that is its
+        // own piece of work.
+        else if (var == "$_" && g_opt.backend != Backend::Cnp)
+            sc.fail("the topic as a loop variable, which this backend emits as the live topic");
+        else {
+            LoopStmt* lp = synthCountedLoop(fs, var);
+            sc.countedVar = var;
+            // The BODY is walked first, before the synthetic header marks the
+            // loop variable written, so that `written` can answer one question
+            // the other loop shapes never have to: a `for` variable is a
+            // READ-ONLY binding (`for 1..3 -> $i { $i = 9 }` is an error), and
+            // the kernel would assign it like any other slot. A body that
+            // writes it is refused rather than quietly given a mutable one.
+            sc.block(lp->body.get(), true);
+            if (sc.err.empty() && sc.written.count(var))
+                sc.fail("an assignment to the loop variable, which a `for` binds read-only");
+            sc.declRefused = true;
+            sc.expr(lp->cond.get());
+            sc.headerExpr(lp->incr.get());
+            sc.declRefused = false;
+            if (sc.err.empty()) { s->emit = lp; s->countedFor = true; }
+        }
     } else {
         sc.fail("not a while/loop");
     }
@@ -638,7 +750,7 @@ void examine(Site* s) {
     // later, so emitting C++ here would be work thrown away.
     if (g_opt.backend == Backend::Cxx) {
         try {
-            s->src = emitJitKernel(loop, fnName, s->slots);
+            s->src = emitJitKernel(s->emit, fnName, s->slots);
         } catch (const CodegenError& e) {
             s->why = e.msg;
             s->state.store(StIneligible, std::memory_order_release);
@@ -665,7 +777,7 @@ void startCompile(Site* s) {
         // file. That is also why the threshold this backend runs at is two
         // orders of magnitude below the C++ one.
         std::string why;
-        cnp::Kernel* k = cnp::compile(s->loop, s->slots, why);
+        cnp::Kernel* k = cnp::compile(s->emit, s->slots, why);
         if (!k) {
             s->why = why;
             s->state.store(StFailed, std::memory_order_release);
@@ -822,7 +934,8 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
 }
 
 Site* siteFor(Stmt* loop) {
-    if (loop->kind != NK::WhileStmt && loop->kind != NK::LoopStmt) return nullptr;
+    if (loop->kind != NK::WhileStmt && loop->kind != NK::LoopStmt &&
+        loop->kind != NK::ForStmt) return nullptr;
     if (Site* s = (Site*)loop->jitSite.get()) return s;
     // Two threads can meet the same loop node at once under RAKUPP_PARALLEL.
     // `publish` is a compare-exchange, so exactly one Site is ever installed and
@@ -830,6 +943,7 @@ Site* siteFor(Stmt* loop) {
     // every other PublishedOnce slot in this tree uses.
     Site* mine = new Site();
     mine->loop = loop;
+    mine->emit = loop;                // replaced by the synthetic loop for a `for`
     Site* won = (Site*)loop->jitSite.publish(mine);
     if (won != mine) { delete mine; return won; }
     std::lock_guard<std::mutex> lk(g_mu);
@@ -894,6 +1008,13 @@ bool refuse(Site* s, const std::string& why) {
 // nothing inside the kernel can insert into a scope the kernel did not create
 // (an insert is the only thing that moves a map entry, and a pad never grows at
 // all); and each slot is refused below unless its container is a plain one.
+// Is a kernel published for this site? The counted-`for` entry has to know
+// before it builds the frame the kernel wants, because building that frame
+// costs an allocation and the answer is "no" on every iteration but one.
+bool isReady(Site* s) {
+    return s && s->state.load(std::memory_order_acquire) == StReady;
+}
+
 bool runIfReady(Site* s, Interpreter& I, Env* env) {
     if (!s) return false;
     if (s->state.load(std::memory_order_acquire) != StReady) return false;

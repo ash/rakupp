@@ -24,12 +24,12 @@ pointed at one loop instead of a whole program.
 
 ## What happens
 
-1. **Counting.** Every `while`, `until` and C-style `loop` counts its
-   iterations. Nothing else does — a `for`, a `.map` and a `repeat` have no
-   counter, so they are never candidates, however hot they get. That is the
-   limit that decides whether either flag does anything at all on a given
-   program: see [How much of a program it reaches](#how-much-of-a-program-it-reaches)
-   below. The default threshold is 1000.
+1. **Counting.** Every `while`, `until`, C-style `loop`, and `for` over a
+   **Range of integers** counts its iterations. Nothing else does — a `for` over
+   anything else, a `.map` and a `repeat` have no counter, so they are never
+   candidates however hot they get. How much that leaves out is measured in
+   [How much of a program it reaches](#how-much-of-a-program-it-reaches) below.
+   The default threshold is 1000.
 2. **Checking.** A loop that goes hot is checked against a whitelist (below).
    A loop that fails it is marked and never looked at again.
 3. **Emitting.** The loop becomes a small C++ function, the same one `rakupp
@@ -80,48 +80,57 @@ The factors above are what a tiered loop is worth. This is how often a program
 has one. `--cnp=stats` over the 40 programs in `examples/` and `tools/bench/`
 that run without an argument:
 
-| | |
-|---|---:|
-| programs with no countable loop at all | 33 of 40 |
-| loops examined | 12 |
-| loops that passed the whitelist | 3 |
-| programs that entered a kernel | 2 |
+| | before `for` was counted | now |
+|---|---:|---:|
+| programs with no countable loop at all | 33 of 40 | **20 of 40** |
+| loops examined | 12 | 33 |
+| loops that passed the whitelist | 3 | 7 |
+| programs that entered a kernel | 2 | **6** |
 
-The 33 are step 1 above, not the whitelist: those programs iterate with `for`
-and `.map`, which are never counted. Counting the keywords across the Raku in
-this repo — `examples/`, `tools/`, `rakulib/`, `lib/` and `t/`, 904 files — by
-grep over source text, so proportions rather than exact loop counts:
+The left column is what this looked like when only `while`, `until` and the
+C-style `loop` were counted, and it is why `for` over a Range was the first
+widening taken: a `for` was not *refused*, it was never examined, and refusing
+things better would not have moved a single row of it.
+
+What is still never counted is the rest of how Raku iterates. Counting the
+keywords across the Raku in this repo — `examples/`, `tools/`, `rakulib/`,
+`lib/` and `t/`, 904 files — by grep over source text, so proportions rather
+than exact loop counts:
 
 | form | | counted? |
 |---|---:|---|
-| `for` | 2256 | no |
+| `for` | 2256 | **only over a Range of integers** |
 | `.map` / `.grep` | 966 | no |
 | `while` | 378 | yes, unless it is a statement modifier |
 | `until` | 72 | yes |
 | `loop (…)` | 43 | yes |
 | `repeat` | 26 | no |
 
-So roughly one iteration construct in eight is even looked at, and the
-whitelist below then refused 9 of the 12 that were. The same arithmetic written
-both ways is the whole of it:
+A `for` over an array, over `.kv`, over a lazy sequence or written as a
+statement modifier (`$f *= $_ for 1 .. 10000`) is still not a candidate, and
+neither is any `.map`. So the honest summary is that the most common *shape* is
+now reachable and the most common *sources* are not.
+
+Both spellings of a counted `for` tier up, and the same arithmetic written three
+ways now lands in the same place:
 
 | a 5M-iteration sum, same answer | plain | `--cnp` |
 |---|---:|---:|
-| `for 1 .. 5_000_000 { … }` | 0.98 s | 0.99 s |
-| `while $i <= 5_000_000 { … }` | 1.37 s | **0.03 s** |
+| `for 1 .. 5_000_000 -> $i { … }` | 0.95 s | **0.03 s** |
+| `for 1 .. 5_000_000 { … $_ … }` | 0.95 s | **0.03 s** |
+| `while $i <= 5_000_000 { … }` | 1.33 s | **0.03 s** |
 
-None of this makes a tiered loop worth less. Where one is built it is worth the
-factors in the table above, and on `tools/optbench/nummath.raku` — a `Num`
-kernel, which the `-O` lanes do not reach — `--cnp` runs the whole program in
-57 ms against `--exe -O`'s 178 ms. This is a statement about the trigger, not
-about the kernel.
+**The topic form is `--cnp`'s alone.** `for 1 .. N { … $_ … }` tiers up under
+`--cnp` and stays interpreted under `--jit`, which is the one place the two
+backends' eligibility lists differ. The reason is in the C++ backend rather
+than in the loop: it emits kernels through the same code generator `--exe`
+uses, and that generator does not resolve `$_` to a lexical — it emits the
+enclosing topic, and in a kernel there is none. `--jit=verbose` says so by
+name. The pointy form `-> $i` tiers up under both.
 
-Widening the trigger is ordinary work, and `for` over a `Range` is the first
-item on that list ([JIT-PLAN.md](../dev/plans/JIT-PLAN.md), "What tiers up, in
-v1"): a `for` over an Int range with one loop variable is a counted loop wearing
-different syntax, where a `for` over an arbitrary iterable is not. Until that
-lands, a program that iterates the way Raku programs usually iterate gets
-nothing from either flag, and `--cnp=stats` is how to tell in one line.
+Where a kernel is built it is worth the factors in the table above, and on
+`tools/optbench/nummath.raku` — a `Num` kernel, which the `-O` lanes do not
+reach — `--cnp` runs the whole program in 57 ms against `--exe -O`'s 178 ms.
 
 `tools/run-engines.raku` prints the per-kernel version of this across every
 engine, with a column saying whether each kernel was refused, never counted, or
@@ -129,8 +138,10 @@ built.
 
 ## What tiers up
 
-A `while`, `until` or C-style `loop`, unlabelled, not in expression position,
-whose body contains only:
+A `while`, `until` or C-style `loop`, unlabelled, not in expression position —
+or a `for` over a Range of integers, unlabelled, not in expression position, not
+a statement modifier, with one loop variable and no destructuring — whose body
+contains only:
 
 - integer, number and plain string literals;
 - plain `$` scalars with no twigil (not `$_`, not `$*dyn`, not `$!attr`);
@@ -144,9 +155,16 @@ regex, a `for`, `return`, `die`, a phaser, `state`, a closure. `--jit=verbose`
 names the construct that refused each loop, which is also the work queue for
 widening the list.
 
-A `for` **around** an eligible loop is a different matter, and costs nothing: it
-is not refused, it is simply not a candidate itself, so the inner loop still
-tiers up and is re-entered once per outer iteration.
+A `for` **around** an eligible loop, where the outer `for` is not itself a
+candidate, costs nothing: it is not refused, so the inner loop still tiers up
+and is re-entered once per outer iteration.
+
+A counted `for` has one extra rule of its own. Its loop variable is a
+**read-only** binding, and a kernel assigns its slots directly, so a body that
+writes the loop variable refuses the loop. That is not tidiness: the
+interpreter rebinds the variable from the counter on every iteration, so a write
+to it is forgotten at the next one, while a kernel holds one slot for the whole
+loop and would carry the write into the counter and change the trip count.
 
 There is a second gate at the moment of entry. A variable the kernel would
 **write** is refused if its container has behaviour a direct assignment would

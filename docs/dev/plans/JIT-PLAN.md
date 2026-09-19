@@ -193,8 +193,10 @@ ignored, because those modes never tier-walk anything.
 ### What tiers up, in v1
 
 A loop node is a **candidate** if it is a `while`/`until` with no pointy
-signature, or a C-style `loop`, not in expression position, not labelled. Its
-subtree must pass a whitelist walk:
+signature, a C-style `loop`, or a `for` over a Range of integers with a single
+loop variable and no destructuring — in every case not in expression position,
+not labelled, and not a statement modifier. Its subtree must pass a whitelist
+walk:
 
 - **Statements:** `ExprStmt`, `IfStmt` (with `elsif`/`else`), `Block`,
   nested `WhileStmt`/`LoopStmt`, unlabelled `LastStmt`/`NextStmt`.
@@ -217,7 +219,11 @@ not a statement about what the technique can do — it is the smallest set that
 makes the v1 **provably** unable to reach the interpreter's state while a
 kernel runs, which is what "no chance to break the interpreter" means. It
 covers both numeric kernels above. Widening it is per-node work with a gate
-behind each step, and `for` over a Range is the first item.
+behind each step. `for` over a Range was the first item and has landed — as a
+synthetic `loop (; $i <= END; $i++)` built at eligibility time, so the scan, the
+C++ emitter and the copy-and-patch lowerer all see a shape they already handle
+and none of the three learned a new statement kind. `t/jit/cases/counted-for.raku`
+is its gate. The next items are unchanged: a `for` over an array, and `.map`.
 
 ### Why "no calls" is the load-bearing rule
 
@@ -306,14 +312,22 @@ second, from the cache.
 ## What it does NOT claim
 
 - **The counter, not the whitelist, is what most programs hit first.** A loop is
-  only ever a candidate if it is a `while`/`until` or a C-style `loop`: those are
-  the two `siteFor` call sites in `Interpreter.cpp`. A `for`, a `.map` and a
-  `repeat` are never counted, so `--jit=verbose` says nothing about them — they
-  do not appear as refusals because they were never examined. Across the Raku in
-  this repo that is 3,248 of 3,741 iteration constructs, and over the 40 runnable
-  programs in `examples/` and `tools/bench/`, 33 have no countable loop at all.
-  Widening the whitelist does not move that number; `for` over a Range (above) is
-  what does.
+  only ever a candidate if it is a `while`/`until`, a C-style `loop`, or a `for`
+  over a Range of integers — the three `siteFor` call sites in `Interpreter.cpp`.
+  A `for` over anything else, a `.map` and a `repeat` are never counted, so
+  `--jit=verbose` says nothing about them: they do not appear as refusals
+  because they were never examined. Over the 40 runnable programs in `examples/`
+  and `tools/bench/`, 20 still have no countable loop at all — down from 33
+  before the `for` work, which is what that widening was worth and what
+  widening the whitelist instead would not have touched.
+- **The topic form is refused for THIS backend and taken by `--cnp`.**
+  `for 1 .. N { … $_ … }` needs `$_` bound as a slot, and Codegen emits `$_` as
+  the enclosing topic — `RT.dynVarRef("$_")` when there is none, which in a
+  kernel is always. The kernel then reads the interpreter's live topic while the
+  synthetic `$_++` writes a slot nobody reads, and it answers wrong rather than
+  failing: 211 against the interpreter's 210, caught by gate 1 and by nothing
+  else. Binding a topic to a name in Codegen is what would lift it, and it is
+  the only line of the eligibility list the two backends do not share.
 - **It is not faster than `--exe -O`.** v1 is the same emission, so a tiered
   loop lands on the `--exe -O` row and not below it. It can be marginally
   *slower* on a call-heavy loop, since a v1 kernel stops at the loop boundary

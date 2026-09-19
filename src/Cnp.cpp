@@ -129,6 +129,24 @@ extern "C" {
 
 int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b) {
     try {
+        // `$s ~= …`, the compound-assign shape the lowering emits as
+        // `binop(dst, dst, src)`. The general path below copies the accumulator
+        // OUT of its box (regValue returns by value), builds a whole new string
+        // beside it, and copies that back in — three O(n) passes per append, so
+        // a loop that appends n times moves O(n²) bytes. Measured: 400,000
+        // appends took 34.4 s against the interpreter's 0.06 s, and the answer
+        // was right the whole time, which is why nothing caught it.
+        //
+        // rtCatAssign appends into the box instead. It is the same definition
+        // the interpreter and `--exe` already use for `~=` — the comment on it
+        // in Interpreter.h says "one definition for the interpreter and both
+        // compiling backends", and this is the caller that was missing.
+        if (d == a && op == (uint64_t)RK_OP_CONCAT && f->t[a] == RK_T_BOX) {
+            Value* boxes = static_cast<Value*>(f->boxes);
+            const Value vb = regValue(f, b);
+            rtCatAssign(boxes[d], vb);
+            return 0;
+        }
         Value va = regValue(f, a), vb = regValue(f, b);
         setReg(f, d, applyArith(std::string(kOpNames[op]), va, vb));
         return 0;

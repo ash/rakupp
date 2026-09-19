@@ -319,14 +319,15 @@ if 'rakupp' (elem) @show && @show > 1 {
 say '';
 if $with-cnp {
     say 'cnp kernels: compiled of examined loops; "refused" = a hot loop was seen and turned';
-    say '             down, "no loop" = nothing countable (a `for` is not a `while`), and a';
+    say '             down, "no loop" = nothing countable — a `while`, an `until`, a C-style';
+    say '             `loop` and a `for` over an Int Range are, and nothing else is — and a';
     say '             trailing ! = built but never entered. `--cnp=verbose` says why.';
 }
 if $compile-secs > 0 {
     my $n = @show.grep({ $_ eq 'exe' || $_ eq 'exeO' }).elems;
     printf "the %s --exe column%s cost %.1fs of compiling that appears in %s;\n",
            ($n == 1 ?? 'one' !! 'two'), ($n == 1 ?? '' !! 's'), $compile-secs,
-           ($n == 1 ?? 'nowhere in it' !! 'neither of them');
+           ($n == 1 ?? 'it nowhere' !! 'neither of them');
     say '--cnp builds its kernels inside the run it is timing.' if 'cnp' (elem) @show;
 }
 if @bad-rows {

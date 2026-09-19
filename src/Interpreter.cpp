@@ -11989,7 +11989,40 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (topic) *topic = Value::integer(k);
                         else scope->define(var, Value::integer(k));
                     };
+                    // --jit / --cnp. THIS is the shape a `for` can tier up in:
+                    // `k` walks a machine integer from `lo` to `hi`, which is a
+                    // counted loop with its init already run, so the site is
+                    // asked for here and nowhere else in ForStmt. Everything
+                    // below is unreachable without the flag, as in WhileStmt.
+                    jit::LoopGuard __jg(jit::on() ? jit::siteFor(s) : nullptr);
+                    // The frame the kernel's synthetic condition wants: the loop
+                    // variable at the value this iteration would have run with,
+                    // and the end bound its `$i <= END` reads. A frame of our
+                    // own, so the two names vanish with it and the body's other
+                    // names still resolve outward past it.
+                    //
+                    // Built ONCE and refilled, not built per attempt. A ready
+                    // kernel that declines to enter is not always retired — the
+                    // "another Raku thread is live" refusal deliberately keeps
+                    // the site, so the loop gets its kernel back once the
+                    // workers join — and an allocation per iteration for the
+                    // rest of that loop is the sort of cost this whole feature
+                    // exists to remove.
+                    std::shared_ptr<Env> kframe;
                     for (k = lo; k <= hi; k++) {
+                        if (__jg.site && jit::isReady(__jg.site)) {
+                            if (!kframe) {
+                                kframe = std::make_shared<Env>();
+                                kframe->parent = tctx_.cur;
+                                kframe->define(jit::countedForEndSlot(), Value::integer(hi));
+                            }
+                            kframe->define(var, Value::integer(k));
+                            // On success the kernel has run the REST of the
+                            // range, so there is nothing left to iterate.
+                            if (jit::runIfReady(__jg.site, *this, kframe.get()))
+                                return forResult();
+                        }
+                        if (__jg.site) jit::tick(__jg.site);
                         if (flat && topic && scope.use_count() == 1) {
                             *topic = Value::integer(k);
                         } else {
