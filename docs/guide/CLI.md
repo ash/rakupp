@@ -641,6 +641,52 @@ build, `--prefix=DIR` for another location). `-M` preloads modules into the
 notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
 itself. The whole story is [JUPYTER.md](JUPYTER.md).
 
+## `--jit`: compiling while the program runs
+
+Off by default. `--jit` lets a running program compile its own hot loops to
+native code and start using them mid-loop, without you asking for a build:
+
+```bash
+rakupp --jit prog.raku
+```
+
+A loop that has gone round enough times is handed to the same C++ code
+generator `--exe` uses, compiled in the background by the same C++ compiler, and
+loaded into the running process. The interpreter keeps going meanwhile and
+switches over at an iteration boundary once the kernel is ready — the loop's
+whole state lives in its variables, so entering partway through is entering at
+the top. The compiled kernel calls the *same* runtime the interpreter does, so
+it cannot disagree with it about what your program means.
+
+The first run of a program pays for the compile and usually finishes before it
+arrives; the kernel is cached under `~/.cache/rakupp/jit`, so it is the second
+and later runs that get faster. Nothing is written to your disk unless you pass
+the flag.
+
+`--jit=SPEC` takes a comma-separated list:
+
+| spec | |
+|---|---|
+| `off` | explicitly off — the default |
+| `sync` | compile before the loop continues, instead of in the background |
+| `verbose` | say what tiered up, and why a loop did not |
+| `stats` | one summary line at exit |
+| `nocache` | never read or write the kernel cache |
+| `threshold=N` | iterations before a loop counts as hot (default 1000) |
+
+**What tiers up today is deliberately narrow.** A `while` or C-style `loop`
+whose body is arithmetic, comparisons, string operators, assignments, `if`,
+nested loops and unlabelled `last`/`next`. A body that calls anything — a sub, a
+method, a builtin — is left alone, and so is `for`. `--jit=verbose` names the
+construct that refused each loop. Widening that list is ordinary work with a
+gate behind each step; the design and the measurements are in
+[JIT-PLAN.md](../dev/plans/JIT-PLAN.md).
+
+The flag is accepted by every mode, as `-q` is, but only a *run* acts on it:
+the compile modes and the source tools never tier-walk anything, so they take
+it and ignore it. A machine with no C++ compiler says so once and runs
+interpreted.
+
 ## Choosing a backend
 
 Four things rakupp can emit instead of running your program: an analysis, C++,

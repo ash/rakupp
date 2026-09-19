@@ -1,14 +1,20 @@
 # Raku++ — the `-O` optimizer
 
-Raku++ runs a program three ways (see [BENCHMARKS.md](../status/BENCHMARKS.md) for the
+Raku++ runs a program four ways (see [BENCHMARKS.md](../status/BENCHMARKS.md) for the
 speed picture):
 
 - **interp** — tree-walk the AST (the default).
 - **`--aot` / `--bundle`** — standalone binaries that still *tree-walk* an
   embedded program, so they run at interpreter speed.
 - **`--exe`** — transpile the program to C++ and compile it to a native binary,
-  with no interpreter inside. This is the only mode whose runtime performance
-  differs, and the only mode the optimizer touches.
+  with no interpreter inside.
+- **`--jit`** — interpret, but hand a loop that proves hot to the SAME code
+  generator, with `-O` always on, and enter the result mid-loop. Everything on
+  this page therefore describes what a JIT kernel is made of as well; see
+  [JIT.md](../guide/JIT.md).
+
+`--exe` and `--jit` are the two modes whose runtime performance differs, and the
+passes below are what both are built from.
 
 For how `--exe` codegen fits the pipeline see [ARCHITECTURE.md](ARCHITECTURE.md)
 (§4); it emits C++ that calls the *same* runtime the interpreter uses (`Value`,

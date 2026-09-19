@@ -227,7 +227,8 @@ host C++ compiler, which is the point of emitting C++ rather than machine code.
 
 ### Tree-walking interpreter, or a compiler?
 
-Tree-walking, in three of the five modes. `eval(Expr*)` returns a `Value` and
+Tree-walking, in three of the five modes — and in the fourth, `--jit`, for
+every loop the tier-up compiler has not taken over. `eval(Expr*)` returns a `Value` and
 `exec(Stmt*)` runs a statement, straight over the AST. There is no bytecode and
 no separate operand stack — **the C++ stack is the Raku stack**, which is why
 the entry point runs your program on a thread with a very large stack.
@@ -239,6 +240,7 @@ the entry point runs your program on a thread with a very large stack.
 | `--aot` | AST rebuilt at startup, still tree-walked |
 | `--exe` | Source-to-source compiler — a transpiler to C++ |
 | `--target=js` | Source-to-source compiler — a transpiler to JavaScript |
+| `--jit` | Tree-walking interpreter with a **tier-up compiler** behind it |
 
 ### Is there a VM?
 
@@ -248,8 +250,33 @@ MoarVM.
 
 ### Is there a JIT?
 
-No. Nothing is compiled at run time. `--exe` compiles ahead of time, by emitting
-C++ and shelling out to a C++ compiler.
+**Since `--jit`, yes — opt-in, and not the usual kind.** Off by default, in
+which case nothing below happens and the answer stays "no".
+
+With the flag, a loop that has gone round enough times is handed to the *same*
+C++ code generator `--exe` uses, compiled by a C++ compiler in a background
+thread, `dlopen`ed into the running process, and entered at its next iteration
+boundary. The interpreter keeps walking the tree meanwhile and never waits.
+
+What makes that a JIT rather than a build step is that it happens during the
+run, on code chosen by how the program actually behaves, and takes over
+mid-loop. What makes it an unusual one is the back end: there is no instruction
+encoder and no executable-memory buffer here, because the compiler on the
+machine is the assembler. The loop's state lives entirely in its variables, so
+"on-stack replacement" needs no machinery at all — entering at an iteration
+boundary *is* entering at the top.
+
+It also means the compiled kernel calls the same runtime the interpreter calls:
+it is linked with its `rakupp::` references undefined and bound to the running
+executable when it loads, so an interpreted loop and a tiered one cannot
+disagree about semantics.
+
+It is deliberately narrow — arithmetic-shaped `while` and C-style `loop` bodies
+with no calls in them — and a kernel is byte-for-byte today's `-O` emission, so
+it is not faster than compiling the whole program ahead of time. What it is,
+is automatic. [JIT.md](../JIT.md) is the guide;
+[JIT-PLAN.md](../../dev/plans/JIT-PLAN.md) is the design and the measurements,
+including the ones that say what it is not worth.
 
 ### So what does `--exe` actually produce?
 

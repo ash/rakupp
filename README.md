@@ -117,6 +117,7 @@ rakupp --exe app.raku -o app     # compile it
 | `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
 | `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
+| `--jit[=SPEC]` | Compile hot loops to native code *while the program runs* and enter them mid-loop. Off by default; see [JIT.md](docs/guide/JIT.md) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md), walked through in [JS-TUTORIAL.md](docs/guide/JS-TUTORIAL.md)) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
