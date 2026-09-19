@@ -2650,6 +2650,12 @@ inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big(); }
 // --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
 inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
 inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big() && v.enumName.empty(); }
+// -O unboxed LOOP lanes (UNBOX-PLAN.md): the same question for a float slot.
+// `natFloat` is excluded because a num32 container truncates on assignment and a
+// lane writes `.n` directly; `enumName` for the reason rtIntSlot excludes it.
+// Deliberately NOT accepting an Int here: a lane never changes a variable's
+// runtime type, so a slot the lane holds as a double must already BE a Num.
+inline bool rtNumSlot(const Value& v) { return v.t == VT::Num && !v.natFloat && v.enumName.empty(); }
 // Non-`-O` codegen emits every value-position operator as `applyArith("+", …)`,
 // and the parameter is a std::string — so a one- or two-character literal was
 // built into a temporary on every one of fib's 1.6M calls before the dispatcher

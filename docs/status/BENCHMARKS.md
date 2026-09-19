@@ -41,6 +41,16 @@ Bun, and the browser in
 call trampolines. That comparison is still experimental — see the status note
 there.)
 
+> **The `native` column predates the unboxed loop lanes and is stale low.**
+> `-O` gained a whole-loop unboxing pass on 2026-09-19
+> ([UNBOX-PLAN.md](../dev/plans/UNBOX-PLAN.md)), including the first
+> floating-point lane this compiler has ever had. On the kernels that carry a
+> lane the effect is large — `loopsum` scaled ×60 goes 750 ms compiled without
+> `-O` to 20 ms with it — and none of the tables below have been re-taken since.
+> They need the quiet-machine protocol this file insists on, and the sitting
+> that produced them was taken on a busy box, so they are left alone rather than
+> patched with worse numbers. Re-measure before quoting the `native` column.
+
 ## The short version
 
 - **Startup:** ~2–3 ms on this machine (3.0 ms interpreting, 2.5 ms native) —

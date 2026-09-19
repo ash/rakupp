@@ -1916,6 +1916,12 @@ struct Codegen {
             case NK::WhileStmt: {
                 auto* w = static_cast<WhileStmt*>(s);
                 if (!w->var.empty() || !w->params.empty()) unsupported("while EXPR -> $x"); // incl. pointy signatures
+                auto boxed = [&]() {
+                    std::string c = exBool(w->cond.get());
+                    line(ind + 1, "while (" + (w->isUntil ? "!" + c : c) + ") {");
+                    loopBody(w->body.get(), ind + 2, w->label); line(ind + 1, "}");
+                };
+                if (tryUnboxedLoop(s, ind, boxed)) return;   // -O: UNBOX-PLAN.md
                 std::string c = exBool(w->cond.get());
                 line(ind, "while (" + (w->isUntil ? "!" + c : c) + ") {");
                 loopBody(w->body.get(), ind + 1, w->label); line(ind, "}");
@@ -1930,13 +1936,19 @@ struct Codegen {
             }
             case NK::LoopStmt: {
                 auto* l = static_cast<LoopStmt*>(s);
-                line(ind, "{");
-                if (l->init) line(ind + 1, ex(l->init.get()) + ";");
-                std::string c = l->cond ? exBool(l->cond.get()) : "true";
-                line(ind + 1, "for (; " + c + "; " + (l->incr ? ex(l->incr.get()) : std::string()) + ") {");
-                loopBody(l->body.get(), ind + 2, l->label);
-                line(ind + 1, "}");
-                line(ind, "}");
+                auto boxed = [&](int k) {
+                    line(k, "{");
+                    if (l->init) line(k + 1, ex(l->init.get()) + ";");
+                    std::string c = l->cond ? exBool(l->cond.get()) : "true";
+                    line(k + 1, "for (; " + c + "; " + (l->incr ? ex(l->incr.get()) : std::string()) + ") {");
+                    loopBody(l->body.get(), k + 2, l->label);
+                    line(k + 1, "}");
+                    line(k, "}");
+                };
+                // The fallback re-runs the WHOLE loop, init included, because the
+                // lane rewinds every slot to its entry value before handing over.
+                if (tryUnboxedLoop(s, ind, [&]() { boxed(ind + 1); })) return;
+                boxed(ind);
                 return;
             }
             case NK::NamedRegexDecl: { // my regex NAME { … } — register with the embedded engine
@@ -1944,7 +1956,13 @@ struct Codegen {
                 line(ind, "RT.registerNamedRegex(" + cesc(nr->name) + ", " + cesc(nr->pattern) + ", " + cesc(nr->kind) + ");");
                 return;
             }
-            case NK::ForStmt:  forStmt(static_cast<ForStmt*>(s), ind); return;
+            case NK::ForStmt:
+                // -O: UNBOX-PLAN.md. `for A..B` over integer endpoints becomes a
+                // raw counter with the whole body unboxed; anything else keeps
+                // the emission below, which already counts natively but boxes
+                // the topic and every value the body touches.
+                if (tryUnboxedLoop(s, ind, [&]() { forStmt(static_cast<ForStmt*>(s), ind + 1); })) return;
+                forStmt(static_cast<ForStmt*>(s), ind); return;
             case NK::GivenStmt: givenStmt(static_cast<GivenStmt*>(s), ind); return;
             default: unsupported(nkName(s->kind));
         }
@@ -2598,6 +2616,816 @@ struct Codegen {
         line(ind, "if (!" + ok + ") { " + assign(a) + "; } }");
         return true;
     }
+    // ---- unboxed loop lanes (UNBOX-PLAN.md) --------------------------------
+    //
+    // The lanes above remove the operator dispatch and the allocation; they do
+    // not remove the BOX. Per statement, every iteration, the emitted code
+    // re-checks a type tag, computes, and writes the result back into a Value.
+    // Nothing inside a loop that CALLS NOTHING can change a plain scalar's tag,
+    // so the check belongs at the entry, once, and the value belongs in a C++
+    // local for the loop's extent. Measured 8.6x on an integer loop and 67.7x on
+    // a Num one (tools/unbox-probe-{int,num}.cpp) — the second is larger because
+    // there has never been a FLOAT lane at all: every `Num` operator in a
+    // compiled program dispatches on an operator string today.
+    //
+    // The whole analysis is a refusal: anything it cannot prove gets no lane and
+    // the existing emission runs unchanged, which is what makes it safe to widen
+    // one construct at a time.
+
+    enum class LT { I64, F64 };   // a slot's lane type; it NEVER changes
+
+    struct ULoop {
+        std::map<std::string, LT> slots;   // every lane variable -> its lane type
+        std::set<std::string> written;     // the ones the loop assigns
+        // Declared INSIDE the loop (`my $t = …`). These have no box outside the
+        // lane at all: they are guarded by nothing, stored back nowhere, and
+        // emitted as ordinary C++ locals at the point of declaration, fresh per
+        // iteration exactly as Raku scopes them. Supporting them is not a nicety
+        // — `my $t = …` inside a loop body is most of what real numeric code
+        // looks like, and without it the Mandelbrot kernel got no lane at all.
+        std::set<std::string> local;
+        // Declared in a loop's HEADER — `loop (my $i = 0; …)`, `while (my $l = …)`.
+        // Raku scopes those to the ENCLOSING block, not to the loop: `$i` is
+        // still readable after the loop ends, and the interpreter says so in as
+        // many words. So they are lane locals that must ALSO be written back,
+        // and unlike a slot they are not guarded on the way in — whatever the
+        // box held before the loop is about to be overwritten by the init.
+        // Missing this was a wrong answer, not a slow one: `loop (my $n = 0; …);
+        // say $n` printed the count interpreted and nothing compiled.
+        std::set<std::string> escapes;
+        // ...and the subset of those belonging to the loop the lane REPLACES.
+        // Only those need writing back: the lane stands in for that one loop, so
+        // its header `my` has to survive into the code after it. A nested loop's
+        // header `my` escapes into the enclosing BODY, which is still inside the
+        // lane, so it is declared at the lane's top (one name, one local — the
+        // shadow check keeps that honest) and never stored. Writing it back
+        // named a C++ variable that no longer exists, because the hoist that
+        // would have declared it belongs to an emission the lane replaced.
+        std::set<std::string> escapeStore;
+        bool atTop = true;
+        // The loop variables of lane `for`s currently open. `$_` is only a lane
+        // variable while one of them has bound it; anywhere else it belongs to
+        // whatever encloses the loop and reading it into a register would be
+        // reading something the lane does not own.
+        std::set<std::string> topics;
+        bool inHeader = false;
+        bool atTopHeader = false;   // this header belongs to the loop being replaced
+        bool ok = true;
+        void fail() { ok = false; }
+    };
+
+    // `$name` a lane may hold: exactly what laneVar accepts, minus the topic —
+    // `$_` is bound by whatever encloses the loop and a lane must not outlive
+    // that binding.
+    static bool uScalar(Expr* e, std::string& name) {
+        if (!e || e->kind != NK::VarExpr) return false;
+        auto* v = static_cast<VarExpr*>(e);
+        const std::string& n = v->name;
+        if (n.size() < 2 || n[0] != '$') return false;
+        if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false;
+        if (n.find("::") != std::string::npos) return false;
+        name = n;
+        return true;
+    }
+
+    // Pass 1: collect the slots and refuse anything outside the whitelist. The
+    // lane TYPES are settled by the fixpoint in pass 2; here every slot starts
+    // as I64 and a Num literal is the only thing that seeds F64 directly.
+    void uCollectExpr(Expr* e, ULoop& U) {
+        if (!U.ok || !e) return;
+        switch (e->kind) {
+            case NK::IntLit:
+                if (!static_cast<IntLit*>(e)->big.empty()) U.fail();
+                return;
+            case NK::NumLit: {
+                // `2.0` is a Rat in Raku — exact rational arithmetic — and only
+                // the `2e0` spelling is a Num. A lane that treated a Rat as a
+                // double would change the answer, so isRat gets no lane at all.
+                auto* n = static_cast<NumLit*>(e);
+                if (n->isRat || n->imaginary) U.fail();
+                return;
+            }
+            case NK::VarExpr: {
+                auto* v = static_cast<VarExpr*>(e);
+                std::string nm;
+                if (!uScalar(e, nm)) { U.fail(); return; }
+                if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
+                if (v->declare) {
+                    // A bare `my $x;` has no initialiser and therefore no lane
+                    // type; only `my $x = E`, which arrives through Assign.
+                    U.fail(); return;
+                }
+                if (nm == "$_" && !U.topics.count(nm)) { U.fail(); return; }
+                U.slots.emplace(nm, LT::I64);
+                return;
+            }
+            case NK::Assign: {
+                auto* a = static_cast<Assign*>(e);
+                static const std::set<std::string> ops = {"=", "+=", "-=", "*=", "/=", "%="};
+                if (!ops.count(a->op) || a->containerSigil) { U.fail(); return; }
+                std::string nm;
+                if (!uScalar(a->target.get(), nm)) { U.fail(); return; }
+                if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
+                if (U.topics.count(nm)) { U.fail(); return; }   // `for` ALIASES its variable
+                auto* tv = static_cast<VarExpr*>(a->target.get());
+                if (tv->declare) {
+                    if (a->op != "=") { U.fail(); return; }
+                    if (!(tv->declScope.empty() || tv->declScope == "my")) { U.fail(); return; }
+                    if (!tv->declType.empty() || !tv->declCoerce.empty() || tv->declDefault ||
+                        tv->declDynamic || tv->declExport || !tv->containerIs.empty() ||
+                        tv->declShape || tv->declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
+                        U.fail(); return;
+                    }
+                    // A declaration that SHADOWS a name the lane already holds
+                    // needs two locals for one name, and the emitter has one per
+                    // name. This must refuse on ANY name already in the lane,
+                    // not just on a real slot: `loop (my $i = …) { loop (my $i =
+                    // …) { … } }` is legal Raku, and sharing one local between
+                    // the two made the inner loop reset the outer's counter — the
+                    // outer ran ONCE and the answer came out a sixth of the right
+                    // one. Refusing is a slower answer, not a wrong one.
+                    if (U.slots.count(nm)) { U.fail(); return; }
+                    if (U.inHeader) {
+                        U.escapes.insert(nm);
+                        if (U.atTopHeader) U.escapeStore.insert(nm);
+                    } else U.local.insert(nm);
+                }
+                U.slots.emplace(nm, LT::I64);
+                U.written.insert(nm);
+                uCollectExpr(a->value.get(), U);
+                return;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                static const std::set<std::string> ops = {
+                    "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
+                if (!ops.count(b->op)) { U.fail(); return; }
+                uCollectExpr(b->lhs.get(), U); uCollectExpr(b->rhs.get(), U);
+                return;
+            }
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->op == "++" || u->op == "--") {
+                    std::string nm;
+                    if (!uScalar(u->operand.get(), nm)) { U.fail(); return; }
+                    if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
+                    if (U.topics.count(nm)) { U.fail(); return; }
+                    U.slots.emplace(nm, LT::I64);
+                    U.written.insert(nm);
+                    return;
+                }
+                if (u->op != "-" && u->op != "+" && u->op != "!") { U.fail(); return; }
+                uCollectExpr(u->operand.get(), U);
+                return;
+            }
+            case NK::ListExpr:   // a comma sequence in a loop header; see JIT-PLAN
+                for (auto& it : static_cast<ListExpr*>(e)->items) uCollectExpr(it.get(), U);
+                return;
+            default: U.fail(); return;
+        }
+    }
+
+    // An unlabelled `next` belonging to THIS loop — so nested loops, which have
+    // their own, are not descended into.
+    static bool uHasBareNext(Block* b) {
+        if (!b) return false;
+        std::function<bool(Stmt*)> scan = [&](Stmt* st) -> bool {
+            if (!st) return false;
+            switch (st->kind) {
+                case NK::NextStmt: return static_cast<NextStmt*>(st)->target.empty();
+                case NK::Block: for (auto& x : static_cast<Block*>(st)->stmts) if (scan(x.get())) return true;
+                                return false;
+                case NK::IfStmt: {
+                    auto* f = static_cast<IfStmt*>(st);
+                    for (auto& br : f->branches) for (auto& x : br.second->stmts) if (scan(x.get())) return true;
+                    if (f->elseBlock) for (auto& x : f->elseBlock->stmts) if (scan(x.get())) return true;
+                    return false;
+                }
+                default: return false;   // a nested loop owns its own `next`
+            }
+        };
+        for (auto& x : b->stmts) if (scan(x.get())) return true;
+        return false;
+    }
+
+    void uCollectStmt(Stmt* st, ULoop& U) {
+        if (!U.ok || !st) return;
+        if (!st->label.empty()) { U.fail(); return; }
+        switch (st->kind) {
+            case NK::EmptyStmt: return;
+            case NK::ExprStmt: uCollectExpr(static_cast<ExprStmt*>(st)->e.get(), U); return;
+            case NK::LastStmt: if (!static_cast<LastStmt*>(st)->target.empty()) U.fail(); return;
+            case NK::NextStmt: if (!static_cast<NextStmt*>(st)->target.empty()) U.fail(); return;
+            case NK::IfStmt: {
+                auto* f = static_cast<IfStmt*>(st);
+                if (!f->thenVar.empty() || !f->elseVar.empty() || !f->elseParams.empty()) { U.fail(); return; }
+                for (auto& bv : f->branchVars) if (!bv.empty()) { U.fail(); return; }
+                for (auto& bp : f->branchParams) if (!bp.empty()) { U.fail(); return; }
+                for (auto& br : f->branches) {
+                    uCollectExpr(br.first.get(), U);
+                    for (auto& x : br.second->stmts) uCollectStmt(x.get(), U);
+                    if (!U.ok) return;
+                }
+                if (f->elseBlock) for (auto& x : f->elseBlock->stmts) uCollectStmt(x.get(), U);
+                return;
+            }
+            case NK::Block: {
+                auto* b = static_cast<Block*>(st);
+                if (!b->phaser.empty() || b->isCatch) { U.fail(); return; }
+                for (auto& x : b->stmts) uCollectStmt(x.get(), U);
+                return;
+            }
+            case NK::WhileStmt: {
+                auto* w = static_cast<WhileStmt*>(st);
+                if (w->modifier || w->asExpr || !w->var.empty() || !w->params.empty()) { U.fail(); return; }
+                { bool outerW = U.atTop; U.atTop = false;
+                  bool sv = U.inHeader, svt = U.atTopHeader;
+                  U.inHeader = true; U.atTopHeader = outerW;
+                  uCollectExpr(w->cond.get(), U);
+                  U.atTopHeader = svt; U.inHeader = sv; }
+                for (auto& x : w->body->stmts) uCollectStmt(x.get(), U);
+                return;
+            }
+            case NK::ForStmt: {
+                // `for A..B { … }` is the loop real Raku is written with — 377
+                // of the 701 programs in the corpus have one against 126 with a
+                // `while` — so a pass that skipped it would be a pass that
+                // almost never fires. Only a RANGE with integer endpoints is
+                // taken: everything else is an iterator, and a lane cannot hold
+                // one in a register.
+                auto* f = static_cast<ForStmt*>(st);
+                U.atTop = false;
+                if (f->asExpr || f->rwVars || f->destructure) { U.fail(); return; }
+                if (f->vars.size() > 1 || !f->params.empty()) { U.fail(); return; }
+                if (!f->list || f->list->kind != NK::Range) { U.fail(); return; }
+                auto* r = static_cast<RangeExpr*>(f->list.get());
+                { bool sv = U.inHeader; U.inHeader = true;
+                  uCollectExpr(r->from.get(), U);
+                  uCollectExpr(r->to.get(), U);
+                  U.inHeader = sv; }
+                if (!U.ok) return;
+                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                if (U.topics.count(tv) || U.slots.count(tv)) { U.fail(); return; }  // shadowing
+                U.topics.insert(tv);
+                U.local.insert(tv);
+                U.slots.emplace(tv, LT::I64);
+                for (auto& x : f->body->stmts) uCollectStmt(x.get(), U);
+                U.topics.erase(tv);
+                return;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<LoopStmt*>(st);
+                if (l->asExpr) { U.fail(); return; }
+                // A C-style loop's step runs at the BOTTOM of the emitted body,
+                // so a `continue` would skip it where a three-clause `for` would
+                // run it. Rather than emit the step at every `next` site — which
+                // is where the step itself needs overflow checks — a body that
+                // carries one is simply not laned.
+                if (l->incr && uHasBareNext(l->body.get())) { U.fail(); return; }
+                bool outerL = U.atTop; U.atTop = false;
+                { bool sv = U.inHeader; U.inHeader = true;
+                  bool svt = U.atTopHeader; U.atTopHeader = outerL;
+                  uCollectExpr(l->init.get(), U);
+                  uCollectExpr(l->cond.get(), U);
+                  uCollectExpr(l->incr.get(), U);
+                  U.atTopHeader = svt;
+                  U.inHeader = sv; }
+                for (auto& x : l->body->stmts) uCollectStmt(x.get(), U);
+                return;
+            }
+            default: U.fail(); return;
+        }
+    }
+
+    // Pass 2: the lane type of an expression, given the slot types decided so
+    // far. `changed` is set when a slot has to be widened to F64, which is what
+    // drives the fixpoint. Returns F64 if anything in the expression is a float.
+    LT uTypeOf(Expr* e, ULoop& U, bool& changed) {
+        if (!e) return LT::I64;
+        switch (e->kind) {
+            case NK::IntLit: return LT::I64;
+            case NK::NumLit: return LT::F64;
+            case NK::VarExpr: {
+                std::string nm;
+                if (!uScalar(e, nm)) return LT::I64;
+                auto it = U.slots.find(nm);
+                return it == U.slots.end() ? LT::I64 : it->second;
+            }
+            case NK::Assign: {
+                auto* a = static_cast<Assign*>(e);
+                LT rhs = uTypeOf(a->value.get(), U, changed);
+                std::string nm;
+                if (!uScalar(a->target.get(), nm)) return rhs;
+                LT& cur = U.slots[nm];
+                // `/` on two integers is a Rat in Raku, never an Int — so a slot
+                // written by a division cannot be an I64 lane. Widening it to
+                // F64 would be WRONG (`1/3` is exact), so the lane is refused.
+                if (a->op == "/=") { U.fail(); return cur; }
+                if (rhs == LT::F64 && cur == LT::I64) { cur = LT::F64; changed = true; }
+                // The other direction is the rule that keeps this sound: an F64
+                // slot assigned an integer expression stays F64 (the integer
+                // widens), and an I64 slot is never assigned a float, because
+                // the line above already widened it.
+                return cur;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                LT l = uTypeOf(b->lhs.get(), U, changed), r = uTypeOf(b->rhs.get(), U, changed);
+                static const std::set<std::string> cmp = {
+                    "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
+                if (cmp.count(b->op)) return LT::I64;              // a truth value
+                // Integer `/` is a Rat and integer `%` on floats is not a lane op.
+                if (b->op == "/") { if (l == LT::I64 && r == LT::I64) U.fail(); return LT::F64; }
+                if (b->op == "%") { if (l == LT::F64 || r == LT::F64) U.fail(); return LT::I64; }
+                return (l == LT::F64 || r == LT::F64) ? LT::F64 : LT::I64;
+            }
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->op == "!") return LT::I64;
+                if (u->op == "++" || u->op == "--") {
+                    std::string nm;
+                    if (!uScalar(u->operand.get(), nm)) return LT::I64;
+                    auto it = U.slots.find(nm);
+                    return it == U.slots.end() ? LT::I64 : it->second;
+                }
+                return uTypeOf(u->operand.get(), U, changed);
+            }
+            case NK::ListExpr: {
+                LT last = LT::I64;
+                for (auto& it : static_cast<ListExpr*>(e)->items) last = uTypeOf(it.get(), U, changed);
+                return last;
+            }
+            default: return LT::I64;
+        }
+    }
+
+    void uTypeStmt(Stmt* st, ULoop& U, bool& changed) {
+        if (!U.ok || !st) return;
+        switch (st->kind) {
+            case NK::ExprStmt: uTypeOf(static_cast<ExprStmt*>(st)->e.get(), U, changed); return;
+            case NK::IfStmt: {
+                auto* f = static_cast<IfStmt*>(st);
+                for (auto& br : f->branches) {
+                    uTypeOf(br.first.get(), U, changed);
+                    for (auto& x : br.second->stmts) uTypeStmt(x.get(), U, changed);
+                }
+                if (f->elseBlock) for (auto& x : f->elseBlock->stmts) uTypeStmt(x.get(), U, changed);
+                return;
+            }
+            case NK::Block: for (auto& x : static_cast<Block*>(st)->stmts) uTypeStmt(x.get(), U, changed); return;
+            case NK::WhileStmt: {
+                auto* w = static_cast<WhileStmt*>(st);
+                uTypeOf(w->cond.get(), U, changed);
+                for (auto& x : w->body->stmts) uTypeStmt(x.get(), U, changed);
+                return;
+            }
+            case NK::ForStmt: {
+                auto* f = static_cast<ForStmt*>(st);
+                auto* r = static_cast<RangeExpr*>(f->list.get());
+                uTypeOf(r->from.get(), U, changed);
+                uTypeOf(r->to.get(), U, changed);
+                for (auto& x : f->body->stmts) uTypeStmt(x.get(), U, changed);
+                return;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<LoopStmt*>(st);
+                uTypeOf(l->init.get(), U, changed);
+                uTypeOf(l->cond.get(), U, changed);
+                uTypeOf(l->incr.get(), U, changed);
+                for (auto& x : l->body->stmts) uTypeStmt(x.get(), U, changed);
+                return;
+            }
+            default: return;
+        }
+    }
+
+    // Pass 3: emission. Every slot is a C++ local named `__u<n>`; nothing in the
+    // emitted body touches a Value at all. `uName` maps a Raku name to its local.
+    std::map<std::string, std::string> uLocal_;
+    std::map<std::string, LT> uType_;
+    std::set<std::string> uEscape_;     // names declared in a loop header
+    std::string uBail_, uBailLabel_;    // "an operation left the lane", and where it lands
+
+    std::string uCast(const std::string& expr, LT from, LT to) {
+        if (from == to) return expr;
+        return to == LT::F64 ? "(double)(" + expr + ")" : "(long long)(" + expr + ")";
+    }
+
+    // An expression in BOOLEAN context. Not the same as asking for it as an
+    // I64: `(long long)0.25` is 0, so `while $f` with $f = 0.25 ran zero times
+    // compiled and ten times interpreted — a wrong answer produced by a cast
+    // that looked harmless. A float is true when it is not zero, and C++'s own
+    // truthiness on an integer is already Raku's.
+    std::string uCond(Expr* e, std::vector<std::string>& pre) {
+        if (uNodeType(e) == LT::F64) {
+            std::string v = uExpr(e, LT::F64, pre);
+            return v.empty() ? v : "((" + v + ") != 0.0)";
+        }
+        return uExpr(e, LT::I64, pre);
+    }
+
+    // An expression, as a C++ rvalue of lane type `want`. `into` collects the
+    // statements an overflow check needs; expressions themselves stay pure.
+    std::string uExpr(Expr* e, LT want, std::vector<std::string>& pre) {
+        switch (e->kind) {
+            case NK::IntLit:
+                return uCast(std::to_string(static_cast<IntLit*>(e)->v) + "LL", LT::I64, want);
+            case NK::NumLit: {
+                std::ostringstream o;
+                o.precision(17);
+                o << std::scientific << static_cast<NumLit*>(e)->v;
+                return uCast("(" + o.str() + ")", LT::F64, want);
+            }
+            case NK::VarExpr: {
+                std::string nm; uScalar(e, nm);
+                return uCast(uLocal_[nm], uType_[nm], want);
+            }
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->op == "!") {
+                    std::string c = uCond(u->operand.get(), pre);
+                    if (c.empty()) return c;
+                    return uCast("(!(" + c + "))", LT::I64, want);
+                }
+                if (u->op == "+") return uExpr(u->operand.get(), want, pre);
+                if (u->op == "-") {
+                    LT t = uNodeType(u->operand.get());
+                    if (t == LT::F64) return uCast("(-(" + uExpr(u->operand.get(), LT::F64, pre) + "))", LT::F64, want);
+                    std::string a = uExpr(u->operand.get(), LT::I64, pre), tv = gensym("__ut");
+                    pre.push_back("long long " + tv + "; if (rakupp::sub_ovf(0LL, " + a + ", &" + tv + ")) { "
+                                  + uBail_ + " = true; break; }");
+                    return uCast(tv, LT::I64, want);
+                }
+                // ++ / -- in expression position: the statement form is handled
+                // by uStmt; here it is the value AFTER the step (prefix) which
+                // v1 does not distinguish, so refuse rather than guess.
+                return "";
+            }
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                const std::string& op = b->op;
+                if (op == "&&" || op == "||") {
+                    std::string l = uCond(b->lhs.get(), pre), r = uCond(b->rhs.get(), pre);
+                    if (l.empty() || r.empty()) return "";
+                    return "((" + l + ") " + op + " (" + r + "))";
+                }
+                LT lt = uNodeType(b->lhs.get()), rt = uNodeType(b->rhs.get());
+                LT operandT = (lt == LT::F64 || rt == LT::F64) ? LT::F64 : LT::I64;
+                static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
+                if (cmp.count(op))
+                    return "((" + uExpr(b->lhs.get(), operandT, pre) + ") " + op + " ("
+                              + uExpr(b->rhs.get(), operandT, pre) + "))";
+                std::string a = uExpr(b->lhs.get(), operandT, pre);
+                std::string c = uExpr(b->rhs.get(), operandT, pre);
+                if (operandT == LT::F64)   // IEEE 754: no overflow, and x/0 is Inf as Raku's Num is
+                    return uCast("((" + a + ") " + op + " (" + c + "))", LT::F64, want);
+                if (op == "%") {           // rtMod's int case: floored, and 0 leaves the lane
+                    std::string tv = gensym("__ut");
+                    pre.push_back("if ((" + c + ") == 0) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                    pre.push_back("long long " + tv + " = (" + a + ") % (" + c + "); if (" + tv
+                                + " != 0 && ((" + tv + " < 0) != ((" + c + ") < 0))) " + tv + " += (" + c + ");");
+                    return uCast(tv, LT::I64, want);
+                }
+                std::string ovf = op == "+" ? "add_ovf" : op == "-" ? "sub_ovf" : op == "*" ? "mul_ovf" : "";
+                if (ovf.empty()) return "";
+                std::string tv = gensym("__ut");
+                pre.push_back("long long " + tv + "; if (rakupp::" + ovf + "(" + a + ", " + c + ", &" + tv
+                            + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                return uCast(tv, LT::I64, want);
+            }
+            default: return "";
+        }
+    }
+
+    // The settled lane type of a node, for choosing operand width. The fixpoint
+    // has already run, so this is a plain read.
+    LT uNodeType(Expr* e) {
+        if (!e) return LT::I64;
+        switch (e->kind) {
+            case NK::NumLit: return LT::F64;
+            case NK::IntLit: return LT::I64;
+            case NK::VarExpr: { std::string nm; if (!uScalar(e, nm)) return LT::I64;
+                                auto it = uType_.find(nm); return it == uType_.end() ? LT::I64 : it->second; }
+            case NK::Unary: { auto* u = static_cast<Unary*>(e);
+                              if (u->op == "!") return LT::I64;
+                              return uNodeType(u->operand.get()); }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e);
+                static const std::set<std::string> cmp = {"<","<=",">",">=","==","!=","&&","||"};
+                if (cmp.count(b->op)) return LT::I64;
+                if (b->op == "/") return LT::F64;
+                if (b->op == "%") return LT::I64;
+                return (uNodeType(b->lhs.get()) == LT::F64 || uNodeType(b->rhs.get()) == LT::F64)
+                           ? LT::F64 : LT::I64; }
+            case NK::Assign: { auto* a = static_cast<Assign*>(e); std::string nm;
+                               if (!uScalar(a->target.get(), nm)) return LT::I64;
+                               auto it = uType_.find(nm); return it == uType_.end() ? LT::I64 : it->second; }
+            default: return LT::I64;
+        }
+    }
+
+    // A statement, emitted against the lane locals. Returns false if anything
+    // could not be emitted, which abandons the whole lane.
+    bool uStmt(Stmt* st, int ind) {
+        switch (st->kind) {
+            case NK::EmptyStmt: return true;
+            case NK::LastStmt:  line(ind, "break;");    return true;
+            case NK::NextStmt:  line(ind, "continue;"); return true;
+            case NK::ExprStmt: {
+                Expr* e = static_cast<ExprStmt*>(st)->e.get();
+                if (!e) return true;
+                return uSideEffect(e, ind);
+            }
+            case NK::Block: {
+                line(ind, "{");
+                for (auto& x : static_cast<Block*>(st)->stmts) if (!uStmt(x.get(), ind + 1)) return false;
+                line(ind, "}");
+                return true;
+            }
+            case NK::IfStmt: {
+                auto* f = static_cast<IfStmt*>(st);
+                // `if / elsif / else` becomes NESTED if-else, because an elsif's
+                // own condition may need overflow checks emitted as statements
+                // and those cannot live inside an `else if (...)` header.
+                int depth = 0;
+                bool first = true;
+                for (auto& br : f->branches) {
+                    std::vector<std::string> pre;
+                    std::string c = uCond(br.first.get(), pre);
+                    if (c.empty()) return false;
+                    int k = ind + depth;
+                    for (auto& p2 : pre) line(k, p2);
+                    line(k, "if (" + std::string(first && f->isUnless ? "!(" + c + ")" : c) + ") {");
+                    for (auto& x : br.second->stmts) if (!uStmt(x.get(), k + 1)) return false;
+                    line(k, "} else {");
+                    depth++;
+                    first = false;
+                }
+                if (f->elseBlock)
+                    for (auto& x : f->elseBlock->stmts) if (!uStmt(x.get(), ind + depth)) return false;
+                for (int i = depth; i > 0; i--) line(ind + i - 1, "}");
+                return true;
+            }
+            case NK::WhileStmt: {
+                auto* w = static_cast<WhileStmt*>(st);
+                std::vector<std::string> pre;
+                std::string c = uCond(w->cond.get(), pre);
+                if (c.empty()) return false;
+                if (pre.empty()) {
+                    line(ind, std::string("while (") + (w->isUntil ? "!(" + c + ")" : c) + ") {");
+                } else {
+                    line(ind, "for (;;) {");
+                    for (auto& p2 : pre) line(ind + 1, p2);
+                    line(ind + 1, std::string("if (") + (w->isUntil ? "(" + c + ")" : "!(" + c + ")") + ") break;");
+                }
+                for (auto& x : w->body->stmts) if (!uStmt(x.get(), ind + 1)) return false;
+                line(ind, "}");
+                return true;
+            }
+            case NK::ForStmt: {
+                auto* f = static_cast<ForStmt*>(st);
+                auto* r = static_cast<RangeExpr*>(f->list.get());
+                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                std::string lv = uLocal_[tv];
+                std::vector<std::string> pre;
+                std::string lo = uExpr(r->from.get(), LT::I64, pre);
+                std::string hi = uExpr(r->to.get(), LT::I64, pre);
+                if (lo.empty() || hi.empty()) return false;
+                std::string lon = gensym("__ulo"), hin = gensym("__uhi");
+                line(ind, "{");
+                for (auto& p2 : pre) line(ind + 1, p2);
+                // The endpoints are read ONCE, as the interpreter reads them, and
+                // the exclusive markers are folded in here rather than tested per
+                // iteration. Both are guaranteed integers: every leaf of a lane
+                // I64 expression is either a literal or a slot guarded rtIntSlot,
+                // so the runtime kind test the boxed range loop performs cannot
+                // fail here.
+                line(ind + 1, "long long " + lon + " = (" + lo + ")" + (r->exFrom ? " + 1;" : ";"));
+                line(ind + 1, "long long " + hin + " = (" + hi + ")" + (r->exTo ? " - 1;" : ";"));
+                line(ind + 1, "for (long long " + lv + " = " + lon + "; " + lv + " <= " + hin + "; " + lv + "++) {");
+                for (auto& x : f->body->stmts) if (!uStmt(x.get(), ind + 2)) return false;
+                line(ind + 1, "}");
+                line(ind, "}");
+                return true;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<LoopStmt*>(st);
+                line(ind, "{");
+                if (l->init && !uSideEffect(l->init.get(), ind + 1)) return false;
+                std::vector<std::string> pre;
+                std::string c = l->cond ? uCond(l->cond.get(), pre) : std::string("true");
+                if (c.empty()) return false;
+                line(ind + 1, "for (;;) {");
+                for (auto& p2 : pre) line(ind + 2, p2);
+                line(ind + 2, "if (!(" + c + ")) break;");
+                for (auto& x : l->body->stmts) if (!uStmt(x.get(), ind + 2)) return false;
+                // The step is emitted at the BOTTOM, so a `continue` from the
+                // body would skip it — where a three-clause `for` would run it.
+                // A body carrying an unlabelled `next` is therefore refused by
+                // the analysis (uHasBareNext), and this is the emission that
+                // rule protects.
+                if (l->incr && !uSideEffect(l->incr.get(), ind + 2)) return false;
+                line(ind + 1, "}");
+                line(ind, "}");
+                return true;
+            }
+            default: return false;
+        }
+    }
+
+    // An expression evaluated for its effect: an assignment, a step, or a comma
+    // sequence of them.
+    bool uSideEffect(Expr* e, int ind) {
+        if (!e) return true;
+        if (e->kind == NK::ListExpr) {
+            for (auto& it : static_cast<ListExpr*>(e)->items) if (!uSideEffect(it.get(), ind)) return false;
+            return true;
+        }
+        if (e->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op != "++" && u->op != "--") return false;
+            std::string nm;
+            if (!uScalar(u->operand.get(), nm)) return false;
+            std::string lv = uLocal_[nm];
+            if (uType_[nm] == LT::F64) { line(ind, lv + (u->op == "++" ? " += 1.0;" : " -= 1.0;")); return true; }
+            std::string tv = gensym("__ut");
+            line(ind, "long long " + tv + "; if (rakupp::" + (u->op == "++" ? "add_ovf" : "sub_ovf")
+                    + "(" + lv + ", 1LL, &" + tv + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+            line(ind, lv + " = " + tv + ";");
+            return true;
+        }
+        if (e->kind != NK::Assign) return false;
+        auto* a = static_cast<Assign*>(e);
+        std::string nm;
+        if (!uScalar(a->target.get(), nm)) return false;
+        LT t = uType_[nm];
+        std::string lv = uLocal_[nm];
+        std::vector<std::string> pre;
+        std::string rhs;
+        if (a->op == "=") {
+            rhs = uExpr(a->value.get(), t, pre);
+        } else {
+            // `$x op= E` is `$x = $x op E`, and the overflow check belongs to
+            // the compound operator exactly as it does to the binary one.
+            std::string binop = a->op.substr(0, a->op.size() - 1);
+            LT rt = uNodeType(a->value.get());
+            LT operandT = (t == LT::F64 || rt == LT::F64) ? LT::F64 : LT::I64;
+            std::string r = uExpr(a->value.get(), operandT, pre);
+            if (r.empty()) return false;
+            // `%` has no float form: C++ refuses `double % double` outright, so
+            // this emitted a translation unit that would not compile and took
+            // the whole program's native build down with it. The binary `%` is
+            // refused by the type pass; the COMPOUND one reaches here instead,
+            // and is refused in the one place that sees both widths.
+            if (operandT == LT::F64 && binop == "%") return false;
+            if (operandT == LT::F64) {
+                rhs = uCast("((" + uCast(lv, t, LT::F64) + ") " + binop + " (" + r + "))", LT::F64, t);
+            } else if (binop == "%") {
+                std::string tv = gensym("__ut");
+                pre.push_back("if ((" + r + ") == 0) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                pre.push_back("long long " + tv + " = " + lv + " % (" + r + "); if (" + tv
+                            + " != 0 && ((" + tv + " < 0) != ((" + r + ") < 0))) " + tv + " += (" + r + ");");
+                rhs = tv;
+            } else {
+                std::string ovf = binop == "+" ? "add_ovf" : binop == "-" ? "sub_ovf"
+                                : binop == "*" ? "mul_ovf" : "";
+                if (ovf.empty()) return false;
+                std::string tv = gensym("__ut");
+                pre.push_back("long long " + tv + "; if (rakupp::" + ovf + "(" + lv + ", " + r
+                            + ", &" + tv + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                rhs = tv;
+            }
+        }
+        if (rhs.empty()) return false;
+        for (auto& p2 : pre) line(ind, p2);
+        // `my $x = E` declares the C++ local right here, so it is fresh on every
+        // iteration exactly as Raku scopes it, and goes out of scope with the
+        // block. Everything else assigns an already-declared one.
+        bool decl = a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->declare
+                    && !uEscape_.count(nm);
+        std::string pfx = decl ? (uType_[nm] == LT::F64 ? "double " : "long long ") : "";
+        line(ind, pfx + lv + " = " + rhs + ";");
+        return true;
+    }
+
+    // The driver. Returns true when the loop was emitted as an unboxed lane with
+    // its boxed self as the fallback; false leaves the caller to emit as before.
+    bool tryUnboxedLoop(Stmt* loop, int ind, const std::function<void()>& emitBoxed) {
+        if (!optimize_) return false;
+        if (!loop->label.empty()) return false;
+
+        ULoop U;
+        uCollectStmt(loop, U);
+        if (!U.ok || U.slots.empty() || U.written.empty()) return false;
+
+        // Fixpoint: widen a slot to F64 the moment anything float reaches it, and
+        // re-run until nothing moves. Bounded by the slot count (a slot can only
+        // widen once), with a margin.
+        for (size_t round = 0; round <= U.slots.size() + 1; round++) {
+            bool changed = false;
+            uTypeStmt(loop, U, changed);
+            if (!U.ok) return false;
+            if (!changed) break;
+        }
+        if (!U.ok) return false;
+
+        // Set up the lane's locals. Order matters only for readability, so the
+        // map's own (name) order is used, which makes the emitted C++ stable
+        // across runs and therefore makes a JIT kernel's cache key stable too.
+        uLocal_.clear(); uType_.clear(); uEscape_.clear();
+        std::vector<std::string> names;      // the SLOTS: guarded, unboxed, stored back
+        std::vector<std::string> esc;        // header `my`s: declared up front, not guarded
+        std::vector<std::string> escStore;   // ...and of those, the ones that outlive the lane
+        for (auto& kv : U.slots) {
+            uType_[kv.first] = kv.second;
+            uLocal_[kv.first] = gensym("__u");
+            if (U.escapes.count(kv.first)) {
+                esc.push_back(kv.first); uEscape_.insert(kv.first);
+                if (U.escapeStore.count(kv.first)) escStore.push_back(kv.first);
+            }
+            else if (!U.local.count(kv.first)) names.push_back(kv.first);
+        }
+        if (names.empty() && escStore.empty()) return false;  // nothing outside the loop to speed up
+        uBail_ = gensym("__ubail");
+        uBailLabel_ = gensym("__ubl");
+        std::string ok = gensym("__ulane");
+
+        // Emit into a buffer first: the body may still refuse (an expression the
+        // analysis admitted but the emitter cannot write), and a half-written
+        // lane must not reach the output.
+        std::ostringstream saved;
+        saved.swap(out);
+        bool good = true;
+
+        line(ind, "{ bool " + ok + " = false; do { // -O unboxed loop lane (UNBOX-PLAN.md)");
+        std::vector<std::string> guards;
+        for (auto& n : names)
+            guards.push_back(std::string(uType_[n] == LT::F64 ? "rtNumSlot(" : "rtIntSlot(") + varRef(n) + ")");
+        if (!guards.empty()) line(ind + 1, "if (!(" + joinAnd(guards) + ")) break;");
+        for (auto& n : names)
+            line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + uLocal_[n]
+                        + " = " + varRef(n) + (uType_[n] == LT::F64 ? ".n;" : ".i;"));
+        // A header `my` is declared here rather than where it is written, so the
+        // store-back after the loop can still see it. Its value on the way in is
+        // never read: the header assigns it before anything else runs.
+        for (auto& n : esc)
+            line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + uLocal_[n]
+                        + (uType_[n] == LT::F64 ? " = 0.0;" : " = 0;"));
+        // The ENTRY snapshot. An integer operation that overflows leaves the
+        // lane mid-loop, and the boxed loop must then run from a state it can
+        // re-derive — so the whole thing is rewound to the loop's entry and the
+        // boxed emission runs the loop from scratch. Redoing work is the right
+        // trade here: an overflow is rare, and the alternative (resuming the
+        // boxed loop mid-flight) has to reproduce the exact point a bail
+        // happened, which is where this kind of pass gets its wrong answers.
+        std::vector<std::string> entry;
+        bool canBail = false;
+        for (auto& kv : uType_) if (kv.second == LT::I64) canBail = true;
+        if (canBail)
+            for (auto& n : names) {
+                std::string e = gensym("__ue");
+                entry.push_back(e);
+                line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + e + " = " + uLocal_[n] + ";");
+            }
+        line(ind + 1, "bool " + uBail_ + " = false; (void)" + uBail_ + ";");
+        if (!uStmt(loop, ind + 1)) good = false;
+        // The landing pad. A bail can happen inside any depth of nested loop, so
+        // it is a goto and not a break: a break would leave one loop and let the
+        // ones outside it carry on with a value the lane already abandoned.
+        // Jumping forward to a label in the same block, out of inner scopes, is
+        // the one use of goto this codebase has, and it is the correct one.
+        line(ind + 1, uBailLabel_ + ": ;");
+        if (canBail) {
+            line(ind + 1, "if (" + uBail_ + ") {");
+            for (size_t i = 0; i < names.size(); i++)
+                line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
+            line(ind + 2, "break;");
+            line(ind + 1, "}");
+        }
+        // Only what the loop WRITES is committed: a slot it merely read must not
+        // be re-stored, which would be a no-op on a good day and a retyping on a
+        // bad one.
+        for (auto& n : names)
+            if (U.written.count(n))
+                line(ind + 1, varRef(n) + (uType_[n] == LT::F64 ? ".n = " : ".i = ") + uLocal_[n] + ";");
+        // An escaping name's box may hold anything at all (it was `Value::any()`
+        // a moment ago), so this CONSTRUCTS rather than writing a payload under
+        // a tag that was never checked.
+        for (auto& n : escStore)
+            line(ind + 1, varRef(n) + " = " + (uType_[n] == LT::F64 ? "Value::number(" : "Value::integer(")
+                        + uLocal_[n] + ");");
+        line(ind + 1, ok + " = true;");
+        line(ind, "} while (0);");
+        line(ind, "if (!" + ok + ") {");
+        std::string lane = out.str();
+        out.str(""); out.clear();
+        out.swap(saved);
+        if (!good) return false;            // nothing was written; the caller emits as before
+        out << lane;
+        emitBoxed();
+        line(ind, "} }");                   // the fallback, then the scope the lane opened
+        return true;
+    }
+
     // Statement-position `$x++` / `$x--` / `++$x` / `--$x` on a plain scalar.
     bool tryLaneIncDec(Unary* u, int ind) {
         if (u->op != "++" && u->op != "--") return false;

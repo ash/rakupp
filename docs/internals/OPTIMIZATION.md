@@ -181,6 +181,53 @@ Everything else — `Num`s, strings, `Rat`s, bignums, array elements, method
 calls — fails the lane at compile time or its guards at runtime and takes the
 boxed route unchanged.
 
+### 4. Unboxed loop lanes (skip the box for a whole loop)
+
+Pass 3 removes the box for one expression. What it leaves is a **type check per
+statement, per iteration**, and a write back
+into a `Value` after each one. Nothing inside a loop that calls nothing can
+change a plain scalar's tag, so pass 3b checks once at the loop's entry, runs
+the whole loop on C++ locals, and writes back only where a value escapes:
+
+```cpp
+{ bool __ulane = false; do {                      // -O unboxed loop lane
+    if (!(rtIntSlot(v_si) && rtIntSlot(v_ss))) break;    // ONE guard, at entry
+    long long __u0 = v_si.i, __u1 = v_ss.i;              // unbox
+    long long __ue0 = __u0, __ue1 = __u1;                // entry snapshot
+    while (__u0 < 50000000LL) {
+        long long __t; if (rakupp::add_ovf(__u1, __u0, &__t)) { goto __ubl; } __u1 = __t;
+        if (rakupp::add_ovf(__u0, 1LL, &__t)) { goto __ubl; } __u0 = __t;
+    }
+    __ubl: ;
+    if (bailed) { v_si.i = __ue0; v_ss.i = __ue1; break; }  // rewind, boxed loop reruns
+    v_si.i = __u0; v_ss.i = __u1;                          // commit
+    __ulane = true;
+  } while (0);
+  if (!__ulane) { /* passes 1-3, unchanged, as the fallback */ } }
+```
+
+Two lanes exist: `long long` and — **the first floating-point lane this
+compiler has ever had** — `double`. Before it, every `Num` operator in a
+compiled program dispatched on an operator *string* at run time, because
+`rtAdd` and its family fast-path `rtBothInt` and fall through to `applyArith`
+for anything else.
+
+Each variable gets one lane type, settled by a fixpoint over the loop and never
+changed afterwards, which is what lets the entry guard be exact and the
+write-back be a payload store rather than a retyping. An integer overflow leaves
+the lane, rewinds every variable to its entry value and lets the boxed loop run
+the whole thing again — rare, and simpler to be sure of than resuming mid-flight.
+
+`while`, `until`, C-style `loop`, and `for A..B` over integer endpoints can
+carry a lane. The body may hold arithmetic, comparisons, `if`, nested loops,
+unlabelled `last`/`next` and `my` declarations — and **no call of any kind**,
+which is the rule the whole thing rests on: if the loop can call something, that
+something can observe a variable whose live value is sitting in a register.
+
+`2.0` in Raku is a `Rat`, not a `Num`, so rational code correctly gets no lane;
+only the `2e0` spelling reaches the float one. The design, the measurements and
+what it does *not* reach are in [UNBOX-PLAN.md](../dev/plans/UNBOX-PLAN.md).
+
 ## A related default: in-place `~=` (not gated by `-O`)
 
 `$s ~= …` naively rebuilds the whole string each step — `$s = $s ~ "x"` copies
