@@ -25,8 +25,19 @@ namespace jit {
 
 // ---- the switch ------------------------------------------------------------
 
+// Which machine-code backend a hot loop goes through.
+//
+//   Cxx — emit C++ with the `--exe` Codegen, run a compiler, dlopen the result.
+//         General, and it needs a C++ compiler on the box plus a disk cache to
+//         make the SECOND run of a program fast.
+//   Cnp — copy-and-patch: stitch pre-compiled machine-code snippets that were
+//         built when rakupp was. Narrower, but it needs no compiler and no
+//         disk, and it makes the FIRST run fast. docs/dev/plans/CNP-PLAN.md.
+enum class Backend { Cxx, Cnp };
+
 struct Options {
     bool on = false;
+    Backend backend = Backend::Cxx;
     bool sync = false;        // compile on the interpreter thread (deterministic gates)
     bool verbose = false;     // narrate decisions to stderr
     bool stats = false;       // one summary line at exit
@@ -38,12 +49,18 @@ struct Options {
 // Parse a `--jit[=SPEC]` spec (comma-separated words). Returns "" on success or
 // a human-readable error naming what exists.
 std::string parseSpec(const std::string& spec, Options& out);
+// The same for `--cnp[=SPEC]`. Selects the copy-and-patch backend and takes the
+// words that mean something to it; the ones that only describe a compiler and a
+// cache (`sync`, `nocache`, `pch`) are not offered, because it has neither.
+std::string parseCnpSpec(const std::string& spec, Options& out);
 
 // Install the options. Called once, from main, before the program runs.
 // `cxx` is the C++ compiler to build kernels with and `inc` the directory
 // holding the runtime headers — the same two main.cpp resolves for `--exe`.
 // Either one empty turns the JIT off with a message; `selfExe` goes into the
-// kernel cache key so that any rebuild of rakupp invalidates it.
+// kernel cache key so that any rebuild of rakupp invalidates it. The
+// copy-and-patch backend uses none of the three: it asks only whether this
+// build carries a stencil table.
 void configure(const Options& o, const std::string& cxx, const std::string& inc,
                const std::string& selfExe);
 
@@ -101,4 +118,8 @@ void info();
 std::pair<unsigned long long, unsigned long long> clean();
 
 }  // namespace jit
+
+// Turn the copy-and-patch backend on inside a bundled binary. See Jit.cpp.
+void rakuppCnpBundled(bool on, const std::string& selfExe);
+
 }  // namespace rakupp

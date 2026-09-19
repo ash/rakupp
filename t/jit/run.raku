@@ -18,9 +18,18 @@
 #   nocache      each run compiles what it needs, so the gate never reports on
 #                a kernel some earlier run left on disk
 #
+# With `--cnp` the SECOND lane is the copy-and-patch backend instead
+# (docs/dev/plans/CNP-PLAN.md), run as `--cnp=threshold=0`. The two backends
+# share this harness, this corpus and this oracle, which is the point: they are
+# two ways of compiling the same loops and neither may disagree with the
+# interpreter. There is no `sync` or `nocache` in that lane because there is no
+# background compile and no cache to bypass.
+#
 #   rakupp t/jit/run.raku                    # t/jit/cases, then t/regression + examples
 #   rakupp t/jit/run.raku t/jit/cases        # one directory (or a list of files)
 #   rakupp t/jit/run.raku --quick            # the JIT's own cases only
+#   rakupp t/jit/run.raku --cnp              # the copy-and-patch backend
+#   rakupp t/jit/run.raku --cnp t/cnp/cases  # and its own cases
 #
 # Exit 1 on any disagreement.
 
@@ -29,7 +38,11 @@ my $rakupp = $*EXECUTABLE;
 
 my @args = @*ARGS;
 my $quick = so @args.grep('--quick');
-@args = @args.grep({ $_ ne '--quick' });
+my $cnp   = so @args.grep('--cnp');
+@args = @args.grep({ $_ ne '--quick' && $_ ne '--cnp' });
+# What the second lane is, and what to call it in a message.
+my @lane  = $cnp ?? ('--cnp=threshold=0',) !! ('--jit=sync,threshold=0,nocache',);
+my $LANE  = $cnp ?? '--cnp' !! '--jit';
 
 # Programs whose output is not a function of their source alone, so two runs of
 # the SAME binary need not agree with each other and the comparison says nothing.
@@ -49,9 +62,13 @@ my %skip =
     'rakupp-upgrade.raku' => 'a filesystem-dependent skip line, nondeterministic run to run',
     ;
 
+# The copy-and-patch backend runs the JIT's cases too — the two lower the same
+# whitelist — plus the cases that are about its own machinery.
+my @caseDirs = $cnp ?? ($ROOT.add('t/jit/cases'), $ROOT.add('t/cnp/cases'))
+                    !! ($ROOT.add('t/jit/cases'),);
 my @dirs = @args ?? @args.map(*.IO)
-                 !! ($quick ?? ($ROOT.add('t/jit/cases'),)
-                            !! ($ROOT.add('t/jit/cases'), $ROOT.add('t/regression'), $ROOT.add('examples')));
+                 !! ($quick ?? @caseDirs
+                            !! (|@caseDirs, $ROOT.add('t/regression'), $ROOT.add('examples')));
 my @files;
 for @dirs -> $d {
     if $d.d    { @files.append: $d.dir.grep({ .extension eq 'raku' }).sort(*.Str) }
@@ -72,7 +89,7 @@ my @bad;
 for @files -> $f {
     if %skip{$f.basename} -> $why { $skipped++; next }
     my ($rc0, $out0, $err0) = capture($f);
-    my ($rc1, $out1, $err1) = capture($f, '--jit=sync,threshold=0,nocache');
+    my ($rc1, $out1, $err1) = capture($f, |@lane);
     if $rc0 == $rc1 && $out0 eq $out1 && $err0 eq $err1 {
         $agree++;
     }
@@ -84,42 +101,42 @@ for @files -> $f {
             default             { "exit status ($rc0 vs $rc1)" }
         };
         @bad.push: "$($f.relative($ROOT)) — $what";
-        say "not ok - $($f.relative($ROOT)): $what differs under --jit";
+        say "not ok - $($f.relative($ROOT)): $what differs under $LANE";
         if $out0 ne $out1 {
             say "      plain: " ~ $out0.lines.head(3).join('\n');
-            say "      --jit: " ~ $out1.lines.head(3).join('\n');
+            say "      $LANE: " ~ $out1.lines.head(3).join('\n');
         }
         elsif $err0 ne $err1 {
             say "      plain: " ~ $err0.lines.head(3).join('\n');
-            say "      --jit: " ~ $err1.lines.head(3).join('\n');
+            say "      $LANE: " ~ $err1.lines.head(3).join('\n');
         }
     }
 }
 
-# The JIT's own cases carry a second requirement the corpus cannot: they exist
-# to be tiered up, so a case that agrees only because nothing compiled is not
-# evidence. `--jit=stats` says how many kernels ran.
+# The backends' own cases carry a second requirement the corpus cannot: they
+# exist to be tiered up, so a case that agrees only because nothing compiled is
+# not evidence. `stats` says how many kernels ran.
 my $tiered = 0;
 if !@args {
-    for $ROOT.add('t/jit/cases').dir.grep({ .extension eq 'raku' })
-             .grep({ !.lines[0].starts-with('# JIT: refused') }).sort(*.Str) -> $f {
-        my $p = run $rakupp.Str, '--jit=sync,threshold=0,nocache,stats', $f.Str, :out, :err;
+    my @want = @caseDirs.map({ .dir.grep({ .extension eq 'raku' }) }).flat
+                        .grep({ !.lines[0].starts-with('# JIT: refused' | '# CNP: refused') }).sort(*.Str);
+    for @want -> $f {
+        my $p = run $rakupp.Str, |@lane.map({ $_ ~ ',stats' }), $f.Str, :out, :err;
         $p.out.slurp(:close);
         my $e = $p.err.slurp(:close);
         $tiered++ if $e ~~ / 'kernels entered ' (\d+) / && +$0 > 0;
     }
-    # A case whose first line is `# JIT: refused` exists to be TURNED DOWN, and
+    # A case whose first line is `# JIT: refused` or `# CNP: refused` exists to
+    # be TURNED DOWN, and
     # its answer is the proof the guard fired. Every other case must actually
     # enter a kernel: one that agrees with the interpreter only because nothing
     # compiled is not evidence of anything, and that is the way this gate would
     # rot without noticing.
-    my $want = $ROOT.add('t/jit/cases').dir.grep({ .extension eq 'raku' })
-                    .grep({ !.lines[0].starts-with('# JIT: refused') }).elems;
-    if $tiered < $want {
-        say "not ok - only $tiered of the $want tier-up cases actually entered a kernel";
+    if $tiered < @want.elems {
+        say "not ok - only $tiered of the {@want.elems} tier-up cases actually entered a kernel";
         @bad.push: "tier-up coverage";
     }
-    else { say "ok - $tiered of the $want tier-up cases entered a kernel" }
+    else { say "ok - $tiered of the {@want.elems} tier-up cases entered a kernel" }
 }
 
 say "";

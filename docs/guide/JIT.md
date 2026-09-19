@@ -1,8 +1,19 @@
-# `--jit` — compiling while the program runs
+# `--jit` and `--cnp` — compiling while the program runs
 
-Off by default. With `--jit`, a running program compiles its own hot loops to
+> **Both flags are work in progress, and both spellings are provisional.**
+> They are one feature with two backends behind it, kept apart for now so each
+> can be measured against the interpreter on its own. The expectation is that
+> **`--cnp` becomes the default and `--jit` is removed** — at which point tiering
+> up stops being something you ask for. Until then, treat the flag names, the
+> spec words and the defaults as unsettled: use them to measure and to
+> experiment, not as something a script or a build depends on.
+
+Off by default. With either flag, a running program compiles its own hot loops to
 native code and starts using them partway through the loop, without you asking
-for a build and without a separate binary:
+for a build and without a separate binary. `--jit` does it with a C++ compiler
+([below](#what-happens)); `--cnp` does it with machine-code snippets already
+inside the binary, so it needs no compiler at all
+([below](#--cnp-the-same-thing-without-a-compiler)).
 
 ```bash
 rakupp --jit prog.raku
@@ -41,10 +52,14 @@ but the loop's own control flow.
 Measured on an arm64 Mac, Release build, against the same programs run plainly.
 The machine was busy, so read these as factors:
 
-| | interpreted | `--jit`, warm cache | `--exe -O` |
-|---|---:|---:|---:|
-| 5M-iteration integer `while` | 0.93 s | **0.03 s** | 0.03 s |
-| Mandelbrot, 150×130, floats | 0.41 s | **0.06 s** | 0.06 s |
+| | interpreted | `--jit`, warm cache | `--cnp` | `--exe -O` |
+|---|---:|---:|---:|---:|
+| 5M-iteration integer `while` | 0.96 s | **0.04 s** | **0.05 s** | 0.03 s |
+| `examples/mandel.raku` | 0.12 s | 0.10 s | **0.08 s** | 0.07 s |
+
+(The Mandelbrot row is mostly startup and output: `--exe -O` compiles the whole
+program and still takes 0.07 s of it. The loop itself goes from about 50 ms to
+about 7 ms.)
 
 A tiered loop lands on the `--exe -O` row, which is the honest ceiling for this
 version: it is the same emission, so it is not faster than compiling the whole
@@ -150,7 +165,89 @@ and reaches its `CATCH` exactly as it would have, with every variable reading
 what it should. `--exe` prints no line at all for the same program, so this is
 the compiled backends' shared limit, answered a little more usefully here.
 
+## `--cnp`: the same thing without a compiler
+
+`--jit` needs a C++ compiler on the machine and a cache on the disk, and the run
+that benefits is the second one. `--cnp` is a second backend behind the same
+machinery that needs neither — and it is the one expected to survive: the plan
+is for it to become the default and for `--jit` to go, once it has been run on
+more than the one platform it has been run on so far.
+
+```bash
+rakupp --cnp prog.raku
+```
+
+It works by **copy and patch**. Snippets of machine code — one per operation a
+kernel can perform — were compiled when rakupp itself was built and are carried
+inside the binary. To compile a loop, rakupp copies the snippets it needs into a
+page of memory, one after another, and fills in the blanks: which register, which
+constant, where to go next. There is no compiler to find and nothing to write
+down.
+
+| | `--jit` | `--cnp` |
+|---|---|---|
+| needs a C++ compiler | yes | **no** |
+| writes to your disk | ~50 KB per kernel | **nothing** |
+| time to build one kernel | ~0.55–0.83 s | **~15 µs** (measured over 4,000 of them) |
+| the run that gets faster | the second, from the cache | **the first** |
+| iterations before a loop is hot | 1000 | **100** |
+| what it can compile | whatever `--exe -O` emits | what its snippets cover |
+
+The last row is the trade. Both backends start from the same eligibility list
+above, but `--cnp` can only build what it has snippets for, and a loop it cannot
+build stays interpreted — which costs nothing. `--cnp=verbose` says which loops
+it took and which it turned down.
+
+`--cnp=SPEC` takes `off`, `on`, `verbose`, `stats` and `threshold=N`. There is no
+`sync`, because there is no background compile to wait for, and no `nocache`,
+because there is no cache.
+
+### The one thing it gives up
+
+A `--cnp` kernel keeps the loop's variables in machine registers for the whole
+loop and writes them back when it leaves. That is where its speed comes from, and
+it is invisible — *unless something outside the loop writes one of those
+variables while it runs*. Nothing inside the loop can (a loop that calls anything
+is not eligible), so the only way is another thread:
+
+```raku
+my $stop = False;
+start { until $stop { ... } }     # would never see the write
+$stop = True;
+```
+
+So a `--cnp` kernel is **not entered at all while another Raku thread is live**.
+That loop stays interpreted and behaves exactly as it always did. Single-threaded
+programs — which is most programs, and all of the ones above — are unaffected.
+
+### Which snippets your binary has
+
+```bash
+rakupp -V
+```
+
+reports the instruction set the snippets were built for, or says there are none.
+Today that is arm64; the x86-64 support is written and has not been run. A binary
+with no snippets says so once and runs interpreted.
+
+### In a bundled binary
+
+`--bundle` can carry it, and it is the only backend that can — `--jit` would need
+a C++ compiler on whatever machine runs the bundle, which is the thing a
+single-file deliverable exists not to need. A bundled binary has no options of
+its own, so the choice is made when you build it:
+
+```bash
+rakupp --bundle --cnp prog.raku -o prog
+```
+
+`RAKUPP_CNP=1` turns it on for one run of a bundle built without it, and
+`RAKUPP_CNP=0` turns it off again. Anything else in that variable is read as a
+spec, so `RAKUPP_CNP=verbose,stats` works too.
+
 ## Requirements and limits
+
+These are `--jit`'s; `--cnp` answers the first two differently, above.
 
 - **A C++ compiler has to be on the machine** — the same one `--exe` needs, and
   found the same way (`$CXX`, else `c++`/`clang++`/`g++`). Without one, rakupp
@@ -179,6 +276,8 @@ the whole program rather than one loop, if you want to read what runs.
 
 - [JIT-PLAN.md](../dev/plans/JIT-PLAN.md) — the design, the measurements it was
   chosen on, and what the next steps are.
+- [CNP-PLAN.md](../dev/plans/CNP-PLAN.md) — the copy-and-patch backend: how a
+  snippet is patched, and the four things that made it the harder of the two.
 - [OPTIMIZATION.md](../internals/OPTIMIZATION.md) — the `-O` passes the kernel
   is emitted with.
 - [CLI.md](CLI.md) — the flag among the rest of the command line.

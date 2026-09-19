@@ -223,6 +223,98 @@ set(RAKUPP_ALL_SOURCES ${RAKUPP_SOURCES})
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_UCD_NAMES_SOURCES} ${RAKUPP_UCD_COLL_SOURCES}
                                 ${RAKUPP_UCD_PROPS_SOURCES} ${RAKUPP_PARSE_SOURCES})
 
+# ---- the copy-and-patch stencil table (`--cnp`) ------------------------------
+#
+# docs/dev/plans/CNP-PLAN.md. `src/cnp/stencils.c` is compiled HERE, once, by
+# the machine building rakupp, and `tools/cnp-extract` turns the object file
+# into a C++ table of byte arrays and holes. That table is what ships: at run
+# time the emitter copies and patches those bytes, so a user running a Raku
+# program needs no C compiler at all — which is the whole difference between
+# this backend and `--jit`.
+#
+# Nothing here can fail the build. A platform the extractor cannot read, a
+# cross-compile, or a universal build (which has no single instruction set to
+# extract for) all produce an EMPTY table; `--cnp` then reports that it has no
+# stencils and the program runs interpreted, exactly as it does today.
+set(RAKUPP_CNP_GEN "${CMAKE_CURRENT_BINARY_DIR}/generated/CnpStencils.cpp")
+list(LENGTH CMAKE_OSX_ARCHITECTURES RAKUPP_CNP_NARCH)
+set(RAKUPP_CNP_ON ON)
+if(CMAKE_CROSSCOMPILING)
+  set(RAKUPP_CNP_ON OFF)
+  set(RAKUPP_CNP_WHY "a cross-compile cannot run the extractor")
+elseif(RAKUPP_CNP_NARCH GREATER 1)
+  set(RAKUPP_CNP_ON OFF)
+  set(RAKUPP_CNP_WHY "a universal build has no single instruction set to extract for")
+endif()
+
+# MSVC's driver takes none of the flags below and its object format is not one
+# the extractor reads, so a Windows build takes the empty-table path rather than
+# failing. MinGW compiles fine and produces COFF, which the extractor also does
+# not read — it says so and writes an empty table, which is the same outcome by
+# a longer road.
+if(RAKUPP_CNP_ON AND NOT (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|IntelLLVM"))
+  set(RAKUPP_CNP_ON OFF)
+  set(RAKUPP_CNP_WHY "the stencils need a GCC- or Clang-style driver")
+endif()
+
+if(RAKUPP_CNP_ON)
+  add_executable(cnp_extract "${CMAKE_CURRENT_SOURCE_DIR}/tools/cnp-extract.cpp")
+  target_include_directories(cnp_extract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  set(RAKUPP_CNP_OBJ "${CMAKE_CURRENT_BINARY_DIR}/generated/cnp_stencils.o")
+  # The flags are load-bearing, not taste:
+  #   -fno-*-unwind-tables   a code buffer has no unwind info and needs none,
+  #                          because no stencil may let an exception through
+  #   -fomit-frame-pointer   the fast stencils are leaves; a frame would be six
+  #                          stack operations per op for nothing
+  #   -fno-stack-protector   a guard would be one more global to relocate
+  #   -fPIC                  makes every reference to a hole go through the GOT
+  #                          form the patcher knows how to rewrite
+  set(RAKUPP_CNP_CFLAGS -O2 -std=c11 -fno-asynchronous-unwind-tables -fno-unwind-tables
+                        -fomit-frame-pointer -fno-stack-protector -fPIC)
+  if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES)
+      list(APPEND RAKUPP_CNP_CFLAGS -arch ${CMAKE_OSX_ARCHITECTURES})
+    endif()
+    if(CMAKE_OSX_SYSROOT)
+      list(APPEND RAKUPP_CNP_CFLAGS -isysroot ${CMAKE_OSX_SYSROOT})
+    endif()
+  endif()
+  # Compiled by the C++ driver with `-x c`, not by CMAKE_C_COMPILER: the project
+  # declares only CXX, and making it need a second toolchain to build one object
+  # file would be a new way for a configure to fail on a machine that was fine
+  # before.
+  add_custom_command(
+    OUTPUT "${RAKUPP_CNP_OBJ}"
+    COMMAND "${CMAKE_CXX_COMPILER}" -x c ${RAKUPP_CNP_CFLAGS} -c
+            -o "${RAKUPP_CNP_OBJ}" "${CMAKE_CURRENT_SOURCE_DIR}/src/cnp/stencils.c"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cnp/stencils.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/cnp/CnpAbi.h"
+    COMMENT "Compiling the copy-and-patch stencils"
+    VERBATIM)
+  add_custom_command(
+    OUTPUT "${RAKUPP_CNP_GEN}"
+    COMMAND cnp_extract "${RAKUPP_CNP_OBJ}" "${RAKUPP_CNP_GEN}"
+    DEPENDS "${RAKUPP_CNP_OBJ}" cnp_extract
+    COMMENT "Extracting the stencil table"
+    VERBATIM)
+else()
+  message(STATUS "rakupp: --cnp has no stencils (${RAKUPP_CNP_WHY})")
+  file(WRITE "${RAKUPP_CNP_GEN}"
+"// GENERATED at configure time. ${RAKUPP_CNP_WHY}\n"
+"#include \"cnp/CnpTable.h\"\n"
+"namespace rakupp { namespace cnp {\n"
+"const Stencil     kStencils[]     = {};\n"
+"const char* const kStencilNames[] = { nullptr };\n"
+"const char* const kHelperNames[]  = { nullptr };\n"
+"const unsigned    kCount          = 0;\n"
+"const unsigned    kHelperCount    = 0;\n"
+"const char* const kArch           = \"none\";\n"
+"} }\n")
+endif()
+set_source_files_properties("${RAKUPP_CNP_GEN}" PROPERTIES GENERATED TRUE)
+list(APPEND RAKUPP_SOURCES "${RAKUPP_CNP_GEN}")
+list(APPEND RAKUPP_ALL_SOURCES "${RAKUPP_CNP_GEN}")
+
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 # BuildInfo.cpp reads the stamped header, so the stamp has to run first.
 add_dependencies(rakupp_rt rakupp_build_info)

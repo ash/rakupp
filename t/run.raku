@@ -1605,6 +1605,58 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '--jit leaves no intermediate files behind, even when the program outruns its compile');
     }
 
+    # --cnp: the copy-and-patch backend's flag surface. What it shares with
+    # --jit is deliberate — one harness, one option grammar — so what is pinned
+    # here is the SAME set of questions plus the two things only this backend
+    # can answer: that it needs nothing on the machine, and that it writes
+    # nothing to it.
+    {
+        my $cdir = $work.add('cnpcache');
+        my %e = %*ENV;
+        %e<RAKUPP_JIT_DIR> = $cdir.Str;
+        # The copy-and-patch backend must not consult a C++ compiler at all. An
+        # impossible $CXX proves it: --jit would refuse the run, --cnp cannot
+        # notice.
+        %e<CXX> = '/nonexistent/no-such-compiler';
+        sub cnp-run(*@a) {
+            my $p = run($*EXECUTABLE, |@a, :out, :err, :env(%e));
+            ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
+        }
+        my $prog = 'my $s = 0; my $i = 0; while $i < 20000 { $s = $s + $i; $i = $i + 1 }; say $s';
+        my ($o0, $e0, $x0) = cnp-run('-e', $prog);
+        ok($x0 == 0 && $o0 eq "199990000\n" && $e0 eq '',
+           '--cnp: the default run says nothing about it and is not one');
+
+        my ($o1, $e1, $x1) = cnp-run('--cnp=threshold=0,stats', '-e', $prog);
+        ok($x1 == 0 && $o1 eq $o0, '--cnp: a tiered loop answers what the interpreter answered');
+        ok($e1 ~~ / 'kernels entered ' <[1..9]> /, 'and --cnp=stats says a kernel ran');
+        ok(!$cdir.e, '--cnp writes nothing to disk, with or without a cache directory');
+
+        ok(cnp-run('--cnp=bogus', '-e', '1')[1].contains("unknown spec word 'bogus'"),
+           '--cnp: an unknown spec word names the ones that exist');
+        # The words that only mean something to a compiler-and-cache backend are
+        # not quietly accepted here: there is no background compile to wait for
+        # and no cache to bypass, so offering them would be a lie.
+        ok(cnp-run('--cnp=sync', '-e', '1')[1].contains("unknown spec word 'sync'"),
+           '--cnp: sync is not offered, because there is nothing to synchronise');
+        ok(cnp-run('--cnp=nocache', '-e', '1')[1].contains("unknown spec word 'nocache'"),
+           '--cnp: nocache is not offered, because there is no cache');
+        ok(cnp-run('--cnp=threshold=x', '-e', '1')[1].contains('wants a number'),
+           '--cnp: threshold= refuses a non-number');
+        ok(cnp-run('--cnp=off', '-e', $prog)[0] eq $o0, '--cnp=off runs the program plainly');
+
+        # ONE option, every mode, either side of the command — the -q rule.
+        ok(cnp-run('--cnp', '-c', '-e', '1')[0].contains('Syntax OK'), '--cnp before a mode is legal');
+        ok(cnp-run('-c', '--cnp', '-e', '1')[0].contains('Syntax OK'), '--cnp after a mode is legal');
+        ok(cnp-run('--cnp', '--cpp', '-e', 'say 1')[0].contains('#include'),
+           '--cnp is accepted, and ignored, by a mode that never runs the program');
+
+        # -V is where a bug report looks first: the snippets are baked into the
+        # binary, so which instruction set they are for is a property of the
+        # binary in front of you.
+        ok(cnp-run('-V')[0] ~~ /^^ 'Cnp' \s+ \S/, '-V reports what --cnp has to work with');
+    }
+
     # --stagestats: the phases, and every module load
     {
         my ($o, $e, $x) = run-rakupp-err('--stagestats', '-I', $mlib.Str, '-e', 'use CliM; say cli-m()');

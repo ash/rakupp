@@ -6,7 +6,17 @@ something 100x faster than now", followed by "make it safe and only allow this
 mode with an explicit CLI switch, so that we can test it independently and no
 chance to break the interpreter and the `--exe` parts".*
 
-**Status: P0 and P1 landed 2026-09-19** — `--jit[=SPEC]`, the eligibility walk,
+**Status: WORK IN PROGRESS, and expected to be REMOVED.** The copy-and-patch
+backend ([CNP-PLAN.md](CNP-PLAN.md)) landed behind the same harness the next day
+and needs neither a compiler nor a disk cache; the intent is that `--cnp`
+becomes the default and this flag goes, once `--cnp` has a platform matrix
+behind it. What survives from this file is the harness — the candidate walk, the
+whitelist, the counter, the outermost-loop attribution, the slot binding and its
+container guards — which is exactly the argument its last section made for not
+deleting it. Read the phases below as the history of how that harness was
+arrived at.
+
+**P0 and P1 landed 2026-09-19** — `--jit[=SPEC]`, the eligibility walk,
 `emitJitKernel`, the background compile, the PCH, the on-disk kernel cache, and
 the gate `t/jit/run.raku` with twelve cases of its own. Where the code decided
 differently from the draft below it says so there. What did NOT land: Linux

@@ -117,7 +117,8 @@ rakupp --exe app.raku -o app     # compile it
 | `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
 | `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
-| `--jit[=SPEC]` | Compile hot loops to native code *while the program runs* and enter them mid-loop. Off by default; see [JIT.md](docs/guide/JIT.md) |
+| `--jit[=SPEC]` | *(work in progress)* Compile hot loops to native code *while the program runs* and enter them mid-loop. Off by default; see [JIT.md](docs/guide/JIT.md) |
+| `--cnp[=SPEC]` | *(work in progress)* The same, by copy-and-patch: hot loops are stitched from machine-code snippets compiled into rakupp itself, so no C++ compiler is needed and nothing is cached. Off by default. These two are one feature with two backends, and the plan is for `--cnp` to become the default and `--jit` to go; see [JIT.md](docs/guide/JIT.md#--cnp-the-same-thing-without-a-compiler) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md), walked through in [JS-TUTORIAL.md](docs/guide/JS-TUTORIAL.md)) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |

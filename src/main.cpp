@@ -9,6 +9,7 @@
 #include <cstdio>
 #include "Codegen.h"
 #include "Jit.h"
+#include "Cnp.h"
 #include "codegen/Js.h"
 #ifdef _WIN32
 #include <io.h>         // _isatty
@@ -293,7 +294,14 @@ static bool g_static = false;
 // nothing, the way -l does.
 static bool g_quiet = false;
 
-// --jit[=SPEC] — the tier-up JIT (docs/dev/plans/JIT-PLAN.md). OFF unless asked
+// --jit[=SPEC] and --cnp[=SPEC] — the two tier-up backends. BOTH ARE WORK IN
+// PROGRESS and both spellings are provisional: they are one feature kept behind
+// two flags only so that each backend can be measured against the interpreter on
+// its own, and the expectation is that --cnp becomes the default and --jit is
+// removed. Nothing outside this file should grow a dependency on either name.
+// (docs/dev/plans/JIT-PLAN.md, docs/dev/plans/CNP-PLAN.md). They share one
+// Options and one harness; the last of the two flags on the command line picks
+// the backend. Both OFF unless asked
 // for. Like -q it is ONE option accepted by every mode and position-
 // independently, but it is only ACTED on where a program is interpreted: the
 // compile modes and the source tools never tier-walk anything, so they parse it
@@ -950,7 +958,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
                 " const std::string&, const std::string&, const std::vector<std::string>&); void setupConsole();"
                 " void rakuppSetProgramName(const std::string&);"
-                " int rakuppRefuseInterpreterEval(int, char**); }\n";
+                " int rakuppRefuseInterpreterEval(int, char**); void rakuppCnpBundled(bool, const std::string&); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
@@ -1003,7 +1011,16 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
                 "  rakupp::rakuppSetProgramName(exe);\n"
                 "  char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
-                "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
+             // A bundled binary interprets its embedded source, so the
+             // copy-and-patch backend works inside one exactly as it does here
+             // — and it is the only backend that can, because it needs no
+             // compiler on the machine running the bundle. `rakupp --bundle
+             // --cnp` bakes it in; RAKUPP_CNP steers a single run either way.
+             << "  rakupp::rakuppCnpBundled("
+             << ((g_jitAsked && g_jitOpt.on && g_jitOpt.backend == rakupp::jit::Backend::Cnp)
+                     ? "true" : "false")
+             << ", exe);\n"
+             << "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
         stub << slimManifestTU("bundle");
     }
@@ -1738,7 +1755,8 @@ static const FlagDoc kFlagDocs[] = {
     {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
     {"-o", 2, "FILE", "output file (compile modes, --target=js, --cpp)"},
     {"-O", 0, nullptr, "optimize (compile modes)"},
-    {"--jit", 1, "off on sync verbose stats nocache pch threshold=", "compile hot loops while the program runs (off by default)"},
+    {"--jit", 1, "off on sync verbose stats nocache pch threshold=", "work in progress - compile hot loops while the program runs (off by default)"},
+    {"--cnp", 1, "off on verbose stats threshold=", "work in progress - copy-and-patch hot loops, no compiler and no cache (off by default)"},
     {"--jit-info", 0, nullptr, "what is in the JIT kernel cache"},
     {"--jit-clean", 0, nullptr, "empty the JIT kernel cache"},
     {"-h", 0, nullptr, "help"},
@@ -2465,6 +2483,11 @@ int main(int argc, char** argv) {
                 if (!err.empty()) { std::cerr << err << "\n"; return 4; }
                 g_jitAsked = true; continue;
             }
+            if (a == "--cnp" || a.rfind("--cnp=", 0) == 0) {
+                std::string err = rakupp::jit::parseCnpSpec(a.size() > 5 ? a.substr(6) : "", g_jitOpt);
+                if (!err.empty()) { std::cerr << err << "\n"; return 4; }
+                g_jitAsked = true; continue;
+            }
             if (a == "-o") { if (i + 1 < argc) outPath = argv[++i]; continue; }
             if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); continue; }
             // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
@@ -2771,7 +2794,11 @@ int main(int argc, char** argv) {
 "  --profile[=FILE]             Routine-level wall-time profile after the run\n"
 "                               (stderr by default; a .json FILE gets JSON).\n"
 "                               Builtins are attributed to their caller\n"
-"  --jit[=SPEC]                 Compile hot loops to native code WHILE the program\n"
+"  --jit[=SPEC]                 WORK IN PROGRESS, and so is --cnp below: the two are\n"
+"                               one feature with two backends, and --cnp is expected\n"
+"                               to become the default while --jit is removed. Treat\n"
+"                               both spellings as provisional.\n"
+"                               Compile hot loops to native code WHILE the program\n"
 "                               runs, and enter them mid-loop. Off by default; needs\n"
 "                               a C++ compiler, as --exe does. SPEC is a comma list:\n"
 "                               off, sync, verbose, stats, nocache, pch,\n"
@@ -2779,6 +2806,16 @@ int main(int argc, char** argv) {
 "                               ~/.cache/rakupp/jit (~50 KB each), so it is the\n"
 "                               SECOND run of a program that starts fast\n"
 "  --jit-info / --jit-clean     What is in the JIT kernel cache / empty it\n"
+"  --cnp[=SPEC]                 WORK IN PROGRESS; see --jit above for what that means\n"
+"                               for both of them.\n"
+"                               The same tier-up, by copy-and-patch: hot loops are\n"
+"                               stitched from machine-code snippets compiled into\n"
+"                               rakupp itself, so NO C++ compiler is needed and\n"
+"                               nothing is written to disk. A kernel costs\n"
+"                               microseconds, so the FIRST run of a program is the\n"
+"                               one that gets faster. Narrower than --jit: a loop it\n"
+"                               cannot lower stays interpreted. SPEC is a comma\n"
+"                               list: off, verbose, stats, threshold=N\n"
 "  -q, --quiet                  Drop the lines a mode prints about itself: `Syntax\n"
 "                               OK`, the lint summary, `Compiled …`, the installer's\n"
 "                               progress and `already installed:`, the REPL banner.\n"
@@ -3023,6 +3060,13 @@ int main(int argc, char** argv) {
                   << "Build   " << rakupp::buildId() << ", " << rakupp::buildDate() << "\n"
                   << "Target  " << rakupp::platform() << ", " << rakupp::compilerId() << "\n"
                   << "FFI     " << ffi::describe() << "\n"
+                  // What `--cnp` has to work with in THIS binary. The stencils
+                  // are baked in at build time, so "which instruction set, and
+                  // are there any" is a property of the binary in front of you
+                  // and the first thing to ask of a `--cnp` bug report.
+                  << "Cnp     " << (rakupp::cnp::available()
+                        ? std::string("copy-and-patch stencils for ") + rakupp::cnp::arch()
+                        : std::string("none — ") + rakupp::cnp::unavailableReason()) << "\n"
                   << "Exe     " << exePath << "\n"
                   << "Home    https://raku.online\n";
         return 0;
@@ -3587,10 +3631,15 @@ int main(int argc, char** argv) {
     // RUN reaches here, which is the whole of where the flag means anything —
     // the compile modes and the source tools returned long before this point.
     if (g_jitAsked && g_jitOpt.on) {
-        std::string jlib, jinc;
-        if (!findRuntime(exePath, jlib, jinc)) jinc.clear();
-        rakupp::jit::configure(g_jitOpt, jinc.empty() ? std::string() : nativeCxx(jlib),
-                               jinc, exePath);
+        if (g_jitOpt.backend == rakupp::jit::Backend::Cnp) {
+            // Nothing to find: the stencils are already in this binary.
+            rakupp::jit::configure(g_jitOpt, std::string(), std::string(), exePath);
+        } else {
+            std::string jlib, jinc;
+            if (!findRuntime(exePath, jlib, jinc)) jinc.clear();
+            rakupp::jit::configure(g_jitOpt, jinc.empty() ? std::string() : nativeCxx(jlib),
+                                   jinc, exePath);
+        }
     }
     if (replAfter) {
         // python -i: the program runs in the session's own interpreter, and the

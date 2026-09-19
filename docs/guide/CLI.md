@@ -643,6 +643,12 @@ itself. The whole story is [JUPYTER.md](JUPYTER.md).
 
 ## `--jit`: compiling while the program runs
 
+**Work in progress, and the spelling is provisional.** `--jit` and `--cnp`
+below are one feature with two backends, kept apart for now so each can be
+measured on its own; the expectation is that `--cnp` becomes the default and
+`--jit` is removed. Use them to experiment, not as something a script depends
+on. [JIT.md](JIT.md) has the whole story.
+
 Off by default. `--jit` lets a running program compile its own hot loops to
 native code and start using them mid-loop, without you asking for a build:
 
@@ -688,6 +694,61 @@ The flag is accepted by every mode, as `-q` is, but only a *run* acts on it:
 the compile modes and the source tools never tier-walk anything, so they take
 it and ignore it. A machine with no C++ compiler says so once and runs
 interpreted.
+
+## `--cnp`: the same thing without a compiler
+
+**Work in progress**, like `--jit` above, and the one of the two expected to
+survive: the plan is for it to become the default, at which point tiering up
+stops being something you ask for.
+
+Off by default. `--cnp` tiers up the same loops as `--jit`, through the same
+machinery, but it builds the native code a different way — by **copy and
+patch**. Snippets of machine code were compiled when rakupp itself was built and
+are carried inside the binary; to compile a loop, rakupp copies the snippets it
+needs and fills in the blanks. So:
+
+```bash
+rakupp --cnp prog.raku
+```
+
+- **No C++ compiler has to be installed.** Nothing is looked for on your
+  machine, because the machine code is already in the binary you are running.
+- **Nothing is written to your disk.** There is no cache to warm, to clean, or
+  to invalidate, and no `--cnp-info` because there is nothing to report.
+- **The first run is the fast one.** A kernel takes microseconds to build rather
+  than half a second, so it is ready long before the loop finishes. That is also
+  why it waits only 100 iterations to decide a loop is hot, against `--jit`'s
+  1000.
+
+`--cnp=SPEC` takes a comma-separated list: `off`, `on`, `verbose`, `stats`,
+`threshold=N`. There is no `sync` (there is no background compile to wait for)
+and no `nocache` (there is no cache).
+
+**It is narrower than `--jit`.** The two share one eligibility list, but the
+copy-and-patch backend can only build what its snippets cover, and a loop it
+cannot build stays interpreted — which costs nothing. `--cnp=verbose` says which
+loops it took and which it turned down. One case it always turns down: a loop
+running **while another thread is live**, because it keeps the loop's variables
+in registers for the loop's duration and another thread's write would not be
+seen.
+
+`rakupp -V` reports whether the binary in front of you carries any snippets, and
+for which instruction set. Today that is arm64; the x86-64 support is written
+and untested. The design is in
+[CNP-PLAN.md](../dev/plans/CNP-PLAN.md).
+
+`--bundle` can carry it. A bundled binary has no options of its own — everything
+after its name belongs to the program inside it — so the choice is made when you
+build the bundle, and `RAKUPP_CNP=1` turns it on for a single run of a bundle
+built without it (`RAKUPP_CNP=0` turns it off again):
+
+```bash
+rakupp --bundle --cnp prog.raku -o prog   # prog tiers up its own hot loops
+```
+
+`--cnp` is the only backend a bundle can carry, because `--jit` would need a C++
+compiler on whatever machine runs it — which is the thing a single-file
+deliverable exists not to need.
 
 ## Choosing a backend
 

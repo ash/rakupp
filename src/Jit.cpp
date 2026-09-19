@@ -16,6 +16,7 @@
 // for everything but the loop's own control flow.
 #include "Jit.h"
 #include "Ast.h"
+#include "Cnp.h"
 #include "Codegen.h"
 #include "Interpreter.h"
 #include "Platform.h"   // dlopen/dlsym and their Win32 shims
@@ -65,8 +66,10 @@ std::atomic<int> g_inFlight{0};
 std::atomic<unsigned> g_examined{0}, g_eligible{0}, g_compiled{0},
                       g_cacheHits{0}, g_failed{0}, g_entered{0};
 
+const char* tag() { return g_opt.backend == Backend::Cnp ? "[cnp] " : "[jit] "; }
+
 void note(const std::string& s) {
-    if (g_opt.verbose) std::cerr << "[jit] " << s << "\n";
+    if (g_opt.verbose) std::cerr << tag() << s << "\n";
 }
 
 // ---- the kernel ------------------------------------------------------------
@@ -89,6 +92,10 @@ struct Site {
     std::string why;                  // ineligibility reason, for --jit=verbose
     std::string src;                  // the emitted TU (also the cache key's material)
     std::string fnName;               // the kernel's extern "C" entry point
+    // The copy-and-patch backend's kernel. Only one of `fn` and this is ever
+    // set, and which one is decided once, by the command line.
+    std::atomic<cnp::Kernel*> cnpKernel{nullptr};
+    std::atomic<bool> notedThreads{false};   // the "a worker is live" line, said once
 };
 
 namespace {
@@ -624,17 +631,22 @@ void examine(Site* s) {
     // draft of this file was no faster than the interpreter. The dylib's PATH is
     // what distinguishes one kernel from another.
     const std::string fnName = "rakupp_jit_kernel";
-    try {
-        s->src = emitJitKernel(loop, fnName, s->slots);
-    } catch (const CodegenError& e) {
-        s->why = e.msg;
-        s->state.store(StIneligible, std::memory_order_release);
-        note("loop at line " + std::to_string(loop->line) + " refused by the emitter: " + e.msg);
-        return;
-    } catch (...) {
-        s->why = "the emitter raised";
-        s->state.store(StIneligible, std::memory_order_release);
-        return;
+    // Only the C++ backend needs a translation unit. Copy-and-patch lowers
+    // straight from the AST when the loop is compiled, which is microseconds
+    // later, so emitting C++ here would be work thrown away.
+    if (g_opt.backend == Backend::Cxx) {
+        try {
+            s->src = emitJitKernel(loop, fnName, s->slots);
+        } catch (const CodegenError& e) {
+            s->why = e.msg;
+            s->state.store(StIneligible, std::memory_order_release);
+            note("loop at line " + std::to_string(loop->line) + " refused by the emitter: " + e.msg);
+            return;
+        } catch (...) {
+            s->why = "the emitter raised";
+            s->state.store(StIneligible, std::memory_order_release);
+            return;
+        }
     }
     s->fnName = fnName;
     s->state.store(StEligible, std::memory_order_release);
@@ -646,6 +658,27 @@ void examine(Site* s) {
 void startCompile(Site* s) {
     if (s->requested.exchange(true, std::memory_order_acq_rel)) return;
     s->state.store(StCompiling, std::memory_order_release);
+    if (g_opt.backend == Backend::Cnp) {
+        // Microseconds, so it happens right here: no thread, no subprocess, no
+        // file. That is also why the threshold this backend runs at is two
+        // orders of magnitude below the C++ one.
+        std::string why;
+        cnp::Kernel* k = cnp::compile(s->loop, s->slots, why);
+        if (!k) {
+            s->why = why;
+            s->state.store(StFailed, std::memory_order_release);
+            g_failed.fetch_add(1, std::memory_order_relaxed);
+            note("loop at line " + std::to_string(s->loop->line) + " did not lower: " + why);
+            return;
+        }
+        s->cnpKernel.store(k, std::memory_order_release);
+        s->state.store(StReady, std::memory_order_release);
+        g_compiled.fetch_add(1, std::memory_order_relaxed);
+        note("loop at line " + std::to_string(s->loop->line) + " lowered to " +
+             std::to_string(cnp::opCount(k)) + " ops, " + std::to_string(cnp::regCount(k)) +
+             " registers, " + std::to_string(cnp::codeBytes(k)) + " bytes");
+        return;
+    }
     std::string src = s->src, fn = s->fnName;
     auto work = [s, src, fn]() {
         KernelFn k = buildAndLoad(src, fn);
@@ -671,8 +704,10 @@ void startCompile(Site* s) {
 
 // ---- the public surface ----------------------------------------------------
 
-std::string parseSpec(const std::string& spec, Options& out) {
-    out.on = true;
+namespace {
+// The spec words both flags share, plus the ones only a compiler-and-cache
+// backend has. `flag` is what an error message calls itself.
+std::string parseWords(const std::string& spec, Options& out, const char* flag, bool cnp) {
     if (spec.empty()) return "";
     size_t i = 0;
     while (i <= spec.size()) {
@@ -681,26 +716,53 @@ std::string parseSpec(const std::string& spec, Options& out) {
         if (!w.empty()) {
             if (w == "off") out.on = false;
             else if (w == "on") out.on = true;
-            else if (w == "sync") out.sync = true;
             else if (w == "verbose") out.verbose = true;
             else if (w == "stats") out.stats = true;
-            else if (w == "nocache") out.cache = false;
-            else if (w == "pch") out.pch = true;
-            else if (w == "nopch") out.pch = false;
+            else if (!cnp && w == "sync") out.sync = true;
+            else if (!cnp && w == "nocache") out.cache = false;
+            else if (!cnp && w == "pch") out.pch = true;
+            else if (!cnp && w == "nopch") out.pch = false;
             else if (w.rfind("threshold=", 0) == 0) {
                 std::string n = w.substr(10);
                 if (n.empty() || n.find_first_not_of("0123456789") != std::string::npos)
-                    return "--jit: threshold= wants a number, got '" + n + "'";
+                    return std::string(flag) + ": threshold= wants a number, got '" + n + "'";
                 out.threshold = (unsigned)std::strtoul(n.c_str(), nullptr, 10);
             } else {
-                return "--jit: unknown spec word '" + w +
-                       "' (known: off, on, sync, verbose, stats, nocache, pch, threshold=N)";
+                return std::string(flag) + ": unknown spec word '" + w + "' (known: off, on, verbose, "
+                       "stats, threshold=N" + (cnp ? "" : ", sync, nocache, pch") + ")";
             }
         }
         if (j == std::string::npos) break;
         i = j + 1;
     }
     return "";
+}
+}  // namespace
+
+// Switching backends resets the fields the other one owns, so that `--cnp
+// --jit` means the C++ backend at ITS defaults rather than the C++ backend
+// wearing copy-and-patch's threshold and its disabled cache. Repeating the SAME
+// flag accumulates, as it always did: `--jit=sync --jit=verbose` is both.
+std::string parseSpec(const std::string& spec, Options& out) {
+    if (out.backend != Backend::Cxx) { out.sync = false; out.cache = true; out.threshold = 1000; }
+    out.on = true;
+    out.backend = Backend::Cxx;
+    return parseWords(spec, out, "--jit", false);
+}
+
+// `--cnp` is the same harness with the copy-and-patch backend. Its default
+// threshold is a hundredth of the C++ one because a kernel costs microseconds
+// to produce rather than half a second, so waiting a thousand iterations to
+// decide would throw away most of what there is to win.
+std::string parseCnpSpec(const std::string& spec, Options& out) {
+    if (out.backend != Backend::Cnp) {
+        out.sync = true;       // there is nothing to do on another thread
+        out.cache = false;     // and nothing to put on disk
+        out.threshold = 100;
+    }
+    out.on = true;
+    out.backend = Backend::Cnp;
+    return parseWords(spec, out, "--cnp", true);
 }
 
 void configure(const Options& o, const std::string& cxx, const std::string& inc,
@@ -713,6 +775,19 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
         g_opt.threshold = (unsigned)std::strtoul(t, nullptr, 10);
     if (std::getenv("RAKUPP_JIT_VERBOSE")) g_opt.verbose = true;
     if (!o.on) { g_on = false; return; }
+    if (g_opt.backend == Backend::Cnp) {
+        // Nothing to look for on the machine: the stencils were compiled into
+        // this binary. The only question is whether this build has any.
+        if (!cnp::available()) {
+            std::cerr << "--cnp: " << cnp::unavailableReason() << " — running interpreted\n";
+            g_on = false;
+            return;
+        }
+        g_on = true;
+        note(std::string("on — copy-and-patch for ") + cnp::arch() + ", threshold " +
+             std::to_string(g_opt.threshold));
+        return;
+    }
     if (g_cxx.empty() || g_inc.empty()) {
         std::cerr << "--jit: no C++ compiler or runtime headers found — running interpreted\n";
         g_on = false;
@@ -809,8 +884,37 @@ bool refuse(Site* s, const std::string& why) {
 bool runIfReady(Site* s, Interpreter& I, Env* env) {
     if (!s) return false;
     if (s->state.load(std::memory_order_acquire) != StReady) return false;
+    const bool isCnp = g_opt.backend == Backend::Cnp;
     KernelFn fn = s->fn.load(std::memory_order_acquire);
-    if (!fn) return false;
+    cnp::Kernel* ck = s->cnpKernel.load(std::memory_order_acquire);
+    if (!fn && !ck) return false;
+    // A copy-and-patch kernel HOISTS its slots: it unboxes them into registers
+    // at entry and writes them back at exit, which is where its speed comes
+    // from. That is unobservable only while nothing else can touch those
+    // containers. Nothing on THIS thread can — the whitelist admits no calls —
+    // and `liveWorkers_ == 0` is what says nothing on any other thread can
+    // either.
+    //
+    // Found by the corpus gate, not by reasoning: `my $stop = False; start {
+    // until $stop {…} }; $stop = True` hung, because the kernel read `$stop`
+    // once and the write it was waiting for landed in the container.
+    // `--jit` binds a `Value&` and re-reads it per iteration, so it never had
+    // this to answer.
+    //
+    // The test comes BEFORE the slot binding on purpose: a refusal has to cost
+    // one relaxed load, because the interpreter asks again on every iteration.
+    // The site is not retired — a program that joins its workers gets its
+    // kernel back at the next entry.
+    // Both counters, because that pair is what the rest of the engine means by
+    // "is there concurrent work": a cued job is not a live worker yet, but it
+    // becomes one without this thread doing anything.
+    if (isCnp && (I.liveWorkers_.load(std::memory_order_acquire) > 0 ||
+                  I.cuedLoads_.load(std::memory_order_acquire) > 0)) {
+        if (!s->notedThreads.exchange(true, std::memory_order_relaxed))
+            note("loop at line " + std::to_string(s->loop->line) +
+                 " not entered while another thread is live — its variables are shared");
+        return false;
+    }
 
     std::vector<Value*> slots;
     slots.reserve(s->slots.size());
@@ -843,6 +947,16 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         slots.push_back(cell);
     }
     g_entered.fetch_add(1, std::memory_order_relaxed);
+    if (isCnp) {
+        I.restoreTestLine(s->loop->line);
+        // A kernel that will not bind HERE is retired rather than retried —
+        // `run` answers false for exactly one thing the guards above cannot
+        // see, two names sharing a single container.
+        std::string why;
+        if (!cnp::run(ck, I, slots.empty() ? nullptr : slots.data(), s->slotWritten, why))
+            return refuse(s, why);
+        return true;
+    }
     // A kernel does not advance the interpreter's statement line — the whole
     // point is that it runs without touching interpreter state per statement —
     // so a fault raised inside one would be reported at whatever line happened
@@ -856,6 +970,34 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
 }
 
 std::string cacheDir() { return jitDir(); }
+
+}  // namespace jit
+
+// A bundled binary has no option surface of its own — every argument after the
+// executable belongs to the embedded program, which is the whole contract of
+// `--bundle`. So the backend is decided when the bundle is BUILT (`rakupp
+// --bundle --cnp prog.raku`) and baked into the stub, and one run can still be
+// steered with RAKUPP_CNP: `0` off, `1` on, anything else a `--cnp` spec.
+//
+// Only the copy-and-patch backend is offered here. `--jit` would need a C++
+// compiler and the runtime headers on the machine running the bundle, which is
+// exactly what a single-file deliverable is meant not to need.
+void rakuppCnpBundled(bool on, const std::string& selfExe) {
+    std::string spec;
+    if (const char* e = std::getenv("RAKUPP_CNP")) {
+        std::string v = e;
+        if (v == "0" || v == "off") return;
+        on = true;
+        if (v != "1") spec = v;
+    }
+    if (!on) return;
+    jit::Options o;
+    std::string err = jit::parseCnpSpec(spec, o);
+    if (!err.empty()) { std::cerr << err << "\n"; return; }
+    jit::configure(o, std::string(), std::string(), selfExe);
+}
+
+namespace jit {
 
 std::pair<unsigned long long, unsigned long long> clean() {
     unsigned long long n = 0, bytes = 0;
@@ -909,9 +1051,10 @@ void info() {
 
 void report() {
     if (!g_opt.stats || !g_on) return;
-    std::cerr << "[jit] examined " << g_examined.load() << ", eligible " << g_eligible.load()
-              << ", compiled " << g_compiled.load() << ", cache hits " << g_cacheHits.load()
-              << ", failed " << g_failed.load() << ", kernels entered " << g_entered.load() << "\n";
+    std::cerr << tag() << "examined " << g_examined.load() << ", eligible " << g_eligible.load()
+              << ", compiled " << g_compiled.load();
+    if (g_opt.backend == Backend::Cxx) std::cerr << ", cache hits " << g_cacheHits.load();
+    std::cerr << ", failed " << g_failed.load() << ", kernels entered " << g_entered.load() << "\n";
 }
 
 }  // namespace jit
