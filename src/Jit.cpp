@@ -379,9 +379,12 @@ std::string shq(const std::string& s) {
 }
 
 int run(const std::string& cmd) {
-    std::string c = cmd;
-    if (!g_opt.verbose) c += " >/dev/null 2>&1";
-    return std::system(c.c_str());
+    if (g_opt.verbose) return std::system(cmd.c_str());
+    // The GROUP is redirected, not the last command in it. Every command here
+    // is a `&&`/`;` chain, and `a && b >/dev/null 2>&1` redirects only `b` — so
+    // the compiler's own diagnostics were reaching the user's terminal on a
+    // failed kernel, in the middle of their program's output.
+    return std::system(("{ " + cmd + " ; }" + " >/dev/null 2>&1").c_str());
 }
 
 // What the cache key has to change with: the kernel source, the headers it is
@@ -538,8 +541,15 @@ KernelFn buildAndLoad(const std::string& src, const std::string& fnName) {
         // land for the next one. `mv` within a directory is atomic, so a reader
         // sees either no kernel or a complete one.
         cmd += " && mv -f " + shq(tmp) + " " + shq(so);
+        // The TU is removed by the shell too, for the same reason the publish is
+        // done there: a program that exits before its own compile finishes takes
+        // this thread with it, and a `remove()` written below would never run.
+        // That left one orphaned .cpp in the cache for every such run — which is
+        // most of them, since a compile takes longer than a short program does.
+        // Kept under --jit=verbose, where reading the emitted kernel is the point.
+        if (!g_opt.verbose) cmd += " ; rm -f " + shq(cpp);
         int rc = run(cmd);
-        if (!g_opt.verbose) ::remove(cpp.c_str());
+        if (!g_opt.verbose) ::remove(cpp.c_str());   // belt and braces if we outlive it
         if (rc != 0) { ::remove(tmp.c_str()); note("compile failed for " + fnName); return nullptr; }
         g_compiled.fetch_add(1, std::memory_order_relaxed);
     } else {

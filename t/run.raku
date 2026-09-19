@@ -1594,6 +1594,15 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         my ($co, $ce, $cx) = jit-run('--jit-clean');
         ok($cx == 0 && $co.contains('removed'), '--jit-clean empties it');
         ok(!$jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat.elems, 'and leaves nothing behind');
+
+        # A kernel's TU is removed by the SHELL, not by a `remove()` after the
+        # compiler returns — a program that exits before its own compile finishes
+        # never reaches that line, which left one orphaned .cpp per run.
+        jit-run('--jit', '-e', $prog);
+        sleep 2;
+        my @left = $jdir.e ?? $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat !! ();
+        ok(!@left.grep({ .extension eq 'cpp' | 'tmp' }),
+           '--jit leaves no intermediate files behind, even when the program outruns its compile');
     }
 
     # --stagestats: the phases, and every module load
