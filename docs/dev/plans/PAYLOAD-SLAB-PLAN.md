@@ -430,5 +430,17 @@ list is thread-private, so a block can only be reissued on the thread that freed
 it. That is RVec's property too, and it is the reason this design copied RVec's
 rather than inventing one.
 
-**Still not run: Roast.** The zero-regression per-file gate has not been done,
-and this must not merge without it.
+**Roast — the zero-regression per-file gate: GREEN.** Two full runs of the same
+1,464-file corpus (`roast b2cbe8a42`), one under the changed binary and one
+under a Release build of the baseline commit, `--cpu=5`:
+
+| | baseline | change |
+|---|---:|---:|
+| files reporting a status | 1,363 | 1,363 |
+| fully passing | **698** | **698** |
+| per-file status differences | — | **0** |
+
+Not 698 against `COUNTING.md`'s 676 — that figure predates many commits on
+`main`, so it is not the gate. The gate is a same-day diff of the two file
+lists, and it is empty: no file moved between PASS, part, TIME or no-TAP in
+either direction.
