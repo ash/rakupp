@@ -1,0 +1,200 @@
+# Plan: the allocator line, not the copy line
+
+*Written 2026-09-20, before any engine change. Priced with
+[tools/payload-slab-probe.cpp](../../../tools/payload-slab-probe.cpp).*
+
+[VALUE32-PLAN.md](VALUE32-PLAN.md) profiled an array/hash-heavy 1.8 s workload
+and the top line was not `Value`:
+
+    malloc family 21.5%   std::vector<Value> members 7.6%
+    Value copy/move 3.7%  thread-local access 6.1%
+
+The representation campaign is about the 3.7%. This file prices the 21.5%.
+Every call into the allocator comes from a **payload** — `make_shared<ValueList>`
+(24 sites), `<ObjectData>` (47), `<ValueExt>`, `<MatchData>`, `<ValueHash>`,
+`<StrBody>`. All fixed-size, all high-churn: the textbook slab shape.
+
+**The number a stranger can re-measure:**
+
+```bash
+cmake -S . -B build-probe -DCMAKE_BUILD_TYPE=Release
+cmake --build build-probe --target rakupp_rt rakupp_parse rakupp_ucd_names \
+      rakupp_ucd_coll rakupp_ucd_props rakupp_stubs -j 8
+c++ -std=c++20 -O2 -DNDEBUG -Isrc -Iinclude tools/payload-slab-probe.cpp \
+    build-probe/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props,stubs}.a \
+    -o /tmp/payload-slab-probe && /tmp/payload-slab-probe
+```
+
+Measurements below: 2026-09-20, Darwin 25.5 / arm64, Apple clang, `Value` at
+128 bytes. Two consecutive runs agree to within 0.1x on every ratio except
+section E's malloc column, noted there. These are C++ **probe** timings that
+price allocation directly; none is an engine kernel number and none belongs in
+BENCHMARKS.md.
+
+---
+
+## What one value of each shape costs the allocator
+
+A global `operator new` records every block. RVec's capacity-1..4 free lists are
+**warm**, as they are in a running program:
+
+| shape | blocks | bytes | sizes |
+|---|---:|---:|---|
+| Int | 0 | 0 | — |
+| Str (short) | 0 | 0 | — |
+| Str (promoted) | 2 | 168 | 80, 88 |
+| Array (empty) | 1 | 48 | 48 |
+| Array (2 elems) | 1 | 48 | 48 |
+| Hash (empty) | 1 | 136 | 136 |
+| Hash (3 keys) | 4 | 4208 | 8, 32, 136, 513 |
+| Match | 4 | 464 | 48, 88, 136, 192 |
+| ValueExt only | 1 | 192 | 192 |
+| Object | 1 | 304 | 304 |
+
+Three things fall out of the table.
+
+**The hot case is already free.** An `Int` and a short `Str` allocate nothing.
+Batches 2 and 4 of the representation campaign did that, and nothing here
+touches it.
+
+**`RVec`'s pool works, and it covers exactly one of the two blocks.** "Array
+(2 elems)" costs the same single block as an empty one: the capacity-1 and
+capacity-2 *data* blocks come off the thread-local free list in
+[src/ValueVec.h](../../../src/ValueVec.h). What is left is the 48-byte
+`shared_ptr` **control block** — the refcounts plus the 24-byte `RVec` header —
+and it goes to malloc every time. That block is the unfinished half of a pool
+the codebase already has. (Run the probe with the warm-up loop removed and the
+same line reads 3 blocks / 432 bytes: that is the cold-pool number, and quoting
+it for a running interpreter would overstate the shape by two blocks of three.)
+
+**A `Match` is four allocations.** `ValueExt` (192), `MatchData` (88),
+`ValueList` (48), `ValueMap` (136) — 464 bytes across four malloc calls for one
+regex match, on the engine's hottest parsing path.
+
+## The drop-in: `allocate_shared` with a thread-local slab
+
+Same ownership, same refcount, same call sites — only the allocator changes.
+3M construct+destroy pairs:
+
+| payload | make_shared | slab | ratio |
+|---|---:|---:|---:|
+| ValueList | 90.24 ms | 30.01 | **3.01x** |
+| ValueExt | 92.02 | 30.18 | 3.05x |
+| MatchData | 87.18 | 29.95 | 2.91x |
+| ValueHash | 92.42 | 33.93 | 2.72x |
+| ObjectData | 116.36 | 42.00 | 2.77x |
+
+And on whole `Value`s, built and destroyed, 2M each:
+
+| shape | today | slab | ratio |
+|---|---:|---:|---:|
+| Array (empty) | 67.82 ms | 23.49 | 2.89x |
+| arg list (2 elems) | 136.35 | 82.23 | 1.66x |
+| Match | 270.91 | 96.71 | 2.80x |
+| Object | 78.82 | 27.82 | 2.83x |
+
+The argument list is the honest one: 1.66x, not 3x, because the two `Value`
+constructions and the pooled data block dilute the one control block the slab
+actually improves. It is also the shape that runs on every interpreted call.
+
+## Churn order does not hurt it
+
+A slab's advertised case is LIFO, which is also a tree-walker's normal case. The
+worry is a long-lived structure that frees in arbitrary order. Measured — a live
+set of 200k `ValueList`s, 3M replacements at pseudo-random indices:
+
+    make_shared 215.94 ms    slab 35.74    6.04x
+
+**Better than LIFO, not worse.** malloc degrades as the live set fragments; an
+intrusive free list does not care what order blocks come back in. This is the
+one result that contradicted the prediction going in.
+
+## Threads
+
+1.5M construct+destroy per thread, wall clock:
+
+| threads | make_shared | slab | ratio |
+|---:|---:|---:|---:|
+| 1 | 40.39 ms | 15.12 | 2.67x |
+| 2 | 233.32 | 15.71 | 14.85x |
+| 4 | 51.92 | 18.07 | 2.87x |
+| 8 | 78.72 | 22.97 | 3.43x |
+
+**The load-bearing claim is the slab column, which is flat** (15.1 → 23.0 across
+an 8x thread count). The malloc column is not monotonic and the 2-thread figure
+is a reproducible pathology — it survives best-of-7 and reappears across runs
+(233 ms, then 197 ms) — but we did not chase it to a cause, so **the 14.85x
+should not be quoted as a result.** It is a reason to look at what libmalloc
+does at two threads, separately from this plan.
+
+## The ceiling, and what it would cost
+
+3M `ValueList` construct+destroy:
+
+| | | |
+|---|---:|---|
+| `make_shared` | 90.33 ms | 1.00x |
+| `allocate_shared` + slab | 30.38 | **2.97x** — drop-in, refcount kept |
+| slab + placement new, no `shared_ptr` | 8.84 | 10.22x — no control block, no atomic |
+| bump arena, never frees | 15.65 | 5.77x |
+
+Two things worth saying about that table.
+
+**The bump arena is slower than the free list.** 15.65 vs 8.84. A freed slot
+comes back off the LIFO list still in L1; a bump pointer walks forward through
+fresh 1 MB chunks and misses. So "never free" is not the floor — reuse beats it.
+
+**The 10.22x is the same ~190 ownership sites `VALUE32-PLAN` already costed.**
+That file measured an intrusive refcount at **1.08x on copying** and concluded it
+earns its place only as part of a size target. This is a different lever on the
+same sites: on *allocation* the control block is worth 3.4x beyond what the
+allocator swap gets. Neither number alone justifies the move; together they are
+a better case than either made separately.
+
+## What this does NOT claim
+
+**No wall-clock number.** The probe prices allocator operations. Their share of a
+real program is the 21.5% line, and only the part of it that is poolable
+fixed-size payloads — not `std::string`, not deque chunks, not AST nodes. A 3x
+on a subset of 21.5% is the **ceiling**, and the only way to learn the real
+figure is to wire it in and run the benchmark suite. Nothing here should be
+quoted as "rakupp got N% faster".
+
+**The slab in the probe never returns memory.** That is deliberate for a probe
+and wrong for the engine: `RVec::dealloc` caps each class at `kPoolMax = 64`
+blocks for a reason the codebase already learned the hard way (a million
+one-element arrays holding four-element blocks: 424 MB → 664 MB, 22% of that
+program's cycles). A real implementation needs that cap, and the cap will shave
+some of the 3x on spiky workloads. The probe does not price that.
+
+## The order to do it in
+
+1. Generalise `RVec`'s `BlockPool` into a size-classed thread-local slab with
+   `kPoolMax` retention, in its own header. No call-site changes.
+2. Swap `make_shared<T>` → `allocate_shared<T>` at the payload sites, heaviest
+   first: `ValueList` (24), `ObjectData` (47), then `ValueExt` / `MatchData` /
+   `ValueHash`. Mechanical, reversible per type.
+3. Re-run BENCHMARKS.md kernels. If the JSON and array kernels do not move, stop
+   — the 21.5% was not where this plan assumed.
+4. Only then consider the control block (the 10.22x), and only jointly with
+   `VALUE32-PLAN`'s `Ref`, since it is the same ~190 sites.
+
+## Gates
+
+Nothing below has been run — no engine change exists yet. When one does:
+`t/run.raku` twice, full Roast per-file diff against a same-day pre-change run
+(the zero-regression file list is the gate), `-DRAKUPP_PTR_CENSUS` still
+compiles, and — because the slab is thread-local and blocks freed on one thread
+join that thread's list — **ThreadSanitizer with zero reports**, plus parmap and
+`t/stress/parallel-map` under `RAKUPP_PARALLEL=1`. The threading discipline is
+the risk in this change, not the arithmetic.
+
+## What would falsify this plan
+
+- If the benchmark kernels do not move after step 2, the poolable share of the
+  21.5% is small and the remaining allocator traffic is strings and AST nodes —
+  a different plan.
+- If the `kPoolMax` cap costs most of the 3x, the win was retention rather than
+  pooling, and the honest version is a bigger `RVec` pool, not a new allocator.
+- If TSan reports anything the existing `BlockPool` does not, the generalisation
+  broke an invariant that the capacity-keyed design was holding by accident.
