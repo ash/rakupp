@@ -151,14 +151,76 @@ same sites: on *allocation* the control block is worth 3.4x beyond what the
 allocator swap gets. Neither number alone justifies the move; together they are
 a better case than either made separately.
 
+## Where the acceleration actually is — measured on real runs
+
+The probe prices an allocator *operation*. It cannot say how much of a *program*
+is allocator operations, so [tools/malloc-census.c](../../../tools/malloc-census.c)
+— a DYLD interposer that counts every malloc by exact size — answers that on
+real kernels. The payload signature sizes from section A (48 `ValueList`, 88
+`MatchData`, 136 `ValueHash`, 192 `ValueExt`, 304 `ObjectData`) attribute the
+traffic without guessing.
+
+**`regex.raku`** — 50k matches, 40 ms wall, 303,247 mallocs:
+
+| size | count | share | source |
+|---:|---:|---:|---|
+| 48 | 100,151 | 33.0% | ValueList control ×2 |
+| 88 | 50,010 | 16.5% | MatchData control |
+| 136 | 50,002 | 16.5% | ValueMap control |
+| 192 | 50,168 | 16.5% | ValueExt control |
+| 40 | 50,134 | 16.5% | (unattributed) |
+
+**82.5% of every allocation this kernel makes is a payload control block** the
+swap covers. At the 20 ns/op the probe measures (30.1 → 10.1 ns per
+construct+destroy pair), that is 250k × 20 ns = **5 ms on 40 ms, ~12%**.
+
+**`objects.raku`** — 200k objects, 450 ms wall, 2,503,494 mallocs:
+
+| size | count | share | source |
+|---:|---:|---:|---|
+| 168 | 600,009 | 24.0% | 3 per object (unattributed) |
+| 32 | 400,508 | 16.0% | 2 per object |
+| 152 | 400,006 | 16.0% | 2 per object |
+| 136 | 200,002 | 8.0% | **ValueHash control** |
+| 304 | 200,006 | 8.0% | **ObjectData control** |
+| 4032 | 200,006 | 8.0% | ValueHash's deque chunk |
+| 64 | 200,049 | 8.0% | 1 per object |
+| 8 | 200,063 | 8.0% | 1 per object |
+| 48 | 100,162 | 4.0% | **ValueList control** |
+
+Only **20%** are payload control blocks. 500k × 20 ns = **10 ms on 450 ms,
+~2%**.
+
+So the honest answer to "where is the acceleration": **it is on the Match path,
+not the object path.** The swap is worth roughly 12% on regex-shaped code and
+roughly 2% on object-shaped code, and anyone expecting one number for both will
+be disappointed by whichever kernel they run second.
+
+### The bigger lead this turned up
+
+**One `Point` object costs about eleven allocations.** ObjectData (304) +
+ValueHash control (136) + a **4032-byte deque chunk** + three at 168 + two at
+152 + two at 32 + one 64 + one 8. The deque chunk alone is 806 MB of the
+kernel's 1088 MB of allocation traffic — a 4 KB block to hold two attributes,
+which is the price of `ValueHash`'s reference-stability contract
+(`std::deque`, so `Value&` survives autovivification) applied to a container
+that never grows past `has` count.
+
+That is a much larger number than the slab is playing for, it is on the shape
+"most real Raku code is written in" (the kernel's own words), and it is a
+different change: a small-size representation for `ValueHash` that skips the
+deque entirely below a handful of entries. It should be its own plan, and it
+should probably be written before this one is implemented.
+
 ## What this does NOT claim
 
-**No wall-clock number.** The probe prices allocator operations. Their share of a
-real program is the 21.5% line, and only the part of it that is poolable
-fixed-size payloads — not `std::string`, not deque chunks, not AST nodes. A 3x
-on a subset of 21.5% is the **ceiling**, and the only way to learn the real
-figure is to wire it in and run the benchmark suite. Nothing here should be
-quoted as "rakupp got N% faster".
+The two percentages above are **estimates**, not measurements: they multiply a
+real allocation count by a probe-measured per-op saving. The probe's malloc runs
+in a tight loop where its fast path stays warm, which a real interleaved program
+may not; the error could go either way. `/usr/bin/time` also resolves to 10 ms,
+so the 40 ms denominator behind the 12% is ±1 band. Only wiring the swap in and
+re-running the kernels settles it. Nothing here should be quoted as "rakupp got
+N% faster".
 
 **The slab in the probe never returns memory.** That is deliberate for a probe
 and wrong for the engine: `RVec::dealloc` caps each class at `kPoolMax = 64`
@@ -176,7 +238,9 @@ some of the 3x on spiky workloads. The probe does not price that.
    `ValueHash`. Mechanical, reversible per type.
 3. Re-run BENCHMARKS.md kernels. If the JSON and array kernels do not move, stop
    — the 21.5% was not where this plan assumed.
-4. Only then consider the control block (the 10.22x), and only jointly with
+4. Consider a small-size `ValueHash` that skips the deque — the eleven-allocation
+   object above is a bigger number than this whole plan.
+5. Only then consider the control block (the 10.22x), and only jointly with
    `VALUE32-PLAN`'s `Ref`, since it is the same ~190 sites.
 
 ## Gates
