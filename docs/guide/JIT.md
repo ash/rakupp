@@ -172,6 +172,22 @@ skip: a native width (`my int8`), a readonly binding, a coercion, a default, an
 `is rw` write-through, `is dynamic`. A variable the kernel only **reads** is
 exempt, which is what lets a loop in a routine use its own parameters.
 
+A third rule is about the program rather than the loop. If the program declares
+a routine that **overloads an operator the loop uses** — `multi sub infix:<+>`,
+`sub prefix:<->` — then no loop using that operator tiers up, in either backend.
+A kernel emits the built-in operator, and it may not call anything: that single
+rule is what keeps its variables pinned for the loop's duration, so there is
+nowhere to put the call to your routine. The loop stays interpreted and answers
+exactly what it always did. `--jit=verbose` names the routine when this happens.
+
+This is per operator *spelling*, not per operand: overloading `+` for one class
+stops every loop in the program that uses `+` from tiering up, even one adding
+two Ints. Deciding otherwise would mean knowing at compile time what the
+operands will be at run time.
+
+`--exe` has no such limit — it can emit the call, so a compiled binary consults
+your operator exactly as the interpreter does.
+
 ## The cache
 
 A compiled kernel is written to `~/.cache/rakupp/jit`, keyed on the kernel's

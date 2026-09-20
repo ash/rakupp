@@ -235,6 +235,13 @@ scope the kernel did not create, so both kinds of slot are pinned for the
 duration. Every later widening of the whitelist has to answer this question
 again, which is why it is stated here rather than in a comment.
 
+One consequence of the rule reaches outside the loop entirely. A user-declared
+`infix:<+>` shadows the built-in operator, and a kernel emits the built-in — so
+a program that overloads an operator this loop uses cannot have the loop
+compiled, because consulting the user's routine would mean calling it. Both
+tier-up backends look the routine up in the live frame at the first entry and
+retire the site. `--exe` has no such limit and emits the call.
+
 ### Slots and locals
 
 A scope-aware walk over the subtree splits the names it mentions:

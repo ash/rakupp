@@ -161,6 +161,54 @@ struct Codegen {
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
     std::map<std::string, ClassDecl*> classDecls_; // name → declaration, for ancestry questions
     std::set<std::string> multiNames;    // names that are multi subs (dispatched at runtime)
+
+    // A user-declared operator routine's emitted dispatcher, or "" when the
+    // program declares none by that name. `name` is the Raku spelling of the
+    // routine — `infix:<+>`, `prefix:<->`.
+    //
+    // The whole cost of operator overloading in compiled code is gated on this
+    // returning non-empty: a program that overloads nothing emits exactly what
+    // it emitted before, byte for byte. Only TOP-LEVEL declarations are here,
+    // which is the same set the sub emission itself covers — a `sub infix:<+>`
+    // nested inside a block is not compiled as an operator today and is not
+    // claimed to be.
+    std::string userOpFn(const std::string& name) const {
+        if (!multiNames.count(name) && !userSubs.count(name)) return "";
+        return mangleSub(name);
+    }
+    // The call expression for it, as a plain function pointer. A lambda rather
+    // than `&u_…` because the emitted routine may take `ValueList` or
+    // `ValueList&` (an `is rw` parameter) and may carry an -O fast-signature
+    // overload beside it; one adapter resolves all three at the call site.
+    std::string userOpPtr(const std::string& fn) const {
+        return "+[](ValueList __a)->Value{ return " + fn + "(__a); }";
+    }
+
+    // The built-in prefix operators, emitted against whatever expression `x`
+    // names. Split out from the Unary case so that the user-overload path can
+    // emit the SAME built-in against a temporary — the fallback has to be the
+    // expression that was there before, not a re-derivation of it.
+    std::string prefixBuiltin(Unary* u, const std::string& x) {
+        if (u->op == "!" || u->op == "not") return "Value::boolean(!RT.boolify(" + x + "))";
+        if (u->op == "?")  return "Value::boolean(RT.boolify(" + x + "))";
+        if (u->op == "-")  return "applyArith(\"-\", Value::integer(0), " + x + ")";
+        if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
+        if (u->op == "~")  return "Value::str((" + x + ").toStr())";
+        if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
+        if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
+        if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
+        if (u->op == "ctx%") return "rtCoerceHash(" + x + ")"; // %(...) hash composer
+        if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
+        if (u->op == "decont") // `$x<>` — the value, out of its item container
+            return "([&]()->Value{ Value _v = " + x +
+                   "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
+        if (u->op == "ctx$") // $(...) — an array becomes one non-flattening item
+            return "([&]()->Value{ Value _v = " + x + "; if (_v.t==VT::Array) _v.itemized=true; return _v; }())";
+        if (u->op == "ctx@") // @(...) — one-level list context
+            return "rtArrayVal(" + x + ")";
+        if (u->op == "|") return "rtSlipShallow(" + x + ")"; // |x in value position: one-level marker
+        unsupported("prefix operator '" + u->op + "'");
+    }
     std::string self_;                   // C++ expr for `self` inside a method ("" outside)
     std::vector<std::string> topics;  // stack of C++ var names bound to $_
     int tmp = 0;
@@ -345,7 +393,13 @@ struct Codegen {
                 {"<", "rtLtB"}, {"<=", "rtLeB"}, {">", "rtGtB"}, {">=", "rtGeB"}, {"==", "rtEqB"}, {"!=", "rtNeB"},
                 {"eq", "rtEqSB"}, {"ne", "rtNeSB"}, {"lt", "rtLtSB"}, {"gt", "rtGtSB"}, {"le", "rtLeSB"}, {"ge", "rtGeSB"}};
             auto it = cmp.find(b->op);
-            if (it != cmp.end())
+            // An overloaded comparison has to go through the VALUE emission and
+            // be boolified, because the rt*B family is the built-in operator
+            // with an Int fast path in front of it and knows nothing about a
+            // user candidate. Missing this was worse than missing the value
+            // position: `while $obj < 10` kept its built-in comparison while the
+            // body's `+` had become the user's, so the loop stopped terminating.
+            if (it != cmp.end() && userOpFn("infix:<" + b->op + ">").empty())
                 return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
         }
         return "RT.boolify(" + ex(e) + ")";
@@ -1249,25 +1303,16 @@ struct Codegen {
                            "; RT.quietDepth_--; return __q; } catch (...) { RT.quietDepth_--; throw; } }())";
                 }
                 std::string x = ex(u->operand.get());
-                if (u->op == "!" || u->op == "not") return "Value::boolean(!RT.boolify(" + x + "))";
-                if (u->op == "?")  return "Value::boolean(RT.boolify(" + x + "))";
-                if (u->op == "-")  return "applyArith(\"-\", Value::integer(0), " + x + ")";
-                if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
-                if (u->op == "~")  return "Value::str((" + x + ").toStr())";
-                if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
-                if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
-                if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
-                if (u->op == "ctx%") return "rtCoerceHash(" + x + ")"; // %(...) hash composer
-                if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
-                if (u->op == "decont") // `$x<>` — the value, out of its item container
-                    return "([&]()->Value{ Value _v = " + x +
-                           "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
-                if (u->op == "ctx$") // $(...) — an array becomes one non-flattening item
-                    return "([&]()->Value{ Value _v = " + x + "; if (_v.t==VT::Array) _v.itemized=true; return _v; }())";
-                if (u->op == "ctx@") // @(...) — one-level list context
-                    return "rtArrayVal(" + x + ")";
-                if (u->op == "|") return "rtSlipShallow(" + x + ")"; // |x in value position: one-level marker
-                unsupported("prefix operator '" + u->op + "'");
+                // A user `prefix:<op>` that overloads this spelling wins over the
+                // built-in for an object operand, which is evalUnary's own gate.
+                // The built-in below is untouched — it is emitted against the
+                // temp instead of against the operand expression, so the operand
+                // is still evaluated exactly once.
+                if (std::string uf = userOpFn("prefix:<" + u->op + ">"); !uf.empty())
+                    return "([&]()->Value{ Value _uo = " + x + "; Value _ur; if (rtUserPrefix(" +
+                           userOpPtr(uf) + ", _uo, _ur)) return _ur; return " +
+                           prefixBuiltin(u, "_uo") + "; }())";
+                return prefixBuiltin(u, x);
             }
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
@@ -1371,6 +1416,14 @@ struct Codegen {
                     return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?_a:(" + R + "); }())";
                 if (b->op == "//") // defined-or — including a Failure, which rtIsDefined knows about
                     return "([&]()->Value{ Value _a=(" + L + "); return !rtIsDefined(_a)?(" + R + "):_a; }())";
+                // A user `infix:<op>` that overloads this spelling. It wins for the
+                // operand shapes it has candidates for and only those, which is
+                // what rtUserInfix decides — the same two decisions evalBinary
+                // makes. Without this the emitted code called the built-in
+                // straight through and a compiled program quietly answered
+                // differently from an interpreted one.
+                if (std::string uf = userOpFn("infix:<" + b->op + ">"); !uf.empty())
+                    return "rtUserInfix(" + userOpPtr(uf) + ", " + cesc(b->op) + ", " + L + ", " + R + ")";
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
                 return "applyArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
@@ -2160,6 +2213,9 @@ struct Codegen {
                            : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : binop == "~"  ? "applyArith(\"~\", __r, " + rhs + ")"
                            : binop == ","  ? "([&]{ Value __c = __r; rtCommaAssign(__c, " + rhs + "); return __c; }())"
+                           : !userOpFn("infix:<" + binop + ">").empty()
+                                           ? "rtUserInfix(" + userOpPtr(userOpFn("infix:<" + binop + ">")) +
+                                             ", " + cesc(binop) + ", __r, " + rhs + ")"
                            : !fb.empty()   ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
             return "([&]()->Value{ Value& __b = " + lvalueExpr(ix->base.get()) + ";"
@@ -2201,6 +2257,14 @@ struct Codegen {
         // destination twice and so can never multiply over it, and rtMul's inline
         // small-Int case is the first thing applyArith tests anyway, so
         // applyArithInto gives up nothing and gains the BigInt in-place path.
+        // `$obj OP= x` through a user `infix:<OP>`, with the built-in below as
+        // the fallback. Both operands are bound once: the built-in lanes name
+        // `lhs` twice already, and adding a third use would have turned a
+        // side-effecting target into two evaluations.
+        if (std::string uf = userOpFn("infix:<" + binop + ">"); !uf.empty())
+            return "([&]()->Value&{ Value& __ua = " + lhs + "; Value __ub = " + rhs +
+                   "; if (!rtUserInfixInto(" + userOpPtr(uf) + ", __ua, __ub)) applyArithInto(" +
+                   cesc(binop) + ", __ua, __ub); return __ua; }())";
         if (std::string f = fastBin(binop); !f.empty() && binop != "*")
             return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
         // applyArithInto, not `lhs = applyArith(...)`: same result, but the

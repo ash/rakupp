@@ -469,6 +469,14 @@ One binary, no compiler and no rakupp on the machine running it.
 - **It is not more general than `--jit`.** The 53 stencils are the ceiling. Where
   `--jit` can in principle compile whatever `--exe -O` emits, this refuses and
   leaves the loop interpreted.
+- **It does not tier up a loop whose operators the program overloads**, and
+  neither does `--jit`. A user `multi sub infix:<+>` shadows the built-in for
+  the operand shapes it has candidates for; a kernel emits the built-in and may
+  not call anything, so there is nowhere to put the call. Both backends look the
+  routine up in the live frame at the first entry and retire the site. `--exe`
+  is not limited this way — it emits the call (`rtUserInfix`), which it could do
+  all along and did not: until 2026-09-20 every compiled backend quietly
+  answered differently from the interpreter here, `--exe` included.
 - **It has run on one platform.** arm64 macOS. The x86-64 patcher is written,
   is now known to be *wrong* rather than merely unexercised, and is refused at
   startup until P1 (see above). ELF is exercised on aarch64 and works.

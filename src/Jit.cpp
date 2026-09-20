@@ -106,6 +106,8 @@ struct Site {
     // set, and which one is decided once, by the command line.
     std::atomic<cnp::Kernel*> cnpKernel{nullptr};
     std::atomic<bool> notedThreads{false};   // the "a worker is live" line, said once
+    std::vector<std::string> opKeys;         // routine names that would overload this loop's operators
+    std::atomic<bool> opsChecked{false};     // …looked for once, at the first entry
 };
 
 // The name a counted `for`'s synthetic condition reads its end bound from. It
@@ -190,6 +192,14 @@ struct Scan {
     // parameter is the single most common shape there is — `sub f($n) { while
     // $i < $n {…} }` — and refusing it cost every loop in a routine.
     std::set<std::string> written;
+    // Every operator spelling the loop uses, as the routine name a user would
+    // have to declare to overload it. A kernel emits the BUILT-IN operator for
+    // each of these, so a program that overloads one cannot have this loop
+    // compiled — see the note at the lookup in runIfReady.
+    std::set<std::string> opKeys;
+    void useOp(const char* kind, const std::string& op) {
+        opKeys.insert(std::string("&") + kind + ":<" + op + ">");
+    }
     // The counted `for`'s loop variable. `$_` is refused everywhere else —
     // plainScalar says so, because the topic is frame state and not a lexical —
     // but for `for 1 .. N { … $_ … }` the interpreter hands the kernel a frame
@@ -258,6 +268,8 @@ void Scan::expr(Expr* e) {
             auto* a = static_cast<Assign*>(e);
             if (!asgOps().count(a->op)) { fail("assignment operator '" + a->op + "'"); return; }
             if (a->containerSigil) { fail("a container-sigil assignment"); return; }
+            // `$x += $y` is `$x = $x + $y` and consults `infix:<+>`.
+            if (a->op.size() > 1) useOp("infix", a->op.substr(0, a->op.size() - 1));
             if (a->target->kind == NK::VarExpr) written.insert(static_cast<VarExpr*>(a->target.get())->name);
             // The VALUE is scanned first, so that `my $x = $x` records the OUTER
             // `$x` as a slot before the declaration shadows it — which is the
@@ -270,6 +282,7 @@ void Scan::expr(Expr* e) {
         case NK::Binary: {
             auto* b = static_cast<Binary*>(e);
             if (!binOps().count(b->op)) { fail("operator '" + b->op + "'"); return; }
+            useOp("infix", b->op);
             expr(b->lhs.get()); expr(b->rhs.get());
             return;
         }
@@ -277,9 +290,15 @@ void Scan::expr(Expr* e) {
             auto* u = static_cast<Unary*>(e);
             if (!unOps().count(u->op)) { fail("operator '" + u->op + "'"); return; }
             if (u->op == "++" || u->op == "--") {
+                // These are their own routines in both positions, and each of
+                // them ALSO reaches infix:<+> — the interpreter runs them as
+                // `$x = $x + 1`, so an overloaded `+` changes what they mean.
+                useOp(u->postfix ? "postfix" : "prefix", u->op);
+                useOp("infix", "+");
                 if (u->operand->kind != NK::VarExpr) { fail("++/-- on a non-variable"); return; }
                 written.insert(static_cast<VarExpr*>(u->operand.get())->name);
             }
+            else useOp("prefix", u->op);
             expr(u->operand.get());
             return;
         }
@@ -735,6 +754,7 @@ void examine(Site* s) {
         return;
     }
     s->slots = sc.slots;
+    s->opKeys.assign(sc.opKeys.begin(), sc.opKeys.end());
     s->slotWritten.clear();
     for (const std::string& n : sc.slots) s->slotWritten.push_back(sc.written.count(n) != 0);
     // ONE exported name, the same in every kernel. It has to be independent of
@@ -1048,6 +1068,26 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
             note("loop at line " + std::to_string(s->loop->line) +
                  " not entered while another thread is live — its variables are shared");
         return false;
+    }
+
+    // A user-declared `infix:<+>` SHADOWS the built-in for the operand shapes it
+    // has candidates for, and a kernel emits the built-in: `--exe` learned to
+    // consult the user's routine (rtUserInfix), but neither tier-up backend can.
+    // A kernel may not CALL anything — that single rule is what pins its slot
+    // pointers, and for `--cnp` what makes hoisting the registers sound — so
+    // there is nowhere to put the call. The loop stays interpreted instead, which
+    // is the answer the program would have given anyway.
+    //
+    // Looked up the way the interpreter does, from the live frame, so the two
+    // cannot disagree about which declarations are in scope. Once per site: a
+    // refusal retires it, so the only repeat is the clean case.
+    if (!s->opKeys.empty() && !s->opsChecked.load(std::memory_order_acquire)) {
+        for (const std::string& key : s->opKeys)
+            for (Env* e = env; e; e = e->parent.get())
+                if (e->find(key))
+                    return refuse(s, "the program declares " + key.substr(1) +
+                                     ", which shadows an operator this loop uses");
+        s->opsChecked.store(true, std::memory_order_release);
     }
 
     std::vector<Value*> slots;

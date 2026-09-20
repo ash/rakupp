@@ -231,6 +231,61 @@ bool rtIsDefined(const Value& v) {
 }
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
 
+// ---- user-defined operators, for compiled code -----------------------------
+//
+// A user `infix:<+>` SHADOWS the built-in of the same spelling, but only for the
+// operand shapes it has a candidate for: `multi infix:<+>(Money, Money)` must
+// not stop `1 + 2` working. evalBinary makes that two decisions — gate on an
+// object/enum operand, and treat "no candidate took these" as a fall-through to
+// the built-in — and compiled code has to make the same two or it answers
+// differently from the interpreter, which is exactly what `--exe`, `--jit` and
+// `--cnp` all did until these existed. The emitted code calls the user's own
+// dispatcher, so the candidate choice itself is the one Codegen already emits.
+//
+// The gate is why this costs nothing in general: two tag tests before any
+// lookup, on an operator the program actually overloaded, and nothing at all on
+// one it did not — the emitter only reaches for this when the program declares
+// the routine.
+Value rtUserInfix(Value (*fn)(ValueList), const char* op, const Value& l, const Value& r) {
+    if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) {
+        try { return fn(ValueList{l, r}); }
+        // Only "no candidate took these operands" falls back. An error the
+        // user's operator RAISED is its answer and must keep being raised.
+        catch (RakuError& e) {
+            std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+            if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+        }
+    }
+    return applyArith(std::string(op), l, r);
+}
+
+// The COMPOUND-ASSIGNMENT form, `$obj OP= x`. Deliberately not rtUserInfix:
+// evalAssign's arm gates on an object operand alone — no enum — and swallows
+// whatever the candidate raises rather than only a no-match. Mirroring what is
+// actually there matters more than making the three consistent with each other;
+// if they should agree, that is a change to the interpreter first.
+bool rtUserInfixInto(Value (*fn)(ValueList), Value& lhs, const Value& r) {
+    if (!(lhs.t == VT::Object || r.t == VT::Object)) return false;
+    try { lhs = fn(ValueList{lhs, r}); return true; }
+    catch (RakuError&) {}
+    return false;
+}
+
+// The PREFIX half, which differs in both of its decisions and so shares neither
+// of the two above. evalUnary gates on an OBJECT WITH A CLASS (no enum arm: a
+// built-in prefix on an enum stays built-in), and falls back on X::Multi::NoMatch
+// alone. It answers into `out` rather than returning, because the built-in
+// fallback for a prefix is a different expression per operator and the emitter
+// is what holds it.
+bool rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out) {
+    if (!(v.t == VT::Object && v.obj() && v.obj()->cls)) return false;
+    try { out = fn(ValueList{v}); return true; }
+    catch (RakuError& e) {
+        if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+    }
+    return false;
+}
+
 // A hash-subscript key: on an OBJECT-KEYED hash (declared `has %!h{Mu:U}`) a
 // TYPE-OBJECT key keys by its parenthesised name so `%h{Str}` and `%h{Int}`
 // stay distinct (DBDish's TypeConverter reads `%!Conversions{$type}` directly

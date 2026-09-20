@@ -697,6 +697,53 @@ section('--target=js (JavaScript backend)');
     try unlink $bin;
 }
 
+# ---- a user operator that overloads a built-in one ----------------------
+# Every compiled backend used to emit the built-in operator straight through,
+# because Codegen writes `applyArith(op, l, r)` and that function has no access
+# to the program's symbol table. So a program that overloaded `infix:<+>`
+# computed one answer interpreted and a different one compiled, with no
+# diagnostic. The fixture runs under the interpreter too, so this diffs the two
+# against each other rather than trusting either.
+{
+    my $src = $ROOT.add('t/fixtures/operator-overloads.raku').Str;
+    my $interp = run($*EXECUTABLE, $src, :out).out.slurp(:close);
+    ok($interp.contains('value    £10 True') && $interp.contains('ints     45 10 5 -4 True'),
+       'the operator-overload fixture runs interpreted');
+    for '', '-O' -> $opt {
+        my $bin = $*TMPDIR.add("rakupp-suite-ops$opt-$*PID").Str;
+        my @a = $opt ?? ('--exe', $opt, $src, '-o', $bin) !! ('--exe', $src, '-o', $bin);
+        my $p = run($*EXECUTABLE, |@a, :out, :err);
+        my $msg = $p.out.slurp(:close) ~ $p.err.slurp(:close);
+        my $lbl = $opt ?? '--exe -O' !! '--exe';
+        # The load-bearing half of this test. Anything Codegen refuses — a
+        # CATCH block was what caught us — makes `--exe` bundle the interpreter
+        # instead, and a bundled binary reproduces the interpreter's answer
+        # whatever the emitter does. Without this line the two checks below
+        # passed while proving nothing at all.
+        ok($msg.contains('(native)'), "$lbl compiles the fixture NATIVELY, so the next check means something");
+        my $native = $p.exitcode == 0 ?? run($bin, :out).out.slurp(:close) !! '';
+        ok($native eq $interp, "$lbl agrees with the interpreter on user-defined operators");
+        diag("interp:\n$interp\n$lbl:\n$native") if $native ne $interp;
+        try unlink $bin;
+    }
+}
+
+# The two TIER-UP backends cannot emit the call — a kernel may not call
+# anything, which is what pins its slot pointers — so they refuse the loop
+# instead. The byte comparison that proves they agree is t/jit/run.raku's; what
+# is pinned here is that the refusal is what produced the agreement, rather than
+# the loop having failed to be eligible for some unrelated reason.
+{
+    my $case = $ROOT.add('t/jit/cases/operator-overload.raku').Str;
+    for '--cnp=threshold=0,verbose', '--jit=sync,threshold=0,nocache,verbose' -> $lane {
+        my $p = run($*EXECUTABLE, $lane, $case, :out, :err);
+        $p.out.slurp(:close);
+        my $e = $p.err.slurp(:close);
+        ok($e.contains('shadows an operator this loop uses'),
+           "$lane.substr(0,5) refuses a loop whose operator the program overloads");
+    }
+}
+
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
 # with its module tree gone from the machine. Each mode reached this differently
