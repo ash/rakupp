@@ -31,42 +31,49 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~91% of all declared Roast tests pass** (200,843 / 219,610); on the
-stricter file bar, ~46% of files fully pass (676 / 1,464). The per-file breakdown
+**Headline: ~93% of all declared Roast tests pass** (205,100 / 219,626); on the
+stricter file bar, ~48% of files fully pass (705 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
-`not ok … # todo` lines as passes. Net of both it is 90.5% rather than 91.1% —
-1,372 assertions, 0.69% of the pass count. mutsu's equivalent shield is 1,438
+`not ok … # todo` lines as passes. Net of both it is 92.8% rather than 93.4% —
+1,223 assertions, 0.60% of the pass count. mutsu's equivalent shield is 1,438
 (0.66%), so it is a wash between the two; the measured breakdown is in
 [COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 — Unicode / strings / NFG —
-is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
-complete `uniprop` coverage landed for v1.1; its one non-passing file,
-`S15-unicode-information/uniprop.t`, fails 2 of its 203 assertions — a
-correctness gap, not a timeout. See [ROAST-GAPS](../dev/findings/ROAST-GAPS.md).)
+still rounds to 100% of assertions — 91,799 of 91,807 — on the strength of full
+UCD case tables, grapheme-level regex and complete `uniprop` coverage landed for
+v1.1. **Its file count went the wrong way this sitting**, 80 fully passing to 77:
+`S15-literals/identifiers.t` (7/7 at v4.0.1, now 5/7) and
+`S15-literals/numbers.t` (49/49, now 46/49) both regressed between the tag and
+`a4291988`, and every one of the five lost assertions is a *rejection* test — a
+non-ASCII digit or combining mark accepted at the start of an identifier, and
+`Nl`/`No` numerals accepted as general radix digits. The character-class
+predicates have become too permissive; see
+[ROAST-GAPS](../dev/findings/ROAST-GAPS.md). `uniprop.t` fails 2 of its 203 as it
+did before, and `uniname.t` improved to 45/46.)
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **676** | **46%** |
-| Partially passing | 668 | 46% |
-| No TAP output | 114 | 8% |
-| Timeouts | 13 | 0.9% |
+| **Fully passing** | **705** | **48%** |
+| Partially passing | 648 | 44% |
+| No TAP output | 101 | 7% |
+| Timeouts | 10 | 0.7% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
 `S12-construction/destruction.t` fully passes since the DESTROY protocol
 landed. See [dev/findings/ROAST-GAPS.md](../dev/findings/ROAST-GAPS.md).)
 
-**Coverage ≈ 44% of files.** That is the number to quote. About a tenth of the
-suite produces no TAP at all — those files hit a parse error or an unimplemented
-construct and abort before any assertion runs — so they are entirely unmeasured
-territory, not "passing" and not "failing."
+**Coverage ≈ 48% of files.** That is the number to quote. About a fourteenth of
+the suite produces no TAP at all — those files hit a parse error or an
+unimplemented construct and abort before any assertion runs — so they are
+entirely unmeasured territory, not "passing" and not "failing."
 
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**200,843 of ~219,610 declared tests — 91.5%**. "Declared" means every test the
+**205,100 of ~219,626 declared tests — 93.4%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -75,11 +82,11 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 200,843 / 206,919 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 200,843 / 216,650 (~93%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 200,843 / 219,610 (91.5%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 205,100 / 210,792 (97.3%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 205,100 / 216,666 (94.7%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 205,100 / 219,626 (93.4%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The 91% is the per-test analog of the ~45% file coverage. Three notes on scope:
+The 93% is the per-test analog of the ~48% file coverage. Three notes on scope:
 
 1. **~3.0k of the denominator comes from no-TAP files** (75 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -93,8 +100,8 @@ The 91% is the per-test analog of the ~45% file coverage. Three notes on scope:
    fully-passing files. Do not compare pre-v2.0.0 Roast numbers against these
    without that correction (see the [CHANGELOG](../../CHANGELOG.md)).
 
-Coverage is the ~45% of files; per-test correctness across the whole suite is the
-91%. They are different measurements, quoted for different purposes.
+Coverage is the ~48% of files; per-test correctness across the whole suite is the
+93%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
 
@@ -106,33 +113,33 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 55 | 76 | 0 | 16 | 7233/7859 | 92% |
-| S03 | Operators | 49 | 61 | 2 | 13 | 23185/23903 | 97% |
-| S04 | Blocks, statements, phasers | 30 | 44 | 0 | 3 | 1250/1499 | 83% |
-| S05 | Regexes & grammars | 39 | 55 | 0 | 4 | 5794/6258 | 93% |
-| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1572/1842 | 85% |
+| S02 | Literals, types, magicals | 53 | 78 | 0 | 16 | 7433/8108 | 92% |
+| S03 | Operators | 48 | 62 | 2 | 13 | 23233/23912 | 97% |
+| S04 | Blocks, statements, phasers | 31 | 42 | 0 | 4 | 1236/1488 | 83% |
+| S05 | Regexes & grammars | 38 | 56 | 0 | 4 | 5852/6273 | 93% |
+| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1570/1840 | 85% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 224/268 | 84% |
-| S09 | Data structures | 3 | 19 | 0 | 0 | 952/1117 | 85% |
+| S09 | Data structures | 2 | 20 | 0 | 0 | 3993/4685 | 85% |
 | S10 | Packages | 2 | 7 | 0 | 0 | 55/104 | 53% |
 | S11 | Modules | 9 | 11 | 0 | 2 | 90/123 | 73% |
-| S12 | Objects & classes | 33 | 57 | 0 | 11 | 1388/1622 | 86% |
+| S12 | Objects & classes | 33 | 57 | 0 | 11 | 1423/1652 | 86% |
 | S13 | Overloading | 5 | 1 | 0 | 1 | 64/71 | 90% |
-| S14 | Roles | 7 | 16 | 0 | 2 | 284/333 | 85% |
-| S15 | Unicode / strings / NFG | 80 | 1 | 0 | 0 | 91805/91807 | 100% |
-| S16 | I/O | 14 | 19 | 0 | 4 | 429/572 | 75% |
-| S17 | Concurrency (supply/promise/async) | 46 | 38 | 6 | 9 | 965/1121 | 86% |
+| S14 | Roles | 6 | 17 | 0 | 2 | 282/333 | 85% |
+| S15 | Unicode / strings / NFG | 77 | 4 | 0 | 0 | 91799/91807 | 100% |
+| S16 | I/O | 17 | 17 | 0 | 3 | 430/575 | 75% |
+| S17 | Concurrency (supply/promise/async) | 74 | 18 | 4 | 3 | 1306/1360 | 96% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
-| S22 | Package format | 0 | 1 | 0 | 0 | 5/5 | 100% |
+| S22 | Package format | 0 | 1 | 0 | 0 | 6/7 | 86% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
-| S26 | Documentation (POD) | 6 | 20 | 0 | 1 | 304/458 | 66% |
+| S26 | Documentation (POD) | 7 | 20 | 0 | 0 | 402/587 | 68% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 9 | 4 | 1 | 0 | 411/417 | 99% |
-| S32 | Standard types (str/list/num/…) | 126 | 122 | 1 | 14 | 42195/44740 | 94% |
-| integration | Cross-feature programs | 75 | 34 | 1 | 9 | 1137/1209 | 94% |
-| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 652/723 | 90% |
+| S32 | Standard types (str/list/num/…) | 136 | 114 | 1 | 12 | 42967/44615 | 96% |
+| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1161/1240 | 94% |
+| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 646/723 | 89% |
 | 6.d | v6.d language snapshot | 15 | 3 | 0 | 0 | 20264/20310 | 100% |
-| APPENDICES | — | 2 | 1 | 2 | 1 | 19/30 | 63% |
-| MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
+| APPENDICES | — | 1 | 3 | 1 | 1 | 27/48 | 56% |
+| MISC / t | — | 2 | 1 | 0 | 3 | 11/12 | 92% |
 
 ### Reading the table
 
@@ -159,10 +166,11 @@ land on it. **Rakudo itself passes 1,433 of the 1,464 here** — measured
 own `fudge` applied and a 60-second timeout
 ([ROAST-CEILING-2026-09-17](../dev/findings/ROAST-CEILING-2026-09-17.md)).
 Seven of the 31 it does not pass, Raku++ does, so the reachable set on this
-machine is **1,440 files** and the honest figure is **676 of 1,440 (46.9%)**.
-The 764 files between the two are the work queue, listed with each one's
-first failure in
-[roast-queue-2026-09-17.tsv](../dev/findings/roast-queue-2026-09-17.tsv); the
+machine is **1,440 files** and the honest figure is **705 of 1,440 (49.0%)**.
+The 735 files between the two are the work queue; the 764 it held when the
+list was taken are recorded with each one's first failure in
+[roast-queue-2026-09-17.tsv](../dev/findings/roast-queue-2026-09-17.tsv), which
+is a dated snapshot and is not regenerated per sitting. The
 list Rakudo passed is archived as
 [roast-lists/rakudo-2026.08.list](roast-lists/rakudo-2026.08.list). Rakudo is
 the oracle both other implementations check themselves against.
@@ -177,7 +185,7 @@ timeout, and the same counting rules:
 | | files fully passing | assertions, all declared |
 |---|---:|---:|
 | **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 4.0.0 | 676 / 1,464 (46.2%) | 200,843 / 219,610 (91.5%) |
+| **Raku++** 4.0.1-84-ga4291988 | 705 / 1,464 (48.2%) | 205,100 / 219,626 (93.4%) |
 
 Both runs are on the **fudged bar** — Raku++ honours Roast's `#?rakudo`
 directives unconditionally, and mutsu's equivalent was switched on with
@@ -246,6 +254,20 @@ moment held them until it exited, which is what put a file with its complete
 TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
+
+_Snapshot 2026-09-20, main at `a4291988` (`--cpu=5`, one pass, 37 s): 705 /
+1,464 files fully passing (48.2% coverage); 648 partial, 101 no-TAP, 10 timeout;
+205,100 / 219,626 declared assertions (93.4%). Not a release run — the figures
+above were re-measured because the standing ones dated from v4.0.1 and the
+dashboard reads this file. Against that tag the suite gained 29 files and 4,257
+assertions, the bulk of it **S17 concurrency, 46 fully-passing files to 74**,
+with its no-TAP count falling 9 → 3 as the supply and promise fixes of the
+preceding days landed. Two files went backwards and are not yet fixed:
+`S15-literals/identifiers.t` 7/7 → 5/7 and `S15-literals/numbers.t` 49/49 →
+46/49, all five lost assertions being rejection tests that the lexer's
+character-class predicates now wrongly accept. The per-commit gate could not see
+them: it diffs against the immediately preceding commit, and these landed
+earlier in the same 84-commit span._
 
 _Snapshot 2026-09-07, main at `35c9691` (`--workers=4`, five passes): 660 /
 1,464 files fully passing (~45% coverage); 672 partial, 117 no-TAP, 15 timeout.

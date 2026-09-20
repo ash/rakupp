@@ -317,7 +317,10 @@ the shape of it:
   [ROAST.md](docs/status/ROAST.md) per-section statistics,
   [COUNTING.md](docs/status/COUNTING.md) methodology,
   [BENCHMARKS.md](docs/status/BENCHMARKS.md) vs Rakudo, mutsu, and Perl,
-  [ROADMAP.md](docs/status/ROADMAP.md).
+  [ROADMAP.md](docs/status/ROADMAP.md). Every one of those numbers charted
+  release over release — Roast, the ecosystem, and each benchmark kernel on
+  all four engines — is at
+  [raku.online/spec/dashboard](https://raku.online/spec/dashboard/).
 - **The story:** [MILESTONES.md](docs/status/MILESTONES.md) (the dated
   timeline), [JOURNEY.md](docs/dev/JOURNEY.md) (the method),
   [LONGREAD.md](LONGREAD.md) (the whole arc, long-form).
