@@ -728,6 +728,26 @@ section('--target=js (JavaScript backend)');
     }
 }
 
+# ---- is `--cnp` live in THIS binary? ------------------------------------
+# The copy-and-patch backend is the one half of tier-up that is not available
+# everywhere yet, and three SUPPORTED configurations carry none of it: a build
+# with no stencil table (a cross-compile, or the universal macOS build, which
+# has no single instruction set to extract for), an instruction set with no
+# patcher, and x86-64, whose patcher is written but unverified and gated off
+# until it is not (CNP-PLAN.md P1). All three say so on stderr and run the loop
+# interpreted — the same answer by a slower road — so a check that requires a
+# KERNEL can only be put where there is one to enter. The flag-surface checks
+# further down are asked everywhere, because the flag exists everywhere.
+#
+# `-V` answers it for the binary in front of us, which is the right question to
+# ask: the universal build runs on the very arm64 machine whose stencils it
+# declined to carry, so the ARCHITECTURE does not decide this and the binary
+# does.
+my $CNP-V   = run($*EXECUTABLE, '-V', :out).out.slurp(:close).lines.first(*.starts-with('Cnp')) // '';
+my $CNP     = so $CNP-V.contains('copy-and-patch stencils for');
+my $CNP-WHY = $CNP-V.contains('—') ?? $CNP-V.split('—', 2)[1].trim !! 'no copy-and-patch backend';
+diag("--cnp is not live in this build, so its tier-up checks are skipped: $CNP-WHY") unless $CNP;
+
 # The two TIER-UP backends cannot emit the call — a kernel may not call
 # anything, which is what pins its slot pointers — so they refuse the loop
 # instead. The byte comparison that proves they agree is t/jit/run.raku's; what
@@ -736,11 +756,16 @@ section('--target=js (JavaScript backend)');
 {
     my $case = $ROOT.add('t/jit/cases/operator-overload.raku').Str;
     for '--cnp=threshold=0,verbose', '--jit=sync,threshold=0,nocache,verbose' -> $lane {
+        my $name = $lane.substr(0, 5);
+        if $name eq '--cnp' && !$CNP {
+            skip("$name refuses a loop whose operator the program overloads");
+            next;
+        }
         my $p = run($*EXECUTABLE, $lane, $case, :out, :err);
         $p.out.slurp(:close);
         my $e = $p.err.slurp(:close);
         ok($e.contains('shadows an operator this loop uses'),
-           "$lane.substr(0,5) refuses a loop whose operator the program overloads");
+           "$name refuses a loop whose operator the program overloads");
     }
 }
 
@@ -758,11 +783,16 @@ section('--target=js (JavaScript backend)');
 {
     my $case = $ROOT.add('t/jit/cases/counted-for.raku').Str;
     for '--cnp=threshold=0,stats', '--jit=sync,threshold=0,nocache,stats' -> $lane {
+        my $name = $lane.substr(0, 5);
+        if $name eq '--cnp' && !$CNP {
+            skip("$name enters a kernel for a counted `for`");
+            next;
+        }
         my $p = run($*EXECUTABLE, $lane, $case, :out, :err);
         $p.out.slurp(:close);
         my $e = $p.err.slurp(:close);
         my $entered = $e ~~ / 'kernels entered ' (\d+) / ?? +$0 !! 0;
-        ok($entered > 0, "$lane.substr(0,5) enters a kernel for a counted `for` (entered $entered)");
+        ok($entered > 0, "$name enters a kernel for a counted `for` (entered $entered)");
     }
 }
 

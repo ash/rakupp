@@ -112,6 +112,17 @@ would have given anyway, a little slower. `RAKUPP_CNP_X86=1` lifts the gate,
 because P1 cannot be done by anyone who cannot run the thing being fixed. The
 gate comes out when P1 lands, and not before.
 
+The suite follows the gate rather than the architecture. `t/run.raku` asks the
+binary in front of it — `-V` prints one `Cnp` line — and where the answer is
+`none`, the two checks that require a kernel to be ENTERED are skipped by name
+instead of failing; `t/jit/run.raku --cnp` says so and stops, because both of
+its lanes would be the interpreter and comparing them would prove nothing. The
+architecture is the wrong question: the universal macOS build runs on the very
+arm64 machine whose stencils it declined to carry. Everything that is about the
+FLAG rather than the kernel — the spec words, the two-sided placement, that it
+writes nothing to disk — is still asked everywhere, because the flag is
+everywhere. When P1 lands, the skips turn back into checks on their own.
+
 ### 2. Two object formats
 
 Smaller than it looks, for one reason worth stating: **the extractor runs on the

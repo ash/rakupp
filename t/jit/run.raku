@@ -44,6 +44,25 @@ my $cnp   = so @args.grep('--cnp');
 my @lane  = $cnp ?? ('--cnp=threshold=0',) !! ('--jit=sync,threshold=0,nocache',);
 my $LANE  = $cnp ?? '--cnp' !! '--jit';
 
+# The copy-and-patch lane needs a binary that HAS that backend, and three
+# supported configurations do not have it: a build with no stencil table (a
+# cross-compile, or the universal macOS build, which has no single instruction
+# set to extract for), an instruction set with no patcher, and x86-64, whose
+# patcher is written but unverified and gated off until it is not
+# (CNP-PLAN.md P1). Each prints ONE line to stderr and runs interpreted, so
+# every case in the corpus would be reported as a stderr disagreement and the
+# run would prove nothing about a backend that never ran. Nothing to compare is
+# not a failure and it is not a pass either, so say which it is and stop.
+if $cnp {
+    my $line = run($rakupp.Str, '-V', :out).out.slurp(:close).lines.first(*.starts-with('Cnp')) // '';
+    unless $line.contains('copy-and-patch stencils for') {
+        my $why = $line.contains('—') ?? $line.split('—', 2)[1].trim !! 'no copy-and-patch backend';
+        say "--cnp is not live in this binary, so both lanes would be the interpreter";
+        say "and there is nothing to compare: $why";
+        exit 0;
+    }
+}
+
 # Programs whose output is not a function of their source alone, so two runs of
 # the SAME binary need not agree with each other and the comparison says nothing.
 my %skip =
