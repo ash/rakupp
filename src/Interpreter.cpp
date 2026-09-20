@@ -1622,12 +1622,12 @@ static Value gatherDeepCopy(const Value& v, int depth = 0) {
     if (depth > 16) return v;
     Value c = v;
     if (v.t == VT::Array && v.arr()) {
-        c.setArr(std::make_shared<ValueList>());
+        c.setArr(makePayload<ValueList>());
         c.arr()->reserve(v.arr()->size());
         for (auto& e : *v.arr()) c.arr()->push_back(gatherDeepCopy(e, depth + 1));
     }
     else if (v.t == VT::Hash && v.hash()) {
-        c.setHash(std::make_shared<ValueHash>());
+        c.setHash(makePayload<ValueHash>());
         for (auto& kv : *v.hash()) (*c.hash())[kv.first] = gatherDeepCopy(kv.second, depth + 1);
     }
     return c;
@@ -1901,7 +1901,7 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
 // is hit the result is lazy and extends by re-running with a doubled cap.
 Value Interpreter::rtGather(Value blockClosure) {
     auto runGather = [this, blockClosure](size_t limit, long long budgetUs, ValueList& out) -> bool {
-        auto collector = std::make_shared<ValueList>();
+        auto collector = makePayload<ValueList>();
         pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
         bool hit = false;
         try { ValueList noargs; callCallable(blockClosure, noargs); }
@@ -1987,7 +1987,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         auto seqDeduceThrow = [this](const std::string& from) {
             std::string msg = "Unable to deduce arithmetic or geometric sequence from: " + from;
             auto& ci = classes_["X::Sequence::Deduction"];
-            auto od = std::make_shared<ObjectData>();
+            auto od = makePayload<ObjectData>();
             od->cls = ci;
             od->attrs["from"] = Value::str(from);
             od->attrs["message"] = Value::str(msg);
@@ -3429,7 +3429,7 @@ Interpreter::Interpreter() {
         mkShim("CompUnit::Handle", {"unit"});
         // $*REPO is the head of the repo chain — an Installation over ~/.raku, which is
         // exactly the prefix rakupp resolves `use` from. Methods handled in methodCall.
-        auto od = std::make_shared<ObjectData>(); od->cls = inst;
+        auto od = makePayload<ObjectData>(); od->cls = inst;
         od->attrs["name"] = Value::str("home");
         Value pfx = Value::str(platHomeDir() + "/.raku"); pfx.hashKind = "IO";
         od->attrs["prefix"] = pfx;
@@ -3442,7 +3442,7 @@ Interpreter::Interpreter() {
         auto slangCls = std::make_shared<ClassInfo>();
         slangCls->name = "Grammar"; slangCls->isGrammar = true;
         for (const char* nm : {"$~MAIN", "$~Quote", "$~Q", "$~Regex", "$~P5Regex"}) {
-            auto od = std::make_shared<ObjectData>(); od->cls = slangCls;
+            auto od = makePayload<ObjectData>(); od->cls = slangCls;
             global_->define(nm, Value::object(od));
         }
     }
@@ -11507,7 +11507,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!cd->howName.empty() && ci->howObj.t != VT::Object) {
                 auto hcit = classes_.find(resolveClassAlias(cd->howName));
                 if (hcit != classes_.end() && hcit->second) {
-                    auto od = std::make_shared<ObjectData>();
+                    auto od = makePayload<ObjectData>();
                     od->cls = hcit->second;
                     od->attrs["__type"] = Value::typeObj(clsName);
                     // A metaclass is an ordinary object and keeps state in its
@@ -12825,7 +12825,7 @@ Value Interpreter::makeTypedEx(const std::string& type,
             if (!have) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; it->second->attrs.push_back(a); }
         }
     }
-    Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>());
+    Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
     ex.obj()->cls = it->second;
     for (auto& kv : attrs) ex.obj()->attrs[kv.first] = kv.second;
     ex.obj()->attrs["message"] = Value::str(message);
@@ -15983,7 +15983,7 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
 // attribute must be `is rw`; anything else is not assignable.
 Value& Interpreter::accessorRef(Value& base, const std::string& name) {
     if (base.t == VT::Hash && base.hashKind == "FileHandle") {
-        if (!base.hash()) base.setHash(std::make_shared<ValueMap>());
+        if (!base.hash()) base.setHash(makePayload<ValueMap>());
         return (*base.hash())[name];
     }
     if (base.t == VT::Object && base.obj()) {
@@ -16427,7 +16427,7 @@ Value rtAttrGet(const Value& self, const std::string& name) {
 }
 Value& rtAttrRef(Value& self, const std::string& name) {
     if (self.t != VT::Object || !self.obj()) { // shouldn't happen; keep it safe
-        self = Value::object(std::make_shared<ObjectData>());
+        self = Value::object(makePayload<ObjectData>());
     }
     return self.obj()->attrs[name];
 }
@@ -18252,7 +18252,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // shape a CPointer RETURN gets, so `with $handle` reads right.
             if (*rb.i == 0) nv = Value::typeObj(rb.cls->name);
             else {
-                nv.t = VT::Object; nv.setObj(std::make_shared<ObjectData>());
+                nv.t = VT::Object; nv.setObj(makePayload<ObjectData>());
                 nv.obj()->cls = rb.cls;
                 nv.obj()->attrs["__native_ptr"] = Value::integer(*rb.i);
             }
@@ -18316,7 +18316,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // and never raised on a missing file, because a boxed null is defined
             // and true.
             if (ri == 0) return Value::typeObj(ci->name);
-            Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+            Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
             o.obj()->cls = ci; o.obj()->attrs["__native_ptr"] = Value::integer(ri);
             return o;
         }
@@ -18493,7 +18493,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (isJunction(codeVal)) { // a junction of callables autothreads the invocation
         Value out = Value::array(); out.enumName = codeVal.enumName; out.isList = true;
-        out.setArr(std::make_shared<ValueList>());
+        out.setArr(makePayload<ValueList>());
         for (auto& e : *codeVal.arr()) { ValueList a2 = args; out.arr()->push_back(callCallable(e, a2)); }
         return out;
     }
@@ -19736,7 +19736,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
             // built for then refused it as "not of type".
             if (name == "new" && !clsName.empty() && !nb.empty() && nb != "Proxy" &&
                 r.t != VT::Object && classes_.count(clsName)) {
-                auto od = std::make_shared<ObjectData>();
+                auto od = makePayload<ObjectData>();
                 od->cls = classes_[clsName];
                 od->hasBoxed = true;
                 od->boxed = r;
@@ -21370,11 +21370,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mcName == "handled") {
-            if (!base->hash()) base->setHash(std::make_shared<ValueMap>());
+            if (!base->hash()) base->setHash(makePayload<ValueMap>());
             return &(*base->hash())["handled"];
         }
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
-            if (!base->hash()) base->setHash(std::make_shared<ValueMap>());
+            if (!base->hash()) base->setHash(makePayload<ValueMap>());
             return &(*base->hash())[mcName];
         }
         if (base->t == VT::Object && base->obj()) {
@@ -22045,11 +22045,11 @@ void Interpreter::coerceElems(Value& v, const std::string& ct, char sigil) {
     // the two ended up sharing every Hash: a later `%o<headers><k> = '+'`
     // wrote through into the Map it was copied from.
     if (v.t == VT::Hash && v.hash()) {
-        auto fresh = std::make_shared<ValueMap>(*v.hash());
+        auto fresh = makePayload<ValueMap>(*v.hash());
         v.setHash(fresh);
     }
     else if (v.t == VT::Array && v.arr()) {
-        auto fresh = std::make_shared<ValueList>(*v.arr());
+        auto fresh = makePayload<ValueList>(*v.arr());
         v.setArr(fresh);
     }
     if (sigil == '%') {
@@ -23212,7 +23212,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (ict == classes_.end()) ict = classes_.find(resolveClassAlias(it2.substr(4)));
                         if (ict != classes_.end()) {
                             inlineInv.t = VT::Object;
-                            inlineInv.setObj(std::make_shared<ObjectData>());
+                            inlineInv.setObj(makePayload<ObjectData>());
                             inlineInv.obj()->cls = ict->second;
                             inlineInv.obj()->attrs["__native_ptr"] =
                                 Value::integer(ov.obj()->attrs["__native_ptr"].toInt() + ioff);
@@ -31849,7 +31849,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     if (base.t == VT::Object && base.obj()) {
         obj = base.objS();
         if (copy) { // `but` works on a fresh copy; the original is untouched
-            auto nd = std::make_shared<ObjectData>();
+            auto nd = makePayload<ObjectData>();
             nd->cls = obj->cls;
             nd->attrs = obj->attrs;
             nd->boxed = obj->boxed;
@@ -31859,7 +31859,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     } else {
         // non-object base (`5 but Role`, `{} does R`): box the value so the mixed
         // object still coerces / dispatches to it. `does`/`but` are both copies here.
-        obj = std::make_shared<ObjectData>();
+        obj = makePayload<ObjectData>();
         obj->boxed = base;
         obj->hasBoxed = true;
         // `True but False`: the mixed-in Bool is what the value now IS in every
@@ -32807,7 +32807,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     for (auto& kv : *snap)
                         if (Value* p = genv->find(kv.first)) *p = gatherDeepCopy(kv.second);
             }
-            auto collector = std::make_shared<ValueList>();
+            auto collector = makePayload<ValueList>();
             pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
             bool hit = false;
             auto pop = [this] { popGatherFrame(); };
@@ -33385,7 +33385,7 @@ Value Interpreter::exceptionFor(const RakuError& e) {
         if (isAdHocKind(tn)) { ClassAttr pa; pa.name = "payload"; pa.sigil = '$'; pa.pub = true; ci->attrs.push_back(pa); }
         classes_[tn] = ci;
     }
-    auto od = std::make_shared<ObjectData>();
+    auto od = makePayload<ObjectData>();
     od->cls = ci;
     od->attrs["message"] = Value::str(e.message);
     // an X::AdHoc's .payload is whatever was passed to `die` — for `die "msg"`
@@ -33455,7 +33455,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         for (auto& e : *v.arr()) if (e.t == VT::Hash && e.hashKind == "Proxy") { anyProxy = true; break; }
         if (anyProxy) {
             Value copy = v;
-            copy.setArr(std::make_shared<ValueList>());
+            copy.setArr(makePayload<ValueList>());
             for (auto& e : *v.arr()) copy.arr()->push_back(deproxy(e));
             return gistOf(copy);
         }
@@ -33690,8 +33690,8 @@ Value Interpreter::evalTempLet(Call* c) {
     auto& restores = c->name == "let" ? tctx_.cur->x().letRestores
                                       : tctx_.cur->x().tempRestores;
     auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
-        if (v.t == VT::Array && v.arr()) v.setArr(std::make_shared<ValueList>(*v.arr()));
-        else if (v.t == VT::Hash && v.hash()) v.setHash(std::make_shared<ValueMap>(*v.hash()));
+        if (v.t == VT::Array && v.arr()) v.setArr(makePayload<ValueList>(*v.arr()));
+        else if (v.t == VT::Hash && v.hash()) v.setHash(makePayload<ValueMap>(*v.hash()));
         return v;
     };
     // A VarExpr target restores THROUGH its owning Env by name — a raw

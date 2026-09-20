@@ -262,3 +262,85 @@ the risk in this change, not the arithmetic.
   pooling, and the honest version is a bigger `RVec` pool, not a new allocator.
 - If TSan reports anything the existing `BlockPool` does not, the generalisation
   broke an invariant that the capacity-keyed design was holding by accident.
+
+---
+
+# IMPLEMENTED AND MEASURED — 2026-09-20
+
+Steps 1 and 2 are done: [src/SlabPool.h](../../../src/SlabPool.h) plus 88
+mechanical call-site swaps (`std::make_shared<T>` → `makePayload<T>`) across 7
+files, +89/-88 lines. Output is byte-identical on every kernel checked.
+
+`SlabPool` follows **RVec's retention discipline, not the probe's**: blocks come
+from `::operator new` one at a time and are merely retained on free, up to 64 per
+size class, released at thread exit. The probe's 64 KB chunk carving measures
+faster and cannot give individual blocks back, which is the trade
+[src/ValueVec.h](../../../src/ValueVec.h) already refused once.
+
+## What it actually bought
+
+**The machine is noisier than the effect.** A before-vs-before control run shows
+±3% on sequential A/B, so the first table this section was going to contain was
+thrown away: it "measured" -5.1% on `arraypush`, a kernel whose census shows 155
+payload allocations in 3,414 mallocs, which the change cannot move. That delta
+was code layout, not the slab. **Any single-digit sequential A/B number in this
+repo needs a null control before it is believed.**
+
+Re-measured with the two binaries **interleaved pair by pair**, 11 pairs, so
+drift hits both sides equally. The discriminator is the SIGN DISTRIBUTION, not
+the median:
+
+| kernel | pairs negative | median | null control |
+|---|---|---:|---|
+| `regex` | **10 of 11** (1 zero, 0 positive) | **-4.27%** | 6 pos / 5 neg, median +1.56% |
+| `objects` | 8 of 11 | -3.72% | — |
+
+`regex` is a **real win of roughly 4%**: eleven pairs with no positive result
+against a null that splits evenly is a sign test at p ≈ 0.012. `objects` at 8 of
+11 is suggestive and **not established** (p ≈ 0.11).
+
+Peak RSS, which the control showed at **0.0% on every kernel** and is therefore
+the trustworthy column:
+
+| kernel | before | after | delta |
+|---|---:|---:|---:|
+| `regex` | 6.3 MB | 6.2 | **-1.6%** |
+| `objects` | 7.0 | 6.9 | -1.4% |
+| `sortby` | 25.8 | 25.8 | 0.0% |
+| `arrayops` | 79.5 | 79.5 | 0.0% |
+| `arraypush` | 63.3 | 63.2 | -0.2% |
+
+**The retention cost this plan warned about did not appear.** Memory is flat to
+slightly down, so the `kPoolMax` cap is doing its job and the bounded free lists
+cost less than the malloc metadata they displace.
+
+## The estimate was 3x too optimistic, and why
+
+This plan predicted **~12%** for `regex` from 250k payload allocations × 20 ns.
+Measured: **~4%**. The error is the per-op saving, not the allocation count —
+the count came from a real run and is right.
+
+20 ns was measured in a tight loop where the free-list head and the block coming
+off it stay in L1 across millions of iterations. A real interpreter interleaves
+tree-walking between allocations and evicts both. The plan's own caveat said the
+probe's warm fast path "may not" hold in a real program and "the error could go
+either way"; it went the way that hurts, by about a factor of three.
+
+**The general lesson for the rest of this campaign: an allocator microbenchmark
+overstates its own effect by roughly 3x on this engine.** `VALUE32-PLAN`'s
+`Slim32` ratios (4.3x on copy, 5.0x on array build) were measured the same way
+and should be discounted the same way before anyone budgets against them.
+
+## What is still open
+
+- The **eleven allocations per object** finding is untouched and remains the
+  larger number: a 4032-byte deque chunk per `ValueHash` is 806 MB of
+  `objects.raku`'s 1088 MB of traffic. That is the next plan, not this one.
+- No Roast run yet. The gates below are unrun, and this must not merge without
+  them — in particular TSan, since `SlabPool` adds a second thread-local free
+  list beside `RVec`'s.
+- `SlabPool::pool()` is a function-local `static thread_local` with a
+  non-trivial destructor, so every payload allocation pays an init guard. This
+  repo has been bitten by exactly that before (`emptyValueExt`'s comment: a
+  function-local-static guard "was most of a 28% regex regression"). Worth
+  testing a `constinit` namespace-scope pool against it.

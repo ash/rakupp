@@ -51,7 +51,7 @@ struct Builder {
         std::string qualified = std::string(kRakuAstPrefix) + cls;
         const std::shared_ptr<ClassInfo>* ci = rakuAstClass(qualified);
         if (!ci) unmapped(cls);
-        auto od = std::make_shared<ObjectData>();
+        auto od = makePayload<ObjectData>();
         od->cls = *ci;
         for (auto& a : attrs) od->attrs[a.first] = a.second;
         return Value::object(od);

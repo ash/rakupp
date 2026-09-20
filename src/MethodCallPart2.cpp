@@ -1043,7 +1043,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if ((m == "list" || m == "List" || m == "Seq" || m == "eager") &&
             !listy && inv.hash()->count("kind")) {
-            auto out = std::make_shared<ValueList>();
+            auto out = makePayload<ValueList>();
             auto fin = std::make_shared<int>(0);          // 0 running, 1 done, 2 quit
             auto err = std::make_shared<Value>();
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
@@ -2539,7 +2539,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (c.t != VT::Object) {
                 auto xit = classes_.find("X::AdHoc");
                 if (xit != classes_.end()) {
-                    Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>());
+                    Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
                     ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(c.toStr());
                     c = ex;
                 }
@@ -3908,7 +3908,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // rule the `my` declarators use: `@` → [], `%` → {}, native → 0/"",
         // `Int` → the type object, untyped `$` → Any.
         if (m == "CREATE") {
-            auto od = std::make_shared<ObjectData>();
+            auto od = makePayload<ObjectData>();
             auto it = classes_.find(resolveClassAlias(inv.s));
             if (it != classes_.end()) {
                 od->cls = it->second;
@@ -4727,7 +4727,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion")) {
                     long long size = Interpreter::ncStructSize(ci.get());
                     void* mem = calloc(1, size ? (size_t)size : 1);
-                    auto od = std::make_shared<ObjectData>();
+                    auto od = makePayload<ObjectData>();
                     od->cls = ci;
                     od->attrs["__native_ptr"] = Value::integer((long long)(intptr_t)mem);
                     od->attrs["__cstruct_owned"] = Value::boolean(true);
@@ -4767,7 +4767,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         nb == "buf8" || nb == "buf16" || nb == "buf32" || nb == "buf64") {
                         // `class MySet is Set`: back the instance with a real quanthash
                         // built from the args, so .elems/.keys/{k} dispatch to it
-                        auto od = std::make_shared<ObjectData>();
+                        auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         od->boxed = methodCall(Value::typeObj(nb), "new", args);
                         Value self = Value::object(od);
@@ -4782,7 +4782,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // Box a real meta-object built from the named arguments, which is
                     // what the built-in constructor does with them.
                     if (nb == "Attribute" || nb == "Parameter") {
-                        auto od = std::make_shared<ObjectData>();
+                        auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         Value meta = Value::makeHash(); meta.hashKind = nb;
                         // A named argument that names one of the SUBCLASS's OWN
@@ -4814,7 +4814,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return self;
                     }
                     if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
-                        auto od = std::make_shared<ObjectData>();
+                        auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
                         else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
@@ -4854,7 +4854,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // forward in methodCallInner). Without the box the instance
                     // was a bare object: "No such method 'slurp'".
                     if (nb == "IO::Path") {
-                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         ValueList builtinArgs;
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
@@ -4866,7 +4866,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return self;
                     }
                     if (nb == "DateTime" || nb == "Date") {
-                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         // args that are not attribute pairs feed the BUILT-IN's own
                         // constructor (`D.new(:2000year, a => 5)`: :year boxes the
                         // DateTime, a => 5 binds the attribute)
@@ -4891,7 +4891,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // a POSITIONAL Pair argument (`ValuePair.new( (a => 42) )`) is
                     // not mistaken for a named one.
                     if (nb == "Pair" || nb == "Enum") {
-                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         ValueList builtinArgs;   // attribute pairs stay with the object
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s)))
@@ -4923,7 +4923,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
                          nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
                          nb == "Complex" || nb == "Bool")) {
-                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         ValueList builtinArgs;   // attribute pairs stay with the object
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
@@ -4935,7 +4935,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return self;
                     }
                 }
-                auto od = std::make_shared<ObjectData>();
+                auto od = makePayload<ObjectData>();
                 od->cls = ci;
                 runAttrDefaults(od, ci, args);
                 // A class deriving a built-in SCALAR inherits that type's storage:
@@ -5098,7 +5098,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     m != "raku" && m != "gist" && m != "Str") {
                     Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
                     if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date")) {
-                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
                         // the ONE attribute walk (the stripped copy here had no
                         // `self` in scope); `.now`'s args are the built-in's, so
                         // none feed attributes
@@ -5211,7 +5211,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         "Cannot resolve caller clone(" + inv.typeName() + ":D: " + a.typeName() +
                         (rtIsDefined(a) ? ":D" : ":U") + "); none of these signatures matches:\n"
                         "    (Mu:U $:: *%_)\n    (Mu:D $:: *%twiddles)"};
-            Value nv = inv; auto ni = std::make_shared<ObjectData>();
+            Value nv = inv; auto ni = makePayload<ObjectData>();
             ni->cls = inv.obj()->cls; ni->attrs = inv.obj()->attrs;
             // A twiddle names a PUBLIC attribute — one with an accessor. Rakudo
             // walks `self.^attributes` and twiddles only those, so `$!private`
@@ -6682,8 +6682,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return methodCall(Value::typeObj(inv.hashKind), "new", na);
     }
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
-        if (inv.t == VT::Array) { Value nv = inv; nv.setArr(std::make_shared<ValueList>(*inv.arr())); return nv; }
-        if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(std::make_shared<ValueMap>(*inv.hash())); return nv; }
+        if (inv.t == VT::Array) { Value nv = inv; nv.setArr(makePayload<ValueList>(*inv.arr())); return nv; }
+        if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(makePayload<ValueMap>(*inv.hash())); return nv; }
         // A PAIR is mutable through `.value` (Rakudo declares it `is rw`), and
         // every copy of the Value shares the one cell it points at — so the
         // immutable return below handed back an ALIAS, and `$p.clone.value = 7`
@@ -6852,7 +6852,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     slot = std::make_shared<ClassInfo>();
                     slot->name = pk->second == 1 ? "Metamodel::ModuleHOW" : "Metamodel::PackageHOW";
                 }
-                Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+                Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
                 h.obj()->cls = slot;
                 h.obj()->attrs["__type"] = Value::typeObj(inv.s);
                 return h;
@@ -6872,7 +6872,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     howRoleClsInfo_ = std::make_shared<ClassInfo>();
                     howRoleClsInfo_->name = "Metamodel::ParametricRoleGroupHOW";
                 }
-                Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+                Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
                 h.obj()->cls = hci->isRole ? howRoleClsInfo_ : howClsInfo_;
                 h.obj()->attrs["__type"] = Value::typeObj(hci->name);
                 hci->howObj = std::move(h);
@@ -6884,7 +6884,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
         std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
         auto& stash = pkgStashes_[pkg];
-        if (!stash) stash = std::make_shared<ValueMap>();
+        if (!stash) stash = makePayload<ValueMap>();
         if (global_) { // `our`-scoped symbols live as qualified globals; show them
             // A sigilled one is published sigil-FIRST (`&A::foo`, `$A::bar`),
             // so a plain `A::` prefix test never saw it and `A.WHO` came back

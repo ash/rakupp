@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "IStr.h"
+#include "SlabPool.h"
 #include "ValueVec.h"
 
 namespace rakupp {
@@ -654,7 +655,7 @@ struct Value {
     // clone when the body is shared — replacing one copy's pointer never
     // touched another copy's before, and must not now.
     MatchData& mdW() {
-        if (p_.use_count() > 1) p_ = std::make_shared<MatchData>(*static_cast<MatchData*>(p_.get()));
+        if (p_.use_count() > 1) p_ = makePayload<MatchData>(*static_cast<MatchData*>(p_.get()));
         return *static_cast<MatchData*>(p_.get());
     }
     void setArr(std::shared_ptr<ValueList> x) {
@@ -685,8 +686,8 @@ struct Value {
     // census says is rare.
     const ValueExt& xr() const { return x_ ? *x_ : emptyValueExt; }
     ValueExt& xw() {
-        if (!x_) x_ = std::make_shared<ValueExt>();
-        else if (x_.use_count() > 1) x_ = std::make_shared<ValueExt>(*x_);
+        if (!x_) x_ = makePayload<ValueExt>();
+        else if (x_.use_count() > 1) x_ = makePayload<ValueExt>(*x_);
         return *x_;
     }
     double im() const { return xr().im; }
@@ -792,8 +793,8 @@ struct Value {
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
     static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
     static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
-    static Value array() { Value v; v.t = VT::Array; v.setArr(std::make_shared<ValueList>()); return v; }
-    static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(std::make_shared<ValueList>(std::move(items))); return v; }
+    static Value array() { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>()); return v; }
+    static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>(std::move(items))); return v; }
     // a List/Seq: same storage as Array but gists with (..) instead of [..]
     static Value list(ValueList items) { Value v = array(std::move(items)); v.isList = true; return v; }
     // a Seq: a List whose `s` carries the Seq tag, so `.raku` renders `(…).Seq`
@@ -829,7 +830,7 @@ struct Value {
     // with eager allocation above they simply return the existing container.
     ValueList& arrRef() {
         if (ValueList* a = arr()) return *a;
-        auto sp = std::make_shared<ValueList>();
+        auto sp = makePayload<ValueList>();
         ValueList& r = *sp;
         setArr(std::move(sp));
         return r;
@@ -903,19 +904,19 @@ struct Value {
 #include "ValueHash.h"
 namespace rakupp {
 
-inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.setHash(std::make_shared<ValueMap>()); return v; }
+inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.setHash(makePayload<ValueMap>()); return v; }
 inline Value Value::matchVal(std::string text, long from, long to) {
     Value v; v.t = VT::Match; v.s = std::move(text);
     ValueExt& x = v.xw(); x.rFrom = from; x.rTo = to;
-    auto m = std::make_shared<MatchData>();
-    m->pos = std::make_shared<ValueList>();
-    m->named = std::make_shared<ValueMap>();
+    auto m = makePayload<MatchData>();
+    m->pos = makePayload<ValueList>();
+    m->named = makePayload<ValueMap>();
     v.setMatch(std::move(m));
     return v;
 }
 inline ValueMap& Value::hashRef() {
     if (ValueMap* h = hash()) return *h;
-    auto sp = std::make_shared<ValueMap>();
+    auto sp = makePayload<ValueMap>();
     ValueMap& r = *sp;
     setHash(std::move(sp));
     return r;

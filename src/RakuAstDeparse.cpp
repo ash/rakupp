@@ -801,7 +801,7 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
     const std::shared_ptr<ClassInfo>* ci = rakuAstClass(qualifiedName);
     if (!ci) throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                              "Undeclared name '" + qualifiedName + "'"};
-    auto od = std::make_shared<ObjectData>();
+    auto od = makePayload<ObjectData>();
     od->cls = *ci;
     const std::string cls = isRakuAstName(qualifiedName) ? qualifiedName.substr(9) : qualifiedName;
 
@@ -837,7 +837,7 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
             Value inner = Value::array();
             inner.arr()->push_back(l->second);
             inner.arr()->push_back(r->second);
-            auto ad = std::make_shared<ObjectData>();
+            auto ad = makePayload<ObjectData>();
             if (const std::shared_ptr<ClassInfo>* ac = rakuAstClass("RakuAST::ArgList")) ad->cls = *ac;
             ad->attrs["args"] = std::move(inner);
             od->attrs.erase("left");
@@ -885,7 +885,7 @@ Value rakuAstEval(Interpreter& I, const Value& node) {
 // objects. The parts are stored as plain strings; the renderer joins them.
 Value rakuAstNameFrom(Interpreter&, const ValueList& parts) {
     const std::shared_ptr<ClassInfo>* ci = rakuAstClass("RakuAST::Name");
-    auto od = std::make_shared<ObjectData>();
+    auto od = makePayload<ObjectData>();
     if (ci) od->cls = *ci;
     Value list = Value::array();
     for (auto& p : parts) list.arr()->push_back(Value::str(p.toStr()));

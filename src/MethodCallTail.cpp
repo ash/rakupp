@@ -1247,7 +1247,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if ((m == "all" || m == "any" || m == "none" || m == "one") &&
         inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
         Value j = Value::array(); j.enumName = m;
-        j.setArr(std::make_shared<ValueList>(ValueList{inv}));
+        j.setArr(makePayload<ValueList>(ValueList{inv}));
         return j;
     }
     // Answers that need only the SIZE (or one element) of an Array, taken BEFORE the
@@ -1320,7 +1320,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
         if (m == "any" || m == "all" || m == "none" || m == "one") {
             Value j = Value::array(); j.enumName = m;
-            j.setArr(std::make_shared<ValueList>(items));
+            j.setArr(makePayload<ValueList>(items));
             return j;
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = items; (*s.hash())["values"] = v; return s; }
@@ -1368,7 +1368,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "values") {
             Value out = Value::array();
             if (inv.t == VT::Hash) { for (auto& kv : *inv.hash()) out.arr()->push_back(kv.second); }
-            else out.setArr(std::make_shared<ValueList>(items));
+            else out.setArr(makePayload<ValueList>(items));
             out.isList = true; return out;
         }
         // `.pairup` reads the list PAIRWISE — but a Pair element already is one,

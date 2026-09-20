@@ -4938,7 +4938,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     {
         auto homeDir = []() -> std::string { return platHomeDir(); };
         auto mkCURI = [&](const std::string& name, const std::string& prefix) -> Value {
-            auto od = std::make_shared<ObjectData>();
+            auto od = makePayload<ObjectData>();
             od->cls = classes_["CompUnit::Repository::Installation"];
             od->attrs["name"] = Value::str(name);
             Value p = Value::str(prefix); p.hashKind = "IO"; // IO::Path
@@ -5126,7 +5126,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value e = Value::array(); e.isList = true; e.s = "Seq";
                 std::string homeRepo = platHomeDir() + "/.raku";
                 for (const std::string& pre : rakuRepoPrefixes()) {
-                    auto od = std::make_shared<ObjectData>();
+                    auto od = makePayload<ObjectData>();
                     od->cls = inv.obj()->cls;   // the Installation class, already in hand
                     std::string nm = pre == homeRepo ? "home"
                                    : pre.size() > 5 && pre.compare(pre.size()-5,5,"/site") == 0 ? "site"
@@ -5147,7 +5147,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     std::string core = pre.substr(0, pre.size()-5) + "/core";
                     struct stat st;
                     if (stat(core.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-                    auto od = std::make_shared<ObjectData>();
+                    auto od = makePayload<ObjectData>();
                     od->cls = inv.obj()->cls;
                     od->attrs["name"] = Value::str("core");
                     Value p3 = Value::str(core); p3.hashKind = "IO";
@@ -5368,7 +5368,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 // dist/<id> — the meta index (list-installed reads it; buildResourceMap
                 // scans it for `resources/…` → the on-disk resource copy).
-                Value distMeta = metaV; distMeta.setHash(std::make_shared<ValueMap>(meta));
+                Value distMeta = metaV; distMeta.setHash(makePayload<ValueMap>(meta));
                 (*distMeta.hash())["files"] = filesOut;
                 if (provOut.hash() && !provOut.hash()->empty())
                     (*distMeta.hash())["provides"] = provOut;
@@ -5515,7 +5515,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         };
         for (auto& row : *inv.arr()) {
             Value r = row;
-            if (r.t == VT::Array && r.arr()) { r.setArr(std::make_shared<ValueList>(*r.arr())); strip(r); }
+            if (r.t == VT::Array && r.arr()) { r.setArr(makePayload<ValueList>(*r.arr())); strip(r); }
             ValueList none;
             out += ", " + methodCall(r, "raku", none).toStr();
         }
@@ -5524,7 +5524,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() && inv.arr() && m == "clone") {
         Value c = inv; // deep-copy the nested storage so containers are independent
         std::function<Value(const Value&)> deep = [&](const Value& n) -> Value {
-            if (n.t == VT::Array && n.arr()) { Value a = n; a.setArr(std::make_shared<ValueList>());
+            if (n.t == VT::Array && n.arr()) { Value a = n; a.setArr(makePayload<ValueList>());
                 for (auto& e : *n.arr()) a.arr()->push_back(deep(e)); return a; }
             return n;
         };
@@ -5583,14 +5583,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `(any 0, "").defined` is True while `.Bool` is False.
         if (m == "defined") {
             Value j = Value::array(); j.enumName = inv.enumName;
-            j.setArr(std::make_shared<ValueList>());
+            j.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) j.arr()->push_back(Value::boolean(defined(el)));
             return Value::boolean(j.truthy());
         }
         if (m == "THREAD" && !args.empty()) {
             // shallow map: the block sees each eigenstate whole (junctions included)
             Value out = Value::array(); out.enumName = inv.enumName;
-            out.setArr(std::make_shared<ValueList>());
+            out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) {
                 ValueList one{el};
                 noAutothread_ = true;
@@ -5608,7 +5608,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             "push", "append", "pop", "unshift", "prepend", "shift", "splice"};
         if (!junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m))) {
             Value out = Value::array(); out.enumName = inv.enumName;
-            out.setArr(std::make_shared<ValueList>());
+            out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
             return out;
         }
@@ -6720,7 +6720,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 auto ict = classes_.find(inner);
                 if (ict == classes_.end()) ict = classes_.find(resolveClassAlias(inner));
                 if (ict != classes_.end()) {
-                    Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                    Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
                     o.obj()->cls = ict->second;
                     o.obj()->attrs["__native_ptr"] = Value::integer(fa);
                     return o;   // borrowed: the OUTER struct owns the memory
@@ -6734,7 +6734,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             auto cit = classes_.find(type);
             if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
                 long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
-                Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
                 o.obj()->cls = cit->second; o.obj()->attrs["__native_ptr"] = Value::integer(p);
                 return o;
             }
@@ -6791,7 +6791,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     // a garbage handle that answered a garbage version. This is
                     // the same value `nativecast(FT_Library, $p)` produces, which
                     // is how the level was settled.
-                    Value o = Value::object(std::make_shared<ObjectData>());
+                    Value o = Value::object(makePayload<ObjectData>());
                     o.obj()->cls = ci;
                     o.obj()->attrs["__native_ptr"] = Value::integer(addr);
                     return o;
@@ -7345,7 +7345,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // CompUnit::PrecompilationId.new-from-string($src) — an opaque id; the
     // source spelling is as good an identity as any here.
     if (inv.t == VT::Type && inv.s == "CompUnit::PrecompilationId" && m == "new-from-string") {
-        Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+        Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
         o.obj()->cls = classes_["CompUnit::PrecompilationId"];
         o.obj()->attrs["id"] = Value::str(args.empty() ? "" : args[0].toStr());
         return o;
@@ -7406,7 +7406,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         *pod.arr() = parsePod(text);
         Value unit = Value::makeHash();
         (*unit.hash())["$=pod"] = pod;
-        Value h; h.t = VT::Object; h.setObj(std::make_shared<ObjectData>());
+        Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
         h.obj()->cls = classes_["CompUnit::Handle"];
         h.obj()->attrs["unit"] = unit;
         return h;
@@ -8182,7 +8182,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
                 auto xit = classes_.find("X::AdHoc");
-                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(cause.toStr()); cause = ex; }
+                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(cause.toStr()); cause = ex; }
             }
             (*inv.hash())["failCause"] = cause;
             // once drained, the .closed Promise breaks with the failure cause
@@ -9384,7 +9384,7 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
         if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
         if (ctx->running > 0) {
             Interpreter* ip = &I2;
-            auto saved = std::make_shared<ValueList>(args);
+            auto saved = makePayload<ValueList>(args);
             ctx->queue.push_back({sub, [ip, ctx, sub, fn, saved] {
                 if (ctx->done || (sub && ctx->closedSubs.count(sub))) return;
                 ip->tctx_.tapStack.push_back(ctx);
@@ -10979,7 +10979,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
         }
         auto handle = std::make_shared<TapHandle>();
-        auto buf = std::make_shared<ValueList>();
+        auto buf = makePayload<ValueList>();
         auto srcDone = std::make_shared<std::atomic<bool>>(false);
         auto quitEx = std::make_shared<Value>();
         auto quitSet = std::make_shared<std::atomic<bool>>(false);
@@ -11811,7 +11811,7 @@ void Interpreter::registerBuiltins() {
             // wrap a plain string/number into an X::AdHoc exception (so .message/.^name work in CATCH)
             auto it = I.classes_.find("X::AdHoc");
             if (it != I.classes_.end()) {
-                Value ex; ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>());
+                Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
                 ex.obj()->cls = it->second;
                 ex.obj()->attrs["message"] = Value::str(msg);
                 ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a[0]; // .payload is what was thrown
@@ -11937,7 +11937,7 @@ void Interpreter::registerBuiltins() {
         } else if (!a.empty()) {
             auto it = I.classes_.find("X::AdHoc");
             if (it != I.classes_.end()) {
-                ex.t = VT::Object; ex.setObj(std::make_shared<ObjectData>()); ex.obj()->cls = it->second;
+                ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = it->second;
                 ex.obj()->attrs["message"] = Value::str(a[0].toStr());
                 // `fail %h` keeps the value as the exception's PAYLOAD, as Rakudo's
                 // X::AdHoc does (Text::SubParsers reports a failed parse that way)
@@ -15939,7 +15939,7 @@ void Interpreter::registerBuiltins() {
         // role answered a bare Int instead of a struct handle.
         if (it == I.classes_.end()) it = I.classes_.find(I.resolveClassAlias(t));
         if (it != I.classes_.end()) {
-            Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+            Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
             o.obj()->cls = it->second; o.obj()->attrs["__native_ptr"] = Value::integer(addr);
             return o;
         }
@@ -16652,7 +16652,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 "Map", "Hash", "IterationMap", "List", "Uni", "NFC", "NFD", "NFKC", "NFKD",
                 "IterationBuffer", "Array" };
             if (!kCoreRepr.count(bare)) {
-                Value o; o.t = VT::Object; o.setObj(std::make_shared<ObjectData>());
+                Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
                 o.obj()->cls = it->second;
                 return o;
             }
@@ -16685,7 +16685,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         auto it = classes_.find(tn);
         if (it == classes_.end()) it = classes_.find(resolveClassAlias(tn));
         if (it != classes_.end() && it->second) {
-            auto od = std::make_shared<ObjectData>();
+            auto od = makePayload<ObjectData>();
             od->cls = it->second;
             od->hasBoxed = true;
             od->boxed = n->op == O::BoxI ? Value::integer(v[0].toInt())
@@ -17294,9 +17294,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::CloneOp: { // shallow clone: fresh backing store, same elements
             if (v.empty()) return Value::nil();
             Value c = v[0];
-            if (c.t == VT::Array && c.arr()) { auto na = std::make_shared<ValueList>(*c.arr()); c.setArr(na); }
-            else if (c.t == VT::Hash && c.hash()) { auto nh = std::make_shared<ValueMap>(*c.hash()); c.setHash(nh); }
-            else if (c.t == VT::Object && c.obj()) { auto no = std::make_shared<ObjectData>(*c.obj()); c.setObj(no); }
+            if (c.t == VT::Array && c.arr()) { auto na = makePayload<ValueList>(*c.arr()); c.setArr(na); }
+            else if (c.t == VT::Hash && c.hash()) { auto nh = makePayload<ValueMap>(*c.hash()); c.setHash(nh); }
+            else if (c.t == VT::Object && c.obj()) { auto no = makePayload<ObjectData>(*c.obj()); c.setObj(no); }
             return c;
         }
         case O::Shift: { // generic array shift (ShiftI is the int variant)
