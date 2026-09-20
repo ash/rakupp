@@ -71,7 +71,15 @@ sub spawn(@args, :$cwd = $ROOT.absolute, :%env) {
     my %e = %*ENV;
     %e{.key} = .value for %env;
     my $p = run |@args, :$cwd, :env(%e), :out, :err;
-    ($p.exitcode, $p.out.slurp(:close), $p.err.slurp(:close))
+    # A child killed by a signal has exitcode 0 and a signal number -- Rakudo
+    # answers the same way, so this is the language, not a quirk. Read plainly
+    # it makes a POSIX SIGSEGV indistinguishable from a clean exit, and an
+    # example that crashed would be compared against its expectation instead of
+    # reported as the crash it was. Folded the way a shell folds it (128+N), so
+    # one number is the whole story on both platforms: Windows has no signals
+    # and its abnormal exit IS its status code.
+    my $rc = $p.signal ?? 128 + $p.signal !! $p.exitcode;
+    ($rc, $p.out.slurp(:close), $p.err.slurp(:close))
 }
 
 # A line ending is a platform convention, not a binding difference: the same
@@ -150,6 +158,15 @@ my @hosts =
 
     %(  name => 'cpp', label => 'C++',
         run  => -> $ex { cpp-run($ex) },
+        # What to do when the C++ leg dies instead of running. Its stdout is a
+        # PIPE, so the C runtime buffers it whole and an abnormal exit
+        # (__fastfail on Windows, SIGABRT here) discards every line the program
+        # had already printed -- which is why `shopping runs under C++` has only
+        # ever said "it failed" and never "it failed after the tree walk".
+        # Recompiled with the streams unbuffered, the same crash leaves the
+        # output up to the statement it died on. Diagnosis only: the byte
+        # comparison is always against the command the guide prints.
+        diagnose => -> $ex { cpp-run($ex, :unbuffered) },
         here => $cpp-why eq '', why => $cpp-why ),
 
     # wolframscript -version answers without a kernel, so `here` is true on an
@@ -165,10 +182,28 @@ my @hosts =
 # C++ is the odd one: it compiles first, and LINKS rather than dlopen'ing.
 # Every flag here has two spellings, and the run step differs too — a Windows
 # executable has no rpath, so it finds librakupp.dll beside itself or on PATH.
-sub cpp-run($ex) {
+sub cpp-run($ex, :$unbuffered) {
     my $src = "bindings/cpp/examples/$ex.cpp";
-    my $exe = $*TMPDIR.add("bindings-smoke-$ex-$*PID" ~ ($WIN ?? '.exe' !! ''));
+    my $tag = $unbuffered ?? "-ub" !! "";
+    my $exe = $*TMPDIR.add("bindings-smoke-$ex-$*PID$tag" ~ ($WIN ?? '.exe' !! ''));
     my ($rc, $out, $err);
+
+    # A forced include, ahead of the example's own first line, whose only effect
+    # is that every << reaches the pipe immediately. The example is not edited
+    # and not even aware of it -- the file it compiles is the one in the tree.
+    my $force = $unbuffered ?? $*TMPDIR.add("bindings-smoke-unbuf-$*PID.hpp") !! Nil;
+    $force.spurt(q:to/HPP/) if $force;
+        /* written by tools/bindings-smoke.raku for a crash re-run only */
+        #include <iostream>
+        namespace {
+        struct RkSmokeUnbuffered {
+            RkSmokeUnbuffered() { std::cout << std::unitbuf; std::cerr << std::unitbuf; }
+        } rk_smoke_unbuffered_;
+        }
+        HPP
+    LEAVE { .unlink with $force }
+    my @force-win  = $force ?? ('/FI' ~ $force.absolute,)   !! ();
+    my @force-unix = $force ?? ('-include', $force.absolute) !! ();
 
     if $WIN {
         my $cxx = %*ENV<CXX> // 'cl';
@@ -179,6 +214,7 @@ sub cpp-run($ex) {
         my $obj = $*TMPDIR.add("bindings-smoke-obj-$ex-$*PID");
         $obj.mkdir;
         ($rc, $out, $err) = spawn [$cxx, '/nologo', '/std:c++17', '/EHsc',
+                                   |@force-win,
                                    '/I', $ROOT.add('include').absolute,
                                    $ROOT.add($src).absolute,
                                    '/Fe' ~ $exe.absolute,
@@ -194,7 +230,7 @@ sub cpp-run($ex) {
             ?? ($lib.absolute, '-Wl,-rpath,' ~ $BUILD.absolute)
             !! ('-L' ~ $BUILD.absolute, '-lrakupp',
                 '-Wl,-rpath,' ~ $BUILD.absolute, '-lpthread');
-        ($rc, $out, $err) = spawn [$cxx, '-std=c++17', '-Iinclude', $src,
+        ($rc, $out, $err) = spawn [$cxx, '-std=c++17', '-Iinclude', |@force-unix, $src,
                                    |@link, '-o', $exe.absolute];
     }
     return ($rc, $out, $err) unless $rc == 0;
@@ -242,9 +278,22 @@ for @examples -> $ex {
             # where 0xC0000005 is an access violation and 0xC00000FD a stack
             # overflow. Whatever the run did manage to print comes with it.
             my $detail = "exit code $rc"
-                       ~ ($WIN ?? " (0x{ ($rc +& 0xFFFFFFFF).base(16) })" !! '');
+                       ~ ($WIN            ?? " (0x{ ($rc +& 0xFFFFFFFF).base(16) })"
+                       !! $rc > 128       ?? " (killed by signal { $rc - 128 })"
+                       !!                    '');
             $detail ~= "\nstderr:\n" ~ $err.trim-trailing.indent(2) if $err.trim;
             $detail ~= "\nstdout:\n" ~ $out.trim-trailing.indent(2) if $out.trim;
+            # Nothing on either stream and a host that can say more: the run
+            # died with its output still in a buffer, so ask again with the
+            # buffer out of the way. WHERE it stopped is the whole question a
+            # bare exit code cannot answer.
+            if !$out.trim && !$err.trim && %h<diagnose> -> $diagnose {
+                my ($rc2, $out2, $err2) = $diagnose($ex);
+                $detail ~= "\nunbuffered re-run exited $rc2; what it printed first:\n"
+                         ~ ($out2.trim ?? lf($out2).trim-trailing.indent(2)
+                                       !! '  (nothing at all — it died before the first line)');
+                $detail ~= "\nunbuffered stderr:\n" ~ $err2.trim-trailing.indent(2) if $err2.trim;
+            }
             check False, "$ex runs under {%h<label>}", $detail;
             next;
         }
