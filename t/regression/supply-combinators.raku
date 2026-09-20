@@ -167,7 +167,14 @@ check Supply.zip-latest(Supply.from-list(1), Supply.from-list(2), :with(&[+])).l
     $s.Supply.throttle(2, 0.05).tap({ @o.push($_) });
     $s.emit($_) for 1 .. 5;
     my @first = @o.clone;
-    sleep 0.3;
+    # Five values at two per 0.05s tick need three ticks, and `sleep 0.3` was
+    # the guess that they fit. On a loaded runner they did not: macos-universal
+    # reached this check with [1, 2, 3, 4] and failed on the fifth. WAIT for the
+    # stream instead of timing it -- the claim below is about order, not speed,
+    # so the only thing the clock is still used for is a ceiling that turns a
+    # genuine stall into a failure rather than a hang.
+    my $deadline = now + 10;
+    sleep 0.01 while @o.elems < 5 && now < $deadline;
     # how many ticks elapse while five emits run is wall-clock, so the claim is
     # the one that does not depend on it: the stream is PACED, not passed through
     check (@first.elems < 5), True, 'not every value passes at once';

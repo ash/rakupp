@@ -340,7 +340,13 @@ check (supply { emit 1; emit 2; done; emit 3 }).list, (1, 2), 'emit after done i
     (supply {
         whenever Supply.from-list(1) { emit $_ };
         whenever Supply.from-list(2) { emit $_; done };
-        whenever Supply.interval(10) { emit "never" }
+        # interval's FIRST tick is immediate -- measured at 4ms here and 7ms
+        # under Rakudo -- so `Supply.interval(10)` was racing the queued `done`
+        # rather than never firing, and linux-aarch64 lost that race with
+        # [1, 2, "never"]. The delay puts the first tick ten seconds out, which
+        # is what "still-live but silent" needs to mean for the claim below to
+        # be about `done` and not about the clock.
+        whenever Supply.interval(10, 10) { emit "never" }
     }).tap({ @o.push($_) }, done => { @o.push('done') });
     check @o, [1, 2, 'done'], 'a still-live source does not hold up an explicit done';
 }
