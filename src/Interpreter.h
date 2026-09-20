@@ -581,6 +581,12 @@ Value extLoadModule(const std::string& path, std::string& errOut,
 // caught one and missed the other. Rakudo uses RO for both.
 [[noreturn]] void throwImmutable(const Value& v);
 
+// A hash store handed an odd number of plain items, or a lone Callable. Both
+// refusals are Rakudo's, attributes included (sheet HM-01); shared so that the
+// list store, `.Hash`/`.Map` and the `hash()` sub all raise the same thing.
+[[noreturn]] void throwHashOddNumber(long long found, const Value& last);
+[[noreturn]] void throwHashCallableStore();
+
 // Dividing by zero yields a FAILURE carrying X::Numeric::DivideByZero — not a
 // bare `Failure` type object, which has no exception to detonate and leaves `$!`
 // unset. Three verbatim copies of the check inside one `if` block each returned
@@ -1373,6 +1379,10 @@ public:
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).
     bool runControlWarn(const std::string& msg);
+    bool pairAccepts(const Value& topic, const Value& pair); // Pair.ACCEPTS (sheet HM-20)
+    // The one-liner behind every "Use of uninitialized value …" that is raised
+    // outside strOf: run the CONTROL handler, else print, unless `quietly`.
+    void warnUninit(const std::string& msg);
     // .gist, honouring a user-defined `method gist` (for say/note). skipUser
     // bypasses that method — the built-in behind it, which is where `self.Mu::gist`
     // and a `method gist { callsame }` both have to land (else either re-enters the

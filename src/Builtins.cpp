@@ -1522,7 +1522,11 @@ Value complexSqrt(double re, double im) {
 std::string objHashKeyType(const Value& h) {
     if (h.t != VT::Hash || !h.hashKind.empty()) return "";
     size_t c = h.ofType().find(',');
-    return c == std::string::npos ? "" : h.ofType().substr(c + 1);
+    if (c == std::string::npos) return "";
+    // the SECOND component only: `:{ }` carries a third (see the `ctx%{}`
+    // composer), and "Mu,Any" is not a key type
+    size_t c2 = h.ofType().find(',', c + 1);
+    return h.ofType().substr(c + 1, c2 == std::string::npos ? std::string::npos : c2 - c - 1);
 }
 
 // The REAL key of a hash entry, from whichever of the three sources has it.
@@ -1628,10 +1632,40 @@ static std::string rakuStrLit(const std::string& s) {
     }
     return o + "\"";
 }
+// Does this key print as a COLON PAIR (`:a-b(1)`) rather than as an arrow pair
+// (`"a-1" => 1`)? Rakudo asks whether the key is a Raku identifier, which is
+// not the ASCII word-plus-hyphen set this used to test (sheet HM-16):
+//
+//   ident := <alpha> <word>*  [ <[-']> <alpha> <word>* ]*
+//
+// so a hyphen or apostrophe only counts BETWEEN word characters and the part
+// after it must start with a LETTER: `a-b` and `a'b` are identifiers, `a-`,
+// `-a` and `a-1` are not. And `alpha`/`word` are the Unicode classes, not the
+// ASCII ones — `é`, `αβ` and `日本` are identifiers, `x·y` is not.
 static bool rakuIdentKey(const std::string& s) {
-    if (s.empty() || !(ascii::isalpha((unsigned char)s[0]) || s[0] == '_')) return false;
-    for (unsigned char c : s) if (!(ascii::isalnum(c) || c == '_' || c == '-')) return false;
-    return true;
+    if (s.empty()) return false;
+    bool ascii7 = true;
+    for (unsigned char c : s) if (c >= 0x80) { ascii7 = false; break; }
+    auto isAlphaCp = [](uint32_t cp) {
+        if (cp < 128) return ascii::isalpha((unsigned char)cp) || cp == '_';
+        return uniMatchesProp(cp, "L");
+    };
+    auto isWordCp = [&](uint32_t cp) {
+        if (cp < 128) return ascii::isalnum((unsigned char)cp) || cp == '_';
+        return isAlphaCp(cp) || uniMatchesProp(cp, "Nd");
+    };
+    std::vector<uint32_t> cps;
+    if (ascii7) { cps.reserve(s.size()); for (unsigned char c : s) cps.push_back(c); }
+    else cps = utf8cp(s);
+    size_t i = 0;
+    for (;;) {
+        if (i >= cps.size() || !isAlphaCp(cps[i])) return false;   // each part starts with a letter
+        i++;
+        while (i < cps.size() && isWordCp(cps[i])) i++;
+        if (i == cps.size()) return true;
+        if (cps[i] != '-' && cps[i] != '\'') return false;
+        i++;                                                       // …and another part must follow
+    }
 }
 // An unfilled slot of an array reads as that array's DEFAULT, and `.raku`
 // prints what a read would give: `my @a is default(7); @a[2] = 1` renders
@@ -1831,8 +1865,16 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 if (v.pairKey()->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
                 return krepr + " => " + rakuRepr(val, depth + 1, seen);
             }
-            return rakuIdentKey(v.s) ? ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")"
-                                     : rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
+            if (!rakuIdentKey(v.s))
+                return rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
+            // A Bool VALUE under an identifier key is the flag spelling that
+            // wrote it: `:a` and `:!a`, never `:a(Bool::True)` (sheet HM-16).
+            // Only a Bool value — `:a(Bool)` is the type object. This is the
+            // PAIR's own rendering, so it reaches a Pair inside a list or an
+            // Array (`[:a]`); Hash.raku spells its entries out in full.
+            if (val.t == VT::Bool && val.enumType.empty())
+                return (val.b ? ":" : ":!") + v.s;
+            return ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")";
         }
         case VT::Array: {
             if (v.s == "Slip" && (!v.arr() || v.arr()->empty())) return "Empty";
@@ -1967,6 +2009,12 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 return o + ")." + v.hashKind;
             }
             if (v.hashKind == "Map") {
+                // The EMPTY Map is `Map.new` — no argument list at all, which is
+                // also how it reads back (sheet HM-13). `.gist` keeps the `(())`.
+                if (keys.empty()) {
+                    if (v.hash()) seen.erase(v.hash());
+                    return v.itemized && !g_reprInArrayElem ? "$(Map.new)" : "Map.new";
+                }
                 std::string o = "Map.new(("; bool f = true;
                 for (auto& k : keys) {
                     if (!f) o += ","; f = false;
@@ -1975,7 +2023,11 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                                          : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
                 }
                 if (v.hash()) seen.erase(v.hash());
-                return o + "))";
+                o += "))";
+                // an itemized Map carries the `$` marker a `$`-held container
+                // shows, and it has to enclose the WHOLE constructor
+                if (v.itemized && !g_reprInArrayElem) o = "$(" + o + ")";
+                return o;
             }
             // An OBJECT hash renders as the DECLARATION that rebuilds it —
             // `(my Any %{Int} = 3 => "a")` — because `{3 => "a"}` would round-trip
@@ -1991,13 +2043,37 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                     Value val = v.hash()->at(k);
                     if (val.t == VT::Array || val.t == VT::Hash) val.itemized = true;
                     std::string rv = rakuRepr(val, depth + 1, seen);
+                    // the key's OWN spelling, not the payload's index string —
+                    // an object hash indexes by identity (`Str|a`), so asking
+                    // whether THAT looked like an identifier never said yes
                     Value rk = hashEntryKey(v, k, v.hash()->at(k));
-                    o += (rk.t == VT::Str && rakuIdentKey(k))
-                             ? ":" + k + "(" + rv + ")"
+                    o += (rk.t == VT::Str && rakuIdentKey(rk.s))
+                             ? ":" + rk.s.str() + "(" + rv + ")"
                              : rakuRepr(rk, depth + 1, seen) + " => " + rv;
                 }
                 if (v.hash()) seen.erase(v.hash());
                 return o + ")";
+            }
+            // A VALUE-TYPED hash names its type the same way — `(my Int % = :a(1))`
+            // — because `{:a(1)}` would read back untyped (sheet HM-05/HM-06).
+            // The `is default` knob alone does NOT trigger this form: Rakudo
+            // prints `my %h is default(0) = a => 1` as a plain `{:a(1)}`.
+            {
+                const std::string vt = v.ofType().substr(0, v.ofType().find(','));
+                if (!vt.empty() && vt != "Mu" && !ascii::islower((unsigned char)vt[0])) {
+                    std::string o = "(my " + vt + " %";
+                    bool f = true;
+                    for (auto& k : keys) {
+                        o += f ? " = " : ", "; f = false;
+                        Value val = v.hash()->at(k);
+                        if (val.t == VT::Array || val.t == VT::Hash) val.itemized = true;
+                        std::string rv = rakuRepr(val, depth + 1, seen);
+                        o += rakuIdentKey(k) ? ":" + k + "(" + rv + ")"
+                                             : rakuStrLit(k) + " => " + rv;
+                    }
+                    if (v.hash()) seen.erase(v.hash());
+                    return o + ")";
+                }
             }
             std::string o = "{"; bool first = true;
             for (auto& k : keys) {
@@ -2521,7 +2597,15 @@ ValueList toList(const Value& v) {
         const bool objHash = !objHashKeyType(v).empty();
         for (auto& kv : *v.hash()) {
             Value p = Value::pair(kv.first, kv.second);
-            if (kv.second.pairKey()) p.pairKeyM() = kv.second.pairKey();
+            // A key OBJECT rides along only when it is not already the index —
+            // a plain Str key IS the index, and attaching it as a key object
+            // made the pair render in the arrow form (`"a" => 42`) where
+            // Rakudo writes `:a(42)`.
+            if (kv.second.pairKey()) {
+                const Value& pk2 = *kv.second.pairKey();
+                if (!(pk2.t == VT::Str && pk2.hashKind.empty() && pk2.enumName.empty() && pk2.s == kv.first))
+                    p.pairKeyM() = kv.second.pairKey();
+            }
             else if (objHash) {
                 Value rk = hashEntryKey(v, kv.first, kv.second);
                 if (rk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(rk));
@@ -3124,6 +3208,25 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
 //     its decimal rendering;
 //   * a Complex by its two parts;
 //   * a Bool by 1/0.
+// Is this value's identity its OWN (an ObjAt), rather than its content (a
+// ValueObjAt)? Measured against Rakudo 2026.08: Array, List, Seq, Hash, Buf,
+// Instant, IO::Path, Code and every user object are ObjAt; Int, Rat, Num, Str,
+// Bool, Range, the Setty/Baggy family, Date, Complex, a type object and Nil are
+// ValueObjAt (sheet LA-36). A PAIR is whichever its parts are (sheet HM-19):
+// `(a => 1)` is a value, `(a => [1])` is an object, because the Array inside it
+// is one — which is why two such pairs are not `===` and `.unique` keeps both.
+bool whichIsObjAt(const Value& v) {
+    if (v.t == VT::Pair)
+        return (v.pairKey() && whichIsObjAt(*v.pairKey())) ||
+               (v.pairVal() && whichIsObjAt(*v.pairVal()));
+    return (v.t == VT::Array && v.hashKind != "Capture" && v.enumName.empty()) ||
+           (v.t == VT::Hash && v.hashKind.empty()) ||
+           (v.t == VT::Hash && (v.hashKind == "Hash" || v.hashKind == "SetHash" ||
+                                v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
+           (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "IO")) ||
+           (v.t == VT::Num && v.hashKind == "Instant") ||
+           v.t == VT::Code || v.t == VT::Object;
+}
 std::string whichOf(const Value& v) {
     auto ratPart = [](const Value& r) {
         if (r.ratN() && r.ratD()) return r.ratN()->toString() + "/" + r.ratD()->toString();
@@ -3178,6 +3281,17 @@ std::string whichOf(const Value& v) {
         // it makes `1..^5` and `1..4` the same value, and builds a huge string
         // for a large range on the way
         case VT::Range:   return "Range|" + v.gist();
+        // A Pair identifies by its PARTS — but only while both are values. With
+        // an Array (or any other reference type) inside, the Pair is an object
+        // and identifies by BEING itself: the payload it was built with, which
+        // every copy of the Pair shares and no other Pair has.
+        case VT::Pair:    if (whichIsObjAt(v)) {
+                              char buf[24];
+                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.pairVal());
+                              return "Pair" + std::string(buf);
+                          }
+                          return "Pair|" + (v.pairKey() ? whichOf(*v.pairKey()) : "Str|" + v.s.str()) +
+                                 "|" + (v.pairVal() ? whichOf(*v.pairVal()) : "Any|");
         // a CAPTURE is a VALUE — `\(1,2) === \(1,2)` is True in Rakudo, alone
         // among the Arrays — so it identifies by its PARTS, each with its own
         // identity. Rendering them (the old "Capture|1 2") merged `\(1)` with
@@ -3275,8 +3389,12 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             return;
         }
         Value c = it != h.hash()->end() ? rtAdd(it->second, cnt) : cnt;
-        bool zero = c.big() ? c.big()->isZero() : c.i == 0;
-        if (!zero) { c.pairKeyM() = keep; (*h.hash())[k] = std::move(c); }
+        // A BAG holds POSITIVE weights only — a zero or negative one drops the
+        // element (sheet HM-15). A Mix keeps any non-zero weight, negatives
+        // included, which is the whole difference between the two kinds.
+        bool drop = isMix ? (c.big() ? c.big()->isZero() : c.i == 0)
+                          : (c.big() ? c.big()->sign <= 0 : c.i <= 0);
+        if (!drop) { c.pairKeyM() = keep; (*h.hash())[k] = std::move(c); }
         else h.hash()->erase(k);
     };
     for (auto& v : items) {
@@ -3303,21 +3421,27 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                 }
             }
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
-                auto it = h.hash()->find(v.s);
+                const std::string mk = v.pairKey() ? baggyKeyStr(*v.pairKey()) : v.s.str();
+                auto it = h.hash()->find(mk);
                 auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
                 if (it != h.hash()->end()) {
                     // through the EXACT tower, not a C double: the Rats 1/10 and 1/50
                     // summed as doubles gave 0.12000000000000001, and being a Num the
                     // result then printed at full Num precision too
                     Value sum = applyArith("+", it->second, w);
-                    if (sum.toNum() == 0.0) h.hash()->erase(v.s);
-                    else { sum.pairKeyM() = keep; (*h.hash())[v.s] = std::move(sum); }
-                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash())[v.s] = w; }
+                    if (sum.toNum() == 0.0) h.hash()->erase(mk);
+                    else { sum.pairKeyM() = keep; (*h.hash())[mk] = std::move(sum); }
+                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash())[mk] = w; }
                 continue;
             }
             // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
             // do not); Bag/Mix use the numeric weight. (typed key travels in pairKey)
-            add(v.s, isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKey());
+            // The LOOKUP key comes from the key OBJECT when there is one: an
+            // object hash indexes its own entries by identity, and feeding that
+            // index in as an element key made `%objhash.Set` disjoint from the
+            // same set built any other way.
+            add(v.pairKey() ? baggyKeyStr(*v.pairKey()) : v.s,
+                isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKey());
         }
         else add(baggyKeyStr(v), Value::integer(1), baggyKey(v));
     }
@@ -6143,6 +6267,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return Value::boolean(false);
     if (m == "default" && (inv.t == VT::Array ||
                           (inv.t == VT::Hash && inv.hashKind != "Parameter"))) {
+        // A Map has NO `.default` — a missing key reads as Nil and there is no
+        // knob to change that, so asking for one is a missing method, not Any
+        // (sheet HM-14).
+        if (inv.t == VT::Hash && inv.hashKind == "Map")
+            throw RakuError{Value::typeObj("X::Method::NotFound"),
+                "No such method 'default' for invocant of type 'Map'"};
         if (inv.elemDefault()) return *inv.elemDefault();
         // a QuantHash has a TYPED default, not Any: False for the Set family,
         // 0 for the weighted ones. Only those — every other tagged Hash
@@ -7795,6 +7925,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (pos.size() >= 2)   val = pos[1];
         Value p = Value::pair(key.toStr(), val);
         if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(key);
+        // `Pair.new` BINDS its value exactly as `=>` does (sheet HM-18): a
+        // literal is read-only, a variable would carry its container. The
+        // argument EXPRESSION is what says which, so ask it.
+        if (pos.size() >= 2 && rwArgs && rwArgs->size() > 1)
+            p.pairValRO = !exprNamesContainer((*rwArgs)[1].get());
         return p;
     }
 
@@ -15464,6 +15599,15 @@ void Interpreter::registerBuiltins() {
         if (a.size() == 1) return a[0];
         Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr()->push_back(v); return out;
     };
+    // `pair($key, $value)` — the sub spelling of `$key => $value`, for a key
+    // that is computed rather than written (sheet HM-17). A non-Str key keeps
+    // its own type, so `pair(1, 2)` renders `1 => 2`.
+    B["pair"] = [](Interpreter&, ValueList& a) -> Value {
+        Value k = a.size() > 0 ? a[0] : Value::any();
+        Value p = Value::pair(k.toStr(), a.size() > 1 ? a[1] : Value::any());
+        if (k.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(k);
+        return p;
+    };
     B["hash"] = [](Interpreter&, ValueList& a) -> Value {
         Value h = Value::makeHash();
         ValueList items; // spread list args so hash(<a 1 b 2>) pairs up (and <1 2 3> dies)
@@ -15475,9 +15619,7 @@ void Interpreter::registerBuiltins() {
         for (size_t i = 0; i < items.size(); i++) {
             if (items[i].t == VT::Pair) (*h.hash())[items[i].s] = items[i].pairVal() ? *items[i].pairVal() : Value::any();
             else if (i + 1 < items.size()) { (*h.hash())[items[i].toStr()] = items[i + 1]; i++; }
-            else throw RakuError{Value::typeObj("X::AdHoc"),
-                "Odd number of elements found where hash initializer expected: found " +
-                std::to_string(items.size()) + " elements, last element seen: " + items[i].toStr()};
+            else throwHashOddNumber((long long)items.size(), items[i]);
         }
         return h;
     };

@@ -172,6 +172,9 @@ uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at by
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
+bool whichIsObjAt(const Value& v);   // .WHICH is an ObjAt (identity) rather than a ValueObjAt
+bool exprNamesContainer(const Expr* e); // does this expression name a container? (Pair value binding)
+std::string objHashIndex(const Value& k); // payload index for one key of an object hash
 bool predAnswerTruthy(Interpreter& I, const Value& res, const Value& elem);
 uint32_t toLowerCp(uint32_t c);
 // `:smartcase` (6.e) folds case only when the needle carries none of its own:

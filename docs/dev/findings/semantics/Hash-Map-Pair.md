@@ -3,16 +3,18 @@
 Provenance: Rakudo tag `2026.08`, files `src/core.c/Hash.rakumod` (534
 lines), `Map.rakumod` (694), `Hash/Object.rakumod` (392), `Pair.rakumod`
 (234), read in full on 2026-09-18. Oracle: Homebrew Rakudo v2026.08.
-Compared against Raku++ 4.0.1-23-g80b16d18 (build-arm64, 2026-09-18).
+Compared against Raku++ 4.0.1-23-g80b16d18 (build-arm64, 2026-09-18);
+implemented from this sheet on 2026-09-20 against 4.0.1-70-gab31e04.
 Format and legend: [README.md](README.md).
 
 Where this sits against the declared spec: Rakudo passes 17 of 17
-`S32-hash` files here, Raku++ 6. The rules below are what those files and
-real programs depend on: how a hash is filled, what a key is, what a
-missing key returns, which adverb combinations are legal, how `push`
-stacks values, what a Map refuses, and when a Pair's value is a container.
-2 of the 20 items are neither fully documented nor fully
-asserted by Roast.
+`S32-hash` files here, Raku++ 6 at extraction and 7 now (`adverbs.t`, the
+section's largest, went 1,012 of 1,128 assertions to 1,067). The rules
+below are what those files and real programs depend on: how a hash is
+filled, what a key is, what a missing key returns, which adverb
+combinations are legal, how `push` stacks values, what a Map refuses, and
+when a Pair's value is a container. 2 of the 20 items are neither fully
+documented nor fully asserted by Roast.
 
 ## A. Construction
 
@@ -28,7 +30,7 @@ say (try %(1, 2, 3)) // $!.^name, " ", (try { my %h = { $_ } }) // $!.message.li
 # rakudo 2026.08: X::Hash::Store::OddNumber Cannot use a Callable as the only argument to store in a Hash.  If the X::Hash::Store::OddNumber {} {:a(1)} {:a(1), :b(2)} X::Hash::Store::OddNumber:[:a(1)] {:a(1), :b(2)}
 ```
 A block that uses `$_` is a Callable, and storing one alone is its own error.
-rakupp 4.0.1: differs — an odd count is stored silently (`{"1" => 2}`, `{}`), and so is a Callable.
+rakupp 4.0.2: matches.
 
 ### HM-02  Curly braces: Hash or Block                             D:yes R:yes V:spec
 `{a => 1}` and `{}` are Hashes; `{ ; }`, `{ $_ }` and `{ a => $_ }` are
@@ -39,7 +41,7 @@ say {a => 1}.^name, " ", {}.^name, " ", { ; }.^name, " ", {a => 1, b => 2}.raku,
 # rakudo 2026.08: Hash Hash Block {:a(1), :b(2)} {:a(1)} {} {:a(1)} {:a(1)} {} Block Hash Block
 ```
 Assigning a `{…}` composer to a hash (`%h = {a => 1}`) compiles with a
-"Useless use of hash composer" warning. rakupp 4.0.1: matches.
+"Useless use of hash composer" warning. rakupp 4.0.2: matches.
 
 ## B. Keys
 
@@ -52,7 +54,7 @@ leaves the second key Any. `.of` is Mu and `.default` Any unless typed.
 say do { my @w; CONTROL { when CX::Warn { @w.push(1); .resume } }; my %h; %h{Any} = 1; %h.keys.raku ~ " " ~ @w.elems }, " ", do { my %h; %h{1} = "x"; %h.keys[0].^name ~ " " ~ %h.raku ~ " " ~ %h{1} ~ " " ~ %h<1> }, " ", do { my %h; %h{1.5} = 1; %h{"1.5"} }, " ", do { my %h; %h{(1, 2)} = 3, 4; %h.raku }, " ", do { my %h; %h<a b> = 1, 2; %h.raku }, " ", do { my %h; %h<a b> = 1; %h.raku }, " ", do { my %h = a => 1; %h.keyof.raku ~ " " ~ %h.of.raku ~ " " ~ %h.default.raku }, " ", do { my Int %h; %h.default.raku ~ " " ~ %h.of.raku }
 # rakudo 2026.08: ("",).Seq 1 Str {"1" => "x"} x x 1 {"1" => 3, "2" => 4} {:a(1), :b(2)} {:a(1), :b(Any)} Str(Any) Mu Any Int Int
 ```
-rakupp 4.0.1: differs — no warning for the undefined key; `my Int %h; %h.default` is Any.
+rakupp 4.0.2: matches.
 
 ### HM-04  Object hashes                                           D:yes R:yes V:spec
 `my %h{Int}` keeps keys as objects, typed: a Str or Rat key is
@@ -64,7 +66,8 @@ the subscript is a slice.
 say do { my %h{Int}; ((try { %h<x> = 1; "no" }) // $!.^name) ~ " " ~ ((try { %h{1.5} = 1; "no" }) // $!.^name) ~ " " ~ %h.raku }, " ", do { my %h{Any}; %h{1} = "a"; %h{"1"} = "b"; %h.elems ~ " " ~ %h.keys.map(*.^name).sort.raku }, " ", do { my %h{Int} = 1 => "a", 2 => "b"; %h.keys.sort.raku ~ " " ~ (%h{1}:exists) ~ " " ~ (%h<1>:exists) }, " ", do { my %h{Int}; %h{1} = "a"; %h.raku }, " ", do { my %h{Any}; %h{[1, 2]} = "a"; %h{[1, 2]}.raku ~ " " ~ %h.elems }, " ", :{ 1 => "a" }.raku, " ", :{ 1 => "a" }.^name, " ", :{ }.keyof.raku, " ", do { my %h{Int}; %h.keyof.raku ~ " " ~ %h.^name }
 # rakudo 2026.08: X::TypeCheck::Binding::Parameter X::TypeCheck::Binding::Parameter (my Any %{Int}) 2 ("Int", "Str").Seq (1, 2).Seq True False (my Any %{Int} = 1 => "a") ("a", Any) 2 (my Mu %{Mu} = 1 => "a") Hash[Mu,Mu,Any] Mu Int Hash[Any,Int]
 ```
-rakupp 4.0.1: differs — no key type check, `1` and `"1"` collapse, `%h<1>` finds the Int key, `:{ }` is named `Hash[Mu,Mu]`.
+rakupp 4.0.2: matches. An object hash now indexes by `.WHICH`; the key object travels
+beside the entry, which is what `.keys`, `.pairs` and `.raku` hand back.
 
 ## C. Access and autovivification
 
@@ -77,7 +80,7 @@ containers. An empty typed hash prints with its declaration.
 say do { my %h = a => 1; %h<b>.raku ~ " " ~ %h.elems ~ " " ~ (%h<b>:exists) }, " ", do { my %h = a => 1; my $v = %h<b><c>; %h.raku }, " ", do { my %h; %h<a><b> = 1; %h.raku }, " ", do { my %h; %h<a>[1] = 1; %h.raku }, " ", do { my %h; %h<a>.push(1); %h.raku }, " ", do { my %h; %h<a>++; %h<b> += 2; %h<c> ~= "x"; %h.raku }, " ", do { my %h is default(0); %h<a>.raku ~ " " ~ %h.default ~ " " ~ (%h<a>:exists) }, " ", do { my Int %h is default(9); %h<a> ~ " " ~ %h.raku }
 # rakudo 2026.08: Any 1 False {:a(1)} {:a(${:b(1)})} {:a($[Any, 1])} {:a($[1])} {:a(1), :b(2), :c("x")} 0 0 False 9 (my Int %)
 ```
-rakupp 4.0.1: differs — an empty typed hash prints as `{}`.
+rakupp 4.0.2: matches.
 
 ### HM-06  Typed values, Nil, binding                              D:yes R:yes V:spec
 A wrong value type is `X::TypeCheck::Assignment`; assigning Nil stores
@@ -86,7 +89,10 @@ the type object (`Int`) or Any; a key bound to a value cannot be assigned.
 say do { my Int %h; (try { %h<a> = "x"; "no" }) // $!.^name }, " ", do { my Int %h = a => 1; %h<a> = Nil; %h.raku }, " ", do { my %h = a => 1; %h<a> = Nil; %h.raku }, " ", do { my %h; %h<a> := 5; ((try { %h<a> = 6; "no" }) // $!.^name) }
 # rakudo 2026.08: X::TypeCheck::Assignment (my Int % = :a(Int)) {:a(Any)} X::AdHoc
 ```
-rakupp 4.0.1: differs — the typed hash prints without its declaration; the bound key gives `X::Assignment::RO`.
+rakupp 4.0.2: matches. The two "Cannot assign to …" refusals are an `X::AdHoc`
+now, engine-wide: Rakudo keeps `X::Assignment::RO` for "Cannot modify an
+immutable T (gist)" — a container that exists and says no — and uses the AdHoc
+for a readonly slot or one with no container behind it at all.
 
 ### HM-07  :exists and :delete, and their combinations              D:yes R:yes V:spec
 `:delete` returns the value (the default for a missing key); `:exists`
@@ -101,7 +107,7 @@ say do { my %h = a => 1; %h<a>:delete ~ " " ~ %h.elems }, " ", do { my %h = a =>
 say do { my %h = a => 1; (%h<a b>:exists:kv).raku ~ " " ~ (%h<a b>:exists:p).raku ~ " " ~ (%h<a b>:!exists:kv).raku }, " ", do { my %h = a => 1; my $f = %h<a b>:exists:k; $f.^name ~ ":" ~ $f.exception.^name ~ ":" ~ $f.exception.nogo.raku }, " ", do { my %h = a => 1; (%h<a>:exists:delete) ~ " " ~ %h.elems }, " ", do { my %h = a => 1, b => 2; (%h<a b>:delete:kv).raku ~ " " ~ %h.elems }, " ", do { my %h = a => 1, b => 2; (%h<a z>:delete:p).raku }, " ", do { my %h = a => 1; (%h<a>:delete:kv).raku ~ " " ~ (%h<a>:delete:v).raku }, " ", do { my %h = a => 1; (try %h<a>:foo) // $!.^name }, " ", do { my %h = a => 1; (%h{*}:k).raku ~ " " ~ (%h{*}:kv).raku ~ " " ~ (%h{*}:delete).raku ~ " " ~ %h.elems }
 # rakudo 2026.08: ("a", Bool::True) (:a,) ("a", Bool::False) Failure:X::Adverb:("exists", "k").Seq True 0 ("a", 1, "b", 2) 0 (:a(1),) ("a", 1) () X::Adverb ("a",) ("a", 1) (1,) 0
 ```
-rakupp 4.0.1: differs — `:exists:k` returns `(Bool::True, Bool::False)` instead of failing.
+rakupp 4.0.2: matches.
 
 ### HM-08  Slices                                                  D:yes R:yes V:spec
 A missing key in a slice is Any; `:v`, `:kv`, `:p`, `:k` drop missing keys;
@@ -110,7 +116,7 @@ A missing key in a slice is Any; `:v`, `:kv`, `:p`, `:k` drop missing keys;
 say do { my %h = a => 1, b => 2; %h<a b>.raku ~ " " ~ %h<a c>.raku ~ " " ~ (%h<a c>:v).raku ~ " " ~ (%h<a c>:kv).raku ~ " " ~ (%h<a c>:p).raku ~ " " ~ (%h<a c>:k).raku ~ " " ~ %h{*}.sort.raku ~ " " ~ %h{}.raku ~ " " ~ %h<>.raku }, " ", do { my %h = a => 1; (%h<a>:kv).raku ~ " " ~ (%h<a>:p).raku ~ " " ~ (%h<z>:kv).raku ~ " " ~ (%h<z>:p).raku ~ " " ~ (%h<z>:k).raku ~ " " ~ (%h<z>:v).raku }, " ", do { my %h = a => 1, b => 2; %h{%h.keys.sort}.raku ~ " " ~ %h<a b c>.elems }
 # rakudo 2026.08: (1, 2) (1, Any) (1,) ("a", 1) (:a(1),) ("a",) (1, 2).Seq {:a(1), :b(2)} {:a(1), :b(2)} ("a", 1) :a(1) () () () () (1, 2) 3
 ```
-rakupp 4.0.1: matches.
+rakupp 4.0.2: matches.
 
 ## D. push and append
 
@@ -125,7 +131,7 @@ fails with `X::Cannot::Lazy`; both return the hash.
 say do { my %h; %h.push(a => 1); %h.push(a => 2); %h.raku }, " ", do { my %h; %h.push((a => 1)); %h.push((a => 2)); %h.push((a => 3)); %h.raku }, " ", do { my %h; %h.push("a", 1, "b", 2); %h.raku }, " ", do { my %h; %h.push((a => [1, 2])); %h.push((a => 3)); %h.raku }, " ", do { my %h; %h.append((a => [1, 2])); %h.append((a => [3, 4])); %h.raku }, " ", do { my %h; %h.push((a => [1, 2])); %h.push((a => [3, 4])); %h.raku }, " ", do { my %h = a => 1; %h.append((a => (2, 3))); %h.raku }, " ", do { my %h = a => 1; %h.push((a => (2, 3))); %h.raku }, " ", do { my %h; my $r := %h.push((a => 1)); ($r =:= %h) }, " ", do { my %h; %h.push((a => 1, b => 2)); %h.raku }, " ", do { my @w; CONTROL { when CX::Warn { @w.push(.message); .resume } }; my %h; %h.push("a", 1, "b"); %h.raku ~ " " ~ @w.raku }
 # rakudo 2026.08: {} {:a($[1, 2, 3])} {:a(1), :b(2)} {:a($[1, 2, 3])} {:a($[1, 2, 3, 4])} {:a($[1, 2, [3, 4]])} {:a($[1, 2, 3])} {:a($[1, (2, 3)])} True {:a(1), :b(2)} {:a(1)} ["Trailing item in Hash.push"]
 ```
-rakupp 4.0.1: matches on all of these; a lazy source is accepted where Rakudo fails.
+rakupp 4.0.2: matches on all of these; a lazy source is accepted where Rakudo fails.
 
 ## E. Listing, printing, comparing
 
@@ -136,7 +142,7 @@ pairs by key; `.list` and iteration produce Pairs; `.head` is a Pair.
 say do { my %h = b => 2, a => 1; %h.keys.sort.raku ~ " " ~ %h.values.sort.raku ~ " " ~ %h.kv.sort.raku ~ " " ~ %h.pairs.sort.raku ~ " " ~ %h.antipairs.sort.raku ~ " " ~ %h.invert.sort.raku ~ " " ~ %h.elems ~ " " ~ %h.end }, " ", do { my %h = a => (1, 2), b => 3; %h.invert.sort.raku }, " ", do { my %h = a => [1, 2]; %h.invert.sort.raku }, " ", do { my %h = b => 2, a => 1; %h.sort.raku ~ " " ~ %h.sort(*.value).raku ~ " " ~ %h.list.elems ~ " " ~ %h.List.^name ~ " " ~ %h.map(*.key).sort.raku ~ " " ~ %h.head.^name ~ " " ~ (for %h -> $p { $p.^name }).unique.raku }
 # rakudo 2026.08: ("a", "b").Seq (1, 2).Seq (1, 2, "a", "b").Seq (:a(1), :b(2)).Seq (1 => "a", 2 => "b").Seq (1 => "a", 2 => "b").Seq 2 1 (1 => "a", 2 => "a", 3 => "b").Seq (1 => "a", 2 => "a").Seq (:a(1), :b(2)).Seq (:a(1), :b(2)).Seq 2 List ("a", "b").Seq Pair ("Pair",).Seq
 ```
-rakupp 4.0.1: matches.
+rakupp 4.0.2: matches.
 
 ### HM-11  gist, Str, raku                                         D:partial R:yes V:spec
 `gist` is sorted by key and capped at 100 pairs then `, ...`; `Str` is
@@ -149,7 +155,7 @@ the long form (`:a(Bool::True)`).
 say do { my %h = b => 2, a => 1; %h.gist ~ " " ~ %h.Str.raku ~ " " ~ %h.raku ~ " " ~ %h.Bool ~ " " ~ %().Bool ~ " " ~ +%h ~ " " ~ %h.Int }, " ", do { my %h = (1..150).map({ $_ => 1 }); %h.gist.chars ~ " " ~ %h.gist.substr(*-6) }, " ", do { my %h = a => [1, 2], b => {c => 3}; %h.raku ~ " " ~ %h.gist }, " ", ${a => 1}.raku, " ", do { my %h = "a b" => 1, "1" => 2, "a-b" => 3, "-a" => 4, "a'b" => 5, "é" => 6; %h.raku }, " ", do { my %h = a => True, b => False, c => "x"; %h.raku }
 # rakudo 2026.08: {a => 1, b => 2} "a\t1\nb\t2" {:a(1), :b(2)} True False 2 2 951 , ...} {:a($[1, 2]), :b(${:c(3)})} {a => [1 2], b => {c => 3}} ${:a(1)} {"-a" => 4, "1" => 2, "a b" => 1, :a'b(5), :a-b(3), :é(6)} {:a(Bool::True), :b(Bool::False), :c("x")}
 ```
-rakupp 4.0.1: differs — the gist is not capped (1392 chars), and `a'b` and `é` are quoted.
+rakupp 4.0.2: matches.
 
 ### HM-12  Smartmatch against a hash, eqv, ===                     D:yes R:partial V:spec
 A Str topic asks whether the key exists; a list topic whether any element
@@ -161,7 +167,7 @@ is identity.
 say do { my @w; CONTROL { when CX::Warn { @w.push(1); .resume } }; my %h = b => 2, a => 1; ("a" ~~ %h) ~ " " ~ ("z" ~~ %h) ~ " " ~ (<a z> ~~ %h) ~ " " ~ (<x z> ~~ %h) ~ " " ~ (/^a/ ~~ %h) ~ " " ~ (/^z/ ~~ %h) ~ " " ~ (%(a => 1, b => 2) ~~ %h) ~ " " ~ (%(a => 1) ~~ %h) ~ " " ~ (1 ~~ %h) ~ " " ~ (Any ~~ %h) ~ " " ~ (Map.new((a => 1, b => 2)) ~~ %h) ~ " w=" ~ @w.elems }, " ", do { my %h = a => 1; (%h eqv %(a => 1)) ~ " " ~ (%h eqv %(a => 1, b => 2)) ~ " " ~ (%h eqv Map.new((a => 1))) ~ " " ~ (%() eqv %()) ~ " " ~ (%h === %h) ~ " " ~ (%(a => 1) === %(a => 1)) ~ " " ~ (%h eqv %(a => 1.0)) ~ " " ~ (%h eqv :{ a => 1 }) }
 # rakudo 2026.08: True False True False True False True False False False False w=1 True False False True True False False False
 ```
-rakupp 4.0.1: differs — a Hash topic with equal contents is False, and no warning for the undefined topic.
+rakupp 4.0.2: matches.
 
 ## F. Map
 
@@ -174,7 +180,7 @@ comma between pairs; `.Hash` gives a Hash, `.Map` of a Hash a Map.
 say Map.new((a => 1, b => 2)).raku, " ", Map.new(a => 1).raku, " ", Map.new("a", 1).raku, " ", (try Map.new(1)) // $!.^name, " ", Map.new.raku, " ", Map.new((a => 1)).gist, " ", Map.new((a => 1)).Str.raku, " ", Map.new((a => 1)).elems, " ", Map.new(%(a => 1)).raku, " ", Map.new((a => 1)).Hash.raku, " ", Map.new((a => 1)).Map.^name, " ", %(a => 1).Map.raku, " ", $(Map.new((a => 1))).raku
 # rakudo 2026.08: Map.new((:a(1),:b(2))) Map.new((:a(1))) Map.new((:a(1))) X::Hash::Store::OddNumber Map.new Map.new((a => 1)) "a\t1" 1 Map.new((:a(1))) {:a(1)} Map Map.new((:a(1))) $(Map.new((:a(1))))
 ```
-rakupp 4.0.1: differs — the empty Map prints as `Map.new(())`, the itemized one without `$`.
+rakupp 4.0.2: matches.
 
 ### HM-14  Map immutability, and what stays live                   D:partial R:partial V:quirk
 Assigning to an existing key dies ("Cannot change key 'a' in an immutable
@@ -191,7 +197,11 @@ say do { my $m = Map.new((b => 2, a => 1)); $m.sort.raku ~ " " ~ $m.pairs.sort.r
 # rakudo 2026.08: (:a(1), :b(2)).Seq (:a(1), :b(2)).Seq (1 => "a", 2 => "b").Seq (1, 2, "a", "b").Seq (1 => "a", 2 => "b").Seq 2 Pair True 2 True True True True False (1, 2) (1, Nil) True 1
 ```
 The container-stays-live behaviour of `Map.new(%h)` is the quirk. `.contains` and `.index` on a Map work on its Str form and warn.
-rakupp 4.0.1: differs — a Map is fully mutable, `Map.new(%h)` snapshots, a missing key is Any, `.clone` is a new object, `.default` is Nil, a Map does not smartmatch an equal Map, and `.contains` does not warn.
+rakupp 4.0.2: differs on the QUIRK alone — `Map.new(%h)` snapshots, so a later `%h<a> = 2`
+does not show through, and `Map.new((a => $x))` refuses the write that Rakudo
+lets through to `$x`. Both need scalar containers (see HM-18). The immutability,
+the Nil miss, the absent `.default`, the Map-to-Map smartmatch and the
+`.contains` warning are in.
 
 ### HM-15  Coercions and formatting of a hash                       D:yes R:partial V:spec
 Set, Bag and Mix use the values as weights: Set keeps truthy values, Bag
@@ -203,7 +213,8 @@ directive.
 say do { my %h = a => 2, b => 1; %h.Bag.raku ~ " " ~ %h.Mix.raku }, " ", do { my %h = a => 0, b => 1; %h.Set.raku ~ " " ~ %h.Bag.raku }, " ", do { my %h = a => -1, b => 2; %h.Mix.raku ~ " " ~ %h.Bag.raku }, " ", do { my %h = a => 1; %h.Capture.raku ~ " " ~ %h.Supply.list.raku ~ " " ~ %h.roll.^name ~ " " ~ %h.pick.^name ~ " " ~ %h.roll(2).elems ~ " " ~ %().roll.raku ~ " " ~ %().pick.raku }, " ", do { my %h = a => 1, b => 2; %h.fmt.raku ~ " " ~ %h.fmt("%s=%s", ",").raku ~ " " ~ %h.fmt("%s").raku }
 # rakudo 2026.08: ("a"=>2,"b"=>1).Bag ("a"=>2,"b"=>1).Mix Set.new("b") ("b"=>1).Bag ("b"=>2,"a"=>-1).Mix ("b"=>2).Bag \(:a(1)) (:a(1),) Pair Pair 2 Nil Nil "a\t1\nb\t2" "a=1,b=2" "a\nb"
 ```
-rakupp 4.0.1: differs — `.Bag` keeps a negative weight; `.fmt` gives `"a b"`.
+rakupp 4.0.2: matches. (The `.Bag`/`.Mix` probe prints in HASH ORDER, which the two
+engines do not share and Rakudo does not repeat between runs — the weights agree.)
 
 ## G. Pair
 
@@ -219,7 +230,7 @@ say (a => 1).raku, " ", (a => 1).gist, " ", (a => 1).Str.raku, " ", ("a b" => 1)
 # rakudo 2026.08: :a(1) a => 1 "a\t1" "a b" => 1 "1" => 1 1 => "a" :a-b(1) "-a" => 1 "a-" => 1 :a'b(1) "" => 1 :a :!a "a b" => Bool::True (:a(1)) => 2 (a => 1) => 2 :Int(1) :Any(1) :Nil(1) :NaN(1) 1.5 => 1 :é(1) "a" => 1
 ```
 Note `Int => 1` is the pair with the **string** key `"Int"`: a bareword before `=>` is quoted.
-rakupp 4.0.1: differs — `:a-(1)`, `"a'b" => 1`, `"é" => 1`, `:a(Bool::True)`, and `:arglist` is ignored.
+rakupp 4.0.2: matches.
 
 ### HM-17  Pair as a one-element Associative                        D:yes R:yes V:spec
 ```
@@ -227,7 +238,7 @@ say (a => 1).key, " ", (a => 1).value, " ", (a => 1).kv.raku, " ", (a => 1).keys
 # rakudo 2026.08: a 1 ("a", 1).Seq ("a",).Seq (1,).Seq (:a(1),).Seq 1 => "a" (1 => "a",).Seq (1 => "a",).Seq (1 => "a", 2 => "a").Seq 1 (:a(1),) 1 Nil True \(:key("a"), :value(1)) "a\t1" "a:1" :a(1) :a(1) :a(1) "a\t1" True True :a(1) :a(1)
 ```
 A Pair is always true, even with a false value; a missing key reads as Nil.
-rakupp 4.0.1: differs — there is no `pair` sub and `⇒` does not parse.
+rakupp 4.0.2: matches.
 
 ### HM-18  A Pair's value is whatever was passed                     D:partial R:partial V:spec
 `a => $x` keeps `$x`'s container: assigning through `.value` changes `$x`
@@ -238,7 +249,13 @@ is the key. The Pairs that `%h.pairs` yields alias the hash's containers.
 say do { my $x = 1; my $p = a => $x; ((try { $p.value = 5; "assigned" }) // $!.^name) ~ " " ~ $p.value ~ " " ~ $x }, " ", do { my $x = 1; my $p = a => $x; $x = 7; $p.value }, " ", do { my $p = a => 1; ((try { $p.value = 5; $p.value }) // $!.^name) }, " ", do { my $p = a => 1; ((try { $p.key = "b"; "no" }) // $!.^name) }, " ", do { my $x = 1; my $p = Pair.new("a", $x); ((try { $p.value = 5; "assigned" }) // $!.^name) ~ " " ~ $x }, " ", do { my $p = (a => 1); my $q = $p.clone; ((try { $q.value = 2 }) // "ro") ~ " " ~ $p.value }, " ", do { my %h = a => 1; my $p = %h.pairs[0]; $p.value = 9; %h<a> }, " ", do { my @a = (a => 1); my $p = @a[0]; ((try { $p.value = 2; "ok" }) // $!.^name) }, " ", do { my $p = :a(1); ((try { $p.value = 2; "ok" }) // $!.^name) }, " ", do { my $v = 1; my $p = :a($v); ((try { $p.value = 2; "ok" }) // $!.^name) ~ " " ~ $v }
 # rakudo 2026.08: assigned 5 5 7 X::Assignment::RO X::Assignment::RO assigned 5 ro 1 9 X::Assignment::RO X::Assignment::RO ok 2
 ```
-rakupp 4.0.1: differs — every Pair gets a fresh container: a literal value is assignable, and a variable is copied, not aliased.
+rakupp 4.0.2: differs on the ALIASING half. Which side of the line a pair is on is now
+right — a literal, an expression or a call result refuses the write, a variable,
+an element or an attribute accepts it, and the verdict rides on the pair, so it
+survives `.clone` and storage in a container. What a write does NOT do is reach
+the original variable: a rakupp scalar is a slot in an environment, not a
+container object, so there is nothing for the pair to hold. That is the
+container/binding layer, and it wants the lvalue refactor first.
 
 ### HM-19  Pair identity, eqv, cmp                                  D:yes R:yes V:spec
 `===` is by value only when the value is a value type and not a container
@@ -249,7 +266,9 @@ values, `.unique` follows `===`.
 say ((a => 1) === (a => 1)), " ", ((a => 1) eqv (a => 1)), " ", ((a => 1) eqv (a => 1.0)), " ", ((a => 1) eqv (a => 2)), " ", do { my $x = 1; ((a => $x) === (a => $x)) ~ " " ~ ((a => $x) eqv (a => 1)) }, " ", ((a => 1) cmp (a => 2)), " ", ((a => 1) cmp (b => 0)), " ", ((a => 1) cmp (a => 1)), " ", ((a => [1]) === (a => [1])), " ", (a => 1).WHICH.^name, " ", (a => [1]).WHICH.^name, " ", ((a => 1), (a => 1)).unique.elems, " ", ((a => [1]), (a => [1])).unique.elems
 # rakudo 2026.08: True True False False False True Less Less Same False ValueObjAt ObjAt 1 2
 ```
-rakupp 4.0.1: differs — a container-valued Pair compares equal by `===`, `WHICH` is a Str, `.unique` merges the array-valued pairs.
+rakupp 4.0.2: differs on the VARIABLE case only — `(a => $x) === (a => $x)` is True here,
+for the same reason as HM-18: no container to tell the two pairs apart. A Pair
+holding an Array is an ObjAt and compares by identity, and `.unique` keeps both.
 
 ### HM-20  Pair smartmatch                                          D:yes R:yes V:spec
 With the Pair on the right: against another Pair, key and value must both
@@ -262,7 +281,7 @@ Pair's Str is looked up as a key.
 say ((a => 1) ~~ %(a => 1)), " ", ((a => 1) ~~ %(a => 2)), " ", ((a => 1) ~~ %(b => 1)), " ", ((a => 1) ~~ (a => 1)), " ", ((a => 1) ~~ (a => 2)), " ", ((a => Int) ~~ (a => 1)), " ", ((a => 1) ~~ (a => Int)), " ", ((a => 1) ~~ (Str => 1)), " ", (42 ~~ (is-prime => False)), " ", (try 42 ~~ (:even)) // $!.^name, " ", (try 42 ~~ (:frobnicate)) // $!.^name, " ", ("abc" ~~ (chars => 3)), " ", ("abc" ~~ (:chars)), " ", ((:a) ~~ Pair), " ", ((1, 2) ~~ (elems => 2)), " ", ((a => 1) ~~ Associative), " ", ("" ~~ (:!chars)), " ", (42 ~~ (:is-prime)), " ", (7 ~~ (:is-prime))
 # rakudo 2026.08: False False False True False False True False True X::Method::NotFound X::Method::NotFound True True True True True True False True
 ```
-rakupp 4.0.1: differs — `(a => 1) ~~ (a => Int)` is False, an unknown method gives False instead of throwing, `(1, 2) ~~ (elems => 2)` is False.
+rakupp 4.0.2: matches.
 
 ## Counts
 
@@ -272,13 +291,15 @@ rakupp 4.0.1: differs — `(a => 1) ~~ (a => Int)` is False, an unknown method g
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 2 |
 | Rakudo bugs (do not imitate) | 0 |
 | quirks (recorded, step two decides) | 1 — HM-14 `Map.new(%h)` keeps live containers |
-| rakupp 4.0.1 differs | 16 |
-| rakupp 4.0.1 matches | 3 |
+| rakupp 4.0.2 differs | 3 |
+| rakupp 4.0.2 matches | 17 |
 
-Recurring rakupp gaps, for step two: silent acceptance of odd-count and
-Callable-only hash stores; no key-type enforcement on object hashes; a
-mutable Map with Any for a missing key; Pair values always copied into a
-fresh container; `.raku` key quoting; the uncapped gist.
+What is left, and why — all three are the SAME missing layer. A rakupp scalar is
+a slot in an environment, not a container object, so nothing can be aliased into
+a second place: a Pair cannot hold `$x`'s container (HM-18), two pairs holding
+the same variable cannot be told apart by `===` (HM-19), and `Map.new(%h)`
+cannot keep the Hash's containers alive (HM-14's quirk). That is the
+container/binding layer, and it wants the lvalue refactor first.
 
 ## Method (how this sheet was produced)
 

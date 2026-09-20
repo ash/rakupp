@@ -2574,6 +2574,11 @@ Token Lexer::lexOperator(bool termBefore) {
         int len = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
         std::string s;
         for (int k = 0; k < len && !eof(); k++) s += advance();
+        // `⇒` (U+21D2) is the fat arrow, the same token `=>` makes — it builds a
+        // Pair, so it has to reach the parser AS one and not as an operator
+        // named by three raw bytes (sheet HM-17). The token text stays "=>",
+        // which is what the metaop spellings below compare against.
+        if (s == "\xE2\x87\x92") return make(Tok::FatArrow, "=>");
         // metaop assign on set-combiners: ∩= ∪= ∖= ⊖= ⊎= ⊍= (X= for infix X)
         static const std::set<std::string> combines = {
             "\xE2\x88\xA9", "\xE2\x88\xAA", "\xE2\x88\x96",

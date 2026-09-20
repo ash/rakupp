@@ -286,18 +286,87 @@ bool rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out) {
     return false;
 }
 
+// A Pair BINDS its value: `a => $x` carries $x's container, so `$p.value = 5`
+// writes $x, while `a => 1` carries a value and refuses the write with
+// X::Assignment::RO (sheet HM-18). rakupp has no scalar containers yet, so the
+// aliasing half is out of reach — but which side of the line a pair is on is
+// decided by the value EXPRESSION, and that much is knowable here: a variable,
+// an element or an attribute names a container; a literal, an operator result
+// or a call does not. The flag rides on the pair's own value Value, so it
+// survives `.clone`, storage in an array and every copy of the pair.
+bool exprNamesContainer(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::VarExpr:  return true;
+        case NK::Index:    return true;
+        // `Pair.new('a', my $v = 1)` — the declaration YIELDS the container it
+        // just made, so the pair binds it (t/regression/clone-semantics.raku)
+        case NK::Assign:   return static_cast<const Assign*>(e)->op == "=" &&
+                                  exprNamesContainer(static_cast<const Assign*>(e)->target.get());
+        case NK::Unary:    return static_cast<const Unary*>(e)->op == "ctx$" &&
+                                  exprNamesContainer(static_cast<const Unary*>(e)->operand.get());
+        default:           return false;
+    }
+}
+static void markPairValueRO(Value& pr, const Expr* valueExpr) {
+    if (!exprNamesContainer(valueExpr)) pr.pairValRO = true;
+}
+
 // A hash-subscript key: on an OBJECT-KEYED hash (declared `has %!h{Mu:U}`) a
 // TYPE-OBJECT key keys by its parenthesised name so `%h{Str}` and `%h{Int}`
 // stay distinct (DBDish's TypeConverter reads `%!Conversions{$type}` directly
 // while writes come in through the delegated KEY protocol; both must agree).
 // On a PLAIN hash a type object stringifies to "" like Rakudo's. Everything
 // else keys by its stringification.
+// An UNDEFINED value used as a hash key stringifies to "" — and Rakudo warns
+// about it before it does, the same warning any other string context gives
+// (sheet HM-03). Only for a PLAIN hash: an object-keyed one keys a type object
+// by name and never stringifies it.
+static void warnUninitKey(const Value& k) {
+    if (!g_revInterp) return;
+    const std::string msg = "Use of uninitialized value of type " + k.typeName() +
+        " in string context.\nMethods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.";
+    g_revInterp->warnUninit(msg);
+}
+// An OBJECT-KEYED hash CONSTRAINS its keys: `my %h{Int}` takes Int keys and
+// nothing else, and a wrong one is a binding failure at the subscript — the
+// same exception a parameter type check raises, because that is literally what
+// Rakudo's ASSIGN-KEY signature does (sheet HM-04). Reads are NOT checked: a
+// Str key simply does not find an Int one, so `%h<1>:exists` is False.
+// The payload index for one key of an object hash. See hashSubKey below.
+std::string objHashIndex(const Value& k) {
+    if (k.t == VT::Type) return "(" + k.s.str() + ")";
+    if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
+        return "(" + std::string(k.enumType.str()) + ")";
+    if (k.t == VT::Str && k.hashKind.empty() && k.enumName.empty()) return k.s;
+    return whichOf(k);
+}
+static void checkObjHashKey(const Value& base, const Value& k) {
+    if (!base.objKeyed || base.t != VT::Hash) return;
+    const std::string kt = objHashKeyType(base);
+    if (kt.empty() || kt == "Any" || kt == "Mu") return;
+    if (!g_revInterp || g_revInterp->typeOrSubsetMatches(k, kt)) return;
+    g_revInterp->throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", k}, {"expected", Value::typeObj(kt)}},
+        "Type check failed in binding to parameter 'key'; expected " + kt +
+        " but got " + k.typeName() + " (" + (g_rakuRepr ? g_rakuRepr(k) : k.gist()) + ")");
+}
 static std::string hashSubKey(const Value& k, const Value* base = nullptr) {
     if (k.t == VT::Type && base && base->objKeyed) return "(" + k.s + ")";
     // an ENUM type object (tagged pair-list) keys like any other type object
     if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
         return base && base->objKeyed ? "(" + std::string(k.enumType.str()) + ")"
                                       : std::string();
+    // An OBJECT-KEYED hash keys by IDENTITY, not by rendering: `my %h{Any}`
+    // holds `1` and `"1"` as two entries, and `%h<1>` does not find the Int key
+    // (sheet HM-04). The payload indexes by string, so the identity string is
+    // the index — except for a PLAIN Str, which indexes by itself. That
+    // exception is not an optimisation: an object hash keyed by strings is the
+    // common one (`my %h{Cool}` with word keys, every delegating Associative),
+    // and dozens of sites build a Pair straight out of `kv.first`. Keeping a
+    // Str key's index equal to the key leaves all of them right, and the two
+    // still cannot collide — every other kind's index carries its type name.
+    if (base && base->objKeyed) return objHashIndex(k);
     // A QUANTHASH keys its elements by IDENTITY, not by rendering — `$set{"1"}`
     // and `$set{1}` are different elements — so a subscript on one has to ask
     // the same question the constructor did.
@@ -306,6 +375,7 @@ static std::string hashSubKey(const Value& k, const Value* base = nullptr) {
             "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
         if (kQuant.count(base->hashKind)) return baggyKeyStr(k);
     }
+    if (k.t == VT::Any || k.t == VT::Type) { warnUninitKey(k); return std::string(); }
     return k.toStr();
 }
 
@@ -544,8 +614,22 @@ static bool valueEqv(const Value& a, const Value& b) {
             // hash flavour equal to every other as long as the pairs lined up.
             // typeName() carries the flavour (hashKind), ofType the value
             // constraint and the `{Any}` key shape.
-            if (a.typeName() != b.typeName() || a.ofType() != b.ofType() ||
-                a.objKeyed != b.objKeyed) return false;
+            // …but only the value and key parameters count: `:{ }` carries a
+            // third one (see the `ctx%{}` composer) and a `my Mu %{Mu}` does
+            // not, and Rakudo calls those two eqv all the same.
+            {
+                auto ofPair = [](const Value& v) {
+                    const std::string& t = v.ofType();
+                    size_t c = t.find(',');
+                    if (c == std::string::npos) return t;
+                    size_t c2 = t.find(',', c + 1);
+                    return c2 == std::string::npos ? t : t.substr(0, c2);
+                };
+                // (the KEY SHAPE is in ofType's second component, so the
+                // objKeyed bit adds nothing here — and the classify/categorize
+                // hashes carry the shape without the bit)
+                if (a.typeName() != b.typeName() || ofPair(a) != ofPair(b)) return false;
+            }
             if (!a.hash() || !b.hash()) return false;
             // A Dateish `:formatter` is a RENDERING hook, not state. Rakudo's
             // `Date.new(…, :formatter($f)) eqv Date.new(…)` is True, and roast
@@ -2891,12 +2975,43 @@ std::function<bool(const Value&, ValueList&)> g_objListItems;
 // `store` = this is an ASSIGNMENT into a %-container, not a binding. The two differ
 // for QuantHashes: `my %h = set <a b>` copies the set's pairs into a plain Hash
 // ({a=>True, b=>True}), while `sub f(%h)` binds the Set itself and %h.^name stays Set.
+// A hash store that runs out of values half-way through is an ERROR, not a
+// silent truncation (sheet HM-01): `my %h = 1, 2, 3` throws, and the exception
+// carries how many elements were seen (`.found`) and the one left over
+// (`.last`), which is what a handler reports. The two message shapes are
+// Rakudo's: a lone element "Only saw", several "Found N (implicit) elements".
+[[noreturn]] void throwHashOddNumber(long long found, const Value& last) {
+    Value shown = last;
+    if (shown.t == VT::Array || shown.t == VT::Hash) shown.itemized = true; // a hash value is itemized
+    std::string repr = g_rakuRepr ? g_rakuRepr(shown) : shown.gist();
+    std::string msg = "Odd number of elements found where hash initializer expected:\n";
+    msg += found == 1 ? "Only saw: " + repr
+                      : "Found " + std::to_string(found) + " (implicit) elements:\nLast element seen: " + repr;
+    if (g_revInterp)
+        g_revInterp->throwTypedV("X::Hash::Store::OddNumber",
+                                 {{"found", Value::integer(found)}, {"last", last}}, msg);
+    throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"), msg};
+}
+// `my %h = { … }` where the block is a real Callable — a `{ $_ }` or a `{ ; }`
+// — is its own mistake, and Rakudo spells out the two ways to make it.
+[[noreturn]] void throwHashCallableStore() {
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "Cannot use a Callable as the only argument to store in a Hash.  If the\n"
+        "intent was to store the contents of a Hash, one should probably use the\n"
+        "%( ) hash constructor instead of { }.  Causes of { } misinterpretation:\n"
+        "- using ';' instead of ',' to separate values, as these imply statements\n"
+        "- using '$_' or any placeholder variable, as they imply a block scope"};
+}
 static Value coerceHash(const Value& v, bool store = false, bool objKeyed = false) {
     if (v.t == VT::Hash) { // already a hash: copy entries (value semantics for my %h = %other)
         bool quant = v.hashKind.rfind("Set", 0) == 0 || v.hashKind.rfind("Bag", 0) == 0 ||
                      v.hashKind.rfind("Mix", 0) == 0;
+        // A STORE fills a Hash, so the SOURCE's kind does not travel: `my %h =
+        // $map` leaves a mutable Hash, not a Map that then refuses every write
+        // (sheet HM-14 made that refusal real, which is how it surfaced).
+        bool sourceKind = quant || v.hashKind == "Map" || v.hashKind == "Stash";
         Value h = Value::makeHash();
-        if (!(store && quant)) h.hashKind = v.hashKind;
+        if (!(store && sourceKind)) h.hashKind = v.hashKind;
         if (v.hash()) {
             if (store && quant) {
                 bool setty = v.hashKind.rfind("Set", 0) == 0; // a Set's weights are all True
@@ -2907,6 +3022,8 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
         }
         return h;
     }
+    // a lone Callable is the `{ … }` that was meant to be a hash composer
+    if (store && v.t == VT::Code) throwHashCallableStore();
     Value h = Value::makeHash();
     ValueList items;
     if (v.t == VT::Array) items = *v.arr();
@@ -2918,11 +3035,7 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
     // the subscript paths use, instead of the empty stringification that
     // collapsed Getopt::Long's whole converter table onto one key.
     auto keyStr = [&](const Value& k, const std::string& fallback) -> std::string {
-        if (objKeyed) {
-            if (k.t == VT::Type) return "(" + k.s + ")";
-            if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
-                return "(" + std::string(k.enumType.str()) + ")";
-        }
+        if (objKeyed) return objHashIndex(k);   // by identity (sheet HM-04)
         return fallback;   // the pair's own key string (empty stays empty)
     };
     for (size_t i = 0; i < items.size(); i++) {
@@ -2939,8 +3052,11 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
             }
             // …and an object hash keeps the key AS STORED, so `:{ 1 => "a" }.keys`
             // answers the Int 1. Only the flat k,v branch below did this.
-            if (objKeyed && pk && pk->t != VT::Str) pv.pairKeyM() = std::make_shared<Value>(*pk);
-            (*h.hash())[keyStr(pk ? *pk : items[i], items[i].s)] = pv;
+            // (a Str key too: the index is an identity string, so nothing else
+            // remembers the key's own spelling)
+            Value realK = pk ? *pk : Value::str(items[i].s);
+            if (objKeyed) pv.pairKeyM() = std::make_shared<Value>(realK);
+            (*h.hash())[keyStr(realK, items[i].s)] = pv;
         } else if (items[i].t == VT::Hash && items[i].hash() && items[i].hashKind.empty() &&
                    !items[i].itemized) {
             // a plain (non-itemized) Hash in the list MERGES its pairs
@@ -2950,21 +3066,16 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
         } else if (i + 1 < items.size()) {
             // flat k,v pairing — an OBJECT hash keys type objects by "(Name)"
             // here too (`my %type2allo{Any} = Int, IntStr, …` in roast's val.t)
-            std::string k2 = items[i].toStr();
-            if (objKeyed) {
-                if (items[i].t == VT::Type) k2 = "(" + items[i].s + ")";
-                else if (items[i].t == VT::Array && !items[i].enumType.empty() &&
-                         items[i].enumName.empty())
-                    k2 = "(" + std::string(items[i].enumType.str()) + ")";
-            }
+            std::string k2 = objKeyed ? keyStr(items[i], items[i].toStr()) : items[i].toStr();
             // …and keeps the key AS STORED for an object hash, so `.keys`
             // answers the Int (`my %h{Mu} = 1, 2, 3, 4` — CBOR::Simple encodes
             // such keys as integers)
             Value stored = items[i + 1];
-            if (objKeyed && items[i].t != VT::Str) stored.pairKeyM() = std::make_shared<Value>(items[i]);
+            if (objKeyed) stored.pairKeyM() = std::make_shared<Value>(items[i]);
             (*h.hash())[k2] = std::move(stored);
             i++;
         }
+        else if (store) throwHashOddNumber((long long)items.size(), items[i]);
     }
     return h;
 }
@@ -15535,6 +15646,13 @@ static const char* notWritableMsg(const Value& v) {
     return v.immutableBind ? "Cannot assign to an immutable value"
                            : "Cannot assign to a readonly variable or a value";
 }
+// …and BOTH of those are an X::AdHoc on Rakudo, not an X::Assignment::RO
+// (sheet HM-06). The typed class is reserved there for "Cannot modify an
+// immutable T (gist)" — a container that exists and refuses — while a slot with
+// no container behind it, or a readonly one, carries the message alone.
+[[noreturn]] static void throwNotWritable(const Value& v) {
+    throw RakuError{Value::typeObj("X::AdHoc"), notWritableMsg(v)};
+}
 
 // A FINITE lazy sequence has to be drained before anything walks it, or the
 // walker sees only whatever prefix happened to be materialised already. `for 1,
@@ -15566,7 +15684,7 @@ Value Interpreter::assignChecked(Expr* target, Value v) {
     }
     if (Value* lv = lvalue(target)) {
         if (lv->readonly)
-            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+            throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;                 // the flag marks the container, not the value
         *lv = std::move(v);
         return *lv;
@@ -16949,7 +17067,8 @@ Value rtCoerceHash(const Value& v) { return coerceHash(v, /*store=*/true); }
 Value rtObjHash(const Value& v) {
     Value h = v.t == VT::Hash && v.hashKind.empty() ? v
                                                     : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
-    h.ofTypeM() = "Mu,Mu";
+    h.ofTypeM() = "Mu,Mu,Any";   // as the interpreter's `ctx%{}` arm; see there
+    h.objKeyed = true;
     return h;
 }
 
@@ -20745,6 +20864,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 (base->hashKind == "Set" || base->hashKind == "Bag" || base->hashKind == "Mix"))
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                     "Cannot modify an immutable " + base->hashKind + " (" + base->gist() + ")"};
+            // …and so is a MAP, which said nothing and stored (sheet HM-14).
+            // Rakudo words the two cases apart — changing a key it has, adding
+            // one it does not — and throws X::AdHoc for both, so a `CATCH` that
+            // keys on the message (Crane does) sees what it expects.
+            if (base->t == VT::Hash && base->hashKind == "Map" && base->hash()) {
+                std::string key = eval(idx->index.get()).toStr();
+                bool had = base->hash()->count(key) != 0;
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    had ? "Cannot change key '" + key + "' in an immutable Map"
+                        : "Cannot add key '" + key + "' to an immutable Map"};
+            }
             // `$obj<key> = v` on an OBJECT whose class defines AT-KEY: ask the class
             // for the element's container and assign through THAT (XML::Document's
             // `method AT-KEY($k) is rw { $.root{$k} }` hands back a Proxy). Without
@@ -20833,11 +20963,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `return-rw` that resolves to no container hands back exactly that.
             if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
             Value subKey = eval(idx->index.get());                      // key eval BEFORE the stripe (user code)
+            checkObjHashKey(*base, subKey);
             std::string key = hashSubKey(subKey, base);
             // On an OBJECT-KEYED hash keep the object the subscript named, so
             // `.keys` can hand it back instead of its stringification. Costs a
             // plain string-keyed hash nothing: the test is the key type.
-            if (subKey.t != VT::Str && base->hash() && !objHashKeyType(*base).empty()) {
+            // (a Str key too, now that the index is an identity string rather
+            // than the key itself — `.keys` must answer "1", not `Str|1`)
+            if (base->hash() && !objHashKeyType(*base).empty()) {
                 // DECONTAINERIZED: `my $k = [1,2]` is an itemized Array, and
                 // Rakudo's `.keys` answers the Array, not the item holding it.
                 Value stored = subKey; stored.itemized = false;
@@ -20995,7 +21128,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (mcName == "value" && mc->args.empty() && !mc->meta && !mc->hyper) {
             Value* base = nullptr;
             try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
-            if (base && base->t == VT::Pair && base->pairVal()) return base->pairVal();
+            if (base && base->t == VT::Pair && base->pairVal()) {
+                // …unless the pair binds a VALUE rather than a container, which
+                // is what `a => 1` does and `a => $x` does not (sheet HM-18)
+                // Rakudo's wording names the VALUE that refuses — "Cannot
+                // modify an immutable Int (1)" — which is what throwImmutable
+                // already builds for every other immutable container.
+                if (base->pairValRO) throwImmutable(*base->pairVal());
+                return base->pairVal();
+            }
         }
         // `.head` / `.tail` on an array hand back the ELEMENT'S container, so
         // they are writable: `@stack.tail = …` is how a Weekly Challenge author
@@ -21118,11 +21259,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // `%h.AT-KEY($k) = v` is the same store as `%h{$k} = v` and has
                 // to remember the object too — CBOR::Simple's object-keyed map
                 // is built entirely through this spelling.
-                if (k.t != VT::Str && !objHashKeyType(*base).empty()) {
+                const std::string akey = hashSubKey(k, base);
+                if (!objHashKeyType(*base).empty()) {
                     Value stored = k; stored.itemized = false;
-                    base->hash()->setObjKey(k.toStr(), stored);
+                    base->hash()->setObjKey(akey, stored);
                 }
-                return &(*base->hash())[k.toStr()];
+                return &(*base->hash())[akey];
             }
             Value* cur = base;
             for (auto& a : mc->args) {
@@ -23506,6 +23648,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 throwTypedV("X::Bind::ZenSlice",
                             {{"type", Value::typeObj(ix->isHash ? "Hash" : "Array")}},
                             "Cannot bind to a zen slice");
+            // A MAP has no container to bind into (sheet HM-14) — and the
+            // refusal is a BIND error, not the assignment one the element path
+            // below would raise.
+            if (ix->isHash && ix->base->kind == NK::VarExpr) {
+                Value* bs = nullptr;
+                try { bs = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                if (bs && bs->t == VT::Hash && bs->hashKind == "Map")
+                    throwTyped("X::Bind", {{"target", "Map"}}, "Cannot bind to Map");
+            }
         }
     }
     if (a->op == "=" || a->op == ":=") {
@@ -23865,7 +24016,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                     if (hk == "SetHash" ? !v.truthy() : v.toNum() == 0.0) bp->hash()->erase(key);
                                     else (*bp->hash())[key] = hk == "SetHash" ? Value::boolean(true)
                                                           : hk == "BagHash" ? Value::integer(v.toInt()) : v;
-                                } else (*bp->hash())[ks[i].toStr()] = v;
+                                } else {
+                                    // through hashSubKey, so a SLICE into an
+                                    // object-keyed hash keys by identity like
+                                    // every other write does (sheet HM-04)
+                                    checkObjHashKey(*bp, ks[i]);
+                                    const std::string key = hashSubKey(ks[i], bp);
+                                    if (!objHashKeyType(*bp).empty()) {
+                                        Value stored = ks[i]; stored.itemized = false;
+                                        bp->hash()->setObjKey(key, stored);
+                                    }
+                                    (*bp->hash())[key] = v;
+                                }
                             }
                             else if (bp->t == VT::Array && bp->arr()) {
                                 long long j = ks[i].toInt();
@@ -24212,7 +24374,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // binding ("Cannot assign to an immutable value"). Ordinary readonly
         // keeps its old place, after the type check.
         if (lv->readonly && lv->immutableBind && a->op != ":=")
-            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+            throwNotWritable(*lv);
         if (!tctx_.lvalueImmutable.empty() && a->op != ":=") {
             std::string ty = tctx_.lvalueImmutable, gi = tctx_.lvalueImmutableGist;
             tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
@@ -24223,7 +24385,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                        "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
         }
         if (lv->readonly && !(a->op == ":=" && a->target->kind == NK::Index))
-            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+            throwNotWritable(*lv);
         // …and the flag does NOT travel with the value. It marks the CONTAINER,
         // so `my $y = $x` copies a readonly parameter's value into a perfectly
         // writable slot of its own.
@@ -24511,6 +24673,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (a->op == ":=" && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
                 typeOrSubsetMatches(rhs, "Associative"))
                 { *lv = rhs; return sink ? Value::any() : *lv; }
+            // A name BOUND to a Map names an immutable container, so assigning a
+            // new list of pairs to it is refused outright (sheet HM-14) — it
+            // used to replace the Map with a plain Hash and lose the type.
+            if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Map") throwImmutable(*lv);
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType(); // typed container: `my Int %h` keeps Int
@@ -24722,7 +24888,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value v = eval(a->target.get());
         Value* lv = lvalue(a->value.get());
         if (lv->readonly)
-            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+            throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;
         *lv = std::move(v);
         return sink ? Value::any() : *lv;
@@ -24826,7 +24992,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                    "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
     }
     if (lv->readonly)
-        throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+        throwNotWritable(*lv);
     Value rhs = eval(a->value.get());
     rhs.readonly = rhs.immutableBind = false;                  // the flag marks the container, not the value
     // a Proxy-bound target (`$a := $x`) routes OP= through FETCH/STORE so the
@@ -24974,8 +25140,14 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             if (tier == 2 ? w == 0 : w <= 0) continue;
             // an operand that is ALREADY a quanthash carries its elements in the
             // counts' pairKey; forward them so the result can render them too
-            if (kv.second.pairKey()) setRep(kv.first, *kv.second.pairKey());
-            m[kv.first] += w;
+            // …and an OBJECT HASH indexes by identity, so its index is not an
+            // element key: ask the element itself, or `%h{Any} (|) set(…)` came
+            // out with two keys for one element and compared unequal to the
+            // same set built any other way.
+            const std::string ek = (!countK && !isSetK && kv.second.pairKey())
+                                 ? baggyKeyStr(*kv.second.pairKey()) : kv.first;
+            if (kv.second.pairKey()) setRep(ek, *kv.second.pairKey());
+            m[ek] += w;
         }
     } else if (v.t == VT::Array || v.t == VT::Range) {
         for (auto& x : v.flatten()) {
@@ -26780,6 +26952,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.isAllomorph() || r.isAllomorph()) same = (whichOf(l) == whichOf(r));
         // a RANGE by its endpoint form, not by its elements (`1..^5 === 1..4`)
         else if (l.t == VT::Range) same = (whichOf(l) == whichOf(r));
+        // A PAIR through whichOf, which knows when it is a value and when it is
+        // an object: `(a => 1) === (a => 1)` is True, `(a => [1]) === (a => [1])`
+        // is False. The `.toStr()` fallback below compared "a\t1" strings, so a
+        // Pair holding an Array was identical to any other holding an equal one
+        // (sheet HM-19).
+        else if (l.t == VT::Pair) same = (whichOf(l) == whichOf(r));
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
@@ -27047,11 +27225,31 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 auto it = got.find(kv.first);
                 if (it == got.end() || (root != "Set" && it->second != kv.second)) { res = false; break; }
             }
+        } else if (r.t == VT::Pair && !r.s.empty() && g_cbInterp) {
+            // …and the same rules when the Pair arrives as a VALUE rather than
+            // as a literal on the right of `~~`: `my $p = (chars => 3); "abc" ~~ $p`
+            res = g_cbInterp->pairAccepts(l, r);
         } else if (r.t == VT::Hash) {
             if (l.t == VT::Array) { // @a ~~ %h : any element is a key
                 res = false;
                 if (l.arr()) for (auto& e : *l.arr()) if (r.hash() && r.hash()->count(e.toStr())) { res = true; break; }
-            } else res = r.hash() && r.hash()->count(l.toStr()) > 0; // Cool ~~ Hash : key exists
+            }
+            // An ASSOCIATIVE topic is compared, not looked up: `%a ~~ %b` is
+            // `%a eqv %b`, and so is `$map ~~ $map` (sheet HM-12, HM-14). It
+            // used to stringify the topic — "a\t1\nb\t2" — and ask whether
+            // THAT was a key, which is False for every hash there has ever
+            // been. eqv brings the type with it, so a Map topic does not match
+            // a Hash matcher even with identical entries.
+            else if (l.t == VT::Hash && r.t == VT::Hash &&
+                     (l.hashKind.empty() || l.hashKind == "Map" || l.hashKind == "Stash") &&
+                     (r.hashKind.empty() || r.hashKind == "Map" || r.hashKind == "Stash"))
+                res = valueEqv(l, r);
+            else {
+                // an UNDEFINED topic stringifies to "" and warns on the way,
+                // like any other string context (sheet HM-12)
+                if (l.t == VT::Any || l.t == VT::Type) { warnUninitKey(l); res = false; }
+                else res = r.hash() && r.hash()->count(l.toStr()) > 0; // Cool ~~ Hash : key exists
+            }
         } else if ((l.t == VT::Complex || r.t == VT::Complex) &&
                    (l.isNumeric() || l.t == VT::Complex) && (r.isNumeric() || r.t == VT::Complex)) {
             res = applyArith("==", l, r).truthy(); // numeric smartmatch incl. Complex (3 ~~ 3+0i)
@@ -30077,6 +30275,43 @@ Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, cons
 // over. applyArith cannot see the syntax; the one-shot flag tells it. Raised
 // only when it would change anything — a Whatever(Code) on the left — and
 // dropped again in case applyBinOp answered without reaching applyArith.
+// `$topic ~~ $pair` — Pair.ACCEPTS, in its three shapes (sheet HM-20):
+//
+//   * a PAIR topic matches when the key ACCEPTS the key and the value the value,
+//     so `(a => 1) ~~ (a => Int)` holds and `(a => Int) ~~ (a => 1)` does not;
+//   * an ASSOCIATIVE topic looks the key up and matches the value against what
+//     it finds — `%(a => 1, b => 2) ~~ (a => 1)` is True, the other keys unread;
+//   * anything else calls the key AS A METHOD on the topic and compares the
+//     Bools of the answer and the value, so `"abc" ~~ (chars => 3)` is True
+//     because both are truthy. A key that names no method is an ERROR, not a
+//     False — Rakudo says so in a message that names the mistake, and a `.grep`
+//     over a misspelt pair used to come back quietly empty.
+bool Interpreter::pairAccepts(const Value& topic, const Value& pair) {
+    Value want = pair.pairVal() ? *pair.pairVal() : Value::boolean(true);
+    Value key = pair.pairKey() ? *pair.pairKey() : Value::str(pair.s);
+    if (topic.t == VT::Pair) {
+        Value tk = topic.pairKey() ? *topic.pairKey() : Value::str(topic.s);
+        Value tv = topic.pairVal() ? *topic.pairVal() : Value::any();
+        return matcherAccepts(*this, tk, key) && matcherAccepts(*this, tv, want);
+    }
+    if (topic.t == VT::Hash && (topic.hashKind.empty() || topic.hashKind == "Map" ||
+                                topic.hashKind == "Stash")) {
+        Value got = topic.hash() && topic.hash()->count(pair.s) ? topic.hash()->at(pair.s)
+                                                               : Value::any();
+        return matcherAccepts(*this, got, want);
+    }
+    try { return methodCall(topic, pair.s, {}).truthy() == want.truthy(); }
+    catch (RakuError& e) {
+        if (e.payload.t == VT::Type && e.payload.s == "X::Method::NotFound")
+            throwTypedV("X::Method::NotFound",
+                {{"method", Value::str(pair.s)}, {"typename", Value::str(topic.typeName())}},
+                "No such method '" + pair.s + "' for invocant of type '" + topic.typeName() +
+                "'. Or did you try to smartmatch against a Pair specifically? If so, "
+                "then the key of the Pair should be a valid method name, not '" + pair.s + "'.");
+        throw;
+    }
+}
+
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {
     if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)))
         return applyBinOp(op, l, r);
@@ -31105,15 +31340,8 @@ Value Interpreter::evalBinary(Binary* b) {
             Value rp = eval(b->rhs.get());
             if (rp.t == VT::Pair && !rp.s.empty()) {
                 Value l = eval(b->lhs.get());
-                if (l.t != VT::Pair && l.t != VT::Hash && l.t != VT::Array) {
-                    Value want = rp.pairVal() ? *rp.pairVal() : Value::boolean(true);
-                    bool res;
-                    try { res = methodCall(l, rp.s, {}).truthy() == want.truthy(); }
-                    catch (RakuError&) { res = false; }
-                    return Value::boolean(op == "~~" ? res : !res);
-                }
-                Value r = rp;
-                return applyArith(op, l, r);
+                bool res = pairAccepts(l, rp);
+                return Value::boolean(op == "~~" ? res : !res);
             }
         }
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
@@ -32359,11 +32587,18 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.hash()) *h.hash() = *v.hash();
             return h;
         }
-        if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
+        // `%(…)` is a hash STORE: an odd number of plain items is the error,
+        // not a dropped tail (sheet HM-01)
+        if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v, /*store=*/true);
         if (u->op == "ctx%{}") {                        // :{ ... } object-hash composer
             Value h = v.t == VT::Hash && v.hashKind.empty() ? v
                                                            : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
-            h.ofTypeM() = "Mu,Mu";                      // Rakudo's `Hash[Mu,Mu]`
+            // Rakudo's `:{ }` is `Hash[Mu,Mu,Any]` — the composer passes a third
+            // parameter where the DECLARATION `my Mu %h{Mu}` (`Hash[Mu,Mu]`)
+            // does not, and the two spell their `.^name` apart (sheet HM-04).
+            // `.of` and `.keyof` read the first two, so both stay Mu.
+            h.ofTypeM() = "Mu,Mu,Any";
+            h.objKeyed = true;   // it IS an object hash: subscripts key by identity
             return h;
         }
         // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
@@ -33065,6 +33300,9 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 // payload (`throw RakuError{Value::typeObj("X::Foo"), msg}`) would be an
 // UNDEFINED type object — `$!.defined` must be True and `.message` must answer,
 // so wrap it into a defined instance of that class (registered on the fly).
+void Interpreter::warnUninit(const std::string& msg) {
+    if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+}
 bool Interpreter::runControlWarn(const std::string& msg) {
     if (tctx_.controlHandlers.empty()) return false;
     // pop while running: a warn INSIDE the handler goes to the next one out
@@ -35151,9 +35389,17 @@ Value Interpreter::evalIndex(Index* idx) {
         walk(base);
         Value o = Value::array(); o.isList = true;
         for (auto& lv : leaves) {
-            if (adv == "k") o.arr()->push_back(Value::str(lv.first));
-            else if (adv == "kv") { o.arr()->push_back(Value::str(lv.first)); o.arr()->push_back(lv.second); }
-            else if (adv == "p") o.arr()->push_back(Value::pair(lv.first, lv.second));
+            // the key as the hash holds it (an object hash indexes by identity)
+            Value rk = hashEntryKey(base, lv.first, lv.second);
+            auto keyPair = [&](const Value& v2) {
+                Value p = Value::pair(lv.first, v2);
+                if (rk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(rk);
+                else p.s = rk.s;
+                return p;
+            };
+            if (adv == "k") o.arr()->push_back(rk);
+            else if (adv == "kv") { o.arr()->push_back(rk); o.arr()->push_back(lv.second); }
+            else if (adv == "p") o.arr()->push_back(keyPair(lv.second));
             else o.arr()->push_back(lv.second); // :v or no adverb → the leaf values
         }
         return o;
@@ -35234,6 +35480,7 @@ Value Interpreter::evalIndex(Index* idx) {
         bool kvF = false, pF = false, kF = false, vF = false;
         bool presenceNeg = false; // :k/:v/:kv/:p negative polarity (:!k / :k(False))
         std::vector<std::string> unknownAdv; // `:zorp` / `:zip:zop` — not a subscript adverb
+        std::vector<std::string> advSeen;    // the recognised ones, IN SOURCE ORDER (X::Adverb.nogo)
         {
             std::string rest = idx->adverb;
             while (!rest.empty()) {
@@ -35263,12 +35510,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 // :k/:v/:kv/:p report a MISSING element (undefined value) only under
                 // NEGATIVE polarity — `:!k` or `:k(False)`; existing always reports.
                 bool posPol = hasArg ? (neg ? !argOn : argOn) : !neg;
-                if (part == "exists") { wantExists = true; negExists = neg; }
-                else if (part == "delete") wantDelete = true;
-                else if (part == "kv") { kvF = true; presenceNeg = !posPol; }
-                else if (part == "p")  { pF = true;  presenceNeg = !posPol; }
-                else if (part == "k")  { kF = true;  presenceNeg = !posPol; }
-                else if (part == "v")  { vF = true;  presenceNeg = !posPol; }
+                if (part == "exists") { wantExists = true; negExists = neg; advSeen.push_back(part); }
+                else if (part == "delete") { wantDelete = true; advSeen.push_back(part); }
+                else if (part == "kv") { kvF = true; presenceNeg = !posPol; advSeen.push_back(part); }
+                else if (part == "p")  { pF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
+                else if (part == "k")  { kF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
+                else if (part == "v")  { vF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
                 else if (!part.empty()) unknownAdv.push_back(part); // :zorp / :zip / :zop
             }
         }
@@ -35298,11 +35545,33 @@ Value Interpreter::evalIndex(Index* idx) {
         if ((idx->semicolonSub || idx->multiDim) && wantExists && negExists && wantDelete)
             throw RakuError{Value::typeObj("X::Adverb"),
                 "Unexpected adverbs passed to subscript: combination of :!exists and :delete"};
-        // the presentation adverbs (k/v/kv/p) are mutually exclusive; :exists
-        // combines with :kv/:p/:delete but not :v
-        if ((int)kF + (int)vF + (int)kvF + (int)pF > 1 || (wantExists && vF))
-            throw RakuError{Value::typeObj("X::Adverb"),
-                "Unexpected adverbs passed to subscript"};
+        // The presentation adverbs (k/v/kv/p) are mutually exclusive, and :exists
+        // combines with :kv/:p/:delete but NOT with :k or :v. An unsupported
+        // COMBINATION is a Failure, not a throw — the program sees it only when
+        // it uses the result — where an unknown adverb (above) dies outright.
+        // The Failure carries the offending adverbs in `.nogo`, which is what a
+        // handler reads (sheet HM-07); `%h<a b>:exists:k` used to answer
+        // `(True, False)` as though the `:k` were not there.
+        if ((int)kF + (int)vF + (int)kvF + (int)pF > 1 || (wantExists && (vF || kF))) {
+            Value nogo = Value::array(); nogo.isList = true; nogo.s = "Seq";
+            std::string quoted;
+            for (auto& a2 : advSeen) {
+                if (a2 == "delete") continue;      // :delete is never the odd one out
+                nogo.arr()->push_back(Value::str(a2));
+                if (!quoted.empty()) quoted += ", ";
+                quoted += "'" + a2 + "'";
+            }
+            std::string src = idx->base->kind == NK::VarExpr
+                            ? static_cast<VarExpr*>(idx->base.get())->name : std::string("%h");
+            const std::string msg = "Unsupported combination of adverbs (" + quoted +
+                                    ") passed to slice on '" + src + "'.";
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = makeTypedEx("X::Adverb",
+                {{"what", Value::str("slice")}, {"source", Value::str(src)},
+                 {"unexpected", Value::array()}, {"nogo", nogo}}, msg);
+            (*f.hash())["message"] = Value::str(msg);
+            return f;
+        }
         // ── adverbed multidim: navigate to the leaf's parent, apply the adverb set;
         // :kv/:p/:k report the WHOLE key tuple (%h{a;b;c}:kv is ((a,b,c), v)).
         if (idx->multiDim) {
@@ -35473,7 +35742,12 @@ Value Interpreter::evalIndex(Index* idx) {
             if (assocObj && objHas("keys"))
                 for (auto& k : toList(methodCall(base, "keys", {}))) sliceKeys.push_back(k);
             else if (idx->isHash && base.t == VT::Hash && base.hash())
-                for (auto& e2 : *base.hash()) sliceKeys.push_back(Value::str(e2.first));
+                // the key's OWN value, not the payload's index string — an
+                // object-keyed hash indexes by identity, and feeding that back
+                // through hashSubKey below looked up the identity OF the
+                // identity and found nothing (sheet HM-04)
+                for (auto& e2 : *base.hash())
+                    sliceKeys.push_back(hashEntryKey(base, e2.first, e2.second));
             else if (base.t == VT::Array && base.arr())
                 for (long long i = 0; i < (long long)base.arr()->size(); i++)
                     sliceKeys.push_back(Value::integer(i));
@@ -35552,6 +35826,10 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantDelete && base.t == VT::Hash &&
             (base.hashKind == "Set" || base.hashKind == "Bag" || base.hashKind == "Mix"))
             throwImmutable(base);
+        // A Map is immutable too, and refuses a delete in the Pair/List wording
+        // below rather than the assignment one (sheet HM-14).
+        if (wantDelete && base.t == VT::Hash && base.hashKind == "Map")
+            throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove values from a Map"};
         // …and so are a Pair and a List. `base.hash()` is null for a Pair, so
         // the erase below dereferenced nothing and took the process with it once
         // the Pair stopped being silently promoted to a Hash (issue #69). The
@@ -35690,12 +35968,16 @@ Value Interpreter::evalIndex(Index* idx) {
                 auto it = base.hash()->find(key);
                 if (it != base.hash()->end()) return it->second;
             }
-            // Set/Bag/Mix typed default — ONLY the quanthashes: a Map/Stash
-            // (E.enums) answers Any on a miss like Rakudo's, not the Bag's 0
+            // Set/Bag/Mix typed default — ONLY the quanthashes: a Stash
+            // answers Any on a miss like Rakudo's, not the Bag's 0
             if (base.t == VT::Hash &&
                 (base.hashKind.rfind("Set", 0) == 0 || base.hashKind.rfind("Bag", 0) == 0 ||
                  base.hashKind.rfind("Mix", 0) == 0))
                 return base.hashKind.find("Set") == 0 ? Value::boolean(false) : Value::integer(0);
+            // A MAP has no default to reach for — a key it does not hold reads
+            // as Nil, not as Any (sheet HM-14). `E.enums<nope>` is Nil, and so
+            // is every element of a Map slice that missed.
+            if (base.t == VT::Hash && base.hashKind == "Map") return Value::nil();
             if (base.elemDefault()) return *base.elemDefault();                // `%h is default(v)`
             if (!base.ofType().empty()) return typedElemDefault(base); // Hash[Int] -> Int
             return Value::any();
@@ -37318,7 +37600,7 @@ Value Interpreter::eval(Expr* e) {
                 else if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) { for (auto& kv : *v.hash()) items.arr()->push_back(Value::pair(kv.first, kv.second)); }
                 else items.arr()->push_back(v);
             }
-            return coerceHash(items);
+            return coerceHash(items, /*store=*/true);   // `%(1, 2, 3)` is the odd-number error
         }
         case NK::Assign: return evalAssign(static_cast<Assign*>(e));
         case NK::Binary: return evalBinary(static_cast<Binary*>(e));
@@ -38108,6 +38390,7 @@ Value Interpreter::eval(Expr* e) {
                     return code;
                 }
                 Value pr = Value::pair(kv.toStr(), vv0);
+                markPairValueRO(pr, p->value.get());
                 // a non-string key (number, object, match, array, hash, code) is preserved
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
@@ -38120,7 +38403,11 @@ Value Interpreter::eval(Expr* e) {
                     kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
                 return pr;
             }
-            return Value::pair(p->key, pairValueOf(p->value.get())); // `:err(/pat/)` → Regex value
+            {   // `:err(/pat/)` → Regex value
+                Value pr = Value::pair(p->key, pairValueOf(p->value.get()));
+                markPairValueRO(pr, p->value.get());
+                return pr;
+            }
         }
         case NK::BlockExpr: {
             auto* be = static_cast<BlockExpr*>(e);

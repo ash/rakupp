@@ -1035,8 +1035,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // ofType — `.of` already reads the first half and `.keyof` never read the
         // second. A plain hash keys on the COERCION type Str(Any), not bare Str.
         if (inv.t == VT::Hash) {
-            size_t c = inv.ofType().find(',');
-            if (c != std::string::npos) return Value::typeObj(inv.ofType().substr(c + 1));
+            // objHashKeyType owns the split — `:{ }` carries a third parameter
+            const std::string kt = objHashKeyType(inv);
+            if (!kt.empty()) return Value::typeObj(kt);
         }
         return Value::typeObj("Str(Any)");
     }
@@ -3487,6 +3488,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(slice(start, start + len));
     }
     if (m == "index" || m == "rindex") {
+        // …and the same warning `.contains` carries below: an `.index` on an
+        // associative reads its `.Str` dump (sheet HM-14).
+        if (inv.t == VT::Hash &&
+            (inv.hashKind.empty() || inv.hashKind == "Map" || inv.hashKind == "Stash")) {
+            const std::string tn = inv.hashKind.empty() ? "Hash" : inv.hashKind.str();
+            const std::string msg = "Applying '." + std::string(m) + "' to a " + tn +
+                " will look at its .Str representation. Did you mean '" + tn + "{needle}:exists'?";
+            if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        }
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.
@@ -4054,6 +4064,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `:i`/`:ignorecase` on the string predicates — fold both sides and compare
     if (m == "contains" || m == "starts-with" || m == "ends-with") {
+        // `.contains` on a Hash, Map or Stash looks at its `.Str` — the
+        // tab-and-newline dump — which is almost never what the caller meant,
+        // so Rakudo answers it AND warns, naming the subscript that was meant
+        // (sheet HM-14). Same for `.index`, above. (`.starts-with`/`.ends-with`
+        // carry no such warning — Rakudo warns on these two only.)
+        if (m == "contains" && inv.t == VT::Hash &&
+            (inv.hashKind.empty() || inv.hashKind == "Map" || inv.hashKind == "Stash")) {
+            const std::string tn = inv.hashKind.empty() ? "Hash" : inv.hashKind.str();
+            const std::string msg = "Applying '." + std::string(m) + "' to a " + tn +
+                " will look at its .Str representation. Did you mean '" + tn + "{needle}:exists'?";
+            if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        }
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.

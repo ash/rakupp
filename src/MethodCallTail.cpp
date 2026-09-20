@@ -410,8 +410,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // converters and `{Str}` must not collide with `{Int}` (DBIish). A
         // plain hash keeps Rakudo's ""-key for type objects.
         bool objKeyed = inv.objKeyed;
-        auto kkey = [objKeyed](const Value& k) {
-            return k.t == VT::Type && objKeyed ? "(" + k.s + ")" : k.toStr();
+        // The payload index for a key. An OBJECT-KEYED hash indexes by IDENTITY,
+        // so `1` and `"1"` stay two entries (sheet HM-04); a type object keeps
+        // its parenthesised name, which the declaration paths also write.
+        auto kkey = [objKeyed](const Value& k) -> std::string {
+            return objKeyed ? objHashIndex(k) : k.toStr();
         };
         if (m == "AT-KEY" && !args.empty()) {
             auto it = inv.hash()->find(kkey(args[0]));
@@ -426,7 +429,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if ((m == "ASSIGN-KEY" || m == "BIND-KEY") && args.size() >= 2) {
             const std::string k = kkey(args[0]);
-            if (args[0].t != VT::Str && !objHashKeyType(inv).empty()) {
+            if (!objHashKeyType(inv).empty()) {
                 Value stored = args[0]; stored.itemized = false;   // as the subscript path does
                 inv.hash()->setObjKey(k, stored);
             }
@@ -470,7 +473,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "key") return inv.pairKey() ? *inv.pairKey() : Value::str(inv.s); // object/array keys preserved
         if (m == "value") return inv.pairVal() ? *inv.pairVal() : Value::any();
         if (m == "kv") { Value o = Value::array({inv.pairKey() ? *inv.pairKey() : Value::str(inv.s), inv.pairVal() ? *inv.pairVal() : Value::any()}); o.isList = true; return o; }
-        if (m == "antipair") return Value::pair((inv.pairVal() ? inv.pairVal()->toStr() : ""), Value::str(inv.s));
+        if (m == "antipair") {
+            // The VALUE becomes the key, as itself — `(a => 1).antipair` is
+            // `1 => "a"`, an Int key, not the string "1" (sheet HM-17). Same
+            // rule the list forms below already follow.
+            Value val = inv.pairVal() ? *inv.pairVal() : Value::any();
+            Value p = Value::pair(val.toStr(), Value::str(inv.s));
+            if (val.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(val);
+            return p;
+        }
         // `.freeze` snapshots the value out of its container. rakupp's Pair already
         // copies rather than binding, so the pair is frozen the moment it is built —
         // if Pair ever holds a real container this has to copy pairVal explicitly.
@@ -1505,19 +1516,34 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         if (m == "fmt") {
-            std::string fmt = args.empty() ? "%s" : a0().toStr();
-            std::string sep = args.size() > 1 ? args[1].toStr() : " ";
+            // An ASSOCIATIVE invocant formats its (key, value) PAIRS: the
+            // default format is `%s\t%s`, the default separator a NEWLINE, and
+            // a format with a single directive consumes only the KEY (sheet
+            // HM-15). A Set/Bag/Mix is one of these, and its value is the
+            // weight. The list defaults below — `%s` joined by a space — are a
+            // different method on a different type, and a hash borrowing them
+            // printed `%h.fmt` as "a b".
+            const bool assoc = inv.t == VT::Hash && inv.hash() &&
+                (inv.hashKind.empty() || inv.hashKind == "Map" || inv.hashKind == "Stash" ||
+                 inv.hashKind.rfind("Set", 0) == 0 || inv.hashKind.rfind("Bag", 0) == 0 ||
+                 inv.hashKind.rfind("Mix", 0) == 0);
+            std::string fmt = args.empty() ? (assoc ? "%s\t%s" : "%s") : a0().toStr();
+            std::string sep = args.size() > 1 ? args[1].toStr() : (assoc ? "\n" : " ");
             std::string out;
-            // a Setty/Baggy formats each (key, count) pair — `%s` consumes just the key
-            if (inv.t == VT::Hash && inv.hash() &&
-                (inv.hashKind.rfind("Set", 0) == 0 || inv.hashKind.rfind("Bag", 0) == 0 ||
-                 inv.hashKind.rfind("Mix", 0) == 0)) {
+            auto countDirectives = [](const std::string& f) {
+                size_t n = 0;
+                for (size_t i = 0; i + 1 < f.size(); i++)
+                    if (f[i] == '%') { if (f[i + 1] == '%') i++; else n++; }
+                return n;
+            };
+            if (assoc) {
+                const bool keyOnly = countDirectives(fmt) < 2;
                 bool first = true;
                 for (auto& kv : *inv.hash()) {
                     if (!first) out += sep;
                     first = false;
                     Value key = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
-                    out += doSprintf(fmt, {key, kv.second});
+                    out += keyOnly ? doSprintf(fmt, {key}) : doSprintf(fmt, {key, kv.second});
                 }
                 return Value::str(out);
             }
@@ -1737,7 +1763,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value h = Value::makeHash();
             // …and the result is an OBJECT hash (Rakudo's `Hash[Mu,Mu]`), so a
             // key keeps the classifier's own type instead of stringifying.
-            h.ofTypeM() = "Mu,Mu";
+            h.ofTypeM() = "Mu,Mu,Any";
+            h.objKeyed = true;
             // A key that is itself a LIST is a multi-LEVEL path: the element lands
             // in a hash of hashes, one level per key (`classify { [.&odd, .&big] }`
             // is %h<odd><big>), not under the keys joined into one string.
@@ -1753,7 +1780,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // rakupp showed `Bag((6))` for lines a classifier could not key
             // (issue #14's file: lines with fewer words than the index).
             auto keyOf = [](const Value& kv) {
-                return rtIsDefined(kv) ? kv.toStr() : kv.gist();
+                // the OBJECT-HASH index, so a classify's keys line up with a
+                // `:{ }` literal's (roast's classify/categorize files compare
+                // the two with `is-deeply`) — identity for everything but a
+                // plain Str, which indexes by itself
+                if (!rtIsDefined(kv)) return kv.gist();
+                return objHashIndex(kv);
             };
             auto keyObj = [](const Value& kv) -> std::shared_ptr<Value> {
                 return kv.t == VT::Str ? nullptr : std::make_shared<Value>(kv);
@@ -1770,7 +1802,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     auto it = level->hash()->find(ks);
                     if (it == level->hash()->end() || it->second.t != VT::Hash || !it->second.hash()) {
                         Value nested = Value::makeHash();
-                        nested.ofTypeM() = "Mu,Mu"; // a nested level is an object hash too
+                        nested.ofTypeM() = "Mu,Mu,Any"; // a nested level is an object hash too
+                        nested.objKeyed = true;
                         nested.pairKeyM() = keyObj(path[d]);
                         (*level->hash())[ks] = std::move(nested);
                     }
@@ -2929,8 +2962,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     std::string key = items[k].toStr(); // sequenced explicitly: in `m[f(k)] = g(++k)`
                     (*h.hash())[key] = items[++k];        // the RHS would evaluate before the key!
                 }
-                else throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"), // as Hash.new and Rakudo
-                                     "Odd number of elements found where hash initializer expected"};
+                else throwHashOddNumber((long long)items.size(), items[k]); // as Hash.new and Rakudo
             }
             // `.Map` asks for a MAP: `(a => 1, b => 2).Map` is immutable and
             // reports Map, where `.Hash`/`.hash` answer a mutable Hash. All
@@ -3140,7 +3172,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (m == "kv") { out.arr()->push_back(key); out.arr()->push_back(kv.second); }
                     // (Hash antipairs answered by its own arm above)
                     else { Value p = Value::pair(kv.first, kv.second);
+                           // …and a STR key of an object hash needs recovering
+                           // too: the payload indexes by identity (`Str|a`)
                            if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(key));
+                           else p.s = key.s;
                            out.arr()->push_back(std::move(p)); }
                 }
             } else {

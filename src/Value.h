@@ -572,6 +572,14 @@ struct Value {
     // with it, so every existing check still fires; it picks the message.
     // Free: it lands in the padding this block already had (sizeof stays 128).
     bool immutableBind = false;
+    // A PAIR whose value is not a container: `a => 1` binds a VALUE, `a => $x`
+    // binds $x's container, and only the second can be written through
+    // (`$p.value = 5`). Sheet HM-18. It sits HERE rather than in the cold block
+    // because a pair literal is the common case and the flag is set on almost
+    // every one — a cold-block write would allocate for each, which measured
+    // +4.5% on the object benchmark (two named arguments per construction).
+    // Free: it lands in the padding before natBits, as immutableBind does.
+    bool pairValRO = false;
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     bool natSigned = false;
     bool natFloat = false; // native float container (num32): truncates to float32 on assignment
@@ -696,6 +704,7 @@ struct Value {
     bool rExTo() const { return xr().rExTo; }
     bool rNum() const { return xr().rNum; }
     bool fatRat() const { return xr().fatRat; }
+
     double& imM() { return xw().im; }
     std::shared_ptr<BigInt>& bigM() { return xw().big; }
     std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
@@ -711,6 +720,7 @@ struct Value {
     bool& rExToM() { return xw().rExTo; }
     bool& rNumM() { return xw().rNum; }
     bool& fatRatM() { return xw().fatRat; }
+
 
     Value() : t(VT::Any) {}
 

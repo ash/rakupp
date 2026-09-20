@@ -583,7 +583,10 @@ std::string Value::toStr() const {
                 bool first = true;
                 for (auto* kvp : ents) {
                     if (!first) out += "\n"; first = false;
-                    out += kvp->first + "\t" + kvp->second.toStr();
+                    // an object hash indexes by identity; print the key itself
+                    const Value* ok = hash()->objKey(kvp->first);
+                    if (!ok && kvp->second.pairKey()) ok = kvp->second.pairKey().get();
+                    out += (ok ? ok->toStr() : kvp->first) + "\t" + kvp->second.toStr();
                 }
             }
             return out;
@@ -839,10 +842,19 @@ std::string Value::gist() const {
                 if (hash()) { ents.reserve(hash()->size()); for (auto& kv : *hash()) ents.push_back(&kv); }
                 std::sort(ents.begin(), ents.end(),
                           [](auto* a, auto* b) { return a->first < b->first; });
-                std::string body; bool first = true;
-                for (auto* kv : ents) {
-                    if (!first) body += ", "; first = false;
-                    body += kv->first + " => " + kv->second.gist();
+                std::string body;
+                for (size_t k = 0; k < ents.size(); k++) {
+                    // A hash gist is CAPPED at 100 pairs and marks the rest,
+                    // exactly as a list gist is (sheet HM-11) — .Str and .raku
+                    // stay complete. Without it a `say %h` on a big hash dumped
+                    // the whole table.
+                    if (k == 100) { body += ", ..."; break; }
+                    if (k) body += ", ";
+                    // an OBJECT hash indexes by identity, so the printable key
+                    // is the object it kept beside the entry, not the index
+                    const Value* ok = hash()->objKey(ents[k]->first);
+                    if (!ok && ents[k]->second.pairKey()) ok = ents[k]->second.pairKey().get();
+                    body += (ok ? ok->gist() : ents[k]->first) + " => " + ents[k]->second.gist();
                 }
                 if (hashKind == "Map") return "Map.new((" + body + "))";
                 return "{" + body + "}";

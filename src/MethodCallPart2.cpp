@@ -3877,8 +3877,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (items[k].t == VT::Pair) (*v.hash())[items[k].s] = items[k].pairVal() ? *items[k].pairVal() : Value::any();
             else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash())[key] = items[k + 1]; k++; }
-            else throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"),
-                                 "Odd number of elements found where hash initializer expected"}; // (it dropped the key)
+            else throwHashOddNumber((long long)items.size(), items[k]); // (it dropped the key)
         }
         return v;
     }
@@ -6253,7 +6252,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.s == "Seq") out += ".Seq";   // only a Seq names one
         return Value::str(out);
     }
-    if (m == "raku") return Value::str(rakuRepr(inv));
+    if (m == "raku") {
+        // `.raku(:arglist)` asks for the ARGUMENT-LIST spelling of a Pair — the
+        // arrow form, whatever the key looks like, so `:a(1)` reads back as a
+        // positional pair and not as a named argument (sheet HM-16).
+        if (inv.t == VT::Pair)
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "arglist" && (!a.pairVal() || a.pairVal()->truthy()))
+                    return Value::str((inv.pairKey() ? rakuRepr(*inv.pairKey()) : rakuRepr(Value::str(inv.s))) +
+                                      " => " + rakuRepr(inv.pairVal() ? *inv.pairVal() : Value::nil()));
+        return Value::str(rakuRepr(inv));
+    }
     // A Match is Iterable over its POSITIONAL CAPTURES, so its list coercions answer
     // `$0, $1, …` — not the Match itself. `$/.Slip` slips those captures into the
     // surrounding list, which is how Sparrow6 reads a check's captures
@@ -6936,15 +6945,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Num, Str, Bool, Range, Pair, the Setty/Baggy family, Date, Complex,
         // a type object and Nil are ValueObjAt (sheet LA-36).
         Value w = Value::str(whichOf(inv));
-        bool objAt =
-            (inv.t == VT::Array && inv.hashKind != "Capture" && inv.enumName.empty()) ||
-            (inv.t == VT::Hash && inv.hashKind.empty()) ||
-            (inv.t == VT::Hash && (inv.hashKind == "Hash" || inv.hashKind == "SetHash" ||
-                                   inv.hashKind == "BagHash" || inv.hashKind == "MixHash")) ||
-            (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "IO")) ||
-            (inv.t == VT::Num && inv.hashKind == "Instant") ||
-            inv.t == VT::Code || inv.t == VT::Object;
-        w.hashKind = objAt ? "ObjAt" : "ValueObjAt";
+        w.hashKind = whichIsObjAt(inv) ? "ObjAt" : "ValueObjAt";
         return w;
     }
     if (m == "WHERE") { // memory address of the value (an Int)
