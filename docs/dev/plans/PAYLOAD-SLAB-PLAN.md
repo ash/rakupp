@@ -344,3 +344,53 @@ and should be discounted the same way before anyone budgets against them.
   repo has been bitten by exactly that before (`emptyValueExt`'s comment: a
   function-local-static guard "was most of a 28% regex regression"). Worth
   testing a `constinit` namespace-scope pool against it.
+
+## The init guard, removed — and what it was actually worth
+
+The open item at the end of the previous section said `SlabPool::pool()` was a
+function-local `static thread_local` whose type has a non-trivial destructor, so
+every payload allocation paid an ABI initialisation guard — the pattern
+`emptyValueExt` blames for "most of a 28% regex regression". That is now fixed:
+the hot state is constant-initialised `thread_local` arrays reached with no
+guard, and the thread-exit drain RVec's pool performs is kept by paying the
+guard **once per thread**, on the first allocation, behind a `tlArmed` flag the
+hot path only reads.
+
+(`constinit` is C++20 and this project is C++17, so the keyword sits behind a
+`__cpp_constinit` test. It only asserts what the initialisers already are. The
+standalone unit test had been compiling at `-std=c++20` and passed the keyword
+happily — a reminder to compile probes with the project's own flags.)
+
+**v2 (guard-free) against the original baseline**, 11 interleaved pairs:
+
+| kernel | pairs negative | median | spread |
+|---|---|---:|---|
+| `regex` | **11 of 11** | **-6.62%** | -6.00 / -7.44 |
+| `streq` | 8 of 11 | -6.67% | -14.86 / +9.27 |
+| `loopsum` | 9 of 11 (2 zero, 0 positive) | -0.71% | -1.33 / +0.00 |
+
+**v1 against v2 — the guard priced on its own:**
+
+| kernel | pairs negative | median | verdict |
+|---|---|---:|---|
+| `loopsum` | 10 of 11 | -1.33% | the guard caused the regression |
+| `regex` | 4 of 11 (3 positive, 4 zero) | +0.00% | **no signal** |
+
+Two conclusions, one of them a correction.
+
+**The guard was real, and it was the `loopsum` regression.** A kernel that barely
+allocates was paying it anyway, and removing it turned 0-of-11-negative
+(consistently slower) into 9-of-11-negative. That is the whole of what the fix
+bought.
+
+**It was NOT worth 2.3 points on `regex`, which is what the two measurements
+looked like side by side.** `regex` read -4.27% before the fix and -6.62% after,
+but priced directly against each other the two binaries are indistinguishable.
+The difference was the machine: the -4.27% run happened while another session's
+test suite was running, the -6.62% run did not. **The tight one is the true
+figure** — eleven pairs inside a 1.4-point band, against a spread of ±10 points
+on the noisy run. Anything measured on this box while it is busy is worth about
+half a significant figure.
+
+So the headline for the whole change stands at roughly **-6.6% on `regex`**,
+similar on `streq`, neutral elsewhere, memory flat to -1.6%.
