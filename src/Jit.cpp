@@ -106,6 +106,10 @@ struct Site {
     // set, and which one is decided once, by the command line.
     std::atomic<cnp::Kernel*> cnpKernel{nullptr};
     std::atomic<bool> notedThreads{false};   // the "a worker is live" line, said once
+    // The slot the kernel OWNS: a counted `for`'s loop variable, which the
+    // synthetic `$i++` writes. -1 for every other loop shape. See the entry
+    // guard in runIfReady for why it is singled out.
+    int counterSlot = -1;
     std::vector<std::string> opKeys;         // routine names that would overload this loop's operators
     std::atomic<bool> opsChecked{false};     // …looked for once, at the first entry
 };
@@ -754,6 +758,9 @@ void examine(Site* s) {
         return;
     }
     s->slots = sc.slots;
+    if (s->countedFor && !sc.countedVar.empty())
+        for (size_t k = 0; k < sc.slots.size(); k++)
+            if (sc.slots[k] == sc.countedVar) { s->counterSlot = (int)k; break; }
     s->opKeys.assign(sc.opKeys.begin(), sc.opKeys.end());
     s->slotWritten.clear();
     for (const std::string& n : sc.slots) s->slotWritten.push_back(sc.written.count(n) != 0);
@@ -1109,7 +1116,27 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // assigns the container directly, so it would honour none of them. A
         // slot the kernel only reads is unaffected by all of it.
         if (!s->slotWritten[k]) { slots.push_back(cell); continue; }
-        if (cell->natBits != 0 || cell->natFloat || cell->readonly)
+        // A counted `for`'s loop variable is the one slot the kernel DRIVES
+        // rather than merely assigns, and `readonly` on it describes the
+        // interpreter's own binding, not behaviour a store would skip: the
+        // interpreter rebinds that variable from its counter on every
+        // iteration, and the synthetic `$i++` is the kernel doing the same
+        // thing by another mechanism. So the readonly bit is not an objection
+        // here — it is the binding working as intended.
+        //
+        // It became one when the interpreter started enforcing the binding
+        // (773537d): every counted-`for` kernel was built and then thrown away
+        // at entry, so the whole feature that had landed two commits earlier
+        // was dead and only the gate's tier-up count said so.
+        //
+        // The exemption is exactly one bit wide. A native width still refuses,
+        // because a `my int8` counter would have to wrap and the kernel would
+        // not; the container-trait checks below still run; and a BODY that
+        // writes the loop variable was refused during the eligibility walk,
+        // before the synthetic header marked it written, so nothing that this
+        // skips can reach a body assignment.
+        const bool ownCounter = (int)k == s->counterSlot;
+        if (cell->natBits != 0 || cell->natFloat || (cell->readonly && !ownCounter))
             return refuse(s, "slot " + n + " is a native or readonly container the kernel would write");
         if (owner->ex) {
             const EnvExtras& x = *owner->ex;

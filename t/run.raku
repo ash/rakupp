@@ -744,6 +744,28 @@ section('--target=js (JavaScript backend)');
     }
 }
 
+# A counted `for` must actually ENTER a kernel, not merely agree with the
+# interpreter about the answer.
+#
+# This is here because agreeing is what a dead backend does. `for` over a Range
+# tiered up in d1316d5 and stopped two commits later in 773537d, which made the
+# loop variable a read-only binding and so tripped the written-slot guard the
+# kernel's own synthetic `$i++` runs into. Thirteen kernels were built and
+# thrown away at entry on every run for three commits, and every differential
+# gate stayed green throughout — because a loop that never tiers up cannot
+# disagree with the interpreter. The only thing that knew was a tier-up COUNT in
+# a gate that takes ten minutes, and it reads like a rounding error.
+{
+    my $case = $ROOT.add('t/jit/cases/counted-for.raku').Str;
+    for '--cnp=threshold=0,stats', '--jit=sync,threshold=0,nocache,stats' -> $lane {
+        my $p = run($*EXECUTABLE, $lane, $case, :out, :err);
+        $p.out.slurp(:close);
+        my $e = $p.err.slurp(:close);
+        my $entered = $e ~~ / 'kernels entered ' (\d+) / ?? +$0 !! 0;
+        ok($entered > 0, "$lane.substr(0,5) enters a kernel for a counted `for` (entered $entered)");
+    }
+}
+
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
 # with its module tree gone from the machine. Each mode reached this differently
