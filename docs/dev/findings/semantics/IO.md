@@ -37,7 +37,7 @@ not exist. `.CWD` is an absolute Str, `.SPEC` the platform spec. The
 say "a/b.txt".IO.^name, " ", "a/b.txt".IO.path.raku, " ", "a/b.txt".IO.Str.raku, " ", "a/b.txt".IO.gist, " ", "/a/b.txt".IO.gist, " ", "a/b.txt".IO.raku.subst(/':CWD(' <-[)]>* ')'/, ':CWD(…)'), " ", (try IO::Path.new("")) // $!.^name ~ ":" ~ $!.message, " | ", (try IO::Path.new("a\0b")) // $!.^name, " ", IO::Path.new(:basename<b.txt>, :dirname</foo>).Str, " ", IO::Path.new(:basename<b.txt>).Str, " ", 42.IO.Str.raku, " ", (try Any.IO) // $!.^name, " ", (try "".IO) // $!.^name, " ", do { sub f(IO() $p) { $p.^name }; f("a") }, " ", "a".IO.IO.^name, " ", "a".IO.SPEC.^name, " ", "a".IO.CWD.^name, " ", "a".IO.CWD.IO.is-absolute
 # rakudo 2026.08: IO::Path "a/b.txt" "a/b.txt" "a/b.txt".IO "/a/b.txt".IO IO::Path.new("a/b.txt", :SPEC(IO::Spec::Unix), :CWD(…)) X::AdHoc:Must specify a non-empty string as a path | X::IO::Null /foo/b.txt b.txt "42" X::Method::NotFound X::AdHoc IO::Path IO::Path IO::Spec::Unix Str True
 ```
-rakupp 4.0.1: differs — an empty path is accepted (`"".IO`), and `IO::Path.new(:basename<b.txt>, :dirname</foo>)` stringifies to nothing.
+rakupp 4.0.1-84: matches — `"".IO` and `IO::Path.new("")` throw, and the `:basename`/`:dirname` constructor joins.
 
 ### IO-02  volume, dirname, basename, parts                         D:yes R:yes V:spec
 A trailing slash is dropped before splitting; the root splits as `/` and
@@ -47,7 +47,7 @@ A trailing slash is dropped before splitting; the root splits as `/` and
 say do { for </foo/bar.txt bar.txt / /foo/ foo/ . .. /foo/bar/ a/b/c.d.e> -> $p { my $io = $p.IO; print "$p=[{$io.volume.raku},{$io.dirname},{$io.basename}] " }; "" }, "| ", "/a/b.txt".IO.parts.raku, " ", "/a/b.txt".IO.parts<dirname>, " ", "/a/b.txt".IO.parts[2].raku
 # rakudo 2026.08: /foo/bar.txt=["",/foo,bar.txt] bar.txt=["",.,bar.txt] /=["",/,/] /foo/=["",/,foo] foo/=["",.,foo] .=["",.,.] ..=["",.,..] /foo/bar/=["",/foo,bar] a/b/c.d.e=["",a/b,c.d.e] | IO::Path::Parts.new("","/a","b.txt") /a :basename("b.txt")
 ```
-rakupp 4.0.1: differs — `.volume` is `X::Method::NotFound`, so the line died there.
+rakupp 4.0.1-84: matches — `.volume` answers `""` and `.parts` an IO::Path::Parts.
 
 ### IO-03  absolute, relative, cleanup                              D:yes R:yes V:spec
 `.absolute` resolves against `.CWD`; `.relative($base)` walks up with
@@ -58,7 +58,7 @@ filesystem access).
 say "/a/b".IO.is-absolute, " ", "a/b".IO.is-absolute, " ", "a".IO.is-relative, " ", ("a".IO.absolute eq $*CWD.Str ~ "/a"), " ", "/a/b".IO.relative("/a"), " ", "/a/b".IO.relative("/x"), " ", "/a/b".IO.relative("/a/b"), " ", "a//b/./c/".IO.cleanup.Str, " ", "./a".IO.cleanup.Str, " ", "/../a".IO.cleanup.Str, " ", "a/../b".IO.cleanup.Str, " ", "/".IO.cleanup.Str, " ", "a/.".IO.cleanup.Str, " ", "/a/b/".IO.cleanup.Str
 # rakudo 2026.08: True False True True b ../a/b . a/b/c a /a a/../b / a /a/b
 ```
-rakupp 4.0.1: differs — `"/../a".IO.cleanup` stays `/../a`.
+rakupp 4.0.1-84: matches — `cleanup` drops a `..` directly under the root.
 
 ### IO-04  parent, child, add, sibling                              D:partial R:partial V:spec
 `parent` is textual: `/` stays `/`, `foo` becomes `.`, `.` becomes `..`,
@@ -69,7 +69,7 @@ with a single separator; a child starting with `/` is still joined.
 say "/foo/bar".IO.parent.Str, " ", "/foo/bar".IO.parent.parent.Str, " ", "/".IO.parent.Str, " ", "foo".IO.parent.Str, " ", ".".IO.parent.Str, " ", "..".IO.parent.Str, " ", "../..".IO.parent.Str, " ", "foo/bar".IO.parent.Str, " ", "/foo/bar/baz".IO.parent(2).Str, " ", "/foo".IO.parent(0).Str, " ", (try "/foo".IO.parent(-1)) // $!.^name, " ", "a".IO.child("x").Str, " ", "a/".IO.child("x").Str, " ", "a".IO.add("x", "y").Str, " ", "a".IO.add("/x").Str, " ", "a/b".IO.sibling("z").Str, " ", "/".IO.child("x").Str, " ", ".".IO.child("x").Str
 # rakudo 2026.08: /foo / / . .. ../.. ../../.. foo /foo /foo X::OutOfRange a/x a/x a/x/y a/x a/z /x x
 ```
-rakupp 4.0.1: differs — `parent(-1)` returns the path unchanged, `add("/x")` gives `a//x`.
+rakupp 4.0.1-84: matches.
 
 ### IO-05  extension, succ, pred, Numeric                           D:yes R:yes V:spec
 The extension is the text after the last dot of the basename; `:parts(n)`
@@ -82,7 +82,7 @@ as a string. `.Numeric` numifies the basename.
 say "a.tar.gz".IO.extension, " ", "a.tar.gz".IO.extension(:parts(2)), " ", "a.tar.gz".IO.extension(:parts(0..2)), " ", "a.tar.gz".IO.extension(:parts(3)).raku, " ", "a.tar.gz".IO.extension("txt").Str, " ", "a.tar.gz".IO.extension("").Str, " ", "a.tar.gz".IO.extension("txt", :parts(2)).Str, " ", "a.tar.gz".IO.extension("txt", :parts(0)).Str, " ", "noext".IO.extension.raku, " ", "noext".IO.extension("x").Str, " ", ".hidden".IO.extension, " ", "a.".IO.extension.raku, " ", "a.".IO.extension("x").Str, " ", "d/a.b".IO.extension("c").Str, " ", "a.tar.gz".IO.extension("x", :joiner("-")).Str, " ", "file1.txt".IO.succ.Str, " ", "file1.txt".IO.pred.Str, " ", "file9".IO.succ.Str, " ", "42".IO.Numeric, " ", ("x".IO.Numeric.^name)
 # rakudo 2026.08: gz tar.gz tar.gz "" a.tar.txt a.tar a.txt a.tar.gz.txt "" noext.x hidden "" a.x d/a.c a.tar-x file2.txt file0.txt filf0 42 Failure
 ```
-rakupp 4.0.1: differs — `"noext".IO.extension("x")` gives `noext`.
+rakupp 4.0.1-84: matches — too few dot-parts takes none off and still appends.
 
 ### IO-06  Comparing paths                                          D:yes R:yes V:spec
 With an IO::Path on the right, smartmatch compares the two `.absolute`
@@ -98,7 +98,7 @@ say ("a".IO ~~ "a".IO), " ", ("a".IO ~~ "./a"), " ", ("a".IO ~~ "a/"), " ", ("a"
 say ("./a".IO ~~ "a".IO), " ", ("a".IO ~~ "./a".IO), " ", ("/foo".IO ~~ "/../foo".IO), " ", ("a/".IO ~~ "a".IO), " ", ("a".IO ~~ "a"), " ", ("./a" ~~ "a".IO), " ", ("./a".IO.absolute eq "a".IO.absolute), " ", ("a".IO.ACCEPTS("./a")), " ", ("x/../a".IO ~~ "a".IO), " ", ("a".IO eqv "a".IO), " ", ("./a".IO eqv "a".IO), " ", (IO::Path.new("a", :CWD("/x")) eqv IO::Path.new("a", :CWD("/y")))
 # rakudo 2026.08: True True True True True True True True False True False False
 ```
-rakupp 4.0.1: differs — `.absolute` keeps `./` and a trailing `/`, so no canonical form matches; `===` is True with a Str WHICH; `eqv` ignores CWD.
+rakupp 4.0.1-84: differs in ONE field — `.absolute` is canonical now, so every smartmatch in the second probe holds, and `eqv` compares the :CWD. `"a".IO === "a".IO` is still True: Rakudo's IO::Path WHICH carries the object's address, and a path here is a copied Str value with no identity slot to carry one. Nothing in Roast asks.
 
 ## B. File tests and the standard handles
 
@@ -126,7 +126,7 @@ False when not a terminal; the native descriptors are 0, 1, 2.
 say $*IN.path.^name, " ", $*IN.path.Str, " ", $*IN.path.raku, " ", $*IN.path.e, " ", $*IN.path.d, " ", $*IN.path.f, " ", $*IN.path.s, " ", $*IN.path.r, " ", $*IN.path.w, " ", $*OUT.path.r, " ", $*OUT.path.w, " ", $*ERR.path.Str, " ", $*IN.path.modified.raku, " ", $*IN.path.mode.raku, " ", ($*IN.path === IO::Special.new("<STDIN>")), " ", $*IN.path.IO.^name, " ", $*IN.path.what, " ", $*IN.opened, " ", $*OUT.encoding, " ", $*OUT.t, " ", $*IN.t, " ", $*OUT.nl-out.raku, " ", $*IN.nl-in.raku, " ", $*IN.chomp, " ", $*OUT.gist, " ", $*OUT.Str, " ", $*OUT.path.gist, " ", $*IN.native-descriptor, " ", $*ERR.native-descriptor
 # rakudo 2026.08: IO::Special <STDIN> IO::Special.new("<STDIN>") True False False 0 True False False True <STDERR> Instant Nil True IO::Special <STDIN> True utf8 False False "\n" $["\n", "\r\n"] True IO::Handle<IO::Special.new("<STDOUT>")>(opened) <STDOUT> IO::Special.new("<STDOUT>") 0 2
 ```
-rakupp 4.0.1: differs — the standard handles are a different type (`FileHandle`) without `.opened`, so the line died there.
+rakupp 4.0.1-84: matches — the handles report `IO::Handle`, and IO::Special gists and rakus as its constructor.
 
 ## C. Filesystem operations
 
@@ -209,7 +209,7 @@ Roast's `dies-ok` accepts either. Recorded as observed.
 say do { (spurt("f10", "x"), slurp("f10").raku, spurt("f10", "y", :append), slurp("f10").raku, spurt("f10", "z"), slurp("f10").raku, spurt("f10", "q", :createonly).^name, spurt("f10", "q", :createonly).exception.^name, spurt("f10", "q", :createonly).exception.message, "n10".IO.spurt, "n10".IO.s, "n10".IO.slurp.raku, slurp("f10", :bin).^name, slurp("f10", :bin).raku, spurt("b10", Blob.new(65, 66)), slurp("b10").raku, spurt("c10", 42), slurp("c10").raku, (try slurp("m10")) // $!.^name, (try "m10".IO.slurp) // $!.^name ~ ":" ~ $!.message.substr(0, 19), (try slurp("d10dir".IO.mkdir)) // $!.^name).join(" ") }
 # rakudo 2026.08: True "x" True "xy" True "z" Failure X::AdHoc Failed to open file …/f10: File exists True 0 "" Buf[uint8] Buf[uint8].new(122) True "AB" True "42" X::AdHoc X::AdHoc:Failed to open file X::AdHoc
 ```
-rakupp 4.0.1: differs — `:createonly` fails with `X::IO::Exists`, `:bin` gives a `Blob`, a missing path throws `X::IO::Open`, and slurping a directory returns an empty string without an error.
+rakupp 4.0.1-84: differs — a missing path throws `X::AdHoc` now; `:createonly` still fails with `X::IO::Exists`, `:bin` gives a `Blob`, and slurping a directory returns "".
 
 ### IO-15  Newlines and encodings                                   D:partial R:partial V:spec
 Reading translates `\r\n` to `\n` (`\r` alone is kept); `:bin` and
@@ -238,7 +238,7 @@ throw `X::IO::Closed`, `native-descriptor` and `tell` throw `X::AdHoc`, and
 say do { my $fh = open("w12", :w); ($fh.^name, $fh.opened, $fh.print("a"), $fh.say("b", "c"), $fh.put(1, 2), $fh.printf("%03d", 7), $fh.print-nl, $fh.write(Blob.new(88)), $fh.nl-out.raku, $fh.encoding, $fh.path.^name, $fh.Str, $fh.gist, $fh.t, $fh.native-descriptor.^name, $fh.tell, $fh.close, $fh.opened, $fh.close, $fh.gist, slurp("w12").raku, (try $fh.print("x")) // $!.^name, (try $fh.get) // $!.^name, (try $fh.native-descriptor) // $!.^name, (try $fh.tell) // $!.^name, $fh.eof).join(" ") }
 # rakudo 2026.08: IO::Handle True True True True True True True "\n" utf8 IO::Path w12 IO::Handle<"w12".IO>(opened) False Int 12 True False True IO::Handle<"w12".IO>(closed) "abc\n12\n007\nX" X::IO::Closed X::IO::Closed X::AdHoc X::AdHoc True
 ```
-rakupp 4.0.1: differs — `open` returns a `FileHandle` without `.opened`, so the line died there.
+rakupp 4.0.1-84: matches — all 25 fields, including the closed-handle `X::IO::Closed`/`X::AdHoc` split.
 
 ### IO-17  Reading lines                                            D:yes R:yes V:spec
 `get` returns the next line chomped and Nil at the end; `.tell` after a
@@ -253,7 +253,7 @@ IO::Path or a handle reads a file.
 say do { spurt("r13", "l1\nl2\r\nl3"); my $fh = open("r13"); ($fh.get.raku, $fh.tell, $fh.getc.raku, $fh.get.raku, $fh.eof, $fh.get.raku, $fh.eof, $fh.get.raku, $fh.close, open("r13").lines.raku, open("r13").lines(2).raku, do { my $h = open("r13"); my @l = $h.lines(2); @l.raku ~ " " ~ $h.opened ~ " " ~ $h.get.raku }, do { my $h = open("r13"); my @l = $h.lines(2, :close); $h.opened }, open("r13").lines(:!chomp).raku, open("r13", :!chomp).lines.raku, open("r13", :nl-in("\r")).lines.raku, open("r13").words.raku, open("r13").comb(3).raku, open("r13").split("\n").raku, open("r13").slurp.raku, lines("r13".IO).raku, lines("a\nb").raku, words("a b").raku, "r13".IO.lines(1).raku).join(" ") }
 # rakudo 2026.08: "l1" 3 "l" "2" False "l3" True Nil True ("l1", "l2", "l3").Seq ("l1", "l2").Seq ["l1", "l2"] True "l3" False ("l1", "l2\n", "l3").Seq ("l1\n", "l2\n", "l3").Seq ("l1\nl2\nl3",).Seq ("l1", "l2", "l3").Seq ("l1\n", "l2\n", "l3").Seq ("l1", "l2", "l3").Seq "l1\nl2\nl3" ("l1", "l2", "l3").Seq ("a", "b").Seq ("a", "b").Seq ("l1",).Seq
 ```
-rakupp 4.0.1: differs — the line died at `.opened`; the rest is unmeasured.
+rakupp 4.0.1-84: differs — measured now: `.lines` answers a List where Rakudo answers a Seq, `lines($n)` ignores the limit, `:!chomp`/`:nl-in` are ignored, and `.words`/`.comb`/`.split` on a handle read the path string.
 
 ### IO-18  Binary reads, seek, tell, Supply                          D:yes R:yes V:spec
 `read(n)` gives a `Buf[uint8]` of at most n bytes and an empty one at the
@@ -285,7 +285,7 @@ binary mode and returns Nil.
 say do { (open("m14").^name, open("m14").exception.^name, open("m14").exception.message.substr(0, 19), open("d14".IO.mkdir).^name, open("d14").exception.^name, open("d14").exception.trying, do { spurt("x14", "old"); open("x14", :x).^name ~ ":" ~ open("x14", :x).exception.^name }, do { open("n14", :x).close; "n14".IO.e }, do { open("x14", :a).spurt("+new", :close); slurp("x14").raku }, do { open("x14", :w).close; slurp("x14").raku }, do { my $h = open("x14", :rw); $h.print("ab"); $h.seek(0); $h.get.raku ~ " " ~ $h.close }, do { my $h = open("x14", :mode<wo>, :create, :append); $h.print("c"); $h.close; slurp("x14").raku }, do { my $h = open("x14", :r); (try $h.print("z")) // $!.^name }, (try open("x14", :bin, :enc<utf8>)) // $!.^name, open("x14", :bin).encoding.raku, open("x14").encoding, open("x14", :enc<latin1>).encoding, open("x14", :enc<utf-8>).encoding, (try open("x14", :enc<nope>)) // $!.^name, open("x14", :nl-out("!")).nl-out.raku, open("x14", :chomp(False)).chomp, open("x14", :update).^name, do { my $h = open("x14", :rw); $h.encoding("latin1") ~ " " ~ $h.encoding ~ " " ~ $h.encoding("bin").raku ~ " " ~ $h.encoding.raku }).join(" ") }
 # rakudo 2026.08: Failure X::AdHoc Failed to open file Failure X::IO::Directory open Failure:X::AdHoc True "old+new" "" "ab" True "abc" X::AdHoc X::IO::BinaryAndEncoding Nil utf8 iso-8859-1 utf8 X::Encoding::Unknown "!" False IO::Handle iso-8859-1 iso-8859-1 Nil Nil
 ```
-rakupp 4.0.1: differs — `:x` on an existing file throws ("Failed to open file x14: File exists") instead of failing, so the line died there.
+rakupp 4.0.1-84: differs — `:x` is a Failure now, and the encoding names canonicalize; measured beyond that point for the first time.
 
 ### IO-20  prompt and standard input                                D:yes R:yes V:spec
 `prompt($msg)` prints and flushes the message, then returns the next line
@@ -356,7 +356,7 @@ handle fails with `X::IO::Lock`, a shared one works.
 say do { my $h = IO::Handle.new(:path("x17")); ($h.opened, $h.gist, (try $h.get) // $!.^name, (try $h.print("a")) // $!.^name, $h.close, $h.path.^name, $h.encoding.raku, $h.chomp, $h.nl-in.raku, $h.nl-out.raku, $h.eof, $h.Str, IO::Handle.new(:path("x17"), :bin).encoding.raku, (try IO::Handle.new(:path("x17"), :bin, :encoding<utf8>)) // $!.^name, do { my $w = open("x17", :w); $w.do-not-close-automatically ~ " " ~ $w.lock ~ " " ~ $w.unlock ~ " " ~ $w.flush ~ " " ~ $w.close ~ " " ~ ((try $w.flush) // $!.^name) }, do { my $ro = open("x17"); my $f = $ro.lock; $f.^name ~ ":" ~ $f.exception.^name ~ " " ~ $ro.lock(:shared) ~ " " ~ $ro.close }).join(" ") }
 # rakudo 2026.08: False IO::Handle<"x17".IO>(closed) X::IO::Closed X::IO::Closed True IO::Path "utf8" True $("\n", "\r\n") "\n" True x17 Nil X::IO::BinaryAndEncoding True True True True True X::IO::Flush Failure:X::IO::Lock True True
 ```
-rakupp 4.0.1: differs — `IO::Handle.new` returns a `FileHandle` without `.opened`, so the line died there.
+rakupp 4.0.1-84: matches — an unopened handle, the lock refusal on a read-only handle, and `X::IO::Flush`.
 
 ### IO-25  IO::Pipe                                                 D:yes R:yes V:spec
 `run(:out).out` is an IO::Pipe: `lines`, `get` (Nil at the end), `eof`,
@@ -368,7 +368,7 @@ pipe is written with `print` and closed; gist `IO::Pipe<(IO)>`.
 say do { my $p = run("printf", "hi\\nthere\\n", :out); ($p.out.^name, $p.out.lines.raku, $p.out.get.raku, $p.out.eof, $p.out.close.^name, $p.out.opened, run("printf", "x", :out).out.slurp(:close).raku, run("printf", "x", :out).out.path.raku, run("printf", "x", :out).out.IO.raku, run("printf", "x", :out).out.t, run("printf", "x", :out).out.proc.^name, run("printf", "x", :out).out.encoding, run("printf", "x", :out, :bin).out.read(1).raku, (try run("printf", "x", :out).out.print("y")) // $!.^name, do { my $q = run("cat", :in, :out); $q.in.print("via"); $q.in.close; $q.out.slurp.raku }, (try run("printf", "x", :out).out.native-descriptor.^name), run("printf", "x", :out).out.gist.substr(0, 14)).join(" ") }
 # rakudo 2026.08: IO::Pipe ("hi", "there").Seq Nil True Proc False "x" IO::Path IO::Path False Proc utf8 Buf[uint8].new(120) X::AdHoc "via" Int IO::Pipe<(IO)>
 ```
-rakupp 4.0.1: differs — the pipe is a `FileHandle` without `.opened`, so the line died there.
+rakupp 4.0.1-84: differs — the pipe is an `IO::Pipe` with `.proc` now; `$p.out` still rebuilds a fresh handle per call (so `.close` then `.opened` asks a different object), `.lines` does not advance the cursor, and a `:bin` pipe is not binary.
 
 ### IO-26  IO::CatHandle                                            D:yes R:yes V:spec
 Reads its sources in turn as one stream: `lines`, `get`, `slurp`, `words`,
@@ -393,21 +393,45 @@ rakupp 4.0.1: differs — its `CatHandle` has no `get`, so the line died there.
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 7 |
 | Rakudo bugs (do not imitate) | 0 |
 | quirks (recorded, step two decides) | 1 — IO-14 `slurp` throws where the docs say it fails |
-| rakupp 4.0.1 differs | 24 |
-| rakupp 4.0.1 matches | 2 |
+| rakupp 4.0.1 differs (before implementation) | 24 |
+| rakupp 4.0.1 matches (before implementation) | 2 — IO-13, IO-22 |
+| **rakupp 4.0.1-84 matches** | **10** — IO-01…05, IO-08, IO-13, IO-16, IO-22, IO-24 |
+| rakupp 4.0.1-84 differs | 16 |
 
-Recurring rakupp gaps, for step two: the handle type (`FileHandle`) lacks
-the IO::Handle surface (`opened`, `t`, `gist`, `path`, locks), which killed
-nine probe lines at their first handle method, so those lines are only
-partly measured; operations that Rakudo turns into Failures throw here
-(`:x` on an existing file, `indir` on a missing directory, a second
-`symlink`); Failure exceptions lack `.path` and `.os-error`; `.absolute`
-is not canonical, so path comparison misses `./a`; `.words`, `.comb` and
-`.split` on an IO::Path work on the path string instead of the file;
-`:bin` handles are not binary and `readchars`/`slurp` ignore the position;
-newline translation, `:!chomp`, `:nl-in`, the utf16 BOM and the
-`$*IN.lines($n)` limit are missing; `say` of a Junction autothreads;
-`nl-out` cannot be changed.
+Implementation began 2026-09-20 from this sheet alone, with the Homebrew
+Rakudo `v2026.08` as oracle and Roast as the gate; it is PARTIAL, and each
+item's own line says where it stands.
+
+What the first pass did. The handle type was the gate: `open`, the standard
+handles and a child's pipe all answered `FileHandle`, a type Raku does not
+have, and nine probe lines died at their first handle method. Handles now
+report `IO::Handle` (a pipe `IO::Pipe`), carry `opened`, `proc` and
+`do-not-close-automatically`, and a closed handle refuses reads and writes
+with `X::IO::Closed` while `tell`/`seek`/`native-descriptor` raise
+`X::AdHoc` — which made the rest of those lines measurable for the first
+time. Alongside: `.absolute` is canonical, so path comparison works and
+smartmatch against an IO::Path compares absolutes; `.volume` and `.parts`
+exist; `cleanup` drops a `..` under the root; `IO::Path.new` refuses an
+empty path and accepts `:basename`/`:dirname`; `eqv` on two paths compares
+the `:CWD`; encoding names canonicalize and an unknown one is
+`X::Encoding::Unknown`; a refused `open` and a missing-file `slurp` raise
+Rakudo's `X::AdHoc` rather than an invented `X::IO::Open`, and `:x` on an
+existing file is a Failure rather than a throw.
+
+Still open, for the next pass: operations Rakudo turns into Failures still
+throw (`indir` on a missing directory, a second `symlink`); Failure
+exceptions lack `.path` and `.os-error`, and a file test on a missing path
+answers a plain False instead of an `X::IO::DoesNotExist` Failure;
+`.lines` answers a List where Rakudo answers a Seq, and `lines($n)`
+ignores the limit; `.words`, `.comb` and `.split` on an IO::Path work on
+the path string instead of the file; `:bin` handles are not binary and
+`readchars`/`slurp` ignore the position; newline translation, `:!chomp`,
+`:nl-in` and the utf16 BOM are missing; `say` of a Junction autothreads
+and `nl-out` cannot be assigned; a pipe rebuilds per `.out` call; the
+CatHandle has no `get`. One field is recorded as a deliberate divergence:
+`"a".IO === "a".IO` is True here, because Rakudo's IO::Path WHICH carries
+the object address and a path in this engine is a copied Str value with
+nowhere to keep one (IO-06).
 
 ## Method (how this sheet was produced)
 

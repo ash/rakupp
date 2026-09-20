@@ -571,6 +571,12 @@ static bool valueEqv(const Value& a, const Value& b) {
     // …and an allomorph is its own type: `42 eqv <42>` is False although both are
     // VT::Int. They differ only in their WHICH, which carries both halves.
     if (a.isAllomorph() || b.isAllomorph()) return whichOf(a) == whichOf(b);
+    // An IO::Path is its path text AND the directory that text is read
+    // against: the same "a" against two different :CWDs names two files, so
+    // the two paths are not equivalent. (Smartmatch asks the weaker question —
+    // do they resolve to one absolute path — and lives in applyBinOp.)
+    if (a.t == VT::Str && a.hashKind == "IO" && b.hashKind == "IO")
+        return a.s == b.s && a.ofType() == b.ofType() && a.enumName == b.enumName;
     switch (a.t) {
         case VT::Array:
             // An Array, a List, a Seq and a Slip are DIFFERENT TYPES that share
@@ -25930,6 +25936,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // an AST node — see valueSmartmatchHook. AFTER the junction arms above,
     // because a junction TOPIC threads first: `any(1, 2) ~~ $matcher` asks the
     // matcher about each eigenstate rather than handing it the junction whole.
+    // `$x ~~ $path` is IO::Path.ACCEPTS: it asks whether the two name the same
+    // file, by comparing `.absolute`, which is canonical — so `./a`, `a/` and
+    // `/../a` all match `a`, and two paths carrying different :CWDs do not. A
+    // plain Str on the RIGHT is Str.ACCEPTS instead (text equality), which is
+    // why `"a".IO ~~ "./a"` is False while `"./a" ~~ "a".IO` is True.
+    if ((op == "~~" || op == "!~~") && r.t == VT::Str && r.hashKind == "IO" && g_cbInterp &&
+        (l.t == VT::Str || l.t == VT::Int || l.t == VT::Num) && !isJunction(l)) {
+        Value lp = l;
+        if (lp.hashKind != "IO") { lp = Value::str(l.toStr()); lp.hashKind = "IO"; }
+        Value rp = r;
+        const bool same = g_cbInterp->methodCall(lp, "absolute", ValueList{}).toStr() ==
+                          g_cbInterp->methodCall(rp, "absolute", ValueList{}).toStr();
+        return Value::boolean(op == "~~" ? same : !same);
+    }
     if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object) && g_cbInterp &&
         (op == "~~" || op == "!~~")) {
         Value hooked;

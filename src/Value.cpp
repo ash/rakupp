@@ -539,6 +539,12 @@ std::string Value::toStr() const {
             // Without this it fell through to the key\tvalue dump below.
             if (hashKind == "FileHandle" && hash() && hash()->count("path"))
                 return hash()->at("path").toStr();
+            // a standard handle has no path field — it Strs as the name of the
+            // IO::Special its `.path` answers, not as a dump of its slots
+            if (hashKind == "FileHandle" && hash() && hash()->count("std")) {
+                const std::string w = hash()->at("std").toStr();
+                return w == "err" ? "<STDERR>" : w == "in" ? "<STDIN>" : "<STDOUT>";
+            }
             if (hashKind == "StrDistance" && hash() && hash()->count("after"))
                 return hash()->at("after").toStr(); // "$dist" is the resulting string
             if ((hashKind == "Date" || hashKind == "DateTime") && hash()) {
@@ -644,6 +650,12 @@ std::string Value::gist() const {
         for (char c : s) { if (c == '"') q += '\\'; q += c; }
         return q + "\".IO";
     }
+    // `$*IN.path` is an IO::Special, and it shows as the expression that makes
+    // one — the bare `<STDIN>` is its .Str, one level down, and printing that
+    // for the gist made a standard handle's path indistinguishable from a file
+    // literally named "<STDIN>".
+    if (t == VT::Str && hashKind == "IO::Special")
+        return "IO::Special.new(\"" + s.str() + "\")";
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr() &&
@@ -804,7 +816,19 @@ std::string Value::gist() const {
                 if (hash()->count("argfiles"))
                     return path.empty() ? "IO::ArgFiles(opened on $*IN)"
                                         : "IO::ArgFiles(opened on " + q + ".IO)";
-                return "IO::Handle<" + q + ".IO>(" + (closed ? "closed" : "opened") + ")";
+                const char* state = closed ? "closed" : "opened";
+                // a pipe has no path to name, and says so
+                if (hash()->count("proc-owner"))
+                    return std::string("IO::Pipe<(IO)>(") + state + ")";
+                // a standard handle's path is an IO::Special, and the gist
+                // shows that rather than an empty quoted path
+                auto st = hash()->find("std");
+                if (st != hash()->end()) {
+                    std::string nm = st->second.toStr() == "err" ? "<STDERR>"
+                                   : st->second.toStr() == "in"  ? "<STDIN>" : "<STDOUT>";
+                    return "IO::Handle<IO::Special.new(\"" + nm + "\")>(" + state + ")";
+                }
+                return "IO::Handle<" + q + ".IO>(" + state + ")";
             }
             // A Proc gists as a Proc, not as a dump of its internals. Falling
             // through to the generic hash rendering printed every slot including
@@ -963,6 +987,15 @@ std::string Value::typeName() const {
                         // the one signature a server naturally writes — pass me
                         // a listener — could not be written at all.
                         if (hashKind == "Socket") return "IO::Socket::INET";
+                        // an open file is an IO::Handle — the internal tag has
+                        // said "FileHandle" since the first open(), which is a
+                        // type Raku does not have, so `$fh.^name`, a `where`
+                        // clause and every error message naming the type were
+                        // all wrong. A handle over a child's pipe is an
+                        // IO::Pipe, which is where `.close` answers the Proc.
+                        if (hashKind == "FileHandle")
+                            return (hash() && hash()->count("proc-owner")) ? "IO::Pipe" : "IO::Handle";
+                        if (hashKind == "ProcIn") return "IO::Pipe";
                         // a backtrace frame is Rakudo's `Backtrace::Frame`; the
                         // internal tag has no colons and could not be named in a
                         // signature — Lumberjack declares `has Backtrace::Frame

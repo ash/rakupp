@@ -279,6 +279,13 @@ void rejectNulPath(const std::string& path);
 long long graphemeCount(const std::string& s);
 [[noreturn]] void throwFailedOpen(const std::string& path);
 
+// The canonical spelling of an encoding name, as the registry answers it:
+// `latin1` and `iso_8859-1` are both `iso-8859-1`, `utf-8` is `utf8`. A name
+// no encoding answers to at all sets *known false, and the caller raises
+// X::Encoding::Unknown, so `open :enc<nope>` says so at the open and not at
+// the first character that decodes oddly. "bin" maps to "" — binary mode.
+std::string canonEncodingName(const std::string& name, bool* known = nullptr);
+
 long long cpCount(const std::string& s);
 std::string mapCase(const std::string& s, int kind, int tcMode);
 bool substSelectKnowsAdverb(const std::string& k);

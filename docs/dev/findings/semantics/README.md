@@ -68,7 +68,7 @@ buckets or thread timing says so.
 | [Str.md](Str.md) | Str, Stringy, Cool (string half), allomorphs | 66 | 12 | 56 | implementing 2026-09-18 (Roast 729→735 files; `val.t` 913 failing → 0) |
 | [List-Array.md](List-Array.md) | List, Array, Seq, Slip | 36 | 4 | 13 | implemented 2026-09-19 (Roast 736→738 files, 202,194→205,330 assertions; S09-typed-arrays 605→3,693 of 4,261; S32-list 26→27 files) |
 | [Hash-Map-Pair.md](Hash-Map-Pair.md) | Hash, Map, Hash/Object, Pair | 20 | 2 | 3 | implemented 2026-09-20 (Roast 698→705 files, 204,801→205,080 assertions; S32-hash/adverbs 1,012→1,067, S09-hashes/objecthash 21→27) |
-| [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 24 | extracted 2026-09-19 |
+| [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 16 | implementing 2026-09-20 (sheet items 2→10 of 26; Roast files 704 steady, S16 431→539 assertions, S32 +26) |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.

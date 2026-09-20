@@ -3609,9 +3609,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
         (*h.hash())["mode"] = Value::str("r");
         (*h.hash())["buffer"] = Value::str("");
-        for (auto& a : args)
-            if (a.t == VT::Pair && a.pairVal() && a.s == "path" && a.pairVal()->t != VT::Any)
+        // constructed, never opened: `.opened` is False and the gist says
+        // (closed) from the start — `.open` on it is what makes it live.
+        (*h.hash())["closed"] = Value::boolean(true);
+        bool bin = false; const Value* enc = nullptr;
+        for (auto& a : args) {
+            if (!(a.t == VT::Pair && a.pairVal())) continue;
+            if (a.s == "path" && a.pairVal()->t != VT::Any)
                 (*h.hash())["path"] = Value::str(a.pairVal()->toStr());
+            else if (a.s == "bin") bin = a.pairVal()->truthy();
+            else if ((a.s == "encoding" || a.s == "enc") && a.pairVal()->t != VT::Any)
+                enc = a.pairVal();
+        }
+        // the two are contradictory: bytes have no encoding to be read in
+        if (bin && enc)
+            throw RakuError{Value::typeObj("X::IO::BinaryAndEncoding"),
+                "Cannot open a handle in binary mode with an encoding"};
+        if (bin) (*h.hash())["bin"] = Value::boolean(true);
+        else (*h.hash())["encoding"] = Value::str(enc ? enc->toStr() : "utf8");
+        // The constructed handle carries the attribute's own default, which is
+        // a LIST — `$("\n", "\r\n")`. An opened handle answers the same two
+        // separators as an Array; the two spellings are what each shows.
+        Value nl = Value::array(); nl.isList = true; nl.itemized = true;
+        nl.arr()->push_back(Value::str("\n"));
+        nl.arr()->push_back(Value::str("\r\n"));
+        (*h.hash())["nl-in"] = nl;
         return h;
     }
     if (inv.t == VT::Type && m == "new") {

@@ -1754,6 +1754,9 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 return "IO::Path.new(" + rakuStrLit(v.s) +
                        ", :SPEC(IO::Spec::Unix), :CWD(" + rakuStrLit(cwd) + "))";
             }
+            // a standard handle's path rebuilds by name, not as a path literal
+            if (v.hashKind == "IO::Special")
+                return "IO::Special.new(" + rakuStrLit(v.s) + ")";
             if (v.hashKind == "CArray") { // a locally-built CArray rebuilds the same way
                 std::string o = "CArray.new("; bool f = true;
                 for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
@@ -2536,8 +2539,36 @@ long long graphemeCount(const std::string& s) {
         char buf[4096];
         if (getcwd(buf, sizeof buf)) abs = std::string(buf) + "/" + path;
     }
-    throw RakuError{Value::typeObj("X::IO::Open"),
+    // X::AdHoc, which is what Rakudo throws here. The precise-looking
+    // X::IO::Open this used to name is a type Raku does not have, so the
+    // `CATCH { when X::AdHoc {…} }` that code in the wild is written with
+    // did not catch it.
+    throw RakuError{Value::typeObj("X::AdHoc"),
                     "Failed to open file " + abs + ": No such file or directory"};
+}
+
+std::string canonEncodingName(const std::string& name, bool* known) {
+    if (known) *known = true;
+    std::string key;
+    for (char c : name) key += (char)ascii::tolower((unsigned char)c);
+    if (key == "bin") return "";
+    static const std::map<std::string, std::string> alias = {
+        {"utf-8", "utf8"},        {"utf8", "utf8"},
+        {"utf-8-c8", "utf8-c8"},  {"utf8-c8", "utf8-c8"},
+        {"utf-16", "utf16"},      {"utf16", "utf16"},
+        {"utf-16le", "utf16le"},  {"utf16le", "utf16le"},
+        {"utf-16be", "utf16be"},  {"utf16be", "utf16be"},
+        {"utf-32", "utf32"},      {"utf32", "utf32"},
+        {"ascii", "ascii"},
+        {"latin1", "iso-8859-1"}, {"latin-1", "iso-8859-1"},
+        {"iso_8859-1", "iso-8859-1"}, {"iso-8859-1", "iso-8859-1"},
+        {"windows1251", "windows-1251"}, {"windows-1251", "windows-1251"},
+        {"windows1252", "windows-1252"}, {"windows-1252", "windows-1252"},
+    };
+    auto it = alias.find(key);
+    if (it != alias.end()) return it->second;
+    if (known) *known = false;
+    return key;
 }
 
 std::string joinValues(const ValueList& items, const std::string& sep) {
@@ -7617,8 +7648,29 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return methodCall(l, m, args); // Bool.pick(*) shuffles (False, True)
     }
     if (inv.t == VT::Type && inv.s == "IO::Path" && m == "new") {
-        std::string path;
-        for (auto& a : args) if (a.t != VT::Pair) { path = a.toStr(); break; }
+        std::string path; bool havePositional = false;
+        for (auto& a : args) if (a.t != VT::Pair) { path = a.toStr(); havePositional = true; break; }
+        // the parts constructor: `.new(:basename, :dirname, :volume)` builds the
+        // path from the three pieces `.parts` takes it apart into, so a program
+        // can put back what it took apart. A `.` dirname contributes nothing.
+        if (!havePositional) {
+            std::string vol, dir, base;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
+                if (a.s == "volume") vol = a.pairVal()->toStr();
+                else if (a.s == "dirname") dir = a.pairVal()->toStr();
+                else if (a.s == "basename") base = a.pairVal()->toStr();
+            }
+            if (!base.empty()) {
+                while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
+                path = vol + (dir.empty() || dir == "." ? "" : (dir == "/" ? "/" : dir + "/")) + base;
+                havePositional = true;
+            }
+        }
+        // an empty path names no file, and is refused where it is written
+        // rather than at some later open of ""
+        if (!havePositional || path.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Must specify a non-empty string as a path"};
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO";
         // the `:CWD` is the directory this path is relative to; it rides in
@@ -13308,8 +13360,12 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal()) nlIn = *x.pairVal();
         if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
             std::ifstream probe(path);
-            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
-                "Failed to open file " + path + ": File exists"};
+            if (probe) { // a FAILURE, as every other refused open here is
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
+                return f;
+            }
             if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
         }
         // TRY the open, do not assume it. The handle carries no OS descriptor —
@@ -13333,7 +13389,10 @@ void Interpreter::registerBuiltins() {
             struct stat st;
             if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { // Rakudo's own type and wording
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::IO::Directory");
+                Value ex = Value::typeObj("X::IO::Directory");
+                (*f.hash())["exception"] = ex;
+                (*f.hash())["trying"] = Value::str("open"); // `.trying` names the operation refused
+                (*f.hash())["path"] = Value::str(path);
                 (*f.hash())["message"] = Value::str("'" + path + "' is a directory, cannot do '.open' on a directory");
                 return f;
             }
@@ -13348,8 +13407,10 @@ void Interpreter::registerBuiltins() {
             }
             if (err) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::IO::Open");
+                (*f.hash())["exception"] = Value::typeObj("X::AdHoc"); // the type Rakudo uses; see throwFailedOpen
                 (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
+                (*f.hash())["os-error"] = Value::str(std::strerror(err));
+                (*f.hash())["path"] = Value::str(path);
                 return f;
             }
         }
@@ -13362,9 +13423,21 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t == VT::Pair && x.s == "bin" && x.pairVal() && x.pairVal()->truthy())
             (*h.hash())["bin"] = Value::boolean(true);
         // :enc(...) — the handle's text encoding; every read through it decodes
-        // with this instead of assuming the bytes are already UTF-8
-        for (auto& x : a) if (x.t == VT::Pair && x.s == "enc" && x.pairVal() && x.pairVal()->t != VT::Any)
-            (*h.hash())["encoding"] = Value::str(x.pairVal()->toStr());
+        // with this instead of assuming the bytes are already UTF-8. The name is
+        // canonicalized here (`latin1` is `iso-8859-1`), and an unknown one is
+        // refused at the open rather than at the first odd character.
+        for (auto& x : a) if (x.t == VT::Pair && (x.s == "enc" || x.s == "encoding") &&
+                              x.pairVal() && x.pairVal()->t != VT::Any) {
+            if (h.hash()->count("bin"))
+                throw RakuError{Value::typeObj("X::IO::BinaryAndEncoding"),
+                    "Cannot open a handle in binary mode with an encoding"};
+            bool known = true;
+            std::string canon = canonEncodingName(x.pairVal()->toStr(), &known);
+            if (!known)
+                I.throwTyped("X::Encoding::Unknown", {{"name", x.pairVal()->toStr()}},
+                             "Unknown string encoding '" + x.pairVal()->toStr() + "'");
+            (*h.hash())["encoding"] = Value::str(canon);
+        }
         if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
         // :out-buffer(N) / :!out-buffer — how many bytes the handle may hold
         // back before they must reach the file. Absent, it keeps the default

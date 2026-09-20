@@ -33,6 +33,14 @@ std::string handleEnc(const Value& h) {
     auto it = h.hash()->find("encoding");
     return it != h.hash()->end() ? it->second.toStr() : std::string();
 }
+// `.close` marks the handle rather than dropping it: the object stays
+// reachable, and every read and write through it after that is an error
+// rather than a silent reopen of the path. An `IO::Handle.new(:path)` is
+// born marked — it was never opened.
+bool fhClosed(const Value& h) {
+    auto it = h.hash()->find("closed");
+    return it != h.hash()->end() && it->second.truthy();
+}
 
 } // namespace
 
@@ -1226,6 +1234,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "No such method 'IO' for invocant of type '" +
                             (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
         if (inv.t == VT::Nil) return Value::nil();
+        // "" is not a path. Accepting it made `$maybe-a-name.IO` hand back a
+        // path that every later operation treated as the current directory.
+        if (inv.t == VT::Str && inv.s.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Must specify a non-empty string as a path"};
         rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO";
         p.ofTypeM() = cwdName(); // :CWD captured at creation — the base `.absolute` resolves against
         return p;
@@ -1663,8 +1676,27 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             if (m == "SPEC") return Value::typeObj(spec);
         }
+        // On this platform a path has no volume; the accessor still has to
+        // exist, because `my ($v, $d, $b) = $p.volume, …` is how portable code
+        // takes a path apart, and X::Method::NotFound made it unwritable.
+        if (m == "volume" && inv.hashKind == "IO") return Value::str("");
+        // the method behind `$x ~~ $path`, and callable on its own: same file?
+        if (m == "ACCEPTS" && inv.hashKind == "IO" && !args.empty()) {
+            Value other = args[0];
+            if (other.hashKind != "IO") { other = Value::str(other.toStr()); other.hashKind = "IO"; }
+            return Value::boolean(methodCall(other, "absolute", ValueList{}).toStr() ==
+                                  methodCall(const_cast<Value&>(inv), "absolute", ValueList{}).toStr());
+        }
         if (m == "parent") {
             long long up = args.empty() ? 1 : a0().toInt();
+            // climbing a negative number of levels is not a direction
+            if (up < 0)
+                throwTyped("X::OutOfRange",
+                           {{"what", "Depth argument to parent"},
+                            {"got", std::to_string(up)},
+                            {"range", "0..^Inf"}},
+                           "Depth argument to parent out of range. Is: " +
+                           std::to_string(up) + ", should be in 0..^Inf");
             std::string s = inv.toStr();
             for (long long k = 0; k < up; k++) {
                 // relative tops climb: ".".parent is "..", "..".parent "../.."
@@ -1717,8 +1749,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (auto& a : args) {
                 if (a.t == VT::Pair) continue;
                 for (auto& part : toList(a)) {
-                    if (dotRoot) { s = part.toStr(); dotRoot = false; }
-                    else { s += "/"; s += part.toStr(); }
+                    std::string seg = part.toStr();
+                    // the join puts in exactly ONE separator: a part spelled
+                    // "/x" is still joined onto the parent (it is a child, not
+                    // an absolute path), and `a`+`/x` is `a/x`, never `a//x`
+                    while (seg.size() > 1 && seg[0] == '/' && seg[1] == '/') seg.erase(0, 1);
+                    if (dotRoot) { s = seg; dotRoot = false; }
+                    else if (!seg.empty() && seg[0] == '/') s += seg;
+                    else { s += "/"; s += seg; }
                 }
             }
             if (args.empty()) s += "/";
@@ -1757,8 +1795,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string nw = repl->toStr(), joiner = nw.empty() ? "" : ".";
                 for (auto& a : args)
                     if (a.t == VT::Pair && a.s == "joiner" && a.pairVal()) joiner = a.pairVal()->toStr();
-                // no extension of the requested size exists → nothing is replaced
-                if (take < lo && lo > 0) return asIO(inv.toStr());
+                // The name has fewer dot-parts than asked for: there is nothing
+                // to take off, but the new extension still goes on — which is
+                // what makes `"noext".IO.extension("x")` `noext.x` rather than
+                // `noext`, the one way to give an extension to a file without one.
+                if (take < lo) take = 0;
                 if (take < 0) take = 0;
                 std::string stem;
                 for (long long k = 0; k < (long long)seg.size() - take; k++) {
@@ -1883,22 +1924,37 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 while (base.size() > 1 && base.back() == '/') base.pop_back();
                 s = (base == "/" ? "" : base) + "/" + s;
             }
-            if (m == "canonpath" || m == "cleanup") {
-                // squeeze repeated separators and drop `.` segments — but NOT
-                // `..`, which may cross a symlink and so cannot be resolved
-                // textually (that is `.resolve`'s job)
-                bool abs = !s.empty() && s[0] == '/';
+            // squeeze repeated separators and drop `.` segments — but NOT
+            // `..`, which may cross a symlink and so cannot be resolved
+            // textually (that is `.resolve`'s job). The ONE exception is a
+            // `..` directly under the root: `/` has no parent, so `/../a` can
+            // only ever mean `/a`, symlinks or not.
+            auto tidy = [](const std::string& in) {
+                bool abs = !in.empty() && in[0] == '/';
                 std::vector<std::string> segs;
                 { std::string cur;
-                  for (char c : s) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
+                  for (char c : in) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
                   if (!cur.empty()) segs.push_back(cur); }
                 std::vector<std::string> keep;
-                for (auto& g : segs) if (g != ".") keep.push_back(g);
+                for (auto& g : segs) {
+                    if (g == ".") continue;
+                    if (abs && g == ".." && keep.empty()) continue;  // the root's parent is the root
+                    keep.push_back(g);
+                }
                 std::string out = abs ? "/" : "";
                 for (size_t k = 0; k < keep.size(); k++) { if (k) out += "/"; out += keep[k]; }
-                if (out.empty()) out = ".";
+                if (out.empty()) out = abs ? "/" : ".";
+                return out;
+            };
+            if (m == "canonpath" || m == "cleanup") {
+                std::string out = tidy(s);
                 return m == "canonpath" ? Value::str(out) : asIO(out);
             }
+            // `.absolute` answers a CANONICAL path: `./a`, `a/` and `a` are one
+            // file and must give one string, because that string is what path
+            // comparison is built on — `"./a".IO ~~ "a".IO` is True only if
+            // both sides tidy to the same thing.
+            if (m == "absolute") return Value::str(tidy(s));
             return Value::str(s);   // .absolute is a Str, like .relative
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
@@ -2030,11 +2086,66 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash()->find("chomp");  return it != inv.hash()->end() ? it->second : Value::boolean(true); }
+        if (m == "opened") return Value::boolean(!fhClosed(inv));
+        // an IO::Pipe knows the child it reads from — `.close` answers that
+        // Proc, and `.proc` is how a caller reaches it without closing
+        if (m == "proc") {
+            auto it = inv.hash()->find("proc-owner");
+            if (it != inv.hash()->end()) return it->second;
+        }
+        // rakupp never holds the file open across statements, so there is
+        // nothing for this to switch off; it answers the True that says the
+        // handle will outlive its scope, which is all a caller can observe.
+        if (m == "do-not-close-automatically") return Value::boolean(true);
+        // A CLOSED handle is not a handle onto anything. Reads and writes
+        // through it are X::IO::Closed; the two questions about the operating
+        // system's own state (where am I, which descriptor) have no answer at
+        // all and are X::AdHoc, which is the pair of types Rakudo throws.
+        // `eof` is True, and `close` itself stays idempotent.
+        if (fhClosed(inv)) {
+            static const std::set<std::string> kIoClosed = {
+                "print", "say", "put", "printf", "print-nl", "write", "spurt",
+                "get", "getline", "getc", "lines", "words", "read", "readchars",
+                "slurp", "slurp-rest", "comb", "split", "Supply"};
+            if (kIoClosed.count(m))
+                throw RakuError{Value::typeObj("X::IO::Closed"),
+                    "Cannot do '" + m + "' on a closed handle"};
+            if (m == "tell" || m == "native-descriptor" || m == "seek")
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot do '" + m + "' on a closed filehandle"};
+            if (m == "eof") return Value::boolean(true);
+            if (m == "flush") { // a Failure, not a throw: nothing was lost
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Flush");
+                (*f.hash())["message"] = Value::str("Cannot flush a closed filehandle");
+                return f;
+            }
+        }
         // .lock/.unlock (flock): rakupp handles are buffered (no live OS fd), so
         // there is nothing to flock; report success. Cross-PROCESS exclusion (zef's
         // lock-file-protect guards concurrent zef runs) is thus not provided — fine
         // for a single interpreter process, revisit if real fd-backed IO lands.
-        if (m == "lock" || m == "unlock") return Value::boolean(true);
+        if (m == "lock" || m == "unlock") {
+            // An EXCLUSIVE lock needs a writable handle; the kernel refuses one
+            // on a read-only descriptor, and a program that locks before writing
+            // reads that refusal as "somebody else holds it". A shared lock is
+            // what a read-only handle may take, and does.
+            if (m == "lock") {
+                bool shared = false;
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.s == "shared" && (!a.pairVal() || a.pairVal()->truthy()))
+                        shared = true;
+                auto md = inv.hash()->find("mode");
+                if (!shared && md != inv.hash()->end() && md->second.toStr() == "r" &&
+                    !inv.hash()->count("std")) {
+                    Value f = rakuppNewFailure();
+                    (*f.hash())["exception"] = Value::typeObj("X::IO::Lock");
+                    (*f.hash())["message"] = Value::str("Could not obtain lock: Bad file descriptor");
+                    return f;
+                }
+            }
+            return Value::boolean(true);
+        }
         // `.tell` — the handle's current offset. A STD handle asks the real fd
         // (so a redirected $*OUT reports the bytes written, which is how
         // `silently` checks that a block produced no output); otherwise it is
@@ -2112,8 +2223,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         Value::integer(prev + (long long)encodeTextEnc(consumed, handleEnc(inv)).size());
                     inv.hash()->erase("cps");
                 }
-                (*inv.hash())["encoding"] = Value::str(args[0].toStr());
+                // `.encoding("bin")` switches the handle to binary: no
+                // encoding at all from here, and Nil is what it answers.
+                bool knownEnc = true;
+                std::string canon = canonEncodingName(args[0].toStr(), &knownEnc);
+                if (!knownEnc)
+                    throwTyped("X::Encoding::Unknown", {{"name", args[0].toStr()}},
+                               "Unknown string encoding '" + args[0].toStr() + "'");
+                if (canon.empty()) {
+                    inv.hash()->erase("encoding");
+                    (*inv.hash())["bin"] = Value::boolean(true);
+                    return Value::nil();
+                }
+                inv.hash()->erase("bin");
+                (*inv.hash())["encoding"] = Value::str(canon);
             }
+            // a binary handle has no encoding to name
+            if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) return Value::nil();
             auto it = inv.hash()->find("encoding"); return it != inv.hash()->end() ? it->second : Value::str("utf8"); }
         // The DEFAULT nl-in is the two-element list Rakudo uses, not a bare
         // "\n": a handle that has not been told otherwise ends a line at either
@@ -2286,6 +2412,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (out) out << buf;
             }
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
+            (*inv.hash())["closed"] = Value::boolean(true);  // .opened is False from here, and reads throw
             // A `$proc.out`/`$proc.err` pipe answers its Proc, not True (Rakudo's
             // IO::Pipe.close). A bare `$p.err.close;` statement then SINKS that
             // Proc, and the sink is what raises X::Proc::Unsuccessful for a child
