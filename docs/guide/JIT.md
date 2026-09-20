@@ -357,6 +357,9 @@ the whole program rather than one loop, if you want to read what runs.
   chosen on, and what the next steps are.
 - [CNP-PLAN.md](../dev/plans/CNP-PLAN.md) — the copy-and-patch backend: how a
   snippet is patched, and the four things that made it the harder of the two.
+- [CNP.md](../internals/CNP.md) — `--cnp` as a reference: every stencil, helper
+  and operator index, and five worked examples from Raku source to the machine
+  code that runs.
 - [OPTIMIZATION.md](../internals/OPTIMIZATION.md) — the `-O` passes the kernel
   is emitted with.
 - [CLI.md](CLI.md) — the flag among the rest of the command line.
