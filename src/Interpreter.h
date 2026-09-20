@@ -1460,6 +1460,9 @@ public:
     std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
     // The array behind `for @$x` — likewise; the topic aliases its elements.
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
+    // The array behind `for @a.values` / `for @a.list` — the array twin of
+    // valuesAliasSource; likewise.
+    std::shared_ptr<ValueList> valuesArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
     // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT

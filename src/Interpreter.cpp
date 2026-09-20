@@ -11771,6 +11771,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                           !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                           static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                 auto derefArr = rw ? nullptr : derefArrayAlias(fs->list.get());
+                if (!rw && !derefArr) derefArr = valuesArrayAlias(fs->list.get());
                 if (derefArr) { lv.setArr(derefArr); rw = true; }
                 std::vector<Value*> aliasSlots;
                 if (!rw && scalarListAlias(fs->list.get(), aliasSlots)) {
@@ -12079,7 +12080,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `for @a` does into the array
                 Expr* gpredB = nullptr;
                 Expr* gsrcB = peelGrepFilter(fs->list.get(), gpredB);
-                if (auto valueAlias = valuesAliasSource(gsrcB)) {
+                // Gated exactly as the array arm below is: aliasing is what `$_`
+                // and `<->` do, and a plain `-> $v` is readonly. Ungated, this
+                // path bound the hash value straight into the slot — bypassing
+                // asTopic, and with it the readonly mark — so `for %h.values ->
+                // $v { $v = 9 }` edited the hash where Rakudo refuses it. Falling
+                // through lands on the ordinary path, which marks it.
+                if (auto valueAlias = (fs->vars.empty() || fs->rwVars)
+                                          ? valuesAliasSource(gsrcB) : nullptr) {
                     size_t i = 0, n = valueAlias->size();
                     for (auto& kv : *valueAlias) {
                         if (!grepFilterKeeps(gpredB, kv.second)) { i++; continue; }
@@ -12101,8 +12109,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     bool rw = (fs->vars.empty() || fs->rwVars) && fs->list->kind == NK::VarExpr &&
                               !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
-                    if (!rw && (fs->vars.empty() || fs->rwVars))
+                    if (!rw && (fs->vars.empty() || fs->rwVars)) {
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
+                        // `@a.values` / `@a.list` — the view IS the array, so walk
+                        // the real storage. fs->list, not the grep-peeled gsrcB:
+                        // this path walks every element, and a filtered view would
+                        // write back the wrong ones.
+                        else if (auto d = valuesArrayAlias(fs->list.get())) { arr = d; rw = true; }
+                    }
                     // An ENDLESS lazy source (`1 xx *`, an infinite `...` seq, a
                     // .map view over one — drainIfFiniteLazy above materialised
                     // every finite one) grows JUST-IN-TIME: one more element when
@@ -21518,6 +21532,50 @@ std::shared_ptr<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     Value* hv = tctx_.cur->find(ve->name);
     if (!hv || hv->t != VT::Hash || !hv->hash() || !hv->hashKind.empty()) return nullptr;
     return hv->hashS();
+}
+
+// `@a.values` and `@a.list` are VIEWS of the array, not copies of it: Rakudo
+// hands the loop each element's own container, so a write through the topic
+// lands in @a exactly as `for @a` does — `for @a.values { $_ = 9 }` leaves
+// [9 9 9]. Ours copies the elements out, so the view has to be recognised by
+// name and the real storage iterated instead. This is the array twin of
+// valuesAliasSource above, and the two are tried in turn.
+//
+// Only the views that ARE the array, in order. `.grep`, `.reverse` and the
+// rest of the chain also alias under Rakudo, because there every Array
+// element is a container and these methods just pass them along; reproducing
+// that here is the container/binding refactor, not a list of method names.
+// Plain `for @a.grep(…)` does not alias today either, so stopping at the
+// identity views keeps the two consistent.
+std::shared_ptr<ValueList> Interpreter::valuesArrayAlias(Expr* listExpr) {
+    if (!listExpr) return nullptr;
+    Expr* arrArg = nullptr;
+    if (listExpr->kind == NK::Call) {
+        auto* c = static_cast<Call*>(listExpr);
+        if ((c->name == "values" || c->name == "list") && c->args.size() == 1)
+            arrArg = c->args[0].get();
+    }
+    else if (listExpr->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(listExpr);
+        if ((mc->method == "values" || mc->method == "list") && mc->args.empty() &&
+            !mc->meta && !mc->hyper && !mc->maybe && !mc->methodExpr)
+            arrArg = mc->inv.get();
+    }
+    if (!arrArg || arrArg->kind != NK::VarExpr) return nullptr;
+    auto* ve = static_cast<VarExpr*>(arrArg);
+    // `@a.values`, and equally `.values` on a `$`-scalar HOLDING an array
+    // (`my $r = [1,2,3]; for $r.values`), which shares the same storage
+    if (ve->name.empty() || (ve->name[0] != '@' && ve->name[0] != '$') || ve->declare)
+        return nullptr;
+    // lvalue(), not a lexical lookup: an ATTRIBUTE is not in the enclosing Env,
+    // and `for @!n { $_ = 9 }` already writes through, so `for @!n.values` has
+    // to as well. Safe to resolve because the invocant is a bare VarExpr —
+    // taking the lvalue of a method CHAIN would evaluate it and consume state,
+    // which is why nothing wider is accepted here.
+    Value* av = nullptr;
+    try { av = lvalue(arrArg); } catch (...) { return nullptr; }
+    if (!av || av->t != VT::Array || !av->arr() || av->isList) return nullptr; // a List is immutable
+    return av->arrS();
 }
 
 // `for @$rgb { … }` / `for @($rgb)` iterates the ARRAY BEHIND the scalar, and the
