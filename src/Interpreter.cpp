@@ -11931,12 +11931,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // but a NAMED `$` loop variable is an ordinary scalar parameter and
             // itemizes what it binds either way.
             const bool arrayElemSrc = listv.t == VT::Array && !listv.isList;
-            auto asTopic = [&](Value v, const std::string& nm) {
-                if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
-                    (arrayElemSrc || nm != "$_"))
-                    v.itemized = true;
-                return v;
-            };
             // A Blob/Buf that is NOT held in a scalar container iterates its
             // ELEMENTS, like any other Positional: `.say for blob32.new(1,2)`
             // runs twice (Rakudo), while `for $blob` — itemized — runs once.
@@ -11957,11 +11951,42 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (pn.size() > 2 && pn[1] == '^') phVars.push_back(pn);
             }
             const std::vector<std::string>& loopVars = phVars.empty() ? fs->vars : phVars;
+            // A plain `-> $i` loop variable is a READONLY parameter — the rule a
+            // sub's or a block's `$x` already follows here. We bound it writable,
+            // so `for 1..3 -> $i { $i = 9 }` took the write and dropped it on the
+            // floor: nothing aliases the source, so the 9 went nowhere and the
+            // loop ran to completion. Rakudo dies on it, and silently accepting
+            // is the worst direction for a divergence — it lets code be written
+            // against rakupp that no other implementation will run.
+            //
+            // `<->` and `-> $i is rw` (both fs->rwVars) alias the source element
+            // on purpose. `$_` is `is raw`: it takes its writability from what it
+            // aliases, which is why loopVars must be NON-empty here. Typed,
+            // `is copy` and sub-signature parameters never reach this path —
+            // pointyParamNeedsBinding sends them to bindParams, which marks its
+            // own readonly (and only on `$`, for the reason noted below).
+            const bool roVars = !loopVars.empty() && !fs->rwVars;
+            auto asTopic = [&](Value v, const std::string& nm) {
+                if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
+                    (arrayElemSrc || nm != "$_"))
+                    v.itemized = true;
+                // `$` only, as bindParams does: `-> @inner` binds the array
+                // ITSELF, and `.push` through it mutates the object rather than
+                // assigning to the container, so it stays legal.
+                if (roVars && !nm.empty() && nm[0] == '$') v.readonly = true;
+                return v;
+            };
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
             if (!scalarItem && !fs->destructure && loopVars.size() <= 1 &&
                 fs->params.empty()) { // a sub-signature (`-> $ (:$k)`) needs real binding
                 const std::string var = loopVars.empty() ? "$_" : loopVars[0];
+                // The integer-Range path below mints its own topic instead of
+                // going through asTopic, so it needs the roVars rule spelled out.
+                const bool roVar = roVars && !var.empty() && var[0] == '$';
+                auto topicInt = [&](long long n) {
+                    Value v = Value::integer(n); v.readonly = roVar; return v;
+                };
                 // Reuse one Env across iterations for speed. This is only safe when
                 // nothing captured the previous iteration's scope (a closure would
                 // hold a reference, bumping use_count); in that case we allocate a
@@ -11986,8 +12011,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     long long k = lo;
                     Value* topic = nullptr;
                     std::function<void()> rb = [&] { // redo re-copies
-                        if (topic) *topic = Value::integer(k);
-                        else scope->define(var, Value::integer(k));
+                        if (topic) *topic = topicInt(k);
+                        else scope->define(var, topicInt(k));
                     };
                     // --jit / --cnp. THIS is the shape a `for` can tier up in:
                     // `k` walks a machine integer from `lo` to `hi`, which is a
@@ -12016,7 +12041,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                 kframe->parent = tctx_.cur;
                                 kframe->define(jit::countedForEndSlot(), Value::integer(hi));
                             }
-                            kframe->define(var, Value::integer(k));
+                            kframe->define(var, topicInt(k));
                             // On success the kernel has run the REST of the
                             // range, so there is nothing left to iterate.
                             if (jit::runIfReady(__jg.site, *this, kframe.get()))
@@ -12024,10 +12049,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                         if (__jg.site) jit::tick(__jg.site);
                         if (flat && topic && scope.use_count() == 1) {
-                            *topic = Value::integer(k);
+                            *topic = topicInt(k);
                         } else {
                             freshScope();
-                            topic = &scope->define(var, Value::integer(k));
+                            topic = &scope->define(var, topicInt(k));
                         }
                         if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi, col, rb)) break;
                     }

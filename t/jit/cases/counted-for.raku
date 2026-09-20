@@ -84,11 +84,13 @@ $out = $out ~ "reentry {upto(10)} {upto(200)} {upto(0)} {upto(10)}\n";
 # count. This line pins the two lanes agreeing, which they only do because of
 # the refusal.
 #
-# Rakudo makes the assignment an error and prints "refused" here; rakupp does
-# not enforce the binding yet and prints "none". That divergence is the
-# interpreter's and predates any of this — it shows in the plain lane too — so
-# this gate, which compares rakupp against rakupp, is not the place it gets
-# fixed.
+# Both lanes print "refused" since the interpreter started enforcing the
+# binding; before that they agreed on "none", because the divergence was the
+# interpreter's and showed in the plain lane too. The scan's own refusal is
+# now belt-and-braces — a body that writes the loop variable throws on the
+# first iteration, long before the site is hot enough to tier up — and it
+# stays, because it is what makes the refusal true by construction rather
+# than by the error happening to come first.
 my $err = "none";
 try {
     for 1 .. 200 -> $i { $i = 9 }
