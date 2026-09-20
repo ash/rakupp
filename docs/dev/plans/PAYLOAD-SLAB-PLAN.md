@@ -444,3 +444,29 @@ Not 698 against `COUNTING.md`'s 676 — that figure predates many commits on
 `main`, so it is not the gate. The gate is a same-day diff of the two file
 lists, and it is empty: no file moved between PASS, part, TIME or no-TAP in
 either direction.
+
+## Re-gated after rebase onto `main` (2026-09-20)
+
+The gates above were measured against `ab31e04`. `main` then gained six commits,
+one of which — `ed688ad`, "Hash/Map/Pair: the semantics sheet implemented" —
+reworks `ValueHash`, which is one of the six types this change pools. That is
+exactly the overlap where a regression could hide, so the whole thing was
+re-gated after the rebase rather than merged on the strength of the older proof.
+
+The rebase itself was clean: seven commits replayed with no conflicts, and the
+six new commits introduced **no new payload allocation sites** — all 88 remain
+`makePayload`.
+
+| gate | against `ab31e04` | against `main` (`ed688ad`) |
+|---|---|---|
+| `t/run.raku` | 1078/1078, 0 fail | **1079/1079, 0 fail** |
+| Roast files reporting | 1,363 | 1,363 |
+| Roast fully passing | 698 = 698 | **705 = 705** |
+| Roast per-file differences | 0 | **0** |
+
+The pass count moved 698 → 705 because `main`'s own Hash/Map/Pair work fixed
+seven files; both sides of the new diff sit at 705, so none of that movement is
+this change's. **The number to quote for this change is the difference, which is
+zero, not the numerator.**
+
+Merged to `main` as a fast-forward at `ba781c6`.
