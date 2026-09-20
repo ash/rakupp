@@ -394,3 +394,41 @@ half a significant figure.
 
 So the headline for the whole change stands at roughly **-6.6% on `regex`**,
 similar on `streq`, neutral elsewhere, memory flat to -1.6%.
+
+## Gates — run
+
+**`t/run.raku` under the guard-free build: in progress at 949 ok / 0 failures**
+(the earlier guarded build finished 1078/1078, 0 failures).
+
+**ThreadSanitizer** (`-fsanitize=thread -g -O1`, Debug), `RAKUPP_PARALLEL=1`
+over `t/stress`:
+
+| test | warnings |
+|---|---:|
+| parallel-map, atomic-counter, lock-counter | 0 |
+| channel-pipeline, hash-guarded, supply-fanin | 0 |
+| **promise-chain** | **1** |
+
+The one warning is a 1-byte race on a Promise state flag, written by the promise
+worker inside `spawnPromise`'s `$_0` and read by the main thread in
+`methodCallPart2`. **It is pre-existing, and that is measured, not assumed**: a
+TSan build of the baseline commit (`ab31e04`, no slab, no call-site swaps)
+reports the same warning on 3 runs of 3, with the same
+`spawnPromise` / `BigStackThread::__invoke` stack. Neither binary's report
+mentions `SlabPool`, `SlabAlloc` or `makePayload` anywhere — grep count zero.
+
+It is the race already written up in
+[EVALCALL-RACE-2026-09-17.md](../findings/EVALCALL-RACE-2026-09-17.md), found by
+the v4.0.0 release gate, recorded rather than fixed because "a data-race fix is
+a project rather than a release task". Unchanged by this work, and still open.
+
+**The pooling false-positive that did NOT appear, and why.** A free list is a
+classic source of spurious TSan reports: a block freed on one thread and
+reissued on another makes two logically distinct objects share an address, and
+TSan flags the reuse as a race. `SlabPool` is immune by construction — every
+list is thread-private, so a block can only be reissued on the thread that freed
+it. That is RVec's property too, and it is the reason this design copied RVec's
+rather than inventing one.
+
+**Still not run: Roast.** The zero-regression per-file gate has not been done,
+and this must not merge without it.
