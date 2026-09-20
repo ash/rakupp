@@ -3222,7 +3222,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto natCheck = [&](const Value& v) {
                 if (inv.ofType().empty() || v.t == VT::Nil) return; // a Nil RESETS, it is not a store
                 std::string bt = inv.ofType().substr(0, inv.ofType().find(','));
-                bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
+                bool isNat = bt == "str" || bt == "byte" || bt == "atomicint" ||
+                             bt.compare(0, 3, "int") == 0 ||
                              bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
                 if (!isNat) return; // boxed-type arrays keep their existing behaviour
                 // …and a mixin over a Str (`"bar" but Type<words>`, highlighter's

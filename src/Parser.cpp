@@ -5691,7 +5691,7 @@ ExprPtr Parser::parsePrimary() {
                 (ascii::isupper((unsigned char)peek().text[0]) ||
                  [&]{ static const std::set<std::string> nat = {
                           "int","int8","int16","int32","int64","uint","uint8","uint16",
-                          "uint32","uint64","byte","num","num32","num64","str"};
+                          "uint32","uint64","byte","atomicint","num","num32","num64","str"};
                       return nat.count(peek().text) > 0; }())) {
                 advance(); // [
                 std::string params;

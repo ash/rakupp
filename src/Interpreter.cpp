@@ -1028,7 +1028,8 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
     if (declType.empty()) elemDef = Value::any();
     else if (declType == "str") elemDef = Value::str("");
     else if (declType.rfind("num", 0) == 0) elemDef = Value::number(0);
-    else if (declType.rfind("int", 0) == 0 || declType.rfind("uint", 0) == 0 || declType == "byte")
+    else if (declType.rfind("int", 0) == 0 || declType.rfind("uint", 0) == 0 ||
+             declType == "byte" || declType == "atomicint")
         elemDef = Value::integer(0);
     else elemDef = Value::typeObj(declType);
     size_t idx = 0;
@@ -1066,7 +1067,8 @@ static Value typedDefault(const std::string& type, char sigil) {
         // double, so they need no truncation marker).
         if (type == "num32") { Value v = Value::number(0); v.natBits = 32; v.natFloat = true; return v; }
         if (type == "num" || type.rfind("num", 0) == 0) return Value::number(0);
-        if (type == "int" || type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0) return Value::integer(0);
+        if (type == "int" || type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
+            type == "atomicint") return Value::integer(0);
         if (type == "str") return Value::str("");
         // The lowercase Buf/Blob aliases are TYPE names, not native scalars:
         // `my buf8 $b .= new` needs the (buf8) type object to dispatch .new on
@@ -1080,7 +1082,8 @@ static Value typedDefault(const std::string& type, char sigil) {
     if ((sigil == '@' || sigil == '%') && !type.empty() &&
         (ascii::isupper((unsigned char)type[0]) ||
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
-         type.rfind("num", 0) == 0 || type == "str" || type == "byte")) {
+         type.rfind("num", 0) == 0 || type == "str" || type == "byte" ||
+         type == "atomicint")) {
         Value v = defaultFor(sigil);
         v.ofTypeM() = type;
         // "valueType,keyType" is the declarator's encoding of an OBJECT hash
@@ -13044,7 +13047,7 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
             ac = t == "Int" ? 1 : t == "Str" ? 2 : t == "Num" ? 3 : t == "Bool" ? 4
                : (t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
                   t == "uint" || t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" ||
-                  t == "byte") ? 5
+                  t == "byte" || t == "atomicint") ? 5
                : (t == "num" || t == "num32" || t == "num64") ? 6
                : t == "str" ? 7 : 0;
             p.acceptClass = ac;
@@ -14094,9 +14097,15 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // its own reported type — hashKind is empty for plain values, so this
     // costs one branch on the hot path
     if (!arg.hashKind.empty() && (type == arg.hashKind || type == arg.typeName())) return true;
-    // native-typed params (`int $i`, `num $x`, `str $s`) take the boxed kind
+    // native-typed params (`int $i`, `num $x`, `str $s`) take the boxed kind.
+    // `atomicint` is one of the int family — it is `int` with the ⚛ operators
+    // allowed on it, and Rakudo answers True to `atomicint ~~ Int` — but it was
+    // in `isNativeTypeName` (so the name RESOLVED, and the bind went on to the
+    // full matcher) and in none of the family lists (so the matcher had never
+    // heard of it): `sub f(atomicint $x)` refused every argument, rakupp#91.
+    // Every other list that spells the family out has it now too.
     static const std::set<std::string> natIntTypes = {"int", "int8", "int16", "int32", "int64",
-        "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+        "uint", "uint8", "uint16", "uint32", "uint64", "byte", "atomicint"};
     static const std::set<std::string> natNumTypes = {"num", "num32", "num64"};
     switch (arg.t) {
         // UInt is `subset UInt of Int where * >= 0` — a NON-NEGATIVE Int matches it,
@@ -16318,7 +16327,8 @@ static Value typedElemDefault(const Value& base) {
     // native element types are zero-initialized (my int @a — gaps read as 0)
     if (first == "num" || first == "num32" || first == "num64") return Value::number(0.0);
     if (first == "str") return Value::str("");
-    if (first.compare(0, 3, "int") == 0 || first.compare(0, 4, "uint") == 0 || first == "byte")
+    if (first.compare(0, 3, "int") == 0 || first.compare(0, 4, "uint") == 0 ||
+        first == "byte" || first == "atomicint")
         return Value::integer(0);
     return Value::nil();
 }
@@ -23611,7 +23621,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             static const std::set<std::string> natTy = {
                 "int", "int8", "int16", "int32", "int64", "uint", "uint8",
-                "uint16", "uint32", "uint64", "num", "num32", "num64", "str", "byte"};
+                "uint16", "uint32", "uint64", "num", "num32", "num64", "str", "byte",
+                "atomicint"};
             // …a natively typed SCALAR only. `my uint8 @a := …` binds a native
             // ARRAY, which IS a container and which Rakudo accepts: PDF's
             // password check is `my uint8 @computed := $.compute-user(…)`, and
@@ -27203,7 +27214,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (!res && l.t == VT::Type) {
                 static const std::set<std::string> natNum = {"num", "num32", "num64"};
                 static const std::set<std::string> natInt = {"int", "int8", "int16", "int32", "int64",
-                    "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+                    "uint", "uint8", "uint16", "uint32", "uint64", "byte", "atomicint"};
                 bool numeric = r.s == "Numeric" || r.s == "Real" || r.s == "Cool" || r.s == "Any" || r.s == "Mu";
                 if ((r.s == "Num" || numeric) && natNum.count(l.s)) res = true;
                 else if ((r.s == "Int" || numeric) && natInt.count(l.s)) res = true;

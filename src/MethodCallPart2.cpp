@@ -7053,7 +7053,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!res && inv.t == VT::Type) {
             static const std::set<std::string> natNum = {
                 "int","int8","int16","int32","int64","uint","uint8","uint16","uint32","uint64",
-                "byte","num","num32","num64"};
+                "byte","atomicint","num","num32","num64"};
             if (natNum.count(inv.s) && (rn == "Real" || rn == "Numeric")) res = true;
             else if (inv.s == "str" && rn == "Stringy") res = true;
         }

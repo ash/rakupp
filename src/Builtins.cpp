@@ -6023,7 +6023,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (tn == "UInt" || tn == "IntStr" || tn == "int" || tn == "uint" ||
                 tn == "int8" || tn == "int16" || tn == "int32" || tn == "int64" ||
                 tn == "uint8" || tn == "uint16" || tn == "uint32" || tn == "uint64" ||
-                tn == "byte" || tn == "Priority") tn = "Int";
+                tn == "byte" || tn == "atomicint" || tn == "Priority") tn = "Int";
             else if (tn == "NumStr" || tn == "num" || tn == "num32" || tn == "num64") tn = "Num";
             else if (tn == "StrStr") tn = "Str";
             if (inv.t == VT::Type && !classes_.count(inv.s)) {
