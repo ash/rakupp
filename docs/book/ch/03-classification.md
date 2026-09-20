@@ -244,9 +244,8 @@ copying machine-code snippets out of the binary and patching them. The second
 lowers the loop to a flat list of register ops first — an intermediate
 representation, one loop wide, built and thrown away in about 15 µs, with no
 pass of any kind run over it. The rest of the classification stands: the AST is
-still the sole representation of your *program*, and neither backend is reached
-unless it is asked for. Neither is covered in this book; `docs/guide/JIT.md`
-and `docs/internals/CNP.md` are where they are written up.
+still the sole representation of your *program*, and neither back end is
+reached unless it is asked for. Chapter 44 is both of them end to end.
 
 ## What it is not
 

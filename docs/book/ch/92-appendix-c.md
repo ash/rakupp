@@ -30,6 +30,8 @@ own — is in Appendix D.
 | the CLI and compile drivers | `main.cpp` | Chapter 25 |
 | the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 26 to 28 |
 | what a binary keeps | `SlimScan.cpp`, `ucd_seam.h`, `src/stubs/` | Chapter 29 |
+| tier-up: counting, eligibility, entry | `Jit.cpp` — the candidate walk, `Site`, `runIfReady` | Chapter 44 |
+| copy-and-patch: stencils and the patcher | `src/cnp/`, `Cnp.cpp`, `tools/cnp-extract.cpp` | Chapter 44 |
 | the parse cache | `AstSerial.cpp` | Chapter 30 |
 | the JavaScript back end | `src/codegen/Js.cpp`, `JsRuntimeSrc.cpp`, `src/js-rt/` | Chapter 31 |
 | the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 32 |
@@ -82,6 +84,12 @@ Run `tools/reloc-probe.cpp` after touching the struct.
 
 **Add an early exit, never restructure the general path underneath it.** The
 first node specialisation cost the control 5.7% by doing the latter.
+
+**No helper a stencil calls may throw.** A copy-and-patch code buffer carries
+no unwind tables, so an exception crossing one reaches `std::terminate`. Every
+`rk_cnp_*` helper wraps its body in a catch-all, stashes the exception in the
+frame and returns a status instead. Widening what a kernel may call means
+answering this for the new helper first (Chapter 44).
 
 **A memo is only sound if the thing memoised is a function of the key.** A
 grammar rule that reads a dynamic variable is not a function of (rule, position),

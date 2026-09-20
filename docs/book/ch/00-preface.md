@@ -76,6 +76,7 @@ If you are here for one thing in particular:
 | Raku in a browser | Chapter 32 |
 | installing modules, and the store zef shares | Chapter 34 |
 | calling C, or being called from it | Chapters 36 and 37 |
+| a loop that compiles itself while it runs | Chapter 44 |
 | a term you have not met before | Appendix D, the glossary |
 
 ## Conventions {-}

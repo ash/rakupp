@@ -82,11 +82,12 @@ Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 ## book/ — the compiler book
 
 - **[book/Raku++-Internals.pdf](book/Raku++-Internals.pdf)** — *Raku++
-  Internals*, 320 pages in nine parts: the front end, the value model, the
-  interpreter, the regex and grammar engine, Unicode, the four run modes and the
+  Internals*, 44 chapters in ten parts: the front end, the value model, the
+  interpreter, the regex and grammar engine, Unicode, the run modes and the
   native code generator, the boundaries (modules, the installer and the
-  zef-shared store, `use nqp`, NativeCall, the extension ABI, concurrency), and
-  the tooling built on the AST. It covers
+  zef-shared store, `use nqp`, NativeCall, the extension ABI, concurrency), the
+  tooling built on the AST, and the speed campaign — ending with the two tier-up
+  back ends that compile a hot loop while the program runs. It covers
   several areas that have no page in `internals/` — `Value` in depth, the regex
   engine itself, NativeCall's internals, the extension ABI, and the concurrency
   runtime — and carries the reasons and measurements behind the designs, plus an
