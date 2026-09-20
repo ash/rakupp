@@ -96,7 +96,16 @@ my @benches =
     # currently hands back — but it is not a like-for-like native reading.
     %( :name<multiwhere>, :file("multiwhere.raku"),
        :note('400k calls into a `where`-constrained multi candidate (--exe falls back to the interpreter)') ),
-    %( :name<objects>,  :file("objects.raku"),  :note('200k .new + 300k method calls') );
+    %( :name<objects>,  :file("objects.raku"),  :note('200k .new + 300k method calls') ),
+    # mainwhen (2026-09-20): a `given`/`when` ladder inside a loop, written AT
+    # THE MAINLINE. It is perf-guard's kernel of the same name, same source and
+    # same iteration count, promoted to a timed program so the published table
+    # and the gated one are one workload — the gate had been carrying a 59%
+    # improvement that reached no reader, because nothing in tools/bench/
+    # measures `when` at all. Keep it at the mainline: moved into a sub it
+    # measures the path that always worked, not the one that was broken.
+    %( :name<mainwhen>, :file("mainwhen.raku"),
+       :note('200k iterations of a 3-way given/when ladder at the mainline') );
 @benches = @benches.grep({ .<name> (elem) @only }) if @only;
 unless @benches {
     note "run-bench: --only matched no kernels";
