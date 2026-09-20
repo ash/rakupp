@@ -10665,6 +10665,26 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         Value process = h.at("process");
         auto handle = std::make_shared<TapHandle>();
         struct RunState {
+            // Every field below is reached from at least two threads: the
+            // source's thread pushes a value and pumps, and each `process`
+            // Promise settles on a worker of its own and pumps again from
+            // there. In parallel mode -- the default since v3.0.0 -- a Promise
+            // fires its `.then` continuations with NO GIL held (spawnPromise's
+            // parallel branch says so in as many words), so nothing here is
+            // serialised on our behalf.
+            //
+            // Unguarded, two Promises settling at once ran the pump together
+            // and both took `pending.front()` and erased `pending.begin()`:
+            // two threads inside one RVec::erase. That is a SIGSEGV when the
+            // memmove walks off the end, and the SAME VALUE DISPATCHED TWICE
+            // when it does not -- `.throttle(2, {…})` over three values
+            // answering four Promises. Both were ~5% of runs of
+            // t/regression/supply-combinators.raku.
+            //
+            // The rule the code below keeps: the lock is held for a field
+            // access and NEVER across a callback, because every callback here
+            // is user code that can re-enter this same supply.
+            std::mutex m;
             ValueList pending;
             long long limit = 0, running = 0, emitted = 0;
             bool srcDone = false, finished = false;
@@ -10677,21 +10697,24 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto report = [self, st, statusSup](const char* id) {
             if (statusSup.t != VT::Hash) return;
             Value r = Value::makeHash();
-            (*r.hash())["allowed"] = Value::integer(st->limit - st->running);
-            (*r.hash())["bled"] = Value::integer(0);
-            (*r.hash())["buffered"] = Value::integer((long long)st->pending.size());
-            (*r.hash())["emitted"] = Value::integer(st->emitted);
-            (*r.hash())["id"] = Value::str(id);
-            (*r.hash())["limit"] = Value::integer(st->limit);
-            (*r.hash())["running"] = Value::integer(st->running);
-            (*r.hash())["vent-at"] = Value::integer(0);
+            {   // one snapshot, so the row cannot describe two different moments
+                std::lock_guard<std::mutex> lk(st->m);
+                (*r.hash())["allowed"] = Value::integer(st->limit - st->running);
+                (*r.hash())["bled"] = Value::integer(0);
+                (*r.hash())["buffered"] = Value::integer((long long)st->pending.size());
+                (*r.hash())["emitted"] = Value::integer(st->emitted);
+                (*r.hash())["id"] = Value::str(id);
+                (*r.hash())["limit"] = Value::integer(st->limit);
+                (*r.hash())["running"] = Value::integer(st->running);
+                (*r.hash())["vent-at"] = Value::integer(0);
+            }
             Value sup = statusSup;
             ValueList one{r};
             try { self->methodCall(sup, "emit", one); } catch (...) {}
         };
         auto finish = [self, st, doneCb, handle, report]() {
-            if (st->finished) return;
-            st->finished = true;
+            // claim the teardown exactly once, then run it with the lock DOWN
+            { std::lock_guard<std::mutex> lk(st->m); if (st->finished) return; st->finished = true; }
             report("done");
             if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
             self->closeTapHandle(handle);
@@ -10700,23 +10723,36 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // whenever something changes: a new value, a raised limit, a finish.
         auto pump = std::make_shared<std::function<void()>>();
         *pump = [self, st, process, emitCb, pump, finish]() {
-            while (!st->finished && st->running < st->limit && !st->pending.empty()) {
-                Value v = st->pending.front();
-                st->pending.erase(st->pending.begin());
+            for (;;) {
+                Value v;
+                {   // One value claimed per turn, and the allowance SPENT for it
+                    // before the lock drops: a second thread arriving here must
+                    // find the slot already taken, or both dispatch the same
+                    // value. Everything after this block -- spawning the
+                    // Promise, emitting it -- is callback territory and runs
+                    // unlocked.
+                    std::lock_guard<std::mutex> lk(st->m);
+                    if (st->finished || st->running >= st->limit || st->pending.empty()) return;
+                    v = st->pending.front();
+                    st->pending.erase(st->pending.begin());
+                    st->running++;
+                    st->emitted++;
+                }
                 Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
                 Value pv = v, pf = process;
                 body.code()->builtin = [pv, pf](Interpreter& I2, ValueList&) -> Value {
                     ValueList one{pv}; return I2.callCallable(pf, one);
                 };
                 Value pr = self->spawnPromise(body);
-                st->running++;
-                st->emitted++;
                 if (pr.t == VT::Hash && pr.ext()) {
                     auto ps = std::static_pointer_cast<PromiseState>(pr.ext());
                     std::function<void()> whenDone = [st, pump, finish]() {
-                        if (st->running > 0) st->running--;
+                        { std::lock_guard<std::mutex> lk(st->m); if (st->running > 0) st->running--; }
                         (*pump)();
-                        if (st->srcDone && st->pending.empty() && st->running == 0) finish();
+                        bool last;
+                        { std::lock_guard<std::mutex> lk(st->m);
+                          last = st->srcDone && st->pending.empty() && st->running == 0; }
+                        if (last) finish();
                     };
                     bool now = false;
                     { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(whenDone); }
@@ -10737,28 +10773,35 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 std::string key = cmd.substr(0, colon), val = cmd.substr(colon + 1);
                 while (!key.empty() && key.back() == ' ') key.pop_back();
                 while (!val.empty() && val.front() == ' ') val.erase(val.begin());
-                if (key == "limit") { try { st->limit = std::stoll(val); } catch (...) {} (*pump)(); }
+                if (key == "limit") {
+                    long long n = 0; bool ok = true;
+                    try { n = std::stoll(val); } catch (...) { ok = false; }
+                    if (ok) { std::lock_guard<std::mutex> lk(st->m); st->limit = n; }
+                    (*pump)();
+                }
                 return Value::any();
             };
             tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
         }
         Value inEmit; inEmit.t = VT::Code; inEmit.setCode(std::make_shared<Callable>());
         inEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
-            st->pending.push_back(a.empty() ? Value::any() : a[0]);
+            { std::lock_guard<std::mutex> lk(st->m); st->pending.push_back(a.empty() ? Value::any() : a[0]); }
             (*pump)();
             return Value::any();
         };
         Value inDone; inDone.t = VT::Code; inDone.setCode(std::make_shared<Callable>());
         inDone.code()->builtin = [st, finish](Interpreter&, ValueList&) -> Value {
-            st->srcDone = true;
-            if (st->pending.empty() && st->running == 0) finish();
+            bool last;
+            { std::lock_guard<std::mutex> lk(st->m);
+              st->srcDone = true;
+              last = st->pending.empty() && st->running == 0; }
+            if (last) finish();
             return Value::any();
         };
         Value inQuit; inQuit.t = VT::Code; inQuit.setCode(std::make_shared<Callable>());
         Value qc = quitCb;
         inQuit.code()->builtin = [self, st, qc, handle](Interpreter&, ValueList& a) -> Value {
-            if (st->finished) return Value::any();
-            st->finished = true;
+            { std::lock_guard<std::mutex> lk(st->m); if (st->finished) return Value::any(); st->finished = true; }
             if (qc.t == VT::Code) { ValueList one{a.empty() ? Value::any() : a[0]}; try { self->callCallable(qc, one); } catch (...) {} }
             self->closeTapHandle(handle);
             return Value::any();
