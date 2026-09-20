@@ -62,7 +62,13 @@ for @files -> $f {
         .map({ slug(.subst(/^ '#'+ \s+ /, '')) }).Set;
 }
 
-my ($checked, @bad) = 0, ();
+# NOT `my ($checked, @bad) = 0, ();` — that assigns the empty list as @bad's
+# one ELEMENT, so the gate reported a phantom broken link and exited 1 on a
+# clean tree. Rakudo does the same thing with that spelling (`@b.raku` is
+# `[(),]` in both), so it was this script that was wrong; rakupp only stopped
+# hiding it when list assignment was brought in line with Rakudo.
+my $checked = 0;
+my @bad;
 for @files -> $f {
     my $t = uncoded($f.slurp).subst(/ '`' <-[`\n]>* '`' /, '', :g);   # and code spans
     for $t.match(/ '](' <( <-[)\s]>+ )> ')' /, :g) -> $m {
