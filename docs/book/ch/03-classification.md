@@ -237,6 +237,17 @@ specialisation (Chapter 19) caches a decision on the syntactic shape of a node;
 it is a fast path on a tree walk, not a compilation step, and no amount of it
 turns the tree walk into something with an instruction stream.
 
+**Since this chapter was written, one exception has landed, and the paragraph
+above has to be qualified.** Two opt-in backends compile hot loops *during* the
+run: `--jit`, through the same C++ emission `--exe` uses, and `--cnp`, by
+copying machine-code snippets out of the binary and patching them. The second
+lowers the loop to a flat list of register ops first — an intermediate
+representation, one loop wide, built and thrown away in about 15 µs, with no
+pass of any kind run over it. The rest of the classification stands: the AST is
+still the sole representation of your *program*, and neither backend is reached
+unless it is asked for. Neither is covered in this book; `docs/guide/JIT.md`
+and `docs/internals/CNP.md` are where they are written up.
+
 ## What it is not
 
 Stated plainly, since these are the usual guesses:
@@ -249,8 +260,8 @@ Stated plainly, since these are the usual guesses:
 | GLR or Earley | No parse forest; ambiguity is settled where it is met |
 | Generated | The lexer and parser are hand-written C++ |
 | Bytecode VM | No instruction set and no opcode dispatch loop |
-| SSA-based | No IR of any kind |
-| JIT | Nothing is compiled at run time; `--exe` compiles ahead of time |
+| SSA-based | The only IR is `--cnp`'s one-loop op list, and nothing is in SSA form |
+| A JIT by default | Nothing is compiled at run time unless `--jit` or `--cnp` is asked for; `--exe` compiles ahead of time |
 
 ## Compared with three others
 

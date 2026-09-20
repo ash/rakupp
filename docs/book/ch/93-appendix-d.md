@@ -340,8 +340,11 @@ runtime value (Chapter 10).
 
 **Intermediate representation (IR)** — a form between the tree and the machine,
 invented so that optimisation passes have something regular to rewrite:
-three-address code, SSA, a control-flow graph. Raku++ has none of them, which
-Chapter 3 states as a classification and Chapter 42 revisits as a trade.
+three-address code, SSA, a control-flow graph. Raku++ has none of them in the
+path from your source to its execution, which Chapter 3 states as a
+classification and Chapter 42 revisits as a trade. The one exception is the
+opt-in `--cnp` tier-up backend, which lowers a single hot loop to a flat op
+list and discards it immediately; no pass ever rewrites it.
 
 **Interpreter** — a program that executes another program directly, rather than
 translating it into something else first. See *tree-walking interpreter*.
@@ -353,7 +356,11 @@ dot. Much of method dispatch is guarded on its type (Chapter 16).
 
 **JIT (just-in-time compilation)** — compiling parts of a program into machine
 code while it is already running, guided by what it is observed to do. MoarVM
-has one. Raku++ has none; `--exe` compiles ahead of time instead (Chapter 3).
+has one. Raku++ has two, both opt-in and neither covered in this book: `--jit`
+hands a hot loop to the C++ compiler on the machine, and `--cnp` stitches it
+from machine-code snippets carried in the binary. With neither flag nothing is
+compiled during the run, and `--exe` compiles ahead of time instead
+(Chapter 3).
 
 **Junction** — a Raku value holding several values at once, `1|2|3`, which
 operations distribute over. See *autothreading* and *eigenstate* (Chapter 18).
@@ -599,7 +606,9 @@ which candidate wins (Chapter 16).
 
 **SSA (static single assignment)** — an IR discipline in which every variable
 is assigned exactly once, which makes many optimisations easy to state.
-LLVM's IR is in SSA form. Raku++ has no IR, and therefore no SSA (Chapter 3).
+LLVM's IR is in SSA form. Raku++ has no IR in the path from source to
+execution and no SSA anywhere; the one op list it does build, in the `--cnp`
+backend, is not in SSA form (Chapter 3).
 
 **Stash** — Raku's package symbol table, reachable through `.WHO`. There is no
 per-module stash object here (Chapters 17 and 33).

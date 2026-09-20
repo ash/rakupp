@@ -100,7 +100,9 @@ against Rakudo and against the Roast suite continuously rather than
 aspirationally. The current position is roughly ninety per cent of declared
 Roast assertions.
 
-It has no JIT and no garbage collector. Lifetime is `shared_ptr` reference
+It has no garbage collector, and no JIT unless one is asked for: the two
+tier-up backends, `--jit` and `--cnp`, are off by default and neither is
+covered in this book. Lifetime is `shared_ptr` reference
 counting, which means a reference cycle leaks; the interpreter breaks the
 specific cycle that a self-closured nested sub would create, and otherwise the
 process is short-lived enough for this to be a real but tolerable limitation.
