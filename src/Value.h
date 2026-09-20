@@ -564,6 +564,14 @@ struct Value {
     bool objKeyed = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
                            // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
+    // …and WHY it is readonly, because Rakudo words the two refusals
+    // differently: a readonly CONTAINER is "Cannot assign to a readonly
+    // variable or a value", while a raw binding to something that has no
+    // container at all — the `$_` of `for 1..3` — is "Cannot assign to an
+    // immutable value". Only read alongside `readonly`, which is always set
+    // with it, so every existing check still fires; it picks the message.
+    // Free: it lands in the padding this block already had (sizeof stays 128).
+    bool immutableBind = false;
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     bool natSigned = false;
     bool natFloat = false; // native float container (num32): truncates to float32 on assignment

@@ -9065,7 +9065,14 @@ StmtPtr Parser::parseFor() {
         // The plain-name path keeps only the name, so anything else a parameter
         // carries has to send it to real binding — see pointyParamNeedsBinding.
         if (needsBinding) s->params = std::move(ps);
-        else for (auto& p : ps) s->vars.push_back(p.name);
+        else for (auto& p : ps) {
+            s->vars.push_back(p.name);
+            // `<->` makes EVERY parameter rw, and says so nowhere on the Params
+            unsigned char tr = 0;
+            if (p.isRw || doubly) tr |= ForStmt::VT_RW;
+            if (p.isRaw)          tr |= ForStmt::VT_RAW;
+            s->varTraits.push_back(tr);
+        }
     }
     s->body = parseBlock();
     return s;

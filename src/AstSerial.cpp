@@ -79,6 +79,8 @@ inline void io_(Writer& w, char v)              { w.u8((uint8_t)v); }
 inline void io_(Reader& r, char& v)             { v = (char)r.u8(); }
 inline void io_(Writer& w, signed char v)       { w.u8((uint8_t)v); }
 inline void io_(Reader& r, signed char& v)      { v = (signed char)r.u8(); }
+inline void io_(Writer& w, unsigned char v)     { w.u8(v); }
+inline void io_(Reader& r, unsigned char& v)    { v = r.u8(); }
 inline void io_(Writer& w, int v)               { w.ivar(v); }
 inline void io_(Reader& r, int& v)              { v = (int)r.ivar(); }
 inline void io_(Writer& w, long long v)         { w.ivar(v); }
@@ -386,7 +388,8 @@ template <class IO> void visit(IO& io, IfStmt& n)   {
 template <class IO> void visit(IO& io, WhileStmt& n){ ioExpr(io, n.cond); ioBlock(io, n.body); F(io, n.isUntil);
                                                       F(io, n.var); F(io, n.asExpr); F(io, n.modifier);
                                                       ioParams(io, n.params); }
-template <class IO> void visit(IO& io, ForStmt& n)  { ioExpr(io, n.list); ioVec(io, n.vars); F(io, n.rwVars);
+template <class IO> void visit(IO& io, ForStmt& n)  { ioExpr(io, n.list); ioVec(io, n.vars);
+                                                      ioVec(io, n.varTraits); F(io, n.rwVars);
                                                       F(io, n.destructure); ioParams(io, n.params);
                                                       ioBlock(io, n.body); F(io, n.asExpr); F(io, n.modifier); }
 template <class IO> void visit(IO& io, ReturnStmt& n) { ioExpr(io, n.value); F(io, n.isRw); }

@@ -890,7 +890,16 @@ struct ForStmt : Stmt {
     DecidedOnce<signed char> hasStateCache{-1}; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr list;
     std::vector<std::string> vars; // loop variables ($_ if empty)
+    // What each of `vars` was declared with, parallel to it. The plain-name
+    // path keeps only names, and the two traits that survive it change what a
+    // WRITE to the variable means, so they have to come along: a plain `$i` is
+    // readonly, `is raw` takes its writability from what it binds (like `$_`),
+    // and `is rw` aliases. Per-parameter because Rakudo is: `-> $a is rw, $b`
+    // refuses a write to `$b`.
+    enum : unsigned char { VT_RW = 1, VT_RAW = 2 };
+    std::vector<unsigned char> varTraits;
     bool rwVars = false;           // `<-> $i` / `-> $i is rw`: writes copy back to the source
+                                   // (statement-level: it is what the aliasing paths consult)
     bool destructure = false;      // `-> ($a,$b,$c)`: unpack each element into vars
     std::vector<Param> params;     // full pointy signature when it has sub-signatures
                                    // (named/nested destructure) — bound via bindParams

@@ -11952,29 +11952,49 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (pn.size() > 2 && pn[1] == '^') phVars.push_back(pn);
             }
             const std::vector<std::string>& loopVars = phVars.empty() ? fs->vars : phVars;
-            // A plain `-> $i` loop variable is a READONLY parameter — the rule a
-            // sub's or a block's `$x` already follows here. We bound it writable,
-            // so `for 1..3 -> $i { $i = 9 }` took the write and dropped it on the
-            // floor: nothing aliases the source, so the 9 went nowhere and the
-            // loop ran to completion. Rakudo dies on it, and silently accepting
-            // is the worst direction for a divergence — it lets code be written
-            // against rakupp that no other implementation will run.
+            // WHAT A WRITE TO THE LOOP VARIABLE MEANS. All three answers live in
+            // markTopic below, because the loop binds its own variables and none
+            // of this reaches bindParams: typed, `is copy` and sub-signature
+            // parameters do go there (pointyParamNeedsBinding sends them), and it
+            // marks its own. Everything else arrives here as a bare name plus the
+            // traits varTraits carried along.
             //
-            // `<->` and `-> $i is rw` (both fs->rwVars) alias the source element
-            // on purpose. `$_` is `is raw`: it takes its writability from what it
-            // aliases, which is why loopVars must be NON-empty here. Typed,
-            // `is copy` and sub-signature parameters never reach this path —
-            // pointyParamNeedsBinding sends them to bindParams, which marks its
-            // own readonly (and only on `$`, for the reason noted below).
-            const bool roVars = !loopVars.empty() && !fs->rwVars;
-            auto asTopic = [&](Value v, const std::string& nm) {
+            // Rakudo refuses a write two ways and the wording is the diagnosis:
+            // a plain `-> $i` is a readonly CONTAINER, while `$_` and `is raw`
+            // bind whatever came in — so over a source that yields bare values
+            // there is no container at all, and it is "immutable" instead. Both
+            // used to be accepted here and dropped on the floor, which is the
+            // worst direction for a divergence: it lets code be written against
+            // rakupp that no other implementation will run.
+            //
+            // Does this source yield bare values? See immutableLoopSource — a
+            // deliberately narrow whitelist, because answering "yes" wrongly
+            // turns a working program into a crash.
+            const bool immSrc = immutableLoopSource(fs->list.get());
+            // What a write to loop variable `k` means. Per-parameter, because
+            // Rakudo is: `for @a -> $a is rw, $b { }` refuses a write to `$b`
+            // while `$a` aliases. `$_` (no parameters at all) is raw.
+            //   plain `-> $i` → readonly, whatever the source: Rakudo words it
+            //     "readonly variable" even over a Range.
+            //   `is raw` / `$_` → writability comes from what it binds: nothing
+            //     to bind to means immutable, otherwise leave it alone (the
+            //     aliasing paths below decide, and where they cannot the write
+            //     is lost exactly as it was).
+            //   `is rw` / `<->` → the aliasing paths own it.
+            auto markTopic = [&](Value& v, size_t k) {
+                const unsigned char tr = loopVars.empty() ? ForStmt::VT_RAW
+                                       : k < fs->varTraits.size() ? fs->varTraits[k] : 0;
+                if (tr & ForStmt::VT_RAW) { if (immSrc) v.readonly = v.immutableBind = true; }
+                else if (!(tr & ForStmt::VT_RW)) v.readonly = true;
+            };
+            auto asTopic = [&](Value v, const std::string& nm, size_t k) {
                 if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
                     (arrayElemSrc || nm != "$_"))
                     v.itemized = true;
                 // `$` only, as bindParams does: `-> @inner` binds the array
                 // ITSELF, and `.push` through it mutates the object rather than
                 // assigning to the container, so it stays legal.
-                if (roVars && !nm.empty() && nm[0] == '$') v.readonly = true;
+                if (!nm.empty() && nm[0] == '$') markTopic(v, k);
                 return v;
             };
             // Fast paths for the common single-topic loop: avoid materializing the
@@ -11983,10 +12003,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 fs->params.empty()) { // a sub-signature (`-> $ (:$k)`) needs real binding
                 const std::string var = loopVars.empty() ? "$_" : loopVars[0];
                 // The integer-Range path below mints its own topic instead of
-                // going through asTopic, so it needs the roVars rule spelled out.
-                const bool roVar = roVars && !var.empty() && var[0] == '$';
+                // going through asTopic, so it has to apply markTopic itself —
+                // but the answer is FIXED for the whole loop (neither the traits
+                // nor the source change per iteration), so it is asked once on a
+                // probe and the two flags copied onto each minted Int. Deciding
+                // it per iteration cost ~1% on optbench/intsum, which is the
+                // shape this fast path exists for.
+                Value probe = Value::integer(0);
+                if (!var.empty() && var[0] == '$') markTopic(probe, 0);
+                const bool roInt = probe.readonly, immInt = probe.immutableBind;
                 auto topicInt = [&](long long n) {
-                    Value v = Value::integer(n); v.readonly = roVar; return v;
+                    Value v = Value::integer(n);
+                    v.readonly = roInt; v.immutableBind = immInt;
+                    return v;
                 };
                 // Reuse one Env across iterations for speed. This is only safe when
                 // nothing captured the previous iteration's scope (a closure would
@@ -12158,20 +12187,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     size_t i = 0;
                     std::function<void()> rb = [&] { // redo re-copies (aliases keep writes)
                         if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) {
-                            if (topic) *topic = asTopic((*arr)[i], var);
-                            else scope->define(var, asTopic((*arr)[i], var)); } }
+                            if (topic) *topic = asTopic((*arr)[i], var, 0);
+                            else scope->define(var, asTopic((*arr)[i], var, 0)); } }
                     };
                     TopicAliasFrame taf(tctx_, rw, var, arr); // take-rw's view of the aliasing
                     for (i = 0; growTo(i); i++) {
                         if (flat && topic && scope.use_count() == 1) {
                             ParStripe es(*this, arr.get());
                             if (i >= arr->size()) break;
-                            *topic = asTopic((*arr)[i], var);
+                            *topic = asTopic((*arr)[i], var, 0);
                         } else {
                             freshScope();
                             ParStripe es(*this, arr.get());
                             if (i >= arr->size()) break;
-                            topic = &scope->define(var, asTopic((*arr)[i], var));
+                            topic = &scope->define(var, asTopic((*arr)[i], var, 0));
                         }
                         taf.at(scope.get(), i);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
@@ -12294,11 +12323,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                 TopicAlias tback{scalarSlot, scope.get(), itemsR[i]};
                 if (loopVars.empty()) {
-                    scope->define("$_", asTopic(itemsR[i], "$_"));
+                    scope->define("$_", asTopic(itemsR[i], "$_", 0));
                 } else {
                     for (size_t k = 0; k < loopVars.size(); k++) {
                         scope->define(loopVars[k], haveItem(i + k)
-                            ? asTopic(itemsR[i + k], loopVars[k]) : Value::any());
+                            ? asTopic(itemsR[i + k], loopVars[k], k) : Value::any());
                     }
                 }
                 if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
@@ -15440,6 +15469,14 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
         if (!st->appendNext(*v.arr())) break;
 }
 
+// Rakudo words the two refusals differently, and the wording is the whole
+// diagnosis: "readonly variable" says there IS a container and it is closed,
+// "immutable value" says there is none to write to. See Value::immutableBind.
+static const char* notWritableMsg(const Value& v) {
+    return v.immutableBind ? "Cannot assign to an immutable value"
+                           : "Cannot assign to a readonly variable or a value";
+}
+
 // A FINITE lazy sequence has to be drained before anything walks it, or the
 // walker sees only whatever prefix happened to be materialised already. `for 1,
 // { $_ + 1 } ... 5` ran its body ONCE, on the seed: a closure generator produces
@@ -15470,9 +15507,8 @@ Value Interpreter::assignChecked(Expr* target, Value v) {
     }
     if (Value* lv = lvalue(target)) {
         if (lv->readonly)
-            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                            "Cannot assign to a readonly variable or a value"};
-        v.readonly = false;                 // the flag marks the container, not the value
+            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+        v.readonly = v.immutableBind = false;                 // the flag marks the container, not the value
         *lv = std::move(v);
         return *lv;
     }
@@ -21534,6 +21570,85 @@ std::shared_ptr<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     return hv->hashS();
 }
 
+// Does this loop source yield anything a write could land in? Rakudo's Array
+// elements are containers, so almost any view of one aliases and a write to
+// the topic reaches the array. These are the shapes that yield BARE VALUES,
+// where Rakudo refuses the write outright with "Cannot assign to an immutable
+// value" — and where ours, having nowhere to put it either, used to take it
+// and drop it.
+//
+// A WHITELIST, deliberately. The honest test is "did this come from a
+// container", which is the container/binding refactor; until then, marking a
+// source immutable because we merely FAILED to find its alias would turn
+// working programs into crashes — `for @a.grep(…) { $_ = 9 }` and
+// `for f() { $_ = 9 }` (a sub returning `@g`) both alias under Rakudo and
+// neither aliases here yet. So every rule below was checked to refuse only
+// what Rakudo also refuses, and anything unrecognised stays as it was.
+static bool literalOnlySource(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+            return true;
+        // An interpolated string BUILDS a Str, so the result is a fresh value
+        // however the parts were computed — `for "$x" { $_ = 9 }` is refused
+        // by Rakudo exactly as `for "abc"` is. No need to look inside. (A bare
+        // `"abc"` parses as one of these, not as StrLit.)
+        case NK::InterpStr:
+            return true;
+        case NK::Range: {
+            auto* r = static_cast<const RangeExpr*>(e);
+            return literalOnlySource(r->from.get()) && literalOnlySource(r->to.get());
+        }
+        case NK::ListExpr: {
+            for (auto& it : static_cast<const ListExpr*>(e)->items)
+                if (!literalOnlySource(it.get())) return false;
+            return true;
+        }
+        case NK::ArrayLit: {
+            // `<a b>` is a word LIST of bare values; `[1,2,3]` is an Array, and
+            // its elements are containers — Rakudo runs `for [1,2,3] { $_ = 9 }`
+            auto* al = static_cast<const ArrayLit*>(e);
+            if (!al->isList) return false;
+            for (auto& it : al->items)
+                if (!literalOnlySource(it.get())) return false;
+            return true;
+        }
+        case NK::MethodCall: {
+            // a no-arg view of a literal is still bare values (`(1,2,3).reverse`).
+            // With ARGS it could hand back anything a block names, so it is out.
+            auto* mc = static_cast<const MethodCall*>(e);
+            if (!mc->args.empty() || mc->meta || mc->hyper || mc->maybe || mc->methodExpr)
+                return false;
+            return literalOnlySource(mc->inv.get());
+        }
+        default: return false; // a Call can RETURN containers: `sub f() { @g }`
+    }
+}
+
+bool Interpreter::immutableLoopSource(const Expr* e) {
+    if (!e) return false;
+    if (literalOnlySource(e)) return true;
+    if (e->kind == NK::MethodCall) {
+        auto* mc = static_cast<const MethodCall*>(e);
+        if (!mc->args.empty() || mc->meta || mc->hyper || mc->maybe || mc->methodExpr)
+            return false;
+        // `.kv` and `.pairs` build FRESH keys and Pairs rather than passing the
+        // elements along, and `.List` decontainerises — all three refuse the
+        // write under Rakudo for an Array and a Hash alike. (`.values`,
+        // `.list`, `.reverse` and `.sort` do pass them along, and alias.)
+        return mc->method == "kv" || mc->method == "pairs" || mc->method == "List";
+    }
+    // `list(@a, @b)` flattens two arrays into a NEW List and Rakudo refuses the
+    // write; `list(@a)` alone is the array's own view and aliases (see
+    // valuesArrayAlias). `flat(@a, @b)` is NOT the same — it aliases — so this
+    // names `list` and nothing else.
+    if (e->kind == NK::Call) {
+        auto* c = static_cast<const Call*>(e);
+        return c->name == "list" && c->args.size() > 1;
+    }
+    return false;
+}
+
 // `@a.values` and `@a.list` are VIEWS of the array, not copies of it: Rakudo
 // hands the loop each element's own container, so a write through the topic
 // lands in @a exactly as `for @a` does — `for @a.values { $_ = 9 }` leaves
@@ -22359,7 +22474,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             Value rv = evalValueOf(a->value.get());
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
-                                rv.readonly = false;
+                                rv.readonly = rv.immutableBind = false;
                                 // a `$` container itemizes what it holds
                                 if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
                                     rv.itemized = true;
@@ -22377,7 +22492,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         // ASCII `~=` append, applyArith for the rest
                         Value rhs = eval(a->value.get());
                         if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
-                            rhs.readonly = false;
+                            rhs.readonly = rhs.immutableBind = false;
                             static const char* kOps[] = {"", "", "+", "-", "*", "~"};
                             const char* bop = kOps[(int)sv];
                             if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
@@ -22438,7 +22553,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (!ve->declare) {
             Value* cur = tctx_.cur->find(ve->name);
-            if (cur && cur->readonly && cur->t == VT::Array)
+            // …a readonly BINDING is not that: `for list(@a, @b) { $_ = 9 }`
+            // binds an Array into the topic each round, and Rakudo names the
+            // binding ("Cannot assign to an immutable value") rather than the
+            // Array. Left to the assignment path, which has both messages.
+            if (cur && cur->readonly && !cur->immutableBind && cur->t == VT::Array)
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable List"};
         }
@@ -24027,6 +24146,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // rakupp that no other implementation will run.
         // …but a BIND to an ELEMENT replaces what is bound there, so rebinding a
         // slot that a previous bind made immutable is not an assignment to it.
+        // A topic with NO container behind it answers first, whatever the value
+        // in it happens to be: `for list(@a, @b) { $_ = 9 }` binds an Array each
+        // round, so the immutable-TYPE check below would otherwise report the
+        // Array ("Cannot modify an immutable List") where Rakudo reports the
+        // binding ("Cannot assign to an immutable value"). Ordinary readonly
+        // keeps its old place, after the type check.
+        if (lv->readonly && lv->immutableBind && a->op != ":=")
+            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
         if (!tctx_.lvalueImmutable.empty() && a->op != ":=") {
             std::string ty = tctx_.lvalueImmutable, gi = tctx_.lvalueImmutableGist;
             tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
@@ -24037,12 +24164,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                        "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
         }
         if (lv->readonly && !(a->op == ":=" && a->target->kind == NK::Index))
-            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                            "Cannot assign to a readonly variable or a value"};
+            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
         // …and the flag does NOT travel with the value. It marks the CONTAINER,
         // so `my $y = $x` copies a readonly parameter's value into a perfectly
         // writable slot of its own.
-        rhs.readonly = false;
+        rhs.readonly = rhs.immutableBind = false;
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
             // The VALUE of `$proxy = v` is the container, so reading it runs FETCH —
@@ -24537,9 +24663,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value v = eval(a->target.get());
         Value* lv = lvalue(a->value.get());
         if (lv->readonly)
-            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                            "Cannot assign to a readonly variable or a value"};
-        v.readonly = false;
+            throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
+        v.readonly = v.immutableBind = false;
         *lv = std::move(v);
         return sink ? Value::any() : *lv;
     }
@@ -24642,10 +24767,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                    "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
     }
     if (lv->readonly)
-        throw RakuError{Value::typeObj("X::Assignment::RO"),
-                        "Cannot assign to a readonly variable or a value"};
+        throw RakuError{Value::typeObj("X::Assignment::RO"), notWritableMsg(*lv)};
     Value rhs = eval(a->value.get());
-    rhs.readonly = false;                  // the flag marks the container, not the value
+    rhs.readonly = rhs.immutableBind = false;                  // the flag marks the container, not the value
     // a Proxy-bound target (`$a := $x`) routes OP= through FETCH/STORE so the
     // update reaches the underlying container instead of clobbering the Proxy
     if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
@@ -35912,7 +36036,7 @@ Value Interpreter::eval(Expr* e) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                         ParStripe rs(*this, p); // torn-copy contract, as below
                         Value out = *p;
-                        out.readonly = false;
+                        out.readonly = out.immutableBind = false;
                         return out;
                     }
                 }
@@ -35938,7 +36062,7 @@ Value Interpreter::eval(Expr* e) {
                         // slots of their own. (The `$_`/`$/` readonly tests read
                         // their slot directly, so they still see the flag.)
                         Value out = *p;
-                        out.readonly = false;
+                        out.readonly = out.immutableBind = false;
                         return out;
                     }
                 }

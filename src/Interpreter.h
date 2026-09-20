@@ -1463,6 +1463,9 @@ public:
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
     std::shared_ptr<ValueList> valuesArrayAlias(Expr* listExpr);
+    // True when the loop source yields bare values, so a write to the topic has
+    // nowhere to land and Rakudo refuses it — see the definition.
+    static bool immutableLoopSource(const Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
     // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT

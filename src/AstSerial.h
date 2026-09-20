@@ -20,7 +20,11 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 22; // v22: Param.captureName — a signature TYPE CAPTURE
+inline constexpr uint32_t kAstSerialVersion = 23; // v23: ForStmt.varTraits — `is rw`
+// and `is raw` on a plain-name loop parameter, which decide whether a write to
+// it is refused and with which message; the plain-name path kept only the name,
+// so a cached loop came back with every parameter looking untraited
+// v22: Param.captureName — a signature TYPE CAPTURE
 // (`::T $x`) keeps its name apart from `type`, which a following constraint
 // overwrites (`::T Red::Model:U \type`); without it a cached module's capture
 // bound nothing and the body's `T` was undeclared

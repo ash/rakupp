@@ -17075,7 +17075,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 // the attribute is a fresh slot, or its later `$!iterator :=
                 // nqp::null` is "Cannot assign to a readonly variable"
                 Value bound = v[3];
-                bound.readonly = false;
+                bound.readonly = bound.immutableBind = false;
                 v[0].obj()->attrs[bare] = std::move(bound);
             }
             return op == O::P6BindAttrInvRes ? v[0] : v[3];
