@@ -9160,6 +9160,31 @@ ExprPtr Parser::applyExprModifiers(ExprPtr e) {
     return e;
 }
 
+// `do BLOCK` with a LOOP modifier is Perl 5's do-while, which Raku disallows
+// (S04: "applying a statement modifier to a `do` block is specifically
+// disallowed"). The trap is silent rather than cosmetic: a modifier `while` is
+// a PRE-test, so `my $i = 5; do {...} while $i < 3` runs the body ZERO times
+// where Perl 5 runs it once — the one author who reaches for this form is the
+// one it burns. Rakudo raises X::Obsolete from the `statement modifier loop`
+// branch of its grammar and only there, so a CONDITIONAL modifier in between
+// (`do {...} if $a for @b`) parses the other branch and stays legal — hence
+// the test that the statement is still a bare `do` ExprStmt, unwrapped. A
+// blockless `do EXPR while …` is legal in both: its modifier binds INSIDE the
+// `do`, so the loop never reaches here. A BARE block is what ends the inner
+// statement and strands the modifier outside; a block that is really a TERM —
+// `do -> $x {…} for @a`, `do <-> {…}`, `do sub {…}` — is an EXPR again, takes
+// the modifier with it, and stays legal in Rakudo (it dies later, passing the
+// topic to a block that did not ask for one, which is a runtime matter).
+static bool isDoBlockExprStmt(const Stmt* s) {
+    if (!s || s->kind != NK::ExprStmt) return false;
+    const auto* es = static_cast<const ExprStmt*>(s);
+    if (!es->e || es->e->kind != NK::Unary) return false;
+    const auto* u = static_cast<const Unary*>(es->e.get());
+    if (u->op != "do" || !u->operand || u->operand->kind != NK::BlockExpr) return false;
+    const auto* be = static_cast<const BlockExpr*>(u->operand.get());
+    return !be->isPointy && !be->isSub && !be->isMethodTerm;
+}
+
 StmtPtr Parser::applyModifiers(StmtPtr s) {
     // a BLOCK's `}` at end-of-line TERMINATES the statement (Rakudo's rule) — so
     // `x => {…}\n if COND {…}` starts a NEW if statement, while a modifier on
@@ -9175,6 +9200,17 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
         cur().line != toks_[pos_ - 1].line && cur().spaceBefore) return s;
     if (cur().kind == Tok::Ident) {
         const std::string& kw = cur().text;
+        // see isDoBlockExprStmt: `do {...} while/until/for/given` is Rakudo's
+        // one obsolete-syntax error in this function; the loop modifiers are
+        // exactly the four its grammar lists.
+        if ((kw == "while" || kw == "until" || kw == "for" || kw == "given") &&
+            stmtStart_ < toks_.size() && toks_[stmtStart_].kind == Tok::Ident &&
+            toks_[stmtStart_].text == "do" && isDoBlockExprStmt(s.get())) {
+            std::string old = "do..." + kw;
+            std::string repl = "repeat...while or repeat...until";
+            throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl,
+                             cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+        }
         if (kw == "if" || kw == "unless") {
             advance();
             auto is = std::make_unique<IfStmt>();
