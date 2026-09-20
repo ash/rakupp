@@ -2684,7 +2684,7 @@ past it and stops on `nqp::eqaddr` — a different op, shared with `Tuple` and
 Elizabeth Mattijsen is the ecosystem's largest author: **262 distinct
 distributions** under `auth<zef:lizmat>` and `auth<cpan:ELIZABETH>` together,
 against the next author's 111. This is the per-author sweep over all of them,
-in the shape [Anton Antonov's](#antons-ecosystem) took.
+in the shape [Anton Antonov's](#anton-antonovs-ecosystem-and-the-honest-is-deeply-2026-08-28) took.
 
 Build the list from the REA index by the **`dist` field's** auth, not the whole
 line: the loose test matched 27 dists by OTHER authors that merely pin a lizmat
