@@ -25468,6 +25468,7 @@ static bool isRefValue(const Value& v) {
     }
 }
 
+static bool valueSmartmatchHook(const std::string& op, const Value& l, const Value& r, Value& out); // defined below, beside applyBinOp
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -25751,6 +25752,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         for (auto& e : *j.arr()) out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
         return out;
+    }
+    // Signature-, object- and Numeric-matcher smartmatch, shared by every caller
+    // that holds a VALUE (junction eigenstates, `where` constraints) instead of
+    // an AST node — see valueSmartmatchHook. AFTER the junction arms above,
+    // because a junction TOPIC threads first: `any(1, 2) ~~ $matcher` asks the
+    // matcher about each eigenstate rather than handing it the junction whole.
+    if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object) && g_cbInterp &&
+        (op == "~~" || op == "!~~")) {
+        Value hooked;
+        if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
     if (op == "..." || op == "...^") { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
@@ -30205,6 +30216,85 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     }
 }
 
+static Value bridgeReal(Interpreter& I, const Value& v);
+// The value-level smartmatch hooks, out of line on purpose: applyArith's Int/Int
+// fast path and the junction collapse above it are hot enough that carrying
+// these ~50 lines in the same body cost 3% per eigenstate on the width
+// benchmark — the checks never even run there (Int ~~ Int returns earlier),
+// so it was pure code layout. Gated by a cheap type test at the call site.
+static bool valueSmartmatchHook(const std::string& op, const Value& l, const Value& r, Value& out) {
+    // `$x ~~ $obj` where $obj's class defines ACCEPTS — the general hook every
+    // matcher type in Raku is built on. It lives HERE, at the bottom that every
+    // smartmatch path converges on, and not in evalBinary or applyBinOp: the
+    // junction eigenstate loops and the `where`-constraint sites hold VALUES and
+    // reach applyArith directly, so a hook any higher was invisible to them.
+    // `5 ~~ ($matcher | $other)` and `sub f($x where $matcher)` both answered
+    // False without ever calling ACCEPTS, while the same match written out
+    // (`5 ~~ $matcher`) and `.grep($matcher)` called it — the hook was in
+    // evalBinary, which only the written-out form goes through.
+    // The call site places this AFTER applyArith's junction arms, because a
+    // junction TOPIC threads first: `any(1, 2) ~~ $matcher` asks the matcher
+    // about each eigenstate rather than handing it the junction whole. Only a
+    // DEFINED instance takes this road; `$x ~~ SomeClass` stays a type check.
+    // Each arm re-tests what the gate already checked: cheap here (this is only
+    // reached when the gate passed) and it keeps the helper correct on its own.
+    if (r.t == VT::Object && r.obj() && r.obj()->cls && g_cbInterp &&
+        (op == "~~" || op == "!~~")) {
+        bool hasAccepts = false;
+        for (ClassInfo* ci = r.obj()->cls.get(); ci && !hasAccepts; ci = ci->parent.get())
+            if (ci->methods.count("ACCEPTS")) hasAccepts = true;
+        if (hasAccepts) {
+            ValueList one{l};
+            // A user's ACCEPTS is usually a MULTI constrained to the types it
+            // knows how to match. When the topic is none of them, Rakudo falls
+            // back to Mu.ACCEPTS — the ordinary type/identity check — rather
+            // than failing to dispatch. Tinky's State accepts only a State, and
+            // `$object ~~ $state` (an Object against it) has to answer False,
+            // not "No matching multi candidate for method ACCEPTS".
+            try {
+                Value m = g_cbInterp->methodCall(r, "ACCEPTS", one);
+                if (op == "~~" && m.t == VT::Match) { out = m; return true; }
+                bool ok = g_cbInterp->boolify(m);
+                out = Value::boolean(op == "~~" ? ok : !ok); return true;
+            }
+            catch (RakuError& e) {
+                if (e.message.find("No matching multi candidate for method ACCEPTS") == std::string::npos &&
+                    e.message.rfind("Cannot resolve caller ACCEPTS", 0) != 0)
+                    throw;
+                // fall through to the generic smartmatch below
+            }
+        }
+    }
+    // `\(…) ~~ :(…)` — a Signature matches by BINDING the capture to it, which
+    // is Signature.ACCEPTS's job. Here for the same reason as the arm above: a
+    // signature reached as a VALUE (a junction eigenstate, a `where :(…)`) never
+    // passes through evalBinary, and answered False for every capture.
+    if (r.t == VT::Hash && r.hashKind == "Signature" && g_cbInterp &&
+        (op == "~~" || op == "!~~")) {
+        ValueList one{l};
+        bool ok = g_cbInterp->boolify(g_cbInterp->methodCall(r, "ACCEPTS", one));
+        out = Value::boolean(op == "~~" ? ok : !ok); return true;
+    }
+    // A NUMERIC matcher smartmatches with `==` — that is Rakudo's
+    // `Numeric.ACCEPTS(Any:D \a) { self == a }` — and `==` NUMIFIES the topic, so
+    // an object with its own (or a delegated) `method Numeric` matches by the
+    // number it answers. Lumberjack tests a log message against a level exactly
+    // this way: `$message ~~ $level`, where Message.Numeric hands back the
+    // message's own level. Here rather than in evalBinary for the same reason as
+    // the two arms above — `$obj ~~ (42 | 99)` and `sub f($x where 42)` were both
+    // False because they reach applyArith without passing through evalBinary.
+    if (l.t == VT::Object && l.obj() && l.obj()->cls && g_cbInterp &&
+        (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
+        (op == "~~" || op == "!~~")) {
+        Value nb = bridgeReal(*g_cbInterp, l);
+        if (!(nb.t == VT::Object)) {
+            bool ok = g_cbInterp->boolify(applyArith("==", nb, r));
+            out = Value::boolean(op == "~~" ? ok : !ok); return true;
+        }
+    }
+    return false;
+}
+
 // Real-role bridge: a user object that defines .Bridge (or .Numeric) numifies
 // through it, so numeric operators work on `class F does Real` instances.
 static Value bridgeReal(Interpreter& I, const Value& v) {
@@ -31256,60 +31346,11 @@ Value Interpreter::evalBinary(Binary* b) {
             bool ok = boolify(m);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
-        // `\(…) ~~ :(…)` — a Signature matches by BINDING the capture to it, which
-        // is Signature.ACCEPTS's job. applyArith has no idea what a Signature is
-        // and answered False for every capture.
-        if (r.t == VT::Hash && r.hashKind == "Signature") {
-            ValueList one{lTopic};
-            bool ok = boolify(methodCall(r, "ACCEPTS", one));
-            return Value::boolean(op == "~~" ? ok : !ok);
-        }
-        // `$x ~~ $obj` where $obj's class defines ACCEPTS — the general hook every
-        // matcher type in Raku is built on. Only a DEFINED instance takes this
-        // road; `$x ~~ SomeClass` stays a type check. Without it a custom matcher
-        // object silently answered False (IO::Glob's `"f.txt" ~~ glob("*.txt")`,
-        // and every `.grep($matcher)` over one).
-        if (r.t == VT::Object && r.obj() && r.obj()->cls) {
-            bool hasAccepts = false;
-            for (ClassInfo* ci = r.obj()->cls.get(); ci && !hasAccepts; ci = ci->parent.get())
-                if (ci->methods.count("ACCEPTS")) hasAccepts = true;
-            if (hasAccepts) {
-                ValueList one{lTopic};
-                // A user's ACCEPTS is usually a MULTI constrained to the types it
-                // knows how to match. When the topic is none of them, Rakudo falls
-                // back to Mu.ACCEPTS — the ordinary type/identity check — rather
-                // than failing to dispatch. Tinky's State accepts only a State, and
-                // `$object ~~ $state` (an Object against it) has to answer False,
-                // not "No matching multi candidate for method ACCEPTS".
-                try {
-                    Value m = methodCall(const_cast<Value&>(r), "ACCEPTS", one);
-                    if (op == "~~" && m.t == VT::Match) return m;
-                    bool ok = boolify(m);
-                    return Value::boolean(op == "~~" ? ok : !ok);
-                }
-                catch (RakuError& e) {
-                    if (e.message.find("No matching multi candidate for method ACCEPTS") == std::string::npos &&
-                        e.message.rfind("Cannot resolve caller ACCEPTS", 0) != 0)
-                        throw;
-                    // fall through to the generic smartmatch below
-                }
-            }
-        }
-        // A NUMERIC matcher smartmatches with `==` — that is Rakudo's
-        // `Numeric.ACCEPTS(Any:D \a) { self == a }` — and `==` NUMIFIES the
-        // topic, so an object with its own (or a delegated) `method Numeric`
-        // matches by the number it answers. Lumberjack tests a log message
-        // against a level exactly this way: `$message ~~ $level`, where
-        // Message.Numeric hands back the message's own level. Without it the
-        // comparison fell through to identity and was False for every value.
-        if ((lTopic.t == VT::Object && lTopic.obj() && lTopic.obj()->cls) &&
-            (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat)) {
-            Value nb = bridgeReal(*this, lTopic);
-            if (!(nb.t == VT::Object)) {
-                bool ok = boolify(applyArith("==", nb, r));
-                return Value::boolean(op == "~~" ? ok : !ok);
-            }
-        }
+        // The Signature-ACCEPTS, object-ACCEPTS and Numeric-matcher arms that used
+        // to sit here now live in applyArith, the bottom every smartmatch path
+        // converges on. All three were invisible to the callers that hold a VALUE
+        // — junction eigenstates, `where` constraints — because those never come
+        // through evalBinary. This arm falls through to them below.
         // generic smartmatch on the already-evaluated operands — the Whatever a
         // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
         // Rakudo); only a written `*` curries
