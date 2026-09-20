@@ -171,14 +171,42 @@ public:
         if (rk_type(S.c, d) != RK_HASH) throw ParseError(label_ + ": no match");
         Tree t = S.tree_of(d);
         auto& m = t.map();
+        /* The engine answered with a hash, but READING it is where a library
+         * has to be careful: `m.at(k)` raises std::out_of_range for a key that
+         * is not there, and `.int_()`/`.str()` raise std::bad_variant_access
+         * for one that is not the type expected. Neither is a ParseError, so a
+         * host following this header's own documented shape
+         *
+         *     catch (const rakupp::ParseError& e)
+         *
+         * does NOT catch it: the exception leaves main, std::terminate calls
+         * abort, and the PROCESS dies over a parse that merely failed. That is
+         * the one thing an embedded language must never do to its host, and it
+         * is silent about it — on Windows abort is __fastfail, so there is no
+         * message anywhere, only the exit code 0xC0000409. Every field is read
+         * defensively instead, and anything unexpected degrades to the
+         * undiagnosed ParseError above, which is what the caller was promised
+         * either way. */
+        auto number = [&m](const char* key, long long& out) {
+            auto it = m.find(key);
+            if (it == m.end() || !std::holds_alternative<long long>(it->second.v)) return false;
+            out = it->second.int_();
+            return true;
+        };
+        long long line = -1, col = -1, pos = -1;
+        auto r = m.find("rule");
+        if (!number("line", line) || !number("col", col) ||
+            r == m.end() || !std::holds_alternative<std::string>(r->second.v))
+            throw ParseError(label_ + ": no match");
+        number("pos", pos);   /* the offset is detail; its absence is not fatal */
+        const std::string& rulename = r->second.str();
         ParseError err(label_ + ": no match — failed at line " +
-                       std::to_string(m.at("line").int_()) + " column " +
-                       std::to_string(m.at("col").int_()) + " while trying <" +
-                       m.at("rule").str() + ">");
-        err.pos = m.at("pos").int_();
-        err.line = m.at("line").int_();
-        err.col = m.at("col").int_();
-        err.rule = m.at("rule").str();
+                       std::to_string(line) + " column " + std::to_string(col) +
+                       " while trying <" + rulename + ">");
+        err.pos = pos;
+        err.line = line;
+        err.col = col;
+        err.rule = rulename;
         throw err;
     }
 
