@@ -1092,6 +1092,25 @@ public:
     // applyArith sees values only, so the callers holding one raise this
     // through smartmatchValue().
     static thread_local bool valueSmartmatch_;
+    // A regex match run on the CALLER's behalf rather than by the caller: an
+    // eigenstate of a junction that is collapsing to a Bool, or the pattern
+    // `.grep`/`.first` was handed. Rakudo leaves `$/` untouched by those —
+    // `'abc' ~~ any(/(a)/, /(b)/)` answers True and `$/` stays undefined, where
+    // we used to leave whichever eigenstate ran last (or, since the collapse
+    // short-circuits, ran first). setMatchVar honours this flag, so ONE guard at
+    // the call site covers the dozen publication points inside regexMatch
+    // instead of a save/restore around each.
+    //
+    // It must never wrap USER code: `.grep({ $_ ~~ /a/ and ~$/ })` is the
+    // caller's own match inside its own block, and suppressing that would break
+    // a `$/` read the program is entitled to. Guard the regexMatch call, not the
+    // loop that may also invoke a Callable.
+    static thread_local bool matchVarSuppressed_;
+    struct MatchVarGuard {                 // nests and unwinds correctly
+        bool saved;
+        MatchVarGuard() : saved(matchVarSuppressed_) { matchVarSuppressed_ = true; }
+        ~MatchVarGuard() { matchVarSuppressed_ = saved; }
+    };
     Value smartmatchValue(const std::string& op, const Value& l, const Value& r);
     // one-shot: the next callCallable's activation is a ROUTINE frame even for a
     // bare block. `start { … }` sets it so `$/` scopes to the worker rather than

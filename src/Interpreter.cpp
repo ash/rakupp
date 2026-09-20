@@ -3008,6 +3008,7 @@ thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
 thread_local bool Interpreter::noAutothread_ = false;
 thread_local bool Interpreter::valueSmartmatch_ = false;
+thread_local bool Interpreter::matchVarSuppressed_ = false;
 thread_local bool Interpreter::forceRoutineFrame_ = false;
 thread_local std::string Interpreter::declaringType_;
 thread_local int Interpreter::loopPhaserCtl_ = 0;
@@ -3342,6 +3343,9 @@ Interpreter::Interpreter() {
 // `do { with X { … } }`) must be visible to the caller, like Rakudo's
 // per-routine $/ declaration.
 void Interpreter::setMatchVar(Value v) {
+    // a match made on the caller's behalf (junction collapse, .grep/.first
+    // matcher) publishes nothing — see matchVarSuppressed_ in the header
+    if (matchVarSuppressed_) return;
     for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
         auto it = e->vars.find("$/");
         if (it != e->vars.end()) {
@@ -31045,6 +31049,9 @@ Value Interpreter::evalBinary(Binary* b) {
                 (l.enumName == "any" || l.enumName == "all" ||
                  l.enumName == "one" || l.enumName == "none")) {
                 Value out = Value::array(); out.enumName = l.enumName;
+                // the Matches go into the RESULT, not into `$/`: Rakudo answers
+                // `any(｢4｣, Nil)` here with `$/` still undefined
+                MatchVarGuard noSlash;
                 for (auto& e : *l.arr()) {
                     Value m = regexMatch(rxSubject(e), pat);
                     if (op == "~~") out.arr()->push_back(m.truthy() ? m : Value::nil());
@@ -31209,7 +31216,10 @@ Value Interpreter::evalBinary(Binary* b) {
             JunctionCollapse jc(r.enumName);        // short-circuits; see Value.h
             for (auto& e : *r.arr()) {
                 bool m;
-                if (e.t == VT::Regex) m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); // &e: an interpolating eigenstate resolves vars from ITS captured env
+                // the guard is scoped to the REGEX arm alone: a Code eigenstate
+                // is the caller's own block and keeps its own `$/`
+                if (e.t == VT::Regex) { MatchVarGuard noSlash;
+                    m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); } // &e: an interpolating eigenstate resolves vars from ITS captured env
                 else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
                 // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
                 // smartmatch below knows nothing about IO or Pairs and answered

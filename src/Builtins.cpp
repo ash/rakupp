@@ -2068,7 +2068,12 @@ bool substSelectKnowsAdverb(const std::string& k) {
 // regexes — and a JUNCTION of matchers is tested eigenstate by eigenstate so a
 // regex inside one still matches (`.grep(none /<[aeiou]>/)`).
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
-    if (mt.t == VT::Regex) return I.regexMatch(v.toStr(), mt.s).truthy();
+    // The pattern `.grep`/`.first` was HANDED — the match is ours, not the
+    // caller's, so it publishes no `$/` (Rakudo: `<ab ac>.grep(/(a)/)` leaves
+    // `$/` undefined). Scoped to this arm only: the Code arm below is the
+    // caller's own block and must keep its own `$/`.
+    if (mt.t == VT::Regex) { Interpreter::MatchVarGuard noSlash;
+                             return I.regexMatch(v.toStr(), mt.s).truthy(); }
     if (mt.t == VT::Array && mt.arr() &&
         (mt.enumName == "any" || mt.enumName == "all" ||
          mt.enumName == "one" || mt.enumName == "none")) {
