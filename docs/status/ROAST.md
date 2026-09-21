@@ -261,6 +261,36 @@ TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
 
+_Snapshot 2026-09-21 (later still), main at `6aba9e9` + the S19 working tree
+(`--workers=4 --cpu=3`, one pass): 749 / 1,464 files fully passing (51.2%); 614
+partial, 92 no-TAP, 9 timeout; 207,912 / 219,915 declared assertions (94.5%).
+The sitting was **S19 (Command-line)**: 6 fully-passing files to 7 and its one
+partial to none, which is the whole reachable chapter. Rakudo passes 7 of these
+8 as well, and it is the same 7 — the file neither engine passes,
+`01-dash-uppercase-i.t`, is a Pugs-era test that wants `$*OS` and
+`$*EXECUTABLE_NAME` (removed from the language; no other Roast file names
+either), a global `@*INC` (replaced by `$*REPO`), and a `run $string` that
+shells out and honours `>` (Raku's `run` does neither). It is absent from
+Rakudo's `spectest.data` and from
+[rakudo-2026.08.list](roast-lists/rakudo-2026.08.list), and it is one of the 31
+files in the ceiling section above.
+
+The cause was in `applyRakudoFudge`, not on the command line. A `#?rakudo todo`
+in front of a column-0 block was read as a one-test todo; roast's own `fudge`
+instead recurses into the block — "do all in block as one action" — and prefixes
+`todo(<reason>);` to every test statement inside it. `04-negation.t` puts three
+`is_run`s under one such directive, so two of its three tests ran exposed
+against a bar Rakudo's fudged spectest shields. The directive is suite-wide, not
+an S19 one: 41 block-form `todo`s sit in 31 files, and the fix also shields 4
+more tests in `S12-enums/basic.t` and 3 in `S03-operators/identity.t`. All three
+deltas reproduce standalone. Gated against a clean build of `6aba9e9` measured
+the same way: no file lost. The two files gained beyond `04-negation.t` —
+`S15-nfg/concat-stable.t` and `S17-supply/syntax-nonblocking-await.t` — pass in
+isolation under either build, the load flappers COUNTING's timeout section
+describes. The by-synopsis table above and COUNTING's measures are deliberately
+not refreshed from this run: the build is stamped `-modified`, and those figures
+want a clean one._
+
 _Snapshot 2026-09-21 (later), main at `a23f1ba` + the S13 working tree
 (`--workers=4 --cpu=3`, one pass): 747 / 1,464 files fully passing (51.0%); 615
 partial, 92 no-TAP, 10 timeout; 207,830 / 219,677 declared assertions (94.6%).

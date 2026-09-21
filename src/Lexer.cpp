@@ -37,7 +37,10 @@ static std::string renderPod(const std::string& content) {
 // next N test statements for the Rakudo implementation. rakupp is a moar-like
 // backend, so it honours bare `#?rakudo` and `#?rakudo.moar` (never `.jvm`/`.js…`).
 // This is a faithful subset of roast's own `fudge` preprocessor:
-//   todo  — rewrite the directive line into `todo('<reason>', N);` (marks next N tests)
+//   todo  — rewrite the directive line into `todo('<reason>', N);` (marks next N tests),
+//           EXCEPT when a column-0 `{…}` block follows: then every test statement
+//           inside the block gets its own `todo('<reason>');`, the way fudge's
+//           "do all in block as one action" recursion does
 //   skip  — comment out the next N test statements / column-0 `{…}` blocks, emitting
 //           `skip('<reason>', numtests);` in front (numtests = test calls inside), so
 //           the plan stays satisfied without running the guarded construct — some of
@@ -162,7 +165,42 @@ static std::string applyRakudoFudge(const std::string& src) {
             std::string arg = rtrim(line.substr(std::min(vq, line.size())));
             if (v == "todo") {
                 if (arg.empty() || (arg[0] != '\'' && arg[0] != '"')) arg = "\"\"";
-                line = line.substr(0, p) + "todo(" + arg + ", " + count + ");";
+                // Block form. When the next significant line is a column-0 `{`,
+                // roast's fudge does NOT arm a counted todo and walk away: it
+                // recurses into the block with PENDING = 999999 ("do all in block
+                // as one action") and prefixes a bare `todo(<reason>);` to every
+                // test statement inside, up to the column-0 `}`. The difference is
+                // not cosmetic. `todo(reason, N)` arms N tests ONCE, so in a block
+                // whose tests sit inside a `for` (S04-phasers/in-loop.t,
+                // S04-phasers/next.t, S17-promise/basic.t) only the first N
+                // iterations would be shielded; fudge re-arms per source line, so
+                // every iteration is. And in a straight-line block (the common
+                // case: S19-command-line-options/04-negation.t) the old code armed
+                // exactly one test and left the block's other two exposed, failing
+                // a file Rakudo's own fudged spectest passes. Prefix per line, as
+                // fudge does; the directive line stays the comment it already is.
+                size_t nx = li + 1;
+                while (nx < lines.size()) {
+                    size_t q2 = indentOf(lines[nx]);
+                    if (rtrim(lines[nx]).empty() || (q2 < lines[nx].size() && lines[nx][q2] == '#')) { nx++; continue; }
+                    break;
+                }
+                bool marked = false;
+                if (nx < lines.size() && !lines[nx].empty() && lines[nx][0] == '{') {
+                    size_t end = nx + 1;
+                    while (end < lines.size() && !(lines[end].size() && lines[end][0] == '}')) end++;
+                    for (size_t k = nx + 1; k < end && k < lines.size(); k++) {
+                        std::string w = fudgeLeadingWord(lines[k]);
+                        if (!testFns.count(w) && !doesMap.count(w)) continue;
+                        size_t ind = indentOf(lines[k]);
+                        lines[k] = lines[k].substr(0, ind) + "todo(" + arg + "); " + lines[k].substr(ind);
+                        marked = true;
+                    }
+                }
+                // No recognised test statement in the block: fall back to the
+                // counted form rather than emitting nothing, so a construct our
+                // $IS list misses is still shielded as well as it was before.
+                if (!marked) line = line.substr(0, p) + "todo(" + arg + ", " + count + ");";
                 fudged = true;
             }
             else if (v == "skip" || v == "eval" || v == "try") {
