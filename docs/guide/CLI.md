@@ -1137,6 +1137,28 @@ the ordinary Unix ones:
   `:x(["a","b"])`, which binds `:@x` whole — and fails to bind a scalar
   `Str :$x`, exactly as under Rakudo, instead of silently keeping the
   last value.
+- **`True` and `False` are the Bool itself, wherever they appear.** Those
+  two words — spelled exactly so, or qualified as `Bool::True` /
+  `Bool::False` — become the value as each argument is read, before any
+  signature is looked at, which is what lets `prog --tls=True` drive a
+  `Bool :$tls` written for the bare `--tls`. Being a rule about the spelling
+  rather than about the parameter, it cuts both ways: `--tls=1`, `--tls=yes`
+  and `--tls=true` stay strings and do *not* bind that `Bool`, while a
+  `Str :$a` refuses `--a=True` because what it is offered is a `Bool`.
+  Positionals read the same way. Every other argument goes through `val()`
+  instead, so `--n=42` arrives as a real `IntStr` and a `UInt` parameter
+  rejects `-2` by its value rather than its spelling.
+  (`t/regression/main-bool-named-value.raku` is that matrix, and it too
+  passes under both engines.)
+
+  **The known gap**: Rakudo arrives at those four spellings by looking each
+  argument up in the program's scope and taking whatever **enum value** it
+  finds there, so under Rakudo a program that declares `enum Color <Red …>`
+  also receives `Red` as `Color::Red`, and `Less`, `Kept` and `BigEndian`
+  arrive as their core-enum values (rakudo#2794; roast's
+  `S06-other/main.t` "enums are converted" covers it). Here only `Bool` —
+  the case that reaches users — is converted; every other name stays the
+  string it was spelled as.
 
 ### The usage text
 

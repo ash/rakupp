@@ -79,6 +79,21 @@ static const std::unordered_set<std::string> kBlockKeywords = {
     "xor", "not",
 };
 
+// Keywords whose STATEMENT reading a following `(` cancels. Raku ends a
+// keyword at `<.end_keyword>`, and one thing that ends it is a paren glued to
+// it: `sub if {…}; if();` calls the sub, and roast declares and calls a routine
+// for each of thirty-odd keywords this way (S02-names-vars/names.t). Only the
+// names listed here are affected, and only once THIS unit has declared a
+// routine of that name (Parser::kwNamedSubs_) — an undeclared `if(1) {…}` is
+// left to the reading, and the error, it had before.
+static const std::unordered_set<std::string> kNeedsEndKeyword = {
+    "if", "unless", "while", "until", "for", "foreach", "loop", "repeat",
+    "given", "when", "default", "has", "multi", "proto", "only", "subset",
+    // …and the scope declarators, which took `my()` for a declaration of
+    // nothing and warned about the useless `()` rather than calling the sub
+    "my", "our", "state", "constant",
+};
+
 // every keyword that can follow a statement as a modifier — `with` and `without`
 // are deliberately NOT in kBlockKeywords (they start a term there), so the loop
 // controls need their own list to keep `next without $x` from reading `without`
@@ -3392,6 +3407,84 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
     }
 }
 
+static void rejectPackagedDynamic(const std::string& name, int line); // see below
+
+// An EXTENDED NAME — `$today:foo<a b>:bar:baz<x>` — is one symbol whose name
+// carries the adverbs. Raku lets the values be written four ways and they all
+// name the SAME variable, so the name is CANONICALISED here to the angle
+// spelling Rakudo stores: `:foo<a b>` however it was typed. A valueless adverb
+// (`:bar`) stays bare.
+//
+// The suffix is recognised only where Raku recognises one: the `:` glued to the
+// name and the key glued to the `:`. That space is what separates it from the
+// invocant colon (`say $obj: foo` passes `foo` to `$obj`), which is spelled
+// with the space after the colon, and from an adverb written apart from its
+// term. Nothing is consumed when the shape does not match.
+std::string Parser::readExtendedNameSuffix() {
+    auto splitWords = [](const std::string& t, std::vector<std::string>& out) {
+        for (size_t i = 0; i < t.size();) {
+            while (i < t.size() && ascii::isspace((unsigned char)t[i])) i++;
+            size_t b = i;
+            while (i < t.size() && !ascii::isspace((unsigned char)t[i])) i++;
+            if (i > b) out.push_back(t.substr(b, i - b));
+        }
+    };
+    std::string out;
+    while (isOp(":") && !cur().spaceBefore &&
+           peek().kind == Tok::Ident && !peek().spaceBefore && !peek().text.empty()) {
+        size_t save = pos_;
+        advance();                                  // :
+        std::string key = advance().text;
+        // `my $fo:o::b:ar` — an adverb key is an IDENTIFIER, and a package path
+        // is not one. The lexer folds the `::` into the identifier, so the
+        // double colon arrives here as part of the key; Rakudo is Confused by
+        // it and so are we (roast S02-names-vars/varnames.t).
+        if (key.find("::") != std::string::npos)
+            throw ParseError("Confused", cur().line, "X::Syntax::Confused", {});
+        std::vector<std::string> words;
+        bool haveWords = false;
+        if (!cur().spaceBefore) {
+            if (isKind(Tok::QwList)) { splitWords(advance().text, words); haveWords = true; }
+            else if (isOp("<")) { advance(); words = readAngleWords(">"); haveWords = true; }
+            // `«a b»` — the opener is its own op token and the words follow
+            else if (isOp("\xC2\xAB")) { advance(); words = readAngleWords("\xC2\xBB"); haveWords = true; }
+            // …but a ONE-WORD guillemet list lexes FUSED, and in the ASCII
+            // spelling: `«x»` arrives as the single op token `<<x>>`
+            else if (isKind(Tok::Op) && cur().text.size() >= 4 &&
+                     cur().text.compare(0, 2, "<<") == 0 &&
+                     cur().text.compare(cur().text.size() - 2, 2, ">>") == 0) {
+                std::string t = advance().text;
+                splitWords(t.substr(2, t.size() - 4), words);
+                haveWords = true;
+            }
+            else if (isKind(Tok::LBracket) || isKind(Tok::LParen)) {
+                // `:foo['a','b']` / `:foo('a','b')` — a comma list of LITERALS.
+                // Anything else in there is not a name, so the whole suffix is
+                // handed back to the ordinary parse.
+                Tok close = isKind(Tok::LBracket) ? Tok::RBracket : Tok::RParen;
+                advance();
+                bool ok = true;
+                while (!isKind(close) && !isKind(Tok::End)) {
+                    if (isKind(Tok::StrLit) || isKind(Tok::IntLit)) words.push_back(advance().text);
+                    else { ok = false; break; }
+                    if (isKind(Tok::Comma)) { advance(); continue; }
+                    break;
+                }
+                if (!ok || !isKind(close)) { pos_ = save; return out; }
+                advance();                          // ] / )
+                haveWords = true;
+            }
+        }
+        out += ":" + key;
+        if (haveWords) {
+            out += "<";
+            for (size_t i = 0; i < words.size(); i++) { if (i) out += " "; out += words[i]; }
+            out += ">";
+        }
+    }
+    return out;
+}
+
 ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (matchOp("\\")) {
         // sigilless: my \x = ...
@@ -3675,6 +3768,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (dnm.size() == 1 && std::strchr("$@%&", dnm[0])) dnm += kAnonSlot; // `my ($, $b)`: unnameable, as above
             auto ve = std::make_unique<VarExpr>(dnm);
             ve->declare = true; ve->declScope = scope;
+            // `my ($x?) := ()` — the signature markers. A declaration list binds
+            // POSITIONALLY, and a position the right-hand side does not reach
+            // already yields an undefined value, which is exactly what optional
+            // means here; the marker only has to stop being a parse error
+            // ("expected )"), which took all fifteen tests of
+            // S02-names-vars/signature.t with it.
+            if (isOp("?") || isOp("!")) advance();
             // A type written BEFORE the parenthesis applies to every variable in
             // the list — `my Int ($a, $b)` declares two Int, and `my uint32
             // ($a, $b)` two 32-bit natives that wrap on assignment. Only the
@@ -3718,6 +3818,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "X::Syntax::Variable::Match", {});
         }
         std::string vname = advance().text;
+        rejectPackagedDynamic(vname, cur().line);   // `my $*FOO::BAR` — see the helper
+        vname += readExtendedNameSuffix();          // `my $today:foo<a b>` — one symbol
         // `my &infix:<plus> = sub ($a, $b) {…}` — an OPERATOR declared by
         // assigning to a code variable. It is the spelling a module reaches for
         // when it builds its operators inside `sub EXPORT` (every one of the
@@ -3846,6 +3948,19 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         return ve;
     }
+    // A BAREWORD where the variable should be is the sigilless slip — `my Int a`
+    // — and Rakudo names the two ways to write what was meant. The generic
+    // "expected variable after declarator" said none of that and came out as
+    // X::Syntax::Confused, which is not the type the spec tests ask for
+    // (S02-names-vars/varnames.t matches the word "sigilless").
+    if (isKind(Tok::Ident)) {
+        std::string nm = cur().text;                 // `my Int a`: the LAST bareword
+        for (int k = 1; peek(k).kind == Tok::Ident; k++) nm = peek(k).text;
+        const std::string what = scope + " (did you mean to declare a sigilless \\" +
+                                 nm + " or $" + nm + "?)";
+        throw ParseError("Malformed " + what, cur().line,
+                         "X::Syntax::Malformed", {{"what", what}});
+    }
     error("expected variable after declarator");
 }
 
@@ -3897,6 +4012,19 @@ static std::string stripPseudoPkg(const std::string& name) {
     if (pkg == "PROCESS" && !std::strchr("*!?.^", rest[0])) sig += "*";
     return sig + rest;
 }
+// A `*`-twigil name may not be package-qualified: Rakudo refuses every
+// `$*FOO::BAR`, and refuses it for the pseudo-packages too (`$*PROCESS::IN`,
+// `$*CALLER::x`) — a dynamic is looked up along the CALL chain, which is not
+// where a package name points. Both the declaration and the use are errors
+// (roast S02-names-vars/contextual.t asks for each).
+static void rejectPackagedDynamic(const std::string& name, int line) {
+    if (name.size() < 3 || !std::strchr("$@%&", name[0]) || name[1] != '*') return;
+    if (name.find("::", 2) == std::string::npos) return;
+    throw ParseError("Dynamic variables cannot have package-like names (with '::'), so\n'" +
+                     name + "' is not allowed.", line, "X::Dynamic::Package",
+                     {{"symbol", name}});
+}
+
 // A pseudo-package angle access `MY::<$x>` / `CORE::<&not>` — symbol via scope chain.
 static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& sym) {
     if (sym.empty()) return "$_";
@@ -4853,6 +4981,10 @@ ExprPtr Parser::parsePrimary() {
             }
             int ln = cur().line;
             std::string raw = advance().text;
+            rejectPackagedDynamic(raw, ln);
+            // `$today:foo<a b>` — the adverbs are part of the NAME (the four
+            // value spellings canonicalise to one), not a pair after the term
+            raw += readExtendedNameSuffix();
             // `$.name(ARGS)` is `self.name(ARGS)` — a method call that TAKES those
             // arguments. It used to parse as the no-argument accessor `$.name`
             // followed by a postfix call on whatever that returned, so
@@ -4915,6 +5047,30 @@ ExprPtr Parser::parsePrimary() {
                 sr->pkg = "CALLER";
                 sr->nameExpr = std::make_unique<StrLit>(stripPseudoPkg(raw));
                 sr->line = ln; return sr;
+            }
+            // `$OUTER::a` is the lookup `OUTER::<$a>` already performs: each
+            // OUTER steps one scope OUT before the name is resolved. Merely
+            // stripping the qualifier — what the other pseudo-packages below
+            // do, and rightly — found our own `$a` again, so the two spellings
+            // disagreed and a shadowed outer variable had no way to be named
+            // (roast S02-names-vars/variables-and-packages.t reads three
+            // nested `$a` this way). A chain hops once per OUTER, and whatever
+            // qualifier is left after them is stripped as before.
+            if (raw.size() > 1 && std::strchr("$@%&", raw[0])) {
+                size_t head = 1;
+                if (head < raw.size() && std::strchr("*!?.^:", raw[head])) head++;
+                size_t p = head;
+                long long hops = 0;
+                while (p + 7 <= raw.size() && raw.compare(p, 7, "OUTER::") == 0) { hops++; p += 7; }
+                if (hops) {
+                    auto c = std::make_unique<Call>();
+                    c->name = "__sym-lookup";
+                    c->line = ln;
+                    c->args.push_back(std::make_unique<StrLit>(
+                        stripPseudoPkg(raw.substr(0, head) + raw.substr(p))));
+                    c->args.push_back(std::make_unique<IntLit>(hops));
+                    return c;
+                }
             }
             auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
@@ -5604,7 +5760,15 @@ ExprPtr Parser::parsePrimary() {
                 rl->isRx = true;
                 return rl;
             }
-            if (name == "self" && peek().kind != Tok::FatArrow) {
+            // A term, but only where a keyword may END: a TIGHT `self(` is a
+            // call of a sub named `self`, exactly as `pi()` below is. Rakudo
+            // spells the rule `<.end_keyword>` and roast declares `sub self
+            // { 4 }` and calls it (S02-names-vars/names.t) — we answered
+            // "'self' used where no object is available" and took the
+            // remaining 135 tests of that file down with us. A SPACE before
+            // the paren keeps the term, as it does there.
+            if (name == "self" && peek().kind != Tok::FatArrow &&
+                !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
                 advance(); // `self => v` stays an autoquoted pair key
                 return std::make_unique<SelfTerm>();
             }
@@ -5881,8 +6045,12 @@ ExprPtr Parser::parsePrimary() {
                 }
                 return u;
             }
-            if (name == "for" || name == "while" || name == "until" ||
-                name == "loop" || name == "repeat") {
+            if ((name == "for" || name == "while" || name == "until" ||
+                 name == "loop" || name == "repeat") &&
+                // …but `sub while {}; while();` is that sub's call. Delegating
+                // to parseStatement here would bounce straight back off its own
+                // end_keyword guard and recurse until the stack gave out.
+                !kwCallHere(name)) {
                 // a loop in term/value position: `(for … {…})».Str`, `my @x = while …`.
                 // parseStatement consumes the loop keyword; wrap it as a `do` so it
                 // evaluates to the collected List of per-iteration values.
@@ -5957,7 +6125,10 @@ ExprPtr Parser::parsePrimary() {
                  name == "has" || name == "constant") &&
                 // `state => header-init` is a PAIR with key "state" (Cro::HTTP2),
                 // not a declaration — a `=>` after the keyword means pair
-                peek().kind != Tok::FatArrow) {
+                peek().kind != Tok::FatArrow &&
+                // …and `sub has {}; has();` is that sub's call, not a
+                // declaration of nothing: the keyword ended at the paren
+                !kwCallHere(name)) {
                 advance();
                 // `my class Foo {…}` / `my role …` as an expression — evaluates to the type.
                 // …but only when a DECLARATION follows: `constant class = Foo` names
@@ -6657,6 +6828,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.userPostcircumfix_ = userPostcircumfix_;
     p.userDeclarators_ = userDeclarators_;
     p.wordInfixSubs_ = wordInfixSubs_;   // `"{ div 3 }"` sees this unit's `sub div`
+    p.kwNamedSubs_ = kwNamedSubs_;       // …and its `sub if`, so `"{ if() }"` calls it
     Program prog = p.parseProgram();
     // a single bare expression interpolates directly
     if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt)
@@ -8160,6 +8332,9 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         // `sub div` / `sub min` in THIS file: the name is now a routine, so at
         // term position it is a call and not the operator (startsListopArg).
         if (!asMethod && isWordInfixName(s->name)) wordInfixSubs_.insert(s->name);
+        // …and `sub if` / `sub has` / `sub loop`: the name is now a routine too,
+        // so a paren glued to it is that routine's call rather than the keyword.
+        if (!asMethod && kNeedsEndKeyword.count(s->name)) kwNamedSubs_.insert(s->name);
     }
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
     else if (isOp("::") && peek().kind == Tok::LParen) {
@@ -8869,6 +9044,23 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isModuleDecl = kindKw == "module";
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
+    // A pseudo-package names a SCOPE to look in, so nothing may be declared
+    // under one: `unit module MY;` is an error, and so is `module CALLER::Foo`.
+    // Only the FIRST component counts — `module Foo::MY` is an ordinary name —
+    // and `GLOBAL::` is the exception that proves it, being a real place to put
+    // a declaration (`class GLOBAL::evo`, stripped just below). GLOBAL standing
+    // ALONE is still nothing to declare, and Rakudo says so in its own words.
+    if (!cd->name.empty()) {
+        size_t sep = cd->name.find("::");
+        std::string first = sep == std::string::npos ? cd->name : cd->name.substr(0, sep);
+        if (first == "GLOBAL" && sep == std::string::npos)
+            throw ParseError("Cannot declare pseudo-package GLOBAL", cur().line,
+                             "X::AdHoc", {});
+        if (first != "GLOBAL" && isPseudoPkg(first))
+            throw ParseError("Cannot use pseudo package " + first + " in package name",
+                             cur().line, "X::PseudoPackage::InDeclaration",
+                             {{"pseudo-package", first}, {"action", "package name"}});
+    }
     // `class GLOBAL::evo { … }` declares `evo` in the root package — the pseudo
     // package is where it goes, not part of its name (S12-class/magical-vars.t
     // EVALs such a class and then names it bare). Only GLOBAL:: is stripped:
@@ -9984,6 +10176,15 @@ StmtPtr Parser::parseStatementImpl() {
 
     if (t.kind == Tok::Ident) {
         const std::string& kw = t.text;
+        // A keyword ENDS at a paren glued to it, so once this unit declares a
+        // routine of that name the call is what is written: `sub loop {}; loop();`
+        // is a call, not a malformed loop spec. Every branch below reads the
+        // keyword, so the question has to be asked ahead of all of them.
+        if (kwCallHere(kw)) {
+            auto es = std::make_unique<ExprStmt>();
+            es->e = parseExpression();
+            return applyModifiers(std::move(es));
+        }
         // scoped/unit declarations: my sub / our class / unit module / my constant ...
         static const std::set<std::string> declKw = {
             "sub", "method", "submethod", "multi", "proto", "class", "role",

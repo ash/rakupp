@@ -70,6 +70,63 @@ static std::string fudgeLeadingWord(const std::string& line) {
                                line[p] == '-' || line[p] == '\'')) p++;
     return line.substr(s, p - s);
 }
+// The one question this pass cannot answer by reading text: is a line that says
+// `#?rakudo skip …` a COMMENT, or the inside of a heredoc that looks like one?
+// It used to assume the first, and so rewrote a program's DATA — a heredoc
+// carrying such a line came back with the line under it commented out and a
+// `skip(…)` call spliced in front. Rakudo prints that heredoc verbatim; roast's
+// fudge is a separate tool that never sees a program it was not pointed at.
+//
+// Only the lexer knows where a comment is, and this runs before the lexer — so
+// it runs ONE throwaway lex of the source as written (`honourFudge` false, so
+// there is no recursion back into here) and asks it one thing: does a `#`
+// comment START on this line? A directive has to be one.
+//
+// That single question is the whole fix, because everything this pass rewrites
+// hangs off recognising a directive first. What happens AFTER a real directive
+// stays textual, exactly as roast's fudge tool is: a `#?rakudo skip` over an
+// `EVAL q[[ … is … ]]` block is MEANT to reach inside the string, count the
+// tests written there and comment them out with the rest — S04-statements/
+// leave.t plans 23 tests on that reading, and a "do not touch literals" rule
+// scored it 21. If the probe throws — the source need not even be valid Raku —
+// `ok` stays false and the pass behaves as it always did.
+//
+// An earlier attempt asked `scanSpans` (the standalone scanner behind
+// --highlight/--fmt) which lines were inside a literal. It is not a parser, and
+// on 16 of roast's 434 directive-carrying files it left a string span open
+// across a construct it misreads — a `‘…’` smart-quoted string, a
+// `m:Perl5/…\/…/` regex — which silently switched the directives off for the
+// rest of the file and cost four fully-passing files. The lexer's own answer
+// costs one more lex and is exact.
+struct FudgeProbe {
+    bool ok = false;
+    std::vector<char> comment;
+    bool commentOn(size_t li) const { return li < comment.size() && comment[li]; }
+};
+static FudgeProbe fudgeProbe(const std::string& src) {
+    FudgeProbe m;
+    try {
+        Lexer probe(src, /*honourFudge=*/false);
+        probe.trackComments_ = true;
+        probe.tokenize();
+        // …and turn the byte offsets into line numbers here, where the source is
+        // in hand. A backtracking lex can report one twice or out of order.
+        std::vector<size_t> at = std::move(probe.commentOffsets_);
+        std::sort(at.begin(), at.end());
+        size_t line = 0, next = 0;
+        for (size_t i = 0; i <= src.size() && next < at.size(); i++) {
+            while (next < at.size() && at[next] <= i) {
+                if (line >= m.comment.size()) m.comment.resize(line + 1, 0);
+                m.comment[line] = 1;
+                next++;
+            }
+            if (i < src.size() && src[i] == '\n') line++;
+        }
+        m.ok = true;
+    } catch (...) { return FudgeProbe(); }
+    return m;
+}
+
 static std::string applyRakudoFudge(const std::string& src) {
     if (src.find("#?rakudo") == std::string::npos && src.find("#?DOES") == std::string::npos)
         return src; // fast path: no directives
@@ -84,6 +141,11 @@ static std::string applyRakudoFudge(const std::string& src) {
           lines.push_back(src.substr(i, eol - i));
           i = eol + 1;
       } }
+
+    // …and which of those lines the lexer reads as a comment, which is the only
+    // thing that may arm a directive (see FudgeProbe).
+    const FudgeProbe probe = fudgeProbe(src);
+    auto isComment = [&](size_t li) { return !probe.ok || probe.commentOn(li); };
 
     auto indentOf = [](const std::string& l) {
         size_t p = 0; while (p < l.size() && (l[p] == ' ' || l[p] == '\t')) p++; return p;
@@ -124,7 +186,7 @@ static std::string applyRakudoFudge(const std::string& src) {
         size_t p = indentOf(line);
 
         // ---- #?DOES n : next statement (or sub definition) counts as n tests
-        if (line.compare(p, 6, "#?DOES") == 0) {
+        if (line.compare(p, 6, "#?DOES") == 0 && isComment(li)) {
             size_t q = p + 6; while (q < line.size() && (line[q] == ':' || line[q] == ' ' || line[q] == '\t')) q++;
             does = std::atoi(line.c_str() + q);
             continue; // the line stays (it's a comment)
@@ -143,7 +205,7 @@ static std::string applyRakudoFudge(const std::string& src) {
         }
 
         // ---- directive lines: #?rakudo[.backend] [N] verb [reason]
-        if (line.compare(p, 8, "#?rakudo") == 0) {
+        if (line.compare(p, 8, "#?rakudo") == 0 && isComment(li)) {
             size_t q = p + 8;
             std::string backend;
             if (q < line.size() && line[q] == '.') {
@@ -649,6 +711,7 @@ void Lexer::skipWhitespaceAndComments() {
         // is the three words "#", "name", "ver". Treating the `#` as a comment
         // swallowed the closing `>` and the rest of the line.
         if (c == '#' && angleWords_ == 0) {
+            if (trackComments_) commentOffsets_.push_back(pos_);   // fudge probe; see Lexer.h
             // `#`«…»` — the GUILLEMET spelling of the same embedded comment, and
             // the tripled `#`«««…»»»` a module uses to comment out a whole
             // signature (Terminal::Gauge). Both delimiters are two UTF-8 bytes,

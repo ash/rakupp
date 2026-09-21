@@ -1883,7 +1883,25 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     // one arrives as a real IntStr/RatStr and binds Int/Rat/Num params by its
     // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
     // the spelling. See issue #11.
-    auto allomorph = [](const std::string& str) { return valAllomorph(Value::str(str)); };
+    // Ahead of val() come the words that NAME `Bool`'s two values, which arrive as
+    // the Bool itself. That is the command line's OWN rule, not val()'s —
+    // `val("True")` is still the Str — and it is what lets `--tls=True` bind the
+    // `Bool :$tls` a program wrote for `--tls`. Being a rule about the spelling and
+    // not about the parameter, it is exact and type-blind in both directions:
+    // `--tls=1`, `--tls=yes` and `--tls=true` stay Str and fail to bind that Bool,
+    // while `Str :$a` refuses `--a=True` — it is handed a Bool. See issue #95.
+    //
+    // Rakudo reaches these four spellings by looking the word up in the program's
+    // scope and taking it when it finds an ENUM VALUE there, which is also why a
+    // user's `enum Color <Red …>` makes `Red` arrive as `Color::Red` (rakudo#2794,
+    // roast S06-other/main.t "enums are converted" — not implemented here: it
+    // reinterprets every argument of every program, so it wants its own gate run).
+    // Bool is the case that reaches users, and it needs no scope at all.
+    auto argValue = [](const std::string& str) -> Value {
+        if (str == "True"  || str == "Bool::True")  return Value::boolean(true);
+        if (str == "False" || str == "Bool::False") return Value::boolean(false);
+        return valAllomorph(Value::str(str));
+    };
     // Rakudo's conventions, oracle-verified case by case. The loop mirrors
     // default-args-to-capture, whose CHECK ORDER is observable:
     //   1. a bare `--`, met while the loop is still live, is consumed and the
@@ -1905,11 +1923,11 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     for (size_t i = 0; i < argv.size(); i++) {
         const std::string& a = argv[i];
         if (a == "--") { // check 1: consumed, everything after is positional
-            for (++i; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            for (++i; i < argv.size(); i++) pos.push_back(argValue(argv[i]));
             break;
         }
         if (!namedAnywhere && !pos.empty()) { // check 2: this + rest, verbatim
-            for (; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            for (; i < argv.size(); i++) pos.push_back(argValue(argv[i]));
             break;
         }
         if (a.size() > 1 && (a[0] == '-' || a[0] == ':')) {
@@ -1918,12 +1936,12 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
             if (!rest.empty()) {
                 if (rest[0] == '/') { addNamed(rest.substr(1), Value::boolean(false)); continue; }
                 auto eq = rest.find('=');
-                if (eq != std::string::npos) { addNamed(rest.substr(0, eq), allomorph(rest.substr(eq + 1))); continue; }
+                if (eq != std::string::npos) { addNamed(rest.substr(0, eq), argValue(rest.substr(eq + 1))); continue; }
                 addNamed(rest, Value::boolean(true));
                 continue;
             }
         }
-        pos.push_back(allomorph(a));
+        pos.push_back(argValue(a));
     }
     // positionals first, then the named args — the same capture shape the
     // RUN-MAIN builtin produces; named binding is by key, not position
@@ -8160,6 +8178,27 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // sorting where the EVAL itself sits in its unit.
     EndUnitScope endUnit{*this, /*atSourcePosition=*/false};
     registerEnds(*prog);
+    // Pre-declare the unit's own top-level `my`s, as the MAINLINE does above —
+    // in Raku a declaration is a compile-time effect, so the container exists
+    // before the line that initialises it runs, and `(my @a) = […@a…]` can name
+    // the very variable it declares. EVAL'd code got none of that and died
+    // "Variable '@a' is not declared", which is how `.raku` of a
+    // self-referential array — whose whole rendering is that shape — could not
+    // be read back (roast S02-names-vars/list_array_perl.t).
+    for (auto& s : prog->stmts) {
+        if (s->kind != NK::ExprStmt) continue;
+        Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
+        if (!e || e->kind != NK::Assign) continue;
+        Expr* t = static_cast<Assign*>(e)->target.get();
+        if (!t || t->kind != NK::VarExpr) continue;
+        auto* ve = static_cast<VarExpr*>(t);
+        // only a plain `my`: `state`, `our` and the trait/parameterized forms
+        // own machinery that the declaration itself has to run
+        if (!ve->declare || ve->declScope != "my" || ve->name.empty()) continue;
+        if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) continue;
+        if (tctx_.cur->local(ve->name)) continue;
+        tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
+    }
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
@@ -9369,6 +9408,26 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     auto pun = std::make_shared<ClassInfo>(*role);
     static int punSerial = 0;
     pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
+    // …and what to CALL it: `Foo[Int]`, the way it was written, the way Rakudo
+    // answers `.^name` and the way `.^shortname` shortens. The key above cannot
+    // double as that — it carries a serial so the SAME parameterization written
+    // twice stays one type — so the display form rides alongside it. A nested
+    // parameter uses ITS display form, which is how `Baz[Foo[Int],Bar[Int]]`
+    // comes out whole (roast S02-names-vars/names.t).
+    {
+        std::string args;
+        for (auto& a : argv) {
+            if (a.namedArg) continue;
+            if (!args.empty()) args += ",";
+            if (a.t == VT::Type) {
+                auto ci = classes_.find(a.s);
+                args += (ci != classes_.end() && !ci->second->dispName.empty())
+                            ? ci->second->dispName : a.typeName();
+            }
+            else args += g_rakuRepr ? g_rakuRepr(a) : a.toStr();
+        }
+        pun->dispName = args.empty() ? roleName : roleName + "[" + args + "]";
+    }
     if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     pun->roleParamBindings.clear();
@@ -15883,6 +15942,15 @@ static void forceLazyImpl(const Value& v) {
     }
     g_cbInterp->materializeLazy(v, 1000000);
 }
+// The display name of a registry key — see ClassInfo::dispName. Reads the live
+// class registry through g_matchClasses, so a free function suffices and Value
+// can call it without knowing about the Interpreter.
+static std::string typeDispNameImpl(const std::string& key) {
+    if (!g_matchClasses) return std::string();
+    auto it = g_matchClasses->find(key);
+    return it == g_matchClasses->end() || !it->second ? std::string() : it->second->dispName;
+}
+static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 
 // The g_makeTypedEx hook (Value.h): the free runtime helpers that raise a typed

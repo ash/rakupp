@@ -1618,12 +1618,59 @@ Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
 
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
-std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
+std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen);
 // True while rendering an element of an `[…]` Array. Every Array slot is its own
 // scalar container, so an itemized value nested there needs no `$` marker —
 // Rakudo prints `[[1, 2],]`. Inside a `(…)` List the marker does matter.
 static bool g_reprInArrayElem = false;
-std::string rakuRepr(const Value& v) { std::set<const void*> seen; return rakuRepr(v, 0, seen); }
+
+// A SELF-REFERENTIAL container cannot be written as a literal, so `.raku` names
+// it: Rakudo renders `my $a = [42]; $a[1] = $a` as
+//     ((my @Array_5513076856128) = $[42, @Array_5513076856128])
+// — a declaration whose initializer mentions the very variable it declares. We
+// printed `[...]` there, which is not Raku at all: roast's
+// S02-names-vars/list_array_perl.t EVALs what .raku gives back and the parse
+// error took the file's remaining ten tests with it.
+//
+// Containers that turn out to be referenced from inside themselves land here
+// during a render, keyed by container, with the name to use. The name is
+// invented at the BACK-reference; the frame that owns the container (the one
+// that put it in `seen`) finds it afterwards and wraps its body in the
+// declaration — which is why a cycle deeper in the structure declares itself
+// there rather than at the top: `$[1, ((my @Array_x) = [2, @Array_x])]`.
+static thread_local std::map<const void*, std::string> g_reprSelfRef;
+static std::string reprSelfName(const void* p, bool isHash) {
+    auto it = g_reprSelfRef.find(p);
+    if (it != g_reprSelfRef.end()) return it->second;
+    std::string nm = (isHash ? "%Hash_" : "@Array_") +
+                     std::to_string((unsigned long long)(uintptr_t)p);
+    g_reprSelfRef.emplace(p, nm);
+    return nm;
+}
+std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+    const void* ctr = v.t == VT::Array ? (const void*)v.arr()
+                    : v.t == VT::Hash  ? (const void*)v.hash() : nullptr;
+    // A container already being rendered is the back-reference itself — let the
+    // impl answer it (with the name), and leave the wrapping to the frame that
+    // owns it, further out.
+    if (!ctr || seen.count(ctr)) return rakuReprImpl(v, depth, seen);
+    std::string body = rakuReprImpl(v, depth, seen);
+    auto it = g_reprSelfRef.find(ctr);
+    if (it == g_reprSelfRef.end()) return body;
+    std::string nm = it->second;
+    g_reprSelfRef.erase(it);
+    return "((my " + nm + ") = " + body + ")";
+}
+std::string rakuRepr(const Value& v) {
+    std::set<const void*> seen;
+    // a render can run user code (a `.raku` method), so the cycle names are
+    // saved and restored rather than simply cleared
+    auto saved = std::move(g_reprSelfRef);
+    g_reprSelfRef.clear();
+    std::string o = rakuRepr(v, 0, seen);
+    g_reprSelfRef = std::move(saved);
+    return o;
+}
 // Value.cpp renders Range endpoints with .raku; hand it this implementation.
 static const bool g_rakuReprInstalled = ((g_rakuRepr = &rakuRepr), true);
 void rejectNulPath(const std::string& path) {
@@ -1735,7 +1782,7 @@ static Value arrayHoleFill(const Value& arr, const Value& e) {
     return e;
 }
 
-std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen) {
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
     // style — nested occurrences included. (The .raku method arm pre-materialises
@@ -1780,7 +1827,12 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
         case VT::Bool: return v.b ? "Bool::True" : "Bool::False";
-        case VT::Type: return v.s;
+        case VT::Type: {
+            // a role pun renders as what it was written as, `Foo[Int]`, not as
+            // the registry key that keeps two of them the same type
+            std::string d = g_typeDispName ? g_typeDispName(v.s) : std::string();
+            return d.empty() ? v.s.str() : d;
+        }
         case VT::Str:
             // a Buf/Blob is a Str only in REPRESENTATION — its .raku is the
             // constructor that rebuilds it, over its ELEMENTS, not a string
@@ -1957,7 +2009,8 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 for (auto& e : *v.arr()) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 return o + ")";
             }
-            if (v.arr() && !seen.insert(v.arr()).second) return v.isList ? "(...)" : "[...]"; // cycle
+            // a cycle: name the container and let its owning frame declare it
+            if (v.arr() && !seen.insert(v.arr()).second) return reprSelfName(v.arr(), false);
             // A TYPED array round-trips through its parameterized constructor:
             // `my Int @a = 1, 2` is `Array[Int].new(1, 2)`, a native one
             // `array[int].new(1, 2)`, and an empty one still names its type.
@@ -2026,7 +2079,7 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             return o;
         }
         case VT::Hash: {
-            if (v.hash() && !seen.insert(v.hash()).second) return "{...}"; // cycle
+            if (v.hash() && !seen.insert(v.hash()).second) return reprSelfName(v.hash(), true); // cycle
             std::vector<std::string> keys;
             if (v.hash()) for (auto& kv : *v.hash()) keys.push_back(kv.first);
             std::sort(keys.begin(), keys.end());
@@ -3693,6 +3746,13 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     std::string o;
     if (!p.type.empty()) {
         o += p.type;
+        // A COERCION renders both halves — `Int(Cool) $a`, and `Int()` as
+        // `Int(Any)`, which is what it means. Only the target was printed, so
+        // `:(Int(Cool) $a).raku` came back `:(Int $a)` and read as an ordinary
+        // type constraint (roast S02-names-vars/signature.t). `.type` already
+        // answered the coercion; this is the rendering catching up with it.
+        if (p.coerce)
+            o += "(" + (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")";
         if (p.defConstraint == 1) o += ":D";
         else if (p.defConstraint == 2) o += ":U";
         o += " ";
@@ -3741,7 +3801,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     q->aliasBoth = p.aliasBoth; q->aliasKeys = p.aliasKeys; q->pod = p.pod;
     q->slurpyKind = p.slurpyKind; q->named = p.named; q->slurpy = p.slurpy;
     q->optional = p.optional; q->required = p.required; q->invocant = p.invocant;
-    q->defConstraint = p.defConstraint; q->coerce = p.coerce;
+    q->defConstraint = p.defConstraint; q->coerce = p.coerce; q->coerceFrom = p.coerceFrom;
     q->isRw = p.isRw; q->isCopy = p.isCopy;
     q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
     q->defaultRaku = renderDefault(p);
@@ -3888,7 +3948,13 @@ Value makeSignature(const Callable* c) {
                 : p.sigil == '@' ? "Positional"
                 : p.sigil == '%' ? "Associative"
                 : p.sigil == '&' ? "Callable"
-                : (c && c->isSigLiteral) ? "Mu" : "Any");
+                // An untyped scalar parameter defaults to Mu on a BLOCK and on a
+                // bare signature literal, and to Any on a routine — Rakudo
+                // measured: `(-> $a {}).signature.params[0].type` is Mu where
+                // `(sub ($a) {}).…` is Any. Blocks answered Any here, so a
+                // signature literal never compared equal to the pointy block it
+                // describes (roast S02-names-vars/signature.t).
+                : (c && (c->isSigLiteral || c->isBlock)) ? "Mu" : "Any");
             (*pv.hash())["type-obj"] = std::move(tv);
         }
         // trait/shape flags the introspection API exposes one method each for
@@ -6102,7 +6168,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (inv.t == VT::Type && inv.ofType().empty()) {
                 auto cn = classes_.find(inv.s);
                 if (cn != classes_.end() && cn->second && !cn->second->name.empty())
-                    return Value::str(cn->second->name);
+                    // a ROLE PUN answers what it was WRITTEN as — `Foo[Int]` —
+                    // not the registry key that keeps two of them one type
+                    return Value::str(cn->second->dispName.empty() ? cn->second->name
+                                                                   : cn->second->dispName);
+            }
+            {   // …and so does an INSTANCE of one: `Foo[Int].new.^name`
+                auto cn = classes_.find(inv.typeName());
+                if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
+                    return Value::str(cn->second->dispName);
             }
             return Value::str(inv.typeName());
         }
@@ -6128,10 +6202,27 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (mm == "shortname") { // type name without its package qualifier
             std::string n = inv.typeName();
-            size_t base = n.find('[');            // keep any [parametrization]
-            size_t cut = n.rfind("::", base == std::string::npos ? std::string::npos : base);
-            if (cut != std::string::npos) n = n.substr(cut + 2);
-            return Value::str(n);
+            {   // a role pun is known by its display name, `Foo::Bar[Int]`
+                auto cn = classes_.find(n);
+                if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
+                    n = cn->second->dispName;
+            }
+            // EVERY name in the rendering is shortened, not just the head:
+            // Rakudo answers `Baz[Foo[Int],Bar[Int]]` for
+            // `Foo::Bar::Baz[Foo[Int],Foo::Bar[Int]]`, so the parameters lose
+            // their qualifiers too. (For an unparameterized name this is the
+            // same single-segment strip it always did.)
+            std::string o;
+            size_t seg = 0;
+            for (size_t i = 0; i <= n.size(); i++) {
+                if (i != n.size() && n[i] != '[' && n[i] != ']' && n[i] != ',') continue;
+                std::string part = n.substr(seg, i - seg);
+                size_t cut = part.rfind("::");
+                o += cut == std::string::npos ? part : part.substr(cut + 2);
+                if (i < n.size()) o += n[i];
+                seg = i + 1;
+            }
+            return Value::str(o);
         }
         // `.^mixin(Role)` mixes IN PLACE — it reblesses the object itself, so every
         // reference to it sees the role, which is what separates it from `but`.

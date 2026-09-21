@@ -3815,7 +3815,19 @@ function runMain(cands, argv, sinkResult) {
 // A string default is shown QUOTED, so `[default: '.']` cannot be read as
 // punctuation of the sentence around it — as the interpreter renders it.
 function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
-function argValue(s) { return val(s); }   // the IntStr-like allomorph Rakudo hands MAIN: `Int $n` accepts it, `say $n` prints the spelling
+// The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
+// prints the spelling), with the command line's own rule ahead of it: the words
+// naming Bool's two values arrive as the Bool itself, which is what lets
+// `--tls=True` bind the `Bool :$tls` a program wrote for `--tls`. The rule is
+// about the spelling and not the parameter, so `--tls=1` and `--tls=yes` stay
+// Str and do NOT bind that Bool. The interpreter's rtMainArgs is the twin of
+// this, and says there why the wider enum rule Rakudo reaches these through is
+// not implemented in either. See issue #95.
+function argValue(s) {
+    if (s === 'True'  || s === 'Bool::True')  return true;
+    if (s === 'False' || s === 'Bool::False') return false;
+    return val(s);
+}
 function bindMain(c, pos, named) {
     const args = [];
     let pi = 0;
@@ -3823,7 +3835,13 @@ function bindMain(c, pos, named) {
     const nmap = new Map();
     for (const p of c.params) {
         if (p.named) {
-            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v === 'string') v = truthy(v); if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
+            // A `Bool` named takes a Bool and nothing else: `--tls`, `--/tls` and
+            // the `--tls=True` / `--tls=False` spellings argValue already turned
+            // into one. Anything else — `--tls=yes`, or the list a repeated
+            // `--tls=…` collects — does not bind, and the usage message is printed.
+            // The mirror of that is a `Str` named refusing the Bool those two
+            // words became: `--a=True` does not bind a `Str :$a`.
+            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
             // `*%opts` takes the leftover options ONE BY ONE: it is the slurpy
             // that collects them, so they arrive as the named arguments they
             // are, not as a single `:opts(%h)`.
@@ -3841,7 +3859,11 @@ function bindMain(c, pos, named) {
         if (pi >= pos.length) { if (p.optional || p.hasDefault) continue; return null; }
         let v = pos[pi++];
         if (p.type && (p.type === 'Int' || p.type === 'Num' || p.type === 'Numeric' || p.type === 'Real' || p.type === 'Rat')) { let n; try { n = strToNumeric(str(v)); } catch (e) { return null; } if (p.type === 'Int' && !isIntVal(n)) return null; if (!(v instanceof RAllo)) v = n; }   // the allomorph stays: `Int $n` sees an IntStr
-        else if (p.type === 'Bool') v = truthy(v);
+        // A positional `Bool $x` takes `True`/`False` and no other spelling, and
+        // conversely those two words do not bind a `Str $p` — by the time binding
+        // looks at them they are a Bool, not a string.
+        else if (p.type === 'Bool' && typeof v !== 'boolean') return null;
+        else if (p.type === 'Str' && typeof v === 'boolean') return null;
         if (p.lit !== undefined && str(v) !== p.lit) return null;
         args.push(v);
     }
@@ -3972,7 +3994,8 @@ function main(body, opts) {
     let r;
     try { r = body(); }
     catch (e) { code = reportUncaught(e); return finish(undefined); }
-    // a coloured program (one that awaits) hands back a Promise: finish when it settles
+)RKJS",
+R"RKJS(    // a coloured program (one that awaits) hands back a Promise: finish when it settles
     if (r && typeof r.then === 'function') return r.then(v => finish(v), e => { code = reportUncaught(e); return finish(undefined); });
     return finish(r);
 }
@@ -3993,8 +4016,7 @@ function reportUncaught(e) {
     if (e instanceof RakuError) { host.stderr(e.message + '\n'); return 1; }
     if (e instanceof RObj) { host.stderr(excMessage(e) + '\n'); return 1; }
     if (e instanceof RFailure) { host.stderr(e.err.message + '\n'); return 1; }
-)RKJS",
-R"RKJS(    if (e instanceof RangeError && /call stack/i.test(e.message)) { host.stderr('Maximum call stack size exceeded (a deeper recursion than this JavaScript host allows; try node --stack-size=65500)\n'); return 1; }
+    if (e instanceof RangeError && /call stack/i.test(e.message)) { host.stderr('Maximum call stack size exceeded (a deeper recursion than this JavaScript host allows; try node --stack-size=65500)\n'); return 1; }
     host.stderr('Internal error: ' + (e && e.stack ? e.stack : String(e)) + '\n');
     return 3;
 }
@@ -4191,7 +4213,8 @@ function jsCall(o, name, args) {
     return fromJs(prop);
 }
 function jsGet(o, k) { const target = o instanceof RJsObj ? o.v : o; return fromJs(target == null ? undefined : target[typeof k === 'number' ? k : str(k)]); }
-function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
+)RKJS",
+R"RKJS(function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
 function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
 function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
 function jsTruthy(o) { return !!o.v; }
@@ -4205,8 +4228,7 @@ M(JsObjectT, {
     'AT-KEY': (s, k) => jsGet(s, k), 'ASSIGN-KEY': (s, k, v) => jsSet(s, k, v), 'EXISTS-KEY': (s, k) => jsExists(s, k), 'AT-POS': (s, i) => jsGet(s, Number(toInt(i))), 'ASSIGN-POS': (s, i, v) => jsSet(s, Number(toInt(i)), v),
     'new': (s, ...a) => jsNew(s, a), 'keys': (s) => mkSeq(Object.keys(s.v)), 'elems': (s) => s.v != null && s.v.length !== undefined ? s.v.length : Object.keys(s.v).length,
     'list': (s) => mkList(Array.from(s.v, fromJs)), 'List': (s) => mkList(Array.from(s.v, fromJs)), 'Array': (s) => mkArray(Array.from(s.v, fromJs)), 'Hash': (s) => { const h = new RHash(); for (const k of Object.keys(s.v)) h.m.set(k, fromJs(s.v[k])); return h; },
-)RKJS",
-R"RKJS(    'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
+    'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
     'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
 });
 Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
@@ -4392,7 +4414,8 @@ function toSupply(src) {
 }
 function supplyFromList(items) { return new RSupply(null, (t) => { for (const v of items) { if (t.closed) return; safeEmit(t, v); } if (!t.closed) { if (t.done) t.done(); t.tap.close(); } }); }
 function supplyInterval(secs, delay) {
-    const ms = Math.max(1, toFloat(secs) * 1000), first = delay === undefined ? 0 : toFloat(delay) * 1000;
+)RKJS",
+R"RKJS(    const ms = Math.max(1, toFloat(secs) * 1000), first = delay === undefined ? 0 : toFloat(delay) * 1000;
     return new RSupply(null, (t) => {
         let n = 0, iv = null;
         const tick = () => { if (t.closed) return; safeEmit(t, n++); };
@@ -4416,8 +4439,7 @@ function supplyHead(src, n) { const k = n === undefined ? 1 : Number(toInt(n)); 
 function supplyLines(src, chomp) {
     return new RSupply(null, (t) => {
         let buf = '';
-)RKJS",
-R"RKJS(        const inner = src.tap(v => { buf += str(v); for (;;) { const i = buf.indexOf('\n'); if (i < 0) break; const line = buf.slice(0, i + 1); buf = buf.slice(i + 1); if (t.closed) return; safeEmit(t, chomp ? line.slice(0, -1) : line); } },
+        const inner = src.tap(v => { buf += str(v); for (;;) { const i = buf.indexOf('\n'); if (i < 0) break; const line = buf.slice(0, i + 1); buf = buf.slice(i + 1); if (t.closed) return; safeEmit(t, chomp ? line.slice(0, -1) : line); } },
             () => { if (t.closed) return; if (buf !== '') { safeEmit(t, buf); buf = ''; } finishTap(t); },
             e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } });
         t.cleanup = () => inner.close();
@@ -4582,7 +4604,8 @@ function ccFlag(f, cp, ch) {
     }
 }
 function classFlagsMatch(flags, cp, ch) {
-    for (const f of flags) {
+)RKJS",
+R"RKJS(    for (const f of flags) {
         const lc = f.toLowerCase();
         const hit = ccFlag(lc, cp, ch);
         if (f === lc ? hit : !hit) return true;
@@ -4609,8 +4632,7 @@ function clusterEnd(s, i) {
         else if (cur === GB_Extend || cur === GB_ZWJ) brk = false;
         else if (cur === GB_SpacingMark) brk = false;
         else if (prev === GB_Prepend) brk = false;
-)RKJS",
-R"RKJS(        else if (incbState === 2 && ip === 2) brk = false;
+        else if (incbState === 2 && ip === 2) brk = false;
         else if (pictSeq && prev === GB_ZWJ && cur === GB_ExtPict) brk = false;
         else if (prev === GB_RI && cur === GB_RI && (riRun % 2 === 1)) brk = false;
         else brk = true;
@@ -4822,7 +4844,8 @@ function m(n, st, pos, k) {
             const r = truthy(n.fn(cur));
             return (r !== !!n.negate) ? k(pos) : false;
         }
-        case 'VarMatch': return varMatch(n, st, pos, k);
+)RKJS",
+R"RKJS(        case 'VarMatch': return varMatch(n, st, pos, k);
         case 'CapStart': { const saved = st.capFrom; st.capFrom = pos; if (k(pos)) return true; st.capFrom = saved; return false; }
         case 'CapEnd': { const saved = st.capTo; st.capTo = pos; if (k(pos)) return true; st.capTo = saved; return false; }
         case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
@@ -4845,8 +4868,7 @@ function rep(n, st, pos, k) {
     };
     const matchOne = (p, count, kk) => {
         if (count > 0 && n.sep) return m(n.sep, st, p, (q) => m(kid, st, q, (r) => r === p && count > 0 ? false : kk(r)));
-)RKJS",
-R"RKJS(        return m(kid, st, p, (r) => (r === p && !st.rx.tree.p5) ? false : kk(r));
+        return m(kid, st, p, (r) => (r === p && !st.rx.tree.p5) ? false : kk(r));
     };
     // possessive / ratchet: take as many as possible, never give back
     if (!n.frugal && (n.possessive || st.ratchet)) {
@@ -5102,7 +5124,8 @@ function namedFromFrame(frame, tree) {
     const named = new Map();
     const listNames = tree.listNames || [], hashNames = tree.hashNames || [];
     for (const [name, list] of frame) {
-        if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
+)RKJS",
+R"RKJS(        if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
         else if (list.length > 1 || listNames.includes(name)) named.set(name, mkList(list.slice()));
         else named.set(name, list[0]);
     }
@@ -5126,8 +5149,7 @@ function cursorCall(cur, name, args) {
 }
 // the end of a match of rxo anchored at pos, or -1
 function matchEndAt(s, rxo, pos) { const st = new RxState(s, rxo, null); st.startPos = pos; let end = -1; m(rxo.root, st, pos, (q) => { end = q; return true; }); return end; }
-)RKJS",
-R"RKJS(// A regex built from a STRING at run time (`<$p>` with $p a Str): the subset of
+// A regex built from a STRING at run time (`<$p>` with $p a Str): the subset of
 // the syntax a pattern string carries — literals, quotes, \d\w\s\n\t\h and their
 // negations, `.`, anchors, word boundaries, ( ) and [ ] groups, <[…]> classes,
 // <name> assertions, quantifiers with % separators, | and || alternation, :i.
@@ -5330,7 +5352,8 @@ function matchGist(mt, depth) {
     const entries = [];
     mt.caps.forEach((c, i) => { if (c instanceof RList) { for (const x of c.a) entries.push([x.from, String(i), x]); } else if (c instanceof RMatch) entries.push([c.from, String(i), c]); });
     for (const [k, v] of mt.named) { if (v instanceof RList) { for (const x of v.a) entries.push([x.from, k, x]); } else if (v instanceof RMatch) entries.push([v.from, k, v]); else entries.push([0, k, v]); }
-    entries.sort((a, b) => a[0] - b[0]);
+)RKJS",
+R"RKJS(    entries.sort((a, b) => a[0] - b[0]);
     const pad = ' '.repeat(depth + 1);
     for (const [, k, v] of entries) out += '\n' + pad + k + ' => ' + (v instanceof RMatch ? matchGist(v, depth + 1) : gist(v));
     return out;
@@ -5352,8 +5375,7 @@ function grammarParse(ty, subject, args, subparse) {
     if (!rule) throw new RakuError(`No such method '${ruleName}' for invocant of type '${ty.name}'`, 'X::Method::NotFound');
     const ctx = { grammar: ty, actions: actions === undefined ? null : actions, memo: new Map() };
     if (rule.proto) {   // parsing from a proto: the top-level match is the winning candidate's
-)RKJS",
-R"RKJS(        const st = new RxState(s, new RRegex({ root: { k: 'Subrule', name: ruleName }, ncaps: 0 }), ctx);
+        const st = new RxState(s, new RRegex({ root: { k: 'Subrule', name: ruleName }, ncaps: 0 }), ctx);
         let found = null;
         const ok = subrule({ k: 'Subrule', name: ruleName }, st, 0, (q) => { if (!subparse && q !== s.length) return false; found = st.named.get(ruleName)[0]; return true; });
         if (!ok) return Nil;
