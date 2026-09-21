@@ -60,6 +60,14 @@ sub engine-id($path) {
 }
 my ($ENGINE, $ENGINE-VER) = engine-id($BIN);
 my $FOREIGN = $ENGINE ne 'rakupp';
+# mutsu is the one foreign engine this harness actually gets pointed at, and it
+# has a fudge switch of its own — MUTSU_FUDGE=1, OFF by default, set by its own
+# runner (COUNTING.md's comparison table). Measured without it, mutsu is scored
+# on a bar neither engine uses: 1,419 of 1,464 files with it, far less without.
+# That single missing environment variable is the likeliest reason a mutsu run
+# comes back with a number nobody expects, so name it in the run's own output.
+my $MUTSU       = $ENGINE-VER.lc.contains('mutsu');
+my $MUTSU-FUDGE = ((%*ENV<MUTSU_FUDGE> // '') ne '') && ((%*ENV<MUTSU_FUDGE> // '') ne '0');
 
 # The ceiling is a RAKUPP budget and it does not travel. Measured serially on an
 # idle 8-core box: the 81 S15 files take 10 s of wall under rakupp and 160 s
@@ -346,7 +354,22 @@ if $FOREIGN && @files {
     for @files.pick($sample) -> $f {
         $raw++ if $f.IO.lines.first({ .trim.starts-with('#?rakudo') });
     }
-    if $raw {
+    if $raw && $MUTSU {
+        # mutsu does the rewriting itself, inside the interpreter, when the
+        # variable is set — so for mutsu a raw checkout is the RIGHT input and
+        # the fudgeall advice below is wrong. Which of the two bars this run is
+        # on comes down to one environment variable; say which.
+        note $MUTSU-FUDGE
+            ?? "run-roast: mutsu with MUTSU_FUDGE=1 — it applies the #?rakudo directives "
+             ~ "itself, so a raw checkout is the right input and the fudged bar is the "
+             ~ "one being measured (docs/status/COUNTING.md)."
+            !! "run-roast: mutsu WITHOUT MUTSU_FUDGE=1 — its fudge rewriting is off by "
+             ~ "default, so every test a #?rakudo directive exists to skip is running "
+             ~ "and failing here ($raw of $sample sampled files carry one). This run "
+             ~ "measures the UNFUDGED bar, which our own figures are not on. Re-run as "
+             ~ "`MUTSU_FUDGE=1 mutsu tools/run-roast.raku` (docs/status/COUNTING.md).";
+    }
+    elsif $raw {
         note "run-roast: $ENGINE is measured against a RAW Roast checkout — $raw of "
            ~ "$sample sampled files still carry #?rakudo fudge directives, which "
            ~ "$ENGINE does not apply itself. Fudge a worktree first (`fudgeall "
@@ -401,7 +424,24 @@ my $timeout-declared = 0; # tests declared by timed-out files that never emitted
 my $timeout-counted  = 0; # how many timed-out files we recovered a static plan from
 my $timeout-unknown  = 0; # timed-out files with no static plan to recover
 # Per-section rollups for the by-synopsis table.
+#
+# Every one of these is written with `+= 1`, never `++`. That is not a style
+# choice: this harness is MEANT to be run under a foreign engine (see engine-id
+# above), and mutsu 0.23.0 — the one foreign engine anybody actually points at
+# it — silently drops `%h{$k}++` when it appears inside a named sub. The tally
+# below is a named sub, so under mutsu every one of these hashes stayed empty
+# while `$pass` and friends, being scalars, counted correctly: a run that looked
+# right in every headline and printed a by-synopsis table with nothing in it.
+# `%h{$k} += 1` works there and means the same thing everywhere.
 my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
+
+# Files the harness never managed to measure. A missing result is not a failing
+# file and not a passing one; it is a hole in the run, and the only wrong thing
+# to do with it is nothing. They are counted, named, and their declared tests
+# are charged to the denominator — see the final flush after the workers.
+my $lost = 0;            # files with no result, or whose run threw
+my $lost-declared = 0;   # tests those files declare, recovered from source
+my @lost-files;
 
 # ---------------------------------------------------------------------------
 # Scheduling: a work queue, longest file first.
@@ -555,6 +595,19 @@ my sub run-one($f) {
      $skipped, $todofail, $cpu]; # an Array stays one item
 }
 
+# Record a file the harness could not measure: no result at all, or a run that
+# threw. Its declared tests still go into the denominator — a file that leaves
+# the ratio entirely is the one outcome that IMPROVES the headline, which is
+# exactly the hole COUNTING.md's measure 4 was built to close for parse errors.
+my sub lose($k, $why) {
+    my $rel = @files[$k].substr($ROOT.chars + 1);
+    $lost += 1;
+    @lost-files.push("$rel — $why");
+    my $sp = static-plan(@files[$k]);
+    $lost-declared += $sp if $sp > 0;
+    say sprintf('  [LOST]  %5s  %s', '—', $rel);
+}
+
 # Tally and print file $k. Called in file order, under $lock.
 my sub tally($k) {
     my $f = @files[$k];
@@ -563,9 +616,13 @@ my sub tally($k) {
     my $r = @result[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
     my ($skipped, $todofail) = $r[6] // 0, $r[7] // 0;
+    if ($r[9] // Nil).defined {   # run-one threw; the worker caught it and said so here
+        lose($k, ~$r[9]);
+        return;
+    }
     if $timedout {
         $timeout++;
-        %sec-time{$sec}++;
+        %sec-time{$sec} += 1;
         # A timed-out file used to `return` right here, contributing nothing to
         # the numerator AND nothing to any denominator — its tests did not count
         # against the engine, they ceased to exist. That made the headline depend
@@ -611,12 +668,12 @@ my sub tally($k) {
     my $mark;
     if $planned == 0 && $failed == 0 && $has-skip {
         $pass++;              # genuine `plan skip-all` (emits `1..0 # SKIP …`) is a passing outcome
-        %sec-full{$sec}++;
+        %sec-full{$sec} += 1;
         $mark = 'PASS';
     }
     elsif $ran == 0 {
         $noplan++;
-        %sec-notap{$sec}++;
+        %sec-notap{$sec} += 1;
         $mark = '----';
         # A no-TAP file's tests are all effectively failing. If it emitted a plan
         # before dying, that N is already in $tot-plan; otherwise recover N from
@@ -628,12 +685,12 @@ my sub tally($k) {
     }
     elsif $failed == 0 && ($planned < 0 || $planned == $ran) {
         $pass++;
-        %sec-full{$sec}++;
+        %sec-full{$sec} += 1;
         $mark = 'PASS';
     }
     else {
         $partial++;
-        %sec-part{$sec}++;
+        %sec-part{$sec} += 1;
         $mark = 'part';
     }
     @fullypassing.push($rel) if $mark eq 'PASS';
@@ -670,7 +727,13 @@ my sub worker() {
         last if !$k.defined;
         if $k == -1 { sleep 0.02; next }
         my $t0 = now;
-        my $r  = run-one(@files[$k]);
+        # If run-one throws, the `start` block dies, `await` below rethrows, and
+        # a four-minute run ends with no summary at all — one file taking the
+        # whole measurement down with it. Catch it here instead: the file is
+        # scored as unmeasured (see lose) and the worker goes back to the queue.
+        my $r   = try { run-one(@files[$k]) };
+        my $why = $r.defined ?? Nil !! ($! ?? ~$!.message !! 'run-one failed');
+        $r = [False, -1, 0, 0, 0, False, 0, 0, Nil, $why] unless $r.defined;
         my $dt = (now - $t0).Num;
         $lock.protect({
             $load -= @demand[$k];
@@ -697,6 +760,43 @@ else {
 $sampling = False;
 await $sampler;
 wipe-progress() if $*ERR.t;
+
+# The workers' flush advances only over a CONTIGUOUS defined prefix of the file
+# list, because the per-file lines have to come out in file order. That is right
+# while the run is in flight and wrong the moment it ends: one file whose result
+# never arrived hides every file behind it, and those files then left the tally
+# as ABSENCES — not counted as failures, not counted at all, gone from both
+# sides of every ratio and from the by-synopsis table. A mutsu run reported
+# 1,037 + 181 + 22 + 4 = 1,244 files of 1,464 that way, with nothing in the
+# output saying the other 220 were missing. Nothing is running now, so tally
+# whatever is left, and count what has no result rather than skip past it.
+$lock.protect({
+    while $flushed < @files.elems {
+        if @result[$flushed].defined { tally($flushed) }
+        else                         { lose($flushed, 'no result: the worker that took it never came back') }
+        $flushed += 1;
+    }
+});
+if $lost {
+    note "";
+    note "run-roast: $lost file{$lost == 1 ?? '' !! 's'} produced no result. The run is INCOMPLETE: "
+       ~ "{$lost == 1 ?? 'its' !! 'their'} declared";
+    note "  tests are charged to the denominator, but nothing else about "
+       ~ "{$lost == 1 ?? 'it' !! 'them'} was measured.";
+    note "  $_" for @lost-files.head(8);
+    note "  …and {@lost-files.elems - 8} more" if @lost-files > 8;
+    # Where the missing results come from, when they come from anywhere: the work
+    # queue is shared mutable state across the worker threads, and a foreign
+    # engine's threads are its own. mutsu 0.23.0 hands the same file to several
+    # workers and leaves others unrun — instrumented 2026-09-21 on
+    # S17-supply/watch-path.t, a file whose 60 s timeout leaves a worker parked
+    # long enough for the shared cursor to drift. One worker has no queue to race.
+    note $FOREIGN
+        ?? "  A foreign engine's threads are its own: mutsu 0.23.0 hands one file to "
+         ~ "several workers and leaves others unrun. Re-run with --workers=1 for a "
+         ~ "figure worth quoting."
+        !! "  Re-run those files to measure them.";
+}
 
 # The gate's file list, as DATA. Written before the summary so a run that dies
 # formatting its own tables still leaves the thing a release actually diffs.
@@ -760,21 +860,34 @@ if $TIMES-GIVEN && $TIMESFILE {
     }
 }
 
-my $declared = $tot-plan + $notap-declared + $timeout-declared;  # every test any file declares it will run
+my $declared = $tot-plan + $notap-declared + $timeout-declared + $lost-declared;  # every test any file declares it will run
 my $fpct  = @files.elems ?? 100 * $pass     / @files.elems !! 0;
 my $rpct  = $tot-ran     ?? 100 * $tot-pass / $tot-ran     !! 0;
 my $ppct  = $tot-plan    ?? 100 * $tot-pass / $tot-plan    !! 0;
 my $dpct  = $declared    ?? 100 * $tot-pass / $declared    !! 0;
 say "";
 say "Files: ", @files.elems, "   fully-pass: ", $pass,
-    "   partial: ", $partial, "   no-TAP: ", $noplan, "   timeout: ", $timeout;
+    "   partial: ", $partial, "   no-TAP: ", $noplan, "   timeout: ", $timeout,
+    ($lost ?? "   LOST: $lost" !! '');
+# Every file lands in exactly one of those buckets, so they add up to the file
+# count — and when they do not, every figure below is over a subset of the suite
+# that nothing else in the output names. Say so on stderr, next to the line that
+# is wrong, rather than leaving the arithmetic to the reader.
+{
+    my $seen = $pass + $partial + $noplan + $timeout + $lost;
+    if $seen != @files.elems {
+        note "run-roast: ACCOUNTING CHECK FAILED — $seen files categorised of {@files.elems}. "
+           ~ "The figures below cover {$seen} files, not the suite.";
+    }
+}
 say sprintf("Wall time:            %.1f s  (%d workers)", (now - $T0).Num, $WORKERS);
 say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP and +%d from %d timed-out files, read from source; %d more have no static plan)",
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP and +%d from %d timed-out files, read from source; %d more have no static plan)%s",
             $tot-pass, $declared, $dpct, $notap-declared, $notap-counted,
-            $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown);
+            $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown,
+            ($lost ?? sprintf(" — and +%d from %d LOST file%s, which %s not measured at all", $lost-declared, $lost, $lost == 1 ?? '' !! 's', $lost == 1 ?? 'was' !! 'were') !! ''));
 # What the pass count is SHIELDED by. Both categories are legitimately counted as
 # passes above; this line says how many, so the headline can be read net.
 my $shielded = $tot-skip + $tot-todofail;

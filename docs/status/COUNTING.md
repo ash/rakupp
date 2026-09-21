@@ -112,6 +112,17 @@ The numerator is the **same** in every ratio — only the denominator widens.
   the engine — they vanished from numerator and denominator alike, so a run that
   timed out on more files quietly improved its own ratio. That is the same hole
   measure 4 closes for parse errors, and it is now closed for the clock too.
+- **Files with no result at all.** Workers park their results and flush the
+  *completed prefix* of the file list, so the per-file lines stay in file order.
+  That means one file whose result never arrives hides every file behind it, and
+  **until 2026-09-21 those files left the tally as absences** — not scored as
+  failures, not scored at all, gone from both sides of every ratio and from the
+  by-synopsis table, with nothing in the output saying so. A mutsu run reported
+  `1,037 + 181 + 22 + 4 = 1,244` of 1,464 files that way. There is now a final
+  flush after the workers stop: anything still unflushed is tallied, a file with
+  no result is counted in a `LOST:` bucket and named on stderr, its declared
+  tests are charged to measure 4, and the summary cross-checks that the buckets
+  add up to the file count before printing anything else.
 - **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
   the numerator — this is standard TAP (a skip/todo is not a failure), and it is
   how every TAP harness, Rakudo's included, scores.
@@ -249,6 +260,13 @@ to 180 seconds for. 1,419 at 10 s and 1,433 at 30 s+ are the same engine
 measured on two bars, not a discrepancy. Note also that the README's 1,433 was
 written 2026-07-23 and the file itself points at their site for the live figure,
 so treat it as a floor rather than a current reading.
+
+Re-measured 2026-09-21, after the harness started giving a foreign engine 6x the
+ceiling (60 s) and stopped losing the files behind a missing result: **1,428 /
+1,464 files and 219,526 / 220,916 declared assertions (99.4%)**, 16 workers,
+3 timeouts. The two readings agree — 1,419 at 10 s, 1,428 at 60 s, 1,433 at
+their own 30-180 s — and none of them is a statement about a bar either engine
+publishes on its own.
 
 ### The assertion figures net of skip and todo
 
@@ -409,7 +427,21 @@ foreign engine and handles the first two itself:
   neither engine uses. The harness samples 40 of the files it is about to run and
   warns, but cannot fix it — run
   `fudgeall --keep-exit-code --version=v6.d rakudo.moar` over a worktree and
-  point `$ROAST` at that.
+  point `$ROAST` at that. **mutsu is the exception**: it does the rewriting
+  itself, inside the interpreter, when `MUTSU_FUDGE=1` is set — so a raw checkout
+  is the right input for it and the whole question is one environment variable.
+  The harness recognises mutsu and says which of the two bars the run is on,
+  because measuring it unfudged is the easiest way to get a number that means
+  nothing.
+
+One more thing travels badly, in the other direction: **the harness itself has
+to run on the foreign engine.** It is Raku, and the foreign engine's bugs are
+its bugs. mutsu 0.23.0 silently drops `%h{$k}++` when the statement is inside a
+named sub, which is exactly where the per-synopsis rollups were written — every
+headline figure was correct and the by-synopsis table printed empty. Those five
+statements are now `%h{$k} += 1`, which means the same thing everywhere. When a
+foreign run produces a figure that looks structurally wrong rather than merely
+low, suspect the harness running on that engine before you suspect the engine.
 
 Getting any of this wrong does not produce a slightly-off number, it produces a
 meaningless one: `rakudo tools/run-roast.raku` on defaults once reported 76,285
