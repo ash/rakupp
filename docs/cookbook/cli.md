@@ -70,8 +70,8 @@ quick             2
 Four pieces of the signature are doing work that would otherwise be code.
 `Str $file = '-'` makes the argument optional with a default. `Int :$top`
 rejects `--top=abc` before the body runs. `Bool :$json` makes `--json` a flag
-rather than something that takes a value. And every `#=` becomes a line of the
-usage message.
+that needs no value — though a caller may still spell one out, as `--json=True`
+or `--json=False`. And every `#=` becomes a line of the usage message.
 
 ## The usage message is free
 

@@ -1883,7 +1883,25 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     // one arrives as a real IntStr/RatStr and binds Int/Rat/Num params by its
     // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
     // the spelling. See issue #11.
-    auto allomorph = [](const std::string& str) { return valAllomorph(Value::str(str)); };
+    // Ahead of val() come the words that NAME `Bool`'s two values, which arrive as
+    // the Bool itself. That is the command line's OWN rule, not val()'s —
+    // `val("True")` is still the Str — and it is what lets `--tls=True` bind the
+    // `Bool :$tls` a program wrote for `--tls`. Being a rule about the spelling and
+    // not about the parameter, it is exact and type-blind in both directions:
+    // `--tls=1`, `--tls=yes` and `--tls=true` stay Str and fail to bind that Bool,
+    // while `Str :$a` refuses `--a=True` — it is handed a Bool. See issue #95.
+    //
+    // Rakudo reaches these four spellings by looking the word up in the program's
+    // scope and taking it when it finds an ENUM VALUE there, which is also why a
+    // user's `enum Color <Red …>` makes `Red` arrive as `Color::Red` (rakudo#2794,
+    // roast S06-other/main.t "enums are converted" — not implemented here: it
+    // reinterprets every argument of every program, so it wants its own gate run).
+    // Bool is the case that reaches users, and it needs no scope at all.
+    auto argValue = [](const std::string& str) -> Value {
+        if (str == "True"  || str == "Bool::True")  return Value::boolean(true);
+        if (str == "False" || str == "Bool::False") return Value::boolean(false);
+        return valAllomorph(Value::str(str));
+    };
     // Rakudo's conventions, oracle-verified case by case. The loop mirrors
     // default-args-to-capture, whose CHECK ORDER is observable:
     //   1. a bare `--`, met while the loop is still live, is consumed and the
@@ -1905,11 +1923,11 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     for (size_t i = 0; i < argv.size(); i++) {
         const std::string& a = argv[i];
         if (a == "--") { // check 1: consumed, everything after is positional
-            for (++i; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            for (++i; i < argv.size(); i++) pos.push_back(argValue(argv[i]));
             break;
         }
         if (!namedAnywhere && !pos.empty()) { // check 2: this + rest, verbatim
-            for (; i < argv.size(); i++) pos.push_back(allomorph(argv[i]));
+            for (; i < argv.size(); i++) pos.push_back(argValue(argv[i]));
             break;
         }
         if (a.size() > 1 && (a[0] == '-' || a[0] == ':')) {
@@ -1918,12 +1936,12 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
             if (!rest.empty()) {
                 if (rest[0] == '/') { addNamed(rest.substr(1), Value::boolean(false)); continue; }
                 auto eq = rest.find('=');
-                if (eq != std::string::npos) { addNamed(rest.substr(0, eq), allomorph(rest.substr(eq + 1))); continue; }
+                if (eq != std::string::npos) { addNamed(rest.substr(0, eq), argValue(rest.substr(eq + 1))); continue; }
                 addNamed(rest, Value::boolean(true));
                 continue;
             }
         }
-        pos.push_back(allomorph(a));
+        pos.push_back(argValue(a));
     }
     // positionals first, then the named args — the same capture shape the
     // RUN-MAIN builtin produces; named binding is by key, not position

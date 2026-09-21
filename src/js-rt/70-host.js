@@ -278,7 +278,19 @@ function runMain(cands, argv, sinkResult) {
 // A string default is shown QUOTED, so `[default: '.']` cannot be read as
 // punctuation of the sentence around it — as the interpreter renders it.
 function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
-function argValue(s) { return val(s); }   // the IntStr-like allomorph Rakudo hands MAIN: `Int $n` accepts it, `say $n` prints the spelling
+// The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
+// prints the spelling), with the command line's own rule ahead of it: the words
+// naming Bool's two values arrive as the Bool itself, which is what lets
+// `--tls=True` bind the `Bool :$tls` a program wrote for `--tls`. The rule is
+// about the spelling and not the parameter, so `--tls=1` and `--tls=yes` stay
+// Str and do NOT bind that Bool. The interpreter's rtMainArgs is the twin of
+// this, and says there why the wider enum rule Rakudo reaches these through is
+// not implemented in either. See issue #95.
+function argValue(s) {
+    if (s === 'True'  || s === 'Bool::True')  return true;
+    if (s === 'False' || s === 'Bool::False') return false;
+    return val(s);
+}
 function bindMain(c, pos, named) {
     const args = [];
     let pi = 0;
@@ -286,7 +298,13 @@ function bindMain(c, pos, named) {
     const nmap = new Map();
     for (const p of c.params) {
         if (p.named) {
-            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v === 'string') v = truthy(v); if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
+            // A `Bool` named takes a Bool and nothing else: `--tls`, `--/tls` and
+            // the `--tls=True` / `--tls=False` spellings argValue already turned
+            // into one. Anything else — `--tls=yes`, or the list a repeated
+            // `--tls=…` collects — does not bind, and the usage message is printed.
+            // The mirror of that is a `Str` named refusing the Bool those two
+            // words became: `--a=True` does not bind a `Str :$a`.
+            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
             // `*%opts` takes the leftover options ONE BY ONE: it is the slurpy
             // that collects them, so they arrive as the named arguments they
             // are, not as a single `:opts(%h)`.
@@ -304,7 +322,11 @@ function bindMain(c, pos, named) {
         if (pi >= pos.length) { if (p.optional || p.hasDefault) continue; return null; }
         let v = pos[pi++];
         if (p.type && (p.type === 'Int' || p.type === 'Num' || p.type === 'Numeric' || p.type === 'Real' || p.type === 'Rat')) { let n; try { n = strToNumeric(str(v)); } catch (e) { return null; } if (p.type === 'Int' && !isIntVal(n)) return null; if (!(v instanceof RAllo)) v = n; }   // the allomorph stays: `Int $n` sees an IntStr
-        else if (p.type === 'Bool') v = truthy(v);
+        // A positional `Bool $x` takes `True`/`False` and no other spelling, and
+        // conversely those two words do not bind a `Str $p` — by the time binding
+        // looks at them they are a Bool, not a string.
+        else if (p.type === 'Bool' && typeof v !== 'boolean') return null;
+        else if (p.type === 'Str' && typeof v === 'boolean') return null;
         if (p.lit !== undefined && str(v) !== p.lit) return null;
         args.push(v);
     }
