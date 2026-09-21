@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~95% of all declared Roast tests pass** (207,843 / 219,677); on the
-stricter file bar, ~51% of files fully pass (745 / 1,464). The per-file breakdown
+**Headline: ~95% of all declared Roast tests pass** (207,830 / 219,677); on the
+stricter file bar, ~51% of files fully pass (747 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
 `not ok … # todo` lines as passes. Net of both it is 94.1% rather than 94.6% —
@@ -55,9 +55,9 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **745** | **51%** |
-| Partially passing | 616 | 42% |
-| No TAP output | 93 | 6% |
+| **Fully passing** | **747** | **51%** |
+| Partially passing | 615 | 42% |
+| No TAP output | 92 | 6% |
 | Timeouts | 10 | 0.7% |
 
 (Both files that once wedged the harness with unkillable children are measured
@@ -73,7 +73,7 @@ entirely unmeasured territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**207,843 of ~219,677 declared tests — 94.6%**. "Declared" means every test the
+**207,830 of ~219,677 declared tests — 94.6%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -82,13 +82,13 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 207,843 / 213,138 (97.5%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 207,843 / 216,747 (95.9%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 207,843 / 219,677 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 207,830 / 213,119 (97.5%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 207,830 / 216,747 (95.9%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 207,830 / 219,677 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 95% is the per-test analog of the ~51% file coverage. Three notes on scope:
 
-1. **~2.2k of the denominator comes from no-TAP files** (65 of them, read from
+1. **~2.1k of the denominator comes from no-TAP files** (64 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
    genuinely uncountable, so they sit outside even this figure.
 2. **S15 (Unicode) is ~91k of the reached total**, passing at ~100%, so it lifts
@@ -114,7 +114,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
 | S02 | Literals, types, magicals | 53 | 78 | 0 | 16 | 7445/8108 | 92% |
-| S03 | Operators | 79 | 40 | 1 | 5 | 25673/26041 | 99% |
+| S03 | Operators | 79 | 40 | 1 | 5 | 25678/26048 | 99% |
 | S04 | Blocks, statements, phasers | 32 | 41 | 0 | 4 | 1241/1488 | 83% |
 | S05 | Regexes & grammars | 39 | 55 | 0 | 4 | 5873/6273 | 94% |
 | S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1572/1840 | 85% |
@@ -123,7 +123,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S10 | Packages | 2 | 7 | 0 | 0 | 55/104 | 53% |
 | S11 | Modules | 9 | 11 | 0 | 2 | 90/123 | 73% |
 | S12 | Objects & classes | 33 | 57 | 0 | 11 | 1394/1614 | 86% |
-| S13 | Overloading | 5 | 1 | 0 | 1 | 64/71 | 90% |
+| S13 | Overloading | 7 | 0 | 0 | 0 | 88/88 | 100% |
 | S14 | Roles | 6 | 17 | 0 | 2 | 282/333 | 85% |
 | S15 | Unicode / strings / NFG | 77 | 4 | 0 | 0 | 91799/91807 | 100% |
 | S16 | I/O | 18 | 16 | 0 | 3 | 580/749 | 77% |
@@ -260,6 +260,15 @@ moment held them until it exited, which is what put a file with its complete
 TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
+
+_Snapshot 2026-09-21 (later), main at `a23f1ba` + the S13 working tree
+(`--workers=4 --cpu=3`, one pass): 747 / 1,464 files fully passing (51.0%); 615
+partial, 92 no-TAP, 10 timeout; 207,830 / 219,677 declared assertions (94.6%).
+**S13 (Overloading) is a fully-passing chapter**, 5 files to 7. Gated against the
+run below: no file lost. The 19 fewer assertions EMITTED are accounted for file
+by file — `S17-promise/start.t` flapped from 44 to 1 under load (3 real failures
+either way, measured in isolation), against +17 from `metaoperators.t` running at
+all and +7 from `S03-metaops/reverse.t` reaching further. Not a release run._
 
 _Snapshot 2026-09-21, main at `0f77ba5` + the S03 working tree (`--workers=4
 --cpu=3`, one pass): 745 / 1,464 files fully passing (50.9% coverage); 616

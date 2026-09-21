@@ -1275,6 +1275,29 @@ ExprPtr Parser::parseExpr(int minbp) {
         // candidate (roast's advent2009-day22.t, "Cannot resolve caller
         // infix:<==>()"). Built-in ops keep their normal parse; the runtime
         // already tries a user overload first for object operands.
+        // A METAOP over a USER word infix arrives as ONE identifier — `Xwtf`,
+        // `Zwtf`, `Rwtf`, `XZwtf` — because the lexer cannot know `wtf` is an
+        // operator. The infix classifier's word-base table lists only built-ins,
+        // so the declared-operator set is consulted here instead.
+        if (cur().kind == Tok::Ident && cur().text.size() > 1 &&
+            !userInfix_.count(cur().text)) {
+            const std::string w = cur().text;
+            size_t i = 0;
+            while (i < w.size() && (w[i] == 'Z' || w[i] == 'X' || w[i] == 'R')) i++;
+            if (i > 0 && i < w.size() && userInfix_.count(w.substr(i))) {
+                // Z/X are list infixes whatever they wrap; R keeps the base's own
+                // precedence, since it only swaps the operands.
+                int bp = (w[0] == 'Z' || w[0] == 'X') ? BP_ZIP : userInfix_[w.substr(i)];
+                if (bp < minbp) break;
+                advance();
+                auto bin = std::make_unique<Binary>();
+                bin->op = w;
+                bin->lhs = std::move(lhs);
+                bin->rhs = parseExpr(bp + 1);
+                lhs = std::move(bin);
+                continue;
+            }
+        }
         if ((cur().kind == Tok::Ident ||
              (cur().kind == Tok::Op && !classifyInfix(cur()).valid)) &&
             userInfix_.count(cur().text)) {
@@ -5055,12 +5078,20 @@ ExprPtr Parser::parsePrimary() {
                 while (j < 4 && (peek(j).kind == Tok::Ident || peek(j).kind == Tok::Op) &&
                        (j == 1 || !peek(j).spaceBefore)) pre += peek(j++).text;
                 int m = j + 1; std::string inner;
-                if (peek(j).kind == Tok::LBracket && (j == 1 || !peek(j).spaceBefore))
-                    while (peek(m).kind == Tok::Op || peek(m).kind == Tok::Ident) inner += peek(m++).text;
+                if (peek(j).kind == Tok::LBracket && (j == 1 || !peek(j).spaceBefore)) {
+                    // `[[&foo]]` — a reduction over a bracketed CALLABLE. The
+                    // name rides in the operator string and applyBinOp resolves
+                    // it, exactly as the binary `A [&foo] B` form does.
+                    if (peek(m).kind == Tok::Var && peek(m).text.size() > 1 && peek(m).text[0] == '&')
+                        inner = peek(m++).text;
+                    else
+                        while (peek(m).kind == Tok::Op || peek(m).kind == Tok::Ident) inner += peek(m++).text;
+                }
                 // …but only when the brackets really hold an OPERATOR: `[[-x]]` is
                 // an array of an array, not a reduction over an infix `-x`.
                 bool okInner = false;
-                if (!inner.empty()) {
+                if (!inner.empty() && inner[0] == '&') okInner = true;
+                else if (!inner.empty()) {
                     Token t2 = cur(); t2.text = pre + inner;
                     t2.kind = ascii::isalpha((unsigned char)t2.text[0]) ? Tok::Ident : Tok::Op;
                     okInner = classifyInfix(t2).valid || userInfix_.count(t2.text) != 0;

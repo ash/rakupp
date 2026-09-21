@@ -20265,32 +20265,40 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             for (auto& b : k->roleParamBindings)
                 if (!env->local(b.first)) env->define(b.first, b.second);
     }
-    // TOO FEW POSITIONALS is an error for a method as much as for a sub. The
-    // check lived only on the sub path, so a method called with fewer arguments
-    // than its signature requires simply RAN, with the missing parameter
-    // undefined — a typo'd or mis-remembered call did nothing and said nothing.
-    // HTTP::Roles asserts the opposite: a role's stubbed `method middleware
-    // (Callable $sub) {*}` called bare must die, which is how a class learns it
-    // has not implemented the role. Only the too-FEW half is checked here; the
-    // too-many half is ambiguous at this level (a quoted-key pair binds
-    // positionally, a capture-flattened named loses its bit), exactly as the
-    // sub path's comment says.
+    // POSITIONAL ARITY is an error for a method as much as for a sub, in BOTH
+    // directions. The check lived only on the sub path, so a method called with
+    // fewer arguments than its signature requires simply RAN, with the missing
+    // parameter undefined — a typo'd or mis-remembered call did nothing and said
+    // nothing. HTTP::Roles asserts the opposite: a role's stubbed `method
+    // middleware (Callable $sub) {*}` called bare must die, which is how a class
+    // learns it has not implemented the role.
+    //
+    // Only DEFINITELY-positional arguments are counted. That is not a heuristic:
+    // a quoted-key pair binds positionally (`f("a" => 1)` fills `$x`) while a
+    // bareword-key or colon-pair one is named (`f(a => 1)` is "too few
+    // positionals"), and `namedArg` already records which is which. Crediting
+    // every pair toward the positional count — which this check used to do —
+    // is what let `XYX(:a)` bind a named argument to a required positional.
     if (c.params && !c.params->empty() && !c.isMultiDispatcher && !c.subAsMethod) {
-        int reqPos = 0; bool unbounded = false;
+        int reqPos = 0, maxPos = 0; bool unbounded = false;
         for (auto& p : *c.params) {
             if (p.invocant || p.named) continue;
             if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; break; }
+            maxPos++;
             if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
         }
-        if (!unbounded && reqPos > 0) {
+        if (!unbounded) {
             int given = 0;
             for (auto& a : args) if (!isNamedArg(a)) given++;
-            // a Pair may be meant positionally, so credit every one of them
-            for (auto& a : args) if (isNamedArg(a)) given++;
-            if (given < reqPos)
+            if (reqPos > 0 && given < reqPos)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Too few positionals passed; expected " + std::to_string(reqPos) +
                     " argument" + (reqPos == 1 ? "" : "s") + " but got " +
+                    std::to_string(given)};
+            if (given > maxPos)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Too many positionals passed; expected " + std::to_string(maxPos) +
+                    " argument" + (maxPos == 1 ? "" : "s") + " but got " +
                     std::to_string(given)};
         }
     }
@@ -30935,10 +30943,22 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // `[+]`): the citation means the bare operator; strip once and recurse
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && op != "[=]")
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
+    // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its
+    // reduce form. The `&` spelling cannot collide with any infix.
+    if (op.size() > 1 && op[0] == '&' && tctx_.cur)
+        if (Value* f = tctx_.cur->find(op)) return callCallable(*f, ValueList{l, r});
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op)))
         return applyBinOp(op.substr(1), r, l);
+    // …and over a USER word infix (`a Rwtf b`), which no built-in table can list:
+    // the base is whatever `&infix:<…>` the scope declares. Here rather than in
+    // evalBinary because the simple-operand fast path never reaches that arm.
+    if (op.size() > 1 && op[0] == 'R' && ascii::isalnum((unsigned char)op[1]) && tctx_.cur) {
+        size_t i = 0; while (i < op.size() && op[i] == 'R') i++;
+        if (i < op.size() && tctx_.cur->find("&infix:<" + op.substr(i) + ">"))
+            return (i % 2) ? applyBinOp(op.substr(i), r, l) : applyBinOp(op.substr(i), l, r);
+    }
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object) && isStringCmpOp(op))
         return applyBinOp(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
@@ -31325,8 +31345,13 @@ Value Interpreter::evalBinary(Binary* b) {
             "&&", "and", "||", "or", "andthen", "orelse", "notandthen", "//", "^^", "xor", "&", "|", "^",
             "=:=", "!=:=", "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
             "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
+        // …and EVERY `R`-prefixed spelling, not just the ones the built-in table
+        // knows: `Rwtf` over a user `infix:<wtf>` is a reverse metaop too, and
+        // the fast path goes straight to applyArith, which has no scope to
+        // resolve the base in.
         bool rmeta = op.size() > 1 && op[0] == 'R' &&
-                     (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op));
+                     (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op) ||
+                      (tctx_.cur && tctx_.cur->find("&infix:<" + op.substr(1) + ">")));
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
     // A lexical `&infix:<op>` wins over the built-in it spells. Gated on
@@ -31551,6 +31576,50 @@ Value Interpreter::evalBinary(Binary* b) {
                 return hyperCore(ll, rr, sL, sR,
                     [&](const Value& x, const Value& y, Value*, Value*) { return callCallable(fn, ValueList{x, y}); });
             }
+            // `@a »=» @b` / `$h<a b c> »=» 42` — hyper ASSIGNMENT. There is no
+            // `infix:<=>` to apply element-wise, so the right side is cycled to
+            // the left's length and written through the ordinary assignment
+            // machinery, which is what makes a hash SLICE target work: its
+            // elements are values, not containers, so writing into the evaluated
+            // list (as the compound form below can) would reach nothing.
+            if (inner == "=") {
+                ValueList rhs = (r.t == VT::Array && r.arr() && !r.itemized) ? *r.arr() : ValueList{r};
+                size_t n = (l.t == VT::Array && l.arr()) ? l.arr()->size() : 1;
+                if (rhs.empty()) return l;
+                Value out = Value::array(); out.isList = true;
+                for (size_t i = 0; i < n; i++) out.arr()->push_back(rhs[i % rhs.size()]);
+                // A SLICE target stores key by key: `lvalue` reads `$h<a b c>` as
+                // one key whose name is the whole word list, which is right for a
+                // single subscript and wrong for a slice.
+                if (b->lhs->kind == NK::Index) {
+                    auto* ix = static_cast<Index*>(b->lhs.get());
+                    if (ix->index && !ix->multiDim && ix->adverb.empty()) {
+                        Value kv = eval(ix->index.get());
+                        if ((kv.t == VT::Array && kv.arr() && kv.arr()->size() > 1) ||
+                            kv.t == VT::Range) {
+                            ValueList keys = kv.flatten();
+                            Value* bp = lvalue(ix->base.get(), /*asInvocant=*/true);
+                            if (bp) {
+                                if (ix->isHash && !(bp->t == VT::Hash && bp->hash())) *bp = Value::makeHash();
+                                if (!ix->isHash && !(bp->t == VT::Array && bp->arr())) *bp = Value::array();
+                                for (size_t i = 0; i < keys.size(); i++) {
+                                    Value v = i < out.arr()->size() ? (*out.arr())[i] : Value::any();
+                                    if (bp->t == VT::Hash && bp->hash()) (*bp->hash())[keys[i].toStr()] = v;
+                                    else if (bp->t == VT::Array && bp->arr()) {
+                                        long long j = keys[i].toInt();
+                                        if (j < 0) continue;
+                                        if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1);
+                                        (*bp->arr())[j] = v;
+                                    }
+                                }
+                                rwWriteThrough(ix->base.get());
+                                return out;
+                            }
+                        }
+                    }
+                }
+                return assignChecked(b->lhs.get(), std::move(out));
+            }
             // hyper compound assignment — the shared implementation; this call
             // site has the AST, so a parenthesised LHS gets its write-back
             if (isHyperCompoundAssign(inner, l))
@@ -31653,6 +31722,16 @@ Value Interpreter::evalBinary(Binary* b) {
             else same = (l.t == r.t) && valueEq(l, r);
         }
         return Value::boolean(op[0] == '!' ? !same : same);
+    }
+    // `a Rwtf b` — the reverse metaop over a USER word infix, which no built-in
+    // table can list: the base is whatever `&infix:<…>` the scope declares.
+    if (op.size() > 1 && op[0] == 'R' && ascii::isalnum((unsigned char)op[1]) &&
+        !reverseWordOp(op) && tctx_.cur) {
+        size_t i = 0; while (i < op.size() && op[i] == 'R') i++;
+        if (i < op.size() && tctx_.cur->find("&infix:<" + op.substr(i) + ">")) {
+            Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
+            return (i % 2) ? applyBinOp(op.substr(i), r, l) : applyBinOp(op.substr(i), l, r);
+        }
     }
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op))) {
         // reverse metaoperator: `a R/ b` computes `b / a` — applyBinOp (not
@@ -35060,6 +35139,21 @@ Value Interpreter::evalCall(Call* c) {
             }
             return methodCall(Value::list(flat), c->name, ValueList{});
         }
+        // A type name applied to NOTHING, or to a single TYPE OBJECT, is the
+        // COERCION TYPE and not a call: `Int()` is `Int(Any)`, `A(Any)` is
+        // `A(Any)`, and both answer a Metamodel::CoercionHOW. Rakudo reads it
+        // that way even when the class has a CALL-ME — `A()` is the coercion
+        // where `A.()` is the call — so this comes before every coercer below.
+        if (c->parenned && !c->callee) {
+            bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
+                           args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
+            if ((args.empty() || typeArg) &&
+                (isKnownTypeName(c->name) || classes_.count(resolveClassAlias(c->name)))) {
+                std::string tgt = classes_.count(resolveClassAlias(c->name))
+                                      ? resolveClassAlias(c->name) : c->name;
+                return Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")");
+            }
+        }
         // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later
         // keys winning — which is how a sub layers defaults, computed values
         // and extras into the hash it returns (`Hash(%defaults, %computed,
@@ -35144,6 +35238,17 @@ Value Interpreter::evalCall(Call* c) {
                     return methodCall(a0, c->name, ValueList{});
                 if (Value* co = cit->second->findMethod("COERCE"))
                     return invokeMethod(*co, Value::typeObj(coerceName), std::move(args), &c->args);
+                // …and with no `.T` on the argument, no COERCE and no constructor
+                // of its own, there is nothing left to try: Rakudo says so by name
+                // rather than falling into the DEFAULT constructor, which can only
+                // report the unrelated "only takes named arguments".
+                if (!cit->second->findMethod("new") && !cit->second->findMethod("BUILD"))
+                    throwTypedV("X::Coerce::Impossible",
+                                {{"target-type", Value::typeObj(coerceName)},
+                                 {"from-type", Value::typeObj(args[0].typeName())},
+                                 {"hint", Value::str("no acceptable coercion method found")}},
+                                "Impossible coercion from '" + args[0].typeName() + "' into '" +
+                                coerceName + "': no acceptable coercion method found");
                 return methodCall(Value::typeObj(coerceName), "new", std::move(args));
             }
             return methodCall(a0, c->name, ValueList{});
