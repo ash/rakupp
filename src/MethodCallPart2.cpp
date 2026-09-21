@@ -2725,6 +2725,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "new") return Value::complex(args.size() > 0 ? args[0].toNum() : 0.0,
                                               args.size() > 1 ? args[1].toNum() : 0.0);
     }
+    // `*` is a singleton, so `Whatever.new` hands back the one that exists;
+    // HyperWhatever has no instance to hand back and says so by name.
+    if (inv.t == VT::Type && m == "new" && inv.s == "Whatever") return Value::whatever();
+    if (inv.t == VT::Type && m == "new" && inv.s == "HyperWhatever")
+        throwTypedV("X::Cannot::New", {{"type", Value::typeObj("HyperWhatever")}},
+                    "Cannot make a HyperWhatever object using .new");
     // Num had no constructor, so `Num.new(⅓)` fell through to the generic
     // type-object `.new` and answered 0 for every argument.
     if (inv.t == VT::Type && inv.s == "Num" && m == "new")

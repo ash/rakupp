@@ -2220,9 +2220,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 "print", "say", "put", "printf", "print-nl", "write", "spurt",
                 "get", "getline", "getc", "lines", "words", "read", "readchars",
                 "slurp", "slurp-rest", "comb", "split", "Supply"};
-            if (kIoClosed.count(m))
-                throw RakuError{Value::typeObj("X::IO::Closed"),
-                    "Cannot do '" + m + "' on a closed handle"};
+            if (kIoClosed.count(m)) {
+                const std::string msg = "Cannot do '" + (const std::string&)m + "' on a closed handle";
+                // a real INSTANCE: `.trying` names the operation that was refused
+                throwTypedV("X::IO::Closed", {{"trying", Value::str(m)}}, msg);
+            }
             if (m == "tell" || m == "native-descriptor" || m == "seek")
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Cannot do '" + m + "' on a closed filehandle"};
@@ -2921,6 +2923,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             out.arr()->push_back(Value::str(line));
         }
         return out;
+    }
+    // `.comb` / `.words` / `.split` on a PATH are questions about the FILE's
+    // text, exactly as `.lines` and `.slurp` are — Rakudo's IO::Path defines all
+    // five. Without them the path's own STRING was combed, so `$path.comb(/\w/)`
+    // answered the letters of "/tmp/…" (roast S16-io/comb.t).
+    if (inv.hashKind == "IO" && (m == "comb" || m == "words" || m == "split")) {
+        Value text = methodCall(const_cast<Value&>(inv), "slurp", ValueList{});
+        return methodCall(text, m, args);
     }
 
     // string

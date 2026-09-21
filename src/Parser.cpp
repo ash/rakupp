@@ -1251,6 +1251,51 @@ ExprPtr Parser::parseParenSemiList() {
     return lst;
 }
 
+// `my Int $x = NaN` is a COMPILE error in Raku, and a named one: a numeric
+// LITERAL must already BE the declared type — no widening and no narrowing, so
+// `my Rat $x = 42` and `my Num $x = 1.5` are refused as firmly as the NaN.
+// (A NEGATED literal is an expression, not a literal, and falls through to the
+// ordinary run-time check: `my Int $x = -Inf` is X::TypeCheck::Assignment.)
+static void checkLiteralDeclType(const Expr* target, const Expr* value, int line) {
+    if (!target || !value || target->kind != NK::VarExpr) return;
+    auto* ve = static_cast<const VarExpr*>(target);
+    if (!ve->declare || ve->declType.empty() || ve->name.empty() || ve->name[0] != '$') return;
+    static const std::set<std::string> kInt = {"Int", "int", "int8", "int16", "int32",
+        "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+    static const std::set<std::string> kRat = {"Rat", "rat", "rat32", "rat64", "FatRat"};
+    static const std::set<std::string> kNum = {"Num", "num", "num32", "num64"};
+    const char* want = kInt.count(ve->declType) ? "Int"
+                     : kRat.count(ve->declType) ? "Rat"
+                     : kNum.count(ve->declType) ? "Num" : nullptr;
+    if (!want) return;
+    std::string got, spell;
+    if (value->kind == NK::IntLit) {
+        auto* il = static_cast<const IntLit*>(value);
+        got = "Int";
+        spell = !il->raw.empty() ? il->raw : (!il->big.empty() ? il->big : std::to_string(il->v));
+    }
+    else if (value->kind == NK::NumLit) {
+        auto* nl = static_cast<const NumLit*>(value);
+        if (nl->imaginary) return; // a Complex literal is a different question
+        got = nl->isRat ? "Rat" : "Num";
+        spell = nl->raw;
+    }
+    else if (value->kind == NK::NameTerm) {
+        const std::string& n = static_cast<const NameTerm*>(value)->name;
+        if (n != "NaN" && n != "Inf") return;
+        got = "Num"; spell = n;
+    }
+    else return;
+    if (got == want || spell.empty()) return;
+    throw ParseError("Cannot assign a literal of type " + got + " (" + spell +
+                     ") to a variable (" + ve->name + ") of type " + ve->declType +
+                     ". You can declare the variable to be of type Real, or try to "
+                     "coerce the value with " + spell + "." + ve->declType + " or " +
+                     ve->declType + "(" + spell + ").",
+                     line, "X::Syntax::Number::LiteralType",
+                     {{"vartype", ve->declType}, {"value", spell}});
+}
+
 ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
     for (;;) {
@@ -2060,6 +2105,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 lhs = std::move(call);
                 continue;
             }
+            if (in.op == "=") checkLiteralDeclType(lhs.get(), rhs.get(), cur().line);
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
             // `=@=` and friends ARE plain assignment; only the container semantics
@@ -3811,6 +3857,11 @@ ExprPtr Parser::parseColonPair() {
         ExprPtr num = parsePrimary();
         pair->key = advance().text;
         pair->value = std::move(num);
+        // …and the NUMBER is the whole value: `:69th($_)` has nowhere to put the
+        // parenthesised one, so Raku refuses it rather than calling the 69.
+        if (isKind(Tok::LParen) && !cur().spaceBefore)
+            throw ParseError("Extra argument not allowed with a numeric adverb",
+                             cur().line, "X::Comp::AdHoc", {});
         return pair;
     }
     if (isKind(Tok::Var)) {
@@ -4615,7 +4666,9 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Var: {
             if (cur().text.rfind("&?ROUTINE", 0) == 0 && routineDepth_ == 0)
-                throw ParseError("&?ROUTINE is only available inside a routine (X::Undeclared::Symbols)", cur().line);
+                throw ParseError("Undeclared name:\n    &?ROUTINE used at line " +
+                                 std::to_string(cur().line), cur().line,
+                                 "X::Undeclared::Symbols", {});
             // `$?CLASS` / `$?ROLE` / `$?PACKAGE` — the SIGILLED spelling of the
             // compile-time enclosing type, and the same constant as `::?CLASS`
             // (handled in parsePrimary's `::` arm). Only the `::` form resolved,
@@ -5837,6 +5890,8 @@ ExprPtr Parser::parsePrimary() {
                         if (as->op == ":=" || as->op == "::=") listTarget = true;
                         as->target = std::move(decl);
                         as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
+                        if (as->op == "=")
+                            checkLiteralDeclType(as->target.get(), as->value.get(), cur().line);
                         return as;
                     }
                     return decl;
@@ -7353,6 +7408,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     while (!isKind(closeTok) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
         Param p;
+        const int paramLine = cur().line; // where THIS parameter starts — its `#|` sits above it
         // return-type constraint `--> Type` — always last; discarded. Skip to the
         // end of the signature so smileys (IO::Path:D) and parametrised types
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
@@ -7890,7 +7946,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // A `#|` above the param — but not the ROUTINE's own, which on a
             // one-line signature is "above" the parameters too. (A resolved
             // `#=` claim overrides this below — the old precedence.)
-            if (cur().line > sigOwnerLine_) p.pod = leadingPodFor(cur().line);
+            // Asked of the parameter's OWN line, not of wherever the parse has
+            // reached: after the LAST parameter that is the closing `)`, a line
+            // below its doc, so the last one never found its `#|`.
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
@@ -8145,7 +8204,11 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // signature: a multi-line signature puts each parameter's `#=` on the lines
     // just below the declaration, and those are the params' docs, not the
     // routine's (parseSignature marked them claimed; issue #17)
-    if (s->pod.empty()) s->pod = trailingPodFor(subDeclLine);
+    {   // …the same for a routine: leading and trailing docs are joined, not
+        // one-or-the-other (a parameter's own `#=` was claimed in the signature)
+        std::string trail = trailingPodFor(subDeclLine);
+        if (!trail.empty()) s->pod = s->pod.empty() ? trail : s->pod + "\n" + trail;
+    }
     // optional return type / traits up to block: skip until '{'
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)
@@ -8685,9 +8748,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         ~DepthGuard() { d--; }
     } classDepthGuard(classDepth_);
     auto cd = std::make_unique<ClassDecl>();
-    cd->pod = leadingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line); // `#|` above the decl
-    if (cd->pod.empty()) // trailing `#=` run on/below the decl line
-        cd->pod = trailingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line);
+    {   // `#|` above the decl and `#=` below it are BOTH the declaration's doc,
+        // and a declaration carrying the two answers them joined by a newline.
+        int dl = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+        cd->pod = leadingPodFor(dl);
+        std::string trail = trailingPodFor(dl);
+        if (!trail.empty()) cd->pod = cd->pod.empty() ? trail : cd->pod + "\n" + trail;
+    }
     cd->isRole = isRole;
     cd->isGrammar = isGrammar;
     cd->isMonitor = kindKw == "monitor";
@@ -9398,7 +9465,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
                      isIdent("orwith") || isIdent("orwithout")))
         throw ParseError("\"unless\" does not take \"" + cur().text +
                          "\", please rewrite using \"if\"",
-                         cur().line, "X::Syntax::UnlessElse", {});
+                         cur().line, "X::Syntax::UnlessElse", {{"keyword", cur().text}});
     while (isIdent("elsif")) {
         advance();
         ExprPtr c;
@@ -10635,7 +10702,8 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             int& f = subs[sd->name];
             int bit = sd->isMulti ? 2 : 1;
             if ((f & 1) && bit == 1)
-                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
+                throw ParseError("Redeclaration of routine '" + sd->name +
+                                 "'. Did you mean to declare a multi-sub?", sd->line,
                                  "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
             if ((f && bit == 1) || ((f & 1) && bit == 2))
                 throw ParseError("Redeclaration of routine '" + sd->name + "' (multi/only mix)", sd->line,

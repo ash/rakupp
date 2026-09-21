@@ -24,12 +24,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 773 / 1,464 (**~53%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 207,991 / 213,199 (~98%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 207,991 / 217,651 (~96%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 207,991 / 219,915 (**~95%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 788 / 1,464 (**~54%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 208,005 / 213,191 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 208,005 / 217,651 (~96%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 208,005 / 219,915 (**~95%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~53%)** and **measure 4 (all declared tests, ~95%)** are the
+**Measure 1 (files, ~54%)** and **measure 4 (all declared tests, ~95%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number
@@ -65,9 +65,9 @@ declares its real — often larger, dynamically computed — plan, so the percen
 can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 207,991 passes read two ways:
+So our same 208,005 passes read two ways:
 
-- **~95%** against *our* denominator (207,991 / 219,915) — *"of the tests we can
+- **~95%** against *our* denominator (208,005 / 219,915) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~95%** against the suite's *full* declared total —
@@ -370,10 +370,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  773 / 1464  (52.8%)
-Assertions passed:    207991 / 213199  (97.6%)  of tests that ran
-Assertions passed:    207991 / 217651  (95.6%)  of tests planned by files that emitted a plan
-Assertions passed:    207991 / 219915  (94.6%)  of ALL declared tests (+2143 from 64 no-TAP and +121 from 7 timed-out files, read from source; 3 more have no static plan)
+Files fully passing:  788 / 1464  (53.8%)
+Assertions passed:    208005 / 213191  (97.6%)  of tests that ran
+Assertions passed:    208005 / 217651  (95.6%)  of tests planned by files that emitted a plan
+Assertions passed:    208005 / 219915  (94.6%)  of ALL declared tests (+2143 from 64 no-TAP and +121 from 7 timed-out files, read from source; 3 more have no static plan)
 ```
 
 (The harness reads the Roast checkout from `$ROAST`, defaulting to

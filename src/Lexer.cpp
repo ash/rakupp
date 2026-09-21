@@ -955,15 +955,23 @@ Token Lexer::lexNumber() {
     };
     // Underscores are KEPT in the spelling `num` (so `<1.2.1_01>` word-quotes and
     // .raku round-trip preserve them) and stripped only when computing the value.
+    // …and CONSECUTIVE underscores get a diagnostic of their own: Rakudo groups
+    // that one as X::Comp::Group where a trailing `_` stays an ordinary Confused.
+    auto underscoreRun = [&]() {
+        if (peek(1) == '_')
+            throw ParseError("Only isolated underscores are allowed inside numbers",
+                             line_, "X::Comp::Group", {});
+        throw ParseError("Cannot use underscore between digits unless it is between two digits", line_);
+    };
     while (takeDigit(num) || peek() == '_') {
-        if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); num += advance(); }
+        if (peek() == '_') { if (!isDigitNext(1)) underscoreRun(); num += advance(); }
     }
     bool hasDot = false, hasExp = false;
     if (peek() == '.' && ascii::isdigit((unsigned char)peek(1))) {
         isFloat = true; hasDot = true;
         num += advance(); // .
         while (takeDigit(num) || peek() == '_') {
-            if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); num += advance(); }
+            if (peek() == '_') { if (!isDigitNext(1)) underscoreRun(); num += advance(); }
         }
     }
     if ((peek() == 'e' || peek() == 'E') &&
@@ -975,7 +983,7 @@ Token Lexer::lexNumber() {
         num += advance();
         if (peek() == '+' || peek() == '-') num += advance();
         while (ascii::isdigit((unsigned char)peek()) || peek() == '_') {
-            if (peek() == '_') { if (!ascii::isdigit((unsigned char)peek(1))) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); }
+            if (peek() == '_') { if (!ascii::isdigit((unsigned char)peek(1))) underscoreRun(); }
             num += advance();
         }
     }
@@ -1944,6 +1952,25 @@ bool Lexer::tryQuoteForm(Token& out) {
                                      " not allowed on rx", line_,
                                      "X::Syntax::Regex::Adverb",
                                      {{"adverb", name}, {"construct", "rx"}});
+        }
+        // A Perl 5 TRAILING modifier — `m/…/i`, `/…/g` — is Raku's leading adverb
+        // written the old way, and Raku names each one rather than leaving a
+        // bare parse error. Only the seven Perl 5 actually had; any other letter
+        // tight against the closer is somebody else's problem (a term, usually).
+        if (!eof() && ascii::isalpha((unsigned char)peek()) && !isIdentCont(peek(1))) {
+            static const std::pair<char, const char*> kP5Mod[] = {
+                {'m', "^^ and $$ anchors"}, {'s', ". or \\N"},
+                {'x', "normal default whitespace"}, {'i', ":i"},
+                {'g', ":g"}, {'c', ":c or :p"},
+                {'e', "interpolated {...} or s{} = ... form"}};
+            for (auto& [mod, use] : kP5Mod)
+                if (peek() == mod) {
+                    std::string spell(1, mod);
+                    advance();
+                    throw ParseError("Unsupported use of /" + spell + ". In Raku please use: " +
+                                     use + ".", line_, "X::Obsolete",
+                                     {{"old", "/" + spell}, {"replacement", use}});
+                }
         }
         out = make(Tok::RegexLit, adverbs + raw);
         out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
@@ -3213,6 +3240,21 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {
             t = lexNumber(); // ASCII digit, Unicode-Nd digit, or an Nl/No numeral
+            // A COMBINING MARK tight against the digits makes a synthetic
+            // numeral — `7̈` is one grapheme and not a number. Raku names it two
+            // ways: inside a colon pair (`:7̈a`) it is a malformed radix number,
+            // and anywhere else the grapheme itself is "not a valid number".
+            if (!eof() && (unsigned char)peek() >= 0x80 &&
+                uniGeneralCategory(codepointHere())[0] == 'M') {
+                bool colonPair = !out.empty() && out.back().kind == Tok::Op &&
+                                 out.back().text == ":" && !t.spaceBefore;
+                if (colonPair)
+                    throw ParseError("Malformed radix number", line_,
+                                     "X::Syntax::Malformed", {{"what", "radix number"}});
+                std::string mark; for (int k = utf8Len((unsigned char)peek()); k > 0; k--) mark += advance();
+                throw ParseError("'" + t.text + mark + "' is not a valid number", line_,
+                                 "X::Comp::AdHoc", {});
+            }
         } else if (c == '\'' && !inAngle) {
             t = lexQuoted('\'');
         } else if (c == '"' && !inAngle) {

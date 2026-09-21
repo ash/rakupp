@@ -1766,7 +1766,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--version", 0, nullptr, "version, build and platform, on one line"},
     {"--version-full", 0, nullptr, "the full build report"},
     {"--info", 0, nullptr, "the full build report"},
-    {"--doc", 0, nullptr, "render the Pod of the program after the run"},
+    {"--doc", 0, nullptr, "render the Pod of the program after the run (--doc=Text names the renderer)"},
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
@@ -2264,7 +2264,12 @@ int main(int argc, char** argv) {
             }
             if (a == "-V" || a == "--info" || a == "--version-full") { mode = Mode::VersionFull; break; }
             if (a == "--ffi-info")           { mode = Mode::FfiInfo; break; }
-            if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
+            // `--doc=Text` names the renderer. Rakudo accepts any module name
+            // there and falls back to its own Text renderer for the one we have,
+            // which is what every other value would mean to us anyway.
+            if (a == "--doc" || a.rfind("--doc=", 0) == 0) {
+                rakupp::rakuppSetDocMode(true); continue;
+            }
             // Rakudo's flag: every frame of an uncaught error, uncollapsed and
             // uncapped (issue #67). RAKUPP_BACKTRACE=0|short|full is the env knob.
             if (a == "--ll-exception") { rakupp::rakuppSetLLException(true); continue; }

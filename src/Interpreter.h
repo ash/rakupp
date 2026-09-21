@@ -2276,6 +2276,9 @@ public:
     // is a namespace here, not a type), so `.HOW` has nowhere else to learn it,
     // and Rakudo answers a different metaobject for each.
     std::unordered_map<std::string, signed char> pkgKind_;
+    // a module/package's own declarator pod (`#|` above, `#=` below), which is
+    // what `M.WHY` answers — a package has no ClassInfo to hang it on
+    std::unordered_map<std::string, std::string> pkgPod_;
     std::shared_ptr<ClassInfo> howModuleClsInfo_, howPackageClsInfo_;   // their metaobjects
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.

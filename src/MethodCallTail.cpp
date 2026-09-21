@@ -2706,13 +2706,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // .tree — a nested view of the list. No arg: identity (already nested).
             // .tree(N): N levels deep, flattening everything below level N into leaves.
             // .tree(&c0, &c1, …): descend, then apply closure cD to each level-D node.
-            if (args.empty()) { Value o = Value::array(); *o.arr() = items; o.isList = true; return o; }
+            // `*` is no depth LIMIT, which is what no argument already means
+            if (args.empty() || args[0].t == VT::Whatever) {
+                Value o = Value::array(); *o.arr() = items; o.isList = true; return o;
+            }
             // closures may be passed as bare args (`.tree(&a, &b)`) or one array (`.tree([&a, &b])`)
             ValueList closures;
             if (args[0].t == VT::Array && args[0].arr()) { for (auto& e : *args[0].arr()) if (e.t == VT::Code) closures.push_back(e); }
             else for (auto& a : args) if (a.t == VT::Code) closures.push_back(a);
             bool byClosure = !closures.empty();
             long long depth = byClosure ? (long long)closures.size() : args[0].toInt();
+            // `.tree(0)` is the IDENTITY, not "flatten everything": roast asks for
+            // it by `===`, so it must be the same object and not an equal copy.
+            if (!byClosure && depth <= 0) return inv;
             std::function<Value(const Value&, long long)> build = [&](const Value& node, long long d) -> Value {
                 bool isList = node.t == VT::Array || node.t == VT::Range;
                 if (!isList) return node;

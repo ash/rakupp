@@ -5603,6 +5603,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             auto it = classes_.find(inv.s);
             if (it != classes_.end() && !it->second->pod.empty())
                 return Value::str(it->second->pod);
+            auto pi = pkgPod_.find(inv.s); // a module/package keeps its own
+            if (pi != pkgPod_.end()) return Value::str(pi->second);
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->pod.empty())
             return Value::str(inv.obj()->cls->pod);

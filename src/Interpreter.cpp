@@ -8085,6 +8085,17 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
             }
             throwTypedV("X::Package::Stubbed", {{"packages", arr}}, e.what());
         }
+        if (e.exType == "X::Syntax::Number::LiteralType") {
+            // the two attributes are OBJECTS, not text: `:vartype(Int)` is the
+            // type and `:value(NaN)` the number, which is what throws-like asks
+            std::string vt = "Int", val = "0";
+            for (auto& kv : e.exAttrs) {
+                if (kv.first == "vartype") vt = kv.second;
+                else if (kv.first == "value") val = kv.second;
+            }
+            throwTypedV("X::Syntax::Number::LiteralType",
+                        {{"vartype", Value::typeObj(vt)}, {"value", numifyStr(val)}}, e.what());
+        }
         if (e.exType == "X::Comp::Group") {
             // parse-level group diagnostic: the `sorrow` attr names the inner
             // exception type; rebuild it as a real object list in .sorrows
@@ -10390,6 +10401,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
                     pkgKind_[tctx_.pkgPrefix + cd->name] = k;
                     if (!tctx_.pkgPrefix.empty()) pkgKind_[cd->name] = k;
+                    if (!cd->pod.empty()) {
+                        pkgPod_[tctx_.pkgPrefix + cd->name] = cd->pod;
+                        if (!tctx_.pkgPrefix.empty()) pkgPod_[cd->name] = cd->pod;
+                    }
                 }
                 // name adverbs, literal or computed: `module Zef:ver($?DISTRIBUTION…)`
                 if (!cd->name.empty() &&
@@ -11058,6 +11073,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code()->rakuAst = rakuAstPragma_;
                 code.code()->closure = bodyEnv;
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
+                // a method's own declarator pod — `#|` above it, `#=` below — is
+                // what `.^find_method('m').WHY` answers, exactly as a sub's is
+                code.code()->pod = md->pod;
                 code.code()->declFile = declFileNow();
                 code.code()->declLine = md->line;
                 code.code()->isStub = stmtIsStub(md->body);
