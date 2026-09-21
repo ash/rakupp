@@ -76,7 +76,11 @@ struct Line {
 std::string spacingAnchors(const std::string& src) {
     std::string mark(src.size(), '0');
     std::vector<Token> toks;
-    try { Lexer lexer(src); toks = lexer.tokenize(); }
+    // …and the lexer must read the source AS WRITTEN: the marks below are
+    // indices into `src`, and the fudge rewrite the Lexer otherwise applies
+    // moves every byte after a `#?rakudo` line, which made R5 go quiet for the
+    // rest of such a file (see Token::off).
+    try { Lexer lexer(src, /*honourFudge=*/false); toks = lexer.tokenize(); }
     catch (...) { return mark; }
     for (size_t t = 0; t < toks.size(); t++) {
         const Token& tk = toks[t];

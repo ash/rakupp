@@ -34,7 +34,11 @@ inline bool rakuIdentJoins(char sep, char next) {
 
 class Lexer {
 public:
-    explicit Lexer(std::string src);
+    // `honourFudge` false tokenizes the source EXACTLY as given, rather than
+    // through the roast fudge rewrite. A caller that addresses the source BY
+    // BYTE — anything reading `Token::off` against its own copy — needs it;
+    // anything running the program wants the rewrite, which is the default.
+    explicit Lexer(std::string src, bool honourFudge = true);
     std::vector<Token> tokenize();
     const std::string& finishData() const { return finishData_; } // text after =finish ($=finish)
     const std::string& podData() const { return podData_; } // rendered =pod content (for --doc)

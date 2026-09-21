@@ -18,7 +18,7 @@
 
 namespace rakupp {
 
-Lexer::Lexer(std::string) {
+Lexer::Lexer(std::string, bool) {
     featureMissing("eval", "EVAL/require/runtime-compiled regexes (the lexer)");
 }
 std::vector<Token> Lexer::tokenize() {

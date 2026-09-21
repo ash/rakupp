@@ -40,9 +40,25 @@ struct Token {
     double nval = 0;
     int line = 0;
     int col = 0;
-    // Byte offset in the source just PAST this token. Stamped where the token
-    // is built, so it is exact — `line`/`col` are for diagnostics and `col`
-    // runs ahead of the token it belongs to. `--fmt` needs the byte.
+    // Byte offset just PAST this token in THE STRING THE LEXER TOKENIZED, which
+    // is not always the string its caller handed over: the constructor rewrites
+    // roast's fudge directives first (`#?rakudo skip …` puts a `skip(…)` call in
+    // front of the statement it guards and comments that statement out; `todo`
+    // rewrites the directive line itself). That rewrite keeps one line in for
+    // one line out, so `line` survives it — but it does not keep bytes, and from
+    // the first directive on an offset taken here no longer indexes the caller's
+    // own copy of the source. Construct the Lexer with `honourFudge` false to
+    // get offsets into the source AS PASSED; that is what `--fmt` needs, and
+    // without it rule R5 in Fmt.cpp silently stopped spacing commas for the rest
+    // of such a file.
+    //
+    // Otherwise it is stamped where the token is BUILT, which is exact for all
+    // but a few look-ahead call sites that construct their tokens once the
+    // construct is wholly consumed — `tryRuleDecl` stamps the `regex` keyword
+    // and the rule's name with the end of the body, and a couple of allomorph
+    // and radix forms do the same. Measured over 60 roast files: 20 of 23,305
+    // tokens whose text is literal source. Unlike `col`, which is for
+    // diagnostics and runs ahead of the token it belongs to.
     size_t off = 0;
     bool spaceBefore = false; // whitespace/comment preceded this token
     bool flag = false;        // SubstLit: non-mutating S/// (returns new string, leaves $_ intact)

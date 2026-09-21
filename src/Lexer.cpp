@@ -264,7 +264,8 @@ static std::string applyRakudoFudge(const std::string& src) {
     return out;
 }
 
-Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {
+Lexer::Lexer(std::string src, bool honourFudge)
+    : src_(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src)) {
     // A file may DECLARE its own symbolic operators (`sub infix:<%%%>`), and a
     // spelling like that has to be one token or the built-in table swallows a
     // prefix of it (`%%%` lexed as `%%` then `%`, so `5 %%% 2` divided by an
