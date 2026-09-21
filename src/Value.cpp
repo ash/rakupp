@@ -1186,11 +1186,32 @@ static const SuccRange kSuccRanges[] = {
     {0x17E0, 0x17E9, 0, 0x17E0, 0x17E1},      // Khmer digits
     {0xFF10, 0xFF19, 0, 0xFF10, 0xFF11},      // fullwidth digits
     {0x2460, 0x2473, 0, 0x2460, 0x2460},      // circled ①..⑳ (no zero: wraps to ①)
+    {0x2080, 0x2089, 0, 0x2080, 0x2081},      // subscript digits ₀..₉
 };
+// …and one family that is NOT a contiguous run: the SUPERSCRIPT digits borrow
+// ¹²³ from Latin-1 and take the rest from U+2070, so they are listed in VALUE
+// order instead. (`"⁹".succ` is "¹⁰", exactly as the contiguous families work.)
+static const uint32_t kSuperDigits[] = {
+    0x2070, 0x00B9, 0x00B2, 0x00B3, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079
+};
+struct SuccSet { const uint32_t* cps; int n; };
+static const SuccSet kSuccSets[] = { {kSuperDigits, 10} };
+// index of `cp` within its set, or -1; `set` is filled on a hit
+static int succSetIndex(uint32_t cp, const SuccSet*& set) {
+    for (auto& g : kSuccSets)
+        for (int k = 0; k < g.n; k++)
+            if (g.cps[k] == cp) { set = &g; return k; }
+    return -1;
+}
 static const SuccRange* succRangeOf(uint32_t cp) {
     for (auto& r : kSuccRanges)
         if (cp >= r.lo && cp <= r.hi && cp != r.skip) return &r;
     return nullptr;
+}
+// a codepoint any magic increment knows how to step, range or set
+static bool succStepable(uint32_t cp) {
+    const SuccSet* g = nullptr;
+    return succRangeOf(cp) || succSetIndex(cp, g) >= 0;
 }
 static std::vector<uint32_t> sxDecode(const std::string& s) {
     std::vector<uint32_t> out;
@@ -1233,9 +1254,9 @@ static bool succWindowCp(const std::vector<uint32_t>& c, int& lo, int& hi) {
         int end = i;
         while (i >= 0 && sxAlnum(c[i])) i--;
         if (i >= 0 && c[i] == '.') { i--; continue; } // an extension segment
-        if (!succRangeOf(c[end])) return false;       // blocked (e.g. trailing ς)
+        if (!succStepable(c[end])) return false;      // blocked (e.g. trailing ς)
         int wlo = end;
-        while (wlo - 1 > i && succRangeOf(c[wlo - 1])) wlo--;
+        while (wlo - 1 > i && succStepable(c[wlo - 1])) wlo--;
         lo = wlo; hi = end + 1; return true;
     }
     return false;
@@ -1275,13 +1296,24 @@ std::string strSucc(const std::string& s) {
     int lo, hi;
     if (!succWindowCp(c, lo, hi)) return s;
     for (int pos = hi - 1; pos >= lo; --pos) {
+        const SuccSet* g = nullptr;
+        int gi = succSetIndex(c[pos], g);
+        if (gi >= 0) {
+            if (gi + 1 < g->n) { c[pos] = g->cps[gi + 1]; return sxEncode(c); }
+            c[pos] = g->cps[0]; // carry
+            continue;
+        }
         const SuccRange* r = succRangeOf(c[pos]);
         uint32_t nxt = c[pos] + 1;
         if (nxt == r->skip) nxt++;
         if (nxt <= r->hi) { c[pos] = nxt; return sxEncode(c); }
         c[pos] = r->wrap; // carry
     }
-    c.insert(c.begin() + lo, succRangeOf(c[lo])->prepend);
+    {
+        const SuccSet* g = nullptr;
+        int gi = succSetIndex(c[lo], g);
+        c.insert(c.begin() + lo, gi >= 0 ? g->cps[1] : succRangeOf(c[lo])->prepend);
+    }
     return sxEncode(c);
 }
 
@@ -1305,6 +1337,13 @@ std::string strPred(const std::string& s, bool& ok) {
     int lo, hi;
     if (!succWindowCp(c, lo, hi)) return s;
     for (int pos = hi - 1; pos >= lo; --pos) {
+        const SuccSet* g = nullptr;
+        int gi = succSetIndex(c[pos], g);
+        if (gi >= 0) {
+            if (gi > 0) { c[pos] = g->cps[gi - 1]; return sxEncode(c); }
+            c[pos] = g->cps[g->n - 1]; // borrow
+            continue;
+        }
         const SuccRange* r = succRangeOf(c[pos]);
         if (c[pos] > r->lo) {
             uint32_t prv = c[pos] - 1;

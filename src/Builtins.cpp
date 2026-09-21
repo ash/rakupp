@@ -116,6 +116,14 @@ bool Interpreter::runSubtestFrame(const std::string& desc,
     if (todod) I.todoSubtestDepth_++;
     I.subtestFailed_ = false;
     I.planned_ = -1; I.testNum_ = 0;
+    // A pending `todo` counts tests in the CONTEXT it was written in, and a
+    // subtest is a context of its own. Leaving the counter live let the FIRST
+    // assertion inside the subtest eat one of the marks — so `todo(…, 2)` before
+    // two `throws-like`s marked the first one and its inner "code dies", and the
+    // second throws-like counted as a real failure (S15-unicode-information/
+    // uniname.t). The subtest's own mark was taken above and is kept in `todod`.
+    int savedTodoLeft = I.todoRemaining_; std::string savedTodoWhy = I.todoReason_;
+    I.todoRemaining_ = 0; I.todoReason_.clear();
     try { body(); }
     catch (RakuError& e) {
         // the exception is the subtest's failure — but it must be SEEN:
@@ -124,6 +132,7 @@ bool Interpreter::runSubtestFrame(const std::string& desc,
         I.subtestFailed_ = true;
         std::cerr << std::string(4 * I.subtestDepth_, ' ') << "# " << e.message << "\n";
     }
+    I.todoRemaining_ = savedTodoLeft; I.todoReason_ = savedTodoWhy;
     // …and a plan that was not met fails the subtest, as Test.pm6's does
     // ("planned 3 tests, but ran 0" is how a loop that never ran shows)
     if (I.planned_ >= 0 && I.testNum_ != I.planned_) {
@@ -2762,9 +2771,11 @@ static std::string fmtRadix(long long val, int base, bool upper, const std::stri
         int pad = width - (int)core.size();
         if (flags.find('-') != std::string::npos) core += std::string(pad, ' ');
         else if (flags.find('0') != std::string::npos && prec < 0)
-            // zero-pad fills after the prefix; for 6.c/6.d octal/hex it sits before
-            // the sign, for 6.e (and binary) after sign+prefix.
-            core = prefixFirst ? prefix + std::string(pad, '0') + sign + digits
+            // zero-pad fills after the prefix — but only where the sign leads.
+            // Under the 6.c/6.d prefix-first reading the zeros go in FRONT of the
+            // whole thing, so `%#08x` of 1 is "000000x1" and of -256 "000x-100"
+            // (octal reads the same either way; binary keeps sign+prefix first).
+            core = prefixFirst ? std::string(pad, '0') + core
                                : sign + prefix + std::string(pad, '0') + digits;
         else core = std::string(pad, ' ') + core;
     }
@@ -2809,6 +2820,74 @@ static std::string fmtBigDec(std::string digits, const std::string& flags, long 
     return std::string(width - body.size(), ' ') + body;
 }
 
+// Raku's %f is DECIMAL-string based where C's is binary: it renders the value at
+// its shortest round-trip decimal and then rounds or zero-pads THAT string to the
+// asked precision. So `%.50f` of 1.115 is "1.115" followed by zeros rather than
+// the double's 1.11499999999999999111… expansion, and `%.2f` of it rounds the
+// string half-up-away-from-zero to 1.12 where C's binary value gives 1.11.
+// Takes |v| (finite); the caller owns the sign, the flags and the width.
+static std::string fixedFromShortest(double av, int prec) {
+    char buf[64];
+    int sig = 0; // the fewest significant digits that read back as this double
+    for (; sig < 17; sig++) {
+        cnum::snprintf(buf, sizeof buf, "%.*e", sig, av);
+        if (cnum::strtod(buf, nullptr) == av) break;
+    }
+    cnum::snprintf(buf, sizeof buf, "%.*e", sig, av);
+    std::string s(buf);
+    size_t ep = s.find('e');
+    int exp10 = std::atoi(s.c_str() + ep + 1);
+    std::string digits;
+    for (size_t k = 0; k < ep; k++) if (s[k] != '.') digits += s[k];
+    int pointAt = exp10 + 1; // digits belonging before the decimal point
+    std::string intPart, fracPart;
+    if (pointAt <= 0) { intPart = "0"; fracPart = std::string(-pointAt, '0') + digits; }
+    else if ((int)digits.size() <= pointAt) {
+        intPart = digits + std::string(pointAt - digits.size(), '0');
+    } else { intPart = digits.substr(0, pointAt); fracPart = digits.substr(pointAt); }
+    if ((int)fracPart.size() > prec) {
+        bool up = fracPart[prec] >= '5';
+        fracPart.resize(prec);
+        if (up) { // ripple the carry through the whole number, growing it if it runs off
+            std::string all = intPart + fracPart;
+            int k = (int)all.size() - 1;
+            for (; k >= 0; k--) { if (all[k] == '9') all[k] = '0'; else { all[k]++; break; } }
+            if (k < 0) all = "1" + all;
+            size_t ilen = all.size() - fracPart.size();
+            intPart = all.substr(0, ilen); fracPart = all.substr(ilen);
+        }
+    } else fracPart += std::string(prec - (int)fracPart.size(), '0');
+    return prec > 0 ? intPart + "." + fracPart : intPart;
+}
+
+// `sprintf("%d", 0^1)` is not a number-in-disguise — a Junction has no single
+// value to render, so Raku names the directive and the type rather than
+// collapsing it. (Rakudo raises this for every non-numeric value; we raise it
+// where the value genuinely has no scalar reading.)
+[[noreturn]] static void sprintfBadType(char conv, const Value& v, const std::string& fmt) {
+    std::string type = isJunction(v) ? "Junction" : v.typeName();
+    std::string msg = std::string("Directive %") + conv + " not applicable for value of type " +
+                      type + " (" + (g_rakuRepr ? g_rakuRepr(v) : type) + ") in format '" + fmt + "'";
+    Value ex = g_makeTypedEx
+             ? g_makeTypedEx("X::Str::Sprintf::Directives::BadType",
+                             {{"type", Value::str(type)}, {"directive", Value::str(std::string(1, conv))},
+                              {"value", v}, {"format", Value::str(fmt)}}, msg)
+             : Value::typeObj("X::Str::Sprintf::Directives::BadType");
+    throw RakuError{ex, msg};
+}
+
+// A directive Raku has no rendering for at all — `%q`, `%y`, `%n`, `%p`, or a
+// trailing bare `%`. Rakudo names the letter and quotes the whole format.
+[[noreturn]] static void sprintfUnsupported(const std::string& directive, const std::string& fmt) {
+    std::string msg = "Directive " + directive + (directive.empty() ? "" : " ") +
+                      "is not valid in sprintf format '" + fmt + "'";
+    Value ex = g_makeTypedEx
+             ? g_makeTypedEx("X::Str::Sprintf::Directives::Unsupported",
+                             {{"directive", Value::str(directive)}, {"sequence", Value::str(fmt)}}, msg)
+             : Value::typeObj("X::Str::Sprintf::Directives::Unsupported");
+    throw RakuError{ex, msg};
+}
+
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev) {
     std::string out;
     size_t ai = 0;                 // the IMPLICIT cursor
@@ -2821,13 +2900,17 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
     // exactly where it was: `sprintf('%2$d %d %d', 1, 2, 3)` is "2 1 2", not
     // "2 3 0" — the two implicit directives still read 1 then 2. (C and Perl 5
     // both work this way; so does Rakudo outside 6.e.)
+    size_t used = 0;       // arguments the directives ASK for, however many exist
+    bool explicitIdx = false;  // any `%N$`: Rakudo drops the count check entirely then
     auto nextArg = [&]() -> Value {
+        used++;
         if (valIdx >= 1) return argAt(valIdx);
         return ai < args.size() ? args[ai++] : Value::any();
     };
     // A `*` width/precision takes its own argument: `%N$` if it carries one
     // (`%2$*1$d`), otherwise the next implicit one — never the directive's.
     auto starArg = [&](long long n1) -> Value {
+        used++;
         if (n1 >= 1) return argAt(n1);
         return ai < args.size() ? args[ai++] : Value::any();
     };
@@ -2848,6 +2931,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
         if (fmt[i] != '%') { out += fmt[i]; continue; }
         size_t j = i + 1;
         valIdx = takeIndex(j); // explicit positional argument: %2$s
+        if (valIdx >= 1) explicitIdx = true;
         std::string flags;
         while (j < fmt.size() && std::strchr("-+ 0#", fmt[j])) flags += fmt[j++];
         // width (digits or `*` = from argument; negative `*` implies left-justify)
@@ -2865,7 +2949,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
             else { long long p = 0; while (j < fmt.size() && ascii::isdigit((unsigned char)fmt[j])) { p = p * 10 + (fmt[j]-'0'); if (p > SPRINTF_MAX) p = SPRINTF_MAX; j++; } prec = (int)p; }
         }
         while (j < fmt.size() && std::strchr("lhqLVjzt", fmt[j])) j++; // length modifiers, ignored
-        if (j >= fmt.size()) break;
+        if (j >= fmt.size()) sprintfUnsupported(fmt.substr(i + 1), fmt); // a `%` with nothing to end it
         char conv = fmt[j];
         switch (conv) {
             case '%': out += '%'; break;
@@ -2873,6 +2957,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // an arbitrary-precision Int (or a Rat/Num too big for long long)
                 // formats from its exact decimal digits, not a saturated toInt()
                 Value av = nextArg();
+                if (isJunction(av)) sprintfBadType(conv, av, fmt);
                 if (av.t == VT::Int && av.big()) { out += fmtBigDec(av.big()->toString(), flags, width, prec); break; }
                 if (av.t == VT::Rat && av.ratN() && av.ratD() && !av.ratD()->isZero()) {
                     BigInt q, r; BigInt::divmod(*av.ratN(), *av.ratD(), q, r);
@@ -2892,6 +2977,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     while ((p2 = flags2.find('+')) != std::string::npos) flags2.erase(p2, 1);
                 }
                 Value av = nextArg();
+                if (isJunction(av)) sprintfBadType(conv, av, fmt);
                 if (av.t == VT::Int && av.big()) { // arbitrary-precision: exact digits
                     out += fmtBigDec(bigRadixDigits(*av.big(), radix, upper), flags2, width, prec);
                     break;
@@ -2923,26 +3009,43 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // point — sprintf("%#.0f",0) → "0."), 6.c/6.d ignore it (→ "0").
                 std::string ff;
                 for (char c : flags) if (c != '#' || langRev >= 2) ff += c;
-                double fv = nextArg().toNum();
+                Value fa = nextArg();
+                if (isJunction(fa)) sprintfBadType(conv, fa, fmt);
+                double fv = fa.toNum();
                 // `%f` with both `-` and `0` is version-split. 6.e: `0` wins — the
                 // value is zero-padded, not left-justified (opposite of C), precision
                 // unchanged (sprintf("%-08.2f",0) → "00000.00"). 6.c/6.d: the historical
                 // "bogus but provided" form — a non-negative value with no sign flag is
                 // formatted with precision+1, zero-padded ("%-08.2f",0 → "0000.000").
-                if ((conv == 'f' || conv == 'F') &&
-                    ff.find('-') != std::string::npos && ff.find('0') != std::string::npos) {
+                bool leftJ = ff.find('-') != std::string::npos;
+                bool zeroF = ff.find('0') != std::string::npos;
+                int fprec = prec >= 0 ? prec : 6;
+                if ((conv == 'f' || conv == 'F') && leftJ && zeroF) {
                     if (langRev >= 2) {
                         std::string t; for (char c : ff) if (c != '-') t += c; ff = t;
+                        leftJ = false;
                     } else if (prec >= 0 && hasWidth) {
                         bool signFlag = ff.find('+') != std::string::npos || ff.find(' ') != std::string::npos;
-                        std::string sf = ff.find('+') != std::string::npos ? "+"
-                                       : ff.find(' ') != std::string::npos ? " " : "";
-                        int p = (!signFlag && fv >= 0) ? prec + 1 : prec;
-                        std::string spec = "%" + sf + "0" + std::to_string(width) + "." + std::to_string(p) + "f";
-                        std::vector<char> buf(std::max(64, width + prec + 64));
-                        cnum::snprintf(buf.data(), buf.size(), spec.c_str(), fv);
-                        out += buf.data(); break;
+                        if (!signFlag && fv >= 0) fprec = prec + 1;
+                        leftJ = false;
                     }
+                }
+                // %f goes through the decimal-string renderer above; every other
+                // float conversion keeps C's.
+                if ((conv == 'f' || conv == 'F') && std::isfinite(fv)) {
+                    std::string sign = std::signbit(fv) ? "-"
+                                     : ff.find('+') != std::string::npos ? "+"
+                                     : ff.find(' ') != std::string::npos ? " " : "";
+                    std::string body = fixedFromShortest(std::fabs(fv), fprec);
+                    if (fprec == 0 && langRev >= 2 && flags.find('#') != std::string::npos) body += ".";
+                    std::string core = sign + body;
+                    if ((int)core.size() < width) {
+                        int pad = width - (int)core.size();
+                        if (leftJ) core += std::string(pad, ' ');
+                        else if (zeroF) core = sign + std::string(pad, '0') + body;
+                        else core = std::string(pad, ' ') + core;
+                    }
+                    out += core; break;
                 }
                 std::string spec = "%" + ff;
                 if (hasWidth) spec += std::to_string(width);
@@ -2995,12 +3098,31 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     sv = (flags.find('-') != std::string::npos) ? sv + std::string(pad,' ') : std::string(pad,fill) + sv; }
                 out += sv; break;
             }
-            case 'n': case 'p': // deliberately unsupported (Perl compat) — hard error
-                throw RakuError{Value::typeObj("X::Str::Sprintf::Directives::Unsupported"),
-                                std::string("Directive %") + conv + " is not valid in sprintf format"};
-            default: { out += '%'; out += flags; if (hasWidth) out += std::to_string(width); out += conv; break; }
+            // Every directive Raku does not define is an error, not literal text —
+            // `%n`/`%p` are Perl-compat holes, the rest never existed.
+            default: sprintfUnsupported(std::string(1, conv), fmt);
         }
         i = j;
+    }
+    // Raku insists the directives and the arguments agree in NUMBER, so a stray
+    // interpolated `$` (`"%s => $v"` where $v itself holds a `%s`) is reported
+    // rather than silently formatting an (Any). An explicit `%N$` index makes the
+    // correspondence non-positional, and Rakudo drops the check there.
+    if (!explicitIdx && used != args.size()) {
+        auto plural = [](size_t n, const char* noun) {
+            return std::to_string(n) + " " + noun + (n == 1 ? "" : "s");
+        };
+        std::string msg = "Your printf-style directives specify " + plural(used, "argument") +
+                          ", but " + (args.empty() ? std::string("no argument") : plural(args.size(), "argument")) +
+                          (args.size() <= 1 ? " was" : " were") + " supplied to format '" + fmt + "'." +
+                          (used > args.size() ? " Are you using an interpolated '$'?" : "");
+        Value ex = g_makeTypedEx
+                 ? g_makeTypedEx("X::Str::Sprintf::Directives::Count",
+                                 {{"args-used", Value::integer((long long)used)},
+                                  {"args-have", Value::integer((long long)args.size())},
+                                  {"format", Value::str(fmt)}}, msg)
+                 : Value::typeObj("X::Str::Sprintf::Directives::Count");
+        throw RakuError{ex, msg};
     }
     return out;
 }
@@ -14512,8 +14634,17 @@ void Interpreter::registerBuiltins() {
     }
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
-    B["end"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling end() requires an argument"}; ValueList none; return I.methodCall(a[0], "end", none); };
-    B["kv"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling kv() requires an argument"}; ValueList none; return I.methodCall(a[0], "kv", none); };
+    // `end` and `kv` are protos of ONE positional (`($, *%)`), so neither no
+    // argument nor several can ever bind: `end(1,2,3,4)` is an error, where
+    // `end (1,2,3,4)` passes the one list and answers 3.
+    auto oneArgProto = [](const char* name, ValueList& a) {
+        if (a.size() == 1) return;
+        throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+            "Calling " + std::string(name) + "(" + (a.empty() ? "" : "...") +
+            ") will never work with signature of the proto ($, *%)"};
+    };
+    B["end"] = [oneArgProto](Interpreter& I, ValueList& a) -> Value { oneArgProto("end", a); ValueList none; return I.methodCall(a[0], "end", none); };
+    B["kv"] = [oneArgProto](Interpreter& I, ValueList& a) -> Value { oneArgProto("kv", a); ValueList none; return I.methodCall(a[0], "kv", none); };
     B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { arrayOpArgs("prepend", a, false); if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
     B["append"] = [](Interpreter& I, ValueList& a) -> Value { arrayOpArgs("append", a, false); if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
     // …through the METHOD, so the sub and the method stringify identically.
@@ -15563,7 +15694,10 @@ void Interpreter::registerBuiltins() {
     auto sprintfArgs = [](const ValueList& a) -> ValueList {
         ValueList rest;
         for (size_t i = 1; i < a.size(); i++) {
-            if (a[i].t == VT::Array && a[i].arr()) for (auto& x : *a[i].arr()) rest.push_back(x);
+            // …but a JUNCTION is one value, not a list of its eigenstates: it has
+            // no single rendering, and `sprintf("%d", 0^1)` must say so.
+            if (a[i].t == VT::Array && a[i].arr() && !isJunction(a[i]))
+                for (auto& x : *a[i].arr()) rest.push_back(x);
             else rest.push_back(a[i]);
         }
         return rest;

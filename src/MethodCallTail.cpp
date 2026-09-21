@@ -69,9 +69,18 @@ Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
 static void parseRotorSpecs(const ValueList& args, bool isBatch,
                             std::vector<RotorSpec>& specs, bool& partial) {
     for (auto& a : args)
-        if (a.isNumeric() && a.toInt() <= 0)
-            throw RakuError{Value::typeObj("X::OutOfRange"),
-                "batch size is out of range. Is: " + std::to_string(a.toInt()) + ", should be in 1..^Inf"};
+        if (a.isNumeric() && a.toInt() <= 0) {
+            // a real INSTANCE, so `.got` / `.range` / `.what` answer — the suite
+            // asks `throws-like …, X::OutOfRange, got => 0`
+            const std::string msg = "batch size is out of range. Is: " +
+                std::to_string(a.toInt()) + ", should be in 1..^Inf";
+            throw RakuError{g_makeTypedEx
+                ? g_makeTypedEx("X::OutOfRange",
+                    {{"got", a}, {"range", Value::str("1..^Inf")},
+                     {"what", Value::str(isBatch ? "Batching sublist length is"
+                                                 : "Rotorizing sublist length is")}}, msg)
+                : Value::typeObj("X::OutOfRange"), msg};
+        }
     partial = isBatch;
     // `.rotor(*@cycle)` is SLURPY, so a Positional argument spreads:
     // `.rotor(flat (3 xx $a), (2 xx $b))` hands over one list and means
@@ -821,6 +830,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (infinite && (m == "values" || m == "Seq" || m == "list" || m == "List" ||
                          m == "lazy" || m == "cache")) {
             Value out = inv; out.isList = true; // the same shared cache + state, list-shaped
+            // …and the VIEW's own type: `.List`/`.list`/`.cache` of an endless
+            // Seq is a List, which is why `(1…∞) eqv (1…∞).List` is False.
+            // (`.Seq` and `.lazy` stay a Seq; `.values` keeps what it had.)
+            if (m == "List" || m == "list" || m == "cache") out.s.clear();
+            else if (m == "Seq") out.s = "Seq";
             return out;
         }
         if (infinite && m == "Array") { Value out = inv; out.isList = false; return out; } // a lazy Array (Rakudo)

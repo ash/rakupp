@@ -1300,6 +1300,13 @@ public:
     // resolvable before the ordering fix became unreachable. Reads AND writes
     // go through this one resolver.
     static Value* findDynamicLenient(const std::string& name);
+    // A `*`-twigil name nothing declares is X::Dynamic::NotFound, not `Any`:
+    // a read answers the armed Failure, a write (and `temp $*x = …`, which
+    // assigns through lvalue) throws. isBuiltinDynamic exempts the names the
+    // ENGINE provides, which have no container until someone writes one.
+    static bool isBuiltinDynamic(const std::string& name);
+    Value dynNotFound(const std::string& name);                   // the Failure a read answers
+    [[noreturn]] void dynNotFoundThrow(const std::string& name);  // …and what a write does
     // The working directory as the program sees it: an active `my $*CWD`
     // binding wins, then the logical name chdir/indir maintain (symlinks stay
     // as spelled, `..` collapses textually — Rakudo's model), then the
@@ -1636,7 +1643,10 @@ public:
     // (the result while on is that count, not a Bool)
     long long anonMixinSeq_ = 0; // names the anonymous role a value mixin composes
     struct FlipFlop { bool on = false; long long seq = 0; };
-    std::unordered_map<const void*, FlipFlop> ffState_;
+    // keyed by (site, CLONE): a `sub` declared inside a loop body is a fresh
+    // closure each time round, and Raku gives each clone its own flip-flop
+    // state — the same thing `state` variables get, anchored on the same env.
+    std::map<std::pair<const void*, const void*>, FlipFlop> ffState_;
     std::unordered_map<const void*, Value> beginCache_;   // expression BEGIN: once per node
     std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);

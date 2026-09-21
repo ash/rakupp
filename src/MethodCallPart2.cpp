@@ -5982,7 +5982,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Complex → Real conversions need |im| within $*TOLERANCE (default 1e-15),
         // so Num(exp i*π) works but a tightened tolerance throws (X::Numeric::Real)
         double tol = toleranceDyn();
-        if (std::fabs(inv.im()) > tol * std::max(1.0, std::fabs(inv.n)))
+        // relative to the real part (see the twin in evalBinary's `<=>` arm); a
+        // zero real part has nothing to scale by and uses the bare tolerance
+        if (std::fabs(inv.im()) > tol * (inv.n == 0.0 ? 1.0 : std::fabs(inv.n)))
             throw RakuError{Value::typeObj("X::Numeric::Real"),
                             "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
                             cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero"};

@@ -140,6 +140,15 @@ static long long combLimit(Interpreter& I, const Value& v, bool strict, bool& no
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
+    // `.push` and its family are Positional methods: a SCALAR invocant matches
+    // no candidate at all, so `42.push(3)` is a NoMatch rather than a method
+    // that happens to be missing.
+    if ((m == "push" || m == "unshift" || m == "append" || m == "prepend") &&
+        (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat ||
+         inv.t == VT::Str || inv.t == VT::Bool || inv.t == VT::Complex))
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+            "Cannot resolve caller " + (const std::string&)m + "(" + inv.typeName() +
+            ":D); none of these signatures matches"};
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
@@ -1164,6 +1173,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // beyond (found via (2**127-1).is-prime — trial division on a truncated
         // int64 said False for M127)
         static const long long kWit[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+        // A COMPLEX has to become Real first, so `<3-3i>.is-prime` throws
+        // X::Numeric::Real while `<3+0i>.is-prime` simply asks about 3.
+        if (inv.t == VT::Complex) {
+            ValueList none;
+            Value re = methodCall(inv, "Real", none);
+            return methodCall(re, "is-prime", none);
+        }
+        // Only an INTEGER can be prime. `2.3.is-prime` and `"2.1".is-prime` are
+        // False, not the truncated 2's answer — which is what asking `.toInt()`
+        // straight away gave.
+        if (!inv.big()) {
+            double d = inv.toNum();
+            if (!std::isfinite(d) || d != std::floor(d)) return Value::boolean(false);
+        }
         if (inv.big()) {
             const BigInt& n = *inv.big();
             BigInt one(1), two(2);
@@ -3335,7 +3358,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::vector<uint32_t> cps;
         if (inv.t == VT::Int || inv.t == VT::Bool) cps.push_back((uint32_t)inv.toInt());
         else cps = utf8cp(inv.toStr());
-        if (m == "uniprop") return cps.empty() ? Value::str("") : one(cps[0]);
+        // an EMPTY string has no first character to ask about, so there is no
+        // property to name: `uniprop("")` is Nil, not the empty string
+        if (m == "uniprop") return cps.empty() ? Value::nil() : one(cps[0]);
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         for (uint32_t cp : cps) out.arr()->push_back(one(cp));
         return out;

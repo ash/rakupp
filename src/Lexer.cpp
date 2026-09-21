@@ -874,8 +874,10 @@ Token Lexer::lexNumber() {
                               // re-joined source (`:36<utfⅧ>`) still shows the Nl/No char
             for (int k = utf8Len((unsigned char)peek()); k > 0; k--) orig += advance();
             // Nl/No numerals do not combine as digits: another numeral/digit
-            // immediately after is malformed (e.g. `𒐀𒐀`, `⓿⓿`).
-            if ((unsigned char)peek() >= 0x80) {
+            // immediately after is malformed (e.g. `𒐀𒐀`, `⓿⓿`) — EXCEPT a
+            // SUPERSCRIPT run, which is the power operator on the numeral just
+            // read: `²¹²` is 2**12, and `⁰¹²` is 0**12.
+            if ((unsigned char)peek() >= 0x80 && !superscriptChar(codepointHere())) {
                 uint32_t nx = codepointHere(); long long a, b;
                 if (ndDigitValue(nx) >= 0 || unicodeNumeralValue(nx, a, b))
                     throw ParseError("Malformed numeric literal", line_);
@@ -937,6 +939,9 @@ Token Lexer::lexNumber() {
         }
         // No valid digit after the 0x/0o/0b prefix — e.g. an Nl/No numeral or a
         // non-radix script (`0b¹0`, `0xΓαfe`) — is a malformed literal.
+        // (X::Syntax::Confused, the untyped default: the `0b`/`0o`/`0x` PREFIX
+        // forms are Confused on Rakudo, where the adverbial `:36<…>` form —
+        // parsed in Parser.cpp — is X::Syntax::Malformed.)
         if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
         Token t = make(Tok::IntLit, std::string("0") + base + digits); // keep the 0x/0b spelling
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
@@ -1857,9 +1862,31 @@ bool Lexer::tryQuoteForm(Token& out) {
                 advance(); // closing quote
             } else {
                 // capture the RHS expression up to a statement/argument boundary
+                // …except that a parenless LIST OPERATOR owns the commas after it:
+                // `s{a} = join "|", 1, 2` replaces with "1|2", where `s{a} = $x, 1`
+                // ends at the comma. Only the shape can tell them apart here, so a
+                // top-level comma stops the scan unless what we have so far is a
+                // bare `name ARG` call (no parens, not a statement keyword).
+                auto listopSoFar = [](const std::string& r) {
+                    size_t b = 0; while (b < r.size() && ascii::isspace((unsigned char)r[b])) b++;
+                    if (b >= r.size() || !(ascii::isalpha((unsigned char)r[b]) || r[b] == '_')) return false;
+                    size_t e = b;
+                    while (e < r.size() && (ascii::isalnum((unsigned char)r[e]) || r[e] == '_' ||
+                                            r[e] == '-' || r[e] == '\'' || r[e] == ':')) e++;
+                    if (e >= r.size() || !ascii::isspace((unsigned char)r[e])) return false; // `foo(…)` / bare term
+                    static const std::set<std::string> kNotListops = {
+                        "do", "if", "unless", "while", "until", "for", "given", "when",
+                        "my", "our", "has", "state", "anon", "sub", "return", "loop"};
+                    if (kNotListops.count(r.substr(b, e - b))) return false;
+                    while (e < r.size() && ascii::isspace((unsigned char)r[e])) e++;
+                    return e < r.size() && r[e] != '{'; // a block argument is not a list
+                };
                 int pd = 0, bd = 0, brd = 0;
                 while (!eof()) {
                     char ch = peek();
+                    if (pd == 0 && bd == 0 && brd == 0 && ch == ',' && listopSoFar(rhs)) {
+                        rhs += advance(); continue;
+                    }
                     if (pd == 0 && bd == 0 && brd == 0 &&
                         (ch == ',' || ch == ';' || ch == ')' || ch == '}' || ch == ']')) break;
                     if (ch == '(') pd++; else if (ch == ')') pd--;
@@ -3055,7 +3082,9 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             continue;
         }
         // Unicode superscript power: a run of ⁰¹²³⁴… after a term means ** N
-        if (!out.empty() && (unsigned char)c >= 0x80) {
+        // (…but never inside a `< … >` word list, where every word is a word:
+        // `<⁰ ¹ ² ³>` is four strings, not `⁰ ** 123`.)
+        if (!inAngle && !out.empty() && (unsigned char)c >= 0x80) {
             Tok lk = out.back().kind;
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
@@ -3090,6 +3119,27 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         bool afterBareSigil = !spaced && !out.empty() && out.back().kind == Tok::Var &&
                               out.back().text.size() == 1 && strchr("$@%&", out.back().text[0]);
         long long nvN, nvD;
+        // …and in a DECLARATION Raku names the two ways that goes wrong, rather
+        // than leaving them as a generic "Confused": a numeral first character
+        // is X::Syntax::Variable::Numeric ("Cannot declare a numeric variable"),
+        // a leading COMBINING MARK is a malformed declarator. (Outside a
+        // declaration both stay Confused, which is what Rakudo says there too.)
+        if (afterBareSigil && (unsigned char)c >= 0x80 && out.size() >= 2) {
+            const Token& decl = out[out.size() - 2];
+            bool declaring = decl.kind == Tok::Ident &&
+                             (decl.text == "my" || decl.text == "our" || decl.text == "has" ||
+                              decl.text == "state" || decl.text == "anon");
+            if (declaring) {
+                char32_t cp = codepointHere();
+                long long dN, dD;
+                if (ndDigitValue(cp) >= 0 || unicodeNumeralValue(cp, dN, dD))
+                    throw ParseError("Cannot declare a numeric variable", line_,
+                                     "X::Syntax::Variable::Numeric", {});
+                if (uniGeneralCategory(cp)[0] == 'M')
+                    throw ParseError("Malformed " + decl.text, line_,
+                                     "X::Syntax::Malformed", {{"what", decl.text}});
+            }
+        }
         // Unicode ellipsis … (U+2026) is an alias for the sequence/yada operator `...`
         // (checked before the Unicode-letter dispatch, which would otherwise eat it).
         // …but not inside a `< … >` word list, where it is the character

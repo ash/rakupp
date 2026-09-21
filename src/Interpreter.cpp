@@ -960,6 +960,11 @@ Value numifyStr(const std::string& in) {
                 if (split == std::string::npos) { reStr = "0"; imStr = body.empty() ? "1" : body; }
                 else { reStr = body.substr(0, split); imStr = body.substr(split);
                        if (imStr == "+" || imStr == "-") imStr += "1"; }
+                // …and the same rule applies to the IMAGINARY half on its own:
+                // `"3+Infi"` is refused where `"3+Inf\\i"` is `<3+Inf\\i>`. The
+                // digit in the real part does not vouch for it.
+                if (imStr.find_first_of("0123456789") == std::string::npos && !backslashI)
+                    throw std::runtime_error("not numeric");
                 Value rv = numifyStr(reStr), iv = numifyStr(imStr);
                 if (rv.isNumeric() && iv.isNumeric())
                     return Value::complex(rv.toNum(), iv.toNum());
@@ -1030,6 +1035,19 @@ static Value defaultFor(char sigil) {
 }
 // Build a shaped array `my @a[2;3]`: a fixed-size row-major structure pre-filled
 // with the element-type default, tagged with its dimensions for `.shape`.
+// A shaped array's dimensions are FIXED, so an index past one is an error on the
+// READ side too, not a silent (Any) — `my @a[2;2]; @a[2;0]` and `@a[2;0]:delete`
+// die with the same message the ASSIGNMENT path already produced. `shape` is the
+// ROOT value's; `d` is the dimension depth being indexed. A NEGATIVE index is
+// somebody else's error (negIndexFailure), so it passes through here untouched.
+static void shapedBoundsCheck(const std::shared_ptr<std::vector<long long>>& shape,
+                              size_t d, long long i) {
+    if (!shape || d >= shape->size() || i < 0 || i < (*shape)[d]) return;
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "Index " + std::to_string(i) + " for dimension " + std::to_string(d + 1) +
+        " out of range (must be 0.." + std::to_string((*shape)[d] - 1) + ")"};
+}
+
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill) {
     // native (lowercase) element types default to a concrete zero/empty; named
@@ -3442,6 +3460,12 @@ Interpreter::Interpreter() {
         // distribution does (`Failure.new: X::NYI.new: :$feature`). Its message is
         // composed from `feature` at construction, like the X::IO family below.
         reg("X::NYI", {"feature", "message"});
+        // X::Dynamic::NotFound — reading, assigning to or `temp`-ing a `*`-twigil
+        // name nothing declares. Rakudo's carries just `$.name` (the full
+        // spelling, sigil and twigil included) and composes its message from it;
+        // its .^mro is (NotFound, Exception, Any, Mu), so the generated ancestry
+        // table needs no row — Exception is implied for every X:: name.
+        reg("X::Dynamic::NotFound", {"name", "message"});
         reg("Exception", {"message"}); // base class: Exception.new is instantiable
         // The X::IO family. rakupp's own IO builtins already THROW these (as bare
         // type objects with a hand-written message); registering them as classes
@@ -4966,6 +4990,17 @@ static void sinkWarnExprTop(Expr* e, int line, bool nilHint, std::vector<std::st
         for (auto& it : static_cast<ArrayLit*>(e)->items)
             sinkWarnOne(it.get(), line, nilHint, out);
         return;
+    }
+    // `xor` / `^^` in sink context discards EVERY operand, so each one sinks on
+    // its own: `uc 'foo' xor 'bar'` warns about the constant and not the call.
+    // (The chain nests left, so the recursion walks it.)
+    if (e->kind == NK::Binary) {
+        auto* b = static_cast<Binary*>(e);
+        if ((b->op == "xor" || b->op == "^^") && b->lhs && b->rhs) {
+            sinkWarnExprTop(b->lhs.get(), line, nilHint, out);
+            sinkWarnExprTop(b->rhs.get(), line, nilHint, out);
+            return;
+        }
     }
     sinkWarnOne(e, line, nilHint, out);
 }
@@ -15613,6 +15648,24 @@ bool Interpreter::boolify(const Value& v) {
 
 }
 
+// A name that is a TERM, not a routine — `pi()`, `e()`, `τ()` — is not an
+// UNDEFINED routine: Raku reports the routine form of the name as undeclared
+// ("Variable '&pi' is not declared"), a different exception from the
+// X::Undeclared::Symbols a genuinely unknown name raises.
+static bool termConstantName(const std::string& n) {
+    static const std::set<std::string> terms = {
+        "pi", "tau", "e", "i", "Inf", "NaN", "\xCF\x80", "\xCF\x84"
+    };
+    return terms.count(n) != 0;
+}
+[[noreturn]] static void undeclaredRoutine(const std::string& name) {
+    if (termConstantName(name))
+        throw RakuError{Value::typeObj("X::Undeclared"),
+            "Variable '&" + name + "' is not declared. Perhaps you forgot a 'sub' if this "
+            "was intended to be part of a signature?"};
+    throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + name + "'"};
+}
+
 Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
     // A WRAPPED builtin (`&dir.wrap({…})`) routes through callCallable so the
     // wrapper stack runs; unwrapped builtins never pay for the lookup because
@@ -15629,7 +15682,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
         Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
         if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
         if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
-        throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + name + "'"};
+        undeclaredRoutine(name);
     }
     return it->second(*this, args);
 }
@@ -16035,6 +16088,51 @@ Value Interpreter::dynVar(const std::string& name) {
     if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
+}
+
+// ---------------------------------------------------------------------------
+// X::Dynamic::NotFound. A `*`-twigil name that nothing declares is not `Any` in
+// Raku: a READ answers an armed Failure — so `$*foo.defined`, `if $*foo` and
+// `$*foo // …` stay quiet while `$*foo + 1` detonates — and a WRITE throws
+// outright, `temp $*foo = 42` with it, since temp assigns through lvalue. rakupp
+// used to hand back `Any` on read and MINT A SLOT on write, so a misspelt
+// dynamic was silently a brand-new variable and `$*OS` (removed from the
+// language) read as undefined instead of saying so.
+//
+// The exemption list is needed on the WRITE path only. A read of a built-in
+// ($*CWD, $*OUT, $*KERNEL …) is answered by eval's own built-in table well
+// before the generic dynamic lookup, but `lvalue` has no such table — it
+// special-cases the three standard handles and nothing else — so without this
+// `$*CWD = "/tmp"` would start throwing. The names are the ones dynVar() above
+// synthesises, plus %*ENV / @*ARGS / $*REPO / %*SUB-MAIN-OPTS (engine-provided,
+// normally already in global_) and two Rakudo declares that rakupp does not yet
+// implement: $*COLLATION and $*EXIT. Answering those `Any` is a gap we already
+// had, and turning a quiet gap into a detonating Failure is not a fix for it.
+// @*INC and %*INC are deliberately ABSENT — Rakudo raises NotFound for both.
+bool Interpreter::isBuiltinDynamic(const std::string& name) {
+    static const std::set<std::string> kBuiltinDyn = {
+        "$*ARGFILES", "$*COLLATION", "$*CWD", "$*DEFAULT-READ-ELEMS", "$*DISTRO",
+        "$*ERR", "$*EXECUTABLE", "$*EXECUTABLE-NAME", "$*EXIT", "$*GROUP",
+        "$*HOME", "$*IN", "$*INIT-INSTANT", "$*KERNEL", "$*OUT", "$*PERL",
+        "$*PID", "$*PROGRAM", "$*PROGRAM-NAME", "$*RAKU", "$*REPO", "$*SCHEDULER",
+        "$*SPEC", "$*THREAD", "$*TMPDIR", "$*TOLERANCE", "$*TZ", "$*USAGE",
+        "$*USER", "$*VM", "%*ENV", "%*SUB-MAIN-OPTS", "@*ARGS",
+    };
+    return kBuiltinDyn.count(name) != 0;
+}
+// Rakudo's exception carries the full spelling, sigil and twigil included, and
+// composes the message from it; both faces build the same object.
+Value Interpreter::dynNotFound(const std::string& name) {
+    const std::string msg = "Dynamic variable " + name + " not found";
+    Value f = rakuppNewFailure();
+    (*f.hash())["exception"] =
+        makeTypedEx("X::Dynamic::NotFound", {{"name", Value::str(name)}}, msg);
+    (*f.hash())["message"] = Value::str(msg);
+    return f;
+}
+void Interpreter::dynNotFoundThrow(const std::string& name) {
+    const std::string msg = "Dynamic variable " + name + " not found";
+    throw RakuError{makeTypedEx("X::Dynamic::NotFound", {{"name", Value::str(name)}}, msg), msg};
 }
 
 // @a[i]:exists / %h<k>:delete / :k / :v / :kv / :p for native codegen — the
@@ -20888,8 +20986,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // EXPORT must hit the calling sub's declaration, not mint a local that
         // dies with the EXPORT frame. Writes used to see only the lexical
         // chain, so a callee's assignment to a caller's dynamic vanished.
-        if (ve->name.size() > 1 && ve->name[1] == '*')
+        if (ve->name.size() > 1 && ve->name[1] == '*') {
             if (Value* dp = findDynamicLenient(ve->name)) return dp;
+            // Nothing declares it: assigning is X::Dynamic::NotFound, not the
+            // creation of a variable. This is also what makes `temp $*foo = 42`
+            // throw — evalTempLet cannot snapshot a name no Env holds, so it
+            // falls through to lvalue() for the target. Declarations and
+            // `PROCESS::<$x>` returned above; the engine's own dynamics are
+            // exempt because their slot is synthesized on first write.
+            if (!ve->declare && !isBuiltinDynamic(ve->name)) dynNotFoundThrow(ve->name);
+        }
         // The three standard handles have no stored container until someone
         // writes one — they are synthesized on read. A write must therefore land
         // in the GLOBAL scope, the way Rakudo's setting-level container does:
@@ -26540,7 +26646,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // $*TOLERANCE (relative), so exp(i*π) <=> -1 is Same — else it throws
             double tol = Interpreter::toleranceDyn();
             auto toReal = [&](const std::complex<double>& z, const Value& orig) -> double {
-                if (std::fabs(z.imag()) > tol * std::max(1.0, std::fabs(z.real())))
+                // the tolerance is RELATIVE to the real part, with no floor of 1:
+                // `1e-10 + 1e-24i` is as far off as `1 + 1e-14i` is. Only a ZERO
+                // real part falls back to the absolute test (nothing to scale by).
+                if (std::fabs(z.imag()) >
+                    tol * (z.real() == 0.0 ? 1.0 : std::fabs(z.real())))
                     throw RakuError{Value::typeObj("X::Numeric::Real"),
                                     "Cannot convert " + orig.toStr() + " to Real: imaginary part not zero"};
                 return z.real();
@@ -27302,7 +27412,26 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
-    if (op == "eqv") return Value::boolean(valueEqv(l, r));
+    if (op == "eqv") {
+        // Two LAZY iterables of the same type cannot be compared: the answer
+        // would need both iterated to the end. (Different types answer False
+        // without looking, and one lazy side is decided by the other's length,
+        // so only the same-type pair throws — S03-operators/eqv.t pins all three.)
+        // (a RANGE is compared by its endpoints, never by iterating — `Int.Range
+        // eqv -Inf^..^Inf` is a fair question about two infinite ranges.)
+        if (l.t == VT::Array && r.t == VT::Array &&
+            lazySetOperand(l) && lazySetOperand(r)) {
+            auto shape = [](const Value& v) { return v.s == "Seq" ? 2 : v.isList ? 1 : 0; };
+            if (shape(l) == shape(r)) {
+                const std::string msg = "Cannot eqv a lazy list";
+                throw RakuError{g_makeTypedEx
+                                    ? g_makeTypedEx("X::Cannot::Lazy",
+                                                    {{"action", Value::str("eqv")}}, msg)
+                                    : Value::typeObj("X::Cannot::Lazy"), msg};
+            }
+        }
+        return Value::boolean(valueEqv(l, r));
+    }
     // `!==` is NOT here: Raku defines it as the negation of `==` (numeric
     // equality), not of `===`. Treating it as negated identity made
     // `1 !== 1.0` True where Rakudo says False. It falls through to the
@@ -32010,11 +32139,17 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (it != builtins_.end() && builtinVisible(c->name)) return it->second(*this, args);
             }
             if (c->callee) return callCallable(eval(c->callee.get()), std::move(args));
-            throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + c->name + "'"};
+            undeclaredRoutine(c->name);
         }
         // ==> my @target (or an existing container): store the fed value
         Value* lv = lvalue(dstE);
         char sig = (dstE->kind == NK::VarExpr && !static_cast<VarExpr*>(dstE)->name.empty()) ? static_cast<VarExpr*>(dstE)->name[0] : '$';
+        // A feed APPENDS, and Raku will not push a list that never ends. (Plain
+        // `my @a = 0..Inf` is fine — the array stays lazy — but the feed form
+        // dies, which is what S03-feeds/basic.t asks.)
+        if (sig == '@' && lazySetOperand(src))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"),
+                            "Cannot push a lazy list onto a Array"};
         *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src, /*store=*/true) : src;
         return *lv;
     }
@@ -32349,7 +32484,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // that edge element from the result (Any) — but it still counts.
         bool sedlike = op.find("fff") != std::string::npos;
         bool exclFirst = op.front() == '^', exclLast = op.back() == '^';
-        FlipFlop& st = ffState_[b];
+        FlipFlop& st = ffState_[{b, (const void*)tctx_.curStateEnv}];
         auto test = [&](Expr* side) -> bool {
             Value v = eval(side);
             if (v.t == VT::Bool) return v.truthy();
@@ -32942,7 +33077,10 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         return Value::integer(op == "-" ? -n : n);
     }
     if (op == "-") {
-        if (v.t == VT::Complex) return Value::complex(-v.n, -v.im());
+        // `0 - z`, not `(-re, -im)`: Raku's unary minus on a Complex subtracts
+        // from zero, so `-i` has a POSITIVE zero real part (0 - 0 is +0, where
+        // -0.0 is negative zero and `(-i).re.raku` then prints "-0e0").
+        if (v.t == VT::Complex) return Value::complex(0.0 - v.n, 0.0 - v.im());
         if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
         if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
         if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
@@ -33695,6 +33833,16 @@ Value Interpreter::evalUnary(Unary* u) {
                     }
                 }
             }
+        }
+        // …and neither does the RESULT of another step: `prefix:<++>` returns a
+        // plain value, not the container, so `++++$x` matches no candidate.
+        if (u->operand->kind == NK::Unary) {
+            auto* in = static_cast<Unary*>(u->operand.get());
+            if (in->op == "++" || in->op == "--")
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    "Cannot resolve caller " + std::string(u->postfix ? "postfix" : "prefix") +
+                    ":<" + u->op + ">(Int:D); the following candidates match the type but "
+                    "require mutable arguments"};
         }
         // A LITERAL has no container to step: `4++` matches the `is rw` candidate
         // by type and fails to bind it, which is the error Rakudo reports.
@@ -35254,8 +35402,7 @@ Value Interpreter::evalCall(Call* c) {
             return methodCall(a0, c->name, ValueList{});
         }
     }
-    throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                    "Undefined routine '" + c->name + "'"};
+    undeclaredRoutine(c->name);
 }
 
 // An infinite Range keeps the ±LLONG_MAX sentinel in its integer endpoints; a
@@ -35783,6 +35930,7 @@ Value Interpreter::evalIndex(Index* idx) {
     if (idx->multiDim) {
         multiDimRead = [&](const Value& baseV) -> Value {
             auto* dims = static_cast<ListExpr*>(idx->index.get());
+            auto shape = baseV.shape(); // fixed dimensions, if this is a shaped array
             Value out = Value::array(); out.isList = true;
             bool anyMulti = false; // all-scalar dims yield the lone element, not a 1-list
             std::function<void(const Value&, size_t)> walk = [&](const Value& node, size_t d) {
@@ -35823,6 +35971,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (node.t == VT::Array && node.arr()) {
                         long long i = k.toInt(), n = (long long)node.arr()->size();
                         if (i < 0) { walk(negIndexFailure(i), d + 1); continue; }
+                        shapedBoundsCheck(shape, d, i);
                         walk(i < n ? (*node.arr())[i] : Value::any(), d + 1);
                     }
                     else if (node.t == VT::Hash && node.hash()) {
@@ -36495,6 +36644,10 @@ Value Interpreter::evalIndex(Index* idx) {
                     return k;
                 };
                 Value cur = base; bool navOk = true;
+                // Only :delete cares about the fixed shape — `:exists`, `:kv`,
+                // `:p`, `:k` and `:v` all answer SOFTLY out of bounds (False /
+                // the empty list), so they must not see the bounds check.
+                auto shape = wantDelete ? base.shape() : nullptr;
                 for (size_t d = 0; d + 1 < keys.size() && navOk; d++) {
                     keys[d] = resolveKey(keys[d], cur);
                     if (cur.t == VT::Hash && cur.hash()) {
@@ -36503,11 +36656,14 @@ Value Interpreter::evalIndex(Index* idx) {
                         cur = it->second;
                     } else if (cur.t == VT::Array && cur.arr()) {
                         long long i = keys[d].toInt(), n = (long long)cur.arr()->size();
+                        shapedBoundsCheck(shape, d, i);
                         if (i < 0 || i >= n) { navOk = false; break; }
                         cur = (*cur.arr())[i];
                     } else navOk = false;
                 }
                 keys.back() = resolveKey(keys.back(), cur);
+                if (navOk && cur.t == VT::Array && keys.back().isNumeric())
+                    shapedBoundsCheck(shape, keys.size() - 1, keys.back().toInt());
                 bool exists = false; Value val;
                 if (navOk && cur.t == VT::Hash && cur.hash()) {
                     auto it = cur.hash()->find(keys.back().toStr());
@@ -37682,6 +37838,14 @@ Value Interpreter::eval(Expr* e) {
                     }
                     return *dp;
                 }
+                // Nothing declares it, and the built-in table above did not
+                // answer: the read is an ARMED FAILURE, not `Any`. Soft on
+                // purpose — `$*foo.defined`, `if $*foo`, `$*foo // $dflt` are
+                // how programs probe for an optional dynamic, and all three
+                // stay quiet on a Failure; only actually USING the value
+                // detonates, which is the whole distinction Rakudo draws here.
+                if (!ve->declare && !isBuiltinDynamic(ve->name))
+                    return dynNotFound(ve->name);
             }
             Value* p = tctx_.cur->find(ve->name);
             if (p) {

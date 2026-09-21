@@ -3876,7 +3876,9 @@ ExprPtr Parser::parseColonPair() {
                 long long nn, dd;
                 if (uniDigitValue(cp) >= 0) d = uniDigitValue(cp); // never-cut digit table
             }
-            if (d < 0 || d >= base) error("Malformed radix number");
+            if (d < 0 || d >= base)
+                throw ParseError("Malformed radix number", cur().line,
+                                 "X::Syntax::Malformed", {{"what", "radix number"}});
             if (infrac) { frac = frac * base + d; fdiv *= base; }
             else {
                 long long nv;

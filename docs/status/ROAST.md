@@ -31,32 +31,28 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~95% of all declared Roast tests pass** (207,830 / 219,677); on the
-stricter file bar, ~51% of files fully pass (747 / 1,464). The per-file breakdown
+**Headline: ~95% of all declared Roast tests pass** (207,991 / 219,915); on the
+stricter file bar, ~53% of files fully pass (773 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
-`not ok … # todo` lines as passes. Net of both it is 94.1% rather than 94.6% —
-1,228 assertions, 0.59% of the pass count. mutsu's equivalent shield is 1,438
+`not ok … # todo` lines as passes. Net of both it is 94.0% rather than 94.6% —
+1,240 assertions, 0.60% of the pass count. mutsu's equivalent shield is 1,438
 (0.66%), so it is a wash between the two; the measured breakdown is in
-[COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 — Unicode / strings / NFG —
-still rounds to 100% of assertions — 91,799 of 91,807 — on the strength of full
-UCD case tables, grapheme-level regex and complete `uniprop` coverage landed for
-v1.1. **Its file count went the wrong way this sitting**, 80 fully passing to 77:
-`S15-literals/identifiers.t` (7/7 at v4.0.1, now 5/7) and
-`S15-literals/numbers.t` (49/49, now 46/49) both regressed between the tag and
-`a4291988`, and every one of the five lost assertions is a *rejection* test — a
-non-ASCII digit or combining mark accepted at the start of an identifier, and
-`Nl`/`No` numerals accepted as general radix digits. The character-class
-predicates have become too permissive; see
-[ROAST-GAPS](../dev/findings/ROAST-GAPS.md). `uniprop.t` fails 2 of its 203 as it
-did before, and `uniname.t` improved to 45/46.)
+[COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 —
+Unicode / strings / NFG — is a **fully-passing chapter** again: 91,752 of 91,752
+assertions and all 81 of its files, on the strength of full UCD case tables,
+grapheme-level regex and complete `uniprop` coverage. The four that had regressed
+are back — the character-class predicates were too permissive at the start of an
+identifier and in general radix digits, and `uniprop("")` answered the empty
+string where Raku answers Nil. All 81 of its files pass in the run
+these figures come from.)
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **747** | **51%** |
-| Partially passing | 615 | 42% |
+| **Fully passing** | **773** | **53%** |
+| Partially passing | 589 | 40% |
 | No TAP output | 92 | 6% |
 | Timeouts | 10 | 0.7% |
 
@@ -65,7 +61,7 @@ in-run now: `S04-statements/try.t` scores as an ordinary partial, and
 `S12-construction/destruction.t` fully passes since the DESTROY protocol
 landed. See [dev/findings/ROAST-GAPS.md](../dev/findings/ROAST-GAPS.md).)
 
-**Coverage ≈ 51% of files.** That is the number to quote. About a sixteenth of
+**Coverage ≈ 53% of files.** That is the number to quote. About a sixteenth of
 the suite produces no TAP at all — those files hit a parse error or an
 unimplemented construct and abort before any assertion runs — so they are
 entirely unmeasured territory, not "passing" and not "failing."
@@ -73,7 +69,7 @@ entirely unmeasured territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**207,830 of ~219,677 declared tests — 94.6%**. "Declared" means every test the
+**207,991 of ~219,915 declared tests — 94.6%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -82,11 +78,11 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 207,830 / 213,119 (97.5%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 207,830 / 216,747 (95.9%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 207,830 / 219,677 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 207,991 / 213,199 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 207,991 / 217,651 (95.6%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 207,991 / 219,915 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The 95% is the per-test analog of the ~51% file coverage. Three notes on scope:
+The 95% is the per-test analog of the ~53% file coverage. Three notes on scope:
 
 1. **~2.1k of the denominator comes from no-TAP files** (64 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -100,7 +96,7 @@ The 95% is the per-test analog of the ~51% file coverage. Three notes on scope:
    fully-passing files. Do not compare pre-v2.0.0 Roast numbers against these
    without that correction (see the [CHANGELOG](../../CHANGELOG.md)).
 
-Coverage is the ~51% of files; per-test correctness across the whole suite is the
+Coverage is the ~53% of files; per-test correctness across the whole suite is the
 95%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
@@ -114,39 +110,40 @@ while many of its files still don't run at all — read it alongside No-TAP.
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
 | S02 | Literals, types, magicals | 53 | 78 | 0 | 16 | 7445/8108 | 92% |
-| S03 | Operators | 79 | 40 | 1 | 5 | 25678/26048 | 99% |
+| S03 | Operators | 85 | 34 | 1 | 5 | 25702/26063 | 99% |
 | S04 | Blocks, statements, phasers | 32 | 41 | 0 | 4 | 1241/1488 | 83% |
 | S05 | Regexes & grammars | 39 | 55 | 0 | 4 | 5873/6273 | 94% |
-| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1572/1840 | 85% |
+| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1574/1840 | 86% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 224/268 | 84% |
-| S09 | Data structures | 2 | 20 | 0 | 0 | 3999/4685 | 85% |
+| S09 | Data structures | 2 | 20 | 0 | 0 | 4001/4685 | 85% |
 | S10 | Packages | 2 | 7 | 0 | 0 | 55/104 | 53% |
 | S11 | Modules | 9 | 11 | 0 | 2 | 90/123 | 73% |
-| S12 | Objects & classes | 33 | 57 | 0 | 11 | 1394/1614 | 86% |
+| S12 | Objects & classes | 33 | 57 | 0 | 11 | 1398/1614 | 87% |
 | S13 | Overloading | 7 | 0 | 0 | 0 | 88/88 | 100% |
 | S14 | Roles | 6 | 17 | 0 | 2 | 282/333 | 85% |
-| S15 | Unicode / strings / NFG | 77 | 4 | 0 | 0 | 91799/91807 | 100% |
-| S16 | I/O | 18 | 16 | 0 | 3 | 580/749 | 77% |
-| S17 | Concurrency (supply/promise/async) | 73 | 17 | 6 | 3 | 1282/1331 | 96% |
-| S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
+| S15 | Unicode / strings / NFG | 81 | 0 | 0 | 0 | 91807/91807 | 100% |
+| S16 | I/O | 18 | 16 | 0 | 3 | 581/749 | 78% |
+| S17 | Concurrency (supply/promise/async) | 73 | 17 | 6 | 3 | 1290/1343 | 96% |
+| S19 | Command-line | 7 | 0 | 0 | 1 | 24/24 | 100% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 6/7 | 86% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
 | S26 | Documentation (POD) | 7 | 20 | 0 | 0 | 402/587 | 68% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 14 | 0 | 0 | 0 | 465/465 | 100% |
-| S32 | Standard types (str/list/num/…) | 138 | 112 | 1 | 12 | 43055/44659 | 96% |
-| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1179/1258 | 94% |
-| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 646/723 | 89% |
-| 6.d | v6.d language snapshot | 15 | 3 | 0 | 0 | 20264/20310 | 100% |
+| S32 | Standard types (str/list/num/…) | 150 | 100 | 1 | 12 | 43082/44677 | 96% |
+| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1172/1250 | 94% |
+| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 648/723 | 90% |
+| 6.d | v6.d language snapshot | 18 | 0 | 0 | 0 | 20310/20310 | 100% |
 | APPENDICES | — | 1 | 3 | 1 | 1 | 27/48 | 56% |
 | MISC / t | — | 2 | 1 | 0 | 3 | 11/12 | 92% |
 
 ### Reading the table
 
-- **S15 (Unicode)** dominates the assertion count — ~91k of ~201k reached
-  assertions live here (grapheme-break and normalization tables are enormous). Raku++'s
-  generated UCD 17.0 tables clear **~100%** of it, which is why the overall
-  assertion rate is high.
+- **S15 (Unicode)** dominates the assertion count — ~91k of ~208k reached
+  assertions live here (grapheme-break and normalization tables are enormous).
+  Raku++'s generated UCD 17.0 tables clear **all** of it: every assertion and
+  every file. It is why the overall assertion rate is high, so read the other
+  chapters' rows on their own.
 - **S01** is fully green: those files skip-all unless a Perl-5 interop bridge
   exists, and Raku++ handles the skip path spec-correctly.
 - **S29** (builtins & context) is fully green too, and on the harder bar: its 14
@@ -162,7 +159,8 @@ while many of its files still don't run at all — read it alongside No-TAP.
   before any assertion runs — the frontier where a single parser/feature gap
   unlocks a whole cluster of files.
 - The **6.d** snapshot's assertion total (~20k) is dominated by the sprintf
-  format-conversion files (`sprintf-{b,c,d,e,f,o,s,u,x}.t`), now largely passing.
+  format-conversion files (`sprintf-{b,c,d,e,f,o,s,u,x}.t`); all of them pass,
+  and so does every other file in the chapter.
 
 ## Where this stands among implementations
 
@@ -260,6 +258,60 @@ moment held them until it exited, which is what put a file with its complete
 TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
+
+_Snapshot 2026-09-21 (latest), main at `f25f793` + the S15/6.d/S03/S32 working
+tree (`--workers=4 --cpu=3`, one pass): 773 / 1,464 files fully passing (52.8%);
+589 partial, 92 no-TAP, 10 timeout; 207,991 / 219,915 declared assertions
+(94.6%). Two more fully-passing chapters: **S15 (Unicode / strings / NFG)**, 77
+files to 81, and **6.d (v6.d snapshot)**, 15 to 18; **S03** went 79 files to 85
+and **S32** 138 to 150. The by-synopsis table and the headline figures above are
+refreshed from this run.
+
+The four S15 files were four separate rejection bugs: an identifier may not
+start with a non-ASCII digit (`X::Syntax::Variable::Numeric`) or a combining
+mark (`X::Syntax::Malformed`) in a declaration; a general `:36<…>` radix number
+is `X::Syntax::Malformed` where a `0b`/`0o`/`0x` prefixed literal is
+`X::Syntax::Confused`, and typing both the same way traded three passes for
+nine; `uniprop("")` is Nil, not the empty string; and a `todo` in force when a
+`subtest` starts must not leak into the subtest's own tests.
+
+6.d cost four: a shaped array's fixed dimensions are checked on READ and on
+`:delete`, not only on assignment (`:exists`/`:kv`/`:p`/`:k`/`:v` still answer
+softly); `%#08x` zero-pads in FRONT of the `0x` prefix at 6.c/6.d ("000000x1",
+not "0x000001" — octal reads the same either way, binary does not); `%f` renders
+the value's shortest round-trip decimal and rounds or zero-pads THAT string, so
+`%.50f` of 1.115 is 1.115 followed by zeros and `%.2f` of it is 1.12; and
+sprintf now raises `X::Str::Sprintf::Directives::{Count,BadType,Unsupported}`
+where it used to format an (Any), render a Junction's eigenstates or echo an
+unknown directive back as text.
+
+The Count check found one real bug elsewhere: the lexer captured a `s{…} = EXPR`
+replacement up to the first top-level comma, so `s{a} = join "|", 1, 2` lost the
+list operator's arguments. A parenless listop owns those commas now.
+
+The other seventeen came from working down the per-file failure counts in the
+two chapters closest to 100%. In **S03**: `xor` in sink context sinks each of
+its operands, so the constant among them is reported; feeding an endless list
+into an `@` target dies where `my @a = 0..Inf` does not; the `$*TOLERANCE` a
+Complex comparison uses is RELATIVE to the real part with no floor of 1;
+`++++$x` matches no candidate, because `prefix:<++>` returns a value and not the
+container; `succ`/`pred` know the superscript digits, which are not a contiguous
+codepoint run; `eqv` refuses two lazy iterables of the same type; and flip-flop
+state is keyed per CLONE, so a `sub` declared inside a loop body starts fresh
+each time round. In **S32**: a term called as a routine (`pi()`, `e()`) is
+X::Undeclared rather than an undefined routine; `end`/`kv` are one-argument
+protos; `.push` and its family on a scalar are a NoMatch; `.batch(0)`'s
+X::OutOfRange carries `.got`; only integers are prime, and a Complex becomes
+Real first; a superscript run after an Nl/No numeral is the power operator
+(`²¹²` is 4096) but never inside a `< … >` word list; the imaginary half of a
+numeric string needs a digit of its own, so `"3+Infi"` is refused where
+`"3+Inf\i"` is not; and `-i` has a POSITIVE zero real part.
+
+Gated against the run below, file for file: nothing lost. One near-miss worth
+recording — the `eqv` refusal first fired on two RANGES as well, which killed
+`S02-types/range.t` at test 185 of 259. No file left the pass list, and it was
+measure 2's denominator that gave it away, exactly as
+[COUNTING](COUNTING.md#watch-measure-2s-denominator-not-just-its-numerator) says to expect._
 
 _Snapshot 2026-09-21 (later still), main at `6aba9e9` + the S19 working tree
 (`--workers=4 --cpu=3`, one pass): 749 / 1,464 files fully passing (51.2%); 614
