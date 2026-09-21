@@ -40,6 +40,17 @@ public:
     // anything running the program wants the rewrite, which is the default.
     explicit Lexer(std::string src, bool honourFudge = true);
     std::vector<Token> tokenize();
+    // FUDGE: the roast-directive rewrite (applyRakudoFudge, Lexer.cpp) has to
+    // know whether a line that reads like `#?rakudo …` IS a comment or is the
+    // inside of a heredoc that looks like one, and only the lexer knows. It runs
+    // a throwaway lex with `honourFudge` false and `trackComments_` on, and reads
+    // the answer back from here. Off for every other lex, which pays nothing.
+    //
+    // BYTE OFFSETS, not `line_`: that counter does not survive every construct
+    // (a `< … >` word list spanning lines leaves it behind by as many lines),
+    // and the caller turns offsets into line numbers against the source itself.
+    bool trackComments_ = false;
+    std::vector<size_t> commentOffsets_;   // where each `#` comment starts
     const std::string& finishData() const { return finishData_; } // text after =finish ($=finish)
     const std::string& podData() const { return podData_; } // rendered =pod content (for --doc)
     // SLANG-PLAN §B: the seams a `use Slang::X` armed, in force from byte offset
