@@ -2619,6 +2619,18 @@ struct JsGen {
             string cn = "n_" + mangleBody(tyName) + "_" + mangleBody(members[i].first);
             line(ind, "const " + cn + " = " + ty + ".enumValues[" + std::to_string(i) + "];");
             enumKeys[members[i].first] = cn;
+            // A MAIN argument that names an enum value IS that value, so the
+            // reader needs the members by name; nothing else can look them up,
+            // since a compiled member is a `const` and this runtime keeps no
+            // symbol table. The body runs before runMain, so declaring is
+            // registering. Only worth emitting when there is a MAIN to read for
+            // — and asked of the PREPASS, since `hasMain` is not set until the
+            // routine itself is emitted, which is after every enum above it.
+            if (subs.count("MAIN")) {
+                line(ind, "R.registerEnumMember(" + jsStr(members[i].first) + ", " + cn + ");");
+                if (!e->name.empty())
+                    line(ind, "R.registerEnumMember(" + jsStr(e->name + "::" + members[i].first) + ", " + cn + ");");
+            }
         }
         classNames.insert(tyName);
     }

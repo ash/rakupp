@@ -3816,16 +3816,42 @@ function runMain(cands, argv, sinkResult) {
 // punctuation of the sentence around it — as the interpreter renders it.
 function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
 // The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
-// prints the spelling), with the command line's own rule ahead of it: the words
-// naming Bool's two values arrive as the Bool itself, which is what lets
-// `--tls=True` bind the `Bool :$tls` a program wrote for `--tls`. The rule is
-// about the spelling and not the parameter, so `--tls=1` and `--tls=yes` stay
-// Str and do NOT bind that Bool. The interpreter's rtMainArgs is the twin of
-// this, and says there why the wider enum rule Rakudo reaches these through is
-// not implemented in either. See issue #95.
+// prints the spelling), with the command line's own rule ahead of it: a word
+// that NAMES an enum value IS that value, which is what lets `--tls=True` bind
+// the `Bool :$tls` a program wrote for `--tls` (issue #95) and `prog Red` reach
+// a `Color` parameter (rakudo#2794). The rule is about the spelling and not the
+// parameter, so `--tls=1` and `--tls=yes` name nothing and do NOT bind that
+// Bool. rtMainArgs in the interpreter is the twin of this.
+//
+// A program's own members are registered as they are declared (the emitter
+// writes the calls; the body runs before runMain). CORE's are seeded lazily
+// below, because the enums live in files that load after this one. The list is
+// what this runtime HAS — Bool, Order, PromiseStatus — where the interpreter
+// also knows Endian, Signal, SeekType and ProtocolType; those are enums no
+// JavaScript-hosted program can use in the first place. The other difference
+// from the interpreter, which resolves a NAME rather than consulting a table:
+// a constant merely HOLDING an enum value is not a member, so it is not here.
+const mainArgEnums = new Map();   // the PROGRAM's own members, registered as declared
+function registerEnumMember(name, v) { mainArgEnums.set(name, v); }
+let coreArgEnums = null;          // CORE's, built on first use
+function coreEnums() {
+    if (coreArgEnums) return coreArgEnums;
+    coreArgEnums = new Map();
+    const add = (ty, key, v) => { coreArgEnums.set(key, v); coreArgEnums.set(ty + '::' + key, v); };
+    add('Bool', 'True', true);   add('Bool', 'False', false);
+    add('Order', 'Less', Less);  add('Order', 'Same', Same);  add('Order', 'More', More);
+    add('PromiseStatus', 'Planned', Planned);
+    add('PromiseStatus', 'Kept', Kept);
+    add('PromiseStatus', 'Broken', Broken);
+    return coreArgEnums;
+}
 function argValue(s) {
-    if (s === 'True'  || s === 'Bool::True')  return true;
-    if (s === 'False' || s === 'Bool::False') return false;
+    // the program's own members first, so an enum of its own that reuses a CORE
+    // member's name is read as the program's — which is what the lexical lookup
+    // the interpreter does amounts to
+    if (mainArgEnums.has(s)) return mainArgEnums.get(s);
+    const core = coreEnums();
+    if (core.has(s)) return core.get(s);
     return val(s);
 }
 function bindMain(c, pos, named) {
@@ -3965,7 +3991,8 @@ function inArgs(a) {
     if (a.length && isPlainObj(a[a.length - 1])) out[out.length - 1] = named(Object.entries(a[a.length - 1]).map(([k, v]) => [k, fromJs(v)]));
     return out;
 }
-function outCall(f) { try { return exportVal(f()); } catch (e) { throw toJs(e); } finally { host.flush(); } }   // `say` output leaves with the call
+)RKJS",
+R"RKJS(function outCall(f) { try { return exportVal(f()); } catch (e) { throw toJs(e); } finally { host.flush(); } }   // `say` output leaves with the call
 function exportFn(fn, name) { const f = (...a) => outCall(() => fn(...inArgs(a))); Object.defineProperty(f, 'name', { value: name }); return f; }
 function exportMain(cands) { return (...argv) => outCall(() => runMain(cands, argv.map(String))); }
 function exportType(T) {
@@ -3994,8 +4021,7 @@ function main(body, opts) {
     let r;
     try { r = body(); }
     catch (e) { code = reportUncaught(e); return finish(undefined); }
-)RKJS",
-R"RKJS(    // a coloured program (one that awaits) hands back a Promise: finish when it settles
+    // a coloured program (one that awaits) hands back a Promise: finish when it settles
     if (r && typeof r.then === 'function') return r.then(v => finish(v), e => { code = reportUncaught(e); return finish(undefined); });
     return finish(r);
 }
@@ -4023,7 +4049,7 @@ function reportUncaught(e) {
 function setUsage(s) { usageText = s; }
 function envGet(k) { const v = host.env.get(k); return v === undefined ? Any : v; }
 
-Object.assign(R, { host, dynVar, atEnd, runMain, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
+Object.assign(R, { host, dynVar, atEnd, runMain, registerEnumMember, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
 
 // ---- 80-glue.js ----
 // Glue the emitter relies on: closures with arity metadata, boxes for `is rw`,
@@ -4189,7 +4215,8 @@ function fromJs(v) {
             if (v === null) return Nil;
             if (Array.isArray(v)) return mkArray(v.map(fromJs));
             if (v instanceof RObj || v instanceof RList || v instanceof RHash || v instanceof RType || v instanceof RJsObj || v instanceof RNamed || v instanceof RMatch || v instanceof RRegex || v instanceof REnum || v instanceof RPair) return unwrapped.get(v) || v;   // ours, coming back (a proxy hands back its object)
-            if (v instanceof Error && v.raku) return v.raku;
+)RKJS",
+R"RKJS(            if (v instanceof Error && v.raku) return v.raku;
             return new RJsObj(v);
     }
     return new RJsObj(v);
@@ -4213,8 +4240,7 @@ function jsCall(o, name, args) {
     return fromJs(prop);
 }
 function jsGet(o, k) { const target = o instanceof RJsObj ? o.v : o; return fromJs(target == null ? undefined : target[typeof k === 'number' ? k : str(k)]); }
-)RKJS",
-R"RKJS(function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
+function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
 function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
 function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
 function jsTruthy(o) { return !!o.v; }
@@ -4396,7 +4422,8 @@ function whenever(src, fn, phasers) {
         catch (e) { if (e instanceof DoneCtl) { finishCtx(ctx); return; } if (e instanceof LastCtl) { if (tap) tap.close(); leave(); return; } if (e instanceof NextCtl) return; if (isControl(e)) throw e; failCtx(ctx, e); }
         finally { ctxStack.pop(); }
     };
-    tap = sup.tap(
+)RKJS",
+R"RKJS(    tap = sup.tap(
         v => { if (!ctx.finished) run(fn, v); },
         () => { if (phasers && phasers.last && !ctx.finished) run(phasers.last, Nil); leave(); },
         e => { if (phasers && phasers.quit) { run(phasers.quit, e); leave(); } else { failCtx(ctx, e); } });
@@ -4414,8 +4441,7 @@ function toSupply(src) {
 }
 function supplyFromList(items) { return new RSupply(null, (t) => { for (const v of items) { if (t.closed) return; safeEmit(t, v); } if (!t.closed) { if (t.done) t.done(); t.tap.close(); } }); }
 function supplyInterval(secs, delay) {
-)RKJS",
-R"RKJS(    const ms = Math.max(1, toFloat(secs) * 1000), first = delay === undefined ? 0 : toFloat(delay) * 1000;
+    const ms = Math.max(1, toFloat(secs) * 1000), first = delay === undefined ? 0 : toFloat(delay) * 1000;
     return new RSupply(null, (t) => {
         let n = 0, iv = null;
         const tick = () => { if (t.closed) return; safeEmit(t, n++); };
@@ -4584,7 +4610,8 @@ function propRe(name) {
     return r;
 }
 const NL_CPS = new Set([0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029]);
-function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
+)RKJS",
+R"RKJS(function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
 function ccFlag(f, cp, ch) {
     switch (f) {
         case 'a': return cp === 0x5F || (cp < 128 ? ((cp | 32) >= 97 && (cp | 32) <= 122) : propRe('L').test(ch));
@@ -4604,8 +4631,7 @@ function ccFlag(f, cp, ch) {
     }
 }
 function classFlagsMatch(flags, cp, ch) {
-)RKJS",
-R"RKJS(    for (const f of flags) {
+    for (const f of flags) {
         const lc = f.toLowerCase();
         const hit = ccFlag(lc, cp, ch);
         if (f === lc ? hit : !hit) return true;
@@ -4814,7 +4840,8 @@ function m(n, st, pos, k) {
         }
         case 'AnchorEnd': {
             if (n.multiline) { if (pos === s.length || s[pos] === '\n') return k(pos); return false; }
-            if (n.absEnd) return pos === s.length ? k(pos) : false;
+)RKJS",
+R"RKJS(            if (n.absEnd) return pos === s.length ? k(pos) : false;
             return (pos === s.length || (pos === s.length - 1 && s[pos] === '\n')) ? k(pos) : false;
         }
         case 'WBLeft': return (isWordAt(s, pos) && !isWordAt(s, pos - 1)) ? k(pos) : false;
@@ -4844,8 +4871,7 @@ function m(n, st, pos, k) {
             const r = truthy(n.fn(cur));
             return (r !== !!n.negate) ? k(pos) : false;
         }
-)RKJS",
-R"RKJS(        case 'VarMatch': return varMatch(n, st, pos, k);
+        case 'VarMatch': return varMatch(n, st, pos, k);
         case 'CapStart': { const saved = st.capFrom; st.capFrom = pos; if (k(pos)) return true; st.capFrom = saved; return false; }
         case 'CapEnd': { const saved = st.capTo; st.capTo = pos; if (k(pos)) return true; st.capTo = saved; return false; }
         case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
@@ -5097,7 +5123,8 @@ function varMatch(n, st, pos, k) {
     const s = st.s;
     let v;
     if (n.name.startsWith('$<')) { const nm = n.name.slice(2, -1); const l = st.named.get(nm); if (!l || !l.length) return false; v = l[l.length - 1].Str(); }
-    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
+)RKJS",
+R"RKJS(    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
     else if (n.fn) v = n.fn();
     else return false;
     if (v instanceof RRegex) return callRule({ rx: v, kind: v.tree.ratchet ? 'token' : 'regex' }, '', { noCapture: true }, st, pos, (sub, q) => k(q));
@@ -5124,8 +5151,7 @@ function namedFromFrame(frame, tree) {
     const named = new Map();
     const listNames = tree.listNames || [], hashNames = tree.hashNames || [];
     for (const [name, list] of frame) {
-)RKJS",
-R"RKJS(        if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
+        if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
         else if (list.length > 1 || listNames.includes(name)) named.set(name, mkList(list.slice()));
         else named.set(name, list[0]);
     }
@@ -5331,7 +5357,8 @@ function regexMatch(v, rxo) { const mt = runSearch(str(v), rxo, null, 0); return
 function regexComb(s, rxo, limit) { const ms = allMatches(s, rxo, null, false); const out = ms.map(mt => mt.Str()); return mkList(limit !== undefined ? out.slice(0, Number(toInt(limit))) : out); }
 function regexSplit(s, rxo, limit, named) {
     const ms = allMatches(s, rxo, null, false);
-    const v = named && truthy(named.get('v')), kk = named && truthy(named.get('k')), kv = named && truthy(named.get('kv')), p = named && truthy(named.get('p'));
+)RKJS",
+R"RKJS(    const v = named && truthy(named.get('v')), kk = named && truthy(named.get('k')), kv = named && truthy(named.get('kv')), p = named && truthy(named.get('p'));
     const out = []; let last = 0, pieces = 0;
     for (const mt of ms) {
         if (pieces >= limOf(limit) - 1) break;
@@ -5352,8 +5379,7 @@ function matchGist(mt, depth) {
     const entries = [];
     mt.caps.forEach((c, i) => { if (c instanceof RList) { for (const x of c.a) entries.push([x.from, String(i), x]); } else if (c instanceof RMatch) entries.push([c.from, String(i), c]); });
     for (const [k, v] of mt.named) { if (v instanceof RList) { for (const x of v.a) entries.push([x.from, k, x]); } else if (v instanceof RMatch) entries.push([v.from, k, v]); else entries.push([0, k, v]); }
-)RKJS",
-R"RKJS(    entries.sort((a, b) => a[0] - b[0]);
+    entries.sort((a, b) => a[0] - b[0]);
     const pad = ' '.repeat(depth + 1);
     for (const [, k, v] of entries) out += '\n' + pad + k + ' => ' + (v instanceof RMatch ? matchGist(v, depth + 1) : gist(v));
     return out;

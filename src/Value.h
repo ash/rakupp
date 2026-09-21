@@ -815,6 +815,12 @@ struct Value {
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
     static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    // …and the same member carrying its enum's TYPE name, which is what makes
+    // `.WHAT.^name` answer `Color` rather than `Int` and what the MAIN
+    // command-line reader tests a looked-up name with.
+    static Value enumVal(const std::string& name, long long val, const std::string& type) {
+        Value v = enumVal(name, val); v.enumType = type; return v;
+    }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
     // its enum TYPE so `.WHAT.^name` is `Order`, not `Int` (Rakudo parity).
     static Value orderVal(long long c) {

@@ -13099,7 +13099,7 @@ void Interpreter::registerBuiltins() {
                 auto it = smo->hash()->find("named-anywhere");
                 namedAnywhere = it != smo->hash()->end() && it->second.truthy();
             }
-        ValueList margs = rtMainArgs(argv, namedAnywhere);
+        ValueList margs = rtMainArgs(argv, namedAnywhere, &I);
         Value cap = Value::array(); cap.hashKind = "Capture"; *cap.arr() = std::move(margs);
         return cap;
     };

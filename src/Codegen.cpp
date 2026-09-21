@@ -4000,7 +4000,8 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     std::vector<SubDecl*> subs;
     std::vector<ClassDecl*> classes;
     std::map<std::string, std::vector<SubDecl*>> multiCands;
-    std::vector<std::pair<std::string, long long>> enumConsts;
+    struct EnumConst { std::string key; long long ord; std::string type; }; // type: "" for an anonymous enum
+    std::vector<EnumConst> enumConsts;
     // Walk a statement's `my` declarations, handing each (name, declared type)
     // to `fn`. Used for BOTH the top level and class bodies (see the ClassDecl
     // branch below), so the two cannot drift.
@@ -4075,7 +4076,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             for (auto& it : *items) {
                 if (it->kind != NK::StrLit) throw CodegenError{"a non-literal enum value"};
                 std::string key = static_cast<StrLit*>(it.get())->v;
-                enumConsts.push_back({key, idx++});
+                enumConsts.push_back({key, idx++, ed->name});
                 g.enumKeys.insert(key);
             }
         }
@@ -4119,8 +4120,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     if (!g.topVars_.empty()) g.out << "\n";
     // enum values as globals
     for (auto& e : enumConsts)
-        g.out << "static Value " << mangleVar(e.first) << " = Value::enumVal(" << cesc(e.first)
-              << ", " << e.second << "LL);\n";
+        g.out << "static Value " << mangleVar(e.key) << " = Value::enumVal(" << cesc(e.key)
+              << ", " << e.ord << "LL"
+              << (e.type.empty() ? "" : ", " + cesc(e.type)) << ");\n";
     if (!enumConsts.empty()) g.out << "\n";
 
     // forward declarations (subs + multis + class methods)
@@ -4207,6 +4209,14 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     // early, so $*USAGE inside the program body already answers with the real text
     if (hasMainProg && !mainSig.empty())
         g.out << "    RT.registerCompiledMain(__rakupp_main_sig, sizeof __rakupp_main_sig, &__rakupp_main_entry);\n";
+    // The program's own enum MEMBERS, for the same reason and by the same route:
+    // the MAIN command-line reader turns an argument that names an enum value
+    // into that value, and a compiled program's members are C++ statics that no
+    // Env holds. Without this a compiled binary read `prog Red` as the string
+    // where the interpreter read it as `Color::Red`.
+    if (hasMainProg)
+        for (auto& e : enumConsts)
+            g.out << "    RT.registerEnumMember(" << cesc(e.key) << ", " << mangleVar(e.key) << ");\n";
     // a user &USAGE takes over the failed-dispatch text (mainProtocol looks it
     // up in the runtime env, where top-level compiled subs otherwise never go)
     if (hasMainProg)

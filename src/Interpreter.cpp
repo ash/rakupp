@@ -1866,7 +1866,51 @@ Value valAllomorph(const Value& v) {
     return n;
 }
 
-ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
+// One command-line word against the PROGRAM's own scope. Rakudo reads every
+// argument this way — it looks the name up and takes what it finds when that is
+// an ENUM VALUE — which is why `enum Color <Red …>` makes `prog Red` arrive as
+// `Color::Red`, and why `True` arrives as the Bool (rakudo#2794).
+//
+// The program's scope is consulted FIRST and is final: a name it declared as
+// something else keeps the word a string, so `my constant True = "shadow"`
+// leaves `True` the Str it was spelled as, exactly as under Rakudo. Only a name
+// nobody declared reaches CORE's own members.
+//
+// The lookup is deliberately narrow — `find(n)` and nothing else. It must not
+// go through rtNameTerm, which CALLS a routine of that name and invokes no-arg
+// builtins: an argument that happened to read `now`, or to match the program's
+// own `sub baz`, would have RUN it. Routines live under `&baz` anyway, so a bare
+// find cannot see them, and a type object is VT::Type and no enum value — which
+// is why `Int`, `Klass` and an enum's own name `Color` stay strings.
+bool Interpreter::mainArgEnum(const std::string& n, Value& out) {
+    if (n.empty()) return false;
+    Value* p = tctx_.cur ? tctx_.cur->find(n) : nullptr;
+    if (!p && global_) p = global_->find(n);
+    if (p) {
+        // An enum VALUE is an Int carrying its member key, and its enum's type
+        // name when the enum has one — an ANONYMOUS `enum <Aa Bb>` has members
+        // all the same, and Rakudo converts those too. On an Int those two
+        // fields are set by nothing but an enum member. Bool's two are stored
+        // natively here and are every bit the members Raku says they are.
+        //
+        // The enum's own name is bound as well, to the type-LIST, which wears
+        // the same enumType and is no member — it is an Array, so `prog Color`
+        // stays the word it was spelled as, as under Rakudo.
+        if (p->t == VT::Bool ||
+            (p->t == VT::Int && (!p->enumType.empty() || !p->enumName.empty()))) { out = *p; return true; }
+        return false;   // the name is taken, and not by an enum value
+    }
+    // A natively compiled program's own enums live in no Env — they are C++
+    // statics the generated startup hands to registerEnumMember — so a compiled
+    // binary reads the same argument line as the interpreter does.
+    if (!compiledEnums_.empty()) {
+        auto it = compiledEnums_.find(n);
+        if (it != compiledEnums_.end()) { out = it->second; return true; }
+    }
+    return coreEnumValue(n, out);
+}
+
+ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere, Interpreter* scope) {
     ValueList pos;
     // A repeated option collects EVERY value into one named arg (insertion
     // order), exactly as RUN-MAIN-args-to-capture does: `--x=a --x=b` is
@@ -1883,23 +1927,24 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
     // one arrives as a real IntStr/RatStr and binds Int/Rat/Num params by its
     // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
     // the spelling. See issue #11.
-    // Ahead of val() come the words that NAME `Bool`'s two values, which arrive as
-    // the Bool itself. That is the command line's OWN rule, not val()'s —
-    // `val("True")` is still the Str — and it is what lets `--tls=True` bind the
-    // `Bool :$tls` a program wrote for `--tls`. Being a rule about the spelling and
-    // not about the parameter, it is exact and type-blind in both directions:
-    // `--tls=1`, `--tls=yes` and `--tls=true` stay Str and fail to bind that Bool,
-    // while `Str :$a` refuses `--a=True` — it is handed a Bool. See issue #95.
+    // Ahead of val() comes the command line's OWN rule, which val() has no part
+    // in (`val("True")` is still the Str): a word that NAMES an enum value IS
+    // that value. mainArgEnum resolves it against the program's scope, so
+    // `--tls=True` binds the `Bool :$tls` a program wrote for `--tls` (issue
+    // #95) and `prog Red` reaches a `Color` parameter (rakudo#2794).
     //
-    // Rakudo reaches these four spellings by looking the word up in the program's
-    // scope and taking it when it finds an ENUM VALUE there, which is also why a
-    // user's `enum Color <Red …>` makes `Red` arrive as `Color::Red` (rakudo#2794,
-    // roast S06-other/main.t "enums are converted" — not implemented here: it
-    // reinterprets every argument of every program, so it wants its own gate run).
-    // Bool is the case that reaches users, and it needs no scope at all.
-    auto argValue = [](const std::string& str) -> Value {
-        if (str == "True"  || str == "Bool::True")  return Value::boolean(true);
-        if (str == "False" || str == "Bool::False") return Value::boolean(false);
+    // Being a rule about the spelling and not about the parameter, it is exact
+    // and type-blind in both directions: `--tls=1`, `--tls=yes` and `--tls=true`
+    // name nothing, stay Str and fail to bind that Bool, while `Str :$a` refuses
+    // `--a=True` — it is handed a Bool.
+    //
+    // With no interpreter in reach only Bool's four spellings convert; they are
+    // the ones that need no scope, and the ones every program uses.
+    auto argValue = [scope](const std::string& str) -> Value {
+        Value ev;
+        if (scope) { if (scope->mainArgEnum(str, ev)) return ev; }
+        else if (str == "True"  || str == "Bool::True")  return Value::boolean(true);
+        else if (str == "False" || str == "Bool::False") return Value::boolean(false);
         return valAllomorph(Value::str(str));
     };
     // Rakudo's conventions, oracle-verified case by case. The loop mirrors
@@ -2629,6 +2674,72 @@ void rtXxAppend(ValueList& out, Value one) {
 // default: `now` became the type object `(now)` whose .Num is 0, and every
 // benchmark, timeout and timestamp in a compiled program silently read zero
 // (found benchmarking a grammar under --exe, 2026-08-13).
+// CORE's enum MEMBERS by name — bare (`Less`) or qualified (`Order::Less`).
+// ONE definition, for the same reason nameTermConstant below is one: it is read
+// by the interpreter's NameTerm eval, by rtNameTerm (the native-codegen entry
+// point, which carried a THREE-enum subset of this list and so resolved
+// `BigEndian` to a type object in a compiled binary), and by the MAIN
+// command-line reader, which turns an argument naming an enum value into that
+// value. Members only — `Nil`, `Inf`, `NaN` and the type objects are terms of
+// other kinds and stay with their own callers.
+bool coreEnumValue(const std::string& n, Value& out) {
+    // Bool's two, which are an enum in Raku however natively they are stored here
+    if (n == "True"  || n == "Bool::True")  { out = Value::boolean(true);  return true; }
+    if (n == "False" || n == "Bool::False") { out = Value::boolean(false); return true; }
+    if (n == "Order::Same" || n == "Same") { out = Value::orderVal(0);  return true; }
+    if (n == "Order::Less" || n == "Less") { out = Value::orderVal(-1); return true; }
+    if (n == "Order::More" || n == "More") { out = Value::orderVal(1);  return true; }
+    // PromiseStatus <Planned Kept Broken> — real enum values so `$p.status`
+    // both compares (=== Kept) and stringifies (~$s eq 'Kept') correctly.
+    // The ORDINALS are Rakudo's (Planned 0, Kept 1, Broken 2); this list used
+    // to carry Kept and Broken the other way round, which nothing inside the
+    // engine noticed because a promise's status is held as the plain string
+    // and only becomes the enum value here — it showed in `.Int` and in `cmp`.
+    auto promise = [&](const char* key, long long ord) {
+        out = Value::enumVal(key, ord); out.enumType = "PromiseStatus"; return true;
+    };
+    if (n == "PromiseStatus::Planned" || n == "Planned") return promise("Planned", 0);
+    if (n == "PromiseStatus::Kept"    || n == "Kept")    return promise("Kept", 1);
+    if (n == "PromiseStatus::Broken"  || n == "Broken")  return promise("Broken", 2);
+    // Signal enum members (SIGINT, SIGTERM, …) — value is the OS signal number
+    if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
+        std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
+        int num = signalNumberOfName(bare);
+        if (num > 0) { out = Value::enumVal(bare, num); out.enumType = "Signal"; return true; }
+    }
+    // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
+    if (n == "Endian::NativeEndian" || n == "NativeEndian" ||
+        n == "Endian::LittleEndian" || n == "LittleEndian" ||
+        n == "Endian::BigEndian"    || n == "BigEndian") {
+        std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
+        out = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
+        out.enumType = "Endian"; return true;
+    }
+    // enum SeekType <SeekFromBeginning SeekFromCurrent SeekFromEnd> —
+    // what IO::Handle.seek's second argument is written with, and what a
+    // pure-Raku handle (IO::Blob, which 14 dists name) dispatches on.
+    if (n == "SeekType::SeekFromBeginning" || n == "SeekFromBeginning" ||
+        n == "SeekType::SeekFromCurrent"   || n == "SeekFromCurrent" ||
+        n == "SeekType::SeekFromEnd"       || n == "SeekFromEnd") {
+        std::string key = n.rfind("SeekType::", 0) == 0 ? n.substr(10) : n;
+        out = Value::enumVal(key, key == "SeekFromBeginning" ? 0
+                                : key == "SeekFromCurrent"   ? 1 : 2);
+        out.enumType = "SeekType"; return true;
+    }
+    // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
+    // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
+    // passes PROTO_TCP straight into setsockopt(2); without the enum the
+    // name only resolved while the unit's declarations were opaque, and a
+    // fresh parse refused it — killing Cro's accept handler mid-request.
+    if (n == "ProtocolType::PROTO_TCP" || n == "PROTO_TCP" ||
+        n == "ProtocolType::PROTO_UDP" || n == "PROTO_UDP") {
+        std::string key = n.rfind("ProtocolType::", 0) == 0 ? n.substr(14) : n;
+        out = Value::enumVal(key, key == "PROTO_TCP" ? 6 : 17);
+        out.enumType = "ProtocolType"; return true;
+    }
+    return false;
+}
+
 bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     if (n == "pi" || n == "\xcf\x80") { out = Value::number(M_PI); return true; }
     if (n == "e")   { out = Value::number(M_E); return true; }
@@ -2668,20 +2779,9 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     { Value c; if (nameTermConstant(n, c, sixE())) return c; }
     auto it = builtins_.find(n);
     if (it != builtins_.end() && builtinVisible(n)) { ValueList none; return it->second(*this, none); }
-    // builtin enum members (mirror the NameTerm eval): without the numeric
-    // payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
-    if (n == "Order::Same" || n == "Same") return Value::orderVal(0);
-    if (n == "Order::Less" || n == "Less") return Value::orderVal(-1);
-    if (n == "Order::More" || n == "More") return Value::orderVal(1);
-    if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
-    if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
-    if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
-    // Signal enum members (SIGINT, SIGTERM, …) — value is the OS signal number
-    if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
-        std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
-        int num = signalNumberOfName(bare);
-        if (num > 0) { Value v = Value::enumVal(bare, num); v.enumType = "Signal"; return v; }
-    }
+    // builtin enum members (the SAME list the NameTerm eval reads): without the
+    // numeric payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
+    { Value c; if (coreEnumValue(n, c)) return c; }
     return Value::typeObj(n);
 }
 
@@ -16539,7 +16639,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // (`--foo abc` -> `--foo=abc`) into the classic parse.
     const bool namedAnywhere = mainNamedAnywhere();
     auto pairedArgs = [&](const Value& cand) -> ValueList {
-        if (!cand.code() || !cand.code()->params) return rtMainArgs(argv_, namedAnywhere);
+        if (!cand.code() || !cand.code()->params) return rtMainArgs(argv_, namedAnywhere, this);
         std::set<std::string> keys;
         for (auto& p : *cand.code()->params) {
             if (!p.named || p.type != "Str") continue;
@@ -16548,7 +16648,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             if (!k.empty()) keys.insert(k);
             for (auto& al : p.aliasKeys) keys.insert(al);
         }
-        if (keys.empty()) return rtMainArgs(argv_, namedAnywhere);
+        if (keys.empty()) return rtMainArgs(argv_, namedAnywhere, this);
         std::vector<std::string> av;
         bool done = false; // pairing obeys the same options-end-at-the-
                            // first-positional boundary as the parse itself
@@ -16571,7 +16671,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
                 done = true; // the first positional token (named-anywhere: no boundary)
             av.push_back(a);
         }
-        return rtMainArgs(av, namedAnywhere);
+        return rtMainArgs(av, namedAnywhere, this);
     };
     // Decide up front whether any MAIN candidate matches the argv. Checking
     // BEFORE the call means a nested X::Multi::NoMatch thrown from inside a
@@ -16627,7 +16727,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
         listifyNamed(margs);
         mainMatches = scoreCandidate(mainSub, margs) >= 0;
     }
-    else margs = rtMainArgs(argv_, namedAnywhere);
+    else margs = rtMainArgs(argv_, namedAnywhere, this);
     if (mainMatches) return -1;
     // an explicit --help is a REQUEST for the usage text, not a
     // dispatch failure: Rakudo prints it to stdout and exits 0
@@ -16635,7 +16735,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // Only a --help that PARSES as a named option counts: after a
     // positional it is a literal argument and the dispatch failure
     // stays one (oracle: `prog pos --help` exits 2, usage on stderr).
-    ValueList baseArgs = rtMainArgs(argv_, namedAnywhere);
+    ValueList baseArgs = rtMainArgs(argv_, namedAnywhere, this);
     bool wantHelp = rtNamed(baseArgs, "help").truthy();
     // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
     Value* usage = tctx_.cur ? tctx_.cur->find("&USAGE") : nullptr;
@@ -16697,7 +16797,7 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code() ||
         (!mainSub->code()->params && !mainSub->code()->isMultiDispatcher)) {
         refreshArgvFromLiveArgs();
-        ValueList margs = rtMainArgs(argv_, mainNamedAnywhere());
+        ValueList margs = rtMainArgs(argv_, mainNamedAnywhere(), this);
         sinkReturnedValue(fn(margs));
         return 0;
     }
@@ -38693,53 +38793,12 @@ Value Interpreter::eval(Expr* e) {
                 throw BreakGivenEx{};
             }
             if (n == "Nil") return Value::nil();
-            if (n == "True" || n == "Bool::True") return Value::boolean(true);
-            if (n == "False" || n == "Bool::False") return Value::boolean(false);
             if (n == "Inf") return Value::number(INFINITY);
             if (n == "NaN") return Value::number(NAN);
-            if (n == "Order::Same" || n == "Same") return Value::orderVal(0);
-            if (n == "Order::Less" || n == "Less") return Value::orderVal(-1);
-            if (n == "Order::More" || n == "More") return Value::orderVal(1);
-            // PromiseStatus <Planned Broken Kept> — real enum values so `$p.status`
-            // both compares (=== Kept) and stringifies (~$s eq 'Kept') correctly.
-            if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
-            if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
-            if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
-            if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
-                std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
-                int num = signalNumberOfName(bare);
-                if (num > 0) { Value v = Value::enumVal(bare, num); v.enumType = "Signal"; return v; }
-            }
-            // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
-            if (n == "Endian::NativeEndian" || n == "NativeEndian" ||
-                n == "Endian::LittleEndian" || n == "LittleEndian" ||
-                n == "Endian::BigEndian"    || n == "BigEndian") {
-                std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
-                Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
-                ev.enumType = "Endian"; return ev;
-            }
-            // enum SeekType <SeekFromBeginning SeekFromCurrent SeekFromEnd> —
-            // what IO::Handle.seek's second argument is written with, and what a
-            // pure-Raku handle (IO::Blob, which 14 dists name) dispatches on.
-            if (n == "SeekType::SeekFromBeginning" || n == "SeekFromBeginning" ||
-                n == "SeekType::SeekFromCurrent"   || n == "SeekFromCurrent" ||
-                n == "SeekType::SeekFromEnd"       || n == "SeekFromEnd") {
-                std::string key = n.rfind("SeekType::", 0) == 0 ? n.substr(10) : n;
-                Value ev = Value::enumVal(key, key == "SeekFromBeginning" ? 0
-                                             : key == "SeekFromCurrent"   ? 1 : 2);
-                ev.enumType = "SeekType"; return ev;
-            }
-            // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
-            // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
-            // passes PROTO_TCP straight into setsockopt(2); without the enum the
-            // name only resolved while the unit's declarations were opaque, and a
-            // fresh parse refused it — killing Cro's accept handler mid-request.
-            if (n == "ProtocolType::PROTO_TCP" || n == "PROTO_TCP" ||
-                n == "ProtocolType::PROTO_UDP" || n == "PROTO_UDP") {
-                std::string key = n.rfind("ProtocolType::", 0) == 0 ? n.substr(14) : n;
-                Value ev = Value::enumVal(key, key == "PROTO_TCP" ? 6 : 17);
-                ev.enumType = "ProtocolType"; return ev;
-            }
+            // CORE's enum members — True/False, Order, PromiseStatus, Signal,
+            // Endian, SeekType, ProtocolType — from the one list rtNameTerm and
+            // the MAIN command-line reader also read.
+            { Value c; if (coreEnumValue(n, c)) return c; }
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
                 "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",

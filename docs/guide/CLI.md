@@ -1137,28 +1137,46 @@ the ordinary Unix ones:
   `:x(["a","b"])`, which binds `:@x` whole — and fails to bind a scalar
   `Str :$x`, exactly as under Rakudo, instead of silently keeping the
   last value.
-- **`True` and `False` are the Bool itself, wherever they appear.** Those
-  two words — spelled exactly so, or qualified as `Bool::True` /
-  `Bool::False` — become the value as each argument is read, before any
-  signature is looked at, which is what lets `prog --tls=True` drive a
-  `Bool :$tls` written for the bare `--tls`. Being a rule about the spelling
-  rather than about the parameter, it cuts both ways: `--tls=1`, `--tls=yes`
-  and `--tls=true` stay strings and do *not* bind that `Bool`, while a
-  `Str :$a` refuses `--a=True` because what it is offered is a `Bool`.
-  Positionals read the same way. Every other argument goes through `val()`
-  instead, so `--n=42` arrives as a real `IntStr` and a `UInt` parameter
-  rejects `-2` by its value rather than its spelling.
-  (`t/regression/main-bool-named-value.raku` is that matrix, and it too
-  passes under both engines.)
+- **A word that NAMES an enum value IS that value.** Each argument is
+  resolved against the program's own scope before any signature is looked at,
+  and an enum value found there is what binds: a program declaring
+  `enum Color <Red Green>` receives `Red` as `Color::Red` (so a `Color $c`
+  parameter can be driven straight from the command line), and `True`,
+  `Less`, `Kept`, `BigEndian`, `SeekFromEnd`, `PROTO_TCP` and `SIGINT` arrive
+  as their CORE members. The qualified spelling works too (`Color::Red`,
+  `Bool::True`). This is what lets `prog --tls=True` drive a `Bool :$tls`
+  written for the bare `--tls` (issue #95), and it is Rakudo's rule
+  (rakudo#2794; roast `S06-other/main.t` "enums are converted").
 
-  **The known gap**: Rakudo arrives at those four spellings by looking each
-  argument up in the program's scope and taking whatever **enum value** it
-  finds there, so under Rakudo a program that declares `enum Color <Red …>`
-  also receives `Red` as `Color::Red`, and `Less`, `Kept` and `BigEndian`
-  arrive as their core-enum values (rakudo#2794; roast's
-  `S06-other/main.t` "enums are converted" covers it). Here only `Bool` —
-  the case that reaches users — is converted; every other name stays the
-  string it was spelled as.
+  Being a rule about the spelling rather than about the parameter, it cuts
+  both ways: `--tls=1`, `--tls=yes` and `--tls=true` name nothing, stay
+  strings and do *not* bind that `Bool`, while a `Str :$a` refuses
+  `--a=True` because what it is offered is a `Bool`. Positionals read the
+  same way, including past a `--` or the first-positional boundary — those
+  end *option* parsing, not the reading of each word.
+
+  What the lookup does **not** convert is as much the point, since it sees
+  every argument of every program: a type name (`Int`, `Any`, `Mu`, `Nil`),
+  an enum's own name (`Color`), a class, a sub — which is never *called*,
+  the lookup being deliberately narrower than a term evaluation — and any
+  name the program has taken for something else. `my constant True =
+  "shadow"` leaves `True` the string, so a program that redefines a name
+  keeps its own meaning, and an enum of its own whose members shadow CORE's
+  wins for those names. A constant *bound to* an enum value does convert:
+  what is tested is the value, not how the name was declared. Everything
+  else goes through `val()` as before, so `--n=42` arrives as a real
+  `IntStr` and a `UInt` parameter rejects `-2` by its value rather than its
+  spelling. (`t/regression/main-enum-argument.raku` and
+  `main-bool-named-value.raku` are those matrices, and both pass under
+  either engine.)
+
+  **Across the backends**: `--exe` reads argument lines identically — a
+  natively compiled program's members are C++ statics that no scope holds,
+  so the generated startup hands them to the reader. `--target=js` converts
+  the members it compiles, plus CORE's `Bool`, `Order` and `PromiseStatus`;
+  a constant merely *holding* an enum value is not a member and is not
+  registered there, and `Endian`, `Signal`, `SeekType` and `ProtocolType`
+  are enums that runtime does not carry at all.
 
 ### The usage text
 

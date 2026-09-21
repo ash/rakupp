@@ -52,6 +52,12 @@ double randDouble(); // uniform random in [0,1)
 // with the freshly computed value in `out`. Shared by the interpreter's
 // NameTerm eval and the codegen's rtNameTerm so the two cannot drift.
 bool nameTermConstant(const std::string& n, Value& out, bool sixE = false); // sixE: `nano` exists
+// CORE's enum MEMBERS by name, bare (`Less`) or qualified (`Order::Less`):
+// True/False, Order, PromiseStatus, Signal, Endian, SeekType, ProtocolType.
+// Shared for the same reason, by three readers — NameTerm eval, rtNameTerm and
+// the MAIN command-line reader, which turns an argument that names an enum
+// value into that value.
+bool coreEnumValue(const std::string& n, Value& out);
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.
@@ -1327,6 +1333,10 @@ public:
     std::string logicalCwd_; // chdir/indir's logical cwd; empty = getcwd rules
     bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
     bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
+    // Resolve one command-line word against the PROGRAM's scope: true (with the
+    // value in `out`) when the name is an enum value there, which is what makes
+    // `prog Red` arrive as `Color::Red`. rtMainArgs calls it per argument.
+    bool mainArgEnum(const std::string& n, Value& out);
     // The MAIN command-line protocol (pairing, scoring, usage/--help), shared by
     // the interpreter's auto-invoke and compiled binaries. -1 = matched (margs
     // filled); otherwise the exit code, usage already printed.
@@ -1335,6 +1345,11 @@ public:
     // --exe: adopt the embedded signature-only AST and define a metadata-rich
     // &MAIN wrapping the compiled entry point; then dispatch through it.
     void registerCompiledMain(const unsigned char* blob, size_t len, Value (*fn)(ValueList&));
+    // --exe: a natively compiled program's enum members are C++ statics and are
+    // in no Env, so the MAIN command-line reader cannot find them by name the
+    // way it does under the interpreter. The generated startup hands them over
+    // here instead, and mainArgEnum reads this after the Env and before CORE.
+    void registerEnumMember(const std::string& name, const Value& v) { compiledEnums_[name] = v; }
     int runCompiledMain(Value (*fn)(ValueList&));
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
@@ -2384,6 +2399,7 @@ public:
     std::mutex dynRxMutex_;
     std::vector<std::string> argv_;
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)
+    std::unordered_map<std::string, Value> compiledEnums_; // --exe: enum members by name (registerEnumMember)
     static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
     static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
     // (cur_/dynStack_/curStateEnv_/gatherStack_/supplyStack_/makeTargets_/pkgPrefix_/
@@ -3049,7 +3065,11 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
-ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false); // argv -> MAIN args (--opt named, rest positional)
+// argv -> MAIN args (--opt named, rest positional). `scope`, when given, is the
+// interpreter whose symbols decide whether a word NAMES an enum value; without
+// one only the spellings that need no scope (Bool's four) convert.
+ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false,
+                     Interpreter* scope = nullptr);
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(Interpreter& I, const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop — folds via applyReduce
 // Endless operands — an infinite Range (1..Inf / 1..*, which carries the

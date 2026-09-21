@@ -279,16 +279,42 @@ function runMain(cands, argv, sinkResult) {
 // punctuation of the sentence around it — as the interpreter renders it.
 function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
 // The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
-// prints the spelling), with the command line's own rule ahead of it: the words
-// naming Bool's two values arrive as the Bool itself, which is what lets
-// `--tls=True` bind the `Bool :$tls` a program wrote for `--tls`. The rule is
-// about the spelling and not the parameter, so `--tls=1` and `--tls=yes` stay
-// Str and do NOT bind that Bool. The interpreter's rtMainArgs is the twin of
-// this, and says there why the wider enum rule Rakudo reaches these through is
-// not implemented in either. See issue #95.
+// prints the spelling), with the command line's own rule ahead of it: a word
+// that NAMES an enum value IS that value, which is what lets `--tls=True` bind
+// the `Bool :$tls` a program wrote for `--tls` (issue #95) and `prog Red` reach
+// a `Color` parameter (rakudo#2794). The rule is about the spelling and not the
+// parameter, so `--tls=1` and `--tls=yes` name nothing and do NOT bind that
+// Bool. rtMainArgs in the interpreter is the twin of this.
+//
+// A program's own members are registered as they are declared (the emitter
+// writes the calls; the body runs before runMain). CORE's are seeded lazily
+// below, because the enums live in files that load after this one. The list is
+// what this runtime HAS — Bool, Order, PromiseStatus — where the interpreter
+// also knows Endian, Signal, SeekType and ProtocolType; those are enums no
+// JavaScript-hosted program can use in the first place. The other difference
+// from the interpreter, which resolves a NAME rather than consulting a table:
+// a constant merely HOLDING an enum value is not a member, so it is not here.
+const mainArgEnums = new Map();   // the PROGRAM's own members, registered as declared
+function registerEnumMember(name, v) { mainArgEnums.set(name, v); }
+let coreArgEnums = null;          // CORE's, built on first use
+function coreEnums() {
+    if (coreArgEnums) return coreArgEnums;
+    coreArgEnums = new Map();
+    const add = (ty, key, v) => { coreArgEnums.set(key, v); coreArgEnums.set(ty + '::' + key, v); };
+    add('Bool', 'True', true);   add('Bool', 'False', false);
+    add('Order', 'Less', Less);  add('Order', 'Same', Same);  add('Order', 'More', More);
+    add('PromiseStatus', 'Planned', Planned);
+    add('PromiseStatus', 'Kept', Kept);
+    add('PromiseStatus', 'Broken', Broken);
+    return coreArgEnums;
+}
 function argValue(s) {
-    if (s === 'True'  || s === 'Bool::True')  return true;
-    if (s === 'False' || s === 'Bool::False') return false;
+    // the program's own members first, so an enum of its own that reuses a CORE
+    // member's name is read as the program's — which is what the lexical lookup
+    // the interpreter does amounts to
+    if (mainArgEnums.has(s)) return mainArgEnums.get(s);
+    const core = coreEnums();
+    if (core.has(s)) return core.get(s);
     return val(s);
 }
 function bindMain(c, pos, named) {
@@ -485,4 +511,4 @@ function reportUncaught(e) {
 function setUsage(s) { usageText = s; }
 function envGet(k) { const v = host.env.get(k); return v === undefined ? Any : v; }
 
-Object.assign(R, { host, dynVar, atEnd, runMain, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });
+Object.assign(R, { host, dynVar, atEnd, runMain, registerEnumMember, main, module: moduleInit, exportFn, exportMain, exportType, exportVal, wrapObj, reportUncaught, setUsage, envGet, STDIN, STDOUT, STDERR, mkProc, usage });

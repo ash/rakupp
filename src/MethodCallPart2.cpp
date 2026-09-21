@@ -2602,9 +2602,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         else st = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "Kept";
 
-        // Return the PromiseStatus enum value (matches the Planned/Broken/Kept
-        // barewords), so both `is $p.status, Kept` and `~$p.status eq 'Kept'` hold.
-        if (m == "status") return Value::enumVal(st, st == "Planned" ? 0 : st == "Broken" ? 1 : 2);
+        // Return the PromiseStatus enum value (matches the Planned/Kept/Broken
+        // barewords), so both `is $p.status, Kept` and `~$p.status eq 'Kept'`
+        // hold. It has to come from the SAME list the barewords resolve
+        // through: built here from a second copy of the ordinals, it carried
+        // its own (Kept and Broken the wrong way round) and no enum type, and
+        // `$p.status ~~ Broken` was then false against the bareword.
+        if (m == "status") { Value sv; if (coreEnumValue(st, sv)) return sv; return Value::enumVal(st, 0); }
         if (m == "Bool" || m == "so") return Value::boolean(st != "Planned");
         if (m == "cause") { if (ps && ps->broken) return ps->cause; auto it = inv.hash()->find("cause"); return it != inv.hash()->end() ? it->second : Value::nil(); }
         if (m == "result") {
