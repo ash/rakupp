@@ -1158,6 +1158,17 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
+            // A keyword that has nothing after it is not a keyword: `say if;` calls
+            // the sub named `if` (roast S02-lexical-conventions/one-pass-parsing.t
+            // declares one), while the spaced `say if ;` reads the modifier and
+            // fails on the missing condition, exactly as Rakudo has it. Only a
+            // GLUED closer counts — `if;`, `if,`, `if)` — so every keyword that is
+            // actually followed by something stays a keyword.
+            if (&t == &cur() && kStmtModifiers.count(t.text) && !peek().spaceBefore &&
+                (peek().kind == Tok::Semicolon || peek().kind == Tok::Comma ||
+                 peek().kind == Tok::RParen || peek().kind == Tok::RBracket ||
+                 peek().kind == Tok::RBrace || peek().kind == Tok::End))
+                return true;
             // A word-infix operator right after a bareword term is an INFIX, not the
             // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
             static const std::set<std::string> wordInfix = {
@@ -2946,6 +2957,45 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             base = std::move(mc);
             continue;
         } else if (isOp(".")) {
+            // A dot GLUED to an integer literal is first read as a decimal point,
+            // and a decimal point must be followed by a digit. `42.abs` is still a
+            // method call — an identifier right after the dot wins — but `42. abs`
+            // and `42.,` are the malformed number, which is what Rakudo says about
+            // them (`1.5. abs` and `1e3. abs` are fine: those literals already
+            // spent their dot). The set of characters that make the dot a decimal
+            // point is Rakudo's own: whitespace, `,`, `=`, `:`, a terminator, or
+            // end of input.
+            if (pos_ > 0 && toks_[pos_ - 1].kind == Tok::IntLit && !cur().spaceBefore) {
+                // Read off the TOKEN after the dot rather than the source byte:
+                // a token's own `off` is not dependable here (it drifts on some
+                // files, and `42.chr` in roast's S02-names-vars/perl.t read a
+                // space out of a later string literal). The one case the two
+                // spellings disagree on is a `#`(…)` comment wedged between the
+                // dot and the name, which Rakudo accepts and this rejects.
+                const Token& nx = peek();
+                const bool decimalish =
+                    nx.spaceBefore || nx.kind == Tok::Comma || nx.kind == Tok::Semicolon ||
+                    nx.kind == Tok::RParen || nx.kind == Tok::RBracket ||
+                    nx.kind == Tok::RBrace || nx.kind == Tok::End ||
+                    (nx.kind == Tok::Op && (nx.text == "=" || nx.text == ":"));
+                if (decimalish) {
+                    // Rakudo reports this and keeps parsing, so the number of
+                    // diagnostics it ends up with is what decides the exception:
+                    // one alone is the IllegalDecimal itself (`42. abs`, `42.:all`,
+                    // `42.=abs` — the rest of the postfix still reads), and a
+                    // second error makes it a group (`42.,`, `42.:`, `42. +1`).
+                    size_t at = pos_ + 1;                       // the token after the dot
+                    if (toks_[at].kind == Tok::Op &&
+                        (toks_[at].text == "=" || toks_[at].text == ":")) at++;
+                    const bool lone = toks_[at].kind == Tok::Ident;
+                    if (lone)
+                        throw ParseError("Decimal point must be followed by digit", cur().line,
+                                         "X::Syntax::Number::IllegalDecimal", {});
+                    throw ParseError("Decimal point must be followed by digit", cur().line,
+                                     "X::Comp::Group",
+                                     {{"sorrow", "X::Syntax::Number::IllegalDecimal"}});
+                }
+            }
             // `a . b` — a dot with SPACE ON BOTH SIDES is Perl 5's string
             // concatenation, and saying so beats whatever we make of it next
             // ("Cannot invoke non-Callable value of type Int", from reading
@@ -2958,7 +3008,14 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // calls, and only a non-identifier right side (`$x . $y`, `1 . 2`,
             // `$x . ($x)`) is the Perl 5 obsolescence. Erroring on the spelling
             // alone rejected DB::Pg's suite at its `my $pg = DB::Pg . new`.
-            if (cur().spaceBefore && peek().spaceBefore && peek().kind != Tok::Ident)
+            //
+            // The space AFTER the dot is the whole test — space before it is not
+            // required. Rakudo reads `$o. ++`, `$o. 5`, `@a. [0]` and `$t. "uc"()`
+            // as the obsolete concatenation just as it reads `$o . ++`; only a
+            // METHOD NAME may follow the gap. Demanding both sides let `$o. ++`
+            // through to "expected method name after '.'" (roast
+            // S02-lexical-conventions/minimal-whitespace.t wants X::Obsolete).
+            if (peek().spaceBefore && peek().kind != Tok::Ident)
                 throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
                                  cur().line, "X::Obsolete", {});
             advance();
@@ -8506,15 +8563,18 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // compile error — you probably meant `unit sub` or forgot the block.
     if (!hadBlock && s->body.empty() && !s->name.empty() && s->name != "MAIN" &&
         !unitDecl_ && !s->isMulti && (isKind(Tok::Semicolon) || isKind(Tok::End)))
-        throw ParseError("Semicolon form of 'sub' without unit scope is illegal. You probably want 'unit sub'. (X::UnitScope::Invalid)", cur().line);
+        throw ParseError("A unit-scoped sub definition is not allowed except on a MAIN sub;\n"
+                         "Please use the block form. If you did not mean to declare a unit-scoped\n"
+                         "sub, perhaps you accidentally placed a semicolon after routine's definition?",
+                         cur().line, "X::UnitScope::Invalid", {{"what", "sub"}});
     // `unit sub foo;` for anything but MAIN is 6.e syntax. Before 6.e only
     // `unit sub MAIN;` was allowed, so accepting the rest under 6.d let a
     // program compile here that Rakudo refuses — the revision has to say no.
     if (!hadBlock && s->body.empty() && !s->name.empty() && s->name != "MAIN" &&
         unitDecl_ && langRev_ < 2 && (isKind(Tok::Semicolon) || isKind(Tok::End)))
         throw ParseError("A unit-scoped sub is only allowed for MAIN before 6.e; "
-                         "use the block form, or `use v6.e.PREVIEW`. (X::UnitScope::Invalid)",
-                         cur().line);
+                         "use the block form, or `use v6.e.PREVIEW`.",
+                         cur().line, "X::UnitScope::Invalid", {{"what", "sub"}});
     // `sub f($n) {…}(1)` — declaration immediately invoked
     if (isKind(Tok::LParen) && !cur().spaceBefore) {
         advance();
@@ -9750,6 +9810,16 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
         cur().line != toks_[pos_ - 1].line && cur().spaceBefore) return s;
     if (cur().kind == Tok::Ident) {
         const std::string& kw = cur().text;
+        // A keyword is only a keyword when whitespace follows it (Rakudo's `kok`).
+        // `say "OK" if+1` is a missing space, not a modifier, and Rakudo says so
+        // rather than reading `+1` as the condition. The glued `(` is left alone:
+        // Rakudo rejects `say "OK" if(1)` too — as a call to a routine named `if`
+        // — but accepting it is the older, wider reading and plenty of code in
+        // the wild is written that way.
+        if (kStmtModifiers.count(kw) && !peek().spaceBefore &&
+            peek().kind != Tok::LParen && startsTermToken(peek()))
+            throw ParseError("Whitespace required after keyword '" + kw + "'",
+                             cur().line, "X::Comp::AdHoc", {});
         // see isDoBlockExprStmt: `do {...} while/until/for/given` is Rakudo's
         // one obsolete-syntax error in this function; the loop modifiers are
         // exactly the four its grammar lists.
@@ -10870,8 +10940,18 @@ void Parser::enforceStmtSep() {
                          {{"old", "-> as postfix"},
                           {"replacement", "either . to call a method, or whitespace "
                                           "to delimit a pointy block"}});
-    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line)
+    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line) {
+        // A `[` here was read as a bracketed INFIX whose brackets do not spell an
+        // operator — `@a [0]` — and naming that is more use than "two terms in a
+        // row", which is also what Rakudo says about it. (parseExpr cannot raise
+        // it where it gives up on the brackets: the same `[` is legitimately
+        // retried there at a looser precedence, which is how `2 [&f] 3 [&f] 4`
+        // and `1,2 [Z*] 3,4` get parsed at all.)
+        if (isKind(Tok::LBracket))
+            throw ParseError("Missing infix inside []", cur().line,
+                             "X::Syntax::Missing", {{"what", "infix inside []"}});
         throw ParseError("Two terms in a row (missing semicolon?)", cur().line);
+    }
 }
 
 
