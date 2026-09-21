@@ -991,6 +991,12 @@ struct LazySeqState {
     bool gatherSeq = false;
     bool exhausted = false;
     bool forceProbed = false;   // forceLazy has already asked once whether it ends
+    // `42 xx 2**62`: a repeat whose length is KNOWN but far too large to build.
+    // It generates on demand like an endless source (and is flagged `infinite`
+    // so nothing tries to materialise it), but the iterator protocol can still
+    // answer `.count-only` exactly, and sinking it costs nothing.
+    bool hasCount = false;
+    Value countVal;
 };
 
 // Shared state behind a real (thread-backed) Promise. Copies of the Promise
@@ -3030,6 +3036,7 @@ Value  rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, Value
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
+void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
 Value  rtHyperItem(const Value& v);    // [..] hyper item: stays one element, isList cleared

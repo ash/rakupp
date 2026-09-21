@@ -208,7 +208,7 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
 }
 
 template <class IO> void ioRule(IO& io, GrammarRuleDecl& g) {
-    F(io, g.name); F(io, g.pattern); F(io, g.kind); ioVec(io, g.params);
+    F(io, g.name); F(io, g.pattern); F(io, g.kind); ioVec(io, g.params); ioVec(io, g.lits);
 }
 
 template <class IO> void ioTrait(IO& io, SubTraitSpec& t) { F(io, t.name); ioExpr(io, t.arg); }

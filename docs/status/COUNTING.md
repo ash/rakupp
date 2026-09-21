@@ -246,6 +246,14 @@ between 10 s and 30 s. Four more still time out at 30 s
 remaining four run to completion but fail on assertions rather than the clock,
 so no timeout budget recovers them.
 
+That second list is a reading at `v3.23.0-45-gb6905bf` and three of its four
+files have since been fixed rather than budgeted: `minmax.t` finishes in
+milliseconds, and `repeat.t` and `99problems-41-to-50.t` were engine hangs that
+no ceiling would ever have recovered (see the 2026-09-21 snapshot in
+[ROAST.md](ROAST.md)). The point the paragraph makes is unaffected — a timeout
+budget is worth tenths of a point either way — but do not read the list as
+current.
+
 **So the counting rules are not the story.** Adopting every one of mutsu's
 conventions moves Raku++ from 43.9% to 44.2%, against their 97.9%. The gap is
 coverage, and the shape of ours is the all-or-nothing file bar: we pass ~91% of

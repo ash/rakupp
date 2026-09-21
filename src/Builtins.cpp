@@ -6354,6 +6354,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             long long pushed = args.empty() ? 0 : pushInto(args[0], want);
             return pushed < want ? iterEnd() : Value::integer(pushed);
         }
+        // A `42 xx 2**62` repeat carries its length and is flagged endless, so
+        // drainFinite leaves it alone and sinking it generates nothing — which
+        // is the whole of Rakudo's "sunk, plain value `xx` sink cheaply".
         if (m == "sink-all") { drainFinite(); posV.i = n; return iterEnd(); }
         // the skip methods answer an INT (1/0), not a Bool
         if (m == "skip-one") { ensure(posV.i + 1); bool ok = posV.i < n; if (ok) posV.i++; return Value::integer(ok ? 1 : 0); }
@@ -6370,7 +6373,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             posV.i = std::min(n, posV.i + std::max(0LL, want));
             return posV.i < n ? items[posV.i++] : iterEnd();
         }
-        if (m == "count-only") { drainFinite(); return Value::integer(n - posV.i); } // remaining, no advance
+        if (m == "count-only") { // remaining, no advance
+            if (lazySrc && lazySrc->hasCount)
+                return applyArith("-", lazySrc->countVal, Value::integer(posV.i));
+            drainFinite(); return Value::integer(n - posV.i);
+        }
         if (m == "bool-only") { ensure(posV.i + 1); return Value::boolean(posV.i < n); }
         if (m == "is-lazy") { auto it = inv.hash()->find("lazy"); return Value::boolean(it != inv.hash()->end() && it->second.truthy()); }
         // an iterator over a RANDOMISED or unordered source promises neither a

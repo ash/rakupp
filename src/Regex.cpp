@@ -3893,6 +3893,33 @@ Regex* GrammarMatcher::compiled(const std::string& name, const std::string& args
 
 Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, const std::string& argstr,
                                    std::map<std::string, std::string>& boundOut) {
+    // `multi rule expr(0)` / `multi token pred(3)`: dispatch on the ARGUMENT
+    // VALUES before binding anything. The literal candidate is the base case of
+    // a recursive grammar — without it `<expr($p-1)>` descends for ever and the
+    // parse never returns (integration/99problems-41-to-50.t, P47).
+    if (!rule.lits.empty()) {
+        std::vector<std::string> av;
+        for (auto& a : splitArgs(argstr)) av.push_back(evalArg(a));
+        for (size_t ci = 0; ci < rule.lits.size(); ci++) {
+            const Rule::Lit& lc = rule.lits[ci];
+            if (lc.args.size() != av.size()) continue;
+            bool hit = true;
+            for (size_t i = 0; i < av.size() && hit; i++) {
+                auto lv = litVal_.find(lc.args[i]);   // a literal is constant: evaluate once
+                if (lv == litVal_.end()) lv = litVal_.emplace(lc.args[i], evalArg(lc.args[i])).first;
+                hit = lv->second == av[i];
+            }
+            if (!hit) continue;
+            std::string ckey = name; ckey += "\x1f#"; ckey += std::to_string(ci);
+            auto cit2 = cache_.find(ckey);
+            if (cit2 == cache_.end())
+                cit2 = cache_.emplace(std::move(ckey), std::make_unique<Regex>(lc.pattern,
+                    lc.kind == "rule" ? "sr" : lc.kind == "regex" ? "" : "r")).first;
+            return cit2->second.get();
+        }
+        // no candidate matched: a group with no generic body has nothing to run
+        if (rule.litOnly) return nullptr;
+    }
     std::string key = name;
     if (!rule.params.empty()) {
         auto args = splitArgs(argstr);
@@ -3944,7 +3971,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     // plainfirst-ish …) get inlined at call sites — they dominate call volume.
     // Every parameterless rule keeps its compiled body in `noArg` so the per-call
     // path never touches the key/cache machinery.
-    if (rule && rule->params.empty()) {
+    if (rule && rule->params.empty() && rule->lits.empty()) {
         std::map<std::string, std::string> b;
         m.noArg = compiled(name, "", b);
         if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar()) m.singleChar = m.noArg;
@@ -4004,7 +4031,7 @@ int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, c
     if (m.dynDep) return 0;            // caller-state-dependent body
     if (m.rule) {
         auto* rl = static_cast<const Rule*>(m.rule);
-        if (!rl->params.empty()) return 0;
+        if (!rl->params.empty() || !rl->lits.empty()) return 0;
         Regex* body = m.noArg;
         if (!body) {                   // compile-and-cache, same as a first call would
             std::map<std::string, std::string> bound;

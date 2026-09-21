@@ -9449,10 +9449,56 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     // `$*STOPPER` is a dynamic var) plus, after a \x1f separator, the
                     // default-value expression text when the signature declares one.
                     std::vector<std::string> params;
+                    // `multi rule expr(0)` / `multi token pred(3)`: a positional
+                    // slot given as a LITERAL VALUE rather than a variable is a
+                    // dispatch constraint, not a binding — one entry per slot,
+                    // empty where the slot names a variable. 99problems P47
+                    // builds its precedence climber out of exactly this
+                    // (`expr(0)` is the base case that stops `<expr($p-1)>`).
+                    std::vector<std::string> lits;
                     auto lp = nm.find('(');
                     if (lp != std::string::npos) {
                         std::string sig = nm.substr(lp);
                         nm = nm.substr(0, lp);
+                        {   // split the signature on top-level commas and keep the
+                            // literal slots; a slot that starts with a sigil is a
+                            // parameter and is collected by the scan below.
+                            std::string inner = sig;
+                            if (!inner.empty() && inner[0] == '(') inner = inner.substr(1);
+                            if (!inner.empty() && inner.back() == ')') inner.pop_back();
+                            std::string cur2; int d2 = 0; char q2 = 0;
+                            std::vector<std::string> slots;
+                            for (size_t k = 0; k <= inner.size(); k++) {
+                                char c2 = k < inner.size() ? inner[k] : ',';
+                                if (q2) { cur2 += c2; if (c2 == q2) q2 = 0; continue; }
+                                if (c2 == '\'' || c2 == '"') { q2 = c2; cur2 += c2; continue; }
+                                if (c2 == '(' || c2 == '[' || c2 == '{') d2++;
+                                if (c2 == ')' || c2 == ']' || c2 == '}') d2--;
+                                if (c2 == ',' && d2 == 0) { slots.push_back(cur2); cur2.clear(); continue; }
+                                cur2 += c2;
+                            }
+                            bool any = false;
+                            for (auto& sl : slots) {
+                                size_t a2 = sl.find_first_not_of(" \t");
+                                if (a2 == std::string::npos) { lits.push_back(""); continue; }
+                                size_t b3 = sl.find_last_not_of(" \t");
+                                std::string t2 = sl.substr(a2, b3 - a2 + 1);
+                                // A slot is a literal VALUE only when it looks
+                                // like one: a number, a quoted string, or a Bool.
+                                // A bare name is a TYPE constraint on an
+                                // anonymous parameter (`token f(Int)`), which
+                                // this does not dispatch on — reading it as the
+                                // literal "Int" would refuse every call.
+                                char c3 = t2[0];
+                                bool isLit = ascii::isdigit((unsigned char)c3) || c3 == '\'' || c3 == '"' ||
+                                             ((c3 == '-' || c3 == '+') && t2.size() > 1 &&
+                                              ascii::isdigit((unsigned char)t2[1])) ||
+                                             t2 == "True" || t2 == "False";
+                                if (!isLit) { lits.push_back(""); continue; }
+                                lits.push_back(t2); any = true;
+                            }
+                            if (!any) lits.clear();
+                        }
                         for (size_t i = 0; i < sig.size(); i++) {
                             if (sig[i] != '$' && sig[i] != '@' && sig[i] != '%') continue;
                             std::string v(1, sig[i]);
@@ -9482,7 +9528,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             params.push_back(v);
                         }
                     }
-                    if (!nm.empty()) cd->rules.push_back({nm, pat, kind, params});
+                    if (!nm.empty()) cd->rules.push_back({nm, pat, kind, params, lits});
                     continue;
                 }
             }

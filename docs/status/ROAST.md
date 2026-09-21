@@ -259,7 +259,79 @@ TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
 
-_Snapshot 2026-09-21 (latest), main at `5becd69` + a third per-file sitting
+_Snapshot 2026-09-21 (latest), main at `9f8ef05` + the four engine hangs: 802 /
+1,464 files fully passing; 563 partial, 92 no-TAP, **7 timeout (was 11)**;
+208,008 / 219,744 declared assertions (94.7%). The fully-passing list is
+IDENTICAL to the same-tree control, file for file, across three sweeps — the
+whole of this sitting is in the timeout column and the partial credit behind it.
+
+Four files had been timing out on an engine hang rather than on the clock, each
+burning ten seconds of a core every run. All four now finish in well under a
+second:
+
+| file | before | after |
+|---|---|---|
+| `S03-operators/repeat.t` | `[TIME] 12/15` | `[part] 62/63`, 0.07 s |
+| `S17-lowlevel/cas.t` | `[TIME] 8/12` | `[part] 20/24`, 0.43 s |
+| `APPENDICES/A01-limits/misc.t` | `[TIME] 0/0` | `[part] 2/3`, 0.58 s |
+| `integration/99problems-41-to-50.t` | `[TIME] 0/0` | `[part] 8/9`, 0.01 s |
+
+**cas.t was a data race, not a slow test.** rakupp runs `start` blocks in real
+parallel, and the P3 torn-copy contract — copy a shared slot out under its own
+stripe, store into it under the same one — covered a plain LEXICAL and nothing
+else. `cas` on an array element, a hash element or an ATTRIBUTE therefore wrote
+the slot under the stripe while every ordinary read of it copied the same Value
+unlocked, so a reader could take half an overwritten pointer and addref a
+control block that was already gone. The linked list the test builds came out
+CYCLIC about one run in three (and segfaulted outright in others), and the walk
+that sums it never returned. The contract now covers all four container kinds;
+a two-thread probe that alternates one object for another crashed every run
+before and survives every run after. The same sitting made `cas` compare by
+IDENTITY rather than `eqv`: `eqv` is the structural walk, which descends both
+`.next` chains on every failed swap, and would swap on two distinct-but-equal
+objects — which is the one thing a compare-and-swap must never do. The shape has
+a contract program of its own now, `t/stress/cas-containers.raku`: it segfaults
+on every run of the previous binary and is clean under both modes and under
+ThreadSanitizer after. All twelve of
+the file's linked-list tests now pass; the four that remain want a declared type
+enforced on assignment (`my Node $head; $head = Any.new`), which rakupp does not
+do for a user class or a subset in any assignment, `cas` or not.
+
+**`multi rule expr(0)` is a candidate, not an overwrite.** Grammar rules were
+one pattern per name, so every candidate of a literal-value multi clobbered the
+one before it. P47 builds a precedence climber out of `multi rule expr(0)` and
+`multi rule expr($p) { <expr($p-1)> … }`: with the base case gone, the recursion
+had nothing to stop it and the parse never returned. A literal signature slot is
+now a dispatch constraint — the candidates live under a mangled key, a call
+evaluates its arguments once and takes the first whose literals all match, and
+anything else falls through to the generic candidate. P47 passes; P48 still
+fails, on its answers rather than on the clock.
+
+**`xx` no longer builds what it cannot finish.** `NaN` and `-Inf` name no count
+and are now the X::Numeric::CannotConvert `x` already gave, in the interpreter
+and in compiled code alike (throws-like's diagnostic used to walk the endless
+list it was handed instead). A count past ten million elements — `2**62`,
+`2**99999`, which the spec sinks on purpose — is generated on demand with its
+length recorded, so `.count-only` is exact and sinking costs nothing. The
+routine form `infix:<xx>(&block, Inf)` is lazy and calls the block per element,
+and an empty slip yields one Nil per repetition instead of never advancing.
+
+**`"a" x 2**32-1` is one allocation.** MoarVM answers that repeat with a strand
+and never materialises it; rakupp has no lazy string, and the spec file asks for
+a repeat that LIVES, so it builds — but in one allocation and doubling memcpys
+rather than 4.3 billion appends. Half a second instead of never. The repeat also
+keeps its result NFC-normalized now, which an ASCII base skips entirely.
+
+The read-side stripes cost **+0.5% instructions retired** on a microbenchmark
+built to do nothing but read array elements, hash elements and attributes in a
+loop (7.198 G → 7.246 G, interleaved, three pairs); real programs read far less
+densely than that. Gated file for file against a control built from the same
+HEAD: `t/run.raku` fails the identical 24 checks, and no Roast file left the
+pass list. The one file that flapped across sweeps, `S17-supply/batch.t`, passes
+3/3 in isolation under BOTH binaries — it is the spec-timed supply flapper
+COUNTING's timeout section describes._
+
+_Snapshot 2026-09-21, main at `5becd69` + a third per-file sitting
 (`--workers=3 --cpu=3`, one pass): 798 / 1,464 files fully passing (54.5%); 564
 partial, 92 no-TAP, 10 timeout; 207,985 / 219,915 declared assertions (94.6%).
 Ten files: **S12** 33 to 36, **S32** 150 to 152, **S02** 60 to 61, **S03** 85 to

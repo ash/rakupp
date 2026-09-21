@@ -574,7 +574,17 @@ private:
 // frames, and records a ParseNode tree the interpreter turns into Match values.
 class GrammarMatcher {
 public:
-    struct Rule { std::string pattern, kind; std::vector<std::string> params; };
+    struct Rule {
+        std::string pattern, kind; std::vector<std::string> params;
+        // `multi rule expr(0)` — candidates constrained to LITERAL argument
+        // values, in declaration order. A call evaluates its arguments once and
+        // takes the first candidate whose literals all match; none matching
+        // falls through to this rule's own body (the generic `multi rule
+        // expr($p)`), or fails outright when `litOnly` says there is no generic.
+        struct Lit { std::vector<std::string> args; std::string pattern, kind; };
+        std::vector<Lit> lits;
+        bool litOnly = false;
+    };
     std::map<std::string, Rule> rules;
     std::map<std::string, std::vector<std::string>> protos; // proto name -> candidate rule names (`x:<sym>`)
     GrammarHooks hooks; // interpreter callbacks for match-time evaluation (set by grammarParse)
@@ -660,6 +670,7 @@ private:
     std::map<std::string, std::unique_ptr<Regex>> cache_;   // name(+arg values) → compiled
     std::vector<std::map<std::string, std::string>> scope_; // parameterised-rule param bindings
     mutable std::map<std::string, std::string> mergedParams_; // currentParams() scratch: outer dynamic-var params merged in
+    mutable std::map<std::string, std::string> litVal_;     // literal-candidate arg text → its evaluated value (constants: evaluated once)
     Regex* compiled(const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
     Regex* compiledFor(const Rule& rule, const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
     std::string evalArg(const std::string& e) const;

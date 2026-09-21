@@ -1134,6 +1134,13 @@ struct ClassInfo {
     std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
+    // `multi rule expr(0)` / `multi token pred(3)`: candidates constrained to
+    // LITERAL argument values. They share a name, so each is stored in `rules`
+    // under a mangled key (name \x1f lit \x1e lit …) and listed here against the
+    // plain name, in declaration order. Empty for every grammar that has none.
+    std::map<std::string, std::vector<std::string>> ruleLitCands; // name -> mangled candidate keys
+    std::map<std::string, std::vector<std::string>> ruleLitArgs;  // mangled key -> its literal values
+    std::set<std::string> ruleLitOnly; // names whose candidates are ALL literal (no generic body to fall back on)
     bool isGrammar = false;
     bool isRole = false;
     bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
@@ -1252,6 +1259,13 @@ struct ClassInfo {
         if (it != ruleParams.end()) return &it->second;
         if (parent) if (auto* r = parent->findRuleParams(n)) return r;
         for (auto& p : extraParents) if (p) if (auto* r = p->findRuleParams(n)) return r;
+        return nullptr;
+    }
+    const std::vector<std::string>* findRuleLitCands(const std::string& n) const {
+        auto it = ruleLitCands.find(n);
+        if (it != ruleLitCands.end()) return &it->second;
+        if (parent) if (auto* r = parent->findRuleLitCands(n)) return r;
+        for (auto& p : extraParents) if (p) if (auto* r = p->findRuleLitCands(n)) return r;
         return nullptr;
     }
     const ClassAttr* findAttr(const std::string& n) const {

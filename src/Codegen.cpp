@@ -1345,7 +1345,11 @@ struct Codegen {
                     // list repetition thunks its left side (re-evaluate per copy);
                     // rtXxAppend splices a Slip's elements (`|(1,2) xx 2` is 4 elems)
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
-                    return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; _o.s=\"Seq\"; "
+                    // …and a count that names no count at all (`NaN`, `-Inf`) is
+                    // the same refusal the interpreter gives, so the two engines
+                    // agree on S03-operators/repeat.t's throws-like block.
+                    return "([&]()->Value{ Value _c=(" + R + "); rtXxCountCheck(_c); long long _n=_c.toInt(); "
+                           "Value _o=Value::array(); _o.isList=true; _o.s=\"Seq\"; "
                            "for(long long _i=0;_i<_n;_i++) rtXxAppend(*_o.arr(), " + L + "); return _o; }())";
                 }
                 if (b->op == "^..." || b->op == "^...^")

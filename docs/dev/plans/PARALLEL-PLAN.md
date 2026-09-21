@@ -148,6 +148,22 @@ residuals for the next stress programs: iteration during mutation,
 object-attribute races, same-slot torn copies of pointer-carrying values —
 each wants its own contract program before its fix.
 
+**P3 torn-copy contract, second delivery (2026-09-21): it now covers all four
+container kinds.** The rule is that a Value copied OUT of a shared slot is
+copied under that slot's stripe, paired with the striped store — and it had
+been wired for a plain lexical only. An array element, a hash element and an
+object ATTRIBUTE were stored under the stripe (`evalAssignInner` keys on the
+slot pointer, so it always was) and read without it, which is the same torn
+copy the lexical fix closed: a reader takes half an overwritten pointer and
+addrefs a control block that is already gone. `cas` on those three kinds is
+exactly that shape — `S17-lowlevel/cas.t` built a CYCLIC linked list about one
+run in three and segfaulted in others — and the read sites in `evalIndex`
+(fast and general), the hash lookup and the attribute arm of `evalVar` now
+take `ParStripe`. New contract program: `t/stress/cas-containers.raku`, which
+segfaults on every run of the previous binary and is clean in all four
+mode/sanitizer combinations after. Cost: +0.5% instructions retired on a
+microbenchmark that does nothing but read elements and attributes.
+
 ### P3 — container strategy (the crash-elimination decision)
 
 The design choice this plan must make concrete: how shared `Array`/`Hash`/

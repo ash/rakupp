@@ -9638,6 +9638,44 @@ struct TopicAliasFrame {
 
 static void failureDetonate(const Value& v); // an unhandled Failure blows up when USED or SUNK
 
+// A `multi rule NAME(0)` candidate is stored under a mangled key, because every
+// candidate of the group shares NAME. The key is NAME \x1f lit \x1e lit …, so it
+// can never collide with a rule name the parser could produce.
+static std::string ruleLitKey(const std::string& name, const std::vector<std::string>& lits) {
+    std::string k = name; k += '\x1f';
+    for (size_t i = 0; i < lits.size(); i++) { if (i) k += '\x1e'; k += lits[i]; }
+    return k;
+}
+// Install one declared rule into a class, routing a literal-value candidate to
+// its mangled key and listing it against the plain name in declaration order.
+static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
+    if (!r.lits.empty()) {
+        std::string key = ruleLitKey(r.name, r.lits);
+        ci->rules[key] = r.pattern;
+        ci->ruleKind[key] = r.kind;
+        ci->ruleLitArgs[key] = r.lits;
+        auto& cands = ci->ruleLitCands[r.name];
+        if (std::find(cands.begin(), cands.end(), key) == cands.end()) cands.push_back(key);
+        // the plain name must resolve to SOMETHING, or `<expr(3)>` is an unknown
+        // subrule before dispatch ever runs; the first candidate's body stands in
+        // and is only reached when no candidate's literals match.
+        if (!ci->rules.count(r.name)) {
+            ci->rules[r.name] = r.pattern;
+            ci->ruleKind[r.name] = r.kind;
+            ci->ruleOrder.push_back(r.name);
+            ci->ruleLitOnly.insert(r.name);
+        }
+        return;
+    }
+    ci->rules[r.name] = r.pattern;
+    ci->ruleKind[r.name] = r.kind;
+    ci->ruleLitOnly.erase(r.name); // a generic candidate: the group has a fallback body
+    if (!r.params.empty()) ci->ruleParams[r.name] = r.params;
+    else ci->ruleParams.erase(r.name);
+    if (std::find(ci->ruleOrder.begin(), ci->ruleOrder.end(), r.name) == ci->ruleOrder.end())
+        ci->ruleOrder.push_back(r.name);
+}
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -10382,7 +10420,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
                         ci->attrs.push_back(ca);
                     }
-                    for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; ci->ruleOrder.push_back(r.name); }
+                    for (auto& r : cd->rules) installRule(ci, r);
                     noteSymbolMutation("augment (user type)");
                 } else {
                     // augment a built-in type — park methods in the extension
@@ -10882,6 +10920,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (ki != rc->ruleKind.end()) ci->ruleKind[rk.first] = ki->second;
                             auto pi2 = rc->ruleParams.find(rk.first);
                             if (pi2 != rc->ruleParams.end()) ci->ruleParams[rk.first] = pi2->second;
+                            auto li2 = rc->ruleLitArgs.find(rk.first);
+                            if (li2 != rc->ruleLitArgs.end()) ci->ruleLitArgs[rk.first] = li2->second;
+                            auto lc2 = rc->ruleLitCands.find(rk.first);
+                            if (lc2 != rc->ruleLitCands.end()) ci->ruleLitCands[rk.first] = lc2->second;
                         }
                         for (auto& nm : rc->ruleOrder)
                             if (std::find(ci->ruleOrder.begin(), ci->ruleOrder.end(), nm) == ci->ruleOrder.end())
@@ -11006,7 +11048,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         "Placeholder variable '" + ph +
                         "' may not be used here because the surrounding block does not take a signature");
             }
-            for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; ci->ruleOrder.push_back(r.name); }
+            for (auto& r : cd->rules) installRule(ci.get(), r);
             for (auto& a : cd->attrs) {
                 // a placeholder in an attribute default has no block to bind to
                 if (a.def) {
@@ -25929,6 +25971,21 @@ static long long bitwiseInt(const Value& v) {
     return n.toInt();
 }
 
+// Past this many elements a `xx` repeat is generated on demand rather than
+// built: the list would be gigabytes, and the counts the spec asks about
+// (`2**62`, `2**99999`) could never be built at all.
+static constexpr long long kXxEagerMax = 10000000;
+
+// The repetition count of `xx`. `*` and `+Inf` are legitimate — they ask for an
+// endless list — but `NaN` and `-Inf` are not counts at all, and Rakudo refuses
+// them with the same X::Numeric::CannotConvert that `Int(NaN)` gives.
+void rtXxCountCheck(const Value& v) {
+    if (v.t != VT::Num) return;
+    if (std::isnan(v.n) || (std::isinf(v.n) && v.n < 0))
+        throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                        "Cannot convert " + v.toStr() + " to Int"};
+}
+
 // Is `op` the reverse metaop over a WORD base — `Rcmp`, `Rdiv`, `Rmin`? The
 // symbolic forms are recognised by the non-alphanumeric character after the R,
 // but a word base is alphanumeric and would make every identifier starting with
@@ -27218,13 +27275,103 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                             "Cannot repeat a string " + r.toStr() + " times"};
         long long n = strictInt(r);
-        for (long long k = 0; k < n; k++) out += base;
-        return Value::str(out);
+        if (n <= 0 || base.empty()) return Value::str(std::string());
+        // ONE allocation, then doubling copies. `out += base` per repetition is
+        // a billion appends and a chain of reallocations for a count like
+        // `2**32-1` (APPENDICES/A01-limits/misc.t asks for exactly that, and
+        // the file never finished); this builds the same 4 GB in half a second.
+        // MoarVM answers such a repeat with a strand and never materialises it —
+        // rakupp has no lazy string, so the honest alternatives are to build it
+        // or to refuse, and the spec test asks for a repeat that LIVES.
+        unsigned long long want = (unsigned long long)n * (unsigned long long)base.size();
+        if (want > (unsigned long long)out.max_size())
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Cannot allocate a string of " + std::to_string(want) + " bytes"};
+        try {
+            if (base.size() == 1) out.assign((size_t)want, base[0]);
+            else {
+                // doubling, written as explicit memcpys over DISJOINT ranges
+                // rather than self-append, which aliases
+                out.resize((size_t)want);
+                char* p = &out[0];
+                std::memcpy(p, base.data(), base.size());
+                for (size_t have = base.size(); have < (size_t)want; ) {
+                    size_t take = std::min(have, (size_t)want - have);
+                    std::memcpy(p + have, p, take);
+                    have += take;
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            // catchable, per the spec file's own wording: "it either works or
+            // throws a catchable exception … we do not SEGV in such cases"
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Out of memory repeating a string " + std::to_string(n) + " times"};
+        }
+        // The repeat operator keeps text NORMALIZED: two copies of U+0F75 are one
+        // NFC run whose combining marks reorder across the join. ASCII can never
+        // change under NFC, so the common case — including the 4 GB repeat above
+        // — skips the pass entirely.
+        bool ascii = true;
+        for (unsigned char c : base) if (c >= 0x80) { ascii = false; break; }
+        return Value::str(ascii ? std::move(out) : nfcNormalize(std::move(out)));
     }
     if (op == "xx") {
-        Value a = Value::array();
+        rtXxCountCheck(r); // `NaN`/`-Inf` name no count — see xxRepeat
+        // The VALUE path — `infix:<xx>(x, n)` called as a routine, and the
+        // metaop fallbacks — reached here with the left side already evaluated,
+        // so it has no expression to re-thunk. Rakudo's answer for a CALLABLE
+        // left side is the `(&x, $n)` candidate: the block is CALLED once per
+        // element, which is what makes `infix:<xx>({$++}, Inf)[^20]` count from
+        // zero rather than hand back twenty copies of the block.
+        bool callable = l.t == VT::Code && l.code();
+        auto one = [&callable](const Value& v) {
+            return callable && g_cbInterp ? g_cbInterp->callCallable(v, ValueList{}) : v;
+        };
+        // `x xx *` / `x xx Inf` is ENDLESS, and building it eagerly is a loop
+        // that never ends (repeat.t hung here on `infix:<xx>({$++}, Inf)`).
+        if (r.t == VT::Whatever || (r.t == VT::Num && std::isinf(r.n))) {
+            Value a = Value::seq();
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            st->hasCount = true; st->countVal = Value::number(INFINITY);
+            Value src = l;
+            st->appendNext = [src, callable](ValueList& cache) -> bool {
+                size_t before = cache.size();
+                rtXxAppend(cache, callable && g_cbInterp
+                                  ? g_cbInterp->callCallable(src, ValueList{}) : src);
+                if (cache.size() == before) cache.push_back(Value::nil()); // empty slip: one Nil per repetition
+                return true;
+            };
+            {   size_t before = a.arr()->size();
+                rtXxAppend(*a.arr(), one(l));
+                if (a.arr()->size() == before) a.arr()->push_back(Value::nil());
+            }
+            a.extM() = st;
+            return a;
+        }
         long long n = strictInt(r);
-        for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), l);
+        if (r.big() || n > kXxEagerMax) {   // too large to build — generate on demand
+            Value a = Value::seq();
+            auto st = std::make_shared<LazySeqState>();
+            st->infinite = true;
+            st->hasCount = true; st->countVal = r.big() ? r : Value::integer(n);
+            Value src = l;
+            auto left = std::make_shared<long long>(r.big() ? -1 : n);
+            st->appendNext = [src, callable, left](ValueList& cache) -> bool {
+                if (*left == 0) return false;
+                if (*left > 0) --*left;
+                size_t before = cache.size();
+                rtXxAppend(cache, callable && g_cbInterp
+                                  ? g_cbInterp->callCallable(src, ValueList{}) : src);
+                if (cache.size() == before) cache.push_back(Value::nil());
+                return true;
+            };
+            if (n != 0) { --*left; rtXxAppend(*a.arr(), one(l));
+                          if (a.arr()->empty()) a.arr()->push_back(Value::nil()); }
+            a.extM() = st;
+            return a;
+        }
+        Value a = Value::array();
+        for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), one(l));
         a.isList = true; // `1 xx 5` is a flattening list, so `[1 xx 5]` spreads to 5 elems
         a.s = "Seq";     // …and it is lazy: Rakudo reports Seq
         return a;
@@ -30102,6 +30249,23 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             rule.kind = c->ruleKind.count(r.first) ? c->ruleKind.at(r.first) : "token";
             auto pit = c->ruleParams.find(r.first);
             if (pit != c->ruleParams.end()) rule.params = pit->second;
+            // `multi rule expr(0)`: attach the literal-value candidates of this
+            // name, in declaration order, so a call can dispatch on its argument
+            // values before binding the generic candidate's parameters.
+            if (const std::vector<std::string>* lc = c->findRuleLitCands(r.first)) {
+                for (auto& key : *lc) {
+                    auto pt = c->findRule(key);
+                    auto ar = c->ruleLitArgs.find(key);
+                    if (!pt || ar == c->ruleLitArgs.end()) continue;
+                    GrammarMatcher::Rule::Lit lit;
+                    lit.args = ar->second;
+                    lit.pattern = *pt;
+                    auto ki = c->ruleKind.find(key);
+                    lit.kind = ki != c->ruleKind.end() ? ki->second : rule.kind;
+                    rule.lits.push_back(std::move(lit));
+                }
+                rule.litOnly = c->ruleLitOnly.count(r.first) > 0;
+            }
             gm.rules[r.first] = std::move(rule);
         }
         for (auto& nm : c->ruleOrder) if (declSeen.insert(nm).second) declOrder.push_back(nm);
@@ -31490,6 +31654,12 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
 // list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
     // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
     Value rv = eval(count);
+    // Only `*` and `+Inf` name an endless repetition. `NaN` and `-Inf` name no
+    // count at all, so they are a refusal — the same X::Numeric::CannotConvert
+    // `x` already gives. Treating every infinity as endless made `'a' xx -Inf`
+    // build a list nothing could stop reading (S03-operators/repeat.t hung in
+    // throws-like's diagnostic, which prints the value it was handed).
+    rtXxCountCheck(rv);
     if (rv.t == VT::Whatever || (rv.t == VT::Num && std::isinf(rv.n))) {
         // `EXPR xx *` — an endlessly repeating lazy list. The left side is a
         // THUNK on this path too, not one value repeated: `[] xx *` owes each
@@ -31498,21 +31668,60 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
         // DBDish's allrows(:hash-of-array) pushed every column into all of them.
         Value a = Value::seq();   // `EXPR xx *` is a Seq too (sheet LA-32)
         auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        st->hasCount = true; st->countVal = Value::number(INFINITY); // `.count-only` is Inf
         Expr* le = item;
         auto env = tctx_.cur;   // the thunk keeps the scope it was written in
         st->appendNext = [this, le, env](ValueList& cache) -> bool {
             auto saved = tctx_.cur;
             tctx_.cur = env;
+            size_t before = cache.size();
             try { rtXxAppend(cache, eval(le)); } // a Slip replicates its ELEMENTS
             catch (...) { tctx_.cur = saved; throw; }
             tctx_.cur = saved;
+            // An EMPTY slip contributes nothing, so a generator that only ever
+            // splices would never advance and a demand for five elements would
+            // spin for ever. Rakudo's iterator yields one value per repetition
+            // and an empty one yields Nil: `(|() xx *)[^5]` is five Nils.
+            if (cache.size() == before) cache.push_back(Value::nil());
             return true;
         };
-        rtXxAppend(*a.arr(), eval(item));
+        {   size_t before = a.arr()->size();
+            rtXxAppend(*a.arr(), eval(item));
+            if (a.arr()->size() == before) a.arr()->push_back(Value::nil());
+        }
         a.extM() = st;
         return a;
     }
     long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
+    // A count past the materialisation cap — `42 xx 9999999999`, `42 xx 2**62`,
+    // `42 xx 2**99999` — is generated ON DEMAND with its length recorded, the
+    // way Rakudo's iterator does. Building it took as long as the count said
+    // and S03-operators/repeat.t's `sink cheaply` subtest never returned.
+    if (rv.big() || n > kXxEagerMax) {
+        Value a = Value::seq();
+        auto st = std::make_shared<LazySeqState>();
+        st->infinite = true;        // never materialise the whole of it
+        st->hasCount = true; st->countVal = rv.big() ? rv : Value::integer(n);
+        Expr* le = item;
+        auto env = tctx_.cur;
+        auto left = std::make_shared<long long>(rv.big() ? -1 : n); // -1: effectively unbounded
+        st->appendNext = [this, le, env, left](ValueList& cache) -> bool {
+            if (*left == 0) return false;
+            if (*left > 0) --*left;
+            auto saved = tctx_.cur;
+            tctx_.cur = env;
+            size_t before = cache.size();
+            try { rtXxAppend(cache, eval(le)); }
+            catch (...) { tctx_.cur = saved; throw; }
+            tctx_.cur = saved;
+            if (cache.size() == before) cache.push_back(Value::nil());
+            return true;
+        };
+        if (n != 0) { --*left; rtXxAppend(*a.arr(), eval(item));
+                      if (a.arr()->empty()) a.arr()->push_back(Value::nil()); }
+        a.extM() = st;
+        return a;
+    }
     Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
     for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), eval(item));
     return a;
@@ -35011,9 +35220,15 @@ Value Interpreter::evalCall(Call* c) {
             try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
             if (lv) {
                 if (args.size() >= 3) {
+                    // IDENTITY, not `eqv`. Rakudo's cas compares the container's
+                    // object against the expected one — `===`. `eqv` is the
+                    // structural walk, which for the linked list cas.t builds
+                    // descends both `.next` chains on every FAILED swap, and
+                    // would swap on two distinct-but-equal objects, which a
+                    // compare-and-swap must never do.
                     std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
                     Value seen = *lv;
-                    if (applyArith("eqv", seen, args[1]).truthy()) *lv = args[2];
+                    if (applyArith("===", seen, args[1]).truthy()) *lv = args[2];
                     return seen;
                 }
                 if (args[1].t == VT::Code) {
@@ -35032,7 +35247,7 @@ Value Interpreter::evalCall(Call* c) {
                         { std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv)); seen = *lv; }
                         Value next = callCallable(args[1], ValueList{seen});
                         std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
-                        if (applyArith("eqv", *lv, seen).truthy()) { *lv = next; return next; }
+                        if (applyArith("===", *lv, seen).truthy()) { *lv = next; return next; }
                     }
                 }
                 std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
@@ -35970,8 +36185,18 @@ Value Interpreter::evalIndex(Index* idx) {
                 // the wrapping seen further down this function belongs to
                 // containers that are not plain Arrays. Anything else, including
                 // out of range, falls through to the general path.
-                if (have && i >= 0 && i < (long long)bp->arr()->size())
-                    return itemizeElem((*bp->arr())[i], bp->isList);
+                if (have && i >= 0 && i < (long long)bp->arr()->size()) {
+                    // P3 torn-copy contract, the ELEMENT half: the copy-out
+                    // happens under the slot's own stripe, the same one
+                    // evalAssignInner's store and `cas` take. Without it a
+                    // reader could copy a half-overwritten pointer-carrying
+                    // Value while cas replaced it, and addref a control block
+                    // that was already gone (S17-lowlevel/cas.t built a CYCLIC
+                    // linked list, or segfaulted, roughly one run in three).
+                    const Value& slot = (*bp->arr())[i];
+                    ParStripe rs(*this, &slot);
+                    return itemizeElem(slot, bp->isList);
+                }
             }
         }
     }
@@ -37123,7 +37348,10 @@ Value Interpreter::evalIndex(Index* idx) {
                 return key == base.s && base.pairVal() ? *base.pairVal() : Value::nil();
             if (base.t == VT::Hash && base.hash()) {
                 auto it = base.hash()->find(key);
-                if (it != base.hash()->end()) return it->second;
+                if (it != base.hash()->end()) {
+                    ParStripe rs(*this, &it->second); // torn-copy contract
+                    return it->second;
+                }
             }
             // Set/Bag/Mix typed default — ONLY the quanthashes: a Stash
             // answers Any on a miss like Rakudo's, not the Bag's 0
@@ -37295,6 +37523,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (base.t == VT::Array && (src[i].t == VT::Nil || src[i].t == VT::Any) &&
                         (base.elemDefault() || !base.ofType().empty()))
                         return arrayMissingDefault(base);
+                    ParStripe rs(*this, &src[i]); // torn-copy contract (see the fast path above)
                     return src[i];
                 }
                 if (base.elemDefault()) return *base.elemDefault(); // `is default(v)`
@@ -37719,10 +37948,18 @@ Value Interpreter::eval(Expr* e) {
                     // the construction walk), so try that spelling first
                     if (!ve->attrTwin.empty()) {
                         auto st = selfp->obj()->attrs.find(ve->attrTwin);
-                        if (st != selfp->obj()->attrs.end()) return st->second;
+                        if (st != selfp->obj()->attrs.end()) {
+                            ParStripe rs(*this, &st->second); // torn-copy contract
+                            return st->second;
+                        }
                     }
                     auto it = selfp->obj()->attrs.find(an);
-                    if (it != selfp->obj()->attrs.end()) return it->second;
+                    if (it != selfp->obj()->attrs.end()) {
+                        // torn-copy contract, the ATTRIBUTE half — `cas($!head,
+                        // …)` writes this slot under the same stripe.
+                        ParStripe rs(*this, &it->second);
+                        return it->second;
+                    }
                     if (ve->name[1] == '.') return methodCall(*selfp, an, {});
                 }
                 // `$.metrics` with a TYPE OBJECT as self is still a method call

@@ -757,7 +757,11 @@ struct AttrDecl {
     ExprPtr def;        // optional default
 };
 
-struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::string> params; };
+struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::string> params;
+                         // `multi rule expr(0)` / `multi token pred(3)`: the LITERAL value at
+                         // each positional slot (empty where the slot is a variable). Empty
+                         // overall for an ordinary rule, which is nearly all of them.
+                         std::vector<std::string> lits; };
 struct ClassDecl : Stmt {
     std::string name;
     std::string parent; // first `is Parent` / `does Role`
