@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~95% of all declared Roast tests pass** (208,005 / 219,915); on the
-stricter file bar, ~54% of files fully pass (788 / 1,464). The per-file breakdown
+**Headline: ~95% of all declared Roast tests pass** (207,985 / 219,915); on the
+stricter file bar, ~55% of files fully pass (798 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
 `not ok … # todo` lines as passes. Net of both it is 94.0% rather than 94.6% —
@@ -51,8 +51,8 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **788** | **54%** |
-| Partially passing | 574 | 39% |
+| **Fully passing** | **798** | **55%** |
+| Partially passing | 564 | 39% |
 | No TAP output | 92 | 6% |
 | Timeouts | 10 | 0.7% |
 
@@ -61,7 +61,7 @@ in-run now: `S04-statements/try.t` scores as an ordinary partial, and
 `S12-construction/destruction.t` fully passes since the DESTROY protocol
 landed. See [dev/findings/ROAST-GAPS.md](../dev/findings/ROAST-GAPS.md).)
 
-**Coverage ≈ 54% of files.** That is the number to quote. About a sixteenth of
+**Coverage ≈ 55% of files.** That is the number to quote. About a sixteenth of
 the suite produces no TAP at all — those files hit a parse error or an
 unimplemented construct and abort before any assertion runs — so they are
 entirely unmeasured territory, not "passing" and not "failing."
@@ -69,7 +69,7 @@ entirely unmeasured territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**208,005 of ~219,915 declared tests — 94.6%**. "Declared" means every test the
+**207,985 of ~219,915 declared tests — 94.6%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -78,11 +78,11 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 208,005 / 213,191 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 208,005 / 217,651 (95.6%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 208,005 / 219,915 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 207,985 / 213,149 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 207,985 / 217,651 (95.6%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 207,985 / 219,915 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The 95% is the per-test analog of the ~54% file coverage. Three notes on scope:
+The 95% is the per-test analog of the ~55% file coverage. Three notes on scope:
 
 1. **~2.1k of the denominator comes from no-TAP files** (64 of them, read from
    source); 3 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -96,7 +96,7 @@ The 95% is the per-test analog of the ~54% file coverage. Three notes on scope:
    fully-passing files. Do not compare pre-v2.0.0 Roast numbers against these
    without that correction (see the [CHANGELOG](../../CHANGELOG.md)).
 
-Coverage is the ~54% of files; per-test correctness across the whole suite is the
+Coverage is the ~55% of files; per-test correctness across the whole suite is the
 95%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
@@ -109,33 +109,33 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 60 | 71 | 0 | 16 | 7448/8100 | 92% |
-| S03 | Operators | 85 | 34 | 1 | 5 | 25702/26063 | 99% |
+| S02 | Literals, types, magicals | 61 | 70 | 0 | 16 | 7449/8100 | 92% |
+| S03 | Operators | 86 | 33 | 1 | 5 | 25704/26063 | 99% |
 | S04 | Blocks, statements, phasers | 34 | 39 | 0 | 4 | 1243/1488 | 84% |
 | S05 | Regexes & grammars | 40 | 54 | 0 | 4 | 5874/6273 | 94% |
 | S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1574/1840 | 86% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 224/268 | 84% |
-| S09 | Data structures | 2 | 20 | 0 | 0 | 4001/4685 | 85% |
+| S09 | Data structures | 3 | 19 | 0 | 0 | 4003/4685 | 85% |
 | S10 | Packages | 2 | 7 | 0 | 0 | 55/104 | 53% |
 | S11 | Modules | 9 | 11 | 0 | 2 | 90/123 | 73% |
-| S12 | Objects & classes | 33 | 57 | 0 | 11 | 1398/1614 | 87% |
+| S12 | Objects & classes | 36 | 54 | 0 | 11 | 1403/1614 | 87% |
 | S13 | Overloading | 7 | 0 | 0 | 0 | 88/88 | 100% |
-| S14 | Roles | 6 | 17 | 0 | 2 | 282/333 | 85% |
+| S14 | Roles | 7 | 16 | 0 | 2 | 283/333 | 85% |
 | S15 | Unicode / strings / NFG | 81 | 0 | 0 | 0 | 91807/91807 | 100% |
 | S16 | I/O | 20 | 14 | 0 | 3 | 585/749 | 78% |
-| S17 | Concurrency (supply/promise/async) | 73 | 17 | 6 | 3 | 1290/1343 | 96% |
+| S17 | Concurrency (supply/promise/async) | 73 | 17 | 6 | 3 | 1249/1300 | 96% |
 | S19 | Command-line | 7 | 0 | 0 | 1 | 24/24 | 100% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 6/7 | 86% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
 | S26 | Documentation (POD) | 10 | 17 | 0 | 0 | 407/587 | 69% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 14 | 0 | 0 | 0 | 465/465 | 100% |
-| S32 | Standard types (str/list/num/…) | 150 | 100 | 1 | 12 | 43081/44677 | 96% |
-| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1172/1250 | 94% |
+| S32 | Standard types (str/list/num/…) | 152 | 98 | 1 | 12 | 43086/44677 | 96% |
+| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1174/1250 | 94% |
 | 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 648/723 | 90% |
 | 6.d | v6.d language snapshot | 18 | 0 | 0 | 0 | 20310/20310 | 100% |
 | APPENDICES | — | 1 | 3 | 1 | 1 | 27/48 | 56% |
-| MISC / t | — | 2 | 1 | 0 | 3 | 11/12 | 92% |
+| MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
 
@@ -259,7 +259,44 @@ TAP already captured into the `[TIME]` column — the 12-to-22 timeout band
 across passes in the snapshots below was that race, not the engine under test.
 Two sweeps of the same build now agree file for file.
 
-_Snapshot 2026-09-21 (latest), main at `b9a76b9` + a second per-file sitting
+_Snapshot 2026-09-21 (latest), main at `5becd69` + a third per-file sitting
+(`--workers=3 --cpu=3`, one pass): 798 / 1,464 files fully passing (54.5%); 564
+partial, 92 no-TAP, 10 timeout; 207,985 / 219,915 declared assertions (94.6%).
+Ten files: **S12** 33 to 36, **S32** 150 to 152, **S02** 60 to 61, **S03** 85 to
+86, **S09**, **S14** and **MISC** one each. The table and the headline figures
+above are from this run.
+
+The one that unlocked more than itself: **a `my class` / `my role` is LEXICAL**.
+The name meant nothing outside its block in Rakudo and everything in ours, so
+`{ my class R {}; }; R` answered the type. The declaring scope is the class's
+`declEnv`'s parent, and it is in scope exactly when it is still on the current
+Env chain — the same walk the redeclaration guard already made. The refusal has
+to be final: the unit DECLARES the name, so the forward-reference leniency below
+would otherwise wave it through on a declaration this scope cannot see. `anon
+class C {…}` is the same question with no scope at all — it keeps the name for
+`.^name` and installs it nowhere.
+
+Perl 5's method arrow is now named rather than left to fail on a missing block:
+a `->` tight on both sides is X::Obsolete, which needs catching in two places —
+a bareword reaches the pointy-block branch, a variable ends the statement first
+and arrives at the separator check. A quote tight against a name is two terms in
+a row (`foo'...'`), but only in an EVAL'd snippet: an unrecognised QUOTE WORD
+(`qa"…"`) arrives in exactly that shape, and a whole test file must not die over
+one line. That one showed up as a file going from 40 failures to no TAP at all
+with nothing leaving the pass list — measure 2's denominator again.
+
+The rest: a FLAT list assigned to a multi-dim shaped array is
+X::Assignment::ToShaped, not a size complaint; `augment class A:D`,
+`my $a is readonly` and a `whenever` outside a `react` already said the right
+thing and only needed their types; a `:delete` SLICE reports one element per key
+(Any for a key that was not there, Nil when the container itself is undefined)
+instead of leaving gaps; and `:exists:!v` on a POSITIONAL subscript is a no-op
+rather than a clashing presentation adverb — `%h<a>:exists:!v` still dies, and
+`:k` gets no such pass either way.
+
+Gated file for file against the run below: nothing lost._
+
+_Snapshot 2026-09-21 main at `b9a76b9` + a second per-file sitting
 (`--workers=4 --cpu=3`, one pass): 788 / 1,464 files fully passing (53.8%); 574
 partial, 92 no-TAP, 10 timeout; 208,005 / 219,915 declared assertions (94.6%).
 Fifteen files, worked down the per-file failure counts rather than by chapter:

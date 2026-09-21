@@ -2842,6 +2842,17 @@ void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
         if (!(src.t == VT::Array && src.arr()))
             throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
                 "Assignment to a shaped array needs a matching nested structure"};
+        // …and a FLAT list is unstructured however long it is: every element at
+        // a level above the leaves has to be a list of its own, so
+        // `my @a[2;2] = <a b c d>` is ToShaped and not a size complaint.
+        if (d + 1 < shp->size())
+            for (auto& el : *src.arr())
+                if (!(el.t == VT::Array || el.t == VT::Range)) {
+                    std::string sh;
+                    for (auto dim : *shp) sh += (sh.empty() ? "" : " ") + std::to_string(dim);
+                    throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
+                        "Assignment to array with shape " + sh + " must provide structured data"};
+                }
         if ((long long)src.arr()->size() > (*shp)[d])
             throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
                 "Too many elements for dimension " + std::to_string(d)};
@@ -36541,6 +36552,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // variable form ($name: active while the variable is true) or negated.
         bool wantExists = false, negExists = false, wantDelete = false;
         bool kvF = false, pF = false, kF = false, vF = false;
+        bool vPos = true; // polarity of `:v` — `:!v` is NEGATIVE
         bool presenceNeg = false; // :k/:v/:kv/:p negative polarity (:!k / :k(False))
         std::vector<std::string> unknownAdv; // `:zorp` / `:zip:zop` — not a subscript adverb
         std::vector<std::string> advSeen;    // the recognised ones, IN SOURCE ORDER (X::Adverb.nogo)
@@ -36578,7 +36590,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 else if (part == "kv") { kvF = true; presenceNeg = !posPol; advSeen.push_back(part); }
                 else if (part == "p")  { pF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
                 else if (part == "k")  { kF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
-                else if (part == "v")  { vF = true;  presenceNeg = !posPol; advSeen.push_back(part); }
+                else if (part == "v")  { vF = true;  vPos = posPol; presenceNeg = !posPol; advSeen.push_back(part); }
                 else if (!part.empty()) unknownAdv.push_back(part); // :zorp / :zip / :zop
             }
         }
@@ -36615,6 +36627,11 @@ Value Interpreter::evalIndex(Index* idx) {
         // The Failure carries the offending adverbs in `.nogo`, which is what a
         // handler reads (sheet HM-07); `%h<a b>:exists:k` used to answer
         // `(True, False)` as though the `:k` were not there.
+        // …and on a POSITIONAL subscript a negated `:!v` alongside `:exists` asks
+        // for "no values", which `:exists` already answers — a no-op rather than
+        // a clashing presentation adverb. Only there: `%h<a>:exists:!v` dies as
+        // Rakudo's does, and `:k` gets no such pass on either.
+        if (wantExists && vF && !vPos && !idx->isHash) vF = false;
         if ((int)kF + (int)vF + (int)kvF + (int)pF > 1 || (wantExists && (vF || kF))) {
             Value nogo = Value::array(); nogo.isList = true; nogo.s = "Seq";
             std::string quoted;
@@ -36965,6 +36982,9 @@ Value Interpreter::evalIndex(Index* idx) {
             if (pF)  return (h.exists || presenceNeg)
                          ? mkPair(h.keyV, h.exists ? h.val : mval) : emptyL();
             if (h.exists) return h.val; // plain :delete (or all conditionals off after delete)
+            // …and on an UNDEFINED container the answer is Nil: there was no
+            // hash to take the key out of (`Hash<a>:delete`).
+            if (wantDelete && !isDefined(base)) return Value::nil();
             Value dv = arrayMissingDefault(base); // `is default(v)` / typed element default
             return dv.t == VT::Nil ? Value::any() : dv;
         }
@@ -36976,6 +36996,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (kvF)      { if (h.exists || presenceNeg) { out.arr()->push_back(h.keyV); out.arr()->push_back(ex); } }
                 else if (pF)  { if (h.exists || presenceNeg) out.arr()->push_back(mkPair(h.keyV, ex)); }
                 else out.arr()->push_back(ex);
+                continue;
+            }
+            // A plain `:delete` SLICE reports one element PER KEY: a key that was
+            // not there answers Any — Nil when the container itself is undefined
+            // — rather than leaving a gap. (`%h<a zz>:delete` is `(1, Any)`.)
+            if (wantDelete && !kF && !vF && !kvF && !pF && !h.exists && !presenceNeg) {
+                out.arr()->push_back(isDefined(base) ? missLeaf() : Value::nil());
                 continue;
             }
             if (!h.exists && !presenceNeg) continue; // missing kept only under :!k / :k(False)
@@ -38397,6 +38424,32 @@ Value Interpreter::eval(Expr* e) {
                 bool known = classes_.count(rn) || subsets_.count(rn) ||
                              pkgMeta_.count(rn) || isKnownTypeName(rn) ||
                              isNativeTypeName(rn) || isPseudoPkg(rn);
+                // …but a `my class` / `my role` is LEXICAL: the name means
+                // nothing outside the block that declared it, so
+                // `{ my class R {}; }; R` is an undeclared name and not the
+                // type. The declaring scope is declEnv's parent, and it counts
+                // as in scope when it is still on the current chain — the same
+                // walk the redeclaration guard makes.
+                if (known && !isKnownTypeName(rn)) {
+                    auto ci = classes_.find(rn);
+                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isAnonDecl)
+                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                        "Undeclared name '" + n + "'"};
+                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isMy) {
+                        Env* site = ci->second->declEnv && ci->second->declEnv->parent
+                                  ? ci->second->declEnv->parent.get() : nullptr;
+                        bool inScope = !site;
+                        for (Env* en = tctx_.cur.get(); en && !inScope; en = en->parent.get())
+                            if (en == site) inScope = true;
+                        // …and the refusal is FINAL: the unit declares the name,
+                        // so the forward-reference leniency below would let it
+                        // through on the strength of a declaration this scope
+                        // cannot see.
+                        if (!inScope)
+                            throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                            "Undeclared name '" + n + "'"};
+                    }
+                }
                 // a class declared further down the file, used here as a VALUE
                 // (`G.parse($s, :actions(actions))`) — build it now, as a method
                 // call on it already does

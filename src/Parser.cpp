@@ -1048,7 +1048,16 @@ bool Parser::startsTermToken(const Token& t) const {
 // what may begin a list-op argument (no parens; conservative on leading symbols)
 bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
     switch (t.kind) {
-        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
+        case Tok::StrLit: case Tok::StrInterp:
+            // a QUOTE tight against the name is not an argument: `foo'...'` and
+            // `say"x"` are two terms in a row, which is what Raku calls them.
+            // (A `'` between two letters joins an identifier and never reaches
+            // here — `isn't` is one name.) Enforced only in EVAL'd snippets, for
+            // the reason enforceStmtSep gives: a whole test file must not die
+            // over one line, and an unrecognised QUOTE WORD (`qa"…"`) arrives
+            // here in exactly this shape.
+            return t.spaceBefore || !strictSep_;
+        case Tok::IntLit: case Tok::NumLit: case Tok::VersionLit: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::Var: case Tok::LParen:
             return true;
         case Tok::QwList:
@@ -1249,6 +1258,25 @@ ExprPtr Parser::parseParenSemiList() {
     expectKind(Tok::RParen, ")");
     if (lst->items.size() == 1) return std::move(lst->items[0]);
     return lst;
+}
+
+// Did the previous token END a term? (so a tight `->` after it is Perl 5's
+// method arrow rather than the head of a pointy block)
+static bool termEndsHere(const Token& prev) {
+    return prev.kind == Tok::Ident || prev.kind == Tok::Var || prev.kind == Tok::RParen ||
+           prev.kind == Tok::RBracket || prev.kind == Tok::IntLit || prev.kind == Tok::NumLit ||
+           prev.kind == Tok::StrLit || prev.kind == Tok::StrInterp;
+}
+
+// `anon class C {…}` names its type C but installs the symbol NOWHERE, so the
+// bare `C` is undeclared afterwards and inside the body alike. The declaration
+// may arrive as a statement or as an expression, so both spellings route here.
+static void markAnonDecl(Expr* e) {
+    if (!e) return;
+    if (e->kind == NK::Unary) { markAnonDecl(static_cast<Unary*>(e)->operand.get()); return; }
+    if (e->kind != NK::BlockExpr) return;
+    for (auto& st : static_cast<BlockExpr*>(e)->body)
+        if (st && st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAnonDecl = true;
 }
 
 // `my Int $x = NaN` is a COMPILE error in Raku, and a named one: a numeric
@@ -2168,7 +2196,9 @@ ExprPtr Parser::parsePrefix(bool tight) {
          peek().text == "token" || peek().text == "rule" || peek().text == "regex" ||
          peek().text == "multi" || peek().text == "state" || peek().text == "my")) {
         advance();
-        return parsePrefix(tight);
+        ExprPtr inner = parsePrefix(tight);
+        markAnonDecl(inner.get());
+        return inner;
     }
     if (cur().kind == Tok::Op) {
         const std::string& o = cur().text;
@@ -3259,7 +3289,9 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
         // `is readonly` is a PARAMETER trait; on a variable declaration it's a
         // compile error (X::Comp::Trait::Unknown) — roast S03-binding/ro.t.
         if (onVarDecl && wasIs && isIdent("readonly"))
-            error("Can't use unknown trait 'is readonly' in a variable declaration");
+            throw ParseError("Can't use unknown trait 'is' -> 'readonly' in a variable declaration.",
+                             cur().line, "X::Comp::Trait::Unknown",
+                             {{"type", "is"}, {"subtype", "readonly"}, {"declaring", "variable"}});
         // `is default(EXPR)` — capture the container default for the declaration
         if (wasIs && isIdent("default") && peek().kind == Tok::LParen && defaultOut) {
             advance(); advance(); // default (
@@ -5413,6 +5445,19 @@ ExprPtr Parser::parsePrimary() {
                 return arr;
             }
             if (t.text == "->" || t.text == "<->") {
+                // Perl 5's `Foo->new`: an arrow TIGHT on both sides is the old
+                // method arrow, never a pointy block — a block's arrow is always
+                // delimited by whitespace. Raku names it instead of failing on
+                // the missing `{`.
+                if (t.text == "->" && !t.spaceBefore && pos_ > 0 &&
+                    peek().kind == Tok::Ident && !peek().spaceBefore &&
+                    termEndsHere(toks_[pos_ - 1]))
+                    throw ParseError("Unsupported use of -> as postfix. In Raku please use: "
+                                     "either . to call a method, or whitespace to delimit a pointy block.",
+                                     t.line, "X::Obsolete",
+                                     {{"old", "-> as postfix"},
+                                      {"replacement", "either . to call a method, or whitespace "
+                                                      "to delimit a pointy block"}});
                 bool doubly = (t.text == "<->");   // `<->` binds its params `is rw`
                 advance();
                 auto be = std::make_unique<BlockExpr>();
@@ -5693,7 +5738,10 @@ ExprPtr Parser::parsePrimary() {
                 return call;
             }
             if (name == "whenever") {
-                if (!inReactBlock_) error("whenever outside the lexical scope of a react/supply block");
+                if (!inReactBlock_)
+                    throw ParseError("Cannot have a 'whenever' block outside the scope of a "
+                                     "'supply' or 'react' block", cur().line,
+                                     "X::Comp::WheneverOutOfScope", {});
                 advance();
                 auto call = std::make_unique<Call>(); call->name = "whenever";
                 call->args.push_back(parseExpr(BP_COMMA + 1)); // the supply/promise expression
@@ -9846,7 +9894,8 @@ StmtPtr Parser::parseStatementImpl() {
                 peek(2).kind == Tok::Ident) {
                 const std::string& adv = peek(2).text;
                 if (adv == "D" || adv == "U" || adv == "_" || adv == "auth" || adv == "ver" || adv == "api")
-                    error("cannot augment a type with a '" + adv + "' adverb");
+                    throw ParseError("Cannot put adverbs on a typename when augmenting: found '" +
+                                     adv + "'", cur().line, "X::Syntax::Augment::Adverb", {});
             }
             auto st = parseClass(what == "role", what == "grammar");
             if (st->kind == NK::ClassDecl) {
@@ -9910,6 +9959,11 @@ StmtPtr Parser::parseStatementImpl() {
                 // same name again, as Rakudo allows for my-scoped types)
                 if (wasMy && st && st->kind == NK::ClassDecl)
                     static_cast<ClassDecl*>(st.get())->isMy = true;
+                // `anon class C {…}` keeps the NAME C — `.^name` answers it —
+                // but installs the symbol nowhere, so `C` afterwards is
+                // undeclared, and so is a `C` inside the body.
+                if (kw == "anon" && st && st->kind == NK::ClassDecl)
+                    static_cast<ClassDecl*>(st.get())->isAnonDecl = true;
                 // `our sub`/`our multi` — remember package scope so it installs globally.
                 if (wasOur && st && st->kind == NK::SubDecl) {
                     auto* osd = static_cast<SubDecl*>(st.get());
@@ -10344,6 +10398,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto es = std::make_unique<ExprStmt>();
             es->e = parseExpression();
+            markAnonDecl(es->e.get());
             return applyModifiers(std::move(es));
         }
         // `only` is the third multiness declarator — it says this routine has
@@ -10802,6 +10857,19 @@ void Parser::enforceStmtSep() {
     if (!strictSep_) return;
     if (isKind(Tok::End) || isKind(Tok::RBrace) || pos_ == 0) return;
     const Token& pv = toks_[pos_ - 1];
+    // …and when what SPLIT them is a tight `->`, name it: that is Perl 5's
+    // method arrow, which the pointy-block branch only sees after a bareword.
+    const bool arrowAfter = pos_ > 1 && pv.kind == Tok::Op && pv.text == "->" &&
+                            !pv.spaceBefore && !cur().spaceBefore && termEndsHere(toks_[pos_ - 2]);
+    const bool arrowHere  = isKind(Tok::Op) && cur().text == "->" && !cur().spaceBefore &&
+                            termEndsHere(pv) && peek().kind == Tok::Ident && !peek().spaceBefore;
+    if (arrowAfter || arrowHere)
+        throw ParseError("Unsupported use of -> as postfix. In Raku please use: "
+                         "either . to call a method, or whitespace to delimit a pointy block.",
+                         cur().line, "X::Obsolete",
+                         {{"old", "-> as postfix"},
+                          {"replacement", "either . to call a method, or whitespace "
+                                          "to delimit a pointy block"}});
     if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line)
         throw ParseError("Two terms in a row (missing semicolon?)", cur().line);
 }

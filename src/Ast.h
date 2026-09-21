@@ -774,6 +774,8 @@ struct ClassDecl : Stmt {
     bool isMonitor = false;        // `monitor Foo {…}` — a class whose methods lock per instance
     bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
     bool isMy = false;             // `my class`/`my grammar` — lexically scoped, redeclarable across EVALs
+    bool isAnonDecl = false;       // `anon class C {…}` — the type is NAMED C but the
+                                   // name is installed NOWHERE, not even in its own body
     bool classRw = false;          // `class Foo is rw` — every public attribute is writable
     ExprPtr nameExpr;              // `class ::(EXPR) { … }` — the name, computed when the decl runs
     bool isStubDecl = false;
