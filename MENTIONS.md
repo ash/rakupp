@@ -32,6 +32,7 @@ say something worth quoting.
 | 25 August 2026 | [Rakudo Weekly 2026.34](https://rakudoweekly.blog/2026/08/25/2026-34-yar-by-coke/) | Elizabeth Mattijsen | the [live/](live/) registry, and JSON::Native |
 | 31 August 2026 | [Rakudo Weekly 2026.35](https://rakudoweekly.blog/2026/08/31/2026-35-infinity-revisited/) | Elizabeth Mattijsen | the early-adopters post, the benchmark board, perlancar's remark |
 | 14 September 2026 | [Rakudo Weekly 2026.36/7](https://rakudoweekly.blog/2026/09/14/2026-36-7-multiplicity/) | Elizabeth Mattijsen | CSV::Native |
+| 21 September 2026 | [Rakudo Weekly 2026.38](https://rakudoweekly.blog/2026/09/21/2026-38-italiano-per-favore/) | Elizabeth Mattijsen | the module-manager post, and the three new L10N localizations |
 
 ## Rakudo Weekly News
 
@@ -70,6 +71,14 @@ After that it has been steady, roughly a mention per release or per post:
 - [**2026.36/7 Multiplicity**](https://rakudoweekly.blog/2026/09/14/2026-36-7-multiplicity/)
   (14 September 2026) — [CSV::Native](https://raku.land/zef:ash/CSV::Native)
   in the module list.
+- [**2026.38 Italiano, per favore**](https://rakudoweekly.blog/2026/09/21/2026-38-italiano-per-favore/)
+  (21 September 2026) — the issue opens on the week's two posts, the
+  [Italian one](https://andrewshitov.com/2026/09/15/raku-la-lingua-dove-posso-parlare-italiano/),
+  which gave the issue its title, and the
+  [module manager post](https://andrewshitov.com/2026/09/17/raku-module-manager/)
+  covering v4.0.0. The three new localizations — `L10N::UK`, `L10N::LV` and
+  `L10N::RU` — are in the new-module list, and got a sentence of their own in
+  the opening about Raku programs written in those natural languages.
 
 ## perlancar, August 2026
 
