@@ -1002,6 +1002,10 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// Exact binary arithmetic, for the few places in Value that must step or compare
+// in the full numeric tower (a Range whose carried endpoints are bignums).
+using ApplyArithFn = Value (*)(const std::string&, const Value&, const Value&);
+extern ApplyArithFn g_applyArith;
 // Building a TYPED exception object (with its attributes, so `$!.range` answers)
 // needs the class registry, which lives on the Interpreter. The free runtime
 // helpers that raise one — a negative subscript, for instance — reach it
@@ -1047,6 +1051,12 @@ inline void attachRangeEnds(Value& r, Value from, Value to) {
 // allocation on the hot `1..n` path.
 inline void setRangeEnds(Value& r, const Value& from, const Value& to) {
     auto keep = [](const Value& v) {
+        // …and a BIGINT endpoint, which `i` cannot hold: 0..10**42 saturated to
+        // 0..Inf, so .max/.elems answered Inf and every number above the top
+        // was still "in" the range. A machine-width Int renders identically
+        // either way, so carrying one would just cost an allocation on the hot
+        // `1..n` path — a bigint already has one.
+        if (v.t == VT::Int && v.big()) return true;
         return v.t == VT::Rat || v.t == VT::Num || v.t == VT::Bool ||
                v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type; // `1 .. Any`
     };

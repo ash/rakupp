@@ -48,6 +48,7 @@ static PtrCensusDump g_ptrCensusDump;
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
+ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 MakeTypedExFn g_makeTypedEx = nullptr; // installed by Interpreter.cpp (see Value.h)
 EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
@@ -1101,6 +1102,22 @@ ValueList Value::flatten() const {
         long long hi = rTo() - (rExTo() ? 1 : 0);
         for (long long k = lo; k <= hi; k++) out.push_back(Value::str(cpToU8((uint32_t)k)));
     } else if (t == VT::Range) {
+        // BIGINT endpoints do not fit the integer fields — `(2..4) + 2**65` keeps
+        // them in the carried ends, and walking the fields instead gave an empty
+        // (or saturated) range. Step exactly, by one, from the carried start.
+        if (const RangeEnds* re = rangeEnds(*this))
+            if ((re->from.t == VT::Int && re->from.big()) || (re->to.t == VT::Int && re->to.big())) {
+                Value cur = re->from;
+                if (rExFrom()) cur = g_applyArith ? g_applyArith("+", cur, Value::integer(1)) : cur;
+                for (size_t k = 0; k < 1000000; k++) {
+                    if (!g_applyArith) break;
+                    Value cmp = g_applyArith(rExTo() ? "<" : "<=", cur, re->to);
+                    if (!cmp.truthy()) break;
+                    out.push_back(cur);
+                    cur = g_applyArith("+", cur, Value::integer(1));
+                }
+                return out;
+            }
         long long lo = rFrom() + (rExFrom() ? 1 : 0);
         long long hi = rTo() - (rExTo() ? 1 : 0);
         // an infinite range (1..* / 1..Inf) yields a bounded prefix instead of
@@ -1347,6 +1364,55 @@ bool objectStructEqv(const Value& a, const Value& b,
 }
 
 int valueCmp(const Value& a, const Value& b) {
+    // A RANGE orders by its endpoints, in the order Rakudo reads them: min, then
+    // whether the min is excluded, then max, then whether the max is — and that
+    // last one BACKWARDS, since excluding the top makes the range smaller.
+    // A non-Range operand stands for the one-element range `x..x`, which is what
+    // makes `5 cmp (5..10)` Less and `6 cmp (5..10)` More.
+    if (a.t == VT::Range || b.t == VT::Range) {
+        // …against a LIST, though, a Range is its ELEMENTS: `(5..10) cmp
+        // (5,6,7,8,9,10)` is Same.
+        if ((a.t == VT::Array && a.arr() && a.enumName.empty()) ||
+            (b.t == VT::Array && b.arr() && b.enumName.empty())) {
+            ValueList ea = a.flatten(), eb = b.flatten();
+            size_t n = std::min(ea.size(), eb.size());
+            for (size_t k = 0; k < n; k++) {
+                int c = valueCmp(ea[k], eb[k]);
+                if (c) return c;
+            }
+            return ea.size() < eb.size() ? -1 : ea.size() > eb.size() ? 1 : 0;
+        }
+        auto end = [](const Value& v, bool high) -> Value {
+            if (v.t != VT::Range) return v;
+            if (const RangeEnds* re = rangeEnds(v)) return high ? re->to : re->from;
+            if (v.ofType() == "Str") return Value::str(cpToU8((uint32_t)(high ? v.rTo() : v.rFrom())));
+            if (v.rNum()) return Value::number(high ? v.im() : v.n);
+            long long x = high ? v.rTo() : v.rFrom();
+            if (x >= 9000000000000000000LL) return Value::number(INFINITY);
+            if (x <= -9000000000000000000LL) return Value::number(-INFINITY);
+            return Value::integer(x);
+        };
+        auto excl = [](const Value& v, bool high) {
+            return v.t == VT::Range && (high ? v.rExTo() : v.rExFrom());
+        };
+        int c = valueCmp(end(a, false), end(b, false));
+        if (c) return c;
+        if (excl(a, false) != excl(b, false)) return excl(a, false) ? 1 : -1;
+        c = valueCmp(end(a, true), end(b, true));
+        if (c) return c;
+        if (excl(a, true) != excl(b, true)) return excl(a, true) ? -1 : 1;
+        return 0;
+    }
+    // An infinite Num is the extreme of every ordering, whatever the other side
+    // is: `:a<5> cmp Inf` is Less even though neither side is a number the other
+    // can be compared with.
+    auto infSign = [](const Value& v) {
+        return v.t == VT::Num && std::isinf(v.n) ? (v.n > 0 ? 1 : -1) : 0;
+    };
+    if (!(a.isNumeric() && b.isNumeric())) {
+        if (int s = infSign(a)) return s;
+        if (int s = infSign(b)) return -s;
+    }
     if (a.isNumeric() && b.isNumeric()) {
         // Fast, exact path for native ints (the common case — e.g. sorting 50k
         // integers): compare the int64 fields directly, no double, no allocation.

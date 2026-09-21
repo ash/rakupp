@@ -339,7 +339,10 @@ private:
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
 
     // expressions
-    ExprPtr parseExpression();          // full expr incl. commas/and/or
+    ExprPtr parseExpression();
+    ExprPtr parseParenSemiList(); // contents of an open `(` to its `)`, `;` = segments
+    bool ismsPerl5_ = false;      // `use isms <Perl5>` seen: the P5 brainos are allowed
+    std::set<const Expr*> parenned_; // nodes handed back from inside `( … )`          // full expr incl. commas/and/or
     ExprPtr parseExpr(int minbp);
     ExprPtr parsePrefix(bool tight = false);
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);

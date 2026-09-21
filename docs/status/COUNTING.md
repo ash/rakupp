@@ -8,10 +8,10 @@ on every run.
 
 ## The one-line summary
 
-> **Per-test: ~90% of all declared tests pass. Coverage: ~43% of files fully pass.**
+> **Per-test: ~95% of all declared tests pass. Coverage: ~51% of files fully pass.**
 
-Quote both, per-test first. The ~90% is the primary correctness number (the fair
-per-test bar); the ~43% is the stricter all-or-nothing file bar.
+Quote both, per-test first. The ~95% is the primary correctness number (the fair
+per-test bar); the ~51% is the stricter all-or-nothing file bar.
 
 ## The measures
 
@@ -22,12 +22,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 676 / 1,464 (**~46%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 200,843 / 206,919 (~97%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 200,843 / 216,650 (~93%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 200,843 / 219,610 (**~91%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 745 / 1,464 (**~51%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 207,843 / 213,138 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 207,843 / 216,747 (~96%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 207,843 / 219,677 (**~95%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~45%)** and **measure 4 (all declared tests, ~91%)** are the
+**Measure 1 (files, ~51%)** and **measure 4 (all declared tests, ~95%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (219,610) is ~3.0k larger
-than 3's (216,650) — those 2,971 tests live in 75 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (219,677) is ~2.9k larger
+than 3's (216,747) — those 2,930 tests live in 65 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
@@ -57,23 +57,23 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **219,294** declared tests. (This number
+denominator.** Our current run recovers **219,677** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
 can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 200,843 passes read two ways:
+So our same 207,843 passes read two ways:
 
-- **~91%** against *our* denominator (200,843 / 219,610) — *"of the tests we can
+- **~95%** against *our* denominator (207,843 / 219,677) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
-- Essentially the **same ~91%** against the suite's *full* declared total —
+- Essentially the **same ~95%** against the suite's *full* declared total —
   our runner now recovers almost every file's plan, so the two denominators
   have converged; *"of every test the whole suite could declare, how many pass."*
 
 Both are honest; they answer different questions. The convergence means our
-headline **~90% is no longer materially flattered** by uncountable files —
+headline **~95% is no longer materially flattered** by uncountable files —
 almost every declared test is charged for or against us. It also means **raw per-test
 percentages from two different runs aren't directly comparable** until they're
 put over a common denominator: a run that unlocks more files *raises* its own

@@ -188,18 +188,28 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
 // compiled code, so the live revision is read through the same
 // ctor-set-pointer pattern the NativeCall trampoline uses.
 static Interpreter* g_revInterp = nullptr;
+// X::Numeric::DivideByZero carries WHICH operator hit it and WHAT the numerator
+// was — `throws-like … using => 'infix:<%%>', numerator => 9` asks for both, and
+// a bare type object has neither to give.
+static Value divByZeroEx(const Value& lhs, const char* opName, const std::string& msg) {
+    if (g_revInterp)
+        return g_revInterp->makeTypedEx("X::Numeric::DivideByZero",
+            {{"using", Value::str(std::string("infix:<") + opName + ">")},
+             {"numerator", lhs}}, msg);
+    return Value::typeObj("X::Numeric::DivideByZero");
+}
 Value divideByZero(const Value& lhs, const char* opName) {
-    Value ex = Value::typeObj("X::Numeric::DivideByZero");
+    std::string msg = "Attempt to divide " + lhs.toStr() +
+                      " by zero using infix:<" + opName + ">";
     Value f = rakuppNewFailure();
-    (*f.hash())["exception"] = ex;
-    (*f.hash())["message"] = Value::str("Attempt to divide " + lhs.toStr() +
-                                      " by zero using infix:<" + opName + ">");
+    (*f.hash())["exception"] = divByZeroEx(lhs, opName, msg);
+    (*f.hash())["message"] = Value::str(msg);
     return f;
 }
 [[noreturn]] void throwDivideByZero(const Value& lhs, const char* opName) {
-    throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                    "Attempt to divide " + lhs.toStr() +
-                    " by zero using infix:<" + opName + ">"};
+    std::string msg = "Attempt to divide " + lhs.toStr() +
+                      " by zero using infix:<" + opName + ">";
+    throw RakuError{divByZeroEx(lhs, opName, msg), msg};
 }
 // Which of the two a given operator wants.
 static bool divZeroThrows(const std::string& op) {
@@ -2201,6 +2211,14 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                         next = applyArith("+", cache.back(), stepV);
                     else next = allInt ? Value::integer((long long)nv) : Value::number(nv);
                 }
+                // a SLIPPING generator contributes every element of the slip —
+                // see the eager twin below for why that is what interleaves
+                // two sequences under one `...`
+                if (hasGen && next.t == VT::Array && next.arr() && next.s == "Slip") {
+                    if (next.arr()->empty()) return false; // nothing to advance with
+                    for (auto& nx : *next.arr()) cache.push_back(nx);
+                    return true;
+                }
                 cache.push_back(next);
                 return true;
             };
@@ -2285,20 +2303,32 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     next = applyArith("+", out.arr()->back(), stepV); // exact past the double-safe zone
                 else next = allInt ? Value::integer((long long)nv) : Value::number(nv);
             }
-            if (endCode) {
-                if (endAccepts(next)) { if (!exclusive) out.arr()->push_back(next); break; }
-                out.arr()->push_back(next);
-                continue;
+            // A generator that SLIPS produces SEVERAL elements at once, each a
+            // separate element of the sequence — which is how one `...` interleaves
+            // two: `1, 1, { slip $^a + 1, $^b * 2 } ... *` is 1 1 2 2 3 4 4 8, and
+            // the next call reads the last `arity` of whatever came out. Pushed
+            // whole, the Slip became one element and the two strands collapsed.
+            ValueList batch;
+            if (hasGen && next.t == VT::Array && next.arr() && next.s == "Slip") batch = *next.arr();
+            else batch.push_back(std::move(next));
+            bool stop = false;
+            for (auto& nx : batch) {
+                if (endCode) {
+                    if (endAccepts(nx)) { if (!exclusive) out.arr()->push_back(nx); stop = true; break; }
+                    out.arr()->push_back(nx);
+                    continue;
+                }
+                // exact types compare exactly: two Ints five apart at 10**17 are EQUAL as
+                // doubles, so the double tests ended the walk after its first exact step
+                const bool exactEnd = !seqMagnitude && (nx.t == VT::Int || nx.t == VT::Rat) && (r.t == VT::Int || r.t == VT::Rat);
+                if (!infinite) {
+                    if (exactEnd) { if (applyArith(ascending ? ">" : "<", nx, r).truthy()) { stop = true; break; } } // would overshoot
+                    else { double nv = nx.toNum(); if (seqPassedEnd(nv)) { stop = true; break; } }
+                }
+                out.arr()->push_back(nx);
+                if (!infinite && (exactEnd ? applyArith("==", nx, r).truthy() : nx.toNum() == endVal)) { stop = true; break; } // hit endpoint exactly
             }
-            // exact types compare exactly: two Ints five apart at 10**17 are EQUAL as
-            // doubles, so the double tests ended the walk after its first exact step
-            const bool exactEnd = !seqMagnitude && (next.t == VT::Int || next.t == VT::Rat) && (r.t == VT::Int || r.t == VT::Rat);
-            if (!infinite) {
-                if (exactEnd) { if (applyArith(ascending ? ">" : "<", next, r).truthy()) break; } // would overshoot
-                else { double nv = next.toNum(); if (seqPassedEnd(nv)) break; }
-            }
-            out.arr()->push_back(next);
-            if (!infinite && (exactEnd ? applyArith("==", next, r).truthy() : next.toNum() == endVal)) break; // hit endpoint exactly
+            if (stop) break;
         }
         if (exclusive && !infinite && !endCode && !out.arr()->empty()) {
             const Value& lastE = out.arr()->back();
@@ -2359,7 +2389,29 @@ Value strRangeList(const std::string& min, const std::string& to, bool exFrom, b
 // `from .. to` for native codegen. Str endpoints follow the interpreter's NK::Range
 // eval exactly — single-codepoint endpoints are a real Range VALUE, everything else
 // the eager list above. The single-codepoint branch was missing here, so `'a'..'c'`
+// A Range endpoint must be a single ordered value: a Range, a Complex or a Seq
+// there is X::Range::InvalidArg, which names the offending type and carries it.
+// (Rakudo's message is "<Type> objects are not valid endpoints for Ranges".)
+static void checkRangeEndpoint(const Value& v) {
+    const char* kind = nullptr;
+    if (v.t == VT::Range) kind = "Range";
+    else if (v.t == VT::Complex) kind = "Complex";
+    else if (v.t == VT::Array && v.isList && v.s == "Seq") kind = "Seq";
+    if (!kind) return;
+    if (g_revInterp)
+        g_revInterp->throwTypedV("X::Range::InvalidArg", {{"got", v}},
+                                 std::string(kind) + " objects are not valid endpoints for Ranges");
+    throw RakuError{Value::typeObj("X::Range::InvalidArg"),
+                    std::string(kind) + " objects are not valid endpoints for Ranges"};
+}
+
 // was a Range interpreted and a List under --exe.
+// Value.cpp steps a bignum-ended Range through this (see g_applyArith).
+static Value applyArithHook(const std::string& op, const Value& l, const Value& r) {
+    return applyArith(op, l, r);
+}
+static const bool g_applyArithInstalled = ((g_applyArith = &applyArithHook), true);
+
 Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     if (from.t == VT::Str && to.t == VT::Str) {
         if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
@@ -2375,12 +2427,25 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     // Whatever range was built INSIDE OUT: `1..*` was the empty `1..0`, and so
     // `for 1..* {…}` ran zero times, `(1..*)[3]` was Nil, `5 ~~ 1..*` was False,
     // `.head(4)` was (), and `*..5` was `0..5`. All silent wrong answers.
+    checkRangeEndpoint(from); checkRangeEndpoint(to);
+    // (the `^` markers survive: `1..^*` still excludes its endpoint)
     if (from.t == VT::Whatever && to.t == VT::Whatever)
-        return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, false, false);
-    if (to.t == VT::Whatever)
-        return Value::range(from.toInt(), 9223372036854775807LL, exFrom, false);
-    if (from.t == VT::Whatever)
-        return Value::range(-9223372036854775807LL - 1, to.toInt(), false, exTo);
+        return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, exFrom, exTo);
+    // …and a STRING endpoint opposite the Whatever stays a string: `'c'..*` is
+    // bounded below by "c", so "b" is not in it. Numified, every such range
+    // started at 0 and held every string there is.
+    if (to.t == VT::Whatever) {
+        Value r = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
+                               9223372036854775807LL, exFrom, exTo);
+        if (from.t == VT::Str) attachRangeEnds(r, from, Value::number(INFINITY));
+        return r;
+    }
+    if (from.t == VT::Whatever) {
+        Value r = Value::range(-9223372036854775807LL - 1,
+                               to.t == VT::Str ? (long long)u8FirstCp(to.s) : to.toInt(), exFrom, exTo);
+        if (to.t == VT::Str) attachRangeEnds(r, Value::number(-INFINITY), to);
+        return r;
+    }
     // A FRACTIONAL range keeps its real endpoints, exactly as the interpreter's
     // own `..` does: `to.toInt()` alone made `0 ..^ 2.5` the integer range
     // `0..^2`, so under --exe every fractional range was silently truncated at
@@ -2388,10 +2453,12 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     // answered for the wrong range. Endpoints are carried too, so a Rat stays a
     // Rat. (Kept in step with the NK::RangeLit arm in eval.)
     {
-        bool fFrac = (from.t == VT::Num || from.t == VT::Rat) &&
-                     from.toNum() != std::floor(from.toNum());
-        bool tFrac = (to.t == VT::Num || to.t == VT::Rat) &&
-                     to.toNum() != std::floor(to.toNum());
+        // A Num or Rat endpoint makes the ELEMENTS Nums or Rats, whole or not:
+        // `(1e0..3e0).list` is (1e0, 2e0, 3e0) and `(1.0..3.0).list` is Rats.
+        // Only whole-number endpoints used to take this path, so an inexact
+        // range whose ends happened to be round came back as plain Ints.
+        bool fFrac = (from.t == VT::Num || from.t == VT::Rat);
+        bool tFrac = (to.t == VT::Num || to.t == VT::Rat);
         if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
             std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
             Value rr = Value::range((long long)std::floor(from.toNum()),
@@ -2400,6 +2467,15 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
             setRangeEnds(rr, from, to);
             return rr;
         }
+    }
+    // A MIXED range (`'0'..3`) keeps the string endpoint it was written with:
+    // `.min` is the Str "0" and a smartmatch against it compares stringwise,
+    // while the elements it iterates are still the integers 0..3.
+    if ((from.t == VT::Str) != (to.t == VT::Str) &&
+        (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
+        Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
+        attachRangeEnds(r, from, to);
+        return r;
     }
     {
         Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
@@ -15390,20 +15466,63 @@ Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
     Value out = Value::array(); out.isList = true; out.s = "Seq";
     Value cur = std::move(seed);
     size_t skip = 0;                    // head of the segment already emitted
+    // drop `n` leading elements from the lazily-continued tail, then hand back a
+    // Seq whose realised prefix is everything emitted so far
+    auto withLazyTail = [&](Value& seg, size_t drop) {
+        auto inner = std::make_shared<Value>(seg);
+        auto innerSt = std::static_pointer_cast<LazySeqState>(seg.ext());
+        auto pos = std::make_shared<size_t>(drop);
+        auto st = std::make_shared<LazySeqState>();
+        st->infinite = innerSt->infinite;
+        st->streaming = innerSt->streaming;
+        st->appendNext = [inner, innerSt, pos](ValueList& cache) -> bool {
+            while (*pos >= inner->arr()->size())
+                if (!innerSt->appendNext(*inner->arr())) return false;
+            cache.push_back((*inner->arr())[(*pos)++]);
+            return true;
+        };
+        out.extM() = st;
+        if (exclSeed) {
+            if (out.arr()->empty()) st->appendNext(*out.arr());
+            if (!out.arr()->empty()) out.arr()->erase(out.arr()->begin());
+        }
+        return out;
+    };
     for (size_t i = 0; i < groups.size(); i++) {
         if (groups[i].empty()) continue;
-        Value seg = seqOp(cur, groups[i][0], i < exclEnd.size() && exclEnd[i]);
+        const bool last = (i + 1 == groups.size());
+        const bool chained = groups.size() > 1;
+        // In a CHAIN every segment stops SHORT of its endpoint, because the whole
+        // group — endpoint included — is emitted below as the next seed. The
+        // endpoint therefore appears exactly once whether or not the walk landed
+        // on it, which is why `1 ... 5, 10, 20 ... 100` ends in 100 although
+        // doubling from 20 jumps 80 → 160 straight past it. The UN-chained form
+        // is the plain binary operator and keeps its own `...^`: there an
+        // endpoint the walk never reaches is simply not part of the sequence
+        // (`1, 2, 4 ... 100` stops at 64). Rakudo splits these the same way —
+        // one candidate per arity.
+        const bool excl = chained ? true : (i < exclEnd.size() && exclEnd[i]);
+        Value seg = seqOp(cur, groups[i][0], excl);
+        // An ENDLESS segment ends the chain: nothing after it can ever be reached,
+        // so the rest of the sequence IS its tail, continued lazily.
+        if (seg.t == VT::Array && seg.ext()) return withLazyTail(seg, skip);
         if (seg.t == VT::Array && seg.arr())
             for (size_t k = skip; k < seg.arr()->size(); k++) out.arr()->push_back((*seg.arr())[k]);
         else if (skip == 0) out.arr()->push_back(seg);
-        if (groups[i].size() > 1) {     // the tail seeds the next segment verbatim
-            Value rest = Value::array(); rest.isList = true;
-            for (size_t k = 1; k < groups[i].size(); k++) {
-                out.arr()->push_back(groups[i][k]); rest.arr()->push_back(groups[i][k]);
-            }
-            cur = rest; skip = rest.arr()->size();
-        } else {
-            cur = out.arr()->empty() ? Value::any() : out.arr()->back(); skip = 1;
+        // A chained group is emitted whole; an unchained one contributes only its
+        // trailing elements, the endpoint having been handled by seqOp itself
+        // (`1 ... 5, 9` is (1, 2, 3, 4, 5, 9)). A trailing `...^` on the last
+        // chained group drops that group's endpoint, the one thing `^` can still
+        // mean once the segment itself has stopped short.
+        size_t from = chained ? (last && i < exclEnd.size() && exclEnd[i] ? 1 : 0) : 1;
+        for (size_t k = from; k < groups[i].size(); k++) out.arr()->push_back(groups[i][k]);
+        if (!last) {
+            // The WHOLE group seeds the next segment, which is what makes
+            // `1 ... 5, 10 ... 15` continue by FIVES and answer (1..5, 10, 15).
+            // Seeding from the tail alone (10) deduced a step of 1 and walked 10..15.
+            Value nxt = Value::array(); nxt.isList = true;
+            for (auto& v : groups[i]) nxt.arr()->push_back(v);
+            cur = nxt; skip = nxt.arr()->size();
         }
     }
     if (exclSeed && !out.arr()->empty()) out.arr()->erase(out.arr()->begin());
@@ -16948,6 +17067,9 @@ Value Interpreter::captureBacktrace() {
 Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     std::string sub = op.substr(1);
     auto oneLevel = [](const Value& v) -> ValueList {
+        // an ITEMIZED array is ONE element: `$[1,2] X~ "a"` is ("1 2a"), not
+        // two crossings (Z/X are not nodal — `.item` is what stops the spread)
+        if (v.t == VT::Array && v.arr() && v.itemized) return ValueList{v};
         if (v.t == VT::Array && v.arr()) return *v.arr();
         if (v.t == VT::Range) return v.flatten();
         if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
@@ -18762,7 +18884,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         std::string op = c.name.substr(7, c.name.size() - 8);
         bool isAssign = op == "=" ||
             (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+             // …and the identity/approximation family, which also ENDS in `=`:
+             // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
+             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
         if (isAssign) {
             if (Value* lv = lvalue((*rwArgs)[0].get())) {
                 Value rhs = args.size() > 1 ? args[1] : Value::any();
@@ -18786,7 +18911,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         std::string op = c.name.substr(7, c.name.size() - 8);
         bool isAssign = op == "=" ||
             (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+             // …and the identity/approximation family, which also ENDS in `=`:
+             // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
+             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
         if (!isAssign && !isSetOpStr(op) && op != "," && op[0] != 'Z' && op[0] != 'X') {
             static const std::set<std::string> kChaining = {
                 "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
@@ -19463,6 +19591,19 @@ static bool argIsNeverContainer(const Expr* e) {
 // `DEFINITE` and `so` are NOT routed here — Rakudo keeps both on the
 // representation, and the probe in t/regression/lizmat-nqp-ops.raku pins that.
 bool Interpreter::topicDefined(const Value& v) {
+    // A TYPE OBJECT can override `defined` as much as an instance can, and
+    // `andthen`/`orelse`/`with` are exactly where that override is observable —
+    // S03-operators/andthen.t counts the calls.
+    if (v.t == VT::Type) {
+        auto ci = classes_.find(v.s.str());
+        if (ci != classes_.end() && ci->second)
+            for (ClassInfo* c = ci->second.get(); c; c = c->parent.get())
+                if (c->methods.count("defined")) {
+                    ValueList noArgs;
+                    try { return methodCall(v, "defined", noArgs).truthy(); }
+                    catch (...) { break; }
+                }
+    }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
         for (ClassInfo* c = v.obj()->cls.get(); c; c = c->parent.get()) {
             auto it = c->methods.find("defined");
@@ -25068,6 +25209,23 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
         return sink ? Value::any() : *lv;
     }
+    // `@a X= 1` / `@a Z= @b` — the metaop over plain ASSIGNMENT distributes the
+    // right side into the left side's CONTAINERS rather than computing a value:
+    // `Z=` pairs them off, `X=` walks the cross (so each element ends up holding
+    // the LAST right-hand element). There is no `infix:<=>` to fold with, which
+    // is what the generic path below went looking for.
+    if (binop == "X" || binop == "Z") {
+        ValueList rs = rhs.t == VT::Array && rhs.arr() ? *rhs.arr()
+                     : rhs.t == VT::Range              ? rhs.flatten()
+                                                       : ValueList{rhs};
+        if (lv->t == VT::Array && lv->arr() && !rs.empty()) {
+            auto& es = *lv->arr();
+            if (binop == "Z") for (size_t i = 0; i < es.size() && i < rs.size(); i++) es[i] = rs[i];
+            else              for (auto& e : es) e = rs.back();
+        }
+        else if (!rs.empty()) *lv = rs.back();
+        return sink ? Value::any() : *lv;
+    }
     // `A ,= B` is `A = A, B` — see rtCommaAssign, which the compiling backends
     // call too. The target is read ONCE here (lvalue() above), so a subscript's
     // index cannot run twice. Issue #85.
@@ -25128,6 +25286,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (Value* f = tctx_.cur->find("&infix:<" + binop + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
             else throw;
         }
+        // Z/X answer a Seq, and an `@`-sigil target holds an ARRAY: after
+        // `@a X*= 10` the variable must still gist as [10 20 30].
+        if (binop.size() > 1 && (binop[0] == 'Z' || binop[0] == 'X') &&
+            lv->t == VT::Array && a->target->kind == NK::VarExpr) {
+            const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
+            if (!nm.empty() && nm[0] == '@') { lv->isList = false; lv->s.clear(); lv->itemized = false; }
+        }
     }
     if (nb) wrapNative(*lv, nb, ns, nf);
     return sink ? Value::any() : *lv;
@@ -25160,6 +25325,12 @@ static int settyTier(const Value& v) {
     }
     return 0;
 }
+// …and a TYPE OBJECT decides the flavour too, but only under `(+)`: `Mix (+) Mix`
+// is a Mix holding the type object twice, while `Mix (|) Mix` is a plain Set and
+// `Mix (.) Mix` a Bag, both holding it as an ordinary element. (Rakudo's
+// candidate sets differ exactly there — `(+)` has a Mixy pair that an UNDEFINED
+// Mix still matches; the others resolve through Any.)
+static int settyTierOperand(const std::string& op, const Value& v);
 static bool lazySetOperand(const Value& v) {
     if (v.t == VT::Range && v.rTo() >= 9000000000000000000LL) return true;
     if (v.t == VT::Array && v.ext())
@@ -25288,6 +25459,14 @@ static Value setWrap(const std::map<std::string, double>& res, int tier, bool mu
 static int setOpMinTier(const std::string& op) {
     return (op == "(+)" || op == "\xE2\x8A\x8E" || op == "(.)" || op == "\xE2\x8A\x8D") ? 1 : 0;
 }
+static int settyTierOperand(const std::string& op, const Value& v) {
+    int t = settyTier(v);
+    if (t == 0 && v.t == VT::Type && (op == "(+)" || op == "\xE2\x8A\x8E")) {
+        if (v.s == "Mix" || v.s == "MixHash") return 2;
+        if (v.s == "Bag" || v.s == "BagHash") return 1;
+    }
+    return t;
+}
 // single-operand form: `(|) $x` coerces (union with nothing IS the coercion)
 static Value setCoerceOne(const std::string& op, const Value& v) {
     int tier = std::max(settyTier(v), setOpMinTier(op));
@@ -25311,6 +25490,15 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
             const std::string lo = cpToU8((uint32_t)rng.rFrom()), hi = cpToU8((uint32_t)rng.rTo());
             return (rng.rExFrom() ? v > lo : v >= lo) &&
                    (rng.rExTo() ? v < hi : v <= hi);
+        }
+        // A BIGINT endpoint does not fit `i`, which saturates to the sentinel the
+        // endless test uses — so `0 .. 10**42` read as unbounded above and held
+        // every larger number. The carried endpoint objects answer exactly.
+        if (const RangeEnds* re = rangeEnds(rng)) {
+            if (x.isNumeric() && re->from.isNumeric() && re->to.isNumeric()) {
+                if (!applyArith(rng.rExFrom() ? ">" : ">=", x, re->from).truthy()) return false;
+                return applyArith(rng.rExTo() ? "<" : "<=", x, re->to).truthy();
+            }
         }
         double v = x.toNum();
         double lo = (double)rng.rFrom() + (rng.rExFrom() ? 1 : 0);
@@ -25341,7 +25529,11 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
                 bool keyShaped = hay.objKeyed ||
                                  hay.ofType().find(',') != std::string::npos; // Hash[V,K]
                 if (keyShaped && !kv.second.pairKey()) {
-                    if (kv.first == needle.toStr()) return true;
+                    // …and when the hash keys by IDENTITY the stored index IS the
+                    // identity string, so ask for that one rather than the rendering:
+                    // `%h{Any}` holding the Int 13 indexes it "Int|13", which no
+                    // amount of stringifying the needle will ever equal.
+                    if (kv.first == (hay.objKeyed ? objHashIndex(needle) : needle.toStr())) return true;
                     continue;
                 }
                 Value el = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
@@ -25383,15 +25575,27 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
         throw RakuError{Value::typeObj("X::Cannot::Lazy"),
                         "Cannot " + op + " a lazy list"};
     // joint tier: Mixy > Baggy > Setty; (+) and (.) are Baggy at minimum
-    int tier = std::max({settyTier(l), settyTier(r), setOpMinTier(op)});
+    int tier = std::max({settyTierOperand(op, l), settyTierOperand(op, r), setOpMinTier(op)});
     auto a = setWeights(l, tier), b = setWeights(r, tier);
     auto at = [](std::map<std::string, double>& m, const std::string& k) { return m.count(k) ? m[k] : 0.0; };
     if (op == "(<=)" || op == "⊆" || op == "(<)" || op == "⊂" || op == "(>=)" || op == "⊇" ||
         op == "(>)" || op == "⊃" || op == "(==)" || op == "≡" ||
         op == "(!=)" || op == "≢" || op == "(<>)") {
+        // Over the UNION of the keys, not each side's own: a Mix weight can be
+        // NEGATIVE, and a key absent from a set has the virtual weight 0, which
+        // is then GREATER than the weight the other side carries. Walking only
+        // each side's own keys missed exactly that case, so `mix() (<=)
+        // (a => -1).Mix` said True where 0 ≤ -1 is plainly False.
         bool aSubB = true, bSubA = true;
-        for (auto& kv : a) if (kv.second > at(b, kv.first)) { aSubB = false; break; }
-        for (auto& kv : b) if (kv.second > at(a, kv.first)) { bSubA = false; break; }
+        std::set<std::string> keys;
+        for (auto& kv : a) keys.insert(kv.first);
+        for (auto& kv : b) keys.insert(kv.first);
+        for (auto& k : keys) {
+            double av = at(a, k), bv = at(b, k);
+            if (av > bv) aSubB = false;
+            if (bv > av) bSubA = false;
+            if (!aSubB && !bSubA) break;
+        }
         bool eq = aSubB && bSubA;
         if (op == "(==)" || op == "≡") return Value::boolean(eq);
         if (op == "(!=)" || op == "≢" || op == "(<>)") return Value::boolean(!eq);
@@ -25453,12 +25657,49 @@ static Value setSymDiffN(const ValueList& operands) {
         }
         res[k] = t1 - t2;
     }
-    // Same mutability rule as the binary form: the FIRST operand decides, and
-    // symmetric difference needs every operand to be a QuantHash for the
-    // mutable answer (`[(^)] SetHash, <a b>` is a plain Set).
+    // The FIRST operand decides mutability — but at SETTY tier it only decides
+    // when every operand is itself a QuantHash: `SetHash (^) <b c>` is a plain
+    // Set while `SetHash (^) <b c>.Set` is a SetHash. From Baggy up the first
+    // operand decides alone, so `BagHash (^) <a b c d>` stays a BagHash. (That
+    // asymmetry is Rakudo's candidate set, measured operator by operator.)
     bool mut = !operands.empty() && isMutableQuantHash(operands[0]);
-    if (mut) for (auto& o : operands) if (!isQuantHashVal(o)) { mut = false; break; }
+    if (mut && tier == 0) for (auto& o : operands) if (!isQuantHashVal(o)) { mut = false; break; }
     return setWrap(res, tier, mut);
+}
+
+// A set operator is N-ARY, and the tier of its answer is the JOINT tier of
+// EVERY operand — not of each adjacent pair a left fold happens to see. `(-)`
+// over (Set, Set, Mix) is Mixy from the start, so the first step must keep the
+// keys whose weight has gone to zero or below: `[(-)] <a b c>, <c d e>, <e f>.Mix`
+// ends with d at -1 and e at -2, and a Setty first step had already dropped both.
+// Lifting every operand to the joint tier before folding is exactly that rule.
+// Only for a MIXED-tier fold of three or more operands; std::nullopt means the
+// caller's own left fold is already right. Two operands see their joint tier
+// anyway — the pairwise operator computes exactly this — and so does a fold whose
+// operands all share a tier; lifting there would only lose what the pairwise
+// rules carry (the mutable flavour, the lazy-operand refusal).
+static std::optional<Value> setOpFoldN(const std::string& op, const ValueList& items) {
+    if (items.size() <= 2) return std::nullopt;
+    int tier = setOpMinTier(op), first = settyTier(items[0]);
+    bool mixed = false;
+    for (auto& v : items) { int t = settyTier(v); if (t != first) mixed = true; tier = std::max(tier, t); }
+    if (!mixed) return std::nullopt;
+    for (auto& v : items) {
+        setOpCheckFailure(v);
+        if (lazySetOperand(v))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
+    }
+    // A non-QuantHash operand reads at ITS OWN tier and is then re-wrapped: a
+    // plain Hash is Setty, so its VALUES are truthiness and not weights.
+    // `infix:<(-)>({:a<a>}, …, <e f>.Mix)` counts a once; reading "a" as a Mix
+    // weight instead tried to numify it.
+    auto lift = [tier, &op](const Value& v) {
+        int own = std::max(settyTier(v), setOpMinTier(op));
+        return own >= tier ? v : setWrap(setWeights(v, own), tier, isMutableQuantHash(v));
+    };
+    Value acc = lift(items[0]);
+    for (size_t k = 1; k < items.size(); k++) acc = setOp(op, acc, lift(items[k]));
+    return acc;
 }
 
 bool isJunction(const Value& v) {
@@ -25552,8 +25793,17 @@ static long long bitwiseInt(const Value& v) {
 static bool reverseWordOp(const std::string& op) {
     static const std::set<std::string> bases = {
         "cmp", "leg", "eqv", "eq", "ne", "lt", "gt", "le", "ge", "before", "after",
-        "unicmp", "coll", "div", "mod", "gcd", "lcm", "min", "max", "x", "xx"};
-    return op.size() > 1 && op[0] == 'R' && bases.count(op.substr(1)) > 0;
+        "unicmp", "coll", "div", "mod", "gcd", "lcm", "min", "max", "minmax", "x", "xx",
+        "and", "or", "xor", "andthen", "orelse", "notandthen"};
+    // the Rs STACK: `RRxx` is a real (if pointless) spelling, and each one
+    // reverses again — so count the run rather than looking at just the first
+    size_t i = 0; while (i < op.size() && op[i] == 'R') i++;
+    if (i == 0 || i >= op.size()) return false;
+    // A SYMBOLIC base after two or more Rs (`RR-`, `RRR+`) is a reverse metaop
+    // too; the one-R symbolic form is recognised by its own test at each call
+    // site, which looks only at the character after the R.
+    if (!ascii::isalnum((unsigned char)op[i])) return i >= 2;
+    return bases.count(op.substr(i)) > 0;
 }
 
 #if RAKUPP_HAS_INT128
@@ -25792,7 +26042,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 case '-': if (c1 == '\0') return Value::number(a - b); break;
                 case '*': if (c1 == '\0') return Value::number(a * b);
                           if (c1 == '*') return Value::number(std::pow(a, b)); break;
-                case '/': if (c1 == '\0') return Value::number(a / b); break;
+                // …but an INEXACT divide by zero is a Failure, not an IEEE
+                // infinity — only two exact operands answer the zero-denominator
+                // Rat `<1/0>`. Falls through to the full chain, which says so.
+                case '/': if (c1 == '\0' && b != 0.0) return Value::number(a / b); break;
                 case '<': if (c1 == '\0') return Value::boolean(a < b);
                           if (c1 == '=') return Value::boolean(a <= b); break;
                 case '>': if (c1 == '\0') return Value::boolean(a > b);
@@ -25862,6 +26115,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // A curried base (`* !%% 3` -> WhateverCode) stays curried, negation wrapped in.
     if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!===" && op != "!~~" &&
         !isSetOpStr(op)) {
+        // the boolean infixes have no applyArith arm of their own — they live in
+        // applyBinOp, where they can short-circuit — so ask through g_cbInterp
+        static const std::set<std::string> kBool = {"&&", "||", "^^", "and", "or", "xor"};
+        if (kBool.count(op.substr(1)) && g_cbInterp)
+            return Value::boolean(!g_cbInterp->applyBinOpPublic(op.substr(1), l, r).truthy());
         Value base = applyArith(op.substr(1), l, r);
         if (base.t == VT::Code && base.code() && base.code()->isWhateverCode) {
             Value wrap; wrap.t = VT::Code; wrap.setCode(std::make_shared<Callable>());
@@ -26018,11 +26276,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value hooked;
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
-    if (op == "..." || op == "...^") { // simple integer sequence (closure/list seeds handled in evalBinary)
+    if (op == "..." || op == "...^" || op == "^..." || op == "^...^") { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
         // seed, which read as its element count (`[...] 1, 3, 9` answered 3..9):
         // fold through seqOp, the one implementation, as Z/X do through zxOp
-        if (g_cbInterp) return g_cbInterp->seqOp(l, r, op == "...^");
+        if (g_cbInterp) {
+            Value sq = g_cbInterp->seqOp(l, r, op.back() == '^');
+            // a leading `^` drops the seed — the same trim evalBinary does
+            if (op.front() == '^' && sq.t == VT::Array && sq.arr() && !sq.arr()->empty())
+                sq.arr()->erase(sq.arr()->begin());
+            return sq;
+        }
         long long a = l.toInt(), b = r.toInt();
         Value out = Value::array(); out.isList = true;
         if (a <= b) { for (long long i = a; i <= b; i++) out.arr()->push_back(Value::integer(i)); }
@@ -26042,8 +26306,28 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         throw RakuError{Value::typeObj("X::AdHoc"),
             "Z/X evaluated before any Interpreter was constructed"};
     }
+    // `4 R.. 6` — the range operators reached as VALUES (the reverse metaop, a
+    // reduce, `&infix:<..>`). The syntactic form builds a RangeExpr node instead,
+    // so this is the only place that needs to say `..` is an operator at all.
+    if (op == ".." || op == "^.." || op == "..^" || op == "^..^")
+        return rtRangeVal(l, r, op.front() == '^', op.back() == '^');
     if (op == "minmax") { // list infix: a Range spanning both operands' extremes
-        ValueList a = l.flatten(), bb = r.flatten();
+        // A RANGE contributes its two ENDPOINTS, not its elements: flattening
+        // `1..10**17` to find its extremes is the same answer computed by
+        // materialising a hundred quadrillion integers.
+        auto ends = [](const Value& v) -> ValueList {
+            if (v.t != VT::Range) return v.flatten();
+            ValueList e;
+            if (const RangeEnds* re = rangeEnds(v)) { e.push_back(re->from); e.push_back(re->to); }
+            else if (v.ofType() == "Str") {
+                e.push_back(Value::str(cpToU8((uint32_t)v.rFrom())));
+                e.push_back(Value::str(cpToU8((uint32_t)v.rTo())));
+            }
+            else if (v.rNum()) { e.push_back(Value::number(v.n)); e.push_back(Value::number(v.im())); }
+            else { e.push_back(Value::integer(v.rFrom())); e.push_back(Value::integer(v.rTo())); }
+            return e;
+        };
+        ValueList a = ends(l), bb = ends(r);
         // the endpoints are the extreme ELEMENTS, kept as they are — `"a" minmax
         // "b"` is "a".."b", not the 0..0 their numification would give
         bool first = true; Value lo, hi;
@@ -26137,9 +26421,41 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
 
     // Range ± n shifts both endpoints, preserving exclusivity: ^9+1 is 1..9,
     // (1..5)+1 is 2..6. n + Range commutes.
-    if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-")) {
+    if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && !r.big() && (op == "+" || op == "-")) {
         long long d = op == "+" ? r.toInt() : -r.toInt();
         Value out = Value::range(l.rFrom() + d, l.rTo() + d, l.rExFrom(), l.rExTo());
+        return out;
+    }
+    // A BIGINT offset does not fit the integer fields: `(2..4) + 2**65` saturated
+    // them and the range came back at the int64 floor. Carry the real endpoints.
+    if (l.t == VT::Range && r.t == VT::Int && r.big() && !l.rNum() && l.ofType().empty() &&
+        (op == "+" || op == "-")) {
+        const RangeEnds* re = rangeEnds(l);
+        Value lo = re ? re->from : Value::integer(l.rFrom());
+        Value hi = re ? re->to   : Value::integer(l.rTo());
+        Value nlo = applyArith(op, lo, r), nhi = applyArith(op, hi, r);
+        // The int fields stay at the WIDTH of the range, offset to zero, so an
+        // eager consumer that never looks at the carried ends still sees the right
+        // element COUNT; flatten prefers the ends and walks them exactly.
+        Value out = Value::range(0, l.rTo() - l.rFrom(), l.rExFrom(), l.rExTo());
+        attachRangeEnds(out, nlo, nhi);
+        return out;
+    }
+    // …and a Num/Rat shift moves the endpoints in THAT type: `^42 - 2e0` is
+    // -2e0..^40e0, not the integer range the Int arm above would build.
+    if (l.t == VT::Range && !l.rNum() && l.ofType().empty() &&
+        (r.t == VT::Num || r.t == VT::Rat) && (op == "+" || op == "-")) {
+        const RangeEnds* re = rangeEnds(l);
+        Value lo = re ? re->from : Value::integer(l.rFrom());
+        Value hi = re ? re->to   : Value::integer(l.rTo());
+        Value nlo = applyArith(op, lo, r), nhi = applyArith(op, hi, r);
+        Value out = Value::range((long long)std::floor(nlo.toNum()), (long long)std::floor(nhi.toNum()),
+                                 l.rExFrom(), l.rExTo());
+        // …and it iterates from the FRACTIONAL start, stepping by one — `(2..4) +
+        // 0.5` is 2.5, 3.5, 4.5. The integer fields are only the floors, which is
+        // the same shape a fractional `..` builds.
+        out.rNumM() = true; out.n = nlo.toNum(); out.imM() = nhi.toNum();
+        attachRangeEnds(out, nlo, nhi);
         return out;
     }
     // Range * n / Range / n scale both endpoints (n * Range commutes);
@@ -26151,10 +26467,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (f != 0 || op == "*") {
             double lo = l.rFrom() * (op == "*" ? f : 1.0 / f);
             double hi = l.rTo() * (op == "*" ? f : 1.0 / f);
-            if (lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
+            // `*` by an Int keeps an integer range; `/` does not — `(^4) / 2` is
+            // 0..^2.0 and yields the Rats 0.0 and 1.0, as Rakudo has it.
+            if (op == "*" && lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
                 return Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
             Value out = Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
             out.rNumM() = true; out.n = lo; out.imM() = hi;
+            // …and it carries the EXACT endpoints, so a Rat divisor keeps the
+            // elements in Rat space instead of dropping them into doubles
+            {
+                const RangeEnds* re = rangeEnds(l);
+                Value elo = re ? re->from : Value::integer(l.rFrom());
+                Value ehi = re ? re->to   : Value::integer(l.rTo());
+                setRangeEnds(out, applyArith(op, elo, r), applyArith(op, ehi, r));
+            }
             return out;
         }
     }
@@ -26658,8 +26984,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "/") {
         double d = r.toNum();
-        double res = l.toNum() / d; // IEEE: x/0e0 is ±Inf or NaN (the `0.0` answer here was wrong under every reading)
-        return Value::number(res);
+        // An INEXACT divide by zero is a Failure, not an IEEE infinity: only the
+        // exact path (two Int/Rat operands) answers the zero-denominator Rat
+        // `<1/0>`, and `10 / 0e0` is X::Numeric::DivideByZero on Rakudo.
+        if (d == 0.0) return divZeroResult(l, op);
+        return Value::number(l.toNum() / d);
     }
     if (op == "%") {
         if (l.t == VT::Num || r.t == VT::Num) { // floating modulo: a - b * floor(a/b)
@@ -26890,6 +27219,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // the Num, because Rakudo takes the left one only on a STRICT win. The two
     // used to answer the left value, so the result's type depended on which side
     // an equal value was written.
+    // An UNDEFINED operand takes no part: `2 min Any` is 2, as the list forms
+    // have always had it. (A Failure detonates first — see the guard at the top
+    // of applyArith — so `min +'a', +'a'` still throws X::Str::Numeric.)
+    if (op == "min" || op == "max") {
+        auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil ||
+                                                 (v.t == VT::Type && (v.s == "Any" || v.s == "Mu")); };
+        if (undef(l) && undef(r)) return l;
+        if (undef(l)) return r;
+        if (undef(r)) return l;
+    }
     if (op == "min") return valueCmp(l, r) < 0 ? l : r;
     if (op == "max") return valueCmp(l, r) > 0 ? l : r;
 
@@ -26987,7 +27326,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
         // their own identity, so `\(1)` stays apart from `\("1")`.
         else if (l.t == VT::Array) {
-            same = (l.hashKind == "Capture" || r.hashKind == "Capture")
+            // `Empty` is a SINGLETON — the one empty Slip — so `Empty === (Any
+            // andthen 2)` is True even though the two were built separately.
+            if (l.s == "Slip" && r.s == "Slip" && l.arr() && r.arr() &&
+                l.arr()->empty() && r.arr()->empty()) same = true;
+            else same = (l.hashKind == "Capture" || r.hashKind == "Capture")
                        ? (l.hashKind == r.hashKind && whichOf(l) == whichOf(r))
                        : (l.arr() == r.arr());
         }
@@ -27125,16 +27468,83 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (r.t == VT::Range) {
             if (l.t == VT::Range) {
-                // Range ~~ Range: containment — every element of l is in r
-                double llo = l.rNum() ? l.n : (double)l.rFrom();
-                double lhi = l.rNum() ? l.im() : (double)l.rTo();
-                double rlo = r.rNum() ? r.n : (double)r.rFrom();
-                double rhi = r.rNum() ? r.im() : (double)r.rTo();
-                bool loOK = r.rExFrom() ? (llo > rlo || (l.rExFrom() && llo >= rlo))
-                                      : (llo >= rlo);
-                bool hiOK = r.rExTo() ? (lhi < rhi || (l.rExTo() && lhi <= rhi))
-                                    : (lhi <= rhi);
+                // Range ~~ Range: containment — every element of l is in r, and
+                // the comparison is NUMERIC whatever the endpoints are written as.
+                // Reading the integer fields alone put `"2".."3"` at the CODEPOINTS
+                // 50..51, and lost an infinite `1/0` endpoint entirely.
+                auto endNum = [](const Value& rg, bool high) -> double {
+                    auto num = [&](const Value& e) -> double {
+                        if (e.t == VT::Str) {
+                            try { return Value::str(e.s.str()).toNum(); }
+                            catch (...) { return high ? INFINITY : -INFINITY; }
+                        }
+                        return e.toNum();
+                    };
+                    if (const RangeEnds* re = rangeEnds(rg)) return num(high ? re->to : re->from);
+                    if (rg.ofType() == "Str")
+                        return num(Value::str(cpToU8((uint32_t)(high ? rg.rTo() : rg.rFrom()))));
+                    if (rg.rNum()) return high ? rg.im() : rg.n;
+                    long long v = high ? rg.rTo() : rg.rFrom();
+                    if (v >= 9000000000000000000LL) return INFINITY;
+                    if (v <= -9000000000000000000LL) return -INFINITY;
+                    return (double)v;
+                };
+                // `"a".."z" ~~ "b".."c"` is False; numifying the letters made both
+                // sides ±Inf and every such pair True.
+                auto strEnds = [](const Value& rg) {
+                    if (rg.ofType() == "Str") return true;
+                    const RangeEnds* re = rangeEnds(rg);
+                    return re && (re->from.t == VT::Str || re->to.t == VT::Str);
+                };
+                auto endStr = [](const Value& rg, bool high) -> std::string {
+                    if (const RangeEnds* re = rangeEnds(rg)) {
+                        const Value& e = high ? re->to : re->from;
+                        if (e.t == VT::Str) return e.s.str();
+                    }
+                    if (rg.ofType() == "Str") return cpToU8((uint32_t)(high ? rg.rTo() : rg.rFrom()));
+                    return high ? std::to_string(rg.rTo()) : std::to_string(rg.rFrom());
+                };
+                // The MATCHER decides: a string endpoint on the right makes the
+                // whole comparison stringwise, so `0..10 ~~ "0"..3` is True —
+                // "10" sorts after "0" and before "3". (A string range against a
+                // numeric matcher numifies instead: `"2".."3" ~~ 2..3`.)
+                if (strEnds(r)) {
+                    const std::string slo = endStr(l, false), shi = endStr(l, true);
+                    const std::string tlo = endStr(r, false), thi = endStr(r, true);
+                    bool loOK = r.rExFrom() ? (slo > tlo || (l.rExFrom() && slo >= tlo)) : (slo >= tlo);
+                    bool hiOK = r.rExTo()   ? (shi < thi || (l.rExTo()   && shi <= thi)) : (shi <= thi);
+                    res = loOK && hiOK;
+                    return Value::boolean(op == "~~" ? res : !res);
+                }
+                double llo = endNum(l, false), lhi = endNum(l, true);
+                double rlo = endNum(r, false), rhi = endNum(r, true);
+                // A NaN endpoint (`0/0`) orders against nothing, so it can only be
+                // contained by a side that is unbounded there — which is the answer
+                // Rakudo gives for `0/0..0/0 ~~ -1/0..1/0`.
+                bool loOK = std::isnan(llo) ? rlo == -INFINITY
+                          : r.rExFrom() ? (llo > rlo || (l.rExFrom() && llo >= rlo))
+                                        : (llo >= rlo);
+                bool hiOK = std::isnan(lhi) ? rhi == INFINITY
+                          : r.rExTo() ? (lhi < rhi || (l.rExTo() && lhi <= rhi))
+                                      : (lhi <= rhi);
                 res = loOK && hiOK;
+            }
+            else if (rangeEnds(r) &&
+                     (rangeEnds(r)->from.t == VT::Str || rangeEnds(r)->to.t == VT::Str)) {
+                // a HALF-string range (`'c'..*`): compare as strings, and an
+                // infinite end simply does not bound that side
+                const RangeEnds* re = rangeEnds(r);
+                const std::string v = l.toStr();
+                auto unbounded = [](const Value& e) { return e.t == VT::Num && std::isinf(e.n); };
+                res = true;
+                if (!unbounded(re->from)) {
+                    const std::string lo = re->from.toStr();
+                    res = r.rExFrom() ? v > lo : v >= lo;
+                }
+                if (res && !unbounded(re->to)) {
+                    const std::string hi = re->to.toStr();
+                    res = r.rExTo() ? v < hi : v <= hi;
+                }
             }
             else if (r.ofType() == "Str") {
                 // Str range: string ordering between the endpoints ("b" ~~ "a".."c")
@@ -27195,7 +27605,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   // …and a Str-valued member IS a Str (the enum type derives from it)
                   (!l.enumName.empty() && l.pairVal() && l.pairVal()->t == VT::Str &&
                    (r.s == "Str" || r.s == "Stringy")) ||
+                  // A Sub is a Routine and a Block: the type chain is
+                  // Block < Code and Sub < Routine < Block, so a plain `sub {}`
+                  // conforms to every one of them.
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
+                   r.s == "Routine" || r.s == "Block" ||
+                   (r.s == "Method" && l.code() && l.code()->isMethod) ||
                    (r.s == "WhateverCode" && l.code() && l.code()->isWhateverCode))) ||
                   // a Regex is a Method: Routine, Block, Code, Callable
                   (l.t == VT::Regex && (r.s == "Code" || r.s == "Callable" || r.s == "Method" ||
@@ -27426,6 +27841,28 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                         "Cannot resolve caller infix:<" + op + ">(" + l.typeName() +
                         ", " + r.typeName() + "); no such operator is defined"};
+    // The Unicode spellings that stand for an ASCII operator EXACTLY are folded
+    // by the lexer (uniOpAlias), so infix position never reaches here with one.
+    // The `&infix:<⊈>` / `infix:<⩵>(…)` call form does: that name is read as a
+    // literal string, characters and all. Fold it here — the cold path — rather
+    // than in the hot operator ladder.
+    {
+        static const std::map<std::string, std::string> kUniAlias = {
+            {"\xE2\x8A\x84", "!(<)"},  {"\xE2\x8A\x88", "!(<=)"}, // ⊄ ⊈
+            {"\xE2\x8A\x85", "!(>)"},  {"\xE2\x8A\x89", "!(>=)"}, // ⊅ ⊉
+            {"\xE2\xA9\xB5", "=="},    {"\xE2\xA9\xB6", "==="},   // ⩵ ⩶
+        };
+        auto it = kUniAlias.find(op);
+        if (it != kUniAlias.end()) return applyArith(it->second, l, r);
+    }
+    // `&infix:<![!%%]>` — the BRACKETED spelling of an infix, which the metaops
+    // nest freely (`R[+]`, `[!eq]`, `![!%%]`). The brackets are punctuation: the
+    // operator they enclose is the operator.
+    if (!op.empty() && op.back() == ']' && op.find('[') != std::string::npos) {
+        std::string flat;
+        for (char c : op) if (c != '[' && c != ']') flat += c;
+        if (!flat.empty() && flat != op) return applyArith(flat, l, r);
+    }
     throw RakuError{Value::typeObj("X::NYI"), "Unsupported operator '" + op + "'"};
 }
 
@@ -30276,6 +30713,15 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     ValueList la, ra;
     if (!lInf) la = l.t == VT::Array && l.arr() ? *l.arr() : lIter ? l.flatten() : ValueList{l};
     if (!rInf) ra = r.t == VT::Array && r.arr() ? *r.arr() : rIter ? r.flatten() : ValueList{r};
+    // An EMPTY side annihilates: `True »+» ()` and `() «+« True` are both (),
+    // never a length complaint. Only the doubly-strict `»+«` still objects to
+    // the mismatch, which is the one shape Rakudo throws on.
+    if (!lInf && !rInf && (la.empty() || ra.empty()) && !(strictL && strictR)) {
+        Value empty = Value::array();
+        const Value& sh = lIter ? l : r;
+        empty.isList = !(sh.t == VT::Array && !sh.isList);
+        return empty;
+    }
     size_t n;
     if (lInf) n = ra.size();
     else if (rInf) n = la.size();
@@ -30502,7 +30948,12 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op == "//") return topicDefined(l) ? l : r;
     if (op == "||" || op == "or") return l.truthy() ? l : r;
     if (op == "&&" || op == "and") return l.truthy() ? r : l;
-    if (op == "andthen") return topicDefined(l) ? r : l;
+    // `Any andthen 2` is Empty, not the undefined left side — see shortCircuitOp,
+    // where the thunking form says the same thing.
+    if (op == "andthen" || op == "notandthen") {
+        if (topicDefined(l) == (op == "andthen")) return r;
+        Value e = Value::array(); e.isList = true; e.s = "Slip"; return e;
+    }
     if (op == "orelse") return topicDefined(l) ? l : r;
     if (op == "xor" || op == "^^")
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
@@ -30753,6 +31204,80 @@ int Interpreter::tryCondBool(Expr* e) {
            : op == "<=" ? l <= r : op == ">=" ? l >= r
            : op == "==" ? l == r : l != r;
     return v ? 1 : 0;
+}
+
+// The operators that do NOT evaluate both sides: which one is skipped depends on
+// the other's value, so they take AST nodes rather than values. `R&&` and friends
+// reuse this with the operands swapped, which is the whole point — `$n++ R&& 0`
+// must leave $n alone.
+Value Interpreter::shortCircuitOp(const std::string& op, Expr* lhs, Expr* rhs) {
+    if (op == "&&" || op == "and") { Value l = eval(lhs); return boolify(l) ? eval(rhs) : l; }
+    if (op == "||" || op == "or")  { Value l = eval(lhs); return boolify(l) ? l : eval(rhs); }
+    if (op == "//") { Value l = eval(lhs); return topicDefined(l) ? l : eval(rhs); }
+    if (op == "^^" || op == "xor") { // the two-operand form; the CHAIN is walked in evalBinary
+        Value a = eval(lhs), c = eval(rhs);
+        bool ta = boolify(a), tc = boolify(c);
+        if (ta && tc) return Value::nil();
+        return ta ? a : c;           // …and with neither true, the LAST operand
+    }
+    Value l = eval(lhs);
+    bool def = topicDefined(l);
+    bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
+    if (!run) { // skip the RHS: orelse yields the LHS, andthen/notandthen yield Empty
+        if (op == "andthen" || op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
+        return l;
+    }
+    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+    scope->define("$_", l);
+    auto saved = tctx_.cur; tctx_.cur = scope;
+    Value r; try { r = eval(rhs); } catch (...) { tctx_.cur = saved; throw; }
+    tctx_.cur = saved;
+    // A BLOCK on the right is CALLED with the left value: `'x' andthen -> $a {…}`
+    // passes 'x', and `Failure.new(…) orelse -> $f {…}` passes the Failure. Only
+    // a block written there — a Code that merely came out of an expression is
+    // the answer, not something to invoke.
+    if (r.t == VT::Code && r.code() && rhs->kind == NK::BlockExpr) {
+        Value arg = l;
+        // The left side of an `orelse` may be a FAILURE — that is the usual
+        // reason the right side runs — and asking about it is what handles it.
+        // Passed on unhandled, it detonated inside the block instead.
+        if (arg.t == VT::Hash && arg.hashKind == "Failure" && arg.hash())
+            (*arg.hash())["handled"] = Value::boolean(true);
+        return callCallable(r, ValueList{arg});
+    }
+    return r;
+}
+
+Value Interpreter::xxRepeat(Expr* item, Expr* count) {
+// list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
+    // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
+    Value rv = eval(count);
+    if (rv.t == VT::Whatever || (rv.t == VT::Num && std::isinf(rv.n))) {
+        // `EXPR xx *` — an endlessly repeating lazy list. The left side is a
+        // THUNK on this path too, not one value repeated: `[] xx *` owes each
+        // element a FRESH array. Repeating one unit made every key of
+        // `my %rows = @!column-name Z=> [] xx *` share a single array, so
+        // DBDish's allrows(:hash-of-array) pushed every column into all of them.
+        Value a = Value::seq();   // `EXPR xx *` is a Seq too (sheet LA-32)
+        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        Expr* le = item;
+        auto env = tctx_.cur;   // the thunk keeps the scope it was written in
+        st->appendNext = [this, le, env](ValueList& cache) -> bool {
+            auto saved = tctx_.cur;
+            tctx_.cur = env;
+            try { rtXxAppend(cache, eval(le)); } // a Slip replicates its ELEMENTS
+            catch (...) { tctx_.cur = saved; throw; }
+            tctx_.cur = saved;
+            return true;
+        };
+        rtXxAppend(*a.arr(), eval(item));
+        a.extM() = st;
+        return a;
+    }
+    long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
+    Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
+    for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), eval(item));
+    return a;
 }
 
 Value Interpreter::evalBinary(Binary* b) {
@@ -31040,6 +31565,23 @@ Value Interpreter::evalBinary(Binary* b) {
         // zip/cross metaop `Zop`/`Xop` — one implementation (zxOp), which also
         // brings this path the endless-Z lazy view it used to lack
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
+            // …but a CHAIN of the same metaop is one list infix over all of its
+            // operands, and the inner operator folds each whole tuple. The
+            // n-ary reducer owns that; see the chain arm further down, which
+            // this one would otherwise shadow.
+            if (b->lhs->kind == NK::Binary && static_cast<Binary*>(b->lhs.get())->op == op) {
+                std::vector<Expr*> chain;
+                Expr* cn = b;
+                while (cn->kind == NK::Binary && static_cast<Binary*>(cn)->op == op) {
+                    chain.push_back(static_cast<Binary*>(cn)->rhs.get());
+                    cn = static_cast<Binary*>(cn)->lhs.get();
+                }
+                chain.push_back(cn);
+                std::reverse(chain.begin(), chain.end());
+                ValueList items;
+                for (Expr* e : chain) items.push_back(eval(e));
+                return applyReduce(op, items);
+            }
             return zxOp(op, l, r);
         }
         // A STRING operator compares an object by its own `method Str`:
@@ -31114,9 +31656,26 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op))) {
         // reverse metaoperator: `a R/ b` computes `b / a` — applyBinOp (not
-        // applyArith) so the short-circuit family works too (`R//` in LibraryMake)
+        // applyArith) so the short-circuit family works too (`R//` in LibraryMake).
+        // The Rs STACK, and two of them cancel: `rand RRxx 5` is `rand xx 5`.
+        size_t rs = 0; while (rs < op.size() && op[rs] == 'R') rs++;
+        std::string base = op.substr(rs);
+        bool swap = (rs % 2) == 1;
+        // …and `xx` keeps thunking the repeated expression wherever the Rs put
+        // it: `5 Rxx rand` owes five INDEPENDENT rands, so the operands are
+        // swapped as AST nodes and not as already-computed values.
+        if (base == "xx")
+            return swap ? xxRepeat(b->rhs.get(), b->lhs.get())
+                        : xxRepeat(b->lhs.get(), b->rhs.get());
+        // …and the SHORT-CIRCUIT family for the same reason: `$n++ R&& 0` is
+        // `0 && $n++`, which never runs the increment at all.
+        static const std::set<std::string> kThunking = {
+            "&&", "and", "||", "or", "//", "^^", "xor", "andthen", "orelse", "notandthen"};
+        if (kThunking.count(base))
+            return swap ? shortCircuitOp(base, b->rhs.get(), b->lhs.get())
+                        : shortCircuitOp(base, b->lhs.get(), b->rhs.get());
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
-        return applyBinOp(op.substr(1), r, l);
+        return swap ? applyBinOp(base, r, l) : applyBinOp(base, l, r);
     }
     if (op == "~") {
         // string concat coerces via .Str; honour a user-defined `method Str`/`gist`
@@ -31322,37 +31881,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return res;
     }
-    if (op == "xx") {
-        // list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
-        // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
-        Value rv = eval(b->rhs.get());
-        if (rv.t == VT::Whatever || (rv.t == VT::Num && std::isinf(rv.n))) {
-            // `EXPR xx *` — an endlessly repeating lazy list. The left side is a
-            // THUNK on this path too, not one value repeated: `[] xx *` owes each
-            // element a FRESH array. Repeating one unit made every key of
-            // `my %rows = @!column-name Z=> [] xx *` share a single array, so
-            // DBDish's allrows(:hash-of-array) pushed every column into all of them.
-            Value a = Value::seq();   // `EXPR xx *` is a Seq too (sheet LA-32)
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
-            Expr* le = b->lhs.get();
-            auto env = tctx_.cur;   // the thunk keeps the scope it was written in
-            st->appendNext = [this, le, env](ValueList& cache) -> bool {
-                auto saved = tctx_.cur;
-                tctx_.cur = env;
-                try { rtXxAppend(cache, eval(le)); } // a Slip replicates its ELEMENTS
-                catch (...) { tctx_.cur = saved; throw; }
-                tctx_.cur = saved;
-                return true;
-            };
-            rtXxAppend(*a.arr(), eval(b->lhs.get()));
-            a.extM() = st;
-            return a;
-        }
-        long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
-        Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
-        for (long long k = 0; k < n; k++) rtXxAppend(*a.arr(), eval(b->lhs.get()));
-        return a;
-    }
+    if (op == "xx") return xxRepeat(b->lhs.get(), b->rhs.get());
     if (op == "==>" || op == "<==") { // feed: source ==> f(args) ==> … ==> my @target
         Expr* srcE = op == "==>" ? b->lhs.get() : b->rhs.get();
         Expr* dstE = op == "==>" ? b->rhs.get() : b->lhs.get();
@@ -31517,7 +32046,14 @@ Value Interpreter::evalBinary(Binary* b) {
             // empty List is the right answer for "nothing matched" — collapsing it
             // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
             // so only code that counts or iterates the result could see it.
-            if (op == "~~") return m.t == VT::Array ? m : (m.truthy() ? m : Value::nil());
+            // …and a failed `m//` answers False where a failed bare `/…/` answers
+            // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
+            // which is exactly what S03-smartmatch/00-sanity.t asks.
+            if (op == "~~")
+                return m.t == VT::Array ? m
+                     : m.truthy()       ? m
+                     : static_cast<RegexLit*>(b->rhs.get())->isM ? Value::boolean(false)
+                                                                 : Value::nil();
             return Value::boolean(!m.truthy());
         }
         if (b->rhs->kind == NK::SubstLit) {
@@ -31557,7 +32093,10 @@ Value Interpreter::evalBinary(Binary* b) {
                                     "Cannot assign to a readonly variable or a value"};
                 *lv = Value::str(out);
             }
-            return mres;                                     // s/// returns the Match / List of matches
+            // s/// returns the Match / List of matches — and False, not Nil, when
+            // nothing matched (same rule as the `m//` form above)
+            if (mres.t == VT::Nil || (mres.t != VT::Array && !mres.truthy())) return Value::boolean(false);
+            return mres;
         }
         // `X ~~ Y` topicalizes: $_ is bound to X while Y is evaluated (so `$x ~~ .so` works)
         Value lTopic = eval(b->lhs.get());
@@ -31759,35 +32298,9 @@ Value Interpreter::evalBinary(Binary* b) {
         if (closes && exclLast) return Value::nil();
         return Value::integer(st.seq);
     }
-    if (op == "&&" || op == "and") {
-        Value l = eval(b->lhs.get());
-        if (!boolify(l)) return l;
-        return eval(b->rhs.get());
-    }
-    if (op == "||" || op == "or") {
-        Value l = eval(b->lhs.get());
-        if (boolify(l)) return l;
-        return eval(b->rhs.get());
-    }
-    if (op == "andthen" || op == "orelse" || op == "notandthen") {
-        Value l = eval(b->lhs.get());
-        bool def = topicDefined(l);
-        bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
-        if (!run) { // skip the RHS: orelse/andthen yield the LHS, notandthen yields Empty
-            if (op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; } // Empty
-            return l;
-        }
-        auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-        scope->define("$_", l);
-        auto saved = tctx_.cur; tctx_.cur = scope;
-        Value r; try { r = eval(b->rhs.get()); } catch (...) { tctx_.cur = saved; throw; }
-        tctx_.cur = saved; return r;
-    }
-    if (op == "//") {
-        Value l = eval(b->lhs.get());
-        if (topicDefined(l)) return l;
-        return eval(b->rhs.get());
-    }
+    if (op == "&&" || op == "and" || op == "||" || op == "or" || op == "//" ||
+        op == "andthen" || op == "orelse" || op == "notandthen")
+        return shortCircuitOp(op, b->lhs.get(), b->rhs.get());
     if (op == "^^" || op == "xor") {
         // `^^` has "find the one true value" semantics over the WHOLE chain
         // (list-associative): the single true operand, Nil if more than one is
@@ -31811,6 +32324,23 @@ Value Interpreter::evalBinary(Binary* b) {
         return haveTrue ? found : last;
     }
     if (op == "&" || op == "|" || op == "^") {
+        // A user `sub infix:<|>(*@a)` SHADOWS the junction constructor — and the
+        // constructors are LIST-associative, so `1 | 2 | 3 | 4` is ONE call with
+        // four operands, not three nested ones. (S03-junctions/boolean-context.t
+        // counts the calls, which is the only way to tell the two apart.)
+        if (Value* uf = tctx_.cur->find("&infix:<" + op + ">")) {
+            std::vector<Expr*> chain;
+            Expr* cn = b;
+            while (cn->kind == NK::Binary && static_cast<Binary*>(cn)->op == op) {
+                chain.push_back(static_cast<Binary*>(cn)->rhs.get());
+                cn = static_cast<Binary*>(cn)->lhs.get();
+            }
+            chain.push_back(cn);
+            std::reverse(chain.begin(), chain.end());
+            ValueList args;
+            for (Expr* e : chain) args.push_back(evalValueOf(e));
+            return callCallable(*uf, std::move(args));
+        }
         // junction constructors: operands are values, so `rx/a/ & rx/b/` builds a
         // junction of Regex objects (not two matches against $_).
         Value l = evalValueOf(b->lhs.get());
@@ -31820,7 +32350,10 @@ Value Interpreter::evalBinary(Binary* b) {
     if ((op == "Z" || op == "X") && b->lhs->kind == NK::Binary &&
         static_cast<Binary*>(b->lhs.get())->op == op) {
         // `@a Z @b Z @c` is ONE list-infix chain producing 3-tuples — a pairwise
-        // fold would zip tuples-with-a-list and come out mangled. Same for X.
+        // fold would zip tuples-with-a-list and come out mangled. Same for X, and
+        // for the `Zop`/`Xop` forms, where the inner operator folds each whole
+        // tuple: `Z(^)` over three lists is one three-way symmetric difference,
+        // which is not what folding it twice in pairs computes.
         std::vector<Expr*> chain;
         Expr* cur = b;
         while (cur->kind == NK::Binary && static_cast<Binary*>(cur)->op == op) {
@@ -33084,6 +33617,17 @@ Value Interpreter::evalUnary(Unary* u) {
                 }
             }
         }
+        // A LITERAL has no container to step: `4++` matches the `is rw` candidate
+        // by type and fails to bind it, which is the error Rakudo reports.
+        switch (u->operand->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::InterpStr:
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    "Cannot resolve caller " + std::string(u->postfix ? "postfix" : "prefix") +
+                    ":<" + u->op + ">(" + (u->operand->kind == NK::IntLit ? "Int:D" :
+                                           u->operand->kind == NK::NumLit ? "Num:D" : "Str:D") +
+                    "); the following candidates match the type but require mutable arguments"};
+            default: break;
+        }
         Value* lv = lvalue(u->operand.get());
         // a NativeCall Pointer steps by ELEMENTS through `.succ`/`.pred`, as
         // Rakudo's `++` does for any object that answers them (NativeHelpers::
@@ -33186,7 +33730,10 @@ Value Interpreter::evalUnary(Unary* u) {
         // S03: postfix ++/-- on an UNDEFINED numeric returns the type's zero
         // (`my $x; $x++` is 0, and $x becomes 1) — the Bool arm above already
         // does this for its own type
-        if (u->postfix && oldv.t == VT::Any) return Value::integer(0);
+        // …and an explicit `Mu`/`Any` type object is as undefined as a bare `my $x`
+        if (u->postfix && (oldv.t == VT::Any || oldv.t == VT::Nil ||
+                           (oldv.t == VT::Type && (oldv.s == "Mu" || oldv.s == "Any"))))
+            return Value::integer(0);
         return u->postfix ? oldv : newv;
     }
     Value v = eval(u->operand.get());
@@ -33316,6 +33863,19 @@ Value Interpreter::evalUnary(Unary* u) {
         }
     }
     if (u->op == "^") {
+        // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
+        // type, so the range holds six integers and reports 5.5 as its max.
+        if (v.t == VT::Num || v.t == VT::Rat) {
+            double top = v.toNum();
+            bool whole = top == std::floor(top);
+            // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
+            // — so the integer field is the first integer past the bound: `^5.5`
+            // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
+            // off the carried endpoints.
+            Value r = Value::range(0, (long long)std::floor(top) + (whole ? 0 : 1), false, true);
+            attachRangeEnds(r, Value::integer(0), v);
+            return r;
+        }
         Value r = Value::range(0, strictInt(v), false, true);
         if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
         return r;
@@ -33826,6 +34386,13 @@ static bool angleShapedOp(const std::string& op) {
 static std::string normHyperMarkers(std::string s) {
     for (size_t p; (p = s.find("\xC2\xBB")) != std::string::npos; ) s.replace(p, 2, ">>");
     for (size_t p; (p = s.find("\xC2\xAB")) != std::string::npos; ) s.replace(p, 2, "<<");
+    // …and the Unicode spellings the LEXER folds (aliasUniOp), which an
+    // `infix:<−>` NAME carries through as literal characters: `infix:<−>()` is
+    // the zero-argument minus and must answer 0, not Any.
+    static const std::pair<const char*, const char*> kUni[] = {
+        {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
+        {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
+    for (auto& [u, a] : kUni) if (s == u) return a;
     return s;
 }
 
@@ -34333,7 +34900,10 @@ Value Interpreter::evalCall(Call* c) {
         // call form assigns (or metaop-assigns) through its l-value first operand.
         bool isAssign = op == "=" ||
             (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+             // …and the identity/approximation family, which also ENDS in `=`:
+             // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
+             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
         if (isAssign && c->args.size() >= 2) {
             if (Value* lv = lvalue(c->args[0].get())) {
                 *lv = (op == "=") ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
@@ -34366,8 +34936,52 @@ Value Interpreter::evalCall(Call* c) {
             }
             return out;
         }
+        // The sequence operator is LIST-associative, and its call form is where
+        // that shows: `infix:<...>(3, (5,10), (25,50), 100)` is one operator over
+        // four groups, not a left fold of three `...`es. Each group after the seed
+        // opens with the endpoint that closes the previous segment and then seeds
+        // the next one whole — which is what makes that sequence step by 5 from 10
+        // and by 25 from 50. `^...` and `^...^` have no infix arm at all (they are
+        // rewritten at parse time), so this is also where their call form lives.
+        if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
+            if (args.size() >= 2) {
+                std::vector<ValueList> groups; std::vector<char> ends;
+                for (size_t k = 1; k < args.size(); k++) {
+                    ValueList g;
+                    if (args[k].t == VT::Array && args[k].arr() && !args[k].arr()->empty())
+                        g = *args[k].arr();
+                    else g.push_back(args[k]);
+                    groups.push_back(std::move(g));
+                    ends.push_back(op.back() == '^' && k + 1 == args.size());
+                }
+                return seqOpGroups(args[0], groups, ends, op.front() == '^');
+            }
+        }
+        // `infix:<andthen>(%h)` / `infix:<andthen>([42, 70])` — the definedness
+        // infixes take a `+@` slurpy, so ONE Iterable or Associative argument
+        // spreads into its elements (a Hash into its Pairs) rather than being the
+        // single operand it looks like.
+        if ((op == "andthen" || op == "orelse" || op == "notandthen") && args.size() == 1) {
+            ValueList spread;
+            if (args[0].t == VT::Hash && args[0].hash() && args[0].hashKind.empty()) {
+                for (auto& kv : *args[0].hash()) {
+                    Value pv = Value::pair(kv.first, kv.second);
+                    pv.pairKeyM() = kv.second.pairKey();
+                    spread.push_back(std::move(pv));
+                }
+            }
+            else if (args[0].t == VT::Array && args[0].arr() && !args[0].itemized)
+                spread = *args[0].arr();
+            if (spread.size() > 1) {
+                Value acc = spread[0];
+                for (size_t k = 1; k < spread.size(); k++) acc = applyBinOp(op, acc, spread[k]);
+                return acc;
+            }
+        }
         if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
             if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(args); // ⊖ is variadic, not a fold
+            if (isSetOpStr(op) && !isSetPredicateStr(op))
+                if (auto j = setOpFoldN(op, args)) return *j; // one joint tier over every operand
             Value acc = args[0];
             for (size_t k = 1; k < args.size(); k++) acc = applyBinOp(op, acc, args[k]);
             return acc;
@@ -34670,7 +35284,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // comparison reduces CHAIN pairwise ([<] 1,2,3 == 1<2 && 2<3); a leading
     // `!` negates each pairwise test ([!=:=] $x,$y,$x == $x !=:= $y && $y !=:= $x)
     static const std::set<std::string> chainOps = {
-        "<", "<=", ">", ">=", "==", "!=", "eq", "ne", "lt", "le", "gt", "ge",
+        "<", "<=", ">", ">=", "==", "!=", "!==", "eq", "ne", "lt", "le", "gt", "ge",
         "=:=", "===", "eqv", "before", "after", "~~"};
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
@@ -34734,11 +35348,22 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0))
             return applyReduce(op.substr(2, op.size() - 4), items);
         if (op == "+" || op == "-") return Value::integer(0);
-        if (op == "*" || op == "/") return Value::integer(1);
-        if (op == "~") return Value::str("");
+        if (op == "*") return Value::integer(1);
+        if (op == "~" || op == "~|" || op == "~^") return Value::str("");
+        // `[/] ()` has no identity to name — 1 is the identity of `*`, and
+        // reusing it here made the reduction of nothing come back defined.
+        if (op == "/" || op == "+<" || op == "+>" || op == "~&" || op == "~<" || op == "~>")
+            return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<" + op + ">");
+        // the junction constructors reduce to the EMPTY junction of their kind
+        if (op == "&" || op == "|" || op == "^") {
+            Value j = Value::array(); j.isList = true;
+            j.enumName = op == "&" ? "all" : op == "|" ? "any" : "one";
+            return j;
+        }
         // the rest of the identities (Rakudo): `if [&&] @checks` with no checks
         // used to take the FALSE branch on an Any
-        if (op == "&&" || op == "and") return Value::boolean(true);
+        if (op == "&&" || op == "and" || op == "?&") return Value::boolean(true);
+        if (op == "?|" || op == "?^") return Value::boolean(false);
         if (op == "||" || op == "or" || op == "^^" || op == "xor") return Value::boolean(false);
         if (op == "**") return Value::integer(1);
         if (op == "+&") return Value::integer(-1);
@@ -34833,9 +35458,28 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
         return out;
     }
+    // `Zop` / `Xop`: one n-way zip (or cross), each tuple then folded with the
+    // INNER operator over ALL of its elements. Folding the outer metaop in pairs
+    // instead zips tuples against a list, and for an inner operator that is not
+    // associative — `(^)` — even a correctly shaped pairwise fold is the wrong
+    // answer: `1..3, 1..3 Z(^) 2..4, 1..4 Z(^) 2..3, 2..3` is a THREE-way
+    // symmetric difference per tuple.
+    if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
+        Value tuples = applyReduce(std::string(1, op[0]), items);
+        std::string inner = op.substr(1);
+        if (inner.empty() || inner == "," || !tuples.arr()) return tuples;
+        Value out = Value::seq();
+        for (auto& t : *tuples.arr()) {
+            ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
+            out.arr()->push_back(applyReduce(inner, parts));
+        }
+        return out;
+    }
     // [(^)] / [⊖] : symmetric difference is a genuine list op (max − 2nd-max per
     // key), not the left fold the general reducer below would compute
     if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(items);
+    if (isSetOpStr(op) && !isSetPredicateStr(op))
+        if (auto j = setOpFoldN(op, items)) return *j;   // one joint tier over every operand
     Value acc = items[0];
     for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
     return acc;
@@ -37010,6 +37654,8 @@ Value Interpreter::eval(Expr* e) {
                         }
                         if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
                             if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(a); // ⊖ is variadic
+                            if (isSetOpStr(op) && !isSetPredicateStr(op))
+                                if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
                             Value acc = a[0];
                             for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
                             return acc;
@@ -37020,7 +37666,11 @@ Value Interpreter::eval(Expr* e) {
                             if (op == "~") return I.applyBinOp(op, Value::str(""), a[0]);
                             return a[0];
                         }
-                        return Value::any();
+                        // No operands at all: the operator's identity, which is the
+                        // same table the reduce metaop uses — `&infix:<==>()` is
+                        // True, as `[==] ()` is. Answering Any made every
+                        // zero-argument comparison falsy.
+                        { ValueList none; return I.applyReducePublic(op, none); }
                     };
                     return code;
                 }
@@ -37762,6 +38412,15 @@ Value Interpreter::eval(Expr* e) {
             // a smartmatch chain with a COMPOSED WhateverCode on the left is a
             // value comparison (`*.abs ~~ Code` is True); only a bare `*`
             // operand keeps the chain currying (`* ~~ /rx/` for grep/first)
+            // A COMPOSED WhateverCode on the right of a smartmatch is the MATCHER
+            // (`$x ~~ (* == 0)` asks the closure about $x), not something to curry
+            // the chain with. Only a bare `*` there keeps the chain currying.
+            for (size_t k = 1; k < isW.size(); k++)
+                if (isW[k] && ch->operands[k]->kind != NK::Whatever &&
+                    (ch->ops[k - 1] == "~~" || ch->ops[k - 1] == "!~~"))
+                    isW[k] = false;
+            anyWhatever = false;
+            for (bool w : isW) anyWhatever = anyWhatever || w;
             if (anyWhatever && ch->ops.size() == 1 &&
                 (ch->ops[0] == "~~" || ch->ops[0] == "!~~") &&
                 ch->operands[0]->kind != NK::Whatever &&
@@ -38439,19 +39098,39 @@ Value Interpreter::eval(Expr* e) {
             }
             // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
             // marks an infinite range, same as 1..Inf)
+            checkRangeEndpoint(from); checkRangeEndpoint(to);
+            // (the `^` markers survive: `1..^*` still excludes its endpoint, which
+            // is what .excludes-max and .raku report; a STRING endpoint opposite
+            // the Whatever stays a string — see the twin in rangeFromValues)
             if (from.t == VT::Whatever && to.t == VT::Whatever)
-                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, false, false);
-            if (to.t == VT::Whatever)
-                return Value::range(from.toInt(), 9223372036854775807LL, r->exFrom, false);
-            if (from.t == VT::Whatever)
-                return Value::range(-9223372036854775807LL - 1, to.toInt(), false, r->exTo);
+                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, r->exFrom, r->exTo);
+            if (to.t == VT::Whatever) {
+                Value rr = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
+                                        9223372036854775807LL, r->exFrom, r->exTo);
+                if (from.t == VT::Str) attachRangeEnds(rr, from, Value::number(INFINITY));
+                return rr;
+            }
+            if (from.t == VT::Whatever) {
+                Value rr = Value::range(-9223372036854775807LL - 1,
+                                        to.t == VT::Str ? (long long)u8FirstCp(to.s) : to.toInt(),
+                                        r->exFrom, r->exTo);
+                if (to.t == VT::Str) attachRangeEnds(rr, Value::number(-INFINITY), to);
+                return rr;
+            }
             // Fractional numeric range: at least one endpoint is a non-integer
             // Num/Rat. Keep the real endpoints (elements step by 1 from `from`).
             {
-                bool fFrac = (from.t == VT::Num || from.t == VT::Rat) &&
-                             from.toNum() != std::floor(from.toNum());
-                bool tFrac = (to.t == VT::Num || to.t == VT::Rat) &&
-                             to.toNum() != std::floor(to.toNum());
+                // (see the twin in rtRangeVal: a MIXED string/numeric range keeps
+                // the string endpoint it was written with)
+                if ((from.t == VT::Str) != (to.t == VT::Str) &&
+                    (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
+                    Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
+                    attachRangeEnds(rr, from, to);
+                    return rr;
+                }
+                // (…and a Num/Rat endpoint makes the elements Nums/Rats, whole or not)
+                bool fFrac = (from.t == VT::Num || from.t == VT::Rat);
+                bool tFrac = (to.t == VT::Num || to.t == VT::Rat);
                 if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
                     std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
                     Value rr = Value::range((long long)std::floor(from.toNum()),

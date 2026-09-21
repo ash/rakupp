@@ -1145,6 +1145,69 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value r; endlessReduce(op, inv, r); return r; // throws when there is no answer
         }
     }
+    // …but a range whose top is a BIGINT only LOOKS endless: `i` saturated at the
+    // same sentinel. Answer the three questions that are about the endpoint from
+    // the carried objects before falling into the endless arm. (Iterating such a
+    // range is still refused there, which is the right answer for 10**42 elements.)
+    // `*..1` — endless BELOW, bounded above. Neither the finite arm (which wants
+    // both ends in range) nor the endless arm (which keys on the TOP) claimed it,
+    // so `.min` answered the raw LLONG_MIN and `.max` a number off by the
+    // exclusive adjustment.
+    if (inv.t == VT::Range && inv.rFrom() <= -9000000000000000000LL &&
+        inv.rTo() < 9000000000000000000LL) {
+        if (m == "min")          return Value::number(-INFINITY);
+        if (m == "max")          return Value::integer(inv.rTo());
+        if (m == "excludes-min") return Value::boolean(inv.rExFrom());
+        if (m == "excludes-max") return Value::boolean(inv.rExTo());
+        if (m == "infinite" || m == "is-lazy") return Value::boolean(true);
+        if (m == "bounds") { Value o = Value::array({Value::number(-INFINITY), Value::integer(inv.rTo())});
+                             o.isList = true; return o; }
+        if (m == "elems")
+            return ioFailure("X::Cannot::Lazy", {{"action", Value::str(".elems")}},
+                             "Cannot .elems a lazy list");
+        if (m == "list" || m == "List" || m == "Seq" || m == "eager" ||
+            m == "Array" || m == "reverse" || m == "sort" || m == "join" || m == "iterator")
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot ." + std::string(m) + " a lazy list"};
+    }
+    if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL) {
+        if (const RangeEnds* bre = rangeEnds(inv)) {
+            if (bre->to.t == VT::Int) {
+                if (m == "max") return bre->to;
+                if (m == "bounds") { Value o = Value::array({bre->from, bre->to}); o.isList = true; return o; }
+                if (m == "elems" || m == "Numeric" || m == "Int")
+                    return applyArith("+", applyArith("-", bre->to, bre->from),
+                                      Value::integer(1 - (inv.rExFrom() ? 1 : 0) - (inv.rExTo() ? 1 : 0)));
+            }
+        }
+    }
+    // An endless range whose LOW end is a STRING climbs by `succ`, not by
+    // codepoint: `('a'..*)[^5]` is a, b, c, d, e. Reading the integer field gave
+    // the codepoints 97..101 instead.
+    if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL && rangeEnds(inv) &&
+        rangeEnds(inv)->from.t == VT::Str) {
+        std::string first = rangeEnds(inv)->from.s.str();
+        if (inv.rExFrom()) first = strSucc(first);
+        auto take = [&](long long n) {
+            Value o = Value::array(); o.isList = true;
+            std::string cur = first;
+            for (long long i = 0; i < n; i++) { o.arr()->push_back(Value::str(cur)); cur = strSucc(cur); }
+            return o;
+        };
+        if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
+        if (m == "min")  return Value::str(rangeEnds(inv)->from.s.str());
+        if (m == "max")  return Value::number(INFINITY);
+        if (m == "head" && args.empty()) return Value::str(first);
+        if (m == "head") return take(std::max(0LL, args[0].toInt()));
+        if (m == "AT-POS" && !args.empty()) {
+            long long i = args[0].toInt();
+            if (i < 0) return Value::any();
+            std::string cur = first;
+            for (long long k = 0; k < i; k++) cur = strSucc(cur);
+            return Value::str(cur);
+        }
+        if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat")
+            return take(10000);          // the same bounded prefix the Int arm hands out
+    }
     if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL) {
         long long lo = inv.rFrom() + (inv.rExFrom() ? 1 : 0);
         if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
@@ -1152,7 +1215,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "head") { long long n = std::max(0LL, args[0].toInt());
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr()->push_back(Value::integer(lo + i)); return o; }
         if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo(), false, inv.rExTo()); }
-        if (m == "elems") return Value::number(INFINITY); // (.Numeric/.Int are Part2's universal arms)
+        // `.elems` on an ENDLESS range is X::Cannot::Lazy, not Inf — and it is a
+        // SOFT failure, so `throws-like $range.elems, …` still gets to see it
+        // rather than being blown up while its arguments are built.
+        if (m == "elems")
+            return ioFailure("X::Cannot::Lazy", {{"action", Value::str(".elems")}},
+                             "Cannot .elems a lazy list");
         if (m == "min") return inv.rFrom() <= -9000000000000000000LL
             ? Value::number(-INFINITY) : Value::integer(inv.rFrom());
         if (m == "max") return Value::number(INFINITY);                 // `1..*` .max is Inf, not an error

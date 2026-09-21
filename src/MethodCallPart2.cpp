@@ -2138,8 +2138,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "message" || m == "Str" || m == "gist") {
             auto mm = inv.hash()->find("message");
-            if (mm != inv.hash()->end()) return mm->second;
-            return methodCall(ex, m, args, rwArgs);
+            Value out = mm != inv.hash()->end() ? mm->second
+                                                : methodCall(ex, m == "gist" ? std::string("message") : std::string(m), args, rwArgs);
+            // a HANDLED Failure gists with the marker Rakudo prints, so the two
+            // states are told apart at a glance
+            if (m == "gist") return Value::str("(HANDLED) " + out.toStr());
+            return out;
         }
         // Everything else is Failure.FALLBACK: a method the Failure does not
         // answer itself is a USE of the value, and a use throws the exception
@@ -3599,11 +3603,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
-        Value ex; bool haveEx = false;
+        Value ex; bool haveEx = false; std::string msg;
         for (auto& a : args) if (a.t == VT::Object) { ex = a; haveEx = true; } // Failure.new($ex) / :exception
+        // `Failure.new("oh noes!")` — a plain STRING is the message, wrapped in an
+        // X::AdHoc exactly as Rakudo does. Ignored, the Failure had nothing to say
+        // and its gist came back "(Any)".
+        if (!haveEx)
+            for (auto& a : args)
+                if (a.t == VT::Str && !a.namedArg) { msg = a.toStr(); haveEx = true;
+                    ex = makeTypedEx("X::AdHoc", {{"message", Value::str(msg)}}, msg); break; }
         if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be; }
         Value f = rakuppNewFailure();
         (*f.hash())["exception"] = ex;
+        if (!msg.empty()) (*f.hash())["message"] = Value::str(msg);
         return f;
     }
     if (inv.t == VT::Type && inv.s == "Proxy" && m == "new") {
@@ -3870,6 +3882,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::typeObj("Map"); // Hash.Map on the type object is the Map type
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofTypeM() = inv.ofType();
+        // `Hash[V,K]` is an OBJECT hash however it is built, so `.new` has to key
+        // by IDENTITY like the `my %h{K}` declarator does — the Int 13 and the Str
+        // "13" are two keys, and `.keys` gives back the Int. Stringifying here made
+        // `"13" (elem) Hash[Any,Any].new(13 => "x")` True.
+        if (inv.ofType().find(',') != std::string::npos) v.objKeyed = true;
+        auto put = [&](const Value& key, const Value& val) {
+            if (!v.objKeyed) { (*v.hash())[key.toStr()] = val; return; }
+            Value stored = val;
+            stored.pairKeyM() = std::make_shared<Value>(key);
+            (*v.hash())[objHashIndex(key)] = std::move(stored);
+        };
         if (inv.s == "Map") v.hashKind = "Map"; // a Map is a distinct (immutable) type
         // The arguments FLATTEN before they are paired up, and they flatten all the
         // way down — `Hash.new((("a","1"),("b","2")))` is {a => 1, b => 2}, same as
@@ -3910,8 +3933,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                 continue;
             }
-            if (items[k].t == VT::Pair) (*v.hash())[items[k].s] = items[k].pairVal() ? *items[k].pairVal() : Value::any();
-            else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash())[key] = items[k + 1]; k++; }
+            if (items[k].t == VT::Pair)
+                put(items[k].pairKey() ? *items[k].pairKey() : Value::str(items[k].s),
+                    items[k].pairVal() ? *items[k].pairVal() : Value::any());
+            else if (k + 1 < items.size()) { put(items[k], items[k + 1]); k++; }
             else throwHashOddNumber((long long)items.size(), items[k]); // (it dropped the key)
         }
         return v;

@@ -2625,9 +2625,22 @@ private:
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
+    // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the
+    // two operands arrive as AST nodes; `Rxx` hands them over the other way round.
+    Value xxRepeat(Expr* item, Expr* count);
+    // `&&` / `||` / `//` / `andthen` … — one side may not run at all, so they take
+    // AST nodes; the `R` metaop reuses this with the two swapped.
+    Value shortCircuitOp(const std::string& op, Expr* lhs, Expr* rhs);
     // apply a binary operator by name, resolving a user `sub infix:<op>` when the
     // operator isn't built-in (so meta-operators work over custom operators).
     Value applyBinOp(const std::string& op, const Value& l, const Value& r);
+public:
+    // the same dispatch, reachable from the free applyArith (which has no `this`)
+    Value applyBinOpPublic(const std::string& op, const Value& l, const Value& r) {
+        return applyBinOp(op, l, r);
+    }
+    Value applyReducePublic(std::string op, ValueList& items) { return applyReduce(std::move(op), items); }
+private:
     // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
     // into a value, producing an object that also does R.
     Value mixinValue(Value base, const Value& rhs, bool copy);

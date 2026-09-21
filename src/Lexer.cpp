@@ -3148,6 +3148,18 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                              peek(1) == ')' || peek(1) == ';' || peek(1) == ',' ||
                              peek(1) == '}' || peek(1) == ']' || peek(1) == '\n' ||
                              peek(1) == '\0');
+            // …except `[%]`, which is the MODULO reduction — the one place where a
+            // `%` between a bracket pair is an operator and not the anonymous Hash.
+            // (`[%] 13, 7, 4` read as a one-element array literal, so the numbers
+            // became a statement of their own.)
+            if (anonHash && peek(1) == ']' && !out.empty() && out.back().kind == Tok::LBracket)
+                anonHash = false;
+            // …nor is the `%` of the negation metaop `!%`, which is TIGHT against
+            // its `!`. (Rakudo rejects `9 !% 0` by name — "multiplicative
+            // operators are not iffy enough" — and cannot say that about a term.)
+            if (anonHash && !spaced && !out.empty() &&
+                out.back().kind == Tok::Op && out.back().text == "!")
+                anonHash = false;
             // …a NON-ASCII letter starts a name just as much as an ASCII one:
             // `my &δy` lexed `&` as the operator, so the declaration became an
             // assignment to nothing ("Target is not assignable"). `$δ`, `@δs`

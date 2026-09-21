@@ -1882,16 +1882,21 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
             return "<" + g + ">";
         }
         case VT::Range:
-            if (v.ofType() == "Str") // Str range: quoted endpoint form
-                return "\"" + cpToU8((uint32_t)v.rFrom()) + "\"" + (v.rExFrom() ? "^" : "") + ".." +
-                       (v.rExTo() ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo()) + "\"";
+            // Str range: the endpoints are STRING LITERALS, escapes and all —
+            // `'!'..'&'` is `"!".."\&"`, since `&` opens an interpolation
+            if (v.ofType() == "Str")
+                return rakuStrLit(cpToU8((uint32_t)v.rFrom())) + (v.rExFrom() ? "^" : "") + ".." +
+                       (v.rExTo() ? "^" : "") + rakuStrLit(cpToU8((uint32_t)v.rTo()));
             // …and a range whose endpoints are objects renders THOSE, as gist
             // does: `Supply.minmax` builds "a".."ccc", whose ends have no
             // integer form for the fields to hold.
+            // …and the same for any OTHER carried endpoint: the integer fields are
+            // only the floors, so a Num-shifted range (`^42 - 2e0`) printed
+            // `-2..^40` where its own .min and .max already said -2e0 and 40e0.
+            // gist has always spelled these; .raku only did it for Strs.
             if (const RangeEnds* re = rangeEnds(v))
-                if (re->from.t == VT::Str || re->to.t == VT::Str)
-                    return rakuRepr(re->from, depth + 1, seen) + (v.rExFrom() ? "^" : "") + ".." +
-                           (v.rExTo() ? "^" : "") + rakuRepr(re->to, depth + 1, seen);
+                return rakuRepr(re->from, depth + 1, seen) + (v.rExFrom() ? "^" : "") + ".." +
+                       (v.rExTo() ? "^" : "") + rakuRepr(re->to, depth + 1, seen);
             // an endless endpoint is Inf, not the long long it is parked in, and
             // `^Inf` keeps the long form (0..^Inf) — gist already spells both
             if (v.rTo() >= 9000000000000000000LL || v.rFrom() <= -9000000000000000000LL)
@@ -3500,7 +3505,9 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                             "Cannot convert string to number: " + w.s};
                 }
             }
-            if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
+            // (a BOOL weight is not fractional — `(:a, :b).Mix` is a => 1, not
+            // a => True; storing the Bool made that Mix un-`eqv` to <a b>.Mix)
+            if (isMix && w.t != VT::Int && w.t != VT::Bool && w.isNumeric()) { // fractional weight
                 const std::string mk = v.pairKey() ? baggyKeyStr(*v.pairKey()) : v.s.str();
                 auto it = h.hash()->find(mk);
                 auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
@@ -13992,6 +13999,14 @@ void Interpreter::registerBuiltins() {
         B[mname] = [mname](Interpreter& I, ValueList& a) -> Value {
             ValueList pos, named;
             for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) named.push_back(v); else pos.push_back(v); }
+            // COMPARING candidates uses them, so a Failure among two or more
+            // detonates: `min +'a', +'a'` throws the X::Str::Numeric the coercion
+            // produced. A single candidate is never compared with anything, so it
+            // comes back as the Failure it is (`min +'a'` merely fails).
+            if (pos.size() >= 2)
+                for (auto& v : pos)
+                    if (v.t == VT::Hash && v.hashKind == "Failure") I.methodCall(v, "throw", {});
+            if (pos.size() == 1 && pos[0].t == VT::Hash && pos[0].hashKind == "Failure") return pos[0];
             Value list;
             if (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Hash || pos[0].t == VT::Range))
                 list = pos[0];

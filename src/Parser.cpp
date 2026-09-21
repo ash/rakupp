@@ -56,6 +56,9 @@ static int uniWsLen(const std::string& s, size_t i, bool breaking = false) {
 enum {
     BP_OR = 10, BP_AND = 20, BP_ZIP = 25, BP_COMMA = 30, BP_ASSIGN = 40, BP_TERNARY = 50,
     BP_OROR = 60, BP_ANDAND = 70, BP_COMPARE = 80, BP_RANGE = 90,
+    // the junction constructors sit between the structural comparisons and
+    // concatenation, with `&` tighter than `|`/`^` (S03's precedence table)
+    BP_JUNC_OR = 93, BP_JUNC_AND = 96,
     BP_CONCAT = 100, BP_REPLICATE = 110, BP_ADD = 120, BP_MUL = 130, BP_POW = 140, BP_PREFIX = 150
 };
 
@@ -91,6 +94,7 @@ struct InfixInfo {
     bool isAssign = false;
     bool isComma = false;
     bool isRange = false;
+    bool isMinMax = false;   // `min` / `max`: the two do not mix without parentheses
     bool isFatArrow = false;
     bool isTernary = false;
     std::string op;
@@ -232,13 +236,17 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "..." || o == "...^" || o == "^..." || o == "^...^") { in.valid = true; in.lbp = BP_ZIP; return in; }
         if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
+        if (o == "<=>") { in.valid = true; in.lbp = BP_RANGE; return in; } // structural infix
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
-            o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "!=:=" || o == "===" || o == "!==" || o == "!===" ||
+            o == "~~" || o == "!~~" || o == "=:=" || o == "!=:=" || o == "===" || o == "!==" || o == "!===" ||
             o == "!=~=" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
         if (o == "&&") { in.valid = true; in.lbp = BP_ANDAND; return in; }
         if (o == "||" || o == "//" || o == "^^") { in.valid = true; in.lbp = BP_OROR; return in; }
-        if (o == "|" || o == "&" || o == "^") { in.valid = true; in.lbp = BP_ADD; return in; } // junctions any/all/one
+        // junctions any/all/one: LOOSER than concatenation and arithmetic, so
+        // `1 ~ 2 & 12` is `(1~2) & 12` and `2 + 2 | 4 - 1` is `4 | 3`
+        if (o == "&") { in.valid = true; in.lbp = BP_JUNC_AND; return in; }
+        if (o == "|" || o == "^") { in.valid = true; in.lbp = BP_JUNC_OR; return in; }
         // hyper binary metaop  >>OP>>  etc. — it takes the PRECEDENCE (and
         // associativity) of the operator inside it, exactly as Rakudo's metaop
         // does. Giving them all additive precedence made
@@ -292,8 +300,12 @@ static InfixInfo classifyInfix(const Token& t) {
         const std::string& o = t.text;
         in.op = o;
         if (o == "eq" || o == "ne" || o == "lt" || o == "gt" || o == "le" || o == "ge" ||
-            o == "cmp" || o == "leg" || o == "eqv" || o == "before" || o == "after" ||
-            o == "unicmp" || o == "coll") { in.valid = true; in.lbp = BP_COMPARE; return in; }
+            o == "eqv" || o == "before" || o == "after") { in.valid = true; in.lbp = BP_COMPARE; return in; }
+        // STRUCTURAL infix — one level tighter than the chaining comparisons, which
+        // is what makes `1 == 3 <=> 2` mean `1 == (3 <=> 2)`.
+        if (o == "cmp" || o == "leg" || o == "unicmp" || o == "coll") {
+            in.valid = true; in.lbp = BP_RANGE; return in;
+        }
         if (o == "x" || o == "xx") { in.valid = true; in.lbp = BP_REPLICATE; return in; }
         if (o == "div" || o == "mod" || o == "gcd" || o == "lcm") {
             in.valid = true; in.lbp = BP_MUL; return in;
@@ -332,10 +344,23 @@ static InfixInfo classifyInfix(const Token& t) {
                 {"unicmp", BP_COMPARE}, {"coll", BP_COMPARE},
                 {"div", BP_MUL}, {"mod", BP_MUL}, {"gcd", BP_MUL}, {"lcm", BP_MUL},
                 {"min", BP_ADD}, {"max", BP_ADD}, {"x", BP_REPLICATE}, {"xx", BP_REPLICATE},
+                {"minmax", BP_ZIP},
+                {"and", BP_AND}, {"andthen", BP_AND}, {"notandthen", BP_AND},
+                {"or", BP_OR}, {"xor", BP_OR}, {"orelse", BP_OR},
             };
             if (o.size() > 1 && o[0] == 'R') {
-                auto it = kRBase.find(o.substr(1));
+                // the Rs STACK (`RRxx`, `RRRxx`) — count the run, then look the
+                // base up once; `o.substr(1)` alone left `RRxx` an undeclared name
+                size_t i = 0; while (i < o.size() && o[i] == 'R') i++;
+                auto it = kRBase.find(o.substr(i));
                 if (it != kRBase.end()) { in.valid = true; in.lbp = it->second; return in; }
+                // …and a SYMBOLIC base (`RR-`, `RRR+`) takes that operator's own
+                // precedence; only the ONE-R symbolic form has its own reader.
+                if (i >= 1 && i < o.size() && !ascii::isalnum((unsigned char)o[i])) {
+                    Token t2 = t; t2.text = o.substr(i); t2.kind = Tok::Op;
+                    InfixInfo f = classifyInfix(t2);
+                    if (f.valid && !f.isAssign) { f.op = o; return f; }
+                }
             }
         }
         {   // zip/cross metaop over a WORD-op base that lexed as one ident:
@@ -350,8 +375,21 @@ static InfixInfo classifyInfix(const Token& t) {
                 in.valid = true; in.lbp = BP_ZIP; return in;
             }
         }
+        // The metaops NEST and their brackets are punctuation: `R[R[R-]]` is
+        // three reversals of `-` and takes `-`'s own precedence. Strip them and
+        // ask again rather than enumerating every nesting.
+        if (o.find('[') != std::string::npos && o.back() == ']') {
+            std::string flat;
+            for (char c : o) if (c != '[' && c != ']') flat += c;
+            if (!flat.empty() && flat != o) {
+                Token t2 = t; t2.text = flat;
+                t2.kind = ascii::isalpha((unsigned char)flat[0]) ? Tok::Ident : Tok::Op;
+                InfixInfo f = classifyInfix(t2);
+                if (f.valid) { f.op = o; return f; }
+            }
+        }
         if (o == "minmax") { in.valid = true; in.lbp = BP_ZIP; return in; } // list infix
-        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
+        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; in.isMinMax = true; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         // flip-flop, all eight spellings: a leading `^` excludes the evaluation that
@@ -1115,7 +1153,8 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
             static const std::set<std::string> wordInfix = {
                 "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after", "unicmp", "coll",
-                "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
+                "x", "xx", "and", "or", "xor", "andthen", "orelse", "notandthen",
+                "div", "mod", "gcd", "lcm",
                 // …and the mixin infixes: `C but R` / `C does R` on a bare TYPE
                 // NAME read as a call to `C` whose first argument was the routine
                 // `but`, so mixing a role into a type object was a parse error
@@ -1148,6 +1187,16 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // the reason a `<div>` tag builder could not be called.
             if (wordInfix.count(t.text) && wordInfixSubs_.count(t.text)) return true;
             if (wordInfix.count(t.text)) return false;
+            // …and a METAOP over one of them is just as much an infix: `rand Rxx 5`,
+            // `@a Zcmp @b`, `$x RRxx 5`. Read as an argument instead, the metaop
+            // became a routine name nobody declared. (A word that merely STARTS
+            // with R/Z/X is unaffected — `Range`, `Zulu` — because what follows
+            // the run has to be a word infix in its own right.)
+            {
+                size_t i = 0;
+                while (i < t.text.size() && (t.text[i] == 'R' || t.text[i] == 'Z' || t.text[i] == 'X')) i++;
+                if (i > 0 && i < t.text.size() && wordInfix.count(t.text.substr(i))) return false;
+            }
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
             // keyword: `register('Anna', role => 'admin')`
             if (&t == &cur() && peek().kind == Tok::FatArrow) return true;
@@ -1182,6 +1231,25 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
 
 // ---------------- expressions ----------------
 ExprPtr Parser::parseExpression() { return parseExpr(0); }
+// The contents of an already-opened `(` up to its `)`, where a `;` separates
+// SEGMENTS: `[Z](1,2,3;4,5,6)` is a reduce over a list of lists, exactly as the
+// same spelling means in a subscript or a `:shape`. A lone segment is the
+// grouped value, as in the term form.
+ExprPtr Parser::parseParenSemiList() {
+    ExprPtr e = parseExpression();
+    if (!isKind(Tok::Semicolon)) { expectKind(Tok::RParen, ")"); return e; }
+    auto lst = std::make_unique<ListExpr>();
+    lst->parenned = true;
+    lst->semicolon = true;
+    lst->items.push_back(std::move(e));
+    while (matchKind(Tok::Semicolon)) {
+        if (isKind(Tok::RParen)) break;             // trailing ;
+        lst->items.push_back(parseExpression());
+    }
+    expectKind(Tok::RParen, ")");
+    if (lst->items.size() == 1) return std::move(lst->items[0]);
+    return lst;
+}
 
 ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
@@ -1247,9 +1315,20 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(list);
             continue;
         }
-        // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
+            // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
         if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
             InfixInfo base = classifyInfix(peek());
+            // `|4 R.. 5` carries the same precedence worry the plain `..` does —
+            // the prefix binds to the endpoint, not to the range.
+            if (base.valid && base.isRange && lhs->kind == NK::Unary && !parenned_.count(lhs.get())) {
+                const std::string& po = static_cast<Unary*>(lhs.get())->op;
+                if (po == "|" || po == "~")
+                    throw ParseError(
+                        std::string("To apply a ") + (po == "|" ? "Slip flattener" : "string coercion") +
+                        " to a range, parenthesize the whole range.\n"
+                        "(Or parenthesize the whole endpoint expression, if you meant that.)",
+                        cur().line, "X::Worry::Precedence::Range", {});
+            }
             if (base.valid && base.isAssign && BP_ASSIGN >= minbp) {
                 // `$x R~= $y` — reversed-role assignment (assigns to the RIGHT operand)
                 advance(); // R
@@ -1272,12 +1351,39 @@ ExprPtr Parser::parseExpr(int minbp) {
                 continue;
             }
         }
+        // The SEQUENTIAL metaop, `1 S& 2`: the operands are evaluated one after
+        // another rather than in parallel, which on a single thread is what the
+        // plain operator already does — so it IS the plain operator here.
+        if (cur().kind == Tok::Ident && cur().text == "S" && peek().kind == Tok::Op &&
+            !peek().spaceBefore && peek().text != "/" && peek().text != "[") {
+            InfixInfo sBase = classifyInfix(peek());
+            if (sBase.valid && !sBase.isAssign && sBase.lbp >= minbp) {
+                advance();                                   // S
+                std::string baseOp = advance().text;
+                auto bin = std::make_unique<Binary>();
+                bin->op = baseOp;
+                bin->lhs = std::move(lhs);
+                bin->rhs = parseExpr(sBase.lbp + 1);
+                lhs = std::move(bin);
+                continue;
+            }
+        }
         // bracketed infix: `A [op] B` (any infix may be enclosed in square
         // brackets) and the metaop-assignment form `A [op]= B` — LibraryMake:
         // `%vars{$k} [R//]= %*ENV{$k}`. Content must be exactly an operator
         // (optionally R-prefixed) then `]`; anything else backtracks untouched.
-        if (cur().kind == Tok::LBracket && cur().spaceBefore) {
+        // A metaop letter (or the `!` negation) written TIGHT against a bracketed
+        // infix belongs to the bracket: `4 R[+] 5`, `"a" ![!eq] "a"`. Consume it
+        // here so the bracketed-infix reader below sees its own `[`.
+        std::string outerMeta;
+        if (cur().spaceBefore && peek().kind == Tok::LBracket && !peek().spaceBefore &&
+            ((cur().kind == Tok::Ident && !cur().text.empty() &&
+              cur().text.find_first_not_of('R') == std::string::npos) ||  // R, RR, RRR…
+             (cur().kind == Tok::Op && cur().text == "!")))
+            outerMeta = cur().text;
+        if ((cur().kind == Tok::LBracket && cur().spaceBefore) || !outerMeta.empty()) {
             size_t save = pos_;
+            if (!outerMeta.empty()) advance(); // the R / ! before the bracket
             advance(); // [
             std::string rPfx;
             if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
@@ -1306,8 +1412,16 @@ ExprPtr Parser::parseExpr(int minbp) {
                     auto call = std::make_unique<Call>();
                     call->callee = std::move(fn);
                     call->parenned = true;
-                    call->args.push_back(std::move(lhs));
-                    call->args.push_back(parseExpr(BP_ADD + 1));
+                    ExprPtr rhsE = parseExpr(BP_ADD + 1);
+                    // `3 R[&atan2] 4` is atan2(4, 3) — the reverse metaop applies
+                    // to the bracketed callable exactly as it does to an operator
+                    if (outerMeta == "R" || rPfx == "R") {
+                        call->args.push_back(std::move(rhsE));
+                        call->args.push_back(std::move(lhs));
+                    } else {
+                        call->args.push_back(std::move(lhs));
+                        call->args.push_back(std::move(rhsE));
+                    }
                     lhs = std::move(call);
                     made = true;
                 }
@@ -1317,40 +1431,87 @@ ExprPtr Parser::parseExpr(int minbp) {
             // one token: `[max]` and `[eq]` are words, `[Z=>]`/`[X~]` are a word
             // plus an operator. Gather up to four adjacent tokens and ask the
             // infix classifier what they spell, exactly as the hyper metaop does.
+            // The metaops NEST — `[Z[cmp]]`, `R[R[R-]]` — so the spelling is read
+            // with a bracket depth rather than as a flat run of tokens.
             std::string spell;
             size_t k = pos_;
-            for (int n = 0; n < 4 && toks_[k].kind != Tok::RBracket && toks_[k].kind != Tok::End; n++) {
-                if (n && toks_[k].spaceBefore) { spell.clear(); break; }
-                if (toks_[k].kind == Tok::FatArrow) spell += "=>";      // `[Z=>]`
-                else if (toks_[k].kind == Tok::Op || toks_[k].kind == Tok::Ident) spell += toks_[k].text;
-                else { spell.clear(); break; }
-                k++;
+            {
+                int depth = 0; bool ok = true;
+                for (int n = 0; n < 12; n++) {
+                    const Token& t = toks_[k];
+                    if (t.kind == Tok::End) { ok = false; break; }
+                    if (t.kind == Tok::RBracket) {
+                        if (depth == 0) break;              // the closing bracket of the whole form
+                        spell += "]"; depth--; k++; continue;
+                    }
+                    if (n && t.spaceBefore) { ok = false; break; }
+                    if (t.kind == Tok::LBracket) { spell += "["; depth++; k++; continue; }
+                    if (t.kind == Tok::FatArrow) spell += "=>";      // `[Z=>]`
+                    else if (t.kind == Tok::Comma) spell += ",";     // `[R,]`
+                    else if (t.kind == Tok::Op || t.kind == Tok::Ident) spell += t.text;
+                    else { ok = false; break; }
+                    k++;
+                }
+                if (!ok || depth != 0) spell.clear();
             }
             if (toks_[k].kind != Tok::RBracket) spell.clear();
             if (!spell.empty() && spell != "=" &&
                 (cur().kind == Tok::Op || cur().kind == Tok::Ident)) {
                 Token synth = cur(); synth.text = spell;
                 InfixInfo base = classifyInfix(synth);
+                // `[!eq]` — the negation metaop INSIDE the brackets. It is not an
+                // operator the classifier knows by name; what it has to answer is
+                // the base operator's precedence.
+                // `[R,]` — the reverse metaop over the COMMA operator, which has
+                // a token kind of its own and no entry in the infix tables
+                if (!base.valid && spell.size() > 1 && spell.back() == ',') {
+                    base.valid = true; base.lbp = BP_COMMA;
+                }
+                // a USER-DECLARED infix in brackets: `1031 [blue] 4`
+                if (!base.valid && userInfix_.count(spell)) {
+                    base.valid = true; base.lbp = userInfix_[spell]; base.op = spell;
+                }
+                if (!base.valid && spell.size() > 1 && spell[0] == '!') {
+                    Token synth2 = cur(); synth2.text = spell.substr(1);
+                    // a WORD base has to arrive as an Ident — the classifier reads
+                    // the two kinds through different tables, and `[!eq]` starts
+                    // with the `!` Op token
+                    synth2.kind = ascii::isalpha((unsigned char)synth2.text[0]) ? Tok::Ident : Tok::Op;
+                    InfixInfo b2 = classifyInfix(synth2);
+                    if (b2.valid) { base = b2; base.op = spell; }
+                }
                 if (base.valid) {
-                    std::string baseOp = spell;
+                    // The brackets are punctuation once the spelling is known:
+                    // `R[R-]` is `RR-` and `Z[cmp]` is `Zcmp`, which is what every
+                    // metaop reader downstream already understands.
+                    std::string baseOp;
+                    for (char c : spell) if (c != '[' && c != ']') baseOp += c;
                     while (pos_ < k) advance();
                     advance(); // ]
                     bool assignForm = isOp("=") && !cur().spaceBefore;
                     if (assignForm && BP_ASSIGN >= minbp) {
                         advance(); // =
                         auto as = std::make_unique<Assign>();
-                        as->op = "[" + rPfx + baseOp + "]=";
+                        as->op = "[" + outerMeta + rPfx + baseOp + "]=";
                         as->target = std::move(lhs);
                         as->value = parseExpr(BP_ASSIGN);
                         lhs = std::move(as);
                         made = true;
                     }
                     else if (!assignForm && base.lbp >= minbp) {
-                        auto bin = std::make_unique<Binary>();
-                        bin->op = rPfx + baseOp;
-                        bin->lhs = std::move(lhs);
-                        bin->rhs = parseExpr(base.lbp + 1);
-                        lhs = std::move(bin);
+                        if (outerMeta.empty() && rPfx.empty() && userInfix_.count(baseOp)) {
+                            auto call = std::make_unique<Call>();
+                            call->name = "infix:<" + baseOp + ">";
+                            call->args.push_back(std::move(lhs));
+                            call->args.push_back(parseExpr(base.lbp + 1));
+                            lhs = std::move(call);
+                        } else {
+                            auto bin = std::make_unique<Binary>();
+                            bin->op = outerMeta + rPfx + baseOp;
+                            bin->lhs = std::move(lhs);
+                            bin->rhs = parseExpr(base.lbp + 1);
+                            lhs = std::move(bin);
+                        }
                         made = true;
                     }
                 }
@@ -1373,22 +1534,94 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(list);
             continue;
         }
+        // The Perl 5 match operators, which Raku spells `~~` and `!~~`. They are
+        // caught HERE, in operator position, because `=~` and `!~` both parse as
+        // something else otherwise — an assignment of a `~` prefix, and the
+        // negation metaop over concatenation.
+        if (!ismsPerl5_ &&
+            cur().kind == Tok::Op && (cur().text == "=" || cur().text == "!") &&
+            peek().kind == Tok::Op && peek().text == "~" && !peek().spaceBefore &&
+            !(peek(2).kind == Tok::Op && peek(2).text == "~")) {
+            bool neg = cur().text == "!";
+            std::string old = std::string(neg ? "!~" : "=~") +
+                              (neg ? " to do negated pattern matching" : " to do pattern matching");
+            std::string repl = neg ? "!~~" : "~~";
+            throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
+                             cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+        }
         // negated infix (`!eq`, `!%%` when lexed apart): `!` glued to a negatable
         // comparison op applies the op and negates its Bool
         if (cur().kind == Tok::Op && cur().text == "!" && !peek().spaceBefore) {
+            static const std::set<std::string> kChainable = {
+                "<", ">", "<=", ">=", "==", "!=", "eq", "ne", "lt", "gt", "le", "ge",
+                "===", "!==", "!===", "eqv", "!eqv", "=:=", "!=:=",
+                "=~=", "!=~=", "\xE2\x89\x85", "before", "after", "~~", "!~~"};
             static const std::set<std::string> negatable = {
                 "eq", "ne", "lt", "gt", "le", "ge", "before", "after", "eqv",
                 "%%", "==", "<", ">", "<=", ">=",
+                // …and the boolean infixes, which are as iffy as an operator gets:
+                // `True !&& False` is True (S03-metaops/not.t)
+                "&&", "||", "^^", "and", "or", "xor",
             };
             InfixInfo negIn = classifyInfix(peek());
             if (negIn.valid && negatable.count(negIn.op) && negIn.lbp >= minbp) {
                 advance(); advance(); // ! and the op
-                auto bin = std::make_unique<Binary>();
-                bin->op = "!" + negIn.op;
-                bin->lhs = std::move(lhs);
-                bin->rhs = parseExpr(negIn.lbp + 1);
-                lhs = std::move(bin);
+                // A negated COMPARISON chains like its base does: `3 !> 3 !> 1` is
+                // `3 !> 3 && 3 !> 1`, and left-association made it `True !> 1`.
+                auto chain = std::make_unique<ChainExpr>();
+                chain->operands.push_back(std::move(lhs));
+                chain->ops.push_back("!" + negIn.op);
+                chain->operands.push_back(parseExpr(negIn.lbp + 1));
+                while (negIn.lbp == BP_COMPARE) {
+                    if (cur().kind == Tok::Op && cur().text == "!" && !peek().spaceBefore) {
+                        InfixInfo n2 = classifyInfix(peek());
+                        if (!n2.valid || !negatable.count(n2.op) || n2.lbp != BP_COMPARE) break;
+                        advance(); advance();
+                        chain->ops.push_back("!" + n2.op);
+                        chain->operands.push_back(parseExpr(n2.lbp + 1));
+                        continue;
+                    }
+                    InfixInfo n3 = classifyInfix(cur());
+                    if (!n3.valid || n3.lbp != BP_COMPARE || !kChainable.count(n3.op)) break;
+                    advance();
+                    chain->ops.push_back(n3.op);
+                    chain->operands.push_back(parseExpr(n3.lbp + 1));
+                }
+                if (chain->ops.size() == 1) {
+                    auto bin = std::make_unique<Binary>();
+                    bin->op = chain->ops[0];
+                    bin->lhs = std::move(chain->operands[0]);
+                    bin->rhs = std::move(chain->operands[1]);
+                    lhs = std::move(bin);
+                } else lhs = std::move(chain);
                 continue;
+            }
+            // `!.` — a dotty postfix has no Bool to negate, and with a STRING on
+            // the right it is the Perl 5 concatenation instead. Rakudo names both.
+            if (peek().kind == Tok::Op && peek().text == "." &&
+                (peek(2).kind == Tok::Ident || peek(2).kind == Tok::StrLit ||
+                 peek(2).kind == Tok::StrInterp)) {
+                if (peek(2).kind != Tok::Ident)
+                    throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
+                                     cur().line, "X::Obsolete",
+                                     {{"old", "."}, {"replacement", "~"}});
+                throw ParseError("Cannot negate . because dotty operators are not iffy enough",
+                                 cur().line, "X::Syntax::CannotMeta", {});
+            }
+            // `!` on an operator that does not answer a Bool has nothing to
+            // negate, and Rakudo names the reason rather than reporting a
+            // confused parse: `9 !% 0` is X::Syntax::CannotMeta.
+            if (negIn.valid && negIn.lbp >= minbp && peek().kind == Tok::Op) {
+                static const std::map<std::string, std::string> kFamily = {
+                    {"%", "multiplicative"}, {"*", "multiplicative"}, {"/", "multiplicative"},
+                    {"div", "multiplicative"}, {"mod", "multiplicative"}, {"x", "multiplicative"},
+                    {"+", "additive"}, {"-", "additive"}, {"~", "concatenation"},
+                };
+                auto fam = kFamily.find(negIn.op);
+                if (fam != kFamily.end())
+                    throw ParseError("Cannot negate " + negIn.op + " because " + fam->second +
+                                     " operators are not iffy enough", cur().line,
+                                     "X::Syntax::CannotMeta", {});
             }
         }
         // Flip-flops with `^` edge markers — `^ff`, `ff^`, `^ff^` (likewise fff).
@@ -1523,8 +1756,15 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
         // chained comparisons:  2 < $x < 4  ==>  (2 < $x) && ($x < 4), each operand once
+        // (Every operator at CHAINING precedence belongs here — `3 === 3 === 3`
+        // is True in Raku, where left-association made it `True === 3`, and
+        // `0 ~~ 0 ~~ 0` is `0 ~~ 0 && 0 ~~ 0`. `cmp` and `leg` stay out: they
+        // answer an Order, and Rakudo refuses to chain them at all.)
         static const std::set<std::string> chainOps = {
             "<", ">", "<=", ">=", "==", "!=", "eq", "ne", "lt", "gt", "le", "ge",
+            "===", "!==", "!===", "eqv", "!eqv", "=:=", "!=:=",
+            "=~=", "!=~=", "\xE2\x89\x85", "before", "after",
+            "~~", "!~~",
         };
         if (in.lbp == BP_COMPARE && chainOps.count(in.op)) {
             auto chain = std::make_unique<ChainExpr>();
@@ -1621,6 +1861,26 @@ ExprPtr Parser::parseExpr(int minbp) {
                 meta = peek(2).text;
                 metaToks = 4; // Z/X + [ + op + ]
             }
+            // `X[&sprintf]` / `Z[&f]` — a bracketed CALLABLE as the inner operator.
+            // The n-ary call form already folds each tuple with a `:with` named
+            // argument, so desugar to that rather than inventing an operator name.
+            else if (peek().kind == Tok::LBracket && !peek().spaceBefore &&
+                     peek(2).kind == Tok::Var && peek(2).text.size() > 1 && peek(2).text[0] == '&' &&
+                     peek(3).kind == Tok::RBracket && in.lbp >= minbp) {
+                std::string fnName = peek(2).text;       // read before the stream moves
+                for (int k = 0; k < 4; k++) advance();   // Z/X + [ + &fn + ]
+                ExprPtr rhs = parseExpr(in.lbp + 1);
+                auto c = std::make_unique<Call>();
+                c->name = "infix:<" + in.op + ">";
+                c->args.push_back(std::move(lhs));
+                c->args.push_back(std::move(rhs));
+                auto pw = std::make_unique<PairExpr>();
+                pw->key = "with";
+                pw->value = std::make_unique<VarExpr>(fnName);
+                c->args.push_back(std::move(pw));
+                lhs = std::move(c);
+                continue;
+            }
             // `X[R%]` / `Z[R~]` — the bracketed op itself R-reversed
             // (Digest::MD5 builds its index table with `16 X[R%] ...`)
             else if (peek().kind == Tok::LBracket && peek(2).kind == Tok::Ident &&
@@ -1628,6 +1888,22 @@ ExprPtr Parser::parseExpr(int minbp) {
                      !peek(3).spaceBefore && peek(4).kind == Tok::RBracket) {
                 meta = "R" + peek(3).text;
                 metaToks = 5; // Z/X + [ + R + op + ]
+            }
+            // `@a X*= 10` / `@a Z+= @b` — the metaop fused with ASSIGNMENT, which
+            // means `@a = @a X* 10`. Read as a plain metaop the `*=` became the
+            // zip's INNER operator, and applyArith was asked to perform an
+            // assignment with no container to write to.
+            static const std::set<std::string> kMetaNotAssign = {
+                "==", "!=", "<=", ">=", "===", "!==", "!===", "=:=", "!=:=", "=~=", ".=", "=>"};
+            if (!meta.empty() && !peek().spaceBefore && BP_ASSIGN >= minbp &&
+                meta.back() == '=' && !kMetaNotAssign.count(meta)) {
+                for (int k = 0; k < metaToks; k++) advance();
+                auto as = std::make_unique<Assign>();
+                as->op = in.op + meta;            // "X*=" — evalAssign folds off the `=`
+                as->target = std::move(lhs);
+                as->value = parseExpr(BP_ASSIGN);
+                lhs = std::move(as);
+                continue;
             }
             if (!meta.empty() && !peek().spaceBefore) {
                 for (int k = 0; k < metaToks; k++) advance();
@@ -1656,6 +1932,39 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
 
+        // `..` and its `^`-marked siblings are NON-ASSOCIATIVE: `1..2..3` has to
+        // be parenthesized, and Rakudo says so rather than picking a grouping.
+        {
+            // `min` and `max` do not mix: `1 min 2 max 3` needs parentheses, and
+            // Rakudo refuses it by name rather than picking a grouping.
+            if (in.isMinMax && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
+                const std::string& lo = static_cast<Binary*>(lhs.get())->op;
+                if ((lo == "min" || lo == "max") && lo != in.op)
+                    throw ParseError("Operators '" + lo + "' and '" + in.op +
+                                     "' are non-associative and require parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative",
+                                     {{"left", lo}, {"right", in.op}});
+            }
+            static const std::set<std::string> kRangeOps = {"..", "^..", "..^", "^..^"};
+            if (kRangeOps.count(in.op)) {
+                if (lhs->kind == NK::Range && !parenned_.count(lhs.get()))
+                    throw ParseError("Operators '..' and '" + in.op +
+                                     "' are non-associative and require parentheses",
+                                     cur().line, "X::Syntax::NonAssociative", {});
+                // …and a PREFIX on the left endpoint binds tighter than the range,
+                // so `|4 .. 5` slips the 4 and not the range. That is almost never
+                // what was meant, and Rakudo worries about it by name.
+                if (lhs->kind == NK::Unary && !parenned_.count(lhs.get())) {
+                    const std::string& po = static_cast<Unary*>(lhs.get())->op;
+                    if (po == "|" || po == "~")
+                        throw ParseError(
+                            std::string("To apply a ") + (po == "|" ? "Slip flattener" : "string coercion") +
+                            " to a range, parenthesize the whole range.\n"
+                            "(Or parenthesize the whole endpoint expression, if you meant that.)",
+                            cur().line, "X::Worry::Precedence::Range", {});
+                }
+            }
+        }
         advance(); // consume infix op
 
         // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma
@@ -1745,13 +2054,30 @@ ExprPtr Parser::parseExpr(int minbp) {
             r->exFrom = (in.op == "^.." || in.op == "^..^");
             lhs = std::move(r);
         } else {
-            // non-associative operators cannot chain: `1 <=> 2 <=> 3`
-            if ((in.op == "<=>" || in.op == "cmp" || in.op == "leg" ||
-                 in.op == "unicmp" || in.op == "coll") &&
-                cur().kind == Tok::Op && cur().text == in.op)
-                throw ParseError("Operator " + in.op + " is not associative",
-                                 cur().line, "X::Syntax::NonAssociative",
-                                 {{"left", in.op}, {"right", in.op}});
+            // The STRUCTURAL comparisons do not chain — with themselves or with
+            // each other: `1 <=> 2 leg 3` needs parentheses, and so does
+            // `1 <=> 2 <=> 3`.
+            static const std::set<std::string> kStructural = {
+                "<=>", "cmp", "leg", "unicmp", "coll"};
+            if (kStructural.count(in.op)) {
+                InfixInfo nx = classifyInfix(cur());
+                if (nx.valid && kStructural.count(nx.op))
+                    throw ParseError("Operators '" + in.op + "' and '" + nx.op +
+                                     "' are non-associative and require parentheses",
+                                     cur().line, "X::Syntax::NonAssociative",
+                                     {{"left", in.op}, {"right", nx.op}});
+            }
+            // …and the junction constructors `|` and `^` do not mix: `1 | 2 ^ 3`
+            // is ambiguous and Rakudo refuses it.
+            if ((in.op == "|" || in.op == "^") && lhs && lhs->kind == NK::Binary &&
+                !parenned_.count(lhs.get())) {
+                const std::string& lo = static_cast<Binary*>(lhs.get())->op;
+                if ((lo == "|" || lo == "^") && lo != in.op)
+                    throw ParseError("Operators '" + lo + "' and '" + in.op +
+                                     "' are non-associative and require parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative",
+                                     {{"left", lo}, {"right", in.op}});
+            }
             auto b = std::make_unique<Binary>();
             b->op = in.op; b->lhs = std::move(lhs); b->rhs = std::move(rhs);
             lhs = std::move(b);
@@ -4282,6 +4608,20 @@ ExprPtr Parser::parsePrimary() {
                     return std::make_unique<NameTerm>("::?CLASS");
                 return std::make_unique<NameTerm>(typeStack_.back());
             }
+            // `@{$x}` / `%{$x}` — the Perl 5 hard DEREFERENCE forms, which Raku
+            // spells `@($x)` / `%($x)`. (`%{...}` with anything else inside is a
+            // hash composer and stays; only a lone variable is the P5 spelling.)
+            if (cur().text.size() == 1 && (cur().text[0] == '@' || cur().text[0] == '%') &&
+                peek().kind == Tok::LBrace && !peek().spaceBefore &&
+                peek(2).kind == Tok::Var && peek(3).kind == Tok::RBrace) {
+                std::string sig = cur().text;
+                throw ParseError("Unsupported use of " + sig + "{" + peek(2).text +
+                                 "} as " + sig + " dereference. In Raku please use: " +
+                                 sig + "(" + peek(2).text + ").",
+                                 cur().line, "X::Obsolete",
+                                 {{"old", sig + "{" + peek(2).text + "}"},
+                                  {"replacement", sig + "(" + peek(2).text + ")"}});
+            }
             // sigil contextualizer glued to a variable: `@$x` == @($x), `%$h` == %($h)
             if (cur().text.size() == 1 &&
                 (cur().text[0] == '@' || cur().text[0] == '%' || cur().text[0] == '$') &&
@@ -4306,6 +4646,13 @@ ExprPtr Parser::parsePrimary() {
                 if (peek(2).kind == Tok::Ident && peek(3).kind == Tok::RBrace)
                     throw ParseError("Unsupported use of ${" + peek(2).text + "}; in Raku please use :key or $()",
                                      cur().line, "X::Obsolete", {{"old", "${" + peek(2).text + "}"}});
+                // …and `${$x}`, the Perl 5 hard DEREFERENCE, which Raku spells `$($x)`
+                if (peek(2).kind == Tok::Var && peek(3).kind == Tok::RBrace)
+                    throw ParseError("Unsupported use of ${" + peek(2).text + "}. In Raku please use: $(" +
+                                     peek(2).text + ") for hard ref or $::(" + peek(2).text + ") for symbolic ref.",
+                                     cur().line, "X::Obsolete",
+                                     {{"old", "${" + peek(2).text + "}"},
+                                      {"replacement", "$(" + peek(2).text + ")"}});
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = "ctx$"; u->operand = parsePrimary();
@@ -4605,6 +4952,11 @@ ExprPtr Parser::parsePrimary() {
                 return lst;
             }
             expectKind(Tok::RParen, ")");
+            // Remember that THIS node came out of parentheses. Only two readings
+            // need it — the range operator's non-associativity and its
+            // precedence worry — and both have to tell `(|4) .. 5` from `|4 .. 5`
+            // when the parser hands back the inner node unwrapped.
+            if (e) parenned_.insert(e.get());
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
             // A pair in parens is a positional Pair VALUE, not a named argument:
             // `f((:$x))` passes one, `f(:$x)` names one. DBDish::Pg's connect
@@ -4625,7 +4977,7 @@ ExprPtr Parser::parsePrimary() {
             // A capitalized type name — `[Any]`, `[Int]`, `[Foo]` — was never a reduce.
             static const std::set<std::string> kReduceWordOps = {
                 "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after",
-                "unicmp", "coll", "x", "xx", "and", "or", "andthen", "orelse", "notandthen",
+                "unicmp", "coll", "x", "xx", "and", "or", "xor", "andthen", "orelse", "notandthen",
                 "div", "mod", "gcd", "lcm", "min", "max", "but", "does", "o",
             };
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
@@ -4689,12 +5041,44 @@ ExprPtr Parser::parsePrimary() {
                         // comma AFTER the `)` belongs to the enclosing list.
                         advance();
                         if (isKind(Tok::RParen)) { advance(); u->operand = std::make_unique<ListExpr>(); }
-                        else {
-                            u->operand = parseExpression();
-                            expectKind(Tok::RParen, ")");
-                        }
+                        else u->operand = parseParenSemiList();
                     }
                     else u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
+                    return u;
+                }
+            }
+            // `[[+]] 1, 2, 3` — a reduction over a BRACKETED operator. The
+            // metaops nest freely and the brackets are punctuation, so the
+            // reduction is over `+` itself.
+            {
+                int j = 1; std::string pre;    // an optional metaop run: `[R[+]]`, `[Z[cmp]]`
+                while (j < 4 && (peek(j).kind == Tok::Ident || peek(j).kind == Tok::Op) &&
+                       (j == 1 || !peek(j).spaceBefore)) pre += peek(j++).text;
+                int m = j + 1; std::string inner;
+                if (peek(j).kind == Tok::LBracket && (j == 1 || !peek(j).spaceBefore))
+                    while (peek(m).kind == Tok::Op || peek(m).kind == Tok::Ident) inner += peek(m++).text;
+                // …but only when the brackets really hold an OPERATOR: `[[-x]]` is
+                // an array of an array, not a reduction over an infix `-x`.
+                bool okInner = false;
+                if (!inner.empty()) {
+                    Token t2 = cur(); t2.text = pre + inner;
+                    t2.kind = ascii::isalpha((unsigned char)t2.text[0]) ? Tok::Ident : Tok::Op;
+                    okInner = classifyInfix(t2).valid || userInfix_.count(t2.text) != 0;
+                }
+                if (okInner && peek(m).kind == Tok::RBracket &&
+                    peek(m + 1).kind == Tok::RBracket) {
+                    for (int k2 = 0; k2 <= m + 1; k2++) advance();
+                    auto u = std::make_unique<Unary>();
+                    u->op = "[" + pre + inner + "]";
+                    if (isKind(Tok::Comma)) advance();
+                    if (isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End))
+                        u->operand = std::make_unique<ListExpr>();
+                    else if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                        advance();
+                        if (isKind(Tok::RParen)) { advance(); u->operand = std::make_unique<ListExpr>(); }
+                        else { u->operand = parseParenSemiList(); }
+                    }
+                    else u->operand = parseExpr(BP_ZIP);
                     return u;
                 }
             }
@@ -4705,9 +5089,7 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::LParen) && !cur().spaceBefore) {
                     advance();
                     if (isKind(Tok::RParen)) { advance(); return std::make_unique<ListExpr>(); }
-                    ExprPtr e = parseExpression();
-                    expectKind(Tok::RParen, ")");
-                    return e;
+                    return parseParenSemiList();
                 }
                 return parseExpr(BP_ZIP);
             };
@@ -6568,6 +6950,22 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // ${ ... } (same quote-aware scan)
                 j++;
                 std::string inner = scanInterpBlock(raw, j);
+                // …but `"${$x}"` and `"@{$x}"` are the Perl 5 DEREFERENCES, which
+                // Raku refuses by name wherever they are written — inside a string
+                // as much as outside one.
+                {
+                    std::string t = inner;
+                    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+                    while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
+                    bool bareVar = t.size() > 1 && (t[0] == '$' || t[0] == '@' || t[0] == '%') &&
+                                   t.find_first_of(" \t()[]{}.<>+-*/~,;") == std::string::npos;
+                    if (bareVar)
+                        throw ParseError("Unsupported use of " + std::string(1, sig) + "{" + t +
+                                         "}. In Raku please use: " + std::string(1, sig) + "(" + t + ").",
+                                         0, "X::Obsolete",
+                                         {{"old", std::string(1, sig) + "{" + t + "}"},
+                                          {"replacement", std::string(1, sig) + "(" + t + ")"}});
+                }
                 flush();
                 try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); }
                 catch (...) { rethrowIfObsolete(); }
@@ -9622,6 +10020,11 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo && isKind(Tok::Ident) &&
                 (cur().text == "nqp" || cur().text == "MONKEY-GUTS" || cur().text == "MONKEY"))
                 useNqp_ = true; // enable the nqp:: op subset for the rest of the unit
+            // `use isms <Perl5>` lifts the Perl 5 brainos for the rest of the unit,
+            // so `$a =~ $a` there is the `= ~` it reads as in Perl 5 rather than a
+            // "please use ~~" error. (Rakudo scopes the pragma to its block; the
+            // pragma is rare enough that unit scope is the same thing in practice.)
+            if (!u->isNo && isKind(Tok::Ident) && cur().text == "isms") ismsPerl5_ = true;
             if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
