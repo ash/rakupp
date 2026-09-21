@@ -1255,14 +1255,31 @@ Regex::NodePtr Regex::parseQuant() {
             srep->kids.push_back(std::move(sep));
             sep = std::move(srep);
         }
+        bool sepSpace = false;
         if (sigspace_) {
-            // In a `rule`, <.ws> follows the separator (`<x>* %% ','` matches "a, b").
-            // Whitespace BEFORE the separator is allowed only via the iteration unit's
-            // trailing <.ws>, i.e. when the quantifier had a leading space — Rakudo
-            // matches "1 , 2" with `<num> * % \,` but not with `<num>* % \,`.
-            sep = wsWrap(std::move(sep));
+            size_t wsSave = pos_;
+            skipWs();
+            sepSpace = pos_ > wsSave;
+            pos_ = wsSave;                       // parseSeq still wants to see it
+            // In a `rule`, <.ws> follows the separator only where the SOURCE puts
+            // whitespace after it — the separator is a quantified atom like any
+            // other, and the same inter-atom rule applies: `<n>+ % ',' }` matches
+            // "1, 2", the tight `<n>+ % ','}` does not (oracle 2026.08; we used to
+            // wrap unconditionally and matched both). Whitespace BEFORE the
+            // separator is allowed only via the iteration unit's trailing <.ws>,
+            // i.e. when the quantifier had a leading space — Rakudo matches
+            // "1 , 2" with `<num> * % \,` but not with `<num>* % \,`.
+            if (sepSpace) sep = wsWrap(std::move(sep));
         }
         rep->sep = std::move(sep);
+        // …and a separated quantifier ALWAYS ends in a <.ws> call, source
+        // whitespace or not: Rakudo parses the separator as a quantified atom,
+        // whose sigspace treatment emits that call AFTER the repetition. So
+        // `rule { <n>+ % ','<[y]> }` matches "1,2 y" and not "1,2y" — the plain
+        // `<n>+<[y]>` is the other way round. Where the source did have the
+        // whitespace, parseSeq inserts the very same call, so only the tight
+        // spelling needs one here.
+        if (sigspace_ && !sepSpace) return wsWrap(std::move(rep));
     }
     return rep;
 }
