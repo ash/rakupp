@@ -20,7 +20,7 @@ buckets it:
 | **fully-pass** | every planned assertion passed (or the file legitimately `# SKIP`s all) |
 | **partial** | the file ran and produced TAP, but some assertions failed |
 | **no-TAP** | the file produced no plan/assertions — usually a parse error or an unimplemented construct that aborts before any test runs |
-| **timeout** | did not finish within 10s |
+| **timeout** | did not finish within the ceiling (10 s for rakupp, 6x that for any other engine). Scored like a mid-plan abort: what it emitted counts, the rest of its plan counts against us |
 
 Two things are worth reading together: **files fully passing** (a strict,
 all-or-nothing bar) and **assertions passing** (partial credit — a better

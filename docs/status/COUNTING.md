@@ -16,7 +16,9 @@ per-test bar); the ~51% is the stricter all-or-nothing file bar.
 ## The measures
 
 Each `.t` file emits [TAP](https://testanything.org/): a `1..N` plan and `ok`/`not
-ok` lines. The harness runs every file with a 10-second timeout and reports four
+ok` lines. The harness runs every file with a 10-second timeout — that ceiling is
+calibrated for rakupp and scales 6x for any other engine the harness is pointed
+at, see [Measuring another engine](#measuring-another-engine) — and reports four
 ratios, from strictest presentation to fairest, and from widest denominator to
 narrowest:
 
@@ -90,7 +92,8 @@ runtime `1..N` (`-1` if none was emitted). The harness accumulates:
 - `tot-ran`   += `ran`                                  — denominator of measure 2
 - `tot-plan`  += `planned >= 0 ? planned : ran`         — denominator of measure 3
 - `declared`  = `tot-plan` + (static `plan N` read from the source of each file
-  that emitted **no** plan at runtime)                  — denominator of measure 4
+  that emitted **no** plan at runtime, whether it aborted or was killed by the
+  timeout)                                              — denominator of measure 4
 
 The numerator is the **same** in every ratio — only the denominator widens.
 
@@ -100,8 +103,15 @@ The numerator is the **same** in every ratio — only the denominator widens.
   with no count) have no static test count, so they are **excluded** from every
   denominator (15 such files at present). A file that skips-all at runtime is
   scored as a *passing file* contributing 0 tests.
-- **Timeouts** (14 files — mostly sleep-heavy scheduler/IO tests that flap
-  under parallel-runner load) are excluded from the assertion denominators.
+- **Timeouts** (10 files — mostly sleep-heavy scheduler/IO tests that flap under
+  parallel-runner load) are scored exactly like a file that aborts mid-plan: the
+  assertions it printed before the kill count, and the rest of its plan counts
+  against us. Where it died before emitting `1..N`, that N is recovered from
+  source into measure 4, as for a no-TAP file. **Until 2026-09-21 a timeout was
+  excluded from every denominator**, which meant its tests did not count against
+  the engine — they vanished from numerator and denominator alike, so a run that
+  timed out on more files quietly improved its own ratio. That is the same hole
+  measure 4 closes for parse errors, and it is now closed for the clock too.
 - **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
   the numerator — this is standard TAP (a skip/todo is not a failure), and it is
   how every TAP harness, Rakudo's included, scores.
@@ -360,21 +370,66 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  584 / 1462  (39.9%)
-Assertions passed:    194901 / 199872  (97.5%)  of tests that ran
-Assertions passed:    194901 / 212964  (91.5%)  of tests planned by files that emitted a plan
-Assertions passed:    194901 / 216222  (90.0%)  of ALL declared tests (+3258 from 93 no-TAP files read from source; 4 more have no static plan)
+Files fully passing:  747 / 1464  (51.0%)
+Assertions passed:    207898 / 213207  (97.5%)  of tests that ran
+Assertions passed:    207898 / 217651  (95.5%)  of tests planned by files that emitted a plan
+Assertions passed:    207898 / 219915  (94.5%)  of ALL declared tests (+2143 from 64 no-TAP and +121 from 7 timed-out files, read from source; 3 more have no static plan)
 ```
 
 (The harness reads the Roast checkout from `$ROAST`, defaulting to
 `$HOME/roast` — set `ROAST=<checkout>` anywhere else. Nothing more is
 needed: the tests' own `use lib` resolves the Test-Helpers.)
 
+## Measuring another engine
+
+`tools/run-roast.raku` scores whatever ran it — `$*EXECUTABLE` — so
+`rakudo tools/run-roast.raku` puts the reference implementation on this exact
+bar, and that comparison is the point of
+[dev/findings/ROAST-CEILING-2026-09-17.md](../dev/findings/ROAST-CEILING-2026-09-17.md).
+Three things in the harness are calibrated for rakupp and would otherwise be
+applied silently to the other engine. Since 2026-09-21 the harness detects a
+foreign engine and handles the first two itself:
+
+- **The ceiling.** 10 s is a rakupp budget. Measured serially on an idle 8-core
+  box, the 81 S15 files take 10 s of wall under rakupp and 160 s under Rakudo,
+  and the heavy ones are not individually slow — `nfkd-9.t` 4.1 s, `nfd-9.t`
+  4.1 s, `nfc-9.t` 3.9 s, only `nfc-concat.t` over the line at 23 s. At two
+  workers per core a 3-4 s file needs ~2.5x of contention to cross 10 s, and
+  S15 alone is 85,079 of the suite's 146,380 statically declared tests. A
+  foreign engine gets 6x the budget — the same `ROAST_TIMEOUT=60` the ceiling
+  measurement set by hand. `ROAST_TIMEOUT` still overrides.
+- **`roast.times`.** Its wall times and CPU samples describe rakupp. They report
+  the S15 files at ~0.0 s of CPU, which is true of rakupp and nothing else, so
+  the admission controller admitted all of them at once and manufactured the
+  contention that pushed them past the ceiling. A foreign engine gets neither
+  those estimates nor their ordering unless `--times` says so.
+- **Fudging, which you must still do yourself.** Rakudo does not apply
+  `#?rakudo` directives; its own spectest runs Roast's `fudge` first, and rakupp
+  applies them in its lexer. Pointed at a raw checkout, Rakudo is scored on a bar
+  neither engine uses. The harness samples 40 of the files it is about to run and
+  warns, but cannot fix it — run
+  `fudgeall --keep-exit-code --version=v6.d rakudo.moar` over a worktree and
+  point `$ROAST` at that.
+
+Getting any of this wrong does not produce a slightly-off number, it produces a
+meaningless one: `rakudo tools/run-roast.raku` on defaults once reported 76,285
+declared tests for a suite that declares ~216,000, and 1,048 of 1,464 files for
+an engine measured at 1,433 on the same machine.
+
 ## Timeout-partial sensitivity (found 2026-08-09)
 
-The per-assertion top line is **load-banded** through one mechanism: a file
-that hits `ROAST_TIMEOUT` is killed, but the assertions it printed *before*
-the kill still count. A handful of borderline mega-files (the two
+The per-assertion top line is **load-banded** through one mechanism: a handful
+of borderline mega-files sit right at `ROAST_TIMEOUT`, so machine conditions
+decide whether they are killed.
+
+**The mechanism stated here was wrong until 2026-09-21, and the truth was
+worse.** This section said the assertions such a file printed before the kill
+still counted. They did not: `tally()` skipped a timed-out file entirely, so
+crossing the ceiling dropped its *whole* contribution — every assertion it had
+emitted and its entire plan — from both sides of the ratio. That swings a run
+far harder than partial credit does, and it swings it in the flattering
+direction. The behaviour now matches what this section always claimed, so what
+follows describes the harness as it stands. A handful of borderline mega-files (the two
 2,282-assertion sprintf files, the S03/S32 minmax pair, several S15 tables)
 sit right at the timeout on the default binary, so how far each gets before
 the kill moves the total by **thousands per run** with machine conditions.
