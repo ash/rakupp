@@ -106,7 +106,14 @@ logs and the reviews. This page is the complete list.
   — Hash, Map and Pair, 20 items, 2 undeclared, rakupp differs on 16;
   [IO.md](semantics/IO.md) — IO::Path, IO::Handle, IO::Spec::Unix,
   IO::Special, IO::Pipe and IO::CatHandle, 26 items, 7 undeclared, rakupp
-  differs on 24, one quirk (slurp throws where the docs say fail).
+  differs on 24, one quirk (slurp throws where the docs say fail);
+  [Range.md](semantics/Range.md) — Range and its operators, 33 items, 12
+  undeclared, rakupp differs on 29, two Rakudo bugs flagged (`reverse` of a
+  non-integral range, `first(:end, :kv)`); [Int-Num-Rat.md](semantics/Int-Num-Rat.md)
+  — Int, Num, Rat, FatRat and the Real/Numeric roles, 28 items, 3 undeclared,
+  rakupp differs on 26, six Rakudo bugs flagged (`7 mod 2.5`, a negative base
+  to a negative power, `[lcm] ()`, `1 +< -64`, `narrow` losing the value,
+  `polymod` with a non-Int divisor).
 
 ## Reviews — before and after a release
 

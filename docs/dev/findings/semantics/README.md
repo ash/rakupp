@@ -69,12 +69,14 @@ buckets or thread timing says so.
 | [List-Array.md](List-Array.md) | List, Array, Seq, Slip | 36 | 4 | 14 | implemented 2026-09-19, extended 2026-09-21 (sheet items 21→22 of 36) |
 | [Hash-Map-Pair.md](Hash-Map-Pair.md) | Hash, Map, Hash/Object, Pair | 20 | 2 | 4 | implemented 2026-09-20 (Roast 698→705 files, 204,801→205,080 assertions; S32-hash/adverbs 1,012→1,067, S09-hashes/objecthash 21→27) |
 | [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 14 | implementing 2026-09-20/21 (sheet items 2→12 of 26; Roast 704→707 files, S16-io/lines 3→111, S32-io/io-path 2→30, chdir 9→33, indir 0→24) |
+| [Range.md](Range.md) | Range, the `..` family and `prefix:<^>`, the Range candidates of `+ - * / cmp eqv` | 33 | 12 | 29 | extracted 2026-09-21 |
+| [Int-Num-Rat.md](Int-Num-Rat.md) | Int, Num, Rat, Rational, Real, Numeric, Cool (numeric half), Rakudo/Internals coercions, Order, Polymod | 28 | 3 | 26 | extracted 2026-09-21 |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
 
-**Not every item can be counted.** Re-running all six sheets against the
-Rakudo binary on 2026-09-21 reproduced 244 of the 267 recorded outputs; the
+**Not every item can be counted.** Re-running the first six sheets against the
+Rakudo binary on 2026-09-21 reproduced 244 of their 267 recorded outputs; the
 other 23 did not, and they are not rakupp gaps in either direction. Three
 causes: a hash's iteration order is per-process (HM-14, HM-15), nine Supply
 items bucket on the wall clock, and a handful depend on the machine. A sheet
@@ -85,10 +87,11 @@ repo: it is a few dozen lines that parse the item format above.
 
 Candidates, in the order the method-surface probe of 2026-09-17 ranked them
 (the probe is described in the memory of that day and in the Supply sheet's
-method section): Range; Int, Num, Rat; Proc::Async; Promise; Routine, Code,
+method section): Proc::Async; Promise; Routine, Code,
 Parameter, Block, Attribute introspection; Instant, Duration, Date, DateTime;
-Set, Bag, Mix; Blob and Buf; Exception and Backtrace; Grammar and Match; then
-the compiler side: the precedence table, quote adverbs, sink context.
+Set, Bag, Mix; Blob and Buf; Exception and Backtrace; Grammar and Match; the
+`...` sequence operator (which multi-character string ranges delegate to);
+then the compiler side: the precedence table, quote adverbs, sink context.
 
 ## Provenance
 
