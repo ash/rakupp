@@ -119,7 +119,7 @@ pointy-block parameter unless declared `<->`.
 say do { my @a = 1, 2; for @a { $_++ }; @a.raku }, " ", do { my @a = 1, 2; @a.map({ $_ = 5 }); @a.raku }, " ", (try { for (1, 2) { $_++ }; "no" }) // $!.^name, " ", do { my @a = 1, 2; for @a.List { (try $_++) // "ro" }; @a.raku }, " ", do { my @a = 1, 2; for @a <-> $x { $x++ }; @a.raku }, " ", do { my @a = 1, 2; for @a -> $x { (try $x++) // "ro" }; @a.raku }, " ", do { my @a = 1, 2; for @a.values { (try { $_ = 5; "w" }) // "ro" }; @a.raku }
 # rakudo 2026.08: [2, 3] [5, 5] X::Multi::NoMatch [1, 2] [2, 3] [1, 2] [5, 5]
 ```
-rakupp 4.0.1-50: differs — `for (1, 2) { $_++ }` is accepted, and `.values` yields copies. `.map` and `.first` DO write through now (`.map(* *= 2)`, `@a.first = 42`), which is what the S09-typed-arrays files turn on.
+rakupp 4.0.1-88: matches — `++` on a readonly is `X::Multi::NoMatch`, the multi-dispatch failure Rakudo reports (not the `X::Assignment::RO` that a plain `=` raises).
 
 ### LA-09  Binding to and from array elements                      D:yes R:yes V:spec
 `@a[0] := @a[1]` aliases two slots. `my $x := @a[0]` aliases the container.

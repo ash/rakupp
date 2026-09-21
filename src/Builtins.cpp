@@ -2133,7 +2133,12 @@ bool substSelectKnowsAdverb(const std::string& k) {
     static const std::set<std::string> known = {
         "g", "global", "x", "nth", "st", "nd", "rd", "th", "p", "pos",
         "c", "continue", "i", "ignorecase", "samecase", "ii", "s", "sigspace",
-        "samespace", "ss", "samemark", "mm", "m", "ignoremark"};
+        "samespace", "ss", "samemark", "mm", "m", "ignoremark",
+        // `:as` says what each match should be handed back AS. It was absent
+        // here, which made `.match` treat the whole call as unrecognised and
+        // fall back to a plain one-match search — silently dropping the `:g`
+        // or `:x` that came with it.
+        "as", "ov", "overlap"};
     if (known.count(k)) return true;
     if (k.size() >= 2 && ascii::isdigit((unsigned char)k[0])) { // :2nd / :3x
         size_t d = 0; while (d < k.size() && ascii::isdigit((unsigned char)k[d])) d++;
@@ -5792,6 +5797,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // Nil numifies to the INT zero, as `.Int` already did — `.Numeric` went
         // through the generic Num path and answered `0e0` (Nil-Any sheet NA-08).
         if (m == "Numeric" || m == "Real") return Value::integer(0);
+        // `.ACCEPTS` is the one question Nil answers rather than absorbs: it
+        // is what `$x ~~ Nil` asks, and returning Nil for it made the
+        // smartmatch neither true nor false. Only Nil itself — and a Failure,
+        // which is a Nil — matches (Nil-Any sheet NA-10).
+        if (m == "ACCEPTS")
+            return Value::boolean(!args.empty() &&
+                                  (args[0].t == VT::Nil ||
+                                   (args[0].t == VT::Hash && args[0].hashKind == "Failure")));
         // Reading through Nil is Nil, however many indices are handed over:
         // `Nil.AT-POS(0, 1, 2)` is one Nil, not a slice (NA-15).
         if (m == "AT-POS" || m == "AT-KEY" || m == "DELETE-POS" || m == "DELETE-KEY")
@@ -13207,21 +13220,30 @@ void Interpreter::registerBuiltins() {
         if (!isDir) {
             if (!err) err = EEXIST;   // the path exists, and is not a directory
             char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Mkdir");
-            (*f.hash())["message"] = Value::str(
-                "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
-                "': Failed to mkdir: " + std::strerror(err));
-            return f;
+            return I.ioFailure("X::IO::Mkdir",
+                               {{"path", Value::str(path)},
+                                {"mode", Value::integer(mode)},
+                                {"os-error", Value::str(std::string("Failed to mkdir: ") + std::strerror(err))}},
+                               "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
+                               "': Failed to mkdir: " + std::strerror(err));
         }
         Value p = Value::str(path); p.hashKind = "IO";
         p.ofTypeM() = I.cwdName();
         return p;
     };
     B["rmdir"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.empty()) return Value::boolean(false);
-        rejectNulPath(a[0].toStr());
-        return Value::boolean(::rmdir(I.ioFsPath(a[0]).c_str()) == 0);
+        // `rmdir()` removes nothing and can only be a mistake — the same
+        // reading Rakudo gives it, and the same exception.
+        if (a.empty()) throw RakuError{Value::typeObj("X::NoZeroArgMeaning"),
+            "The () form of 'rmdir' is reserved"};
+        // the list form answers the names it DID remove, so a caller can see
+        // which of a batch survived; a single failed name gives an empty list
+        Value ok = Value::array();
+        for (auto& p : a) {
+            rejectNulPath(p.toStr());
+            if (::rmdir(I.ioFsPath(p).c_str()) == 0) ok.arr()->push_back(p);
+        }
+        return ok;
     };
     B["spurt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Hash && a[0].hash() && a[0].hash()->count("mode")) { // an IO::Handle: its own .spurt writes through it
@@ -13241,10 +13263,17 @@ void Interpreter::registerBuiltins() {
         }
         std::string path = I.ioFsPath(a[0]);
         if (createonly) { std::ifstream probe(path); if (probe) { // a Failure, not a quiet False (as the method form)
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Exists");
-            (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
-            return f; } }
+            // X::AdHoc and an ABSOLUTE path, which is what a refused open says
+            // everywhere else here — X::IO::Exists is not a Raku type, and a
+            // relative name in the message does not say which file it meant.
+            std::string abs = path;
+            if (abs.empty() || abs[0] != '/') {
+                char cb[4096];
+                if (getcwd(cb, sizeof cb)) abs = std::string(cb) + "/" + path;
+            }
+            return I.ioFailure("X::AdHoc",
+                               {{"path", Value::str(abs)}, {"os-error", Value::str("File exists")}},
+                               "Failed to open file " + abs + ": File exists"); } }
         content = I.encodeTextEnc(content, Interpreter::encAdverb(a)); // `:enc`, and binary — as the method form
         std::ofstream out(path, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
         if (!out) { // a Failure that detonates when sunk
@@ -13483,6 +13512,8 @@ void Interpreter::registerBuiltins() {
     // True for a file that does not exist, and the point of the call is the
     // state afterwards, not who did it.
     B["unlink"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) throw RakuError{Value::typeObj("X::NoZeroArgMeaning"),
+            "The () form of 'unlink' is reserved"};
         auto gone = [](const std::string& p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
         if (I.sixE() && a.size() == 1) return Value::boolean(gone(I.ioFsPath(a[0])));
         Value ok = Value::array();   // an Array, as Rakudo's `my @ok` is
@@ -13514,7 +13545,7 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(a[0], "getc", {});
     };
     B["chmod"] = [](Interpreter&, ValueList& a) -> Value { // chmod MODE, @paths → the paths changed
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array();   // an Array, as Rakudo's `my @ok` is
         if (a.empty()) return out;
         // a permission string like IO.mode's "0777" is octal; an Int (0o644) is itself
         mode_t mode = a[0].t == VT::Str ? (mode_t)strtol(a[0].s.c_str(), nullptr, 8)
@@ -13874,8 +13905,10 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(list, "minmax", ma);
     };
     B["chdir"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.empty()) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
-            "Cannot call chdir without an argument"};
+        // `chdir()` matches no candidate of the multi — which is the error the
+        // caller sees, and the type a `CATCH` for a bad call is written against
+        if (a.empty()) throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+            "Cannot resolve caller chdir(); none of these signatures matches"};
         if (a[0].toStr().find('\0') != std::string::npos)
             throw RakuError{Value::typeObj("X::IO::Null"),
                 "Cannot use null character (U+0000) as part of the path"};
@@ -13885,9 +13918,12 @@ void Interpreter::registerBuiltins() {
         if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
             to = logicalJoin(a[0].ofType(), to);
         if (::chdir(to.c_str()) != 0) {
-            Value f = rakuppNewFailure();
-            (*f.hash())["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
-            return f;
+            struct stat cst{};
+            const bool exists = ::stat(to.c_str(), &cst) == 0;
+            const std::string why = !exists ? "does not exist" : "is not a directory";
+            return I.ioFailure("X::IO::Chdir",
+                               {{"path", Value::str(a[0].toStr())}, {"os-error", Value::str(why)}},
+                               "Failed to change the working directory to '" + a[0].toStr() + "': " + why);
         }
         I.logicalCwd_ = logicalJoin(old, to);
         // Rakudo's answer is the new cwd as an absolute IO::Path, based where you were
@@ -13939,9 +13975,17 @@ void Interpreter::registerBuiltins() {
         char buf[4096];
         std::string from = getcwd(buf, sizeof buf) ? buf : ".";
         std::string base = I.cwdName(), oldLogical = I.logicalCwd_;
-        if (::chdir(to.c_str()) != 0)
-            throw RakuError{Value::typeObj("X::IO::Chdir"),
-                            "Failed to change the working directory to '" + to + "'"};
+        if (::chdir(to.c_str()) != 0) {
+            // a Failure, not a throw: `indir($maybe, {…}) // handle-it` is how
+            // a caller copes with a directory that is not there, and the
+            // os-error is what tells the two refusals apart
+            struct stat cst{};
+            const bool exists = ::stat(to.c_str(), &cst) == 0;
+            const std::string why = !exists ? "does not exist" : "is not a directory";
+            return I.ioFailure("X::IO::Chdir",
+                               {{"path", Value::str(to)}, {"os-error", Value::str(why)}},
+                               "Failed to change the working directory to '" + to + "': " + why);
+        }
         I.logicalCwd_ = logicalJoin(base, to); // $*CWD keeps the caller's spelling
         Value r;
         try { ValueList none; r = I.callCallable(a[1], none); }

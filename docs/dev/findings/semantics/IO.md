@@ -155,7 +155,7 @@ is missing; the target is then not created.
 say do { "s06".IO.spurt("src"); ("s06".IO.copy("c06"), "c06".IO.slurp, "s06".IO.copy("s06").^name, "s06".IO.copy("s06").exception.^name, "s06".IO.copy("s06").exception.os-error, "s06".IO.copy("c06", :createonly).^name, "s06".IO.copy("c06", :createonly).exception.os-error, do { "dd06".IO.mkdir; "dd06".IO.copy("c06").exception.os-error }, "m06".IO.copy("x06").^name, "m06".IO.copy("x06").exception.^name, "x06".IO.e).join(" ") }
 # rakudo 2026.08: True src Failure X::IO::Copy source and target are the same Failure :createonly specified and destination exists cannot copy a directory to a file Failure X::IO::Copy False
 ```
-rakupp 4.0.1: differs — the Failures' `.os-error` is undefined (three warnings fill the capture; the values themselves were not measured).
+rakupp 4.0.1-88: matches — the Failure carries a real exception instance, so `.os-error` answers.
 
 ### IO-11  rename and move                                          D:yes R:yes V:spec
 `rename` returns True and fails with `X::IO::Rename` for a missing source
@@ -167,7 +167,7 @@ which leaves the file intact. The sub forms behave the same.
 say do { "r07".IO.spurt("r"); ("r07".IO.rename("r07b"), "r07".IO.e, "r07b".IO.e, "m07".IO.rename("z07").^name, "m07".IO.rename("z07").exception.^name, do { "t07".IO.spurt("t"); "r07b".IO.rename("t07", :createonly).^name ~ ":" ~ "r07b".IO.rename("t07", :createonly).exception.os-error }, "r07b".IO.move("v07"), "r07b".IO.e, "v07".IO.slurp, "m07".IO.move("z07").^name, "m07".IO.move("z07").exception.^name, "v07".IO.move("v07").exception.^name, "v07".IO.slurp, rename("v07", "w07"), copy("w07", "w07b"), move("w07b", "w07c"), "w07c".IO.e, "w07b".IO.e).join(" ") }
 # rakudo 2026.08: True False True Failure X::IO::Rename Failure::createonly specified and destination exists True False r Failure X::IO::Move X::IO::Move r True True True True False
 ```
-rakupp 4.0.1: differs — the `:createonly` Failure has an empty os-error.
+rakupp 4.0.1-88: matches.
 
 ### IO-12  symlink, link, readlink, chmod                           D:yes R:yes V:spec
 `symlink` and `link` return True and fail (`X::IO::Symlink`, `X::IO::Link`)
@@ -395,8 +395,8 @@ rakupp 4.0.1: differs — its `CatHandle` has no `get`, so the line died there.
 | quirks (recorded, step two decides) | 1 — IO-14 `slurp` throws where the docs say it fails |
 | rakupp 4.0.1 differs (before implementation) | 24 |
 | rakupp 4.0.1 matches (before implementation) | 2 — IO-13, IO-22 |
-| **rakupp 4.0.1-84 matches** | **10** — IO-01…05, IO-08, IO-13, IO-16, IO-22, IO-24 |
-| rakupp 4.0.1-84 differs | 16 |
+| **rakupp 4.0.1-88 matches** | **12** — IO-01…05, IO-08, IO-10, IO-11, IO-13, IO-16, IO-22, IO-24 |
+| rakupp 4.0.1-88 differs | 14 |
 
 Implementation began 2026-09-20 from this sheet alone, with the Homebrew
 Rakudo `v2026.08` as oracle and Roast as the gate; it is PARTIAL, and each

@@ -63,15 +63,25 @@ buckets or thread timing says so.
 
 | sheet | source files read (tag 2026.08) | items | not D:yes, not R:yes | rakupp differs | status |
 |---|---|---|---|---|---|
-| [Supply.md](Supply.md) | Supply, Supply-factories, Supply-coercers, Supplier, Rakudo/Supply | 69 | 38 | 7 | implemented 2026-09-18 (Roast S17-supply 27→55 of 58) |
-| [Nil-Any.md](Nil-Any.md) | Nil, Any, Any-iterable-methods | 50 | 16 | 22 | implemented 2026-09-18 (Roast 725→729 files; sheet items 6→28 of 50) |
-| [Str.md](Str.md) | Str, Stringy, Cool (string half), allomorphs | 66 | 12 | 56 | implementing 2026-09-18 (Roast 729→735 files; `val.t` 913 failing → 0) |
-| [List-Array.md](List-Array.md) | List, Array, Seq, Slip | 36 | 4 | 13 | implemented 2026-09-19 (Roast 736→738 files, 202,194→205,330 assertions; S09-typed-arrays 605→3,693 of 4,261; S32-list 26→27 files) |
-| [Hash-Map-Pair.md](Hash-Map-Pair.md) | Hash, Map, Hash/Object, Pair | 20 | 2 | 3 | implemented 2026-09-20 (Roast 698→705 files, 204,801→205,080 assertions; S32-hash/adverbs 1,012→1,067, S09-hashes/objecthash 21→27) |
-| [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 16 | implementing 2026-09-20 (sheet items 2→10 of 26; Roast files 704 steady, S16 431→539 assertions, S32 +26) |
+| [Supply.md](Supply.md) | Supply, Supply-factories, Supply-coercers, Supplier, Rakudo/Supply | 69 | 38 | 4 | implemented 2026-09-18 (Roast S17-supply 27→55 of 58) |
+| [Nil-Any.md](Nil-Any.md) | Nil, Any, Any-iterable-methods | 50 | 16 | 20 | implemented 2026-09-18, extended 2026-09-21 (sheet items 6→30 of 50) |
+| [Str.md](Str.md) | Str, Stringy, Cool (string half), allomorphs | 66 | 12 | 54 | implementing (PARTIAL), 2026-09-18 and 2026-09-21 (sheet items 6→12 of 66; `val.t` 913 failing → 0) |
+| [List-Array.md](List-Array.md) | List, Array, Seq, Slip | 36 | 4 | 14 | implemented 2026-09-19, extended 2026-09-21 (sheet items 21→22 of 36) |
+| [Hash-Map-Pair.md](Hash-Map-Pair.md) | Hash, Map, Hash/Object, Pair | 20 | 2 | 4 | implemented 2026-09-20 (Roast 698→705 files, 204,801→205,080 assertions; S32-hash/adverbs 1,012→1,067, S09-hashes/objecthash 21→27) |
+| [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 14 | implementing 2026-09-20/21 (sheet items 2→12 of 26; Roast 704→707 files, S16-io/lines 3→111, S32-io/io-path 2→30, chdir 9→33, indir 0→24) |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
+
+**Not every item can be counted.** Re-running all six sheets against the
+Rakudo binary on 2026-09-21 reproduced 244 of the 267 recorded outputs; the
+other 23 did not, and they are not rakupp gaps in either direction. Three
+causes: a hash's iteration order is per-process (HM-14, HM-15), nine Supply
+items bucket on the wall clock, and a handful depend on the machine. A sheet
+row's `rakupp differs` count therefore overstates the work by however many of
+its items are in that set — measure with both engines before believing a
+number. The probe harness for this lives in the session scratchpad, not the
+repo: it is a few dozen lines that parse the item format above.
 
 Candidates, in the order the method-surface probe of 2026-09-17 ranked them
 (the probe is described in the memory of that day and in the Supply sheet's

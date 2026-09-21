@@ -307,7 +307,7 @@ say do { my $f = 42.first(True); $f.^name ~ ":" ~ $f.exception.^name }, " ", (1,
 say (0,1,2).first(:k).raku, " ", (0, "", 2).first.raku, " ", (0, "", 2).first(:v).raku, " ", Any.first.raku, " ", Any.first(*.defined).raku
 # rakudo 2026.08: 0 0 0 Any Nil
 ```
-rakupp 4.0.2: differs only in `:end` on a LAZY list, which answers instead of throwing `X::Cannot::Lazy`. The Bool matcher and the two-adverb misuse are Failures, and `:kv` is a List.
+rakupp 4.0.1-88: matches — `:end` on a lazy list throws `X::Cannot::Lazy`.
 
 ### NA-23  sum                                                       D:yes R:partial V:spec
 Defined invocant: the sum of its list, starting from 0. Type object:
@@ -616,7 +616,7 @@ fails the assignment of 1 (`X::TypeCheck::Assignment`).
 say do { my $x; my $r = $x++; $r ~ ":" ~ $x }, " ", do { my $x; my $r = ++$x; $r ~ ":" ~ $x }, " ", do { my $x; my $r = $x--; $r ~ ":" ~ $x }, " ", do { my $x; my $r = --$x; $r ~ ":" ~ $x }, " ", do { my Int $i; $i++; $i }, " ", do { my Str $s; (try { $s++; $s }) // $!.^name }, " ", do { my $x = Nil; $x++; $x }
 # rakudo 2026.08: 0:1 1:1 0:-1 -1:-1 1 X::TypeCheck::Assignment 1
 ```
-rakupp 4.0.2: differs — the Str container still accepts 1.
+rakupp 4.0.1-88: matches — `++` runs the container's declared-type check, so the Str container refuses the Int.
 
 ### NA-49  The sub forms, and min/max with undefined operands        D:yes R:partial V:spec
 The list subs take `+values`: one Iterable argument is the list, several

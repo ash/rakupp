@@ -451,7 +451,7 @@ say "abc\n".chomp.raku, " ", "abc\r".chomp.raku, " ", "abc\r\n".chomp.raku, " ",
 say "abcdef".chomp("def").raku, " ", "abcdef".chomp("xyz").raku, " ", "abc".chomp("abcd").raku, " ", "abc".chomp("abc").raku, " ", "abc".chomp("").raku, " ", "abc\n".chomp("\n").raku, " ", "abc\r\n".chomp("\n").raku, " ", "abc\r\n".chomp("\r\n").raku, " ", "ab\r\n".chomp("\r").raku, " ", "abé".chomp("e").raku, " ", "abé".chomp("é").raku, " ", "abe\x[301]".chomp("e").raku, " ", "abc".chomp(<c>).raku, " ", "abc1".chomp(1).raku, " ", (try "abc".chomp(Str)) // $!.^name, " ", (try "abc".chomp(Nil)) // $!.^name
 # rakudo 2026.08: "abc" "abcdef" "abc" "" "abc" "abc" "abc\r\n" "abc" "ab\r\n" "abé" "ab" "abé" "ab" "abc" X::Multi::NoMatch X::Multi::NoMatch
 ```
-rakupp 4.0.1: differs — `"abc\r\n".chomp("\n")` removes the `\n` and leaves
+rakupp 4.0.1-88: matches — a `\r\n` is one grapheme, so `.chomp("\n")` leaves it alone.
 `"abc\r"`.
 
 ### ST-24  chop                                                    D:yes R:yes V:spec
@@ -499,7 +499,7 @@ say "abcabc".index("b").raku, " ", "abcabc".index("b", 2).raku, " ", "abcabc".in
 say "abc".index(<c b>).raku, " ", "ab".index(<b a>).raku, " ", "abc".index(<x y>).raku, " ", "abc".index(()).raku, " ", "abc".index(("",)).raku, " ", "a1b".index((1, "b")).raku, " ", "abcabc".index(("c", "B")).raku, " ", "abcabc".index(("c", "B"), :i).raku, " ", "abc".index(<c b>, 2).raku, " ", "abc".index(<c b>, 0).raku, " ", "a b".index(<a b>, 0).raku, " ", "abc".index(("c", "b"), 1).raku
 # rakudo 2026.08: 1 0 Nil Nil 0 1 2 1 Nil Nil 0 Nil
 ```
-rakupp 4.0.2: differs only in the ORDER a needle list is searched in; the positions and the refusals match.
+rakupp 4.0.1-88: matches — with an explicit position the needle list is taken as one Cool (its space-joined text), which is the candidate Rakudo binds.
 list and a position it searches the list (`<c b>, 2` is 2).
 
 ### ST-27  Positions: out of range versus past the end             D:partial R:yes V:spec/bug

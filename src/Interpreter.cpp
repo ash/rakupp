@@ -12850,6 +12850,15 @@ void Interpreter::throwTypedV(const std::string& type,
     throw RakuError{ex, message};
 }
 
+Value Interpreter::ioFailure(const std::string& type,
+                             std::vector<std::pair<std::string, Value>> attrs,
+                             const std::string& message) {
+    Value f = rakuppNewFailure();
+    (*f.hash())["exception"] = makeTypedEx(type, std::move(attrs), message);
+    (*f.hash())["message"] = Value::str(message);
+    return f;
+}
+
 void Interpreter::throwTyped(const std::string& type,
                              std::vector<std::pair<std::string, std::string>> attrs,
                              const std::string& message) {
@@ -27158,7 +27167,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
                   (l.t == VT::Bool && (r.s == "Int" || r.s == "Real")) || // Bool is an Int-backed enum
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
-                  (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
+                  (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO")) ||
+                  // …and a Failure IS a Nil — that is why `$f // $default`
+                  // works on one — so `$f ~~ Nil` is True (sheet NA-10).
+                  (l.t == VT::Hash && l.hashKind == "Failure" && (r.s == "Nil" || r.s == "Cool"));
             // an allomorph (IntStr/RatStr/NumStr) satisfies BOTH its numeric type and Str
             if (!res && l.isAllomorph())
                 res = typeMatchesArg(l, r.s) || r.s == "Str" || r.s == "Stringy";
@@ -28792,10 +28804,23 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                                      Value* replArg, ValueList& args, long& nsub, bool literal,
                                      const std::string* tmplRepl, Value* matchResult) {
     nsub = 0;
+    // Where the next search starts after a match. Normally past the match
+    // (and at least one character on, so a zero-width match cannot spin);
+    // under `:ov` one character past where it BEGAN, which is what makes the
+    // matches overlap. One CHARACTER, not one byte — stepping into the middle
+    // of a UTF-8 sequence would search from half a character.
+    bool overlapFlag = false;
+    auto advanceAfter = [&](long from, long to) -> long {
+        if (!overlapFlag) return to > from ? to : to + 1;
+        long base = from + 1;
+        while (base < (long)subj.size() && ((unsigned char)subj[(size_t)base] & 0xC0) == 0x80) base++;
+        return base;
+    };
     bool global = false, samecase = false, samespace = false, samemark = false;
     bool icase = false, sigspace = false, ignoremark = false, p5 = false;
     bool haveX = false, haveNth = false, haveStart = false, posAnchored = false;
-    Value xVal, nthVal; long startPos = 0;
+    bool haveAs = false, overlap = false;
+    Value xVal, nthVal, asVal; long startPos = 0;
     auto setAdverb = [&](const std::string& k, const Value& pv) {
         // ordinal / count adverbs written as one token: :1st :2nd :3rd :5th, :2x
         if (k.size() >= 2 && ascii::isdigit((unsigned char)k[0])) {
@@ -28818,6 +28843,24 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "samemark" || k == "mm") { samemark = true; ignoremark = true; } // :mm implies :m
         else if (k == "m" || k == "ignoremark") ignoremark = true;
         else if (k == "P5" || k == "Perl5") p5 = true; // s:P5/// — Perl 5 pattern syntax
+        // `:as(Str)` coerces every match to that type — the match objects are
+        // what was found, `:as` says what to hand back. Ignoring it silently
+        // returned Match objects AND swallowed the `:g`/`:x` that came with
+        // it, so `.match(/a/, :g, :as(Str))` answered one Match.
+        else if (k == "as") { haveAs = true; asVal = pv; }
+        // `:ov` — OVERLAPPING matches: the search resumes one character after
+        // each match STARTS, not after it ends, so `/aa/` on "aaa" finds two.
+        // It implies :g (there is nothing to overlap in a single match).
+        else if ((k == "ov" || k == "overlap") && pv.truthy()) {
+            // …on a MATCH only. Overlapping matches cannot be substituted —
+            // the second one's text has already been replaced — so `s:ov///`
+            // is refused rather than quietly corrupting the string
+            // (S05-substitution/subst.t asserts the refusal).
+            if (!matchResult)
+                throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"),
+                                "Adverb overlap not allowed on substitution"};
+            overlap = true; overlapFlag = true; global = true;
+        }
         else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
@@ -28860,6 +28903,15 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             throwTypedV("X::Str::Match::x", {{"got", xVal}},
                 "in Str.match, got invalid value of type " + xVal.typeName() +
                 " for :x, must be Int or Range");
+        // `Inf` means "all", but NaN and -Inf are not counts at all: neither
+        // can be turned into a number of matches to take, so they throw
+        // rather than quietly answering the empty list.
+        if (t == VT::Num || t == VT::Rat) {
+            const double xn = xVal.toNum();
+            if (std::isnan(xn) || (std::isinf(xn) && xn < 0))
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot coerce " + xVal.gist() + " to an Int for :x"};
+        }
     }
     if (!literal) {
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
@@ -28951,7 +29003,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (f == std::string::npos) break;
             RxMatch mm; mm.matched = true; mm.from = (long)f; mm.to = (long)f + (long)needle.size();
             matches.push_back(mm);
-            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+            pos = advanceAfter(mm.from, mm.to);
         }
     } else if (ignoremark) {
         // :m/:mm — fold subject & pattern to base characters (drop combining marks),
@@ -28989,7 +29041,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         while (pos >= 0 && pos <= (long)folded.size() && re.search(folded, pos, mm, nullptr, nullptr, useHooks)) {
             RxMatch om; om.matched = true; om.from = toOrig(mm.from); om.to = toOrig(mm.to);
             matches.push_back(om);
-            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+            pos = advanceAfter(mm.from, mm.to);
         }
     } else {
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
@@ -29010,7 +29062,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         while (pos >= 0 && pos <= (long)subj.size() &&
                re.search(subj, pos, mm, resolver, lexNames.empty() ? nullptr : &lexNames, useHooks)) {
             matches.push_back(mm);
-            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+            pos = advanceAfter(mm.from, mm.to);
         }
     }
     // :p(n) anchors the FIRST match exactly at position n (`:c` merely searches from n).
@@ -29018,7 +29070,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     long total = (long)matches.size();
     // occurrence selection (1-based). :x count, :nth indices, :g all, else first.
     auto bounds = [&](const Value& v, long& lo, long& hi) {
-        if (v.t == VT::Range) { lo = v.rFrom() + (v.rExFrom() ? 1 : 0); hi = v.rTo() - (v.rExTo() ? 1 : 0); }
+        // `:x` reads a Range by its ENDPOINTS and ignores exclusivity, so
+        // `2^..^4` asks for 2..4 — a quirk, but the one Rakudo has, and a
+        // count is the kind of thing nobody writes an exclusive range for
+        // on purpose (Str sheet ST-47).
+        if (v.t == VT::Range) { lo = v.rFrom(); hi = v.rTo(); }
         else if (v.t == VT::Whatever || std::isinf(v.toNum())) { lo = 1; hi = total; }
         else { lo = hi = v.toInt(); }
     };
@@ -29314,6 +29370,10 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // an EMPTY LIST — `("abc" ~~ m:g/z/).elems` is 0 in Rakudo, and it was 1 here
     // because Nil was answering for every shape. Both are falsy, so only code that
     // counts or iterates the result could tell — which `.elems` does.
+    if (haveAs && !selMatches.empty()) {
+        const std::string want = asVal.t == VT::Type ? asVal.s.str() : asVal.typeName();
+        for (auto& mv : selMatches) mv = coerceToType(mv, want);
+    }
     if (selMatches.empty())
         result = (global || haveNth || haveX) ? Value::list(ValueList{}) : Value::nil();
     else if (nthScalar && selMatches.size() == 1) result = selMatches.back();
@@ -32996,8 +33056,14 @@ Value Interpreter::evalUnary(Unary* u) {
         // lvalue and writes it directly — so `sub f($x) { $x++ }` and
         // `constant C = 5; C++` both quietly worked.
         if (lv && lv->readonly)
-            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                            "Cannot assign to a readonly variable or a value"};
+            // `++` is a multi that binds its argument `is rw`, so a readonly
+            // one matches no candidate — which is the error Rakudo reports,
+            // and a different one from the X::Assignment::RO that a plain
+            // `=` to a readonly container raises.
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " +
+                            std::string(u->postfix ? "postfix" : "prefix") + ":<" + u->op +
+                            ">(Int); none of these signatures matches"};
         // a Proxy-bound alias (`$a := $x`) reads via FETCH and writes via STORE,
         // so ++/-- reach the underlying container instead of clobbering the Proxy
         if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
@@ -33049,6 +33115,13 @@ Value Interpreter::evalUnary(Unary* u) {
             newv = applyArith(u->op == "++" ? "+" : "-", *lv, Value::integer(1));
             if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned, lv->natFloat); // native int wraparound
         }
+        // `++` is an assignment, so the container's declared type applies to
+        // what it stores. It did not: an UNDEFINED `my Str $s` counts as 0
+        // here and `$s++` quietly put an Int in a Str container — the one
+        // shape where the step changes the value's TYPE rather than its
+        // magnitude, so the ordinary `=` guard never saw it.
+        if (u->operand->kind == NK::VarExpr)
+            enforceTypedAssign(static_cast<VarExpr*>(u->operand.get())->name, newv);
         *lv = newv;
         if (anyRwLinks_) rwWriteThrough(u->operand.get()); // ++/-- on a linked rw param
         // BagHash/SetHash/MixHash element ++/--: a weight reaching 0 (or below)

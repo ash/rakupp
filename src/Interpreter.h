@@ -1683,6 +1683,14 @@ public:
     Value makeTypedEx(const std::string& type,
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // build (don't throw) a typed exception object
+    // A soft IO failure whose exception is a real INSTANCE, so `.path`,
+    // `.os-error` and `.trying` answer. Storing a bare type object in the
+    // Failure — which every IO operation here used to do — leaves an
+    // exception that can only say its own name, so a caller asking a failed
+    // copy which file it was about got Nil.
+    Value ioFailure(const std::string& type,
+                    std::vector<std::pair<std::string, Value>> attrs,
+                    const std::string& message);
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     // `»`.method over a container, shared by the direct and the curried paths
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args);

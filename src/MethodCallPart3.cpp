@@ -41,6 +41,16 @@ bool fhClosed(const Value& h) {
     auto it = h.hash()->find("closed");
     return it != h.hash()->end() && it->second.truthy();
 }
+// Bytes read off a handle are a `Buf[uint8]`, not a bare `Buf`: the element
+// type is part of the type the caller is handed, and a signature written
+// `Buf[uint8] $chunk` — which is how binary protocol code spells it — could
+// not be satisfied by what every read here answered.
+Value binBuf(std::string bytes) {
+    Value b = Value::str(std::move(bytes));
+    b.hashKind = "Buf";
+    b.ofTypeM() = "uint8";
+    return identify(b);
+}
 
 } // namespace
 
@@ -1271,9 +1281,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             text.swap(outT);
         }
-        Value v = Value::str(text);
-        if (bin) v.hashKind = "Blob";   // slurp(:bin) yields a Blob, not a decoded Str
-        return v;
+        if (bin) return binBuf(text);   // slurp(:bin) yields a Buf[uint8], not a decoded Str
+        return Value::str(text);
     }
     if (m == "spurt" && inv.hashKind == "IO") { // an IO::Path only — a bare Str has no spurt (Rakudo)
         // path-spurt; an open IO::Handle's .spurt is handled in the FileHandle
@@ -1404,16 +1413,27 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType(); // keep the invocant's :CWD
         return p;
     }
-    if (m == "unlink" && inv.hashKind == "IO") { // $path.IO.unlink — remove the file; True on success (a bare Str has no unlink)
-        return Value::boolean(::unlink(ioFsPath(inv).c_str()) == 0);
+    if (m == "unlink" && inv.hashKind == "IO") { // $path.IO.unlink — remove the file (a bare Str has no unlink)
+        const std::string p = ioFsPath(inv);
+        if (::unlink(p.c_str()) == 0) return Value::boolean(true);
+        // A name that is ALREADY gone is the outcome unlink was asked for, so
+        // it answers True: `unlink $tmp` in a LEAVE block must not fail merely
+        // because the body removed the file first. Anything else — a
+        // directory, a permission — is a Failure naming the path.
+        int err = errno;
+        if (err == ENOENT) return Value::boolean(true);
+        return ioFailure("X::IO::Unlink",
+                         {{"path", Value::str(inv.toStr())},
+                          {"os-error", Value::str(std::strerror(err))}},
+                         "Failed to remove the file '" + inv.toStr() + "': " + std::strerror(err));
     }
     if (m == "rmdir" && inv.hashKind == "IO") { // $path.IO.rmdir — remove the (empty) directory
         if (::rmdir(ioFsPath(inv).c_str()) != 0) { // a Failure, as mkdir answers (this said a quiet False)
             int err = errno;
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Rmdir");
-            (*f.hash())["message"] = Value::str("Failed to remove the directory '" + inv.toStr() + "': " + std::strerror(err));
-            return f;
+            return ioFailure("X::IO::Rmdir",
+                             {{"path", Value::str(inv.toStr())},
+                              {"os-error", Value::str(std::strerror(err))}},
+                             "Failed to remove the directory '" + inv.toStr() + "': " + std::strerror(err));
         }
         return Value::boolean(true);
     }
@@ -1436,10 +1456,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         int rc = symbolic ? platform_symlink(target.c_str(), name.c_str())
                           : platform_link(target.c_str(), name.c_str());
-        if (rc != 0)
-            throw RakuError{Value::typeObj(symbolic ? "X::IO::Symlink" : "X::IO::Link"),
-                std::string("Failed to create ") + (symbolic ? "symlink" : "link") +
-                " called '" + name + "' on target '" + target + "': " + std::strerror(errno)};
+        if (rc != 0) {
+            // a FAILURE, not a throw: `$t.symlink($n) or warn` is how a caller
+            // handles a name that is already taken, and a throw walked past it
+            const std::string os = std::strerror(errno);
+            return ioFailure(symbolic ? "X::IO::Symlink" : "X::IO::Link",
+                             {{"target", Value::str(target)}, {"name", Value::str(name)},
+                              {"os-error", Value::str(os)}},
+                             std::string("Failed to create ") + (symbolic ? "symlink" : "link") +
+                             " called '" + name + "' on target '" + target + "': " + os);
+        }
         return Value::boolean(true);
     }
     // `$path.IO.copy($to, :$createonly)` / `.rename($to)` / `.move($to)` — file
@@ -1458,12 +1484,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             struct stat sf{}, st{};
             if (::stat(from.c_str(), &sf) == 0 && ::stat(to.c_str(), &st) == 0 &&
                 sf.st_dev == st.st_dev && sf.st_ino == st.st_ino) {
-                Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Copy");
-                (*f.hash())["message"] = Value::str(
-                    "Failed to " + m + " '" + from + "' to '" + to +
-                    "': source and target are the same file");
-                return f;
+                const std::string why = "source and target are the same";
+                return ioFailure(m == "move" ? "X::IO::Move" : "X::IO::Copy",
+                                 {{"from", Value::str(from)}, {"to", Value::str(to)},
+                                  {"os-error", Value::str(why)}},
+                                 "Failed to " + m + " '" + from + "' to '" + to + "': " + why);
             }
         }
         // Every refusal here is a FAILURE, not a throw — Rakudo `fail`s from all
@@ -1471,11 +1496,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // same-file check above already answered one; these used to throw past it.
         const std::string verb = m == "copy" ? "copy" : m == "move" ? "move" : "rename";
         auto ioFail = [&](const char* type, const std::string& why) {
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj(type);
-            (*f.hash())["message"] = Value::str(
-                "Failed to " + verb + " '" + from + "' to '" + to + "': " + why);
-            return f;
+            // the reason rides as `os-error`, which is where a caller reads it
+            return ioFailure(type,
+                             {{"from", Value::str(from)}, {"to", Value::str(to)},
+                              {"os-error", Value::str(why)}},
+                             "Failed to " + verb + " '" + from + "' to '" + to + "': " + why);
         };
         const char* failType = m == "move" ? "X::IO::Move" : m == "rename" ? "X::IO::Rename" : "X::IO::Copy";
         // A DIRECTORY is not a file to be read. `copy` opened one, read nothing
@@ -1487,10 +1512,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m != "rename") {
             struct stat sd{};
             if (::stat(from.c_str(), &sd) == 0 && S_ISDIR(sd.st_mode))
-                return ioFail(failType, "source is a directory");
+                return ioFail(failType, "cannot copy a directory to a file");
         }
+        // the wording is the reason the caller reads back from `.os-error`,
+        // and it names the adverb that caused the refusal
         if (createonly && std::ifstream(to).good())
-            return ioFail("X::IO::Copy", "target already exists");
+            return ioFail(failType, ":createonly specified and destination exists");
         int cerr = 0;                       // the errno the copy died of, captured
         auto copyFile = [&]() -> bool {     // before a destructor can overwrite it
             cerr = 0;
@@ -1680,6 +1707,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // exist, because `my ($v, $d, $b) = $p.volume, …` is how portable code
         // takes a path apart, and X::Method::NotFound made it unwritable.
         if (m == "volume" && inv.hashKind == "IO") return Value::str("");
+        // `$path.IO.chdir($rel)` — TEXTUAL: it joins and hands back the path,
+        // without touching the process directory (that is the `chdir` SUB).
+        // `..` and an absolute argument resolve in the text. By default the
+        // result must be an existing directory, which is what makes this
+        // usable as "descend if you can"; `:!d` skips the test.
+        if (m == "chdir" && inv.hashKind == "IO") {
+            std::string base = inv.toStr(), arg = args.empty() ? "" : args[0].toStr();
+            bool wantD = true;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "d") wantD = !a.pairVal() || a.pairVal()->truthy();
+            std::string joined;
+            if (!arg.empty() && arg[0] == '/') joined = arg;
+            else {
+                while (base.size() > 1 && base.back() == '/') base.pop_back();
+                joined = base + "/" + arg;
+            }
+            joined = methodCall(asIO(joined), "cleanup", ValueList{}).toStr();
+            if (wantD) {
+                struct stat st{};
+                if (::stat(ioFsPath(asIO(joined)).c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                    const bool exists = ::stat(ioFsPath(asIO(joined)).c_str(), &st) == 0;
+                    const std::string why = exists ? "is not a directory" : "does not exist";
+                    return ioFailure("X::IO::Chdir",
+                                     {{"path", Value::str(joined)}, {"os-error", Value::str(why)}},
+                                     "Failed to change the working directory to '" + joined + "': " + why);
+                }
+            }
+            return asIO(joined);
+        }
         // the method behind `$x ~~ $path`, and callable on its own: same file?
         if (m == "ACCEPTS" && inv.hashKind == "IO" && !args.empty()) {
             Value other = args[0];
@@ -1775,8 +1831,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // `:parts(N)` — exactly N tail segments; `:parts(a..b)` — the LARGEST
             // count in the range the name actually has. Neither invents parts.
             long long lo = 1, hi = 1;
+            bool partsGiven = false;
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "parts" && a.pairVal()) {
+                    partsGiven = true;
                     const Value& p = *a.pairVal();
                     if (p.t == VT::Range) {
                         lo = p.rFrom() + (p.rExFrom() ? 1 : 0);
@@ -1795,10 +1853,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string nw = repl->toStr(), joiner = nw.empty() ? "" : ".";
                 for (auto& a : args)
                     if (a.t == VT::Pair && a.s == "joiner" && a.pairVal()) joiner = a.pairVal()->toStr();
-                // The name has fewer dot-parts than asked for: there is nothing
-                // to take off, but the new extension still goes on — which is
-                // what makes `"noext".IO.extension("x")` `noext.x` rather than
-                // `noext`, the one way to give an extension to a file without one.
+                // Asked for more parts than the name has. With an EXPLICIT
+                // `:parts(n)` that is a request that cannot be honoured, and
+                // the path comes back untouched. Without one, the default
+                // takes what is there — none — and still appends, which is
+                // what makes `"noext".IO.extension("x")` `noext.x`: the one
+                // way to give an extension to a file that has none.
+                if (take < lo && partsGiven) return asIO(inv.toStr());
                 if (take < lo) take = 0;
                 if (take < 0) take = 0;
                 std::string stem;
@@ -2062,16 +2123,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value v = Value::number(secs); v.hashKind = "Instant"; return identify(v);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
-        if (::chmod(ioFsPath(inv).c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt())) != 0) { // (the syscall's result was never read)
+        const long long wantMode = args.empty() ? 0 : args[0].toInt();
+        if (::chmod(ioFsPath(inv).c_str(), (mode_t)wantMode) != 0) { // (the syscall's result was never read)
             int err = errno;
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Chmod");
-            (*f.hash())["message"] = Value::str("Failed to set the mode of '" + inv.toStr() + "': " + std::strerror(err));
-            return f;
+            char ob[24]; snprintf(ob, sizeof ob, "%03llo", (unsigned long long)wantMode);
+            return ioFailure("X::IO::Chmod",
+                             {{"path", Value::str(inv.toStr())},
+                              {"mode", Value::integer(wantMode)},
+                              {"os-error", Value::str(std::strerror(err))}},
+                             "Failed to set the mode of '" + inv.toStr() + "' to '0o" + ob +
+                             "': " + std::strerror(err));
         }
-        Value p = Value::str(inv.toStr()); p.hashKind = "IO";
-        if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
-        return p;
+        return Value::boolean(true);   // the mode was set; the path was never news
     }
     if (m == "open") { // returns a buffered file handle
         // Delegates to the open() builtin: one implementation, one rule set.
@@ -2307,7 +2370,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 for (auto& a : args)
                     s += (m == "say" ? methodCall(a, "gist", ValueList{}, nullptr).toStr()
                                      : strInStrContext(a));
-                if (m != "print") s += "\n";
+                // the terminator is the handle's OWN `nl-out`, which `open
+                // :nl-out` sets and `$fh.nl-out = "!"` changes — a hardcoded
+                // "\n" ignored both, so a handle told to end records with
+                // something else still wrote newlines.
+                if (m != "print") {
+                    auto nl = inv.hash()->find("nl-out");
+                    s += nl != inv.hash()->end() ? nl->second.toStr() : std::string("\n");
+                }
             }
             s = encodeTextEnc(s, handleEnc(inv)); // the handle's `:enc` names the BYTES on disk
             auto stdit = inv.hash()->find("std");
@@ -2365,9 +2435,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (c == EOF) break;
                     got += (char)(unsigned char)c;
                 }
-                Value b = Value::str(got);
-                b.hashKind = "Buf"; identify(b);
-                return b;
+                return binBuf(got);
             }
             if (inv.hash()->find("bytes") == inv.hash()->end()) {
                 std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
@@ -2381,10 +2449,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (want < 0) want = 0;
             if (pos > (long long)all.size()) pos = all.size();
             long long take = std::min(want, (long long)all.size() - pos);
-            Value b = Value::str(all.substr((size_t)pos, (size_t)take));
-            b.hashKind = "Buf"; identify(b);
             (*inv.hash())["bpos"] = Value::integer(pos + take);
-            return b;
+            return binBuf(all.substr((size_t)pos, (size_t)take));
         }
         // .flush — put what has been written on disk NOW, without closing. A
         // handle holds bytes back up to its out-buffer, so without this a
@@ -3446,8 +3512,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                 args[0].typeName() + ":U); the needle must be defined"};
             std::string s = inv.toStr(), needle = strOf(args[0]);
             if (!needle.empty() && s.size() >= needle.size() &&
-                s.compare(s.size() - needle.size(), needle.size(), needle) == 0)
-                s.resize(s.size() - needle.size());
+                s.compare(s.size() - needle.size(), needle.size(), needle) == 0) {
+                // …but only on a GRAPHEME boundary. "\r\n" is one grapheme, so
+                // a string ending in it does not end with "\n" and chomping
+                // one off would leave half a character behind.
+                const size_t cut = s.size() - needle.size();
+                const bool splitsCRLF = cut > 0 && s[cut - 1] == '\r' && needle[0] == '\n';
+                if (!splitsCRLF) s.resize(cut);
+            }
             return Value::str(s);
         }
         // no needle: ONE trailing logical newline, the same set `.lines` breaks on
@@ -3663,7 +3735,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
         }
         // a LIST of needles: the best (leftmost for index, rightmost for
-        // rindex) position across all of them
+        // rindex) position across all of them — but ONLY in the one-argument
+        // form. Given a start position too, the candidate taken is the plain
+        // `Cool $needle` one, and a list Cools to its space-joined text: so
+        // `"abc".index(<c b>, 0)` looks for the literal "c b" and finds
+        // nothing, where the one-argument call would have answered 1.
+        bool listNeedlePositional = false;
+        for (size_t i = 1; i < args.size(); i++)
+            if (args[i].t != VT::Pair) { listNeedlePositional = true; break; }
+        if (!args.empty() && listNeedlePositional &&
+            (args[0].t == VT::Array || args[0].t == VT::Range)) {
+            ValueList sub{Value::str(args[0].toStr())};
+            for (size_t i = 1; i < args.size(); i++) sub.push_back(args[i]);
+            return methodCall(inv, m, sub);
+        }
         if (!args.empty() && (args[0].t == VT::Array || args[0].t == VT::Range)) {
             Value best; bool have = false;
             for (auto& nd : args[0].flatten()) {

@@ -1847,6 +1847,21 @@ bool Lexer::tryQuoteForm(Token& out) {
         } else {
             repl = readPart(false, !isTrans, /*isRepl=*/true); // replacement (tr: raw, not brace-aware)
         }
+        // …and the OVERLAP adverbs make no sense on a substitution: the second
+        // of two overlapping matches covers text the first one has already
+        // replaced, so there is nothing coherent to substitute. Rakudo refuses
+        // it at compile time, and so does this (S05-substitution/subst.t).
+        if (!isTrans) {
+            static const std::pair<const char*, const char*> kBadSubst[] = {
+                {":overlap ", "overlap"}, {":ov ", "ov"},
+                {":exhaustive ", "exhaustive"}, {":ex ", "ex"}};
+            for (auto& [pat, name] : kBadSubst)
+                if (adverbs.find(pat) != std::string::npos)
+                    throw ParseError(std::string("Adverb ") + name +
+                                     " not allowed on substitution", line_,
+                                     "X::Syntax::Regex::Adverb",
+                                     {{"adverb", name}, {"construct", "substitution"}});
+        }
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;

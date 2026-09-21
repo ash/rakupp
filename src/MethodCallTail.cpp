@@ -762,6 +762,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             Value pred; bool havePred = false;
             for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
+            // `:end` scans BACKWARDS, which a list with no end cannot be asked
+            // to do: there is no last element to start from. Answering the
+            // first match instead — which is what an unguarded forward scan
+            // did — is a different question with a plausible-looking answer.
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "end" && (!a.pairVal() || a.pairVal()->truthy()) && infinite)
+                    throwTyped("X::Cannot::Lazy", {{"action", "first"}},
+                               "Cannot first a lazy list");
             for (size_t si = 0; si < 1000000; si++) {
                 materializeLazy(inv, si + 1);
                 if (si >= inv.arr()->size()) break;
