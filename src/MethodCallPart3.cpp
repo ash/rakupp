@@ -875,6 +875,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "minpairs" || m == "maxpairs") {
         // pairs whose value is the min/max (per cmp); a scalar is its 0 => self pair
+        // A Setty's values are all True, so every pair ties for both ends and
+        // Rakudo's Setty candidates simply hand back `self.pairs` — including a
+        // home-made `does Setty` class that overrides `pairs` (roast
+        // S29-any/minpairs-maxpairs.t checks exactly that). Without this the
+        // object fell through to the scalar arm and answered `0 => self`.
+        if (inv.t == VT::Object &&
+            applyArith("~~", inv, Value::typeObj("Setty")).truthy())
+            return methodCall(inv, "pairs", args);
         Value out = Value::array(); out.isList = true;
         std::vector<std::pair<Value, Value>> kvs; // key, value
         if (inv.t == VT::Array && inv.arr()) {
@@ -919,6 +927,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj() && inv.obj()->cls ? inv.obj()->cls->name : inv.typeName());
         if (inv.t == VT::Type && !inv.ofType().empty() && tn.find('[') == std::string::npos)
             tn += "[" + inv.ofType() + "]";
+        // `.isa` takes exactly ONE type; a second positional is an arity error,
+        // not a silently ignored argument (roast S29-any/isa.t dies-oks it).
+        {
+            size_t pos = 0;
+            for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos++;
+            if (pos > 1)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Too many positionals passed; expected 1 argument but got " +
+                                std::to_string(pos)};
+        }
+        // A user ROLE is never an `isa` ancestor either, and the case that makes
+        // that visible is the PUN: `role A { }; A.new.isa(A)` is False, because
+        // `A.new` is a class that DOES A (roast S29-any/isa.t, R#2331). The name
+        // check below would otherwise match the pun's own name against the role's
+        // and say True, so this has to come before it.
+        {
+            auto rit = classes_.find(want);
+            if (rit != classes_.end() && rit->second->isRole) return Value::boolean(false);
+        }
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
         // `CArray[int32]` IS a `CArray`: an unparameterized want matches the base
         // of a parameterized type. (The reverse does not hold — a bare CArray is
@@ -2522,6 +2549,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*inv.hash())["flushed"] = Value::boolean(true);
             }
             return Value::boolean(true);
+        }
+        // `.split` / `.comb` on a HANDLE read its remaining text and hand the
+        // question to Str — Rakudo's IO::Handle has both, and `:close` shuts the
+        // handle once it has been read. Without them the handle itself was
+        // stringified and split, so `$proc.out.split(0.chr)` came back as the
+        // hash's own dump (roast S29-os/system.t).
+        if (m == "split" || m == "comb") {
+            bool wantClose = false;
+            ValueList rest;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg && a.s == "close")
+                    { wantClose = !a.pairVal() || a.pairVal()->truthy(); continue; }
+                rest.push_back(a);
+            }
+            Value text = methodCall(inv, "slurp", ValueList{});
+            if (wantClose) methodCall(inv, "close", ValueList{});
+            return methodCall(text, m, rest);
         }
         if (m == "slurp") {
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)

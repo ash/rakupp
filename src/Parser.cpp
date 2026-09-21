@@ -5814,9 +5814,13 @@ ExprPtr Parser::parsePrimary() {
             // but a capitalized bareword followed by a block is a type + block body, e.g. `if Mu { }`
             // — EXCEPT the all-caps introspection subs, which are routines rather than
             // types, so `WHAT {3 => 4}` asks what the hash is instead of parsing as the
-            // bareword `WHAT` followed by an unrelated block.
+            // bareword `WHAT` followed by an unrelated block. EVAL is in the set for
+            // the same reason and one more: `EVAL { … }` is the Perl 5 block eval,
+            // and Raku's answer is a runtime error naming `try` — which it can only
+            // give if the block arrives as an ARGUMENT rather than as a stray block
+            // after a bare name (roast S29-context/eval.t, "block EVAL is gone").
             static const std::set<std::string> capsSubs = {
-                "WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY", "DEFINITE"};
+                "WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY", "DEFINITE", "EVAL"};
             if (isKind(Tok::LBrace) && !name.empty() && ascii::isupper((unsigned char)name[0]) &&
                 !capsSubs.count(name))
                 return std::make_unique<NameTerm>(name);

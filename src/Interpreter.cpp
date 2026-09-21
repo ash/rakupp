@@ -1609,9 +1609,15 @@ void Interpreter::sinkValue(const Value& r) {
         std::string cmd;
         auto it = r.hash()->find("argv");
         if (it != r.hash()->end() && it->second.arr() && !it->second.arr()->empty()) cmd = (*it->second.arr())[0].toStr();
-        throw RakuError{Value::typeObj("X::Proc::Unsuccessful"),
-            "The spawned command '" + cmd + "' exited unsuccessfully (exit code: " +
-            std::to_string(ec) + ", signal: " + std::to_string(sg) + ")"};
+        std::string msg = "The spawned command '" + cmd + "' exited unsuccessfully (exit code: " +
+                          std::to_string(ec) + ", signal: " + std::to_string(sg) + ")";
+        // …and, when the command never started, WHY it did not — the line
+        // Rakudo appends for a failed spawn (roast S29-os/system.t pins both
+        // halves of it: the -1 exit code and the `OS error = ` clause).
+        auto oe = r.hash()->find("os-error");
+        if (oe != r.hash()->end() && !oe->second.toStr().empty())
+            msg += "\n(OS error = " + oe->second.toStr() + ")";
+        throw RakuError{Value::typeObj("X::Proc::Unsuccessful"), msg};
     }
 }
 
@@ -7904,7 +7910,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}}, where);
 }
 
-Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* incompleteOut) {
+Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* incompleteOut,
+                              bool checkOnly) {
     // `$=pod` inside the EVAL is the EVAL's own compilation unit's pod, as in
     // Rakudo — Pod::Load's whole method is `EVAL "module M { $source }\n$=pod"`.
     // The main program's DOM is put back on every exit path.
@@ -7989,6 +7996,23 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
+    // `EVAL $code, :check` stops at the end of COMPILATION. The parse above WAS
+    // the compile — a syntax error has already thrown — so what is left to run
+    // is the two phasers that belong to compile time: every BEGIN, then every
+    // CHECK. Nothing else: not the mainline, not INIT (which is run time, just
+    // before it), and not END (which is registered by running). roast
+    // S29-context/eval.t checks all three of those in one go.
+    if (checkOnly) {
+        for (const char* want : {"BEGIN", "CHECK"})
+            for (auto& st : prog->stmts) {
+                if (st->kind != NK::Block) continue;
+                auto* b = static_cast<Block*>(st.get());
+                if (b->phaser != want) continue;
+                if (b->stmtForm) execBlock(b, tctx_.cur);   // `BEGIN my $x = …` declares out here
+                else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+            }
+        return Value::any();
+    }
     // EVAL'd code is its own compilation unit, so its INIT phasers run before
     // ITS mainline — not at their textual position. roast asserts this through
     // `throws-like '… gather for 1..3 { INIT take "OH HAI"; … }'`: the take has
@@ -12020,7 +12044,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     std::shared_ptr<LazySeqState> liveSt;
                     if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
                         auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
-                        if (st->appendNext && (st->infinite || (st->gatherSeq && !st->exhausted)))
+                        if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
                             { liveSt = st; liveArr = lv.arrS(); }
                     }
                     if (oneItem) items.push_back(lv);
@@ -12408,7 +12432,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::shared_ptr<LazySeqState> liveSt;
             if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
                 auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-                if (st->appendNext && (st->infinite || (st->gatherSeq && !st->exhausted)))
+                if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
                     { liveSt = st; liveArr = listv.arrS(); }
             }
             // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`
@@ -15720,6 +15744,9 @@ void Interpreter::drainIfFiniteLazy(const Value& v) {
     if (!(v.t == VT::Array && v.arr() && v.ext())) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (st->infinite) return;
+    // …nor is a STREAMING source: it ends, but only when its producer says so,
+    // and the producer may be waiting on what this loop is about to print.
+    if (st->streaming) return;
     // A gather that outgrew its probe is not KNOWN to be finite. It is a block
     // that has not yet said it is done, and the only way to ask is to run it —
     // so draining one here ran its generator up to the million-element cap to
@@ -25907,6 +25934,24 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         bool pickL = !bothJ ? isJunction(l) : (rank(l) >= rank(r));
         const Value& j = pickL ? l : r;
         bool jleft = pickL;
+        // One eigenstate's match, shared by the two collapsing arms below. A
+        // REGEX matcher has to go through the operator's own regex arm, which
+        // lives in applyBinOp: applyArith knows nothing about regexes at all, so
+        // a VALUE-level `$s ~~ /a/ & /b/` answered False whatever the subject
+        // was. Only the value path was affected — the same expression written in
+        // source is threaded by evalBinary, which does match — and the shape
+        // that surfaced it is a `throws-like …, message => /x/ & /y/` matcher,
+        // which is a junction of Regexes arriving as a value (roast
+        // S29-os/system.t). `$/` stays the caller's, as the comment on
+        // matchVarSuppressed_ requires of every eigenstate match.
+        auto eigenMatch = [&](const Value& subj, const Value& matcher) -> bool {
+            if (valueMatch) Interpreter::valueSmartmatch_ = true;   // inherited per eigenstate
+            if (matcher.t == VT::Regex && g_cbInterp) {
+                Interpreter::MatchVarGuard mg;
+                return g_cbInterp->smartmatchValue("~~", subj, matcher).truthy();
+            }
+            return applyArith("~~", subj, matcher).truthy();
+        };
         // smartmatch AGAINST a junction (RHS) keeps ACCEPTS' collapsing Bool
         // semantics (`5 ~~ 3|5|7` is True); every other op — comparisons
         // included — autothreads into a PRESERVED junction of results, which
@@ -25917,9 +25962,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
             // any(False, True) = True
             JunctionCollapse jc(j.enumName);        // short-circuits; see Value.h
-            for (auto& e : *j.arr()) { // each eigenstate match inherits the value-smartmatch rule
-                if (valueMatch) Interpreter::valueSmartmatch_ = true;
-                jc.feed(applyArith("~~", l, e).truthy());
+            for (auto& e : *j.arr()) {
+                jc.feed(eigenMatch(l, e));
                 if (jc.done()) break;
             }
             bool res = jc.verdict();
@@ -25931,8 +25975,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
             JunctionCollapse jc(l.enumName);        // short-circuits; see Value.h
             for (auto& e : *l.arr()) {
-                if (valueMatch) Interpreter::valueSmartmatch_ = true;
-                jc.feed(applyArith("~~", e, r).truthy());
+                jc.feed(eigenMatch(e, r));
                 if (jc.done()) break;
             }
             bool res = jc.verdict();

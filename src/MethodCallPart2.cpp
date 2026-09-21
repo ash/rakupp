@@ -2444,7 +2444,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // NOW, with the adverbs the constructor recorded, and fill this same
         // object in place: `$proc.out` after the call is the child's output,
         // and the Proc the caller holds is the one that answers `.exitcode`.
-        if ((m == "shell" || m == "spawn") && !args.empty() && inv.hash()->count("unspawned")) {
+        // …and on one that has ALREADY run: Rakudo's Proc is re-runnable, and
+        // `.pid` tracking is asserted through exactly that (roast
+        // S29-os/system.t runs a Proc, then shells and spawns from it).
+        if ((m == "shell" || m == "spawn") && !args.empty()) {
             ValueList ba;
             if (m == "shell") ba.push_back(Value::str(args[0].toStr()));
             else if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())
@@ -2459,6 +2462,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             for (auto& a : args) if (a.t == VT::Pair) ba.push_back(a); // :cwd / :env pass through
             Value res = callBuiltin(m == "shell" ? "shell" : "run", std::move(ba));
+            inv.hash()->erase("os-error");   // whatever went wrong LAST time is over
+            // The new run's state replaces this one's — except `pid`, which the
+            // run only reports when a child actually started. A spawn that never
+            // got off the ground leaves the previous pid standing, which is what
+            // ".pid does not update on failed run()" asks for.
             if (res.t == VT::Hash && res.hash())
                 for (auto& kv : *res.hash()) (*inv.hash())[kv.first] = kv.second;
             inv.hash()->erase("unspawned");
@@ -2502,9 +2510,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*inv.hash())["err-str"] = Value::str(err);
             storeProcStatus(inv, code); // exitcode + signal
             (*inv.hash())["ran"] = Value::boolean(true);
+            if (m == "close") { Value pr = inv; pr.hashKind = "Proc"; return pr; } // as above
             return Value::boolean(true);
         }
-        if (m == "close") return Value::boolean(true);   // already ran on the first write
+        // …and `.close` answers the PROC, as every other pipe's close does
+        // (Rakudo's IO::Pipe.close; roast S29-os/system.t compares it with `===`).
+        // `.in` shares the Proc's own hash, so this is that same hash wearing
+        // its Proc identity again — the identity test sees one object.
+        if (m == "close") { Value pr = inv; pr.hashKind = "Proc"; return pr; }
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Promise" || inv.hashKind == "Vow")) {
         auto ps = inv.ext() ? std::static_pointer_cast<PromiseState>(inv.ext()) : nullptr;

@@ -1929,14 +1929,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // A mismatch is a FAILURE, not a throw: `.are(T)` answers True or
                 // hands back a Failure naming the first element that does not
                 // conform, so `if @a.are(Int) { }` reads it without a `try`
-                // (Nil-Any sheet NA-31; roast S32-list/are.t asserts the message).
+                // (Nil-Any sheet NA-31). The exception is a plain X::AdHoc —
+                // roast S29-any/are.t asserts both the type and the wording, and
+                // even carries an `# XXX proper exception?` next to it.
                 for (size_t k = 0; k < items.size(); k++)
                     if (!applyArith("~~", items[k], args[0]).truthy()) {
                         Value f = rakuppNewFailure();
                         const std::string msg = "Expected '" + t + "' but got '" +
                                                 typeOfVal(items[k]) + "' in element " +
                                                 std::to_string(k);
-                        (*f.hash())["exception"] = Value::typeObj("X::TypeCheck");
+                        (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
                         (*f.hash())["message"]   = Value::str(msg);
                         return f;
                     }

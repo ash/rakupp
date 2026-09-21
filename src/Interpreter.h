@@ -978,6 +978,12 @@ struct CueState { std::atomic<bool> cancelled{false}; };
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;
     bool infinite = false; // a truly unbounded source (…..Inf): elems/pop/tail/[*-1] must die
+    // A source whose next element may not exist YET: standard input, where
+    // asking for one more line blocks until the writer at the other end of the
+    // pipe produces it (or closes). Finite — it ends at EOF — but draining it
+    // up front is a deadlock whenever the producer is waiting on US, so a `for`
+    // walks it live, one pull per iteration, the way it walks an endless one.
+    bool streaming = false;
     // A `gather` block, which is not run until something pulls from it. Its
     // finiteness is therefore UNKNOWN until then, and `.is-lazy` — the one
     // question that inspects a sequence without consuming it — forces that
@@ -1719,7 +1725,10 @@ public:
     static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
-    Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr);
+    // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
+    // CHECK — and stop short of the mainline.
+    Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
+                     bool checkOnly = false);
     // ---- REPL support (src/Repl.cpp) ----------------------------------------
     // A REPL never calls run(): it keeps ONE Interpreter alive and feeds it
     // evalString per line, so the mainline scope IS the session. These two cover

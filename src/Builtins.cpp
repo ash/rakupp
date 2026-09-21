@@ -397,10 +397,14 @@ using ChildChunkSink = std::function<void(bool isErr, const char* data, size_t n
 // A started-but-unreaped child.
 struct SpawnedChild {
     long long pid = 0; // 0 = the spawn failed
+    // WHY it failed, when it did. On Windows that is CreateProcess's own text;
+    // on POSIX it is reconstructed from the errno the child sends back through
+    // the exec-status pipe, since a failed execvp is otherwise indistinguishable
+    // from a program that ran and exited 127.
+    std::string spawnErr;
 #if defined(_WIN32)
     HANDLE hProcess = nullptr;
     HANDLE outR = nullptr, errR = nullptr; // pipe read ends (nullptr: not captured)
-    std::string spawnErr;                  // CreateProcess failure text
 #else
     int outFd = -1, errFd = -1;            // pipe read ends (-1: not captured)
     bool reaped = false;                   // the zombie sweep already waitpid()ed it…
@@ -575,13 +579,24 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
     int pipefd[2] = {-1, -1}, errfd[2] = {-1, -1};
     if (io.captureOut && pipe(pipefd) != 0) return sc;
     if (io.captureErr && pipe(errfd) != 0) { if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); } return sc; }
+    // The exec-status pipe. Its write end is CLOEXEC, so a SUCCESSFUL execvp
+    // closes it silently and the parent reads end-of-file; a FAILED one has the
+    // child write its errno through first. That is the only way to tell "no such
+    // command" from "the command ran and exited 127" — and the difference is
+    // visible: Rakudo reports a failed spawn as exit code -1 with an `OS error`
+    // clause naming the reason (roast S29-os/system.t asserts both).
+    int xfd[2] = {-1, -1};
+    const bool haveX = pipe(xfd) == 0;
+    if (haveX) fcntl(xfd[1], F_SETFD, FD_CLOEXEC);
     pid_t pid = fork();
     if (pid < 0) {
         if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); }
         if (io.captureErr) { close(errfd[0]); close(errfd[1]); }
+        if (haveX) { close(xfd[0]); close(xfd[1]); }
         return sc;
     }
     if (pid == 0) { // child — async-signal-safe only from here
+        if (haveX) close(xfd[0]);
         if (ownPgroup) setpgid(0, 0); // only when a timeout may have to kill the group
         if (io.stdinFd >= 0) dup2(io.stdinFd, STDIN_FILENO);
         if (io.captureOut) dup2(pipefd[1], STDOUT_FILENO);
@@ -600,7 +615,28 @@ static SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const 
         if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
         if (envKV) environ = cenv.data();
         execvp(cargv[0], cargv.data());
+        if (haveX) { int e = errno; ssize_t w = write(xfd[1], &e, sizeof e); (void)w; }
         _exit(127);
+    }
+    // Wait for the exec to resolve — microseconds, and the only place the parent
+    // can learn that the program does not exist.
+    if (haveX) {
+        close(xfd[1]);
+        int childErrno = 0;
+        ssize_t n;
+        while ((n = read(xfd[0], &childErrno, sizeof childErrno)) == -1 && errno == EINTR) {}
+        close(xfd[0]);
+        if (n == (ssize_t)sizeof childErrno) {   // execvp never got off the ground
+            int st = 0;
+            while (waitpid(pid, &st, 0) == -1 && errno == EINTR) {}   // it has already _exit'ed
+            if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); }
+            if (io.captureErr) { close(errfd[0]); close(errfd[1]); }
+            std::string why = std::strerror(childErrno);
+            if (!why.empty()) why[0] = (char)ascii::tolower((unsigned char)why[0]); // libuv's own casing
+            sc.spawnErr = "Failed to spawn process " + argv[0] + ": " + why +
+                          " (error code -" + std::to_string(childErrno) + ")";
+            return sc;                                                // pid stays 0: "never ran"
+        }
     }
     sc.pid = (long long)pid;
     // parent: don't let a concurrent spawn (another worker) inherit our read ends
@@ -770,7 +806,8 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
                          bool errInherit = false, int outMode = 1,
                          const ChildChunkSink* sink = nullptr,
                          std::exception_ptr* sinkErr = nullptr,
-                         int stdinFd = -1, bool mergeErr = false) {
+                         int stdinFd = -1, bool mergeErr = false,
+                         std::string* spawnErrOut = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -787,7 +824,14 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     io.mergeErr = mergeErr;
     SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io, timeoutSec > 0);
     if (!sc.pid) {
+        // The command never started: exitCode stays -1, and the caller that
+        // asked for the reason gets it to put in the Proc (Rakudo's `OS error`).
+        if (spawnErrOut) *spawnErrOut = sc.spawnErr;
 #if defined(_WIN32)
+        // Windows has always ALSO reported it on the spot, and keeps doing so:
+        // there, a CreateProcess failure is the only diagnostic a caller gets.
+        // POSIX never printed anything here and still does not — Rakudo does not
+        // either, and the reason now reaches the caller through the Proc.
         if (!sc.spawnErr.empty()) {
             if (errOut) *errOut = sc.spawnErr + "\n"; else std::cerr << sc.spawnErr << "\n";
         }
@@ -5769,6 +5813,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range &&
         !(inv.t == VT::Type && inv.s == "Supply") &&
         (inv.t != VT::Hash || dateish(inv))) {
+        // …except that `.are(T)` on a TYPE OBJECT asks about the invocant
+        // itself, not about a one-element list around it, and says so: Rakudo's
+        // `Any:U:` candidate reports "Expected 'Str' but got 'Int'" with no
+        // element index, where the `Any:D:` one appends " in element 0"
+        // (roast S29-any/are.t asserts both wordings side by side).
+        if (m == "are" && !args.empty() && inv.t == VT::Type) {
+            if (applyArith("~~", inv, args[0]).truthy()) return Value::boolean(true);
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+            (*f.hash())["message"]   = Value::str("Expected '" + typeOfVal(args[0]) +
+                                                  "' but got '" + typeOfVal(inv) + "'");
+            return f;
+        }
         Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
         return methodCall(one, m, args, rwArgs);
     }
@@ -7393,6 +7450,28 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         o.obj()->cls = classes_["CompUnit::PrecompilationId"];
         o.obj()->attrs["id"] = Value::str(args.empty() ? "" : args[0].toStr());
         return o;
+    }
+    // CompUnit::Loader.load-source($blob) — compile and run a source blob, and
+    // hand back the CompUnit::Handle for it. `.unit` is the compilation unit's
+    // static lexpad; the one entry anything asks for is `$?PACKAGE`, and the
+    // answer is GLOBAL — a `BEGIN EVAL` inside the source compiles in its own
+    // unit and must not leave its package behind (roast S29-context/eval.t).
+    if (inv.t == VT::Type && inv.s == "CompUnit::Loader" &&
+        (m == "load-source" || m == "load-source-file")) {
+        std::string text = args.empty() ? std::string() : args[0].toStr(); // a Blob's bytes ARE its UTF-8
+        if (m == "load-source-file") {
+            std::ifstream in(text);
+            if (!in) throwFailedOpen(text);
+            std::ostringstream ss; ss << in.rdbuf();
+            text = ss.str();
+        }
+        evalString(text, /*mainlinePH=*/true);
+        Value unit = Value::makeHash();
+        (*unit.hash())["$?PACKAGE"] = Value::typeObj("GLOBAL");
+        Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
+        h.obj()->cls = classes_["CompUnit::Handle"];
+        h.obj()->attrs["unit"] = unit;
+        return h;
     }
     // CompUnit::PrecompilationRepository::Default.try-load($dependency) — compile
     // the dependency's source and hand back a handle whose `.unit` holds its
@@ -12691,9 +12770,11 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(died);
     };
     B["EVAL"] = [](Interpreter& I, ValueList& a) -> Value {
-        Value code; bool haveCode = false;
+        Value code; bool haveCode = false, checkOnly = false;
         for (auto& v : a) {
-            if (v.t == VT::Pair && v.s == "lang") {
+            if (v.t == VT::Pair && v.s == "check") {
+                checkOnly = v.pairVal() ? v.pairVal()->truthy() : true;
+            } else if (v.t == VT::Pair && v.s == "lang") {
                 std::string lang = v.pairVal() ? v.pairVal()->toStr() : "";
                 if (lang != "Raku" && lang != "Perl6")
                     // the payload slot takes the exception TYPE, not a message —
@@ -12704,6 +12785,14 @@ void Interpreter::registerBuiltins() {
             } else if (v.t != VT::Pair && !haveCode) { code = v; haveCode = true; }
         }
         if (!haveCode) return Value::any();
+        // A Callable is not a program. `EVAL { ... }` was Perl 5's block eval,
+        // and in Raku it is almost always a `try` that lost its keyword — so
+        // Rakudo names that rather than stringifying the block and compiling
+        // its gist (roast S29-context/eval.t, "block EVAL is gone").
+        if (code.t == VT::Code)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "EVAL() in Raku is intended to evaluate strings or ASTs, "
+                "did you mean 'try'?"};
         // `EVAL $node` — the SUB form over a RakuAST tree, which is how
         // Intl::Format::Number runs the formatters it builds
         // (`EVAL format-number-rakuast |c`). Rakudo takes a node here as
@@ -12715,7 +12804,7 @@ void Interpreter::registerBuiltins() {
         // control flow may not escape an EVAL: a top-level `return`/`next`/… in
         // the string is X::ControlFlow, not a silent unwind of the whole program
         // evalString itself converts escaping control flow (routine-aware)
-        return I.evalString(code.toStr(), /*mainlinePH=*/true);
+        return I.evalString(code.toStr(), /*mainlinePH=*/true, /*incompleteOut=*/nullptr, checkOnly);
     };
     // EVALFILE($path, :$lang) — Rakudo's is `EVAL slurp($filename), :$lang`,
     // so the file is read first (a missing one dies before the language is
@@ -13047,9 +13136,10 @@ void Interpreter::registerBuiltins() {
         // what this used to do — made every streaming child silent until it
         // finished (issue #51: a runner relaying a build's progress).
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
+        std::string spawnErr;   // set only when the program could not be started at all
         spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
                      haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,
-                     merge);
+                     merge, &spawnErr);
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd); // the child holds its own copy
 #endif
@@ -13059,6 +13149,10 @@ void Interpreter::registerBuiltins() {
         // Neither stream needs echoing any more: an un-adverbed child wrote to
         // our own descriptors while it ran.
         storeProcStatus(p, code); // exitcode + signal
+        // A command that never started reports exit code -1 — not the 127 the
+        // stillborn child happened to exit with — and carries the reason, which
+        // the sink appends as Rakudo's `(OS error = …)` line.
+        if (!spawnErr.empty()) (*p.hash())["os-error"] = Value::str(spawnErr);
         (*p.hash())["out-str"] = Value::str(out);
         (*p.hash())["err-str"] = Value::str(err);
         (*p.hash())["timedout"] = Value::boolean(timedout); // the shape the comment above promises
@@ -13326,7 +13420,23 @@ void Interpreter::registerBuiltins() {
             }
             return out;
         }
-        while (std::getline(std::cin, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr()->push_back(Value::str(line)); }
+        // Standard input is STREAMED, one line per pull. Slurping to EOF first is
+        // a deadlock whenever the writer is still open — which is precisely how a
+        // `-ne` child is driven through a Proc::Async pipe, so `last if /2/` never
+        // got to run and the parent's `await` never returned (roast
+        // S29-os/system.t). The `-n`/`-p` record loop is written over this.
+        {
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = true;
+            st->appendNext = [](ValueList& cache) -> bool {
+                std::string l;
+                if (!std::getline(std::cin, l)) return false;
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                cache.push_back(Value::str(l));
+                return true;
+            };
+            out.extM() = st;
+        }
         return out;
     };
     B["get"] = [](Interpreter&, ValueList&) -> Value {
@@ -15752,8 +15862,16 @@ void Interpreter::registerBuiltins() {
     };
     B["VAR"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; }; // container introspection: value is its own container
     B["sink"] = [](Interpreter& I, ValueList& a) -> Value {
-        // sink EXPR / sink { … }: evaluate for side effects, discard the value
-        if (!a.empty() && a[0].t == VT::Code) { ValueList none; I.callCallable(a[0], none); }
+        // sink EXPR / sink { … }: evaluate for side effects, and SINK the value
+        // rather than merely dropping it. Rakudo's `sink` is `x.sink`, so an
+        // unhandled Failure detonates here and an unsuccessful Proc throws
+        // X::Proc::Unsuccessful — the same rule a statement in sink context
+        // follows. Dropping it silently made `sink $proc` the one way to discard
+        // a failed child without hearing about it (roast S29-os/system.t).
+        for (auto& v : a) {
+            if (v.t == VT::Code) { ValueList none; I.sinkReturnedValue(I.callCallable(v, none)); }
+            else I.sinkReturnedValue(v);
+        }
         return Value::nil();
     };
     // sub forms that delegate to the same-named method, invocant first

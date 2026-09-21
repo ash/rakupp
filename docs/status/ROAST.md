@@ -126,14 +126,14 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S13 | Overloading | 5 | 1 | 0 | 1 | 64/71 | 90% |
 | S14 | Roles | 6 | 17 | 0 | 2 | 282/333 | 85% |
 | S15 | Unicode / strings / NFG | 77 | 4 | 0 | 0 | 91799/91807 | 100% |
-| S16 | I/O | 17 | 17 | 0 | 3 | 430/575 | 75% |
+| S16 | I/O | 18 | 16 | 0 | 3 | 580/749 | 77% |
 | S17 | Concurrency (supply/promise/async) | 74 | 18 | 4 | 3 | 1306/1360 | 96% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 6/7 | 86% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
 | S26 | Documentation (POD) | 7 | 20 | 0 | 0 | 402/587 | 68% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
-| S29 | Builtins & context | 9 | 4 | 1 | 0 | 411/417 | 99% |
+| S29 | Builtins & context | 14 | 0 | 0 | 0 | 465/465 | 100% |
 | S32 | Standard types (str/list/num/…) | 136 | 114 | 1 | 12 | 42967/44615 | 96% |
 | integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1161/1240 | 94% |
 | 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 646/723 | 89% |
@@ -149,6 +149,12 @@ while many of its files still don't run at all — read it alongside No-TAP.
   assertion rate is high.
 - **S01** is fully green: those files skip-all unless a Perl-5 interop bridge
   exists, and Raku++ handles the skip path spec-correctly.
+- **S29** (builtins & context) is fully green too, and on the harder bar: its 14
+  files run real work — `EVAL`, `run`/`shell`, `ord`/`chr`, `sleep`, `exit` —
+  and all 465 assertions pass. The last five arrived in one sitting; the one
+  that had been hiding was `S29-os/system.t`, which did not merely fail but
+  **hung**, because `-n`'s record loop read standard input to EOF before running
+  the body and the child it drove was waiting on the parent.
 - **S32** (standard types), **S05** (regexes) and **S17** (concurrency) are the
   biggest pools of *reachable* work — high partial counts mean the files run but
   trip a long tail of individual assertions.
