@@ -38,7 +38,41 @@ my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
-my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // 10).Int; # parallel-mode legs need headroom:
+
+# WHICH engine is being measured. `$*EXECUTABLE` is whatever ran this file, and
+# running the harness under a foreign compiler is a supported, useful thing to do
+# — `rakudo tools/run-roast.raku` scores Rakudo on exactly this bar. But two
+# things here are calibrated for RAKUPP specifically: the ceiling below and the
+# roast.times demand estimates. Applied to another engine they do not merely go
+# stale, they silently truncate its run. So identify the engine once, here, and
+# let both adapt.
+#
+# binary-version() recognises only the Raku++ banner and returns 'unknown' for
+# anything else — that is the detection. The second spawn happens on the foreign
+# path alone, so a rakupp run still pays exactly one --version, as before.
+sub engine-id($path) {
+    my $v = binary-version($path);
+    return ('rakupp', $v) unless $v eq 'unknown';
+    my $p = run($path, '--version', :out, :err);
+    my $t = $p.out.slurp(:close); $p.err.slurp(:close);
+    return ('rakudo', ~$<v>) if $t ~~ / 'Rakudo' \D*? $<v>=[ 'v'? \d+ ['.' \d+]* ] /;
+    return ('other', ($t.lines[0] // '').trim || 'unknown');
+}
+my ($ENGINE, $ENGINE-VER) = engine-id($BIN);
+my $FOREIGN = $ENGINE ne 'rakupp';
+
+# The ceiling is a RAKUPP budget and it does not travel. Measured serially on an
+# idle 8-core box: the 81 S15 files take 10 s of wall under rakupp and 160 s
+# under Rakudo — 16x — and the heavy ones land at 3-4 s each (nfkd-9.t 4.1 s,
+# nfd-9.t 4.1 s, nfc-9.t 3.9 s), with nfc-concat.t at 23 s. At the default two
+# workers per core, a 3-4 s file needs only ~2.5x of contention slowdown to cross
+# 10 s — and S15 alone is 85,079 of the suite's 146,380 statically declared
+# tests. That is how a Rakudo run reported 76,285 declared tests for a suite
+# that declares ~216,000: not because its files are slow, because they are
+# ordinary files measured against another engine's stopwatch. A foreign engine
+# gets 6x the budget; ROAST_TIMEOUT still wins if it is set.
+my $TIME-SCALE = $FOREIGN ?? 6 !! 1;
+my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // (10 * $TIME-SCALE)).Int; # parallel-mode legs need headroom:
     # under RAKUPP_PARALLEL a thread-spawning file pays real contention (cas
     # retries, worker scheduling) that the GIL leg never sees — thread.t takes
     # ~20 s there and PASSES. The GIL baseline keeps the default 10.
@@ -234,6 +268,18 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
     else { @patterns.push($a) }
 }
+# roast.times describes rakupp. Under another engine its wall times and CPU
+# samples are not just stale, they are actively harmful: they report the S15
+# normalization files at ~0.0 s of CPU (true — rakupp runs all 81 in 10 s), so
+# the admission controller admits every one of them at once, which is precisely
+# the contention that pushes a 3-4 s Rakudo file past the ceiling. The estimates
+# and the ordering both come from that file, so a foreign engine gets neither
+# unless --times was given explicitly.
+if $FOREIGN && !$TIMES-GIVEN {
+    $TIMESFILE = '';
+    note "run-roast: measuring $ENGINE, not rakupp — ignoring rakupp's roast.times "
+       ~ "(pass --times=FILE to record and reuse this engine's own).";
+}
 # ---------------------------------------------------------------------------
 # Provenance. A run of this harness produces the release's headline figure and
 # the file list the NEXT release diffs against, and until now it recorded
@@ -284,7 +330,33 @@ sub roast-untracked(--> Set) {
 }
 my $BEFORE = roast-untracked();
 
-my $PROVENANCE = "rakupp {binary-version($BIN)} ($BIN) | roast {roast-revision()} ($ROOT)"
+# Rakudo does not apply `#?rakudo` fudge directives itself — its own spectest runs
+# Roast's `fudge` first, and Raku++ applies the same directives in its lexer
+# (applyRakudoFudge in src/Lexer.cpp). A foreign engine pointed at a RAW checkout
+# is therefore scored on a bar neither engine actually uses: the directives sit
+# there as comments, and every test they exist to skip runs and fails. The gap is
+# not small — docs/dev/findings/ROAST-CEILING-2026-09-17.md measured Rakudo at
+# 1,433 of 1,464 files on a fudged checkout. Sample what we are about to run and
+# say so before the provenance line, beside the roast.times notice, so both
+# warnings about "this is not how you measure another engine" arrive together.
+# Foreign path only: a rakupp run reads nothing extra.
+if $FOREIGN && @files {
+    my $sample = 40 min @files.elems;
+    my $raw = 0;
+    for @files.pick($sample) -> $f {
+        $raw++ if $f.IO.lines.first({ .trim.starts-with('#?rakudo') });
+    }
+    if $raw {
+        note "run-roast: $ENGINE is measured against a RAW Roast checkout — $raw of "
+           ~ "$sample sampled files still carry #?rakudo fudge directives, which "
+           ~ "$ENGINE does not apply itself. Fudge a worktree first (`fudgeall "
+           ~ "--keep-exit-code --version=v6.d rakudo.moar`) and point \$ROAST at it, "
+           ~ "or the figures understate it badly. "
+           ~ "See docs/dev/findings/ROAST-CEILING-2026-09-17.md.";
+    }
+}
+
+my $PROVENANCE = "{$ENGINE} {$ENGINE-VER} ($BIN) | roast {roast-revision()} ($ROOT)"
                 ~ ($BEFORE ?? " + {$BEFORE.elems} untracked" !! '')
                 ~ " | {@files.elems} files | workers $WORKERS";
 say "run-roast: $PROVENANCE";
@@ -325,6 +397,9 @@ my $tot-plan = 0;
 my $notap-declared = 0;   # tests declared by no-TAP files that never emitted a plan (all failing)
 my $notap-counted  = 0;   # how many no-TAP files we recovered a static plan from
 my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncountable
+my $timeout-declared = 0; # tests declared by timed-out files that never emitted a plan
+my $timeout-counted  = 0; # how many timed-out files we recovered a static plan from
+my $timeout-unknown  = 0; # timed-out files with no static plan to recover
 # Per-section rollups for the by-synopsis table.
 my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
 
@@ -469,7 +544,10 @@ my $sampler = start {
 # other workers' child processes instead of serialising afterwards.
 my sub run-one($f) {
     my $rel = $f.substr($ROOT.chars + 1);
-    my ($out, $timedout) = run-with-timeout($BIN, $f, %SLOW-FILES{$rel} // $TIMEOUT);
+    # %SLOW-FILES values are rakupp seconds too: a spec-driven wall time still has
+    # the engine's own work wrapped around it, so they scale with everything else.
+    my $cap = %SLOW-FILES{$rel} ?? %SLOW-FILES{$rel} * $TIME-SCALE !! $TIMEOUT;
+    my ($out, $timedout) = run-with-timeout($BIN, $f, $cap);
     my $cpu = $lock.protect({ %cpu-sample{$f} });   # the last look the sampler took while it ran
     my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
     # New fields go on the END: the unpack below is positional.
@@ -488,7 +566,36 @@ my sub tally($k) {
     if $timedout {
         $timeout++;
         %sec-time{$sec}++;
-        say "  [TIME]          ", $rel;
+        # A timed-out file used to `return` right here, contributing nothing to
+        # the numerator AND nothing to any denominator — its tests did not count
+        # against the engine, they ceased to exist. That made the headline depend
+        # on how much of the suite the engine could finish in time: kill enough
+        # files and the ratio improves. It is the same hole measure 4 was built to
+        # close for parse errors (see COUNTING.md), left open for the clock.
+        #
+        # A timeout is now scored exactly like a mid-plan abort: credit what it
+        # emitted before the kill (run-with-timeout returns that output, and
+        # run-one has already parsed it), and charge the rest of its plan. The
+        # file bar is untouched — a timeout has never been a fully-passing file
+        # and still is not, so the --list gate diffs the same as before.
+        $tot-ran  += $ran;
+        $tot-pass += $passed;
+        $tot-skip += $skipped;
+        $tot-todofail += $todofail;
+        %sec-pass{$sec} += $passed;
+        %sec-tot{$sec}  += $ran;
+        if $planned >= 0 {
+            $tot-plan += $planned;          # it announced N before the clock ran out
+        }
+        else {
+            # Killed before it could announce a plan. Recover N from source, the
+            # way the no-TAP branch does; measure 3 is defined over files that
+            # emitted a plan, so this lands in measure 4 only.
+            my $sp = static-plan($f);
+            if $sp > 0 { $timeout-declared += $sp; $timeout-counted++ }
+            else       { $tot-plan += $ran; $timeout-unknown++ }
+        }
+        say sprintf('  [TIME]  %5s  %s', "$passed/$ran", $rel);
         return;
     }
     $tot-ran  += $ran;
@@ -653,7 +760,7 @@ if $TIMES-GIVEN && $TIMESFILE {
     }
 }
 
-my $declared = $tot-plan + $notap-declared;  # every test any file declares it will run
+my $declared = $tot-plan + $notap-declared + $timeout-declared;  # every test any file declares it will run
 my $fpct  = @files.elems ?? 100 * $pass     / @files.elems !! 0;
 my $rpct  = $tot-ran     ?? 100 * $tot-pass / $tot-ran     !! 0;
 my $ppct  = $tot-plan    ?? 100 * $tot-pass / $tot-plan    !! 0;
@@ -665,8 +772,9 @@ say sprintf("Wall time:            %.1f s  (%d workers)", (now - $T0).Num, $WORK
 say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP files read from source; %d more have no static plan)",
-            $tot-pass, $declared, $dpct, $notap-declared, $notap-counted, $notap-unknown);
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP and +%d from %d timed-out files, read from source; %d more have no static plan)",
+            $tot-pass, $declared, $dpct, $notap-declared, $notap-counted,
+            $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown);
 # What the pass count is SHIELDED by. Both categories are legitimately counted as
 # passes above; this line says how many, so the headline can be read net.
 my $shielded = $tot-skip + $tot-todofail;
