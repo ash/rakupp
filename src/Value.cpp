@@ -48,6 +48,7 @@ static PtrCensusDump g_ptrCensusDump;
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
+TypeDispNameFn g_typeDispName = nullptr; // installed by Interpreter.cpp (see Value.h)
 ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 MakeTypedExFn g_makeTypedEx = nullptr; // installed by Interpreter.cpp (see Value.h)
@@ -683,8 +684,11 @@ std::string Value::gist() const {
             // attached (`Array[Int]` is `(Array[Int])`), and `.raku`/`.^name` keep
             // answering the full name.
             {
-                std::string short_ = s;
-                auto sep = short_.rfind("::");
+                // a ROLE PUN gists under the name it was written with, not the
+                // registry key that keeps two `Foo[Int]` the same type
+                std::string short_ = g_typeDispName ? g_typeDispName(s) : std::string();
+                if (short_.empty()) short_ = s;
+                auto sep = short_.rfind("::", short_.find('['));
                 if (sep != std::string::npos) short_ = short_.substr(sep + 2);
                 return "(" + (ofType().empty() ? short_ : short_ + "[" + ofType() + "]") + ")";
             }

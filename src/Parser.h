@@ -133,6 +133,18 @@ private:
     // reading Rakudo gives once `&div` is in scope. Filled from this file's own
     // declarations and from scanOpsIn's read of an imported module's source.
     std::set<std::string> wordInfixSubs_;
+    // Statement KEYWORDS this unit also declares as routines (`sub if {…}`).
+    // Tight against `(`, such a name is that routine's CALL and not the keyword
+    // — the rule Rakudo spells `<.end_keyword>`. Gated on the declaration
+    // having been seen, so a bare `if(1) {…}` keeps the reading, and the
+    // diagnostic, it always had. See kNeedsEndKeyword in Parser.cpp.
+    std::set<std::string> kwNamedSubs_;
+    // The end_keyword question in one place: is the identifier `n` a keyword
+    // this unit declares a routine for, written TIGHT against the paren that
+    // calls it? Then it is that call, and no keyword branch may claim it.
+    bool kwCallHere(const std::string& n) const {
+        return kwNamedSubs_.count(n) && peek().kind == Tok::LParen && !peek().spaceBefore;
+    }
     // Quote-form keywords an imported module declares as subs (`sub tr`). The
     // lexer decided those before this file's `use` was parsed, so learning one
     // re-lexes what is left of the unit with the quote form vetoed.
@@ -358,6 +370,10 @@ private:
     ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
     ExprPtr qqwwWordItem(const std::string& w);   // one «…»/<<…>>/qqww word with qq:ww:v semantics
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
+    // The EXTENDED NAME suffix glued to a variable: `:foo`, `:foo<a b>`,
+    // `:foo«a b»`, `:foo['a','b']`, `:foo('a','b')`. All of them name the SAME
+    // symbol, so the answer is canonical — Rakudo's angle spelling.
+    std::string readExtendedNameSuffix();
 };
 
 } // namespace rakupp

@@ -5175,7 +5175,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return r;
                 }
             }
-            if (m == "raku") return Value::str(inv.s); // type-object .raku is the bare name
+            if (m == "raku") { // type-object .raku is the bare name (a pun: its display one)
+                std::string d = g_typeDispName ? g_typeDispName(inv.s) : std::string();
+                return Value::str(d.empty() ? inv.s.str() : d);
+            }
             if (m == "gist") return Value::str(inv.gist()); // `(ShortName)` — see Value::gist
             if (m == "Str") return Value::str(""); // type objects stringify empty
         }
@@ -6295,7 +6298,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return methodCall(inv.obj()->boxed, "can", ValueList{args});
         return out;
     }
-    if (inv.t == VT::Type && m == "raku") return Value::str(inv.s); // Int.raku -> "Int" (no parens)
+    if (inv.t == VT::Type && m == "raku") { // Int.raku -> "Int" (no parens)
+        // …and a role pun by the name it was written with, `Foo[Int]`
+        std::string d = g_typeDispName ? g_typeDispName(inv.s) : std::string();
+        return Value::str(d.empty() ? inv.s.str() : d);
+    }
     // An OBJECT's gist is the interpreter's — Class.new(attr => …), a user .gist
     // method, an exception's message. Value::gist() has no access to any of that
     // and falls back to `Class<obj>`, so `say $x` and `say $x.gist` disagreed.

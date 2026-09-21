@@ -8160,6 +8160,27 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // sorting where the EVAL itself sits in its unit.
     EndUnitScope endUnit{*this, /*atSourcePosition=*/false};
     registerEnds(*prog);
+    // Pre-declare the unit's own top-level `my`s, as the MAINLINE does above —
+    // in Raku a declaration is a compile-time effect, so the container exists
+    // before the line that initialises it runs, and `(my @a) = […@a…]` can name
+    // the very variable it declares. EVAL'd code got none of that and died
+    // "Variable '@a' is not declared", which is how `.raku` of a
+    // self-referential array — whose whole rendering is that shape — could not
+    // be read back (roast S02-names-vars/list_array_perl.t).
+    for (auto& s : prog->stmts) {
+        if (s->kind != NK::ExprStmt) continue;
+        Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
+        if (!e || e->kind != NK::Assign) continue;
+        Expr* t = static_cast<Assign*>(e)->target.get();
+        if (!t || t->kind != NK::VarExpr) continue;
+        auto* ve = static_cast<VarExpr*>(t);
+        // only a plain `my`: `state`, `our` and the trait/parameterized forms
+        // own machinery that the declaration itself has to run
+        if (!ve->declare || ve->declScope != "my" || ve->name.empty()) continue;
+        if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) continue;
+        if (tctx_.cur->local(ve->name)) continue;
+        tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
+    }
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
@@ -9369,6 +9390,26 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     auto pun = std::make_shared<ClassInfo>(*role);
     static int punSerial = 0;
     pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
+    // …and what to CALL it: `Foo[Int]`, the way it was written, the way Rakudo
+    // answers `.^name` and the way `.^shortname` shortens. The key above cannot
+    // double as that — it carries a serial so the SAME parameterization written
+    // twice stays one type — so the display form rides alongside it. A nested
+    // parameter uses ITS display form, which is how `Baz[Foo[Int],Bar[Int]]`
+    // comes out whole (roast S02-names-vars/names.t).
+    {
+        std::string args;
+        for (auto& a : argv) {
+            if (a.namedArg) continue;
+            if (!args.empty()) args += ",";
+            if (a.t == VT::Type) {
+                auto ci = classes_.find(a.s);
+                args += (ci != classes_.end() && !ci->second->dispName.empty())
+                            ? ci->second->dispName : a.typeName();
+            }
+            else args += g_rakuRepr ? g_rakuRepr(a) : a.toStr();
+        }
+        pun->dispName = args.empty() ? roleName : roleName + "[" + args + "]";
+    }
     if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     pun->roleParamBindings.clear();
@@ -15841,6 +15882,15 @@ static void forceLazyImpl(const Value& v) {
     }
     g_cbInterp->materializeLazy(v, 1000000);
 }
+// The display name of a registry key — see ClassInfo::dispName. Reads the live
+// class registry through g_matchClasses, so a free function suffices and Value
+// can call it without knowing about the Interpreter.
+static std::string typeDispNameImpl(const std::string& key) {
+    if (!g_matchClasses) return std::string();
+    auto it = g_matchClasses->find(key);
+    return it == g_matchClasses->end() || !it->second ? std::string() : it->second->dispName;
+}
+static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
 
 // The g_makeTypedEx hook (Value.h): the free runtime helpers that raise a typed

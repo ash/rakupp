@@ -1002,6 +1002,13 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// A ROLE PUN's class name is an internal key (`Foo\x01pun3`), because two
+// `Foo[Int]` written apart have to be one type and a key is what the registry
+// indexes. What a user should SEE is `Foo[Int]`, and only the class registry —
+// which lives on the Interpreter — knows the mapping. Installed from there;
+// answers an empty string for a name that has no display form of its own.
+using TypeDispNameFn = std::string (*)(const std::string&);
+extern TypeDispNameFn g_typeDispName;
 // Exact binary arithmetic, for the few places in Value that must step or compare
 // in the full numeric tower (a Range whose carried endpoints are bignums).
 using ApplyArithFn = Value (*)(const std::string&, const Value&, const Value&);
@@ -1125,6 +1132,12 @@ inline constexpr const char* ATTR_ROLES_KEY = "\x01roles";
 
 struct ClassInfo {
     std::string name;
+    // What this type should be CALLED in output, when that differs from the
+    // registry key in `name`. Only a role pun has one: its key carries a serial
+    // (`Foo\x01pun3`) so that two identical parameterizations stay one type,
+    // while what the user wrote — and what `.^name` must answer — is `Foo[Int]`.
+    // Empty everywhere else, which is the signal to use `name`.
+    std::string dispName;
     std::shared_ptr<ClassInfo> parent;
     std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
