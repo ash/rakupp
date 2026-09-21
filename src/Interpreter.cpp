@@ -30030,6 +30030,12 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     return out;
 }
 
+// The `*`-twigil dynamics live at one rule completion, hung on that rule's
+// ParseNode as an opaque `shared_ptr<const void>` (Regex.h cannot see Value).
+// Produced by hooks.captureDyn, consumed by `build`; both live in grammarParse
+// below, so the cast back is local to this file.
+using GrammarDynSnap = std::vector<std::pair<std::string, Value>>;
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
                                 const ValueList* ruleArgs, long startPos, long* consumedEnd) {
@@ -30333,6 +30339,33 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto s = std::static_pointer_cast<GState>(v);
         tctx_.cur->vars = s->vars;
     };
+    // …and the reason a rule's `:my %*FOO` has to be carried on the NODE rather
+    // than simply left in the scope: the restore above wipes it when the rule
+    // exits, while that rule's ACTION does not run until the whole parse is over
+    // (actions replay bottom-up from the recorded tree — see `build`). Only a
+    // `:my` in TOP used to survive, because TOP is not entered through the
+    // subrule path and so nothing rolls it back; an action could read a dynamic
+    // declared in TOP and in no other rule. Rakudo runs the action inside the
+    // rule's own frame, where every enclosing `:my` is visible, so a node
+    // snapshots the `*`-twigil dynamics live at its completion and `build` puts
+    // them back for that node's whole subtree.
+    //
+    // Only nodes beneath a `:my` SUBRULE get here at all: the matcher keeps a
+    // depth count (dynScopeDepth_) and does not call this when it is zero, so a
+    // grammar that declares no dynamics — and most nodes of one that does —
+    // pays one integer test per completion, not a call. When it is called the
+    // scan is over matchScope, the small isolated map the comment below
+    // describes, which holds a handful of entries.
+    gm.hooks.captureDyn = [this]() -> std::shared_ptr<const void> {
+        if (!tctx_.cur) return nullptr;
+        std::shared_ptr<GrammarDynSnap> snap;
+        for (auto& kv : tctx_.cur->vars) {
+            if (kv.first.size() < 2 || kv.first[1] != '*') continue;
+            if (!snap) snap = std::make_shared<GrammarDynSnap>();
+            snap->push_back({kv.first, kv.second});
+        }
+        return snap;
+    };
 
     // `<.name>` where `name` is an ordinary METHOD of the grammar (issue #64):
     // Rakudo dispatches every subrule call as a method call on the cursor, so
@@ -30403,6 +30436,33 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Turn the recorded parse tree into Match values, running actions bottom-up
     // so `$<child>.made` is available to a parent's action.
     std::function<Value(const ParseNode&)> build = [&](const ParseNode& pn) -> Value {
+        // Put this node's dynamic scope back for the whole subtree. It has to
+        // go on BEFORE the children are built, not just around this node's own
+        // make and action: the rule that DECLARES `:my %*FOO` is an ancestor of
+        // the rules whose actions read it, and those actions fire on the way
+        // back up from here. A nested declaration simply overlays again and
+        // restores to this one, so the nesting comes out as it was at match
+        // time. Restored when this frame leaves, so a sibling inherits nothing.
+        struct DynOverlay {
+            std::shared_ptr<Env> env;
+            std::vector<std::pair<std::string, Value>> prev;  // names we shadowed
+            std::vector<std::string> added;                   // …and names we introduced
+            ~DynOverlay() {
+                if (!env) return;
+                for (auto& kv : prev)  env->vars[kv.first] = kv.second;
+                for (auto& n  : added) env->vars.erase(n);
+            }
+        } dynOverlay;
+        if (pn.dynScope && tctx_.cur) {
+            auto snap = std::static_pointer_cast<const GrammarDynSnap>(pn.dynScope);
+            dynOverlay.env = tctx_.cur;
+            for (auto& kv : *snap) {
+                auto it = tctx_.cur->vars.find(kv.first);
+                if (it != tctx_.cur->vars.end()) dynOverlay.prev.push_back({kv.first, it->second});
+                else                             dynOverlay.added.push_back(kv.first);
+                tctx_.cur->vars[kv.first] = kv.second;
+            }
+        }
         Value mv = Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
         // Names captured INSIDE a positional group belong to that group's Match,
         // not to this one: `rule array { '{' ( <element> ','?)* '}' }` gives

@@ -113,6 +113,9 @@ struct GrammarHooks {
     // collect pass can measure branch lengths without polluting the commit pass.
     std::function<std::shared_ptr<void>()> saveState;
     std::function<void(std::shared_ptr<void>)> restoreState;
+    // Snapshot the `*`-twigil dynamics live right now, to hang on the node being
+    // recorded (see ParseNode::dynScope). Answers null when there are none.
+    std::function<std::shared_ptr<const void>()> captureDyn;
     // LTM subrule expansion (phase 3): hand the NFA builder a named rule's
     // PATTERN TEXT + compile flags, or answer false for anything it will not
     // vouch for (builtins unless lexically shadowed, qualified names, protos,
@@ -183,6 +186,15 @@ struct ParseNode {
     // per-iteration spans. Shared/frozen like kids; null = none.
     std::shared_ptr<const std::set<int>> listCaps;
     std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>> capReps;
+    // The `*`-twigil dynamics that were LIVE when this rule completed — its own
+    // `:my %*FOO` and every enclosing rule's. The scope has to travel with the
+    // node because actions do NOT run at the fire site: they replay bottom-up
+    // from this tree after the whole parse, by which time each subrule's exit
+    // has rolled its dynamic scope back (saveState/restoreState). Opaque here
+    // for the same reason saveState's state is — Regex.h does not know Value.
+    // Null whenever the parse declared no dynamics, which is the usual case and
+    // reduces the cost for most grammars to one null pointer per node.
+    std::shared_ptr<const void> dynScope;
 };
 
 // Result of a regex match against a subject string (byte offsets).
@@ -601,6 +613,13 @@ public:
         std::shared_ptr<const std::set<int>> listCaps; // list-valued positional capture indices
         std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>> capReps; // their per-iteration spans
     };
+    // How many `:my` subrules are currently on the stack. Zero — the answer for
+    // every grammar that declares no dynamics, and for most nodes of one that
+    // does — means there is nothing for captureDyn to find, so the node skips
+    // the hook call and the scope scan entirely. A `:my` in TOP does not count
+    // and does not need to: TOP is not entered through the subrule path, so its
+    // scope is never rolled back and is still live when the actions replay.
+    int dynScopeDepth_ = 0;
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)
     void clearMemo() { reapMemo(); }

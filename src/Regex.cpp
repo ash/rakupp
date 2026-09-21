@@ -4220,6 +4220,12 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         return false;
     }
     bool ratchet = meta.ratchet; // token/rule commit + memoize
+    // The rule's `*`-twigil dynamics, for the node about to be recorded. A
+    // RATCHET rule (every `token` and `rule`) restores the caller's dynamic
+    // scope BEFORE it records or fires — see the call below — so on that path
+    // the snapshot has to be taken while the scope is still live and carried
+    // here. Left null elsewhere, where record() can take it itself.
+    std::shared_ptr<const void> dynAtExit;
 
     // Record a completed sub-match (span + subtree) under `capKey` in the caller frame,
     // then run the caller's continuation `k`; on failure, roll the recording back.
@@ -4239,6 +4245,13 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
         pn.listNames = std::move(listNames);
         pn.listCaps = std::move(listCaps); pn.capReps = std::move(capReps);
+        // The node's action fires from this tree long after the parse, when every
+        // rule's dynamic scope has been rolled back, so the scope travels with
+        // the node. On the ratchet path the rollback has already happened by
+        // now and dynAtExit holds what was live; otherwise take it here, which
+        // is still inside the rule (its restore comes after matchNode returns).
+        if (dynAtExit) pn.dynScope = dynAtExit;
+        else if (dynScopeDepth_ && st.hooks && st.hooks->captureDyn) pn.dynScope = st.hooks->captureDyn();
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
         bool hadSpan2 = alsoRuleName && st.named.count(name);
         auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long, long>{-1, -1};
@@ -4294,6 +4307,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // caller's bindings — this is what makes indentation-style dedent work.
         std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                          ? st.hooks->saveState() : nullptr;
+        if (savedScope) dynScopeDepth_++;   // a `:my` scope is live for this rule's whole body
         MemoEntry me;
         me.listNames = re->listNamesPtr();
         me.listCaps = re->listCapsPtr();
@@ -4312,7 +4326,11 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                     : std::make_shared<const ChildMap>(std::move(sub.children));
             return true; // commit to the first complete match — ratchet never backtracks in
         });
-        if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
+        // BEFORE the restore: this is the last moment the rule's own `:my`
+        // dynamics exist, and both the action fired below and the node recorded
+        // at the bottom need them (they run when the scope is long gone).
+        if (me.matched && dynScopeDepth_ && st.hooks->captureDyn) dynAtExit = st.hooks->captureDyn();
+        if (savedScope) { st.hooks->restoreState(savedScope); dynScopeDepth_--; } // rule exited: restore caller's dynamic scope
         scope_.pop_back();
         if (!me.matched) noteFail(pos, name); // the RULE failed here (not a continuation)
         // a FRESH completion fires its action method now (memo replays reuse it) —
@@ -4324,6 +4342,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             fp.to = me.capFrom >= 0 ? me.capTo : me.end;
             fp.caps = me.caps; fp.named = me.named; fp.kids = me.kids;
             fp.listNames = me.listNames; fp.listCaps = me.listCaps; fp.capReps = me.capReps;
+            fp.dynScope = dynAtExit; // captured above, before the restore
             st.hooks->onRule(std::move(fp));
         }
         if (!memoise) {
@@ -4352,6 +4371,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     scope_.push_back(std::move(bound));
     std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                      ? st.hooks->saveState() : nullptr;   // fresh dynamic scope for `:my`
+    if (savedScope) dynScopeDepth_++;
     bool calleeMatched = false; // vs. failing in the CALLER's continuation (G1 highwater)
     bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
         calleeMatched = true;
@@ -4379,6 +4399,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             fp.to = sub.capFrom >= 0 ? sub.capTo : end;
             fp.caps = myCaps; fp.named = sub.named; fp.kids = kidsCopy;
             fp.listNames = re->listNamesPtr(); fp.listCaps = myList; fp.capReps = myReps;
+            if (dynScopeDepth_ && st.hooks->captureDyn) fp.dynScope = st.hooks->captureDyn(); // still inside the rule
             st.hooks->onRule(std::move(fp));
         }
         return finish(record(end, myCaps, sub.named,
@@ -4386,7 +4407,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                              re->listNamesPtr(), myList, myReps,
                              sub.capFrom, sub.capTo)); // rule-body `<( … )>` trims the capture
     });
-    if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
+    if (savedScope) { st.hooks->restoreState(savedScope); dynScopeDepth_--; } // rule exited: restore caller's dynamic scope
     scope_.pop_back();
     if (!calleeMatched) noteFail(pos, name); // the rule itself never completed here
     return ok;
