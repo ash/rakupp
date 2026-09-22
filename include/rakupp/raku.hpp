@@ -84,7 +84,19 @@ struct Session {
     }
 
     Session() {
-        rk = rk_new(nullptr);
+        // own_stack, which rk_new leaves off for a host that did not ask for a
+        // thread. This binding asks: the engine parses and recurses on whatever
+        // stack the CALLER happens to have, and a default-linked Windows
+        // executable has 1 MiB — enough for roughly twenty Raku frames at the
+        // ~50 KB of C++ stack each one costs. `Grammar::from_file` spends its
+        // first moments in a recursive-descent parse, so on Windows the guide's
+        // own example died in its first statement, before printing a line.
+        // The CLI, the MCP server and the Jupyter kernel all take the big stack
+        // for exactly this reason; a binding is no different.
+        RkConfig cfg{};
+        cfg.size = sizeof cfg;
+        cfg.own_stack = 1;
+        rk = rk_new(&cfg);
         if (!rk) throw RakuError("rk_new refused: an interpreter is already live in this process");
         c = rk_ctx(rk);
         if (rk_eval(rk, rk_grammar_shim(), nullptr) != RK_OK)

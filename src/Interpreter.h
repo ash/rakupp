@@ -72,6 +72,9 @@ std::vector<std::pair<std::string, int>> signalNamesAndNumbers(); // every Signa
 void srandSeed(long long s); // reseed the RNG (srand)
 void rakuppSetSeed(long long s); // --seed=N: what every thread's FIRST rand() seeds from, instead of time+pid
 void rakuppSetTrace(bool on);    // --trace: print every statement to stderr as it runs
+// The calling thread's stack size, the same measurement the recursion guard
+// takes. The embed hop reads it to decide whether the caller already has room.
+size_t rakuppCallerStackBytes();
 // --stagestats: the module loads inside a run, in the order they began, with
 // nesting depth and inclusive wall time (a `use` inside a module is deeper).
 struct StageModuleLoad { std::string name; int depth; double ms; };
@@ -2052,6 +2055,26 @@ public:
     bool gilMainlineEnter();               // outermost embed entry? (locks if engaged)
     void gilMainlineLeave(bool outermost); // release re-checks gilHeld_: the body may have engaged
     int embedGilDepth_ = 0;
+    // True between host entries and false while one is running, which is the
+    // one distinction a big-stack hop needs: an entry that arrives at depth 0
+    // came from the HOST and may hop, while one arriving deeper is a native
+    // extension re-entering mid-evaluation and is already on the right stack.
+    bool embedOutermost() const { return embedGilDepth_ == 0; }
+    // RkConfig.own_stack, as rk_new was given it. The flag says "run Raku on a
+    // thread with a large stack", and runOnEmbedStack is what keeps that
+    // promise — for rk_call as much as for rk_eval, since a binding host does
+    // most of its work through the former and would otherwise recurse on
+    // whatever stack it happened to call from (about 1 MiB on Windows).
+    void setEmbedOwnStack(bool b) { embedOwnStack_ = b; }
+    bool embedOwnStack() const { return embedOwnStack_; }
+    // Run `body` on the big-stack thread when the host asked for one, else
+    // inline; either way under the entry-scoped GIL discipline above. `body`
+    // MUST NOT THROW: it runs as a bare thread's entry function, where an
+    // escaping exception is std::terminate rather than a catchable error.
+    // Defined in EmbedApi.cpp, beside the config that turns it on.
+    void runOnEmbedStack(const std::function<void()>& body);
+    bool embedOwnStack_ = false;
+
     // True parallelism: worker threads run interpreter compute concurrently instead
     // of serialising on the GIL — safe now that registers/stacks are thread_local
     // (steps 1/3a) and the symbol tables freeze once concurrency engages (step 2).

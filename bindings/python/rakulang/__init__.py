@@ -71,8 +71,19 @@ class Interp:
     module keeps a default instance behind interpreter()."""
 
     def __init__(self, lib_path=None):
+        import ctypes
         self._lib = _abi.load(lib_path)
-        self._rk = self._lib.rk_new(None)
+        # own_stack, which rk_new leaves off for a host that did not ask for a
+        # thread. This binding asks: the engine recurses on whatever stack the
+        # CALLING thread has, and on Windows that is about 1 MiB — roughly
+        # twenty Raku frames at the ~50 KB of C++ stack each one costs. The
+        # guide's own example walked a match tree with .tree() and took the
+        # process down with it. The CLI, the MCP server and the Jupyter kernel
+        # all take the big stack for the same reason.
+        cfg = _abi.RkConfig()
+        cfg.size = ctypes.sizeof(_abi.RkConfig)
+        cfg.own_stack = 1
+        self._rk = self._lib.rk_new(ctypes.byref(cfg))
         if not self._rk:
             raise RakuError(
                 "rk_new refused: an interpreter is already live in this process"

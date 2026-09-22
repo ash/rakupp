@@ -141,19 +141,42 @@ int guarded(Interp* p, const std::function<void()>& body) {
 // escaping its entry function is std::terminate, not a catchable error. The
 // callers put guarded() INSIDE body for exactly that reason.
 void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
-    if (!p->cfg.own_stack) {
+    p->interp.runOnEmbedStack(body);
+}
+
+}  // namespace
+
+// The hop itself, as a method, because rk_call needs it too and lives in
+// ExtApi.cpp with no sight of `Interp`. own_stack says "run Raku on a thread
+// with a large stack", and until this it only half did: rk_eval and rk_run
+// hopped, while rk_call — the entry a language binding spends most of its time
+// in — ran on whatever stack the host thread had. A binding host reaching a
+// match tree through rk_call therefore recursed on the CALLER's stack, which on
+// Windows is about 1 MiB by default, and the guide's own examples took the
+// process down with them.
+void Interpreter::runOnEmbedStack(const std::function<void()>& body) {
+    Interpreter* self = this;
+    if (!embedOwnStack_) {
         // Same GIL discipline as the hop below, on the caller's own thread.
-        bool outermost = p->interp.gilMainlineEnter();
+        bool outermost = gilMainlineEnter();
         body();
-        p->interp.gilMainlineLeave(outermost);
+        gilMainlineLeave(outermost);
         return;
     }
     ExecContext parked;
-    p->interp.saveCtx(parked);
+    saveCtx(parked);
+    // The G1 grammar highwater is thread-local too, and the shim reads it on a
+    // LATER entry than the parse that set it (`rk-grammar-parse` answers Any,
+    // then `rk-grammar-diagnosis` asks why). A fresh worker per entry would
+    // start with an empty one and answer "no diagnosis" to every failed parse,
+    // which is what both binding guides' strict-parse example printed. So it
+    // rides the hop beside the registers, in both directions.
+    GrammarParseDiag parkedDiag = grammarParseDiag();
     // rakuppMainOnBigStack takes a C callback, so the lambda rides across as
     // its void* context.
-    struct Ctx { Interp* p; const std::function<void()>* fn; ExecContext* parked; };
-    Ctx c{p, &body, &parked};
+    struct Ctx { Interpreter* p; const std::function<void()>* fn; ExecContext* parked;
+                 GrammarParseDiag* diag; };
+    Ctx c{self, &body, &parked, &parkedDiag};
     rakuppMainOnBigStack([](void* v) -> int {
         auto* cc = (Ctx*)v;
         // GIL ownership cannot ride the hop the way the registers do — a
@@ -162,25 +185,26 @@ void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
         // hands it back before the thread ends (gilMainlineEnter/Leave);
         // waiting first also means a still-running `start` worker finishes
         // its yield window before this evaluation touches interpreter state.
-        bool outermost = cc->p->interp.gilMainlineEnter();
-        cc->p->interp.loadCtx(*cc->parked);
+        bool outermost = cc->p->gilMainlineEnter();
+        cc->p->loadCtx(*cc->parked);
+        grammarParseDiag() = *cc->diag;
         // The worker IS the session's mainline while the body runs: `exit`
         // distinguishes the mainline (unwinds as ExitEx, catchable) from a
         // `start {}` worker (ends the process), by thread id.
-        auto prevMain = cc->p->interp.mainThread_;
-        cc->p->interp.mainThread_ = std::this_thread::get_id();
+        auto prevMain = cc->p->mainThread_;
+        cc->p->mainThread_ = std::this_thread::get_id();
         (*cc->fn)();
-        cc->p->interp.mainThread_ = prevMain;
-        cc->p->interp.saveCtx(*cc->parked);
-        cc->p->interp.gilMainlineLeave(outermost);
+        cc->p->mainThread_ = prevMain;
+        *cc->diag = grammarParseDiag();
+        cc->p->saveCtx(*cc->parked);
+        cc->p->gilMainlineLeave(outermost);
         return 0;
     }, &c);
     // The registers return to THIS thread, so between evaluations the session
     // is visible right here — rk_call from the host still finds its scope.
-    p->interp.loadCtx(parked);
+    loadCtx(parked);
+    grammarParseDiag() = parkedDiag;
 }
-
-} // namespace
 
 extern "C" {
 
@@ -202,6 +226,9 @@ RkInterp rk_new(const RkConfig* cfg) {
         std::memcpy(&p->cfg, cfg, n);
     }
     p->cfg.size = sizeof(RkConfig);
+    // The interpreter carries the flag itself, because rk_call reaches the hop
+    // from ExtApi.cpp, which has no sight of this struct.
+    p->interp.setEmbedOwnStack(p->cfg.own_stack != 0);
     p->ctx.interp = &p->interp;
     // SIGPIPE is a PROCESS-wide disposition, so it happens only on request: a
     // Raku TCP server wants it, a host that has its own signal handling does

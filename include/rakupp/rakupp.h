@@ -83,8 +83,15 @@ typedef struct {
     unsigned size;
     /* Run Raku on a thread with a large stack, so deep recursion reaches the
      * interpreter's own guard rather than the native stack's end. The CLI does
-     * this; a host may not want a thread it did not ask for, and the guard
-     * measures the real stack either way, so this is safe to leave off. */
+     * this; a host may not want a thread it did not ask for.
+     *
+     * Leaving it off is safe only where the calling thread has room. The guard
+     * does measure the real stack, but it can only stop BETWEEN frames, and one
+     * interpreter frame costs tens of KB — so on a stack of about 1 MiB, which
+     * is what a default-linked Windows executable's main thread gets, the
+     * engine can run out of native stack between two checks and take the
+     * process with it. Both binding guides' own examples did exactly that. A
+     * host on a small or unknown thread should set this. */
     int own_stack;
     /* Ignore SIGPIPE process-wide, so a Raku TCP server survives a client
      * hanging up. It is a PROCESS-wide disposition — this is your signal

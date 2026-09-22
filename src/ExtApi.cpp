@@ -237,7 +237,9 @@ namespace {
 // one place that must catch everything. A Raku exception is kept whole for
 // re-raising; anything else is flattened to a message, because a std::bad_alloc
 // re-raised as itself would unwind straight past the interpreter's handlers.
-RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
+// The call itself. Split from extCall so a HOST-initiated call can run it on
+// the big-stack thread: see the wrapper below.
+RkValue extCallHere(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
     // The same entry-scoped GIL discipline as rk_eval's hop (see
     // runMaybeBigStack): a host-initiated call between evaluations must not
     // run interpreter code while an engaged worker holds the GIL — and when
@@ -286,6 +288,43 @@ RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) 
                                "control flow escaped a call made from a native extension"};
         return nullptr;
     }
+}
+
+// A stack this big already holds far more interpreter frames than the guard
+// would ever allow — the POSIX main thread's own size. Below it (a default
+// Windows executable's 1 MiB, or a host thread someone sized down) the engine
+// runs out of native stack before the guard can stop it, which is the only
+// case worth paying a thread for.
+static bool callerStackIsTight() {
+    return rakuppCallerStackBytes() < (size_t(8) << 20);
+}
+
+// own_stack means "run Raku on a thread with a large stack", and a host reaches
+// most of the engine through rk_call rather than rk_eval — a language binding
+// walking a match tree makes one call per leaf. Running those on the CALLER's
+// stack is what took the C++ and Python guides' own examples down on Windows,
+// where a default-linked executable's main thread has about 1 MiB and one
+// interpreter frame costs tens of KB. So the hop applies here too.
+//
+// Only at depth 0, and only when the caller's stack is actually tight. An
+// extension re-entering mid-evaluation is already on the engine's own stack,
+// and hopping under it would park a context the evaluation outside is still
+// using. extCallHere catches everything, including control flow, so nothing
+// escapes the worker's entry function.
+//
+// The condition matters: a hop is a thread create and join, measured at 20-34us
+// against 0.8us for the call itself, and a binding's lazy path is one call per
+// LEAF. Paying that on a host that already has room would be a 40x tax for
+// nothing. A persistent worker would make it cheap enough to stop asking; this
+// asks.
+RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
+    if (x->interp && x->interp->embedOwnStack() && x->interp->embedOutermost() &&
+        callerStackIsTight()) {
+        RkValue out = nullptr;
+        x->interp->runOnEmbedStack([&] { out = extCallHere(x, code, argv, argc); });
+        return out;
+    }
+    return extCallHere(x, code, argv, argc);
 }
 
 // A routine visible from the extension's own call site: the lexical scope that
