@@ -397,6 +397,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "base" && !args.empty() &&
         (inv.t == VT::Int || inv.t == VT::Bool || inv.t == VT::Num || inv.t == VT::Rat)) {
         Value bv = args[0];
+        // `"camel"` and `"beer"` are base 2 written in emoji — Rakudo's joke,
+        // and the only two non-numeric base names it accepts.
+        if (bv.t == VT::Str && !bv.isAllomorph() &&
+            (bv.s == "camel" || bv.s == "beer")) {
+            // two glyphs, one per binary digit: a one-hump camel is 0 and a
+            // two-hump one is 1 (and a lone beer is 0, a pair of them 1)
+            const char* d0 = bv.s == "camel" ? "\xF0\x9F\x90\xAA" : "\xF0\x9F\x8D\xBA";
+            const char* d1 = bv.s == "camel" ? "\xF0\x9F\x90\xAB" : "\xF0\x9F\x8D\xBB";
+            Value bits = methodCall(inv, "base", ValueList{Value::integer(2)});
+            std::string out;
+            for (char c : bits.toStr())
+                out += c == '-' ? std::string("-") : std::string(c == '0' ? d0 : d1);
+            return Value::str(out);
+        }
         if (bv.t == VT::Str && !bv.isAllomorph()) bv = numifyStrOrThrow(bv.s.str());
         long long b = bv.toInt();
         if (b < 2 || b > 36)
@@ -528,6 +542,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "polymod" && (inv.t == VT::Int || inv.t == VT::Bool)) { // successive divmod by each divisor
+        // A NEGATIVE invocant has no polymod at all: Rakudo fails it with
+        // X::OutOfRange rather than running the loop on a negative remainder
+        // (it answered `(-1, 0)` for `(-1).polymod(2)`). N-22.
+        if (inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0)
+            return armedFailure("X::OutOfRange",
+                "invocant to polymod out of range. Is: " + inv.toStr() + ", should be in 0..^Inf");
         Value out = Value::array(); out.isList = true;
         long long n = inv.toInt();
         // a lazy divisor list (10 xx *, lazy 2,3) switches to pull-driven mode:
@@ -566,7 +586,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return out;
             }
             for (auto& d : fin) {
-                long long dv = d.toInt(); if (dv == 0) break;
+                // A divisor of ONE OR LESS stops the sequence and hands back
+                // what is left — `120.polymod(1, 10, 100)` is `(120,)`, not six
+                // zeros around a 12 (rakudo/rakudo#4523, which Roast asserts).
+                // A ZERO divisor is the divide-by-zero it looks like.
+                if (d.toNum() == 0)
+                    throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                    "Attempt to divide " + std::to_string(n) +
+                                    " by zero using polymod"};
+                if (d.toNum() <= 1) break;
+                long long dv = d.toInt();
                 out.arr()->push_back(Value::integer(n % dv));
                 n /= dv;
             }

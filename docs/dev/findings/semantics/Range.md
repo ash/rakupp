@@ -5,14 +5,19 @@ lines) read in full on 2026-09-21, plus the `infix:<..>` family and
 `prefix:<^>` it defines, the `Range` candidates of `+ - * / cmp eqv` and
 the exception classes it throws (`Exception.rakumod`). The `...` sequence
 machinery that multi-character string ranges delegate to was NOT read: it
-is its own sheet. Oracle: Homebrew Rakudo v2026.08 on macOS. Compared
-against Raku++ 4.0.1-84-ga4291988 (build-arm64, 2026-09-21). Format and
+is its own sheet. Oracle: Homebrew Rakudo v2026.08 on macOS. First compared
+against Raku++ 4.0.1-84-ga4291988 (build-arm64, 2026-09-21) and, after the
+implementation pass of 2026-09-22, against 4.0.1-118 (build-arm64); every
+`rakupp` line below is the LATTER. Format and
 legend: [README.md](README.md).
 
 Where this sits against the declared spec: Rakudo passes all five Range
 files here (`S02-types/range.t`, `S02-types/range-iterator.t`,
 `S03-operators/range.t`, `range-basic.t`, `range-int.t`) and
-`S03-smartmatch/range-range.t`; Raku++ passes `range-int.t` only. The rules below are what those files and real programs
+`S03-smartmatch/range-range.t`; Raku++ passed `range-int.t` only when this
+sheet was written and, after the implementation pass of 2026-09-22, passes
+all of them but `S02-types/range.t`, which is three assertions short. The
+rules below are what those files and real programs
 lean on: how the four operators build a range, which endpoints are
 refused, what counts as an element, how a range compares with a number, a
 string or another range, and what the many list-like methods return. 12
@@ -45,10 +50,7 @@ say (1..5).gist, "|", (1..5).Str, "|", (1..*).Str, "|", (1..*).gist, "|", (*..*)
 say (1..*).Str, " ", (1^..^*).Str, " ", (*..*).Str, " ", (1..Inf).gist, " ", (1..*).raku, " ", (1..∞).raku, " ", (-∞..∞).gist, " ", (1..*).gist.^name, " ", (1.5..*).Str, " ", ("a"..*).Str, " ", ("a"..*).gist, " ", (*..*).raku, " ", (*^..1).Str, " ", (*..^1).Str, " ", (1..^*).Str, " ", (1..^*).gist, " ", (^Inf).Str, " ", (^Inf).gist, " ", (^Inf).raku, " ", (1e0..*).Str, " ", (1e0..*).gist, " ", (*..1e0).Str
 # rakudo 2026.08: 1..* 1^..^* *..* 1..Inf 1..Inf 1..Inf -Inf..Inf Str 1.5..* a..* "a"..Inf -Inf..Inf *^..1 *..^1 1..^* 1..^Inf 0..^* 0..^Inf 0..^Inf 1..* 1e0..Inf *..1
 ```
-rakupp 4.0.1: differs — `.raku` loses non-Int endpoints (`^5.5`, `0..^5.0`
-and `0e0..^5` all print `^5`; `*^..^*` prints `-Inf..Inf`; `(1.5..*)` prints
-`1..Inf`, `("a"..*)` prints `0..Inf`, `(*.."z")` prints `-Inf..0`), and
-`.Str` drops the second caret of `1^..^*`.
+rakupp 4.0.1-118: matches.
 
 ### RG-02  Endpoints that are refused, and the WhateverCode case            D:partial R:yes V:spec
 A Range, a Seq or a Complex at either end throws `X::Range::InvalidArg`
@@ -64,9 +66,11 @@ say (1..5).^name, " ", (1..*+1).^name, " ", (1..*+1)(4).raku, " ", (^*).^name, "
 # rakudo 2026.08: Range WhateverCode.new 1..5 WhateverCode.new X::Syntax::NonAssociative X::Range::InvalidArg 5 2 Bool::True 1..5 4..5 1..6 (Range) 1e0..2e0 1.5e0..Inf 1.5..Inf "a"..Inf -Inf.."z"
 ```
 The docs describe the WhateverCode case; the refusals have no docs page.
-rakupp 4.0.1: differs — every refused endpoint is accepted silently
-(`10 .. ^20` is `10..0`, `* .. 42i` is `-Inf..0`, a Seq endpoint becomes
-its count), `1..2..3` parses, and `^*` is a Range `0..3`.
+rakupp 4.0.1-118: differs in three fields — the `.got` of a Seq endpoint is
+the Seq itself where Rakudo reports the type object, `Range.new(1..2, 3)`
+refuses with no `.got` at all, and a WhateverCode gists as `WhateverCode`
+rather than `WhateverCode.new`. Every refusal itself now happens, and
+`1..2..3` still parses where Rakudo makes it `X::Syntax::NonAssociative`.
 
 ### RG-03  Endpoint coercion: only a Real left end coerces the right      D:partial R:yes V:spec
 When the left endpoint is Real, the right one is coerced to Real: a
@@ -80,10 +84,11 @@ Match on the left is numified. A Str on the left coerces nothing, so
 say (1 .. "10").max.^name, " ", +(1 .. "10"), " ", do { my @a = 1..10; (1 .. @a).max }, " ", do { my @one = 1; (@one .. 3).min.^name ~ (@one .. 3).min }, " ", ("1"..9).list.raku, " ", ("1"..9).min.^name, " ", do { "1 3" ~~ /(\d) . (\d)/; ($0..$1).min.^name ~ " " ~ ($0..$1).raku }, " ", (1..Any).raku, " ", ("a"..5).raku, " ", ("a"..5).elems, " ", (try (1.."b").elems) // $!.^name, " ", ("100.B".."102.B").list.raku, " ", (1 .. [<a b c d e>]).Str, " ", do { my @three = 1,1,1; (1 ..^ @three).Str }, " ", (1..5.0).max.^name, " ", (1.."5").max.^name, " ", (1 .. "5").raku, " ", ("5" .. 9).raku, " ", (1 .. "5e0").max.^name, " ", (1.5 .. "5").max.^name, " ", (try (1 .. "abc").raku) // $!.^name, " ", ("abc" .. 5).elems, " ", (1 .. Nil).raku, " ", (try (Nil .. 5).raku) // $!.^name, " ", (1 .. True).raku, " ", (1 .. True).elems, " ", (1 .. Date.today).is-int
 # rakudo 2026.08: Int 10 10 Int1 ("1", "2", "3", "4", "5", "6", "7", "8", "9") Str Int 1..3 1..Any "a"..5 0 X::Str::Numeric ("100.B", "101.B", "102.B") 1 2 3 4 5 1 2 Rat Int 1..5 "5"..9 Num Int X::Str::Numeric 0 1..0 Nil..5 1..Bool::True 1 False
 ```
-(`1 .. Nil` also prints "Use of Nil in numeric context".) rakupp 4.0.1:
-differs — `"1"..9` yields Ints, `1..Any` is `1..0`, `"a"..5` is `0..5`
-with 6 elements, `1 .. "abc"` is `1..0` instead of throwing, `1..True`
-is `1..1`, and `.is-int` is missing.
+(`1 .. Nil` also prints "Use of Nil in numeric context".) rakupp 4.0.1-118:
+differs in two fields — `(1 .. Nil).raku` is `1..Nil` where Rakudo numifies
+the Nil to `1..0`, and a Date range answers `.is-int` True. Everything else
+on the line, including the two coercion directions and the `X::Str::Numeric`
+for an unparsable right endpoint, matches.
 
 ### RG-04  is-int, infinite, is-lazy, excludes-min/max, bounds, min, max   D:partial R:yes V:spec
 `is-int` is True only when both endpoints are Int objects (`1..5.0`,
@@ -103,10 +108,12 @@ say (1..Inf).is-lazy, " ", (-Inf..0).is-lazy, " ", (1..5).is-lazy, " ", (Inf..0)
 say Range.new(1, 5).raku, " ", Range.new(1, 5, :excludes-min).raku, " ", Range.new("a", "z", :excludes-max).raku, " ", Range.new(1, 5, :!excludes-min).raku, " ", Range.new(*, 5).raku, " ", Range.new(1, *).infinite, " ", Range.new(1, Inf).raku, " ", Range.new(5, 1).elems, " ", Range.new(1, 1, :excludes-min).elems, " ", (Range.new(1, 3, :excludes-min, :excludes-max)).list.raku, " ", (try Range.new(1..2, 3)) // $!.^name, " ", Range.new(1, 2).is-int, " ", Range.new(1.0, 2).is-int, " ", Range.new(1, "5").max.^name, " ", Range.new("1", 5).min.^name
 # rakudo 2026.08: 1..5 1^..5 "a"..^"z" 1..5 -Inf..5 True 1..Inf 0 0 (2,) X::Range::InvalidArg True False Int Str
 ```
-The NaN rules and `Inf..1` are undocumented. rakupp 4.0.1: differs —
-`is-int`, `infinite` and `Range.new` do not exist; `is-lazy` is False
-for `*..1`, `NaN..NaN` and `1..NaN`; `.elems` of an endless range is the
-Num `Inf` rather than a Failure.
+The NaN rules and `Inf..1` are undocumented. rakupp 4.0.1-118: differs —
+`(1..Any).is-int` and `(1 .. "5").is-int` are True where Rakudo says False;
+`(1..NaN).infinite` and `(NaN..NaN).is-lazy` are False; and `.elems` of an
+endless range is a Failure whose `.raku` renders the carrier hash rather
+than detonating, which is what makes the third line diverge after its
+eleventh field. `Range.new` and the `is-int`/`infinite` surface now exist.
 
 ### RG-05  Truth, WHICH, `===`, `eqv`                                        D:partial R:yes V:quirk
 Every instantiated Range is True, even an empty one (`1..0`, `1^..1`,
@@ -118,8 +125,8 @@ hold for equal endpoints and exclusions of the same types (`1..2` is not
 say (1..2).WHICH, " ", (1..2) === (1..2), " ", (1..2) eqv (1..2), " ", (1..2) eqv (1.0..2), " ", (1..2) eqv (1..^2), " ", (1..2) eqv (1^..2), " ", (1..2) == (1..2), " ", (1..2) eqv ((1..2) but role {}), " ", ?(1..0), " ", ?(1^..1), " ", ?(1..5), " ", (1..0).so, " ", ?("b".."a"), " ", ?Range, " ", (1..5).defined, " ", ("a".."b").WHICH, " ", (1..2) === ((1..2) but role {}), " ", (1..2).WHICH.^name, " ", (1..2) eqv (1..2.0), " ", ((1..3), (1..3)).unique.elems, " ", ((1..3), (1..2)).unique.elems, " ", (1..2) === (1..2.0), " ", (1..*) === (1..*), " ", ((1..2) but role {}).WHICH
 # rakudo 2026.08: Range|1..2 True True False False False True False True True True True True False True Range|"a".."b" False ValueObjAt False 1 2 False True Range+{<anon|3>}|1..2
 ```
-rakupp 4.0.1: differs — `eqv` with a mixin is True, and a mixed-in
-range's WHICH is an address, not a value.
+rakupp 4.0.1-118: differs in two fields — `eqv` with a mixin is True, and a
+mixed-in range's WHICH is an address rather than a value.
 
 ### RG-06  Precedence around `..`                                            D:partial R:yes V:spec
 `..` sits below every arithmetic, `xx`, `~`, hyper and `gcd`/`div`/`mod`
@@ -139,10 +146,11 @@ say EVAL(q[my @a = |4..5; @a.raku]), " ", EVAL(q[(~4..5).raku]), " ", EVAL(q[my 
 ```
 (`|4..5` and `~4..5` each print a "Potential difficulties: To apply a
 Slip flattener to a range, parenthesize the whole range" / "To
-stringify a range, parenthesize the whole range" worry.) rakupp 4.0.1:
-differs — `1..3 ~ "x"` is `1..3`, `cmp`/`leg`/`but` beside `..` parse
-(`Order::Same`, `1..3`), `1..5 xx 2` is 2, `~4..5` is the numeric `4..5`,
-and no worry is issued, fatal or not.
+stringify a range, parenthesize the whole range" worry.) rakupp 4.0.1-118:
+differs — `cmp`, `leg` and `but` beside `..` still parse where Rakudo makes
+them `X::Syntax::NonAssociative`, `1..3 gcd 6` binds the other way, and the
+`|4..5` / `~4..5` worry is fatal here rather than a warning, so the second
+line dies. The arithmetic, `xx`, `~` and hyper precedences all match.
 
 ## B. Counting
 
@@ -157,9 +165,7 @@ object) is 0 with a warning.
 say (1..5).elems, " ", (1^..^10).elems, " ", (1..0).elems, " ", (1.1..5).elems, " ", (1.5..3).elems, " ", ("a".."e").elems, " ", ("a"^..^"e").elems, " ", (Inf..0).elems, " ", (5..-Inf).elems, " ", +Range, " ", (^5).elems, " ", (^5.5).elems, " ", (1..1).elems, " ", (1^..1).elems, " ", ((1..*).elems).^name, " ", do { my $e = (1..*).elems; $e.so; $e.exception.^name ~ ":" ~ $e.exception.action }, " ", do { my $e = (*..*).elems; $e.so; $e.exception.action }, " ", do { my $e = (-Inf..-Inf).elems; $e.so; $e.^name }, " ", (1..Inf).is-lazy, " ", (-Inf..0).is-lazy, " ", (1..5).is-lazy, " ", (Inf..0).is-lazy, " ", (NaN..NaN).is-lazy, " ", (1..NaN).is-lazy, " ", (1..5).elems.^name, " ", ("a".."e").elems.^name
 # rakudo 2026.08: 5 8 0 4 2 5 3 0 0 0 5 6 1 0 Failure X::Cannot::Lazy:.elems .elems Failure True True False False True True Int Int
 ```
-rakupp 4.0.1: differs — `(^5.5).elems` is 5 (its list stops at 4), and an
-infinite range answers the Num `Inf` instead of failing (so the line above
-dies at `.exception`).
+rakupp 4.0.1-118: matches.
 
 ### RG-08  Numeric context                                                D:no R:yes V:quirk
 `+$range` is `elems` for an Int range; for two Numeric endpoints it is
@@ -174,8 +180,7 @@ say +(6..6), " ", +(6^..6), " ", +(6..^6), " ", +(6..^6.1), " ", +(1.2..4), " ",
 ```
 The `Inf` for `-∞..-∞` is asserted by Roast (rakudo/rakudo#3637) even
 though `.elems` of the same range fails; that asymmetry is the quirk.
-rakupp 4.0.1: differs — infinite ranges numify to 1, 0 or 10000, NaN
-ranges to 0 or 2.
+rakupp 4.0.1-118: matches.
 
 ## C. Iteration
 
@@ -192,9 +197,7 @@ say (1.1..4).list.raku, " ", (1.9..4).list.raku, " ", (1.1^..4).list.raku, " ", 
 say (1..1).list.raku, " ", (1^..1).list.raku, " ", (1..^1).list.raku, " ", (1^..^2).list.raku, " ", (1^..^3).list.raku, " ", (2^..2).elems, " ", (-17^..^-15).list.raku, " ", (-17..-19).list.raku, " ", (0..-1).list.raku, " ", (^0).list.raku, " ", (^1).list.raku, " ", (^0.1).list.raku, " ", ("a"^..^"b").list.raku, " ", ("a"^..^"a").list.raku, " ", ("b".."a").list.raku, " ", ('!'^..^'&').list.raku, " ", ('%'^..^'&').list.raku, " ", (" ".." ").list.raku, " ", ("\0".."\x[3]").elems, " ", (1.1^..^1.1).elems, " ", (1..0).list.raku, " ", (1..1).raku, " ", ("a".."a").raku, " ", (^0).raku, " ", ("a".."a").Str, " ", (1..1).Str, " ", (5..1).min, " ", (5..1).max, " ", (5..1).elems, " ", (5..1).Str.raku, " ", (5..1).bounds.raku, " ", (5..1).raku, " ", (1.5..1).elems, " ", ("b".."a").elems, " ", (5..1).list.raku, " ", ("b".."a").raku, " ", (1..1.5).list.raku, " ", (1..0.5).list.raku, " ", (1^..1.5).list.raku
 # rakudo 2026.08: (1,) () () () (2,) 0 (-16,) () () () (0,) (0,) () () () ("\"", "#", "\$", "\%") () (" ",) 4 0 () 1..1 "a".."a" ^0 a 1 5 1 0 "" (5, 1) 5..1 0 0 () "b".."a" (1,) () ()
 ```
-rakupp 4.0.1: differs — a Num or Rat endpoint on the right changes the
-element type (`1..4.9` yields `1e0..4e0`, `1..1.5` yields `1e0`),
-`1e0..3e0` and `1.0..3` yield Ints, `^5.5` stops at 4, `^0.1` is empty.
+rakupp 4.0.1-118: matches.
 
 ### RG-10  Single-character string ranges walk codepoints                  D:partial R:yes V:spec
 When both endpoints are one character long (an Int on the right counts
@@ -207,7 +210,7 @@ say ("a".."e").list.raku, " ", ("a"^..^"e").list.raku, " ", ("A".."a").elems, " 
 # rakudo 2026.08: ("a", "b", "c", "d", "e") ("b", "c", "d") 33 Y Z [ \ ] ^ _ ` a b c d () ("aa", "ab", "ac", "ad") 1 ("a",).Seq ("aa",).Seq False ("az", "ay", "ax", "aw", "av", "au", "at", "as", "ar", "aq", "ap", "ao", "an", "am", "al", "ak", "aj", "ai", "ah", "ag", "af", "ae", "ad", "ac", "ab", "bz", "by", "bx", "bw", "bv", "bu", "bt", "bs", "br", "bq", "bp", "bo", "bn", "bm", "bl", "bk", "bj", "bi", "bh", "bg", "bf", "be", "bd", "bc", "bb") ("Az", "Ay", "Ax", "Aw", "Av", "Au", "At", "As", "Ar", "Aq", "Ap", "Ao", "An", "Am", "Al", "Ak", "Aj", "Ai", "Ah", "Ag", "Af", "Ae", "Ad", "Ac", "Ab", "Bz", "By", "Bx", "Bw", "Bv", "Bu", "Bt", "Bs", "Br", "Bq", "Bp", "Bo", "Bn", "Bm", "Bl", "Bk", "Bj", "Bi", "Bh", "Bg", "Bf", "Be", "Bd", "Bc", "Bb") ().Seq ("1", "2", "3", "4", "5", "6", "7", "8", "9") ("1",) () ("01", "02", "03") ().Seq ("x",) 58 ("é", "ê", "ë") ("a", "b", "c").Seq ("b", "c")
 ```
 The single-character fields match on both engines (the multi-character
-fields of this line belong to RG-11). rakupp 4.0.1: matches on the
+fields of this line belong to RG-11). rakupp 4.0.1-118: matches on the
 single-character fields.
 
 ### RG-11  Multi-character string ranges are per-position products       D:no R:partial V:quirk
@@ -227,11 +230,11 @@ say ("aa".."bb").list.raku, " ", ("ab".."ba").list.raku, " ", ("aa".."az").list.
 ```
 Rakudo's own source calls this "the magic sequence, identical to ..."
 and points at rakudo/rakudo#2238; Roast asserts only the codepoint cases
-and `"Y".."AB"` being empty. rakupp 4.0.1: differs, by decision — it
-iterates by `succ` (`"aa".."bb"` is 28 strings, `"a1".."b2"` twelve),
-the choice made on 2026-07-27 when the Roast payoff of the product rule
-measured +4 against ~5,600 assertions that depend on the
-one-character fast path staying exact.
+and `"Y".."AB"` being empty. rakupp 4.0.1-118: differs, by decision — it
+iterates by `succ` (`"aa".."bb"` is 28 strings, `"a1".."b2"` twelve), the
+choice made on 2026-07-27 when the Roast payoff of the product rule measured
++4 against ~5,600 assertions that depend on the one-character fast path
+staying exact.
 
 ### RG-12  Endless and degenerate ranges                                  D:partial R:yes V:quirk
 `1..*` and `"a"..*` iterate forever by `succ`; `*..1` and `-Inf..0`
@@ -244,10 +247,11 @@ an infinite range are all lazy. Roast pins the `-Inf` and NaN streams
 say (1..*).head(3).raku, " ", ("a"..*).head(3).raku, " ", (*..1).head(2).raku, " ", (-Inf..0).head(2).raku, " ", (NaN..NaN).head(2).raku, " ", (Inf..Inf)[^2].raku, " ", (Inf..NaN)[^2].raku, " ", (1..Inf)[10], " ", (1..*)[10], " ", (1.5..*).head(3).raku, " ", (1..*).is-lazy, " ", (*..1).is-lazy, " ", (1..*).list.is-lazy, " ", do { my @a = 1..*; @a[3] ~ " " ~ @a.is-lazy }, " ", (1..*).flat.is-lazy, " ", (1..*).Seq.is-lazy, " ", (1..*).map(* * 2).head(3).raku, " ", (1..*).grep(* %% 3).head(2).raku, " ", ("aa"..*).head(3).raku, " ", (1e0..*).head(2).raku, " ", (1..*).first(* > 5), " ", (Inf..*).head(2).raku, " ", (1..Inf).elems.^name
 # rakudo 2026.08: (1, 2, 3).Seq ("a", "b", "c").Seq (-Inf, -Inf).Seq (-Inf, -Inf).Seq (NaN, NaN).Seq (Nil, Nil) (Nil, Nil) 11 11 (1.5, 2.5, 3.5).Seq True True True 4 True True True (2, 4, 6).Seq (3, 6).Seq ("aa", "ab", "ac").Seq (1e0, 2e0).Seq 6 ().Seq Failure
 ```
-rakupp 4.0.1: differs — `"a"..*` and `"aa"..*` yield 0, 1, 2; `*..1` and
-`-Inf..0` yield huge negative Ints; `NaN..NaN` yields one 0; `Inf..Inf`
-and `Inf..*` yield the native Int limits; `1.5..*` and `1e0..*` yield
-Ints; `(*..1).is-lazy` is False.
+rakupp 4.0.1-118: differs in five fields — `*..1` yields the int64 minimum
+rather than `-Inf` (the `-Inf..0` spelling, which carries its endpoints, is
+right), `(*..1).is-lazy` is False, and `Inf..*` yields the int64 limits
+where Rakudo yields nothing. The `-Inf` and NaN streams, `Inf..Inf`,
+`Inf..NaN` and the fractional and string starts all match now.
 
 ### RG-13  reverse walks down from max by `pred`                            D:partial R:partial V:bug
 `reverse` returns a Seq. For an Int range it is the elements backwards
@@ -267,10 +271,12 @@ say do { my $r = (1..*).reverse; $r.so; $r.^name ~ ":" ~ $r.exception.^name ~ ":
 # rakudo 2026.08: Failure:X::Cannot::Lazy:.reverse
 ```
 The docs say the elements are reversed and still show `(1..∞).reverse`
-producing Infs; both are wrong for 2026.08. rakupp 4.0.1: differs —
-reversing `1..-Inf` throws "Cannot reverse an infinite range" (Rakudo:
-empty), an infinite range throws instead of failing, and
-`(-Inf..3).reverse` counts down from the native Int minimum.
+producing Infs; both are wrong for 2026.08. rakupp 4.0.1-118: differs — an
+infinite range THROWS `X::Cannot::Lazy` where Rakudo hands back a Failure,
+so all three lines die at their first field. Rakudo's own rule for a
+non-integral range (start at `max` and step by `pred`, which is not the
+reversed list) is the sheet's recorded bug and is deliberately not imitated:
+`(1.1..4).reverse` is the reversed list here.
 
 ### RG-14  first with :end                                                 D:no R:no V:bug
 `first(&test, :end)` searches from the end; with `:k` the index is
@@ -281,8 +287,9 @@ reversed sequence (`(1, 9)`), which contradicts `:k`.
 say (1..10).first(* %% 3), " ", (1..10).first(* %% 3, :end), " ", (1..10).first(* %% 3, :end, :k), " ", (1..10).first(* %% 3, :end, :p).raku, " ", (1..10).first(* %% 3, :k), " ", (1..10).first(* %% 3, :kv).raku, " ", (1..10).first(* > 100, :end).raku, " ", ("a".."e").first("c", :end, :k), " ", (1..10).first(* %% 3, :end, :v), " ", (1..10).first(* %% 3, :end, :kv).raku, " ", (1..*).first(* %% 7), " ", (1..10).first(* %% 3, :end, :k).^name, " ", (1..10).first(* %% 3, :end, :p).^name, " ", ("a".."e").first("c", :end, :p).raku, " ", (1.5..4.5).first(* > 2, :end), " ", (1.5..4.5).first(* > 2, :end, :k), " ", (1..10).first(* %% 3, :end, :kv).^name
 # rakudo 2026.08: 3 9 8 8 => 9 2 (2, 3) Nil 2 9 (1, 9) 7 Int Pair 2 => "c" 4.5 3 List
 ```
-rakupp 4.0.1: matches on every field but the `:end, :kv` one, where it
-answers `(8, 9)`, the consistent value; keep that.
+rakupp 4.0.1-118: differs in one field — the `:end, :kv` corner, where it
+answers `(8, 9)`, the consistent value, against Rakudo's `(1, 9)`. That is
+the recorded bug; keep it.
 
 ### RG-15  Elements are read-only values, and a range does not flatten     D:no R:partial V:spec
 Iterating a range hands out values, not containers: `$_++` in a `for`
@@ -297,11 +304,11 @@ In a list, a range is one item: `for 1..3, 7..8` runs twice and
 say do { my $i = 1; for $i..3 -> $j { }; $i }, " ", do { my @r; for 1..3 { @r.push($_ * 2) }; @r.raku }, " ", (try { for 1..3 { $_++ }; "modified" }) // $!.^name, " ", (try { for 1..3 -> $x is rw { $x++ }; "ok" }) // $!.^name, " ", do { my @a = 1..3; for @a { $_++ }; @a.raku }, " ", (1e0..1e0).map(*.^name).raku, " ", do { my $c = 0; ++$c for (2**130) .. (2**130 + 2); $c }, " ", (1..3).map({ $_ * 2 }).raku, " ", (1..3).grep(* > 1).raku, " ", (1..3).reduce(&[+]), " ", ([+] 1..100), " ", (1..3).join("|"), " ", do { my $c = 0; for 1..3 -> $x is copy { $x++; $c += $x }; $c }, " ", (try { for 1..3 { $_ = 5 }; "assigned" }) // $!.^name, " ", (try { for "a".."c" { $_ = "x" }; "assigned" }) // $!.^name, " ", (try { for 1.5..3 { $_ = 5 }; "assigned" }) // $!.^name, " ", do { my @a = (1..3).list; @a[0] = 9; @a.raku }, " ", (try { (1..3).list[0] = 9; (1..3).list.raku }) // $!.^name, " ", (try { my @l := (1..3).list; @l[0] = 9; @l.raku }) // $!.^name, " ", (1..3).map(-> $x is rw { $x }).^name, " ", (try { (1..3).map(-> $x is rw { $x++ }).eager; "ok" }) // $!.^name, " ", do { my $s = 0; for 1..3 { $s += $_ }; $s }, " ", do { my $s = 0; for 1..* { last if $_ > 5; $s += $_ }; $s }, " ", do { my @a = 1..*; @a[5] }, " ", do { my @a = 1..3; @a.push(4); @a.elems }, " ", do { my @a := 1..3; (try { @a.push(4); "pushed" }) // $!.^name }, " ", do { my @a := 1..3; @a.^name }, " ", do { my $s = 0; for (1..3).reverse { $s += $_ }; $s }, " ", do { my $s = 0; for 1..3, 7..8 { $s += $_ }; $s }, " ", do { my $n = 0; for 1..3 X 1..2 { $n++ }; $n }, " ", do { my $s = ""; for 1..3 -> $a, $b = 0 { $s ~= "$a$b," }; $s }
 # rakudo 2026.08: 1 [2, 4, 6] X::Multi::NoMatch X::Parameter::RW [2, 3, 4] ("Num",).Seq 3 (2, 4, 6).Seq (2, 3).Seq 6 5050 1|2|3 9 X::AdHoc X::AdHoc X::AdHoc [9, 2, 3] X::Assignment::RO X::Assignment::RO Seq X::Parameter::RW 6 15 6 4 X::Immutable Range 6 5 6 12,30,
 ```
-rakupp 4.0.1: differs — `$_++` is `X::Assignment::RO`, an `is rw`
-pointy block is accepted, `1e0..1e0` yields an Int, a loop over a
-big-Int range runs zero times, `@a := 1..3` makes an Array and `push`
-succeeds, `for 1..3, 7..8` adds nothing, and the two-parameter block
-loses the default (`12,3,`).
+rakupp 4.0.1-118: differs in six fields — an `is rw` pointy block is
+accepted (twice), `@a := 1..3` makes an Array so `push` succeeds and
+`.^name` is Array, `for 1..3, 7..8` adds nothing, and a two-parameter block
+loses its default (`12,3,`). `$_++`, `$_ = 5`, `is copy` and the read-only
+list all match.
 
 ## D. Indexing
 
@@ -317,8 +324,10 @@ position and for a Str position.
 say (1..5)[1], " ", (1..5)[10].raku, " ", (1..*)[10], " ", (1..8)[*-1], " ", (1..8)[1,3].raku, " ", (1..5)[^2].raku, " ", (2..1)[^2].raku, " ", (2.1..1.1)[^2].raku, " ", (1.5..4)[1], " ", ("a".."e")[2], " ", (1..5).EXISTS-POS(4), " ", (1..5).EXISTS-POS(5), " ", (1..5).EXISTS-POS(-1), " ", (1..5).AT-POS(0), " ", (try { (1..5)[0] = 9 }) // $!.^name, " ", (1..5)[*].raku, " ", (1..5)[].raku, " ", (1..*)[^3].raku, " ", (1^..5)[0], " ", (^5)[4], " ", (^5)[5].raku, " ", (1..5)[2.7], " ", (1..5)["2"], " ", (1..5)[1..2].raku, " ", (1..5)[*-2..*].raku, " ", (^5)[*-9].^name, " ", (try (^5)[*-9] + 1) // $!.^name, " ", (try (^5)[*-9] + 1) // $!.what ~ ":" ~ $!.got ~ ":" ~ $!.range, " ", (1.5..4)[*-1], " ", ("a".."e")[*-1], " ", (try (1..*)[*-1].^name) // $!.^name, " ", (1..5)[5].raku, " ", (1..5)[4], " ", (1..5).EXISTS-POS(2.5), " ", ("a".."e").EXISTS-POS(4), " ", (1.5..4).EXISTS-POS(2), " ", (1.5..4).elems, " ", (1..5)[*-1], " ", (1..5)[*-5], " ", (1..*)[0], " ", (1..*)[1000000], " ", (1..5)[1, 10].raku, " ", (1.5..4)[10].raku, " ", ("a".."e")[10].raku, " ", (1..5).EXISTS-POS(0), " ", (1..5).EXISTS-POS("1")
 # rakudo 2026.08: 2 Nil 11 8 (2, 4) (1, 2) (Nil, Nil) (Nil, Nil) 2.5 c True False False 1 X::Assignment::RO (1, 2, 3, 4, 5) 1..5 (1, 2, 3) 2 4 Nil 3 3 (2, 3) (4, 5) Failure X::OutOfRange Effective index:-4:0..^Inf 3.5 e X::Cannot::Lazy Nil 5 False True True 3 5 1 1 1000001 (2, Nil) Nil Nil True False
 ```
-rakupp 4.0.1: differs — `EXISTS-POS` is True for -1, 2.5 and "1"; the
-Failure's `what` is "Index"; `("a".."e")[10]` is the `Str` type object.
+rakupp 4.0.1-118: differs — `EXISTS-POS` is True for 2.5 and "1" (the
+negative case is right now), and the out-of-range Failure's `.what` is
+"Index" where Rakudo says "Effective index", which shifts the rest of the
+line.
 
 ### RG-17  A range as a subscript                                           D:yes R:yes V:spec
 `@a[1..*]`, `@a[1..^*]` and `@a[3..*]` are clipped to the source's end
@@ -333,8 +342,9 @@ follow.
 say <a b c d e>[1..3].raku, " ", <a b c d e>[1..*].raku, " ", <a b c d e>[3..^*].raku, " ", <a b c d e>[^2].raku, " ", <a b c>[1..5].raku, " ", [1,2,3][1..5].raku, " ", <a b c d e>[*-2..*].raku, " ", <a b c d e>[2..1].raku, " ", <a b c d e>[1.5..3].raku, " ", do { my @a = <a b c d e>; @a[1..2] = <x y>; @a.raku }, " ", do { my @a = 1..3; @a[1..*] = 9, 9; @a.raku }, " ", <a b c d e>[1..*][0], " ", <a b c d e>[0..^0].raku, " ", "abcdef".substr(1..3), " ", "abcdef".comb[1..*].raku, " ", <a b c d e>[1^..^4].raku, " ", (try <a b c d e>[*..*].elems) // $!.^name, " ", <a b c d e>[3..*].raku, " ", <a b c d e>[5..*].raku, " ", (try <a b c d e>[-1..1].raku) // $!.^name, " ", (try <a b c d e>[*-7..1].raku) // $!.^name, " ", do { my %h = a => 1; %h{1..2}.raku }, " ", <a b c d e>[(1..3).reverse].raku, " ", <a b c d e>[1..^*].raku, " ", <a b c d e>[^*].raku, " ", <a b c d e>[0..*-2].raku, " ", (try <a b c d e>[*..2].raku) // $!.^name, " ", "abcdef".substr(2..*), " ", "abcdef".comb[^3].raku, " ", <a b c d e>[6..*].raku, " ", <a b c d e>[1^..*].raku, " ", <a b c d e>[3..10].elems, " ", do { my @a = <a b c>; @a[1..5].raku }, " ", do { my @a = <a b c>; @a[1..*].raku }, " ", "abcdef".substr(1..*)
 # rakudo 2026.08: ("b", "c", "d") ("b", "c", "d", "e") ("d", "e") ("a", "b") ("b", "c", Nil, Nil, Nil) (2, 3, Any, Any, Any) ("d", "e") () ("b", "c") ["a", "x", "y", "d", "e"] [1, 9, 9] b () bcd ("b", "c", "d", "e", "f") ("c", "d") X::Numeric::CannotConvert ("d", "e") () X::OutOfRange X::OutOfRange (Any, Any) ("d", "c", "b") ("b", "c", "d", "e") ("a", "b", "c", "d", "e") ("a", "b", "c", "d") X::Numeric::CannotConvert cdef ("a", "b", "c") () ("c", "d", "e") 8 ("b", "c", Any, Any, Any) ("b", "c") bcdef
 ```
-rakupp 4.0.1: differs in three fields — `[1.5..3]` gives b, c, d;
-`[*..*]` has 1 element and `[*..2]` is empty instead of throwing.
+rakupp 4.0.1-118: differs in three fields — `[1.5..3]` gives b, c, d where a
+Rat range indexes by its own elements; `[*..*]` has one element and `[*..2]`
+is empty where both are `X::Numeric::CannotConvert`.
 
 ### RG-18  A Range is immutable                                             D:no R:yes V:spec
 `push`, `pop`, `shift`, `unshift`, `append`, `prepend` throw
@@ -349,8 +359,11 @@ say (try { (1..5).push(6) }) // $!.^name ~ ":" ~ $!.typename ~ ":" ~ $!.method, 
 say (try { (1..5).push(6) }) // $!.^name, " ", (try { (1..5).pop }) // $!.^name, " ", (try { (1..5).shift }) // $!.^name, " ", (try { (1..5).unshift(0) }) // $!.^name, " ", (try { (1..5).append(6) }) // $!.^name, " ", (try { (1..5).prepend(0) }) // $!.^name, " ", (try { my $r = 1..5; $r.min = 2 }) // $!.^name, " ", (try { (1..5).excludes-min = True }) // $!.^name, " ", (try { my $r = 1..5; $r.list.push(6); $r.elems }) // $!.^name, " ", (try { (1..5).splice(0, 1) }) // $!.^name, " ", (try { (1..5).BIND-POS(0, 9) }) // $!.^name, " ", (try { (1..5).ASSIGN-POS(0, 9) }) // $!.^name, " ", (try { (1..5)[0] = 9 }) // $!.^name, " ", (try { my $r = 1..5; $r[0] := 9 }) // $!.^name, " ", (try { my $r = 1..5; $r.Array.push(6).elems }) // $!.^name
 # rakudo 2026.08: X::Immutable X::Immutable X::Immutable X::Immutable X::Immutable X::Immutable X::Assignment::RO X::Assignment::RO X::Immutable X::Multi::NoMatch X::Bind X::Assignment::RO X::Assignment::RO X::Bind 6
 ```
-rakupp 4.0.1: differs — the six mutators, `splice`, `BIND-POS` and
-`ASSIGN-POS` are `X::Method::NotFound`, and `$r[0] := 9` binds (9).
+rakupp 4.0.1-118: differs — `splice`, `BIND-POS` and `ASSIGN-POS` are
+`X::Method::NotFound` rather than `X::Multi::NoMatch`, `X::Bind` and
+`X::Assignment::RO`, and `$r[0] := 9` binds. The six resizing methods are
+`X::Immutable` with both attributes now, and the attribute accessors are
+read-only.
 
 ## E. Matching
 
@@ -368,9 +381,7 @@ When only one endpoint is Numeric (`*.."5"`), comparison is the generic
 say 3 ~~ 1..5, " ", 2.5 ~~ 1..5, " ", 5.0e0 ~~ 1..5, " ", 5 ~~ 1..^5, " ", 1 ~~ 1^..5, " ", 5.001 ~~ 1..5, " ", "42" ~~ 20..50, " ", "13" ~~ 20..50, " ", "abc" ~~ 1..10, " ", "5" ~~ *..10, " ", "raku" ~~ 1..*, " ", "raku" ~~ -Inf..Inf, " ", "raku" ~~ -Inf^..^Inf, " ", 1..10 ~~ "5", " ", 42 ~~ *.."5", " ", 42 ~~ *..5, " ", 42 ~~ *.."3", " ", 1.5 ~~ 1^..^2, " ", 4.5 ~~ 0..^5, " ", 5 ~~ ^5, " ", -0.1 ~~ ^5, " ", 0 ~~ ^5, " ", 4.9999999999999999999999 ~~ 0..^5, " ", 3 ~~ 1.5..3.5, " ", 3 ~~ 1.5^..^3, " ", Inf ~~ 1..*, " ", -Inf ~~ *..1, " ", NaN ~~ 1..5, " ", NaN ~~ *..*, " ", 3 ~~ Range, " ", 2**70 ~~ 1..*, " ", 1.5 ~~ 1..2, " ", "1.5" ~~ 1..2, " ", " 3 " ~~ 1..5, " ", "0x10" ~~ 10..20, " ", True ~~ 0..1, " ", 3 ~~ 3..3, " ", 3 ~~ 3^..3
 # rakudo 2026.08: True True True False False False True False False True False False False False True False False True True False False True True True False True True False False False True True True True True True True False
 ```
-rakupp 4.0.1: differs in five fields — `"raku"` matches `-Inf..Inf` and
-`-Inf^..^Inf`, `42 ~~ *.."5"` is False, and `Inf ~~ 1..*`,
-`-Inf ~~ *..1`, `2**70 ~~ 1..*` are False.
+rakupp 4.0.1-118: matches.
 
 ### RG-20  A string against a string range                                D:yes R:yes V:spec
 With a Str endpoint the comparison is string order (`before`/`after`),
@@ -381,8 +392,10 @@ is before `"a"`, and an open end (`'c'..*`, `*..'c'`) keeps string order.
 say 'x' ~~ 'a'..'z', " ", 'x' ~~ 'a'..'c', " ", 'ax' ~~ 'aa'..'zz', " ", 'ax' ~~ 'a'..'zz', " ", 0 ~~ 'a'..'g', " ", 'd' ~~ 'c'..*, " ", 'b' ~~ 'c'..*, " ", 'b' ~~ *..'c', " ", 'd' ~~ *..'c', " ", ' ' ~~ ' '..'A', " ", 42 ~~ "3".."9", " ", "42" ~~ "3".."9", " ", 42 ~~ "5".."9", " ", 42 ~~ "1".."3", " ", "abc" ~~ "a".."b", " ", "b" ~~ "a"^..^"c", " ", "a" ~~ "a"^..^"c", " ", "c" ~~ "a"^..^"c", " ", "aa" ~~ "a".."b", " ", "B" ~~ "a".."z", " ", "é" ~~ "a".."z", " ", "b" ~~ "a".."c", " ", 1.5 ~~ "1".."2", " ", "" ~~ "a".."z", " ", "z" ~~ "a".."y"
 # rakudo 2026.08: True False True True False True False True False True True True False False True True False False True False False True True False False
 ```
-rakupp 4.0.1: differs — `'ax'` is outside both `'aa'..'zz'` and
-`'a'..'zz'`, and the open-ended `'c'..*` / `*..'c'` answer the wrong way.
+rakupp 4.0.1-118: differs in two fields — `'ax'` is outside `'aa'..'zz'` and
+`'a'..'zz'`, which is the multi-character consequence of RG-11: those two
+are Lists here, not Ranges, so `.ACCEPTS` compares element-wise. Every
+single-character and open-ended field matches.
 
 ### RG-21  A range against a range                                          D:yes R:yes V:spec
 A numeric range is inside another when its min is greater, or equal
@@ -397,9 +410,8 @@ different type for `~~` too.
 say 2..3 ~~ 1..12, " ", 1..10 ~~ -∞..∞, " ", 1..10 ~~ -∞^..^∞, " ", 1..2 ~~ *..10, " ", 2..5 ~~ 1..*, " ", 'a'..'j' ~~ 'b'..'c', " ", 'b'..'c' ~~ 'a'..'j', " ", 1^..5 ~~ 1..5, " ", 1..5 ~~ 1^..5, " ", 1..5 ~~ 1..5, " ", 1..^5 ~~ 1..^5, " ", 1..5 ~~ 1..^5, " ", 1..^5 ~~ 1..5, " ", 0..5 ~~ 1..5, " ", 1.5..2.5 ~~ 1..3, " ", 1..3 ~~ 1.5..2.5, " ", "a".."c" ~~ 1..5, " ", 1..5 ~~ "a".."c", " ", (1..5).ACCEPTS(2..3), " ", ^5 ~~ 0..4, " ", 0..4 ~~ ^5, " ", (1..*) ~~ (1..*), " ", (1..2) ~~ ((1..2) but role {}), " ", (5..1) ~~ (1..5), " ", (1..5) ~~ (5..1), " ", (2..2) ~~ (1..3), " ", ("b".."b") ~~ ("a".."c"), " ", (1..3) ~~ (1..*), " ", (1..*) ~~ (1..3), " ", (1.5..2) ~~ (1..2), " ", (1..2) ~~ (1.5..2), " ", (1..2) ~~ (1e0..2e0), " ", ("1".."2") ~~ (1..2), " ", (1..2) ~~ ("1".."2"), " ", (1..2) ~~ ("a".."z"), " ", ("1".."2") ~~ ("a".."z"), " ", (*..*) ~~ (1..2), " ", (1..2) ~~ (*..*)
 # rakudo 2026.08: True True True True True False True True False True True False True False True False False False True False True True True True False True True True False True False True True True False False False True
 ```
-rakupp 4.0.1: differs in three fields — the mixin case is False, and a
-string range against a numeric range (`"1".."2" ~~ 1..2`) or the reverse
-is False.
+rakupp 4.0.1-118: differs in one field — a mixin on the outer range is not a
+different type for `~~`, so `(1..2) ~~ ((1..2) but role {})` is True.
 
 ### RG-22  Other topics, junctions, in-range                               D:partial R:partial V:spec
 A Junction threads; a Complex matches when its imaginary part rounds
@@ -417,10 +429,11 @@ say Date.new("2020-06-15") ~~ Date.new("2020-01-01")..Date.new("2020-12-31"), " 
 # rakudo 2026.08: True False (Date.new(2020,1,1), Date.new(2020,1,2), Date.new(2020,1,3)) 3 False X::TypeCheck::Binding True False True X::OutOfRange Level out of range. Is: 7, should be in 1..5 Letter out of range. Is: "p", should be in "א".."ת" Value out of range. Is: "x", should be in 1..5 (Date.new(2020,1,3), Date.new(2020,1,2), Date.new(2020,1,1)).Seq (Date.new(2020,1,2), Date.new(2020,1,3)) Range Value:7:1..5 Bool True Value out of range. Is: "d", should be in "a".."c" False Date
 ```
 (The first line also warns "Use of uninitialized value of type Any in
-string context" for the `Any` topic.) rakupp 4.0.1: differs — the
-Complex with a tiny imaginary part is rejected, `ACCEPTS(Mu)` is False
-rather than `X::Range::Incomparable`, and a Date range is a List, so
-`is-int` and the rest of the second line die.
+string context" for the `Any` topic.) rakupp 4.0.1-118: differs — a Complex
+whose imaginary part rounds away is rejected, `ACCEPTS(Mu)` is False rather
+than `X::Range::Incomparable`, and a Date range is a List, so `is-int` and
+the rest of the second line die there. The junction, in-range and `.grep`
+fields match.
 
 ## F. Arithmetic, comparison, aggregates
 
@@ -437,11 +450,10 @@ Real yields a range whose endpoints are Failures (`"a" + 1`).
 say ((1..10) + 1).raku, " ", ((1..10) - 1).raku, " ", ((1..10) * 2).raku, " ", ((1..10) / 2).raku, " ", (1 + (1..10)).raku, " ", (2 * (1..^10)).raku, " ", ((1..^10) - 1).raku, " ", ((1^..^10) / 2).raku, " ", (^4 + 2).list.raku, " ", ((^4) / 2).list.raku, " ", ((^4) * 2).list.raku, " ", (1..2 + 2).raku, " ", ((1..10) + 0.5).raku, " ", ((1..10) + 1e0).raku, " ", ((1..3) + 2**65).raku, " ", ((1..10) + 1).is-int, " ", ((1..10) / 2).is-int, " ", (try ((1..10) + 1i).raku) // $!.^name, " ", (try (1 - (1..10)).raku) // $!.^name, " ", (try (2 / (1..10)).raku) // $!.^name, " ", (try ((1..10) + "1").raku) // $!.^name, " ", (((2..^5) but role Meows {}) + 5).^name, " ", ((1..*) + 1).raku, " ", ((*..*) * 2).raku, " ", ((1..*) * 0).raku, " ", ((1..10) × 2).raku, " ", ((1..10) ÷ 2).raku, " ", ((1..10) − 1).raku, " ", (try (("a".."c") + 1).raku) // $!.^name, " ", ((1..10) * -1).raku, " ", ((1..10) * -1).elems, " ", ((1..10) + 1).^name, " ", ((1..10) * 2.5).raku
 # rakudo 2026.08: 2..11 0..9 2..20 0.5..5.0 2..11 2..^20 ^9 0.5^..^5.0 (2, 3, 4, 5) (0.0, 1.0) (0, 1, 2, 3, 4, 5, 6, 7) 1..4 1.5..10.5 2e0..11e0 36893488147419103233..36893488147419103235 True False <10+1i> -9 0.2 11 Range+{Meows} 2..Inf -Inf..Inf 0..NaN 2..20 0.5..5.0 0..9 Failure.new(exception => X::Str::Numeric.new(source => "a", pos => 0, reason => "base-10 number must begin with valid digits or '.'"), backtrace => Backtrace.new)..Failure.new(exception => X::Str::Numeric.new(source => "c", pos => 0, reason => "base-10 number must begin with valid digits or '.'"), backtrace => Backtrace.new) -1..-10 0 Range 2.5..25.0
 ```
-The Failure endpoints are the quirk. rakupp 4.0.1: differs — Rat and
-Num endpoints print without their type (`0.5..5`, `(0, 1)`), `+ 0.5`,
-`+ 1e0`, `+ 2**65`, `+ 1i`, `1 - r`, `2 / r`, `+ "1"`, `(1..*) + 1`,
-`(*..*) * 2` and `(1..*) * 0` are all wrong, and `("a".."c") + 1` adds
-to the codepoints (`98..100`).
+The Failure endpoints are the quirk. rakupp 4.0.1-118: differs — `+ 0.5`, `+
+1e0`, `+ 2**65`, `+ 1i`, `1 - r`, `2 / r`, `+ "1"`, `(1..*) + 1`, `(*..*) *
+2` and `(1..*) * 0` are all wrong, and `("a".."c") + 1` adds to the
+codepoints (`98..100`) where Rakudo builds a range of Failures.
 
 ### RG-24  cmp and sorting                                                 D:yes R:no V:spec
 Two ranges compare by min, then by excludes-min, then max, then the
@@ -454,7 +466,9 @@ reverse of excludes-max; a Real on one side is treated as the range
 say (1..2) cmp (1..2), " ", (1..2) cmp (1..3), " ", (1..4) cmp (1..3), " ", (1..2) cmp 3, " ", (1..2) cmp 1, " ", 3 cmp (1..2), " ", (1..2) cmp [1,2], " ", [1,2] cmp (1..2), " ", (1..2) cmp [1,3], " ", (1^..2) cmp (1..2), " ", (1..^2) cmp (1..2), " ", (1..2) cmp (1..^2), " ", (1..2) cmp 1.5, " ", ("a".."c") cmp ("a".."d"), " ", ((1..2) <=> (1..3)), " ", (1..2) eqv (2..1), " ", (1..2) cmp (1..2.0), " ", (1..3).sort.raku, " ", ((1..3), (1..2), (0..5)).sort.raku, " ", ((1..3) leg (1..3)), " ", (1..3) before (2..3), " ", (try ((1..2) cmp "1 2")) // $!.^name, " ", ((0..1), (0..^1), (0^..1)).sort.raku, " ", ((1..3) cmp (1..3).list), " ", ((1..2) cmp (1,2,3)), " ", ((1..2) cmp 2), " ", (1..2) cmp (1..*), " ", (1..*) cmp (1..2), " ", ((1..2) cmp (1..2)).^name, " ", ((1..3), (1..2)).min.raku, " ", ("a".."c") cmp ("b".."c"), " ", (1..2) cmp (0..2), " ", (1..3) cmp 3, " ", (3..3) cmp 3, " ", 1 cmp (1..2), " ", (1..2) cmp (1..2).Str, " ", ((1..2) leg (1..3)), " ", (try ((1..2) cmp "a")) // $!.^name, " ", ((1..2) cmp (1..2)) === Same
 # rakudo 2026.08: Same Less More Less More More Same Same Less More Less More Less Less Less False Same (1, 2, 3).Seq (0..5, 1..2, 1..3).Seq Same True Same (^1, 0..1, 0^..1).Seq Same Less Less Less More Order 1..2 Less More Less Same Less Same Less Less True
 ```
-rakupp 4.0.1: matches.
+rakupp 4.0.1-118: differs in two fields — `(1..2) cmp (1,2,3)` and `(1..2)
+cmp 2` read Less where Rakudo says Less and More; every other comparison,
+the sort orders and the Positional cases match.
 
 ### RG-25  sum                                                            D:partial R:no V:spec
 When integer bounds exist (RG-26), `sum` is the closed form, so
@@ -467,8 +481,8 @@ say (1..10).sum, " ", (1..10**20).sum, " ", (1^..^10).sum, " ", (1..*).sum, " ",
 # rakudo 2026.08: 55 5000000000000000000050000000000000000000 44 Inf -Inf NaN 4 15 7.5 10 0 1 -Inf X::Str::Numeric (1, 10) (3.5, 4.5) ("a", "z") (-Inf, Inf) (0, 9) (1, 5) (1, 5) (1, Inf) (1, Inf) (1, 0) Int Rat 10..1 1..6 6 Int Num Inf 0 0 42 10 12.5 (0.5, 1.5, 2.5, 3.5, 4.5) 15 Int Int 0 List (1, 3) (1, 3.5) List
 ```
 (The `minmax` fields belong to RG-26; note that `minmax(:by)` hands the
-job to the List and comes back as a Range, `10..1`.) rakupp 4.0.1:
-matches on every `sum` field; the `minmax` fields differ (RG-26).
+job to the List and comes back as a Range, `10..1`.) rakupp 4.0.1-118:
+matches on every `sum` field; two `minmax` fields differ (RG-26).
 
 ### RG-26  int-bounds and minmax                                            D:yes R:yes V:spec
 `int-bounds` returns the first and last integer the range iterates
@@ -486,9 +500,10 @@ say (2..5).int-bounds.raku, " ", (2..^5).int-bounds.raku, " ", (2^..5).int-bound
 say (try (^Inf).minmax.raku) // $!.^name ~ ":" ~ $!.message, " ", (try (1.5..^3).minmax.raku) // $!.^name ~ ":" ~ $!.message, " ", (^Inf).minmax.^name, " ", (try (1^..^Inf).minmax.raku) // $!.^name, " ", (try (1.5^..3).minmax.raku) // $!.^name, " ", (try ("a"^.."c").minmax.raku) // $!.^name, " ", (1^..^5).minmax.raku, " ", (1^..5).minmax.raku, " ", (1..^5).minmax.raku
 # rakudo 2026.08: X::AdHoc:Cannot return minmax on Range with excluded ends X::AdHoc:Cannot return minmax on Range with excluded ends Failure X::AdHoc X::AdHoc X::AdHoc (2, 4) (2, 5) (1, 4)
 ```
-rakupp 4.0.1: differs — `int-bounds` is missing, and `minmax` never
-fails: it returns native-Int limits for `^Inf`, `(1, 2)` for `1.5..^3`,
-`(3, 4)` for `3.5..4.5`, codepoints for a string range.
+rakupp 4.0.1-118: differs in the two `minmax` FAILURE fields — a Range with
+excluded ends hands back a Failure whose `.raku` renders the carrier hash
+rather than detonating, so `// $!.^name` never fires. Every `int-bounds`
+field matches, including the two-argument form and the Inf/NaN refusals.
 
 ### RG-27  min and max with :k, :kv, :p                                    D:no R:yes V:quirk
 `min` is the raw start; `min(:k)` is 0, `min(:kv)` `(0, min)`, `min(:p)`
@@ -501,8 +516,7 @@ hands over to the List.
 say (2..6).min, " ", (2..6).max, " ", (2..6).min(:k), " ", (2..6).min(:kv).raku, " ", (2..6).min(:p).raku, " ", (2..6).max(:k), " ", (2..6).max(:kv).raku, " ", (2..6).max(:p).raku, " ", (2..6).min(:!k), " ", (2..Inf).max(:k), " ", (2..Inf).max(:p).raku, " ", (2^..^6).min, " ", (2^..^6).max, " ", (2^..^6).max(:k), " ", (2^..^6).min(:k), " ", min(2..6, :k), " ", max(2..6, :p).raku, " ", (2..6).min(:by(-*)), " ", (2..6).max(:by(-*)), " ", ("a".."c").max(:k), " ", (1..0).max(:k), " ", (1..0).min(:kv).raku, " ", (1.5..3).max(:k), " ", (1..5).min.^name, " ", (1..*).max.^name, " ", ("a".."c").min, " ", (2..6).max(:!kv), " ", (5..1).min, " ", (5..1).max, " ", (^3).max, " ", (^3).max(:k), " ", (^3).max(:kv).raku, " ", (^0).max(:k), " ", (^0).max(:p).raku
 # rakudo 2026.08: 2 6 0 (0, 2) 0 => 2 4 (4, 6) 4 => 6 2 Inf Inf => Inf 2 6 2 0 0 4 => 6 6 2 2 -1 (0, 1) 1 Int Num a 6 5 1 3 2 (2, 3) -1 -1 => 0
 ```
-rakupp 4.0.1: differs — the adverbs are ignored (`min(:k)` is 2,
-`max(:kv)` is 6), `:by` is ignored, `("a".."c").max(:k)` is "c".
+rakupp 4.0.1-118: matches.
 
 ### RG-28  pick and roll                                                  D:yes R:yes V:spec
 `pick` and `roll` without an argument return one element (an Int for
@@ -516,9 +530,9 @@ infinite range answers Nil.
 say (1..100).pick.^name, " ", (1..100).pick ~~ 1..100, " ", (1..100).pick(1).^name, " ", (1..100).pick(*).elems, " ", (1..100).pick(*).sort.head(3).raku, " ", (1..100).pick(200).elems, " ", (1..100).pick("3").elems, " ", ('b'..'y').pick.^name, " ", ('b'..'y').pick(*).elems, " ", (1..100).roll.^name, " ", (1..100).roll(5).elems, " ", (1..100).roll(*).head(5).elems, " ", (1..0).pick.raku, " ", (1..0).pick(3).raku, " ", (1..0).roll.raku, " ", (1..0).roll(2).raku, " ", (1..0).roll(*).raku, " ", (1..5).pick(-1).raku, " ", (1..5).roll(0).raku, " ", ((1 +< 125) .. (1 +< 126 - 1)).pick(3).elems, " ", ((1 +< 125) .. (1 +< 126 - 1)).roll(*).head(2).elems, " ", (1.5..3.5).pick.^name, " ", (1.5..3.5).pick(*).sort.raku, " ", (1..*).pick.raku, " ", (1..*).roll.raku, " ", (1..5).pick(2).elems, " ", (1..5).pick(2).unique.elems, " ", (1..5).roll(*).^name, " ", (1..5).pick(*).^name, " ", (1..5).pick(1).elems, " ", (^100).pick(*).elems, " ", (1..2).pick(*).sort.raku, " ", (1..5).pick(2.9).elems, " ", (1..5).pick(1e0).elems, " ", (try (1..5).pick("x")) // $!.^name
 # rakudo 2026.08: Int True Seq 100 (1, 2, 3).Seq 100 3 Str 24 Int 5 5 Nil ().Seq Nil ().Seq ().Seq ().Seq ().Seq 3 2 Rat (1.5, 2.5, 3.5).Seq Nil Nil 2 2 Seq Seq 1 100 (1, 2).Seq 2 1 X::Str::Numeric
 ```
-rakupp 4.0.1: differs — `(1..0).pick(3)` is a List, `roll(*)` on a vast
-range yields nothing, `pick` and `roll` on `1..*` return huge Ints, and
-`pick("x")` is an empty List.
+rakupp 4.0.1-118: differs in five fields — `(1..0).pick(3)` is a List,
+`roll(*)` on a vast range yields nothing, `pick` and `roll` on `1..*` return
+huge Ints, and `pick("x")` is an empty List rather than `X::Str::Numeric`.
 
 ### RG-29  rand                                                           D:yes R:yes V:spec
 `rand` needs two Real endpoints (a string range gives a Failure
@@ -533,9 +547,10 @@ say (1..10).rand.^name, " ", 1 <= (1..10).rand < 10, " ", 0 <= (^10).rand < 10, 
 say do { my $f = (1..1).rand; $f.so; $f.exception.^name ~ ":" ~ $f.exception.min ~ ":" ~ $f.exception.max }, " ", do { my $f = ("a".."z").rand; $f.so; $f.^name ~ ":" ~ $f.exception.^name }
 # rakudo 2026.08: X::Range::Rand::InvalidEndpoints:1:1 Failure:X::AdHoc
 ```
-rakupp 4.0.1: differs — an infinite range throws ("Impossible to get a
-random number from an infinite range") instead of failing, and the
-exception carries no `.min`/`.max`.
+rakupp 4.0.1-118: differs — the endpoint refusals are Failures without
+`.min`/`.max`, an infinite range throws rather than failing, and the two
+message texts differ. `.rand` itself no longer returns an excluded endpoint,
+on either side.
 
 ## G. Conversions and the rest of the surface
 
@@ -553,9 +568,9 @@ say (1..3).list.^name, " ", (1..3).flat.^name, " ", Range.flat.raku, " ", (1..3)
 say (1..2).Capture.raku, " ", do { sub f((:$min, :$max, :$excludes-max, *%)) { "$min-$max-$excludes-max" }; f(1..^3) }, " ", (1..2).Capture.^name, " ", (1..2).Capture.keys.sort.raku, " ", (1..2).Capture.elems, " ", do { my (:$min, :$max, *%) := (3..7).Capture; "$min,$max" }
 # rakudo 2026.08: \(:!excludes-max, :!excludes-min, :!infinite, :is-int, :max(2), :min(1)) 1-3-True Capture ("excludes-max", "excludes-min", "infinite", "is-int", "max", "min").Seq 0 3,7
 ```
-rakupp 4.0.1: differs — `.Map` is missing (the first line dies there),
-`.Capture` refuses ("Cannot unpack or Capture"), and `*%` in a
-sub-signature is a parse error.
+rakupp 4.0.1-118: differs — `.Map` and `.Hash` are missing, `.Capture`
+refuses ("Cannot unpack or Capture"), and `*%` in a sub-signature is a parse
+error. `.eager` now reifies from the sub form as well as the method.
 
 ### RG-31  Cool methods see the string, `contains` and `index` warn         D:no R:no V:quirk
 A Range is a Cool, so string methods act on `.Str` (`(1..3).uc` is
@@ -570,8 +585,9 @@ say (1..3).Numeric, " ", ((1..3) + 0).raku, " ", (1..3).Int, " ", +("a".."c"), "
 say do { my @w; CONTROL { when CX::Warn { @w.push(.message.substr(0, 40)); .resume } }; ((1..3).contains(2), (10..12).contains("0 1"), (1..3).index(3), (1..3).contains("4")).join(",") ~ " " ~ @w.elems ~ " " ~ @w[0] }
 # rakudo 2026.08: True,True,4,False 4 Applying '.contains' to a Range will loo
 ```
-rakupp 4.0.1: differs — `succ`, `pred`, `abs` and `sqrt` answer 1, -1,
-0 and 0, `(1..*).Int` is `Inf`, and no warning is issued.
+rakupp 4.0.1-118: differs — `succ`, `pred`, `abs` and `sqrt` answer 1, -1, 0
+and 0 rather than X::Method::NotFound and the numeric values, `(1..*).Int`
+is `Inf`, and `contains`/`index` issue no warning.
 
 ### RG-32  The Range of a numeric type                                     D:partial R:yes V:spec
 `Int.Range` is `-Inf^..^Inf`, `UInt.Range` `0..^Inf`, `Num.Range`,
@@ -587,10 +603,10 @@ say Int.Range.raku, " ", UInt.Range.raku, " ", Num.Range.raku, " ", Rat.Range.ra
 say int8.Range.raku, " ", uint8.Range.raku, " ", int16.Range.raku, " ", uint64.Range.raku, " ", int.Range.raku, " ", uint.Range.raku, " ", byte.Range.raku, " ", int32.Range.int-bounds.raku, " ", 5 ~~ int8.Range, " ", 200 ~~ int8.Range, " ", atomicint.Range.raku, " ", num.Range.raku, " ", int64.Range.raku, " ", int8.Range.elems, " ", 2**64 ~~ uint64.Range, " ", 2**64-1 ~~ uint64.Range, " ", num32.Range.raku, " ", uint32.Range.raku, " ", int8.Range.is-int, " ", int8.Range.min.^name
 # rakudo 2026.08: -128..127 0..255 -32768..32767 0..18446744073709551615 -9223372036854775808..9223372036854775807 0..18446744073709551615 0..255 (-2147483648, 2147483647) True False -9223372036854775808..9223372036854775807 -Inf..Inf -9223372036854775808..9223372036854775807 256 False True -Inf..Inf 0..4294967295 True Int
 ```
-rakupp 4.0.1: differs — the native types have no `.Range`, `Bool.Range`
-and `Rational.Range` are missing, `2**70 ~~ UInt.Range` and
-`Inf ~~ Num.Range` are False, and `Inf ~~ Int.Range` is False where
-Rakudo says True.
+rakupp 4.0.1-118: differs in two fields — `Str.Range` and `Complex.Range`
+answer rather than X::Method::NotFound, and `42.Range` is not
+`X::Parameter::InvalidConcreteness`. Every native span, `Bool.Range`,
+`Rational.Range` and the twelve smartmatch fields match now.
 
 ### RG-33  The type object                                                  D:no R:no V:spec
 `Range` itself numifies to 0 with an "uninitialized value" warning,
@@ -604,8 +620,11 @@ Its MRO is Range, Cool, Any, Mu; its roles Positional and Iterable.
 say (quietly +Range), " ", Range.elems, " ", (quietly Range.Str).raku, " ", Range.gist, " ", Range.raku, " ", Range.list.raku, " ", Range.flat.raku, " ", ?Range, " ", Range.defined, " ", Range.is-lazy, " ", (try Range.min) // $!.^name, " ", (try Range.elems) // $!.^name, " ", (try Range.is-int) // $!.^name, " ", (try Range.infinite) // $!.^name, " ", (try Range.iterator.^name) // $!.^name, " ", (try Range.reverse.raku) // $!.^name, " ", (try Range.sum) // $!.^name, " ", (try Range.pick.raku) // $!.^name, " ", (try Range.rand.raku) // $!.^name, " ", (try Range.bounds.raku) // $!.^name, " ", (try (Range ~~ Range).raku) // $!.^name, " ", (try (5 ~~ Range).raku) // $!.^name, " ", (try Range.ACCEPTS(5).raku) // $!.^name, " ", Range.^name, " ", Range.^mro.map(*.^name).raku, " ", Range.^roles.map(*.^name).raku, " ", (1..2).^roles.map(*.^name).raku, " ", (1..2) ~~ Positional, " ", (1..2) ~~ Iterable, " ", (1..2) ~~ Cool, " ", (1..2) ~~ List, " ", (1..2) ~~ Numeric, " ", (1..2) ~~ Seq
 # rakudo 2026.08: 0 1 "" (Range) Range (Range,) (Range,) False False False X::AdHoc 1 X::AdHoc X::AdHoc X::AdHoc X::Parameter::InvalidConcreteness X::Multi::NoMatch X::Multi::NoMatch X::AdHoc X::AdHoc Bool::True Bool::False Bool::False Range ("Range", "Cool", "Any", "Mu").Seq ("Positional", "Iterable").Seq ("Positional", "Iterable").Seq True True True False False False
 ```
-rakupp 4.0.1: differs — `Range.is-lazy` is `X::Method::NotFound` and the
-line dies there.
+rakupp 4.0.1-118: differs — the instance methods answer for the type object
+instead of refusing it (`Range.min` is `X::Multi::NoMatch` where Rakudo says
+`X::AdHoc`, `Range.iterator` succeeds, `Range.pick` returns the type),
+`Range.is-lazy` is `X::Method::NotFound` and takes the line with it, and
+`.^mro` and `.^roles` do not report Cool, Positional or Iterable.
 
 ## Counts
 
@@ -615,22 +634,36 @@ line dies there.
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 12 |
 | Rakudo bugs (do not imitate) | 2 — RG-13 `reverse` of a non-integral range, RG-14 `first(:end, :kv)` |
 | quirks (recorded, step two decides) | 7 — RG-05 empty ranges are True, RG-08 `+(-∞..-∞)`, RG-11 string cross product, RG-12 `-Inf` and NaN streams, RG-23 Failure endpoints, RG-27 `max(:k)` of an excluded end, RG-31 `contains` warning |
-| rakupp 4.0.1 differs | 29 |
-| rakupp 4.0.1 matches | 4 — RG-10 (single-character fields), RG-14 (all but the buggy corner), RG-24, RG-25 |
+| rakupp 4.0.1-118 differs | 27 |
+| rakupp 4.0.1-118 matches | 6 — RG-01, RG-07, RG-08, RG-09, RG-19, RG-27 (RG-10 on its single-character fields, RG-25 on every `sum` field) |
 
-Recurring rakupp gaps, for step two: the object has no `is-int`,
-`infinite`, `int-bounds`, `Range.new`, `Capture` or `Map`, and the six
-mutators are `X::Method::NotFound` rather than `X::Immutable`; `.raku`
-throws away the endpoint types; invalid endpoints (a Range, a Seq, a
-Complex, an unparsable string) are accepted; non-Int endpoints on the
-right change the element type; every "infinite" case is handled with
-native-Int limits or `Inf` where Rakudo streams `-Inf`/NaN, fails with
-`X::Cannot::Lazy` or yields nothing; `pick`/`roll` on an infinite range
-return huge Ints; smartmatch mishandles `Inf`, big Ints, string
-endpoints with an open end and string-vs-numeric range pairs; `+ - * /`
-with a non-Int Real or with a Range on the right are wrong; the
-`min`/`max` adverbs are ignored. The multi-character string product
-(RG-11) is a deliberate divergence, not a gap.
+Implemented 2026-09-22, from this sheet, against the Roast files named at the
+top: S02-types/range.t 216/259 -> 256/259, S07-iterators/range-iterator.t
+83/103 -> 103/103, and the four S03 files stayed green. The items that MOVED:
+RG-01 (`.raku` keeps the endpoint types), RG-03 (which side coerces which),
+RG-04 (`Range.new`, `is-int` on an infinite range), RG-08 (numeric context),
+RG-09 (the element type follows the START), RG-12 (the -Inf/NaN/Inf streams and
+the fractional and string endless starts), RG-18 (`X::Immutable`), RG-19
+(membership past the int64 limits, and a Str topic that does not parse), RG-26
+(`int-bounds`, its two-argument form, and `minmax`), RG-27 (the `min`/`max`
+adverbs), RG-29 (`.rand` and an excluded endpoint), RG-30 (`eager`), RG-32 (the
+native spans).
+
+Recurring rakupp gaps, for the next sitting, in rough order of what a Roast run
+would meet: an infinite range THROWS `X::Cannot::Lazy` where Rakudo hands back a
+Failure, which kills every probe line that tests one (RG-13, and it is why RG-04
+and RG-26 still read as differing — a Failure's `.raku` renders the carrier
+hash instead of detonating); the object still has no `Capture` or `Map`, and
+`splice`,
+`BIND-POS` and `ASSIGN-POS` are `X::Method::NotFound`; `+ - * /` with a non-Int
+Real or with a Range on the right are wrong (RG-23); `pick`/`roll` on an
+infinite range return huge Ints (RG-28); a mixin does not change a range's type
+for `eqv`, `===` or `~~` (RG-05, RG-21); the Cool methods answer numbers where
+Rakudo has no method at all (RG-31); and the type object answers instance
+methods instead of refusing them, with an MRO and a role list that omit Cool,
+Positional and Iterable (RG-33). The multi-character string product (RG-11, and
+the two `.ACCEPTS` fields of RG-20 that follow from it) is a deliberate
+divergence, not a gap.
 
 ## Method (how this sheet was produced)
 

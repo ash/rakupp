@@ -89,6 +89,16 @@ check (try rand()) // $!.^name,  'X::Obsolete', 'rand() is refused';
 check (try rand(3)) // $!.^name, 'X::Obsolete', 'and rand(3)';
 check 5.rand.^name, 'Num', 'the method form is how you scale it';
 
+# --- N-22: polymod stops at a divisor of one, and refuses two things --------
+check 120.polymod(1, 10, 100, 1000, 10000), (120,), 'a divisor of one stops the sequence';
+check 100.polymod(1 xx *),  (100,), 'a lazy list of ones too';
+check 10.polymod(0.5),      (10,),  'and anything below one';
+check 10.polymod(-3),       (10,),  'including a negative';
+check (-1).polymod(2).exception.^name, 'X::OutOfRange', 'a negative invocant fails';
+check (try 10.polymod(0)) // $!.^name, 'X::Numeric::DivideByZero', 'a zero divisor throws';
+check 120.polymod(10, 10),  (0, 2, 1), 'an ordinary polymod is unchanged';
+check 1000.polymod(10, 10, 10), (0, 0, 0, 1), 'with its trailing remainder';
+
 # --- N-18: U+2212 MINUS SIGN is a minus ------------------------------------
 check "−0".Num,    -0e0, 'a Unicode minus keeps the negative zero';
 check "−0e0".Num,  -0e0, 'in exponent form too';

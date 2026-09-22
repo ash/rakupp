@@ -11,8 +11,10 @@ candidates of `Order.rakumod` and the exception classes named below
 Complex, the numeric literal grammar and `Str.Numeric` (in
 [Str.md](Str.md), ST-06 to ST-08), `sprintf` beyond what `.fmt` shows,
 and the trigonometric values themselves (S32-trig). Oracle: Homebrew
-Rakudo v2026.08 on macOS. Compared against Raku++ 4.0.1-84-ga4291988
-(build-arm64, 2026-09-21). Format and legend: [README.md](README.md).
+Rakudo v2026.08 on macOS. First compared against Raku++
+4.0.1-84-ga4291988 (build-arm64, 2026-09-21) and, after the implementation
+pass of 2026-09-22, against 4.0.1-118 (build-arm64); every `rakupp` line
+below is the LATTER. Format and legend: [README.md](README.md).
 
 Where this sits against the declared spec: of the numeric Roast files
 Rakudo passes here and Raku++ does not — `S32-num/base.t`, `int.t`,
@@ -46,9 +48,9 @@ say 1 === 1.0, " ", 1 == 1.0, " ", 1 eqv 1.0, " ", 1e0 === 1.0, " ", 1e0 == 1.0,
 # rakudo 2026.08: False True False False True False True False True False True True False True True True True True True True True False True False Int|1 Rat|3/2 Num|1 FatRat|1/2 True True Rat|1/1 False False True True ValueObjAt Num|0.30000000000000004 3 (1.0,).Seq
 ```
 The NaN and signed-zero rules of `eqv` are not in the `eqv` docs.
-rakupp 4.0.1: differs in one field — `FatRat.new(1,2).WHICH` is
-`Rat|1/2`, so a FatRat and a Rat of the same value collide in `unique`
-and as object-hash keys.
+rakupp 4.0.1-118: differs in one field — `FatRat.new(1,2).WHICH` is
+`Rat|1/2`, so a FatRat and a Rat of the same value collide in `unique` and
+as object-hash keys.
 
 ### N-02  Numeric.ACCEPTS: numeric equality after coercion                D:yes R:yes V:spec
 `$x ~~ 1` coerces the topic with `.Numeric` and compares with `==`,
@@ -60,7 +62,7 @@ type object on the left never matches an instance.
 say 1 ~~ 1.0, " ", "1" ~~ 1, " ", "abc" ~~ 1, " ", "1.0" ~~ 1, " ", NaN ~~ NaN, " ", 1 ~~ "1", " ", 1 ~~ 1e0, " ", 4 ~~ NaN, " ", <0/0> ~~ NaN, " ", NaN ~~ <0/0>, " ", Inf ~~ <1/0>, " ", 1 ~~ Int, " ", 1.0 ~~ Int, " ", 1 ~~ Rat, " ", 1 ~~ Real, " ", 1 ~~ Numeric, " ", 1e0 ~~ Real, " ", <1/2> ~~ Rational, " ", 1 ~~ UInt, " ", -1 ~~ UInt, " ", 1.0 ~~ Rat, " ", 1 ~~ Cool, " ", "1" ~~ Numeric, " ", 1 ~~ Str, " ", 1 ~~ 1|2, " ", 2 ~~ 1.5, " ", 1.0 ~~ 1, " ", 1e0 ~~ 1, " ", " 1 " ~~ 1, " ", Inf ~~ Inf, " ", -0e0 ~~ 0, " ", <1/0> ~~ Inf, " ", 1 ~~ 1+0i, " ", 1+0i ~~ 1, " ", Int ~~ Numeric, " ", 1 ~~ Int:D, " ", Int ~~ Int:D
 # rakudo 2026.08: True True False True True True True False True True True True False False True True True True True False True True False False True False True True True True True True True True True True False
 ```
-rakupp 4.0.1: differs in one field — `NaN ~~ <0/0>` is False.
+rakupp 4.0.1-118: differs in one field — `NaN ~~ <0/0>` is False.
 
 ### N-03  Truth                                                          D:yes R:yes V:spec
 Zero of any type is False, including `-0e0`; NaN is True; a Rational is
@@ -71,7 +73,7 @@ numeric string is True whenever it is non-empty (`?"0"` is True).
 say ?0, " ", ?0.0, " ", ?0e0, " ", ?-0e0, " ", ?NaN, " ", ?<0/0>, " ", ?<1/0>, " ", ?Inf, " ", ?Int, " ", ?Num, " ", ?Rat, " ", ?0.1, " ", ?FatRat.new(0, 5), " ", ?(1/2), " ", 0.Bool, " ", 5.not, " ", !0.5, " ", <0/0>.Num.Bool, " ", ?"0", " ", ?"0.0", " ", ?"0e0", " ", ?<0>, " ", ?<0.0>, " ", ?<0e0>, " ", ?<0/1>, " ", ?<0+0i>, " ", ?0i, " ", so 0.0000001, " ", ?1e-320
 # rakudo 2026.08: False False False False True False True True False False False True False True False False False True True True True False False False False False False True True
 ```
-rakupp 4.0.1: matches.
+rakupp 4.0.1-118: matches.
 
 ## B. Printing
 
@@ -91,10 +93,9 @@ say 42.Str, " ", 42.raku, " ", (-42).raku, " ", 42.Str(:superscript), " ", (-42)
 ```
 The exponent thresholds are what `S32-num/stringify.t` and
 `S02-types/num.t` pin; the docs only say `say` "does not try very hard".
-rakupp 4.0.1: differs in two fields — the smallest denormal prints as
-`4.94065645841247e-324` (Rakudo `5e-324`) and `12345678901234567e0`
-prints as `12345678901234568` where Rakudo switches to the exponent at
-1e16.
+rakupp 4.0.1-118: differs in two fields — the smallest denormal prints as
+`4.94065645841247e-324` (Rakudo `5e-324`) and `12345678901234567e0` prints
+as `12345678901234568` where Rakudo switches to the exponent at 1e16.
 
 ### N-05  Rat and FatRat as strings                                        D:partial R:yes V:spec
 `.Str` of a Rational is exact when the fraction terminates and otherwise
@@ -115,9 +116,9 @@ say (1/3).Str, "|", (1/3).raku, "|", (1/3).gist, "|", 0.5.raku, "|", (2/4).raku,
 # rakudo 2026.08: 0.333333|<1/3>|0.333333|0.5|0.5|3.0|3.0|3|0.25|<1/6>|<-1/3>|-0.333333|3.5|1.23456789|0.0009765625|<1/18446744073709551615>|0.666667|0.166667|0.142857|0.00001|0.00001|0.000001|0.00000033|123456.789|1000000.5|2|2|2.5|<1/0>|<0/0>|<-1/0>|X::Numeric::DivideByZero|X::Numeric::DivideByZero|FatRat.new(1, 3)|0.333333|0.00000000000000000001|0.142857|FatRat.new(2, 1)|0.333333|Rat|(Rat)|1|<9999999999999999999999/10000000000000000000000>|0|0.00000000000000000001|241025348275725.3352|4.5|0.1|0.3|<1/3>|3.142857|8|0.00001|Str|0.0|0.125|0.2|<1/12>|<1/13>|100.0001|60|FatRat.new(1, 3)|FatRat.new(1, 4)|0.25|FatRat.new(1, 3)|0.142857|0.00001|0.000000999999|3.142857|<2/3>|1.0|0.333333|0.000001|0.000977|0.000001|0.0000001|0.0000001|0.3333333333333333e0|0.3333333333333333|1|0.3|0.1
 ```
 The six-digit rule is asserted (`S32-num/stringify.t`) but written down
-nowhere. rakupp 4.0.1: differs in two fields — `0.9999999999999999999999`
-prints itself instead of `1`, and `FatRat.new(1, 1000001)` prints
-`0.000001` instead of `0.000000999999`.
+nowhere. rakupp 4.0.1-118: differs in two fields —
+`0.9999999999999999999999` prints itself instead of rounding to `1`, and
+`FatRat.new(1, 1000001)` prints `0.000001` instead of `0.000000999999`.
 
 ## C. Construction, undefined values, coercion
 
@@ -138,11 +139,12 @@ a Num only when arithmetic touches it.
 say Int.new.raku, " ", Int.new("42"), " ", Int.new(4.7), " ", (try Int.new(Str)) // $!.^name, " ", Int.new(True), " ", Num.new.raku, " ", Num.new(⅓), " ", Num.new("42").raku, " ", Rat.new(2,4).nude.raku, " ", Rat.new(1,-2).nude.raku, " ", Rat.new(3,0).nude.raku, " ", Rat.new(-5,0).nude.raku, " ", Rat.new(0,0).nude.raku, " ", Rat.new.raku, " ", Rat.new(5).raku, " ", (try Rat.new(1.5, 2)) // $!.^name, " ", FatRat.new(2,4).nude.raku, " ", Rat.new(0, 33).nude.raku, " ", (try Rat.new(1, 2.0)) // $!.^name, " ", (try Num.new(class {}.new)) // $!.^name, " ", Rat.new(1451234131, 60).nude.raku, " ", Rat.new(2**64, 2**65).nude.raku, " ", Rat.new(1, 2**65).^name, " ", Rat.new(1, 2**65).denominator, " ", Rat.new(1, 2**65).Str, " ", (Rat.new(1, 2**65) + 0).^name, " ", (try Int.new("abc")) // $!.^name, " ", Int.new(4.7e0), " ", (try Int.new(Inf)) // $!.^name, " ", Num.new(Inf).raku, " ", FatRat.new.raku, " ", FatRat.new(3).raku, " ", (try Int.new(Int)) // $!.^name, " ", Int.new(Int.new(3)), " ", Rat.new(-1, -7).nude.raku, " ", Num.new(1/3).raku, " ", Rat.new(10, 4).raku, " ", (try Rat.new(1, 2, 3)) // $!.^name
 # rakudo 2026.08: 0 42 4 X::AdHoc 1 0e0 0.3333333333333333 42e0 (1, 2) (-1, 2) (1, 0) (-1, 0) (0, 0) 0.0 5.0 X::TypeCheck::Binding::Parameter (1, 2) (0, 1) X::TypeCheck::Binding::Parameter X::Method::NotFound (1451234131, 60) (1, 2) Rat 36893488147419103232 0.000000000000000000027 Num X::Str::Numeric 4 X::Numeric::CannotConvert Inf FatRat.new(0, 1) FatRat.new(3, 1) X::AdHoc 3 (1, 7) 0.3333333333333333e0 2.5 X::AdHoc
 ```
-rakupp 4.0.1: differs — every refusal is accepted (`Int.new(Str)`,
-`Int.new(Int)`, `Int.new("abc")` are 0, `Rat.new(1.5, 2)` and
-`Rat.new(1, 2, 3)` are 0.5, `Num.new(class {}.new)` is 0,
-`Int.new(Inf)` is 9223372036854775807), and `Rat.new(1, 2**65)` is a
-Num from the start.
+rakupp 4.0.1-118: differs in seven fields — `Rat.new` accepts non-Int parts
+and extra arguments where Rakudo refuses them
+(`X::TypeCheck::Binding::Parameter`, `X::AdHoc`), `Num.new(class {}.new)` is
+0 rather than `X::Method::NotFound`, and `Rat.new(1, 2**65)` is a Num from
+the start where Rakudo keeps a Rat that prints its full value. `Int.new` now
+refuses a type object, an unparsable string and Inf.
 
 ### N-07  An undefined number in numeric context                          D:partial R:partial V:spec
 Prefix `+` and `-`, `.Numeric`, `.Real`, `.Int`, `+&`, `max` and `cmp`
@@ -167,9 +169,12 @@ say (try EVAL '(Int + Int).^name') // $!.^name, " ", (try EVAL 'Int + 1') // $!.
 ```
 The docs (Numeric.rakudoc) still say the `:U` case "issues a warning
 and returns self.new"; Roast (`S03-operators/arith.t`) pins only
-`-Int` warning and yielding 0. rakupp 4.0.1: differs — nothing throws:
-`Int + 1` is 1, `Int == 0` True, `.succ` 1, and only the string-context
-warning is issued.
+`-Int` warning and yielding 0. rakupp 4.0.1-118: differs — nothing throws.
+Every binary arithmetic and comparison operator on an undefined number
+should be `X::Numeric::Uninitialized` and the instance-only methods
+`X::Parameter::InvalidConcreteness`; here `Int + 1` is 1, `Int == 0` True,
+`.succ` 1, `.abs` 0, and only the string-context warning is issued. This is
+the largest single gap in the sheet.
 
 ### N-08  Num to Int, Rat and FatRat                                      D:yes R:yes V:spec
 `Num.Int` truncates toward zero exactly at any magnitude
@@ -186,10 +191,10 @@ all of this. A non-Real epsilon is `X::TypeCheck::Binding::Parameter`.
 say 42.Num.raku, " ", 42.Rat.raku, " ", 42.Rat.nude.raku, " ", 42.FatRat.raku, " ", 42.Int.raku, " ", 42.Bridge.raku, " ", Int.Int.raku, " ", 42.Numeric.raku, " ", 4.2.Numeric.raku, " ", 42.Real.raku, " ", 4.2e0.Real.raku, " ", 42.Complex.raku, " ", 4.5.Complex.raku, " ", 42.Bool.raku, " ", 42.Rat(1).raku, " ", 4.2e0.Bridge.raku, " ", 4.2.Bridge.raku, " ", 42.Bridge.^name, " ", (1/3).Bridge.raku, " ", FatRat.new(1,3).Bridge.raku, " ", 1.5e0.Int, " ", (-1.5e0).Int, " ", 1e20.Int, " ", 1e300.Int.chars, " ", (try Inf.Int / 1) // $!.^name, " ", 0.1e0.Rat.nude.raku, " ", pi.Rat.nude.raku, " ", pi.Rat(1e-10).nude.raku, " ", pi.Rat(0).nude.raku, " ", exp(1).Rat.nude.raku, " ", exp(1).Rat(1e-4).nude.raku, " ", Inf.Rat.nude.raku, " ", (-Inf).Rat.nude.raku, " ", NaN.Rat.nude.raku, " ", NaN.FatRat.nude.raku, " ", 1e0.Rat.raku, " ", 2.5e0.Rat.raku, " ", 1e0.FatRat.raku, " ", (1/3).Num, " ", <1/0>.Num, " ", <-1/0>.Num, " ", <0/0>.Num, " ", 0.1e0.Rat.^name, " ", (2**64).Num.Int, " ", 1e0.Int.^name, " ", 4.7.Int, " ", (-4.7).Int, " ", (-4.7).truncate, " ", 4.7.Num.Int, " ", 1.5.Num.raku, " ", (0.1+0.2).Num.raku, " ", (1/3).Num.Rat.nude.raku, " ", 1e-7.Rat.nude.raku, " ", 0.5e0.Rat.nude.raku, " ", 1e0.Rat.nude.raku, " ", (-2.5e0).Rat.nude.raku, " ", 1e15.Rat.nude.raku, " ", 3.14159e0.Rat.nude.raku, " ", 0.333333333e0.Rat.nude.raku, " ", 1e-3.Rat.nude.raku, " ", 1.1e0.Rat.nude.raku, " ", 1e0.Rat(1e-3).nude.raku, " ", pi.Rat(1e-1).nude.raku, " ", pi.Rat(1).nude.raku, " ", pi.FatRat.nude.raku, " ", 1e-7.Rat(1e-9).nude.raku, " ", 1e17.Int, " ", 123456789012345678e0.Int, " ", (2**53).Num.Int == 2**53, " ", (2**53+1).Num.Int == 2**53, " ", (Inf.Int).^name, " ", (NaN.Int).^name, " ", 1e-7.Rat.raku, " ", 0.3e0.Rat.raku, " ", 0.333e0.Rat.raku, " ", 1.5e0.FatRat.raku, " ", (2**80).Num.Rat.nude.raku, " ", (2**80).Num.Rat.^name, " ", 1e19.Rat.nude.raku, " ", 1e19.Rat.^name, " ", (1/(2**64)).Num.Rat.^name, " ", 1e-20.Rat.nude.raku, " ", 1e-20.Rat(1e-30).nude.raku, " ", 1e-20.Rat(1e-30).^name, " ", 0.1e0.Rat(1e-20).nude.raku, " ", 0.1e0.Rat(0).nude.raku, " ", 0.1e0.FatRat(0).nude.raku, " ", 1e0.Rat(Inf).nude.raku, " ", (try pi.Rat("x")) // $!.^name, " ", pi.Rat(1/1000).nude.raku
 # rakudo 2026.08: 42e0 42.0 (42, 1) FatRat.new(42, 1) 42 42e0 Int 42 4.2 42 4.2e0 <42+0i> <4.5+0i> Bool::True 42.0 4.2e0 4.2e0 Num 0.3333333333333333e0 0.3333333333333333e0 1 -1 100000000000000000000 301 X::Numeric::CannotConvert (1, 10) (355, 113) (312689, 99532) (245850922, 78256779) (2721, 1001) (193, 71) (1, 0) (-1, 0) (0, 0) (0, 0) 1.0 2.5 FatRat.new(1, 1) 0.3333333333333333 Inf -Inf NaN Rat 18446744073709551616 Int 4 -4 -4 4 1.5e0 0.3e0 (1, 3) (0, 1) (1, 2) (1, 1) (-5, 2) (1000000000000000, 1) (9208, 2931) (1, 3) (1, 1000) (11, 10) (1, 1) (22, 7) (3, 1) (355, 113) (1, 10000000) 100000000000000000 123456789012345680 True True Failure Failure 0.0 0.3 0.333 FatRat.new(3, 2) (1208925819614629174706176, 1) Rat (10000000000000000000, 1) Rat Rat (0, 1) (1, 100000000000000000000) Rat (1, 10) (1, 10) (1, 10) (1, 1) X::TypeCheck::Binding::Parameter (333, 106)
 ```
-rakupp 4.0.1: differs in three fields — `Int.Int` is 0 (Rakudo the type
-object), `1e-20.Rat(1e-30)` is 0/1 (Rakudo keeps the 21-digit
-denominator), and a Str epsilon is accepted (`pi.Rat("x")` prints
-3.141592654) instead of `X::TypeCheck::Binding::Parameter`.
+rakupp 4.0.1-118: differs in four fields — `Int.Int` is 0 (Rakudo the type
+object), `1e-20.Rat(1e-30)` is 0/1 where Rakudo keeps the 21-digit
+denominator, and a Str epsilon is accepted instead of
+`X::TypeCheck::Binding::Parameter`.
 
 ### N-09  A string operand: Failure or exception?                          D:partial R:yes V:spec
 Arithmetic and comparison coerce Str operands with `.Numeric` (the
@@ -209,10 +214,11 @@ say ("abc" == 3).^name, " ", do { my $r = try "abc" == 3; ($! ?? "set" !! "unset
 # rakudo 2026.08: Failure unset Failure set Any unset Failure X::Str::Numeric X::Str::Numeric Bool Failure Failure Failure False False False X::Str::Numeric X::Str::Numeric X::Str::Numeric f f set Any unset Failure set Any set Any
 ```
 (Both lines also print "unhandled Failure detected in DESTROY"
-warnings for the Failures that were never touched.) rakupp 4.0.1:
-differs — `==`, `<`, `<=>` and `!=` on an unparsable string throw
-`X::Str::Numeric` outright instead of returning a Failure, and
-`"²" + 0` throws where Rakudo fails.
+warnings for the Failures that were never touched.) rakupp 4.0.1-118:
+differs — `==`, `<`, `<=>` and `!=` on an unparsable string still THROW
+`X::Str::Numeric` outright where Rakudo returns a Failure, so both probe
+lines die at their first field. `+"abc"` and `"abc" + 3` are the soft
+Failure already.
 
 ## D. Arithmetic
 
@@ -237,11 +243,11 @@ say (1/3).nude.raku, " ", (1/3).numerator, " ", (1/3).denominator, " ", (6/4).nu
 ```
 (`FatRat` upgrade with `CX::Warn` printed `Num:0:` here because the
 warning was issued at the fold, not through the `CONTROL` block.)
-rakupp 4.0.1: differs — `$*RAT-OVERFLOW` is ignored (every setting
-gives a Num), `FatRat.Rat` never fails, `0 ** -1` is a Failure
-`X::Numeric::DivideByZero` where Rakudo makes `<1/0>`, and
-`(-2) ** -3` is the correct `-0.125` (see N-12). Everything else on
-these two lines matches.
+rakupp 4.0.1-118: differs — `$*RAT-OVERFLOW` is ignored (every setting gives
+a Num), `FatRat.Rat` never fails, and `0 ** -1` is a Failure
+`X::Numeric::DivideByZero` where Rakudo makes `<1/0>`. `(-2) ** -3` is the
+correct `-0.125`, which is the recorded Rakudo bug and is deliberately not
+imitated (N-12).
 
 ### N-11  Division, modulo, divisibility, gcd and lcm                      D:partial R:yes V:bug
 `div` floors (`-7 div 2` is -4) and `%`, `mod` follow the divisor's
@@ -264,11 +270,11 @@ say do { my $f = 7 div 0; $f.so; $f.exception.^name ~ ":" ~ $f.exception.using ~
 ```
 `7 mod 2.5` is the bug; the docs declare `mod` for `Int:D, Int:D` only.
 The `%` identity `x - floor(x / y) * y` is the documented one and holds
-for Rats and Nums. rakupp 4.0.1: differs on one point only — Num
-division and `%` by zero give `Inf` (the 6.e behaviour the docs
-announce) instead of a Failure; it reproduces `7 mod 2.5` as -0.5, and
-its `X::Numeric::DivideByZero` carries no `.using`, `.numerator` or
-`.details`.
+for Rats and Nums. rakupp 4.0.1-118: differs on one point only — Num
+division and `%` by zero give `Inf` (the 6.e behaviour the docs announce)
+instead of a Failure, which takes the second probe line with it. It
+reproduces `7 mod 2.5` as -0.5, and its `X::Numeric::DivideByZero` carries
+no `.using`, `.numerator` or `.details`.
 
 ### N-12  Power                                                          D:partial R:yes V:bug
 `Int ** Int` is exact; a negative exponent gives a Rat (`2 ** -1` is
@@ -295,12 +301,12 @@ say ((-2) ** -3).nude.raku, " ", ((-2) ** -3) == -0.125, " ", ((-2) ** -3).raku,
 ```
 (`(-0e0) ** 3` and `(-0e0) ** 1` come out as `0e0`: Rakudo replaces a
 zero result by `+0e0` on the way out, which IEEE 754 does not.)
-rakupp 4.0.1: differs — `(-2) ** -3` is the correct `<-1/8>`, `-0.125`;
-`0 ** -1` is a Failure `X::Numeric::DivideByZero` instead of `<1/0>`;
-`1e-300 ** 2` and `2e0 ** -1e20` are `0e0` (IEEE underflow, keep);
-`(-0e0) ** 3` is `-0e0` (IEEE, keep); `0e0 ** -1` is `0e0` (wrong both
-ways, should be Inf); and `10¹⁰⁰` has 1000 digits instead of 101, a
-rakupp bug in superscript parsing.
+rakupp 4.0.1-118: differs — `0 ** -1` is a Failure
+`X::Numeric::DivideByZero` where Rakudo makes `<1/0>`, which shifts the rest
+of the line; `0e0 ** -1` is `0e0` (wrong both ways, should be Inf); and
+`10¹⁰⁰` has 1000 digits instead of 101, a rakupp bug in superscript parsing.
+`(-2) ** -3` is the correct `<-1/8>` and `1e-300 ** 2`, `2e0 ** -1e20`,
+`(-0e0) ** 3` are IEEE — all four deliberate.
 
 ### N-13  Rounding                                                       D:partial R:yes V:quirk
 `round` adds a half and floors, so halves go up towards +Inf for every
@@ -320,9 +326,10 @@ say 2.5.round, " ", (-2.5).round, " ", 3.5.round, " ", (-3.5).round, " ", 2.5e0.
 # rakudo 2026.08: 3 -2 4 -3 3 -2 1 0 Int Int 3.14 Rat 1200 1300 Int 3.142 Rat Num Int Rat 1.95 987700000 123.46 1.0 Inf NaN Inf -Inf NaN Num 1 -2 2 -1 -1 Int 301 3 4 3 -3 X::Numeric::DivideByZero X::Numeric::DivideByZero X::Numeric::DivideByZero X::Numeric::DivideByZero 3 17.3 1.235 3 X::Numeric::DivideByZero 3 Int Int 1 15 -2 0 1 2.5 3 2.5 -2 4999999999999999727876154935214080 0e0 2 6 6 1 2 0 -1 1 2 5e0 5 5.0 1180591620717411303425 1180591620717411303424.0 Inf X::Numeric::DivideByZero 0.0 Int -5 Int 101 1 0 0.6 0.4 2 1 0.2 0.3 0.4 1.01 2.68 2.68 0.5 0.1 0.1 0.3 -0.2 0.0 3e0 -2e0 3e0
 ```
 The half-up rule and the `0.49999999999999994e0` case are the quirk;
-the docs say only "rounds to scale". rakupp 4.0.1: differs in two
-fields — `5.round(0)` is 5 and `NaN.round(0)` NaN where Rakudo fails;
-every other field, including the binary-half case, matches.
+the docs say only "rounds to scale". rakupp 4.0.1-118: differs in two fields
+— `5.round(0)` is 5 and `NaN.round(0)` NaN where Rakudo fails. Every other
+field, including the half-up rule, the binary-half case and the Inf/NaN
+pass-through of the sub forms, matches.
 
 ### N-14  sign, abs, succ, pred                                          D:yes R:yes V:spec
 `sign` is an Int -1, 0 or 1 for any Real, including `Inf`, `-Inf`,
@@ -336,8 +343,9 @@ True.
 say (-3).sign, " ", 0.sign, " ", Inf.sign, " ", (-Inf).sign, " ", NaN.sign.raku, " ", (-0e0).sign, " ", <-1/0>.sign, " ", <0/0>.sign, " ", <1/0>.sign, " ", (3/2).sign.^name, " ", 1.5e0.sign.^name, " ", (try sign(Int)) // $!.^name, " ", "-17".sign, " ", (-5).abs, " ", (-5).abs.^name, " ", (-1.5e0).abs.^name, " ", (-1.5).abs.^name, " ", (-0e0).abs.raku, " ", abs("-10"), " ", abs(NaN).raku, " ", (-3).succ, " ", 1.5.succ.raku, " ", 1e0.succ.raku, " ", Inf.succ, " ", (1/3).succ.raku, " ", (1/3).pred.raku, " ", NaN.succ.raku, " ", 0.pred, " ", <1/0>.succ.raku, " ", (2**64).succ, " ", FatRat.new(1,3).succ.raku, " ", True.succ, " ", (try True.succ.succ) // $!.^name, " ", 1.5.succ.^name, " ", 1e0.succ.^name, " ", Inf.sign.^name, " ", (-Inf).abs, " ", <-1/0>.abs.raku, " ", (-2**70).abs, " ", abs(-5).^name, " ", (-0.0).sign, " ", 0e0.sign, " ", (sign 3.7), " ", (sign "0"), " ", (try sign("abc")) // $!.^name, " ", (try abs("abc")) // $!.^name, " ", (quietly abs(Int)), " ", 5.succ.^name, " ", (1/2).succ.nude.raku, " ", 1e308.succ.raku, " ", 1.7976931348623157e308.succ.raku, " ", (2**53).Num.succ.raku, " ", (2**53).Num.succ == 2**53, " ", "9".succ, " ", "a9".pred, " ", (-1).succ.raku
 # rakudo 2026.08: -1 0 1 -1 NaN 0 -1 0 1 Int Int X::Parameter::InvalidConcreteness -1 5 Int Num Rat 0e0 10 NaN -2 2.5 2e0 Inf <4/3> <-2/3> NaN -1 <1/0> 18446744073709551617 FatRat.new(4, 3) True True Rat Num Int Inf <1/0> 1180591620717411303424 Int 0 0 1 0 X::Str::Numeric X::Str::Numeric 0 Int (3, 2) 1e+308 1.7976931348623157e+308 9007199254740992e0 True 10 a8 0
 ```
-rakupp 4.0.1: differs in two fields — `sign(Int)` is `X::Multi::NoMatch`
-and `<0/0>.sign` is NaN.
+rakupp 4.0.1-118: differs in two fields — `sign(Int)` is `X::Multi::NoMatch`
+rather than `X::Parameter::InvalidConcreteness` and `<0/0>.sign` is NaN
+rather than 0.
 
 ### N-15  Comparison                                                      D:yes R:yes V:spec
 `==`, `<` and friends coerce with `.Numeric`/`.Real` and compare
@@ -355,9 +363,9 @@ say "3" == 3, " ", (try "abc" == 3) // $!.^name, " ", "3" < 4, " ", Inf > Inf, "
 # rakudo 2026.08: True Any True False False True False False Nil Nil Nil More Less Same Same Same More Less Less Less More More Less More Same Same True True True True True False True True True True False True False False True True True True False True True True True True True Less More Order True Bool True False True True True More Less Same Order::Same Less Less Same Less More Less Less More True True 2 1 More Less More True Failure.new(exception => X::Str::Numeric.new(source => "a", pos => 0, reason => "base-10 number must begin with valid digits or '.'"), backtrace => Backtrace.new) Any True Same Same Same Same Same Same Same Same Same Same Same More More Same Less Less More Less (-Inf, 0, 1, Inf, NaN).Seq (1, 2e0, 2.5, 3).Seq ("10", 2, 3).Seq (2, 3, "10").Seq
 ```
 (The `Any` fields are the unhandled Failure of N-09 read through
-`$!.^name`.) rakupp 4.0.1: differs in three fields — `Inf cmp "abc"` is
-Less, and `"abc" == 3`, `"a" == "a"`, `"a" == 1` throw
-`X::Str::Numeric` instead of returning a Failure.
+`$!.^name`.) rakupp 4.0.1-118: differs in three fields — `Inf cmp "abc"` is
+Less, and `"abc" == 3`, `"a" == "a"` throw `X::Str::Numeric` instead of
+returning a Failure (N-09).
 
 ### N-16  Reduction identities and one operand                            D:no R:partial V:bug
 With no operands `[+]`, `[-]`, `[+|]`, `[+^]` are 0, `[*]`, `[**]` are
@@ -387,11 +395,10 @@ say ([+] 1..100), " ", ([*] 1..20), " ", ([-] 10, 2, 3), " ", ([**] 2, 3, 2), " 
 ```
 (`[+] Nil` also warns "Use of Nil in numeric context".) The `[lcm] ()`
 ambiguity is the bug; `S03-operators/equality.t` asserts the
-zero- and one-argument `==`/`!=` forms only. rakupp 4.0.1: differs —
-a reduce over a bare literal (`[+] 5`) or under `try` is a parse error
-("expected ) (got '5')"), `[max] 1, 1.0, 1e0` is a Num, `[+] Nil` is
-Nil, `[+] "a"` is the string "a", and `[+] 1..3, 4` flattens the range
-to 10.
+zero- and one-argument `==`/`!=` forms only. rakupp 4.0.1-118: differs — a
+reduce over a bare literal (`[+] 5`) or under `try` is a parse error
+("expected ) (got '5')"), `[max] 1, 1.0, 1e0` is a Num, `[+] Nil` is Nil,
+`[+] "a"` is the string "a", and `[+] 1..3, 4` flattens the range to 10.
 
 ### N-17  Bitwise operators                                              D:yes R:yes V:bug
 `+&`, `+|`, `+^` and prefix `+^` work on two's-complement Ints of any
@@ -411,10 +418,10 @@ say (try 1 +< 2**70) // $!.^name
 say (try 1 +> 2**70) // $!.^name, " ", (try -1 +> 2**70) // $!.^name
 # rakudo 2026.08: X::AdHoc X::AdHoc
 ```
-rakupp 4.0.1: differs — `1 +< -64` is 0 (the correct answer), a right
-shift by `2**70` gives 0 and -1 instead of throwing, and a LEFT shift by
-`2**70` (or `(2**70) +< (2**70)`) hangs until the alarm kills it: a
-rakupp bug to fix first.
+rakupp 4.0.1-118: differs in one field — `1 +< -64` is 0, the correct
+answer, against Rakudo's wrapped 1; that is the recorded bug. A shift count
+that does not fit a native int is now `X::AdHoc` naming the exact bit width,
+in both directions, and the left shift no longer hangs.
 
 ## E. Special values
 
@@ -433,9 +440,11 @@ and `.Rat` `0.0`, and narrows to 0. `1e0 / -0e0` is a Failure
 say Inf - Inf, " ", Inf * 0, " ", Inf / Inf, " ", (1/Inf).raku, " ", (-1/Inf).raku, " ", (0e0 * -1).raku, " ", (-0e0 + 0e0).raku, " ", (-0e0 * -1).raku, " ", (-0e0).Int, " ", (-0e0).Rat.raku, " ", (-0.0).raku, " ", (-0e0).narrow.raku, " ", (0e0 - 0e0).raku, " ", (-0e0 - 0e0).raku, " ", atan2(-0e0, 1).raku, " ", atan2(0e0, -1e0), " ", atan2(-0e0, -1e0), " ", 1e0 / Inf, " ", Inf.narrow.raku, " ", NaN.narrow.raku, " ", NaN + 1, " ", NaN.isNaN, " ", (0/0).isNaN, " ", Inf.isNaN, " ", <1/0>.isNaN, " ", 1.isNaN, " ", 1e0.isNaN, " ", NaN.Bool, " ", Inf == Inf, " ", Inf + 1 === Inf, " ", 100 / Inf, " ", Inf ** 0, " ", 0 ** Inf, " ", NaN + 1i ~~ NaN, " ", (-Inf).abs, " ", Inf.abs.raku, " ", 2e308.raku, " ", 1.7976931348623157e308 * 2, " ", (1e-320).raku, " ", 5e-324 / 2, " ", (-Inf).sign, " ", -Inf², " ", Inf.Rat.raku, " ", (Inf.Rat * 0).raku, " ", (try Inf.Rat.Str) // $!.^name, " ", Inf.Rat ~~ Rat, " ", (1 - (Inf.Rat)).raku, " ", (-0e0).raku, " ", (-0e0 == 0), " ", (-0e0 === 0e0), " ", (0e0 * -1) === -0e0, " ", ((-0e0).Str), " ", (-0e0).abs.raku, " ", (1 / -0e0).raku, " ", (try (1e0 / -0e0)) // $!.^name, " ", (-0e0).Bool, " ", (-0e0).ceiling.raku, " ", (-0e0).floor.raku, " ", (-0e0).round.raku, " ", (-0e0).truncate.raku, " ", (-0e0 + 1).raku, " ", ("-0e0".Num).raku, " ", (-0e0).Num.raku, " ", (-(0e0)).raku, " ", (0e0.abs * -1).raku, " ", (-1e0 * 0).raku, " ", (0 * -1e0).raku, " ", (0e0 / -1).raku, " ", sqrt(-0e0).raku, " ", (-0e0).sqrt.raku, " ", (-0e0) ** 2, " ", (-0e0) ** 3, " ", (-0e0).exp.raku, " ", (-0e0).sin.raku, " ", (-0e0).cos.raku, " ", ((-0e0).Rat).raku, " ", (-0e0).FatRat.raku, " ", (-0e0).Complex.raku, " ", (-0e0).WHICH, " ", 0e0.WHICH, " ", ((-0e0, 0e0).unique.elems), " ", ((-0e0) cmp 0e0), " ", ((-0e0) <=> 0e0), " ", (-0e0 eqv 0e0), " ", (-0e0 =~= 0e0), " ", (-0e0 < 0e0)
 # rakudo 2026.08: NaN NaN NaN 0e0 -0e0 -0e0 0e0 0e0 0 0.0 0.0 0 0e0 -0e0 -0e0 3.141592653589793 -3.141592653589793 0 Inf NaN NaN True True False False False False True True True 0 1 0 True Inf Inf Inf Inf 1e-320 0 -1 -Inf <1/0> <0/0> X::Numeric::DivideByZero True <-1/0> -0e0 True False True -0 0e0 Failure.new(exception => X::Numeric::DivideByZero.new(using => "/", details => Any, numerator => 1e0), backtrace => Backtrace.new) X::Numeric::DivideByZero False 0 0 0 0 1e0 -0e0 -0e0 -0e0 -0e0 -0e0 -0e0 -0e0 -0e0 -0e0 0 0 1e0 -0e0 1e0 0.0 FatRat.new(0, 1) <-0+0i> Num|-0 Num|0 2 Same Same False True False
 ```
-rakupp 4.0.1: differs in three fields — `1e-320` prints as
-`9.99988867182683e-321`, `1 / -0e0` and `1e0 / -0e0` are `-Inf` (the 6.e
-rule, see N-11), and `(-0e0) ** 3` is `-0` (IEEE, keep).
+rakupp 4.0.1-118: differs — `1e-320` prints as `9.99988867182683e-321`, `1 /
+-0e0` and `1e0 / -0e0` are `-Inf` (the 6.e rule, N-11), and the `.raku` of
+the resulting Failure renders the carrier hash rather than
+`Failure.new(...)`, which shifts the rest of the line. `(-0e0) ** 3` is
+`-0e0`, IEEE and deliberate.
 
 ### N-19  narrow                                                          D:partial R:yes V:bug
 `narrow` returns an Int for a Rat with denominator 1 and for a Num whose
@@ -451,11 +460,12 @@ say 1e-300.narrow.raku, " ", (1/(2**64)).narrow.raku, " ", (1e15+0.5).narrow.rak
 say (4/2).narrow.raku, " ", (5/2).narrow.^name, " ", 4e0.narrow.raku, " ", 4.5e0.narrow.^name, " ", 1e20.narrow.raku, " ", (4+0i).narrow.raku, " ", FatRat.new(4,2).narrow.raku, " ", 1e-300.narrow.^name, " ", ((.1e0+.2e0)*10).narrow.raku, " ", 2.2e0.narrow.raku, " ", (0+2i).narrow.raku, " ", (0+0i).narrow.raku, " ", 5.narrow.raku, " ", (2**70).Num.narrow.raku, " ", Inf.narrow.raku, " ", (-0e0).narrow.raku, " ", <1/0>.narrow.raku, " ", 1e16.narrow.raku, " ", (1e15+0.5).narrow.raku, " ", 1.0.narrow.^name, " ", (3/1).narrow.^name, " ", FatRat.new(1,3).narrow.^name, " ", 4e0.narrow.WHAT.gist, " ", (4e0+1e-20).narrow.raku, " ", 4.0000000000000001e0.narrow.raku, " ", 4.000000000000001e0.narrow.raku, " ", (1e0 + 1e-15).narrow.raku, " ", (1e0 + 1e-16).narrow.raku, " ", NaN.narrow.^name, " ", (2**53+1).Num.narrow.raku, " ", 2.5e0.narrow.WHAT.raku, " ", <0/0>.narrow.raku, " ", (1/(2**64)).narrow.^name, " ", 1e300.narrow.chars, " ", (1e300.narrow ~~ Int), " ", 0e0.narrow.raku, " ", (-4e0).narrow.raku, " ", 4.5.narrow.raku, " ", (9/3).narrow.raku, " ", FatRat.new(9, 3).narrow.^name, " ", (1e0).narrow.^name, " ", Rat.new(4, 2).narrow.WHICH
 # rakudo 2026.08: 2 Rat 4 Num 100000000000000000000 4 2 Int 3 2.2e0 <0+2i> 0 5 1180591620717411303424 Inf 0 <1/0> 10000000000000000 1000000000000000 Int Int FatRat (Int) 4 4 4 1.000000000000001e0 1 Num 9007199254740992 Num <0/0> Int 301 True 0 -4 4.5 3 Int Int Int|2
 ```
-rakupp 4.0.1: differs — it narrows only exact integers, so
-`1e-300.narrow` stays `1e-300` and `(1e15+0.5).narrow` stays a Num
-(both right); but `1e20.narrow`, `(2**70).Num.narrow` and
-`1e300.narrow` stay Nums where Rakudo (correctly) gives the exact Int,
-and `((.1e0+.2e0)*10).narrow` stays `3.0000000000000004e0`.
+rakupp 4.0.1-118: differs in two fields, both deliberate — `1e-300.narrow`
+and `(1/(2**64)).narrow` keep their values where Rakudo answers 0. Rakudo's
+approximate test falls back to an ABSOLUTE comparison when a side is zero,
+which destroys any value under the tolerance; nothing in Roast asks for
+that. The rest of the rule IS implemented, so `((.1e0+.2e0)*10).narrow` is
+the Int 3 and `1e20`, `(2**70).Num`, `1e300` narrow exactly.
 
 ## F. Methods
 
@@ -466,7 +476,8 @@ or a negative digits count is a Failure `X::OutOfRange` (`.what` "base
 argument to base" or "digits argument to base", `.range` "2..36" in
 both cases); a Str base is coerced, an unparsable one is
 `X::Str::Numeric`, `"camel"` and `"beer"` render the binary in
-emoji. A Rational renders 6 digits by default (more for a large
+emoji, one glyph per digit (a one-hump camel is 0 and a two-hump one 1).
+A Rational renders 6 digits by default (more for a large
 denominator), `*` means all digits (endless for 1/3), an explicit
 count pads with zeros unless `:no-trailing-zeroes`, 0 digits rounds to
 an Int, and the last digit is rounded. A Num renders about 8 digits in
@@ -477,17 +488,13 @@ and returns the non-repeating part and the cycle.
 say 255.base(16), " ", 255.base(2), " ", 255.base(36), " ", (-255).base(16), " ", 0.base(2), " ", (try 255.base(37)) // $!.^name, " ", (try 255.base(1)) // $!.^name, " ", 255.base(16, 2), " ", 255.base("16"), " ", (try 255.base(16, -1)) // $!.^name, " ", 255.base(16, *), " ", 255.base(16, 0), " ", 255.base("camel"), " ", 5.base("beer"), " ", (try 255.base("foo")) // $!.^name, " ", (1/3).base(10), " ", (1/3).base(2), " ", pi.base(10, 3), " ", (1/128).base(10, *), " ", (1/3).base(10, 2), " ", (1/2).base(10, 3), " ", (1/2).base(10, 3, :no-trailing-zeroes), " ", (1/3).base(10, 0), " ", 2.5.base(10, 0), " ", 0.1.base(2), " ", (-1/3).base(10), " ", 3.25.base(16), " ", (1/10000000000).base(3), " ", (2/3).base(10, 40), " ", (1/100001).base(10), " ", pi.base(10), " ", pi.base(16), " ", 1e0.base(2), " ", 0.5e0.base(2), " ", (try Inf.base(2)) // $!.^name, " ", (try NaN.base(16)) // $!.^name, " ", 16.99999e0.base(16, 3), " ", 16.999e0.base(16, 3), " ", (6.02214129e23 / 10 ** 23).base(3, 0), " ", 255e0.base(16, *), " ", 1e10.base(10), " ", 1e-10.base(10), " ", 1e-10.base(10, 12), " ", (19/3).base-repeating.raku, " ", (5/2).base-repeating(10).raku, " ", (1/7).base-repeating.raku, " ", 4.0.base-repeating.raku, " ", (try 4.base-repeating) // $!.^name, " ", (-19/3).base-repeating.raku, " ", (1/3).base-repeating(2).raku, " ", 255.base(16).parse-base(16), " ", :16<FF>, " ", 35.base(36, 1), " ", 121.base(11, 3), " ", (try 255.base(16, 2.5)) // $!.^name, " ", (try 1.5.base(10, -1)) // $!.^name, " ", (try 1.5.base(1)) // $!.^name, " ", (3/2).base(10, 1), " ", (49/999).base(10, 1), " ", (98/99).base(10, 1), " ", (98/99).base(10, 0), " ", (.01).base(10, 0), " ", 16.0.base(16, 3), " ", 16.5.base(16, 3), " ", (3/1024).base(16, *), " ", 255.base(10).^name, " ", (-3.5).base(16), " ", 10.5.base(2), " ", 1e0.base(16, 3), " ", 0.1e0.base(10), " ", 0.1e0.base(10, 20), " ", 1e0.base(10, 0), " ", 0.5.base(10, *), " ", 1e300.base(10).chars, " ", (2**70).base(16), " ", (1/3).FatRat.base(10), " ", FatRat.new(1, 10**30).base(10), " ", FatRat.new(1, 3).base(10, 3)
 # rakudo 2026.08: FF 11111111 73 -FF 0 X::OutOfRange X::OutOfRange FF.00 FF X::OutOfRange FF FF 🐫🐫🐫🐫🐫🐫🐫🐫 🍻🍺🍻 X::Str::Numeric 0.333333 0.010101 3.142 0.0078125 0.33 0.500 0.5 0 3 0.00011 -0.333333 3.4 0.000000000000000000001 0.6666666666666666666666666666666666666667 0.00001 3.14159265 3.243F6B 1 0.1 X::Numeric::CannotConvert X::Numeric::CannotConvert 11.000 10.FFC 20 FF 10000000000 0.00000000 0.000000000100 ("6.", "3") ("2.5", "") ("0.", "142857") ("4", "") X::Method::NotFound ("-6.", "3") ("0.", "01") 255 255 Z.0 100.000 X::Multi::NoMatch X::OutOfRange X::OutOfRange 1.5 0.0 1.0 1 0 10.000 10.800 0.00C Str -3.8 1010.1 1.000 0.1 0.10000000000000000000 1 0.5 301 400000000000000000 0.333333 0.000000000000000000000000000001 0.333
 ```
-rakupp 4.0.1: differs — `base-repeating` is missing; `255.base(16, 2)`
-drops the `.00`; `"camel"` and `"beer"` are `X::OutOfRange`; a
-Rational's `*` digits and large counts go through a double
-(`(1/128).base(10, *)` is `0.007813`, `(2/3).base(10, 40)` ends in
-float noise, `(1/10000000000).base(3)` and `FatRat.new(1, 10**30)` are
-`0.000000` and `0`); `2.5.base(10, 0)` and `(98/99).base(10, 0)` round
-down; trailing zeros are kept (`0.1.base(2)` is `0.000110`); a Num gets
-6 digits (`pi.base(10)` `3.141593`), `Inf.base(2)` is a 64-bit string
-and `NaN.base(16)` `0.000000`, `1e300.base(10)` has 20 characters;
-`35.base(36, 1)` and `121.base(11, 3)` lose the fraction; a Rat digits
-count and a negative count are accepted.
+rakupp 4.0.1-118: differs in eight fields — `:no-trailing-zeroes` is
+ignored, `.base-repeating` of a whole number puts the point in the
+non-repeating part (`("4.", "")` for `("4", "")`), a Rat digits count is
+accepted where Rakudo refuses it, and a Num's `%.20f`-scale expansion
+differs in the last digits. Everything else — the exact Rational expansion
+at any length, the three default digit counts, the X::OutOfRange refusals,
+Inf and NaN, and the camel and beer bases — matches.
 
 ### N-21  is-prime, expmod, lsb, msb                                     D:yes R:yes V:spec
 `is-prime` is False for 0, 1 and negatives, True for a Num or Rat that
@@ -503,10 +510,10 @@ number use the two's-complement magnitude: `(-1).msb` 0, `(-2).msb` 1,
 say 2.is-prime, " ", 1.is-prime, " ", 0.is-prime, " ", (-2).is-prime, " ", 2e0.is-prime, " ", 2.5e0.is-prime, " ", Inf.is-prime, " ", NaN.is-prime, " ", 2.0.is-prime, " ", 2.5.is-prime, " ", "7".is-prime, " ", <7+0i>.is-prime, " ", (try <7+1i>.is-prime) // $!.^name, " ", (2**61-1).is-prime, " ", 170141183460469231731687303715884105727.is-prime, " ", expmod(4, 2, 5), " ", 7.expmod(2, 5), " ", 7.expmod(-2, 5), " ", expmod("4", "2", "5"), " ", (try expmod(4, 2, 0)) // $!.^name, " ", 3.expmod(-4, 4), " ", (-3).expmod(-4, 4), " ", (try 42.expmod(-1, 7)) // $!.^name, " ", 0.lsb.raku, " ", 0.msb.raku, " ", 12.lsb, " ", 12.msb, " ", (-1).msb, " ", (-2).msb, " ", (-8).lsb, " ", (-8).msb, " ", (2**100).msb, " ", (2**100).lsb, " ", 1.msb, " ", 255.msb, " ", 256.msb, " ", (-256).msb, " ", (-255).msb, " ", lsb(6), " ", msb(6), " ", 120.polymod(10).raku, " ", 120.polymod(10, 10).raku, " ", 120.polymod(10 xx *).raku, " ", 120.polymod(lazy 1, 10, 10², 10³, 10⁴).raku, " ", 120.polymod(1, 10, 10², 10³, 10⁴).raku, " ", 5.polymod().raku, " ", (try (-1).polymod(10).raku) // $!.^name, " ", (try 120.polymod(0).eager.raku) // $!.^name, " ", (try 120.polymod(1/3).raku) // $!.^name, " ", (2/3).polymod(1/3).raku, " ", 5.Rat.polymod(.3, .2).raku, " ", 10e0.polymod(1.5).raku, " ", 100.polymod(1 xx *).raku, " ", 100.polymod(10, 1 xx *).raku, " ", 12.polymod(14 xx *).raku, " ", 1234567.polymod(256 xx 7).raku, " ", 42.polymod(lazy 2, 3).raku, " ", 42.polymod(2, 3).raku, " ", (2**70).polymod(2**32, 2**32).raku, " ", 1.5.polymod(1).raku, " ", (-1.5).polymod(1).^name, " ", (try 10.polymod(0.5, 0).eager.raku) // $!.^name, " ", (try 10.polymod(3, 0).eager.raku) // $!.^name, " ", (try 10.polymod(3, 0, 5).eager.raku) // $!.^name, " ", 0.polymod(10).raku, " ", 7.polymod(10, 10, 10).raku, " ", (2**64).is-prime, " ", 4.is-prime, " ", 97.is-prime, " ", is-prime("97"), " ", is-prime(97.0), " ", (try is-prime("abc")) // $!.^name, " ", 6.expmod(2, 5), " ", (2**100).expmod(3, 7), " ", 3.expmod(0, 7), " ", 3.expmod(1, 1), " ", (try 3.expmod(-1, 6)) // $!.^name, " ", (-7).lsb, " ", (-7).msb, " ", 7.msb, " ", (2**64).msb, " ", (2**64-1).msb, " ", ((-2)**64).msb, " ", (-(2**64)).msb, " ", 120.polymod(60, 60).raku, " ", 3661.polymod(60, 60).raku, " ", 5.polymod(1, 1).raku, " ", 10.polymod(2.5).raku, " ", 10.polymod(2.5, 2).raku, " ", (try 10.polymod(Inf).eager.raku) // $!.^name, " ", 10.polymod(0.5).raku, " ", 10.polymod(2, 0.5, 3).raku, " ", 10.polymod(1.5).raku, " ", 10.5.polymod(0.5).raku, " ", 10.polymod(-3).raku, " ", (2/3).polymod(1/3).^name, " ", 10e0.polymod(3).raku, " ", 10.polymod(3e0).raku
 # rakudo 2026.08: True False False False True False False False True False True True X::Numeric::Real True True 1 4 4 1 X::AdHoc 1 1 X::AdHoc Nil Nil 2 3 0 1 3 3 100 100 0 7 8 8 8 1 2 (0, 12).Seq (0, 2, 1).Seq (0, 2, 1).Seq (120,).Seq (120,).Seq (5,).Seq X::OutOfRange X::Numeric::DivideByZero (120,).Seq (0, 2.0).Seq (0.2, 0, 80.0).Seq (1e0, 6e0).Seq (100,).Seq (0, 10).Seq (12,).Seq (135, 214, 18, 0, 0, 0, 0, 0).Seq (0, 0, 7).Seq (0, 0, 7).Seq (0, 0, 64).Seq (1.5,).Seq Failure (10,) X::Numeric::DivideByZero X::Numeric::DivideByZero (0, 0).Seq (7, 0, 0, 0).Seq False False True True True X::Str::Numeric 1 1 1 0 X::AdHoc 0 3 2 64 63 64 64 (0, 2, 0).Seq (1, 1, 1).Seq (5,).Seq (-2.5, 5).Seq (-2.5, 1, 2).Seq X::Numeric::DivideByZero (10,).Seq (0, 5).Seq (-5.0, 10).Seq (0, 21.0).Seq (10,).Seq Seq (1e0, 3e0).Seq (1e0, 3).Seq
 ```
-(The `polymod` fields belong to N-22.) rakupp 4.0.1: differs in four
-fields — `2.5e0.is-prime` and `2.5.is-prime` are True, `<7+1i>.is-prime`
-is False instead of throwing, `expmod(4, 2, 0)` is 0, and
-`(-256).msb` is 7.
+(The `polymod` fields belong to N-22.) rakupp 4.0.1-118: differs in two
+fields — `2.5e0.is-prime` and `2.5.is-prime` are True, and `expmod(4, 2, 0)`
+is 0 rather than `X::AdHoc`. `msb` of a negative is now the two's-complement
+length, and polymod's own fields belong to N-22.
 
 ### N-22  polymod                                                       D:partial R:yes V:bug
 `polymod` returns a lazy Seq of remainders, one more than the number of
@@ -523,12 +530,12 @@ non-Int divisor uses `mod`/`div` (N-11), so `10.polymod(2.5)` is
 Rat or Num invocant uses `%` and is right (`(2/3).polymod(1/3)` is
 `(0, 2.0)`, `10e0.polymod(1.5)` `(1e0, 6e0)`).
 Probe: the `polymod` fields of N-21.
-rakupp 4.0.1: differs — no divisor stops the sequence
-(`120.polymod(1, 10, 100, 1000, 10000)` is `(0, 0, 12, 0, 0, 0)`,
-the documented but no longer true answer), a negative invocant is
-`(-1, 0)`, a zero divisor gives `(1, 3)`, and an Int with a Rat divisor
-uses `%` (`10.polymod(2.5)` is `(0, 5)`, the right answer); the Seq is
-a List.
+rakupp 4.0.1-118: matches on every rule — the stop-at-one divisor, the
+`X::OutOfRange` Failure for a negative invocant, and the
+`X::Numeric::DivideByZero` for a zero one. Two shapes still differ: the
+result is a List rather than a Seq, and an Int with a non-Int divisor uses
+`%` (`10.polymod(2.5)` is `(0, 5)`), which is the right answer and the
+recorded Rakudo bug.
 
 ### N-23  Capture, Order, bits                                            D:partial R:partial V:quirk
 `Int.Capture` and `Num.Capture` throw `X::Cannot::Capture` (`.what`
@@ -548,9 +555,10 @@ say (try 42.Capture) // $!.^name, " ", (try 4.2.Capture) // $!.^name, " ", (try 
 say Inf.Order.^name, " ", (try Inf.Order.raku) // $!.^name, " ", (try NaN.Order.raku) // $!.^name, " ", (try (2**70).Order) // $!.^name, " ", (try (2**63).Order) // $!.^name, " ", (try (2**63 - 1).Order) // $!.^name, " ", (try (-2**63).Order) // $!.^name, " ", 0.5.Order, " ", (-0.5e0).Order, " ", int64.bits, " ", uint.bits, " ", byte.bits, " ", atomicint.bits, " ", num64.bits, " ", (try Rat.bits) // $!.^name, " ", (try Str.bits) // $!.^name, " ", (try UInt.bits) // $!.^name, " ", (try 42.Order.^name) // $!.^name, " ", (try (1/2).Capture) // $!.^name, " ", (try Int.Capture) // $!.^name, " ", (try Int.Capture.raku) // $!.^name, " ", Int.bits, " ", int.bits, " ", int8.bits, " ", uint16.bits, " ", Num.bits, " ", num32.bits, " ", num.bits, " ", (try 42.bits) // $!.^name, " ", 5.Order, " ", 0.Order, " ", (-1).Order, " ", 2.5.Order, " ", (-0.5).Order, " ", (try "abc".Order) // $!.^name, " ", ("abc".Order).^name, " ", (try 42.Capture) // $!.^name, " ", (try 4.2.Capture) // $!.^name, " ", (try 4e0.Capture) // $!.^name
 # rakudo 2026.08: Failure X::Numeric::CannotConvert X::Numeric::CannotConvert X::AdHoc X::AdHoc More Less Same Same 64 64 8 64 64 X::Method::NotFound X::Method::NotFound Inf Order \(:denominator(2), :numerator(1)) X::Cannot::Capture X::Cannot::Capture Inf 64 8 16 64 32 64 X::Parameter::InvalidConcreteness More Same Less More Same X::Str::Numeric Failure X::Cannot::Capture \(:denominator(5), :numerator(21)) X::Cannot::Capture
 ```
-The Rational capture is the quirk. rakupp 4.0.1: differs — `.bits` is
+The Rational capture is the quirk. rakupp 4.0.1-118: differs — `.bits` is
 missing everywhere, a Rat is not capturable, `UInt ~~ Int` is False,
-`(2**70).Order` and `(2**63).Order` are More, and `Int.Capture` is `\()`.
+`(2**70).Order` and `(2**63).Order` are More rather than `X::AdHoc`, and
+`Int.Capture` is `\()`. A UInt CONTAINER now enforces the subset.
 
 ### N-24  fmt                                                            D:yes R:yes V:spec
 `.fmt` is `sprintf` with the number as the one argument: `%d` truncates
@@ -567,12 +575,12 @@ say 42.chr, " ", 65.chr, " ", 42.unival.raku, " ", 190.unival, " ", 12345.comb.r
 # rakudo 2026.08: * A NaN 0.75 ("1", "2", "3", "4", "5").Seq 54321 5 23 00042 2a 101010 52 3.14 42 42 FF 4.200000e+01 42 1234.5 (52, 50).Seq 18446744073709551616 10000000000000000 42 True True 1 92 ("", "4", "2", "").Seq Int Int 42 0.333 1 1 X::AdHoc  42.0 1.180592e+21 X::AdHoc NaN -0.000000 -0 3 -3 * 2 3 0.13 +42 0042.000 0.33333333333333330000 101 42 42 X::AdHoc    42| 42   | 4 1 1.000000 0.333333 3.333333e-01 2 4.20e+01 1.23e+06 1.2345e-05 X::AdHoc X::AdHoc X::AdHoc Inf -Inf NaN 65 2000000000000000000000 0xff 0377 0b11111111 0.3333333333333333 0.10000000000000000000 1180591620717411300000.00 1180591620717411303424 Num 0.75 1 17 -2a -101010 -FF 42%
 ```
 (Rakudo also prints "negative value '-42' for %u in sprintf" on
-standard error.) rakupp 4.0.1: differs — `"abc".fmt("%d")`, `Inf.fmt("%d")`,
-`(-42).fmt("%u")`, `%%`, `%d %d` and `%3d|%-3d|` are accepted (0,
-9223372036854775807, -42, "%", "42 0", " 42|0  |"), `%.0f` and `%.2f`
-round to even (`2.5` prints 2, `0.125` `0.12`), `%.20f` shows the
-binary expansion, `1e100.fmt("%.0f")` has 63 characters, and
-`(2**70).fmt("%.2f")` is exact.
+standard error.) rakupp 4.0.1-118: differs — `"abc".fmt("%d")`,
+`Inf.fmt("%d")`, `(-42).fmt("%u")`, `%%`, `%d %d` and `%3d|%-3d|` are
+accepted where Rakudo refuses them, `%.0f` and `%.2f` round to even, `%.20f`
+shows the binary expansion, `1e100.fmt("%.0f")` has 63 characters, and
+`(2**70).fmt("%.2f")` is exact — the last three deliberately, being what the
+number actually is.
 
 ### N-25  log, exp, sqrt, the trigonometric surface                     D:yes R:yes V:spec
 Every one of these goes through `Num`: `log(0)` is `-Inf`, `log(-1)`
@@ -580,7 +588,8 @@ NaN, `log(x, base)` divides two logs (`log(8, 2)` is
 2.9999999999999996, `1024.log2` 10, `100.log10` 2), `log(1, 1)` fails
 `X::Numeric::DivideByZero`, `exp(x, base)` is `base ** x` and so keeps
 an Int base exact (`exp(2, 10)` is the Int 100, `5.exp(2)` 32,
-`2.exp(-1)` 0.5); `sqrt` of a negative Real is NaN in 6.d, of `-0e0`
+`2.exp(-1)` 1 — the INVOCANT is the exponent); `sqrt` of a negative Real is
+NaN in 6.d, of `-0e0`
 `-0e0`; `atan2($y)` defaults `$x` to 1; `cosec(0)`, `cotan(0)` are Inf,
 `atanh(1)` Inf and `atanh(-1)` -Inf, `acosh(0.5)` and `asin(2)` NaN;
 `e`, `pi`, `tau`, `π`, `τ` and `𝑒` are Nums; `roots(n)` is a list of n
@@ -590,10 +599,10 @@ say log(0), " ", log(-1).raku, " ", log(8, 2), " ", (try log(1, 1).raku) // $!.^
 # rakudo 2026.08: -Inf NaN 3 X::Numeric::DivideByZero 2.718281828459045 100 Int 1024 1 10 2 2.9999999999999996 -Inf NaN 2.718281828459045 3.141592653589793 6.283185307179586 True True Num 0e0 Num Num Num 1.2246467991473532e-16 -1 1.633123935319537e+16 NaN NaN Inf -Inf Inf Inf Inf 1 Inf Inf 0.7853981633974483 0.7853981633974483 0.7853981633974483 3.141592653589793 0.7853981633974483 X::Str::Numeric <0.5403023058681398+0.8414709848078965i> <2+0i> 1.7320508075688772 -1 3 3 X::Str::Numeric Inf NaN 0 Inf Num 1 3 Num 1.1920511922155705 9 NaN (<1.4142135623730951+0i>, <-1.4142135623730951+1.7319121124709868e-16i>).Seq True 0e0 Num 1e0 32 32e0 6.25 NaN NaN 0 0e0 Num 2.9999999999999996e0 3e0 10e0 -3e0 -1e0 2e0 3e0 2.718281828459045e0 7.38905609893065e0 Num 0e0 1.4142135623730951e0 Num 0e0 0e0 34359738368e0 2e0 2e0 NaN Inf NaN True 1e0 1e0 1e0 0e0 -Inf NaN 2e0 True False 0 1 1 0.5 2e0 1 Num 2e0 Int 4 8 0.25 0.0625 Num Num 2.9999999999999996e0 2.9999999999999996e0 2 2 14.999999999999998e0 16e0 Num True 64e0 1000.0000000000001e0 693.1471805599454e0 Inf Inf Inf
 ```
 (`(2**1024).log2` is Inf because the Int overflows a double first; a
-1000-bit Int still gives 1000.) rakupp 4.0.1: differs — `exp($base)`
-ignores its base everywhere (`10.exp(2)` is 22026.47, `exp(2, 10)` a
-Num, `2.exp(-1)` 7.389), `log(1, 1)` is NaN, `atan2("a", 1)` is 0,
-`Inf.exp(0.5)` Inf, and `𝑒` is undeclared.
+1000-bit Int still gives 1000.) rakupp 4.0.1-118: differs — `log(1, 1)` is
+NaN rather than a Failure, `atan2("a", 1)` is 0, `Inf.exp(0.5)` Inf, and `𝑒`
+is undeclared. `exp($base)` now uses its base everywhere, in the method, the
+sub and the Complex forms.
 
 ### N-26  rand and srand                                                 D:yes R:yes V:quirk
 `rand` is a Num in [0, 1); `$n.rand` scales it (negative for a negative
@@ -612,9 +621,10 @@ say rand.^name, " ", 0 <= rand < 1, " ", do { srand(42); my $a = rand; srand(42)
 say do { srand(1); my @a = (^100).pick(3); srand(1); my @b = (^100).pick(3); @a.raku ~ @b.raku }, " ", do { srand(1); my @a = (^100).roll(3); srand(1); my @b = (^100).roll(3); @a eqv @b }, " ", do { srand(1); my $a = (^100).pick; srand(1); (^100).pick == $a }, " ", do { srand(1); my @a = (1,2,3,4,5).pick(3); srand(1); my @b = (1,2,3,4,5).pick(3); @a eqv @b }, " ", do { srand(1); my @a = (^100).pick(*); srand(1); my @b = (^100).pick(*); @a eqv @b }, " ", do { srand(1); my @a = (^5).pick(3); srand(1); my @b = (^5).pick(3); @a eqv @b }, " ", do { srand(1); my @a = (^100).roll(*).head(3); srand(1); my @b = (^100).roll(*).head(3); @a eqv @b }
 # rakudo 2026.08: [60, 20, 44][32, 70, 73] False True False False True False
 ```
-rakupp 4.0.1: differs — `Int.rand` is 0, `rand(10)` is
-`X::Undeclared::Symbols`, `srand` accepts `2**70`, 1.5, "1", 1e0 and
-`Int`, and every `pick`/`roll` form replays after `srand`.
+rakupp 4.0.1-118: differs — `Int.rand` is 0 rather than
+`X::Numeric::Uninitialized` (N-07), `srand` accepts `2**70`, 1.5, "1", 1e0
+and `Int`, and every `pick`/`roll` form replays after `srand` where Rakudo's
+`pick(N)` does not. `rand()` and `rand(N)` are now X::Obsolete.
 
 ### N-27  Typed and native containers                                    D:partial R:yes V:spec
 Assigning a literal of the wrong kind is a compile-time
@@ -639,13 +649,13 @@ say do { my Int $x; $x++; $x }, " ", do { my Int $x; ++$x }, " ", do { my Num $n
 say (try { my Rat $r; ($r++).raku ~ " " ~ $r.raku }) // $!.^name, " ", (try { my Rat $r; ++$r; $r.raku }) // $!.^name, " ", (try { my Int $x; $x++; $x.raku }) // $!.^name, " ", (try { my Num $n; $n++; $n.raku }) // $!.^name, " ", (try { my Str $s; $s++; $s.raku }) // $!.^name, " ", (try { my Rat $r; $r += 1; $r.raku }) // $!.^name, " ", (try { my Rat $r; $r += 0.5; $r.raku }) // $!.^name, " ", (try { my FatRat $r; $r++; $r.raku }) // $!.^name, " ", (try { my Num $n; $n += 1; $n.raku }) // $!.^name, " ", (try { my Int $x; $x += 1.5; $x.raku }) // $!.^name, " ", (try { my Int $x; $x--; $x.raku }) // $!.^name, " ", (try { my Rat $r; $r--; $r.raku }) // $!.^name, " ", (try { my UInt $u; $u++; $u.raku }) // $!.^name, " ", (try { my UInt $u; $u--; $u.raku }) // $!.^name, " ", (try { my Real $r; $r++; $r.raku }) // $!.^name, " ", (try { my Numeric $n; $n++; $n.raku }) // $!.^name, " ", (try { my Int $x; $x *= 2; $x.raku }) // $!.^name, " ", (try { my Int $x; $x -= 1; $x.raku }) // $!.^name, " ", (try { my Num $x; $x -= 1; $x.raku }) // $!.^name, " ", (try { my Rat $x; $x -= 1; $x.raku }) // $!.^name, " ", (try { my Rat $x; $x *= 2; $x.raku }) // $!.^name
 # rakudo 2026.08: X::TypeCheck::Assignment X::TypeCheck::Assignment 1 1e0 X::TypeCheck::Assignment X::TypeCheck::Assignment 0.5 X::TypeCheck::Assignment X::TypeCheck::Assignment X::TypeCheck::Assignment -1 X::TypeCheck::Assignment 1 X::TypeCheck::Assignment 1 1 2 -1 X::TypeCheck::Assignment X::TypeCheck::Assignment X::TypeCheck::Assignment
 ```
-rakupp 4.0.1: differs — every literal mismatch is a runtime
-`X::TypeCheck::Assignment`; native `int`/`uint` never wrap at 64 bits
-(`2**63` into an `int` is 9223372036854775808, `uint -1` is -1, `1 +< 64`
-is 18446744073709551616) though `int8`/`uint8`/`int16` do; native
-`div`/`%` by zero are `X::Numeric::DivideByZero`; `int ** negative` is a
-Rat; `my Rat $r; $r++`, `my Str $s; $s++` and `my UInt $u; $u--` are
-accepted (1, 1 and -1).
+rakupp 4.0.1-118: differs — every literal mismatch is a runtime
+`X::TypeCheck::Assignment` rather than a compile-time
+`X::Syntax::Number::LiteralType`; native `int`/`uint` never wrap at 64 bits
+(`2**63` into an `int` is 9223372036854775808, `1 +< 64` is
+18446744073709551616) though `int8`/`uint8`/`int16` do; native `div`/`%` by
+zero are `X::Numeric::DivideByZero`; `int ** negative` is a Rat; and `my Rat
+$r; $r++`, `my Str $s; $s++` and `my UInt $u; $u--` are accepted.
 
 ### N-28  Infectiousness                                                  D:yes R:yes V:spec
 Int < Rat < FatRat < Num < Complex: the wider operand's type wins for
@@ -658,7 +668,7 @@ equal ones), `gcd`/`lcm`/`+&` return Int. `Rat ** Int` is a Rat,
 say (1 + 1).^name, " ", (1 + 1.0).^name, " ", (1 + 1e0).^name, " ", (1.0 + 1e0).^name, " ", (1 + FatRat.new(1)).^name, " ", (1.0 + FatRat.new(1)).^name, " ", (1e0 + FatRat.new(1)).^name, " ", (1 + 1i).^name, " ", (1e0 + 1i).^name, " ", (1 * 1.0).^name, " ", (2 * 0.5).raku, " ", (2 * 0.5).^name, " ", (1 - 1.0).^name, " ", (3 / 1).^name, " ", (3 / 1).raku, " ", (3e0 / 1).^name, " ", (1 % 1.0).^name, " ", (1 ** 1.0).^name, " ", (1 ** 1).^name, " ", (1.0 ** 1e0).^name, " ", (FatRat.new(1) ** 2).^name, " ", (FatRat.new(1,3) / 0.5).^name, " ", (1 div 1).^name, " ", (1.5 div 1).^name, " ", (1 mod 1).^name, " ", (1.5 mod 1).^name, " ", (1.5e0 mod 1).^name, " ", (True + True).^name, " ", (True + True), " ", (1 + True).^name, " ", (1 max 1.0).raku, " ", (1.0 max 1).raku, " ", (1 max 1.0).^name, " ", (1 min 2e0).^name, " ", (1 gcd 1.5).^name, " ", (1 +& 1.5).^name, " ", (1 lcm 1e0).^name, " ", (7.5 % 2).raku, " ", (7.5e0 % 2).raku, " ", (7 % 2.5).raku, " ", (7 % 2.5e0).raku, " ", (-7 % 2.5).raku, " ", (7.5 % -2).raku, " ", (1.0 ** 2).raku, " ", (1e0 ** 2).raku, " ", (FatRat.new(1,2) ** 0.5).^name, " ", (FatRat.new(1,2) * 1i).^name, " ", (1 + <1/2>).^name, " ", (<1/2> + FatRat.new(1,2)).raku, " ", (FatRat.new(1,2) + <1/2>).raku, " ", (FatRat.new(1,2) == 0.5), " ", (FatRat.new(1,2) === 0.5), " ", (FatRat.new(1,2) eqv 0.5), " ", (FatRat.new(1,2) <=> 0.5), " ", (2.5e0 % 1).raku, " ", (2.5 % 1e0).raku, " ", (1e0 ** 1).raku, " ", (2 ** 1e0).raku, " ", (2.0 ** 2.0).raku, " ", (2.0 ** 0.5).raku, " ", (2 * 1.5).raku, " ", (3 * 0.5).^name, " ", (-1 * 0.5).raku, " ", (1.5 ** 2).raku, " ", (1.5 ** 2).^name, " ", (1.5 ** -2).raku, " ", (1.5 ** 2.0).^name, " ", (1.5 ** 2.5).^name, " ", (1.5 ** FatRat.new(2)).^name, " ", (FatRat.new(3,2) ** 2).raku, " ", (FatRat.new(3,2) ** -2).raku, " ", (FatRat.new(3,2) ** 2.5).^name, " ", (2 ** FatRat.new(2)).^name, " ", (2 ** FatRat.new(1,2)).^name, " ", (2 ** 0.5).raku, " ", (2 ** <1/2>).^name, " ", (4 ** <1/2>).raku, " ", (try EVAL '(Int + Int).^name') // $!.^name
 # rakudo 2026.08: Int Rat Num Num FatRat FatRat Num Complex Complex Rat 1.0 Rat Rat Rat 3.0 Num Rat Num Int Num FatRat FatRat Int Int Int Rat Num Int 2 Int 1.0 1 Rat Int Int Int Int 1.5 1.5e0 2.0 2e0 0.5 -0.5 1.0 1e0 Num Complex Rat FatRat.new(1, 1) FatRat.new(1, 1) True False False Same 0.5e0 0.5e0 1e0 2e0 4e0 1.4142135623730951e0 3.0 Rat -0.5 2.25 Rat <4/9> Num Num Num FatRat.new(9, 4) FatRat.new(4, 9) Num Num Num 1.4142135623730951e0 Num 2e0 X::Numeric::Uninitialized
 ```
-rakupp 4.0.1: matches on every field but the last (N-07).
+rakupp 4.0.1-118: matches on every field but the last (N-07).
 
 ## Counts
 
@@ -668,27 +678,48 @@ rakupp 4.0.1: matches on every field but the last (N-07).
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 3 — N-07, N-16, N-23 |
 | Rakudo bugs (do not imitate) | 6 — N-11 `7 mod 2.5`, N-12 `(-2) ** -3` and `0e0 ** -1`, N-16 `[lcm] ()`, N-17 `1 +< -64`, N-19 `narrow` losing the value, N-22 `polymod` with a non-Int divisor |
 | quirks (recorded, step two decides) | 4 — N-13 half-up and the binary half, N-18 `(-0e0) ** 3`, N-23 a Rat is capturable, N-26 `pick` after `srand` |
-| rakupp 4.0.1 differs | 26 |
-| rakupp 4.0.1 matches | 2 — N-03, N-28 |
+| rakupp 4.0.1-118 differs | 26 |
+| rakupp 4.0.1-118 matches | 2 — N-03, N-22 (N-28 on every field but the last) |
 
-Recurring rakupp gaps, for step two, in the order a Roast run would
-meet them: an undefined number in arithmetic must throw
-`X::Numeric::Uninitialized` (N-07); `$*RAT-OVERFLOW` must be honoured
-and `FatRat.Rat` must fail (N-10); `==`, `<`, `<=>` on an unparsable
-string must return a Failure rather than throw (N-09, N-15); `exp` must
-use its base (N-25); `base` must not go through a double and needs
-`base-repeating` (N-20); `polymod` needs the stop-at-one rule and the
-`X::OutOfRange` Failure (N-22); the constructors must refuse what
-Rakudo refuses (N-06); native `int`/`uint` must wrap at 64 bits and
-literal mismatches be compile-time errors (N-27); `.bits`, the Rat
-`Capture` and `UInt ~~ Int` are missing (N-23); the exception objects
-lack `.using`, `.numerator`, `.details`, `.source`, `.pos`, `.what`,
-`.range`; a reduce over a bare literal does not parse (N-16);
-`1 +< 2**70` hangs (N-17); `10¹⁰⁰` is mis-parsed (N-12). Where rakupp
-is closer to IEEE 754 than Rakudo — `(-0e0) ** 3`, underflow to zero,
-`1e0 / 0e0` as Inf per the 6.e note in the docs, exact `%.20f` — keep
-rakupp, as the IEEE-over-Rakudo precedent in
-[REVIEW-GRAND.md](../REVIEW-GRAND.md) already says.
+Implemented 2026-09-22, from this sheet, against the Roast files named at the
+top: S32-num/base.t 47/63 -> 63/63, exp.t 64/72 -> 72/72, narrow.t 15/17 ->
+17/17, rand.t 111/113 -> 113/113, rounders.t 137/143 -> 143/143, int.t 156/165
+-> 163/165, negative-zero.t 16/20 -> 18/20 — the chapter as a whole 21 -> 26
+files fully passing, 3,424 -> 3,465 assertions. The items that MOVED: N-06
+(`Int.new` refuses what it cannot convert), N-13 (the sub rounders pass Inf and
+NaN through), N-17 (a shift count that does not fit a native int — it used to
+HANG), N-18 (U+2212 as a minus), N-19 (`narrow` is approximate), N-20 (`.base`
+computed exactly, with Rakudo's three default digit counts, and `base-repeating`
+defaulting to base 10), N-21 (`msb` of a negative), N-22 (`polymod`'s
+stop-at-one divisor and its two refusals), N-23 (a UInt container enforces the
+subset), N-25 (`exp` uses its base), N-26 (`rand()` is X::Obsolete).
+
+The item counts above are the SHEET's, not a Roast score: a probe line is one
+field in dozens, and several lines still read as differing because a single
+field early in them dies and carries the rest.
+
+Two corrections to the sheet itself, found by re-running its own probes against
+Rakudo: N-25 recorded `2.exp(-1)` as 0.5, but `$x.exp($base)` is `$base ** $x`
+and Rakudo answers 1, as exp.t's own `(2).exp(i pi) == (1i*$pi) ** 2` implies;
+and N-20's `"beer"` base alternates two glyphs (a single beer for 0, a pair for
+1), which the sheet's `255.base("beer")` could not show because 255 is all ones.
+
+Recurring rakupp gaps, for the next sitting, in the order a Roast run would meet
+them: an undefined number in arithmetic must throw `X::Numeric::Uninitialized`
+(N-07) — still the largest single gap, and the reason N-26 and N-28 read as
+differing; `==`, `<`, `<=>` on an unparsable string must return a Failure rather
+than throw (N-09, N-15), which kills three probe lines outright; `$*RAT-OVERFLOW`
+must be honoured and `FatRat.Rat` must fail (N-10); the exception objects lack
+`.using`, `.numerator`, `.details`, `.source`, `.pos`, `.what`, `.range`, and a
+Failure's `.raku` renders the carrier hash instead of detonating, which is what
+shifts the tail of N-11, N-12 and N-18; native `int`/`uint` must wrap at 64 bits
+and literal mismatches be compile-time errors (N-27); `.bits`, the Rat `Capture`
+and `UInt ~~ Int` are missing (N-23); a reduce over a bare literal does not parse
+(N-16); `10¹⁰⁰` is mis-parsed (N-12). Where rakupp is closer to IEEE 754 than
+Rakudo — `(-0e0) ** 3`, underflow to zero, `1e0 / 0e0` as Inf per the 6.e note in
+the docs, exact `%.20f`, and `narrow` declining to turn 1e-300 into 0 — keep
+rakupp, as the IEEE-over-Rakudo precedent in [REVIEW-GRAND.md](../REVIEW-GRAND.md)
+already says.
 
 ## Method (how this sheet was produced)
 

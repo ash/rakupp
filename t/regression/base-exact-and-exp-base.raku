@@ -61,6 +61,15 @@ check (try Inf.base(16)) // $!.^name, 'X::Numeric::CannotConvert', 'Inf has no d
 check (try NaN.base(16)) // $!.^name, 'X::Numeric::CannotConvert', 'nor has NaN';
 # a digit count that cannot be unboxed is an error, not a silent huge string
 check (try 255.base(16, 10**49)) // $!.^name, 'X::AdHoc', 'a bigint digit count is refused';
+# the two joke bases: one glyph per binary digit
+check 5.base('camel'),   '🐫🐪🐫', 'camel is base two in camels';
+check 5.base('beer'),    '🍻🍺🍻', 'and beer is base two in beer';
+check 255.base('camel'), '🐫🐫🐫🐫🐫🐫🐫🐫', 'all ones';
+check (try 255.base('zzz')) // $!.^name, 'X::Str::Numeric', 'any other name is a number or nothing';
+# `.base-repeating` defaults to base 10
+check (1/3).base-repeating, ('0.', '3'),   'base-repeating defaults to ten';
+check (1/7).base-repeating, ('0.', '142857'), 'with the cycle it finds';
+check (1/2).base-repeating, ('0.5', ''),   'and an empty cycle when it terminates';
 
 # --- N-25: exp takes its base -----------------------------------------------
 check 5.exp(2),      32, '5.exp(2) is 2**5';

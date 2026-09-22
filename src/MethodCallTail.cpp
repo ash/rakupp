@@ -400,6 +400,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         return out;
     }
     // Rat.base-repeating($radix) — (non-repeating part, repeating cycle)
+    // `.base-repeating` defaults to base 10 — it required an explicit base and
+    // was X::Method::NotFound without one (N-20).
+    if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN() && inv.ratD() && args.empty())
+        return methodCall(inv, m, ValueList{Value::integer(10)});
     if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN() && inv.ratD() && !args.empty()) {
         long long base = a0().toInt();
         if (base < 2 || base > 36)
