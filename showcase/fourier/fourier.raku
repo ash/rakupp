@@ -27,7 +27,7 @@ sub bold($s) { $colour ?? "\e[1m$s" ~ RESET !! $s }
 sub plot(Str $shape, %c, Int $upto, :$duty = 0.25, Int :$width = 74, Int :$height = 21) {
     my @rows = ('' xx $height).map({ [' ' xx $width] });
     my $lo = -1.35, my $hi = 1.35;
-    my sub row($v) { (($hi - $v) / ($hi - $lo) * ($height - 1)).round.Int max 0 min $height - 1 }
+    my sub row($v) { ((($hi - $v) / ($hi - $lo) * ($height - 1)).round.Int max 0) min $height - 1 }
     for ^$width -> $x {
         my $t = $x / $width;
         @rows[row(wave-value($shape, $t, :$duty))][$x] = '.';

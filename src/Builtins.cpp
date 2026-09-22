@@ -2658,11 +2658,13 @@ long long graphemeCount(const std::string& s) {
         char buf[4096];
         if (getcwd(buf, sizeof buf)) abs = std::string(buf) + "/" + path;
     }
-    // X::AdHoc, which is what Rakudo throws here. The precise-looking
-    // X::IO::Open this used to name is a type Raku does not have, so the
-    // `CATCH { when X::AdHoc {…} }` that code in the wild is written with
-    // did not catch it.
-    throw RakuError{Value::typeObj("X::AdHoc"),
+    // X::IO::Open, which IS-A X::AdHoc (rakuppOnlyExceptionParent), so the
+    // `CATCH { when X::AdHoc {…} }` code in the wild is written with still
+    // fires and `.payload` still reads the message — the name only adds which
+    // call failed, which Rakudo's own X::AdHoc cannot say. The JS lane names it
+    // the same (js-rt/70-host.js); the two have to agree or a program catches
+    // different things on the two backends.
+    throw RakuError{Value::typeObj("X::IO::Open"),
                     "Failed to open file " + abs + ": No such file or directory"};
 }
 
@@ -13744,7 +13746,7 @@ void Interpreter::registerBuiltins() {
             std::ifstream probe(path);
             if (probe) { // a FAILURE, as every other refused open here is
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Exclusive");
                 (*f.hash())["message"] = Value::str("Failed to open file " + path + ": File exists");
                 return f;
             }
@@ -13789,7 +13791,7 @@ void Interpreter::registerBuiltins() {
             }
             if (err) { // a Failure that detonates when used or sunk — `my $fh = open …; if $fh {…}` works (it threw)
                 Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::AdHoc"); // the type Rakudo uses; see throwFailedOpen
+                (*f.hash())["exception"] = Value::typeObj("X::IO::Open"); // see throwFailedOpen
                 (*f.hash())["message"] = Value::str("Failed to open file " + path + ": " + std::strerror(err));
                 (*f.hash())["os-error"] = Value::str(std::strerror(err));
                 (*f.hash())["path"] = Value::str(path);

@@ -359,7 +359,7 @@ static InfixInfo classifyInfix(const Token& t) {
                 {"before", BP_COMPARE}, {"after", BP_COMPARE},
                 {"unicmp", BP_COMPARE}, {"coll", BP_COMPARE},
                 {"div", BP_MUL}, {"mod", BP_MUL}, {"gcd", BP_MUL}, {"lcm", BP_MUL},
-                {"min", BP_ADD}, {"max", BP_ADD}, {"x", BP_REPLICATE}, {"xx", BP_REPLICATE},
+                {"min", BP_OROR}, {"max", BP_OROR}, {"x", BP_REPLICATE}, {"xx", BP_REPLICATE},
                 {"minmax", BP_ZIP},
                 {"and", BP_AND}, {"andthen", BP_AND}, {"notandthen", BP_AND},
                 {"or", BP_OR}, {"xor", BP_OR}, {"orelse", BP_OR},
@@ -405,7 +405,14 @@ static InfixInfo classifyInfix(const Token& t) {
             }
         }
         if (o == "minmax") { in.valid = true; in.lbp = BP_ZIP; return in; } // list infix
-        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; in.isMinMax = true; return in; } // infix min/max
+        // `min`/`max` sit at Raku's "tight or", beside `||` and `//` — not with
+        // the additives. So `($n max 0) min $h - 1` clamps into `0 .. $h-1`
+        // (the `- 1` binds tighter and belongs to the bound, not to the result),
+        // `5 max 1 - 10` is `5 max (1 - 10)`, and `1 max 0 && 7` is
+        // `1 max (0 && 7)`. At BP_ADD all three read the other way round.
+        // The parens are the author's own: `max` and `min` are list-associative
+        // only with themselves, so a mixed chain stays a parse error either way.
+        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_OROR; in.isMinMax = true; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         // flip-flop, all eight spellings: a leading `^` excludes the evaluation that

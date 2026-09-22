@@ -1679,7 +1679,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m != "rename") {
             struct stat sd{};
             if (::stat(from.c_str(), &sd) == 0 && S_ISDIR(sd.st_mode))
-                return ioFail(failType, "cannot copy a directory to a file");
+                return ioFail(failType, "source is a directory, cannot " + verb + " it to a file");
         }
         // the wording is the reason the caller reads back from `.os-error`,
         // and it names the adverb that caused the refusal

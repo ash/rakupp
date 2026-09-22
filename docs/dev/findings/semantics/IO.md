@@ -414,9 +414,11 @@ smartmatch against an IO::Path compares absolutes; `.volume` and `.parts`
 exist; `cleanup` drops a `..` under the root; `IO::Path.new` refuses an
 empty path and accepts `:basename`/`:dirname`; `eqv` on two paths compares
 the `:CWD`; encoding names canonicalize and an unknown one is
-`X::Encoding::Unknown`; a refused `open` and a missing-file `slurp` raise
-Rakudo's `X::AdHoc` rather than an invented `X::IO::Open`, and `:x` on an
-existing file is a Failure rather than a throw.
+`X::Encoding::Unknown`; and `:x` on an existing file is a Failure rather
+than a throw. A refused `open` and a missing-file `slurp` keep the name
+`X::IO::Open`, which IS-A `X::AdHoc`, so the `when X::AdHoc` written
+against Rakudo still fires and `.payload` still reads the message — the
+name only adds which call failed. The JS lane names it the same.
 
 Still open, for the next pass: operations Rakudo turns into Failures still
 throw (`indir` on a missing directory, a second `symlink`); Failure

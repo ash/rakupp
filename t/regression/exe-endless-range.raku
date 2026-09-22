@@ -96,10 +96,11 @@ agree('endless', q:to/END/, '3|1..Inf|4|True|(1 2 3 4)|-Inf..5|(2 3 5 7)|(1 2 3 
     say $l[^5];                         # was (Nil Nil Nil Nil Nil)
     END
 
-# 2. The endpoint shapes around it: exclusive markers are dropped on the
-#    unbounded side (as the interpreter's arm does), a runtime endpoint works
-#    the same as a literal one, and `* .. *` is unbounded both ways.
-agree('endpoints', q:to/END/, '1..Inf|-Inf..5|7..Inf|9|-Inf..Inf');
+# 2. The endpoint shapes around it: an exclusive marker on the unbounded side
+#    is KEPT in the gist, as Rakudo keeps it (`1 ..^ *` gists 1..^Inf), a
+#    runtime endpoint works the same as a literal one, and `* .. *` is
+#    unbounded both ways.
+agree('endpoints', q:to/END/, '1..^Inf|-Inf^..5|7..Inf|9|-Inf..Inf');
     say (1 ..^ *).gist;
     say (* ^.. 5).gist;
     my $x = 7;

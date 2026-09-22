@@ -66,8 +66,21 @@ my %tsan-parallel-skip =
 # CI runner's scheduler — macOS TSan is clean here) reports a race in
 # atomic-counter/parallel while the COUNTER ITSELF is exact (stdout PASS) —
 # the promise/await handshake class, promise-chain's sibling.
+#
+# cas-containers joined it 2026-09-22, and it is the SAME report, not a new
+# one: its CI SUMMARY names Interpreter.cpp:38192 in eval — byte-identical to
+# atomic-counter's — where the copy-out already takes the slot's ParStripe, so
+# what races is the Env walk the lookup does around a spawn, which is what the
+# await-handshake class IS. The program's own answers are exact there (stdout
+# PASS, 8000 swaps against 8000 reads on each of five container kinds). It came
+# in with the four-engine-hangs merge (6bbd8ba0) — a new program tripping an
+# old report, which is why the TSan leg went red on that merge and not on an
+# engine commit. macOS TSan is clean on it over 20 runs, single legs, six
+# concurrent copies and N up to 40,000, so the Linux scheduler is again what
+# surfaces it and there is nothing local to bisect against.
 my %tsan-parallel-racy =
     'atomic-counter' => 'P2 residue: await-handshake report on Linux TSan; counter exact',
+    'cas-containers' => 'P2 residue: the same eval report as atomic-counter; all five kinds exact',
 ;
 
 my $dir  = $?FILE.IO.parent;

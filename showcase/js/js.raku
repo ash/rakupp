@@ -907,8 +907,7 @@ sub js-num-str(Num $n --> Str) {
     return 'Infinity'  if $n == Inf;
     return '-Infinity' if $n == -Inf;
     if $n == $n.Int && $n.abs < 1e15 {
-        my $i = $n.Int;
-        return ($i == 0 && 1e0 / $n < 0) ?? '0' !! ~$i;   # -0 prints as 0
+        return ~$n.Int;   # -0 prints as 0, and an Int has no -0 to lose
     }
     ~$n
 }

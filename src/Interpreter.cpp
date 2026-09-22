@@ -2118,7 +2118,21 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             }
             return out;
         }
-        bool allInt = true; for (auto& s : seed) if (s.t != VT::Int && s.t != VT::Bool) allInt = false;
+        // A step is DEDUCED from the last three seeds (or two) — anything before
+        // them is junk Rakudo ignores, so `1,1,1,2,3 ...` continues by +1. And a
+        // window that is not all numeric is no window at all: deduction reads its
+        // seeds AS NUMBERS, while a chained sequence hands each segment the whole
+        // previous group, so `'a' ... 'c', 0 ... 2` arrives here seeded ('c', 0)
+        // and `'c'.toNum` is 0 — which deduced a step of 0 and repeated the seed
+        // forever. Rakudo steps by .succ from the last seed in that case, so fall
+        // back to the single-seed rules and let that seed alone type the walk.
+        const size_t dedWin = seed.size() >= 3 ? 3 : seed.size();
+        bool numericWindow = dedWin >= 2;
+        for (size_t k = seed.size() - dedWin; numericWindow && k < seed.size(); k++)
+            if (!seed[k].isNumeric()) numericWindow = false;
+        bool allInt = true;
+        for (size_t k = (numericWindow || seed.empty()) ? 0 : seed.size() - 1; k < seed.size(); k++)
+            if (seed[k].t != VT::Int && seed[k].t != VT::Bool) allInt = false;
         bool deduceFailed = false; std::string dedFrom; // see the deduction arm below
         auto seqDeduceThrow = [this](const std::string& from) {
             std::string msg = "Unable to deduce arithmetic or geometric sequence from: " + from;
@@ -2131,7 +2145,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         };
         double step = 1; bool geometric = false; double ratio = 1;
         if (!hasGen) {
-            if (seed.size() >= 3) {
+            if (seed.size() >= 3 && numericWindow) {
                 // Rakudo deduces from the LAST THREE seeds only: `1,1,1,2,3 ...`
                 // continues +1 from its 1,2,3 tail (S03-sequence/basic.t), junk
                 // before the tail notwithstanding. Constant difference =>
@@ -2155,7 +2169,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     deduceFailed = true;
                     for (size_t k = 0; k < seed.size(); k++) { if (k) dedFrom += ","; dedFrom += seed[k].toStr(); }
                 }
-            } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
+            } else if (seed.size() == 2 && numericWindow) step = seed[1].toNum() - seed[0].toNum();
             else if (!infinite && !endCode && out.arr()->back().toNum() > endVal) step = -1;
             if (deduceFailed && !infinite && !endCode)
                 seqDeduceThrow(dedFrom); // a bounded endpoint needs the step NOW
@@ -34755,12 +34769,25 @@ Value Interpreter::evalUnary(Unary* u) {
         // type, so the range holds six integers and reports 5.5 as its max.
         if (v.t == VT::Num || v.t == VT::Rat) {
             double top = v.toNum();
-            bool whole = top == std::floor(top);
             // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
             // — so the integer field is the first integer past the bound: `^5.5`
             // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
             // off the carried endpoints.
-            Value r = Value::range(0, (long long)std::floor(top) + (whole ? 0 : 1), false, true);
+            //
+            // A NON-FINITE bound has no integer to floor, and casting one to
+            // long long is undefined — the architectures disagree about it.
+            // arm64 saturates (+Inf gives the int64 maximum, which IS the
+            // "endless" sentinel the range walk reads); x86_64 gives the int64
+            // MINIMUM. So `^Inf` built 0..^int64-min there — an enormous range
+            // running the wrong way — and `(^Inf).head(3)` never came back,
+            // while arm64 answered (0 1 2). NaN takes the same top sentinel
+            // `1..NaN` does: no comparison against NaN is ever true, so nothing
+            // stops the walk, and Rakudo's `(^NaN).head(3)` is (0 1 2) too.
+            long long ti;
+            if (std::isnan(top) || top >= 9223372036854775807.0) ti = 9223372036854775807LL;
+            else if (top <= -9223372036854775808.0) ti = -9223372036854775807LL - 1;
+            else { bool whole = top == std::floor(top); ti = (long long)std::floor(top) + (whole ? 0 : 1); }
+            Value r = Value::range(0, ti, false, true);
             attachRangeEnds(r, Value::integer(0), v);
             return r;
         }
@@ -36057,11 +36084,24 @@ Value Interpreter::evalCall(Call* c) {
                     return methodCall(a0, c->name, ValueList{});
                 if (Value* co = cit->second->findMethod("COERCE"))
                     return invokeMethod(*co, Value::typeObj(coerceName), std::move(args), &c->args);
+                // A class deriving a BOXED SCALAR built-in — `class Symbol is Str` —
+                // holds that built-in's value and is built from it positionally, so
+                // the coercion is `T.new(x)` although the class declares no `new` of
+                // its own. Rakudo refuses the parents with no value to carry (Cool,
+                // Any and Complex all answer X::Coerce::Impossible there), and so
+                // does this. Array/List/Hash are left out although Rakudo coerces
+                // them: their constructor here drops the positional, so routing a
+                // coercion into it would answer an empty one instead of refusing —
+                // a wrong answer where there is currently a clear error.
+                static const std::set<std::string> kBoxedBase = {"Str", "Int", "Num", "Rat"};
+                bool boxedBase = false;
+                for (const ClassInfo* c2 = cit->second.get(); c2 && !boxedBase; c2 = c2->parent.get())
+                    if (kBoxedBase.count(c2->nativeParent)) boxedBase = true;
                 // …and with no `.T` on the argument, no COERCE and no constructor
                 // of its own, there is nothing left to try: Rakudo says so by name
                 // rather than falling into the DEFAULT constructor, which can only
                 // report the unrelated "only takes named arguments".
-                if (!cit->second->findMethod("new") && !cit->second->findMethod("BUILD"))
+                if (!boxedBase && !cit->second->findMethod("new") && !cit->second->findMethod("BUILD"))
                     throwTypedV("X::Coerce::Impossible",
                                 {{"target-type", Value::typeObj(coerceName)},
                                  {"from-type", Value::typeObj(args[0].typeName())},

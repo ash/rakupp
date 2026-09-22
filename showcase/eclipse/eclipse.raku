@@ -79,7 +79,7 @@ sub seasons($from, $to, Bool :$lunar) {
         @c[$w - (0.36 * $w).round] = '[';
         @c[$w + (0.36 * $w).round] = ']';
         @c[$w] = '|';
-        my $col = ($w + $s * $w).round.Int max 0 min 2 * $w;
+        my $col = (($w + $s * $w).round.Int max 0) min 2 * $w;
         @c[$col] = $e ?? ($e.type.starts-with('total') ?? '#' !! '*') !! '.';
         my $line = sprintf('%-16s %+7.3f  %s', jd-date($jd), $s, @c.join);
         say $e ?? bold($line) !! dim($line);
