@@ -2473,6 +2473,41 @@ Value strRangeList(const std::string& min, const std::string& to, bool exFrom, b
 // A Range endpoint must be a single ordered value: a Range, a Complex or a Seq
 // there is X::Range::InvalidArg, which names the offending type and carries it.
 // (Rakudo's message is "<Type> objects are not valid endpoints for Ranges".)
+// Does `$x..*` step by fractions? Only a FINITE Num or Rat start does: the
+// elements are then x, x+1, x+2, … and not the integers around x. An Int start
+// keeps the plain integer representation (the hot `1..*` path), and an infinite
+// or NaN one has no fractional part to preserve.
+static bool endlessFracStart(const Value& v) {
+    return (v.t == VT::Num || v.t == VT::Rat) && std::isfinite(v.toNum());
+}
+
+// The integer field for a range's TOP endpoint. `Inf` saturates to the int64
+// maximum on its own, which is the sentinel for "endless" — but `NaN.toInt()`
+// is 0, so `1..NaN` came out as the empty `1..0` where Rakudo walks 1, 2, 3
+// for ever (no comparison against NaN is ever true, so nothing stops it).
+static long long rangeTopInt(const Value& v) {
+    if (v.t == VT::Num && std::isnan(v.n)) return 9223372036854775807LL;
+    return v.toInt();
+}
+
+Value strRangeList(const std::string& min, const std::string& to, bool exFrom, bool exTo);
+
+// `"1"..9` — a STRING on the left and a number on the right. The right side is
+// stringified rather than the left numified, so the elements are strings and
+// the comparison is string order: `"a"..5` is empty because "a" comes after
+// "5". Both endpoints are carried so `.min` is still the Str and `.raku` still
+// shows the number on the right as a number.
+static Value strLeftRange(const Value& from, const Value& to, bool exFrom, bool exTo) {
+    std::string tos = to.toStr();
+    if (u8CpLen(from.s) == 1 && u8CpLen(tos) == 1) {
+        Value r = Value::range(u8FirstCp(from.s), u8FirstCp(tos), exFrom, exTo);
+        r.ofTypeM() = "Str";
+        attachRangeEnds(r, from, to);
+        return r;
+    }
+    return strRangeList(from.s.str(), tos, exFrom, exTo);
+}
+
 static void checkRangeEndpoint(const Value& v) {
     const char* kind = nullptr;
     if (v.t == VT::Range) kind = "Range";
@@ -2519,6 +2554,10 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
         Value r = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
                                9223372036854775807LL, exFrom, exTo);
         if (from.t == VT::Str) attachRangeEnds(r, from, Value::number(INFINITY));
+        else if (endlessFracStart(from)) {                   // `1.5..*` steps 1.5, 2.5, …
+            r.rNumM() = true; r.n = from.toNum(); r.imM() = INFINITY;
+            attachRangeEnds(r, from, Value::number(INFINITY));
+        }
         return r;
     }
     if (from.t == VT::Whatever) {
@@ -2549,17 +2588,24 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
             return rr;
         }
     }
-    // A MIXED range (`'0'..3`) keeps the string endpoint it was written with:
-    // `.min` is the Str "0" and a smartmatch against it compares stringwise,
-    // while the elements it iterates are still the integers 0..3.
+    // A MIXED range. Which side is the string decides everything (RG-03): a
+    // Real on the LEFT coerces the right, so `1 .. "5"` is the integer range
+    // 1..5 — but a Str on the left coerces NOTHING, so `"1"..9` is a range of
+    // the STRINGS "1" through "9" and `"a"..5` is empty, because "a" is after
+    // "5" in string order. We used to numify the string in both directions, so
+    // `my @a = "1"..9` came back as integers (S02-types/range.t, "did we get
+    // strings"). The endpoints are carried either way, so `.min` is still the
+    // Str and `.raku` still prints `"5"..9`.
     if ((from.t == VT::Str) != (to.t == VT::Str) &&
         (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
-        Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
-        attachRangeEnds(r, from, to);
+        if (from.t == VT::Str) return strLeftRange(from, to, exFrom, exTo);
+        Value num = numifyStrOrThrow(to.s.str());   // `1.."b"` is X::Str::Numeric
+        Value r = Value::range(from.toInt(), num.toInt(), exFrom, exTo);
+        setRangeEnds(r, from, num);
         return r;
     }
     {
-        Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
+        Value r = Value::range(from.toInt(), rangeTopInt(to), exFrom, exTo);
         if (to.t == VT::Int && to.big()) r.bigM() = to.big(); // keep the big bound (pick/roll sample it)
         setRangeEnds(r, from, to);
         return r;
@@ -26139,6 +26185,21 @@ static long long bitwiseInt(const Value& v) {
     return n.toInt();
 }
 
+// The SHIFT COUNT of `+<` / `+>`. Unlike the operand, it has to fit a native
+// int: Rakudo unboxes it and says so when it cannot. bitwiseInt saturates a
+// bigint to the int64 maximum instead, and `1 +< (2**70)` then asked BigInt for
+// two to the power of nine quintillion — it never came back. `+>` was quieter
+// and merely wrong (0 or -1 for a count that should have been refused).
+static long long shiftCount(const Value& v) {
+    Value n = strictNum(v);
+    if (n.t == VT::Int && n.big() && !n.big()->fitsLL())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Cannot unbox " + std::to_string(n.big()->bitLength()) +
+                        " bit wide bigint into native integer. "
+                        "Did you mix int and Int or literals?"};
+    return bitwiseInt(n);
+}
+
 // Past this many elements a `xx` repeat is generated on demand rather than
 // built: the list would be gigabytes, and the counts the spec asks about
 // (`2**62`, `2**99999`) could never be built at all.
@@ -27561,7 +27622,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return Value::integer(op[1] == '&' ? (a & b) : op[1] == '|' ? (a | b) : (a ^ b));
     }
     if (op == "+<") { // escalate to BigInt when the result would overflow long long
-        bitwiseInt(l); long long sh = bitwiseInt(r);
+        bitwiseInt(l); long long sh = shiftCount(r);
         if (sh < 0) return applyArith("+>", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big() && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
@@ -27579,7 +27640,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
     }
     if (op == "+>") {
-        bitwiseInt(l); long long sh = bitwiseInt(r);
+        bitwiseInt(l); long long sh = shiftCount(r);
         if (sh < 0) return applyArith("+<", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big()) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
 #if RAKUPP_HAS_INT128
@@ -39872,6 +39933,10 @@ Value Interpreter::eval(Expr* e) {
                 Value rr = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
                                         9223372036854775807LL, r->exFrom, r->exTo);
                 if (from.t == VT::Str) attachRangeEnds(rr, from, Value::number(INFINITY));
+                else if (endlessFracStart(from)) {           // `1.5..*` steps 1.5, 2.5, …
+                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = INFINITY;
+                    attachRangeEnds(rr, from, Value::number(INFINITY));
+                }
                 return rr;
             }
             if (from.t == VT::Whatever) {
@@ -39888,8 +39953,10 @@ Value Interpreter::eval(Expr* e) {
                 // the string endpoint it was written with)
                 if ((from.t == VT::Str) != (to.t == VT::Str) &&
                     (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
-                    Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
-                    attachRangeEnds(rr, from, to);
+                    if (from.t == VT::Str) return strLeftRange(from, to, r->exFrom, r->exTo);
+                    Value num = numifyStrOrThrow(to.s.str());   // `1.."b"` is X::Str::Numeric
+                    Value rr = Value::range(from.toInt(), num.toInt(), r->exFrom, r->exTo);
+                    setRangeEnds(rr, from, num);
                     return rr;
                 }
                 // (…and a Num/Rat endpoint makes the elements Nums/Rats, whole or not)
@@ -39905,7 +39972,7 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             {
-                Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
+                Value rr = Value::range(from.toInt(), rangeTopInt(to), r->exFrom, r->exTo);
                 if (to.t == VT::Int && to.big()) rr.bigM() = to.big(); // keep the big bound (pick/roll sample it)
                 setRangeEnds(rr, from, to);
                 return rr;

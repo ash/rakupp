@@ -370,6 +370,26 @@ BigInt BigInt::pow(long long e) const {
     return result;
 }
 
+// The 1-based index of the highest set bit. A base-1e9 magnitude gives no bit
+// count directly, so estimate log2 from the top limb plus 29.897… per lower
+// limb — the limb count is exact, so the product's rounding error stays around
+// 1e-8 even for a million limbs — and then walk the two-bit window around the
+// estimate, keeping the largest b with 2**(b-1) <= |self|. Each probe builds a
+// power of two the same size as the number, so the whole thing costs a few
+// multiplications; it runs on error paths, not hot ones.
+long long BigInt::bitLength() const {
+    if (sign == 0) return 0;
+    long double approx = std::log2l((long double)mag.back()) +
+                         (long double)(mag.size() - 1) * 29.897352853986263L;
+    long long lo = (long long)approx - 2, hi = (long long)approx + 3;
+    if (lo < 1) lo = 1;
+    BigInt a = abs();
+    long long best = 1;
+    for (long long b = lo; b <= hi; b++)
+        if (cmpMag(BigInt(2).pow(b - 1), a) <= 0) best = b;
+    return best;
+}
+
 BigInt BigInt::gcd(BigInt a, BigInt b) {
     a.makeAbs(); b.makeAbs();   // by value already: no reason to copy them again
     // Euclid entirely in registers when both fit — the general loop below builds

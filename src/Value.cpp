@@ -1083,10 +1083,19 @@ ValueList Value::flatten() const {
                 out.push_back(v);
             }
         }
+    } else if (t == VT::Range && degenRange(*this) != DegenRange::No) {
+        // -Inf / NaN / Inf as the START: see degenRange in Value.h. The repeat
+        // gets the same bounded prefix an endless range gets, which is well
+        // past the 1050 elements Roast counts before it looks.
+        if (degenRange(*this) == DegenRange::Repeat)
+            out.assign(10000, rangeEnds(*this)->from);
     } else if (t == VT::Range && rNum()) {
         // fractional range: step by 1 from `n`, stopping at `im` (exclusive bounds
         // drop an endpoint that lands exactly on it)
         double lo = n + (rExFrom() ? 1.0 : 0.0), hi = im();
+        // `1.5..*` has no top: hand back the same bounded prefix the integer
+        // arm below gives an endless range, or this loop never returns.
+        if (!std::isfinite(hi)) hi = lo + 9999.0;
         // a Rat endpoint yields Rats — stepping by 1 is numerator += denominator,
         // so `1.5 .. 3.5` is (1.5 2.5 3.5) as Rats and not Nums
         const RangeEnds* re = rangeEnds(*this);

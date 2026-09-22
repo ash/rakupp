@@ -42,6 +42,11 @@ struct BigInt {
     void makeAbs() { if (sign < 0) sign = 1; }  // abs() without copying the magnitude
     BigInt pow(long long e) const;
     static BigInt gcd(BigInt a, BigInt b);
+    // Position of the highest set bit, 1-based (0 for zero) — what Rakudo's
+    // "Cannot unbox N bit wide bigint" message counts, and S02-types/declare.t
+    // asserts the N. Exact: the limb count brackets log2 to within a bit or
+    // two and a handful of comparisons pin the rest down.
+    long long bitLength() const;
 
     bool fitsLL() const;
     // magnitude fits in a uint64 (Raku caps Rat denominators at uint64;

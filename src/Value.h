@@ -1055,6 +1055,24 @@ inline bool endlessLazy(const Value& v) {
 // to apply" — the caller then renders ISO 8601.
 using DateFormatFn = bool (*)(const Value&, std::string&);
 extern DateFormatFn g_dateFormat;
+// A numeric Range whose START is not a finite number does not step at all:
+// `(-Inf).succ` is -Inf and `NaN.succ` is NaN, so the stream stands still, and
+// a range that starts at Inf has nowhere left to go. Rakudo's answers, which
+// S02-types/range.t pins (rakudo/rakudo#4297, "no floating point drifts"): a
+// -Inf start repeats -Inf for ever; a NaN start repeats NaN when the end is NaN
+// too and is otherwise empty; an Inf start is always empty. Reading the integer
+// fields instead gave the int64 limits and then counted UP from them.
+enum class DegenRange { No, Empty, Repeat };
+inline DegenRange degenRange(const Value& v) {
+    if (v.t != VT::Range) return DegenRange::No;
+    const RangeEnds* re = rangeEnds(v);
+    if (!re || re->from.t != VT::Num || std::isfinite(re->from.n)) return DegenRange::No;
+    if (std::isnan(re->from.n))
+        return (re->to.t == VT::Num && std::isnan(re->to.n)) ? DegenRange::Repeat
+                                                             : DegenRange::Empty;
+    return re->from.n < 0 ? DegenRange::Repeat : DegenRange::Empty;
+}
+
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }

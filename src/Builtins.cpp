@@ -1945,7 +1945,10 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         case VT::Range:
             // Str range: the endpoints are STRING LITERALS, escapes and all —
             // `'!'..'&'` is `"!".."\&"`, since `&` opens an interpolation
-            if (v.ofType() == "Str")
+            // …but carried endpoints win even here: `"5"..9` is a string range
+            // whose RIGHT end was written as a number, and the codepoints have
+            // forgotten that.
+            if (v.ofType() == "Str" && !rangeEnds(v))
                 return rakuStrLit(cpToU8((uint32_t)v.rFrom())) + (v.rExFrom() ? "^" : "") + ".." +
                        (v.rExTo() ? "^" : "") + rakuStrLit(cpToU8((uint32_t)v.rTo()));
             // …and a range whose endpoints are objects renders THOSE, as gist
@@ -14117,8 +14120,13 @@ void Interpreter::registerBuiltins() {
     };
     B["truncate"] = [](Interpreter& I, ValueList& a) -> Value { return rtBTruncate(I, a.empty() ? Value::integer(0) : a[0]); };
     B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "exp", none); }
-        if (a.size() >= 2) return Value::number(std::pow(a[1].toNum(), a[0].toNum())); // exp($x,$base)
+        // …and the BASE travels with it: `exp($z, 2)` is `2 ** $z`, so the
+        // rest of the argument list has to reach the method (it was dropped).
+        if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) {
+            ValueList rest(a.begin() + 1, a.end()); return I.methodCall(a[0], "exp", rest); }
+        // `exp($x, $base)` is `$base ** $x`, which keeps an Int base EXACT —
+        // `exp(2, 10)` is the Int 100, not 100e0 — and matches the method form.
+        if (a.size() >= 2) return applyArith("**", a[1], a[0]);
         return rtBExp(I, a.empty() ? Value::integer(0) : a[0]); };
     // Trigonometry (radians). Also available as methods below.
     {

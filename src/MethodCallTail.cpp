@@ -1075,6 +1075,119 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (!applyArith("~~", other[i], self[i]).truthy()) return Value::boolean(false);
         return Value::boolean(true);
     }
+    // A Range that starts at -Inf, Inf or NaN — see degenRange in Value.h.
+    // Ahead of every other Range arm, because the integer fields it would
+    // otherwise read hold the saturated int64 limits and answer nonsense:
+    // `(Inf..Inf)[^5]` counted up from the int64 maximum and wrapped, and
+    // `(-Inf..0).map` walked up from the minimum instead of standing still.
+    if (inv.t == VT::Range) {
+        DegenRange d = degenRange(inv);
+        if (d == DegenRange::Empty) {
+            if (m == "elems" || m == "end") return Value::integer(m == "end" ? -1 : 0);
+            if (m == "is-lazy" || m == "infinite") return Value::boolean(false);
+            if (m == "AT-POS" || m == "head" || m == "tail") {
+                if (m == "AT-POS" || args.empty()) return Value::nil();
+                Value o = Value::array(); o.isList = true; return o;
+            }
+            if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "flat" ||
+                m == "eager" || m == "Array" || m == "reverse" || m == "sort")
+                { Value o = Value::array(); o.isList = true; return o; }
+        }
+        else if (d == DegenRange::Repeat) {
+            const Value& rep = rangeEnds(inv)->from;
+            auto take = [&](long long k) {
+                Value o = Value::array(); o.isList = true;
+                o.arr()->assign((size_t)std::max(0LL, k), rep);
+                return o;
+            };
+            if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
+            if (m == "min") return rep;
+            if (m == "head") return args.empty() ? rep : take(args[0].toInt());
+            if (m == "AT-POS") return rep;
+            if (m == "elems")
+                return ioFailure("X::Cannot::Lazy", {{"action", Value::str(".elems")}},
+                                 "Cannot .elems a lazy list");
+            if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "flat")
+                return take(10000);      // the bounded prefix every endless range hands out
+            if (m == "map" || m == "grep" || m == "first")
+                return methodCall(take(10000), m, args, rwArgs);
+        }
+    }
+    // A Range is immutable: the six resizing methods refuse it with
+    // X::Immutable naming the method and the typename, the way a List does.
+    // They used to reach the generic method lookup and come back as
+    // X::Method::NotFound, which says the wrong thing and carries neither
+    // attribute (S02-types/range.t asserts both).
+    if (inv.t == VT::Range &&
+        (m == "push" || m == "pop" || m == "shift" || m == "unshift" ||
+         m == "append" || m == "prepend"))
+        throwTyped("X::Immutable", {{"method", m}, {"typename", "Range"}},
+                   "Cannot call '" + m + "' on an immutable 'Range'");
+    // `.minmax` is `int-bounds` for an Int range — the first and last integer
+    // it iterates, so `(^10).minmax` is (0, 9) — and the RAW endpoints for any
+    // other, so `(3.5..4.5).minmax` is (3.5, 4.5) and `("a".."z")` is ("a",
+    // "z"). It used to route to the List arm, which read the integer fields and
+    // answered codepoints for a string range and the int64 limits for
+    // `-Inf..Inf`. A non-Int range with an excluded end has no answer at all:
+    // Rakudo fails it, because neither endpoint is an element.
+    if (inv.t == VT::Range && m == "minmax" && args.empty()) {
+        const bool isInt = methodCall(inv, "is-int", ValueList{}).truthy();
+        if (isInt) return methodCall(inv, "int-bounds", ValueList{});
+        if (inv.rExFrom() || inv.rExTo())
+            return ioFailure("X::AdHoc", {},
+                             "Cannot return minmax on Range with excluded ends");
+        Value o = Value::array({methodCall(inv, "min", ValueList{}),
+                                methodCall(inv, "max", ValueList{})});
+        o.isList = true; return o;
+    }
+    // `.min`/`.max` with `:k`, `:kv`, `:p`, `:v` — a Range answers these as
+    // SCALARS, not as the list of winning positions a List gives, because its
+    // extremes are its endpoints and there is exactly one of each. The key of
+    // `min` is always 0; the key of `max` is `.end`, the index of the last
+    // ELEMENT — so `(2^..^6).max(:kv)` is (2, 6), pairing the last index with
+    // the raw endpoint, a pair whose halves never meet in the list. An endless
+    // range keys on Inf and an empty one on -1. The VALUE is always the raw
+    // endpoint, exclusions and all: `(1.5..3).max(:kv)` is (1, 3) though the
+    // element at index 1 is 2.5. `:by` is a comparator, not an adverb, and
+    // still goes to the list. (S02-types/range.t, 26 assertions.)
+    if (inv.t == VT::Range && (m == "min" || m == "max")) {
+        char want = 0;
+        bool by = false;
+        for (auto& a : args) {
+            if (a.t == VT::Code) by = true;
+            if (a.t != VT::Pair || !a.pairVal()) continue;
+            if (a.s == "by") { by = true; continue; }
+            if (!a.pairVal()->truthy()) continue;        // `:!k` asks for the plain answer
+            if (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p")
+                want = a.s == "kv" ? 'm' : a.s[0];
+        }
+        // `:by` compares by something other than the natural order, so the
+        // endpoints stop being the extremes and only the elements can answer.
+        if (by && !isEndlessRange(inv) && inv.rTo() < 9000000000000000000LL &&
+            inv.rFrom() > -9000000000000000000LL) {
+            Value lst = Value::array(); lst.isList = true; *lst.arr() = toList(inv);
+            return methodCall(lst, m, args, rwArgs);
+        }
+        if (want && !by) {
+            Value raw = methodCall(inv, m, ValueList{});        // the endpoint itself
+            if (want == 'v') return raw;
+            Value key;
+            if (m == "min") key = Value::integer(0);
+            else if (isEndlessRange(inv) || inv.rTo() >= 9000000000000000000LL)
+                key = Value::number(INFINITY);
+            else {
+                Value n = methodCall(inv, "elems", ValueList{});
+                key = applyArith("-", n, Value::integer(1));
+            }
+            if (want == 'k') return key;
+            if (want == 'p') {
+                Value p = Value::pair(key.toStr(), raw);
+                p.pairKeyM() = std::make_shared<Value>(key);   // the key is an Int, not its text
+                return p;
+            }
+            Value o = Value::array({key, raw}); o.isList = true; return o;
+        }
+    }
     if (inv.t == VT::Range && m == "is-lazy")
         return Value::boolean(inv.b || inv.rTo() >= 9000000000000000000LL); // `lazy 1..3` marks .b
     // finite-Range scalar accessors: endpoints (min/max ignore exclusivity), the
@@ -1110,6 +1223,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             o.isList = true; return o;
         }
         if (m == "int-bounds") {
+            // There are no integer bounds when an endpoint is not a whole
+            // number to begin with: a fractional START (the END may be
+            // fractional — `(0..5.5)` is (0, 5)), a string range, or an
+            // infinite or NaN endpoint. Rakudo fails all of those, and
+            // S02-types/range.t walks fifteen Inf/NaN combinations expecting it.
+            const RangeEnds* re = rangeEnds(inv);
+            auto nonFinite = [](const Value& v) {
+                return v.t == VT::Num && !std::isfinite(v.n);
+            };
+            bool fracStart = inv.rNum() && inv.n != std::floor(inv.n);
+            if (inv.ofType() == "Str" || fracStart ||
+                (re && (nonFinite(re->from) || nonFinite(re->to))))
+                return ioFailure("X::AdHoc", {}, "Cannot determine integer bounds");
             Value o = Value::array({Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)),
                                     Value::integer(inv.rTo() - (inv.rExTo() ? 1 : 0))}); o.isList = true; return o;
         }
@@ -1187,12 +1313,57 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (const RangeEnds* bre = rangeEnds(inv)) {
             if (bre->to.t == VT::Int) {
                 if (m == "max") return bre->to;
+                if (m == "is-int") return Value::boolean(bre->from.t == VT::Int);
+                if (m == "infinite") return Value::boolean(false);   // 1..2**70 only LOOKS endless
                 if (m == "bounds") { Value o = Value::array({bre->from, bre->to}); o.isList = true; return o; }
                 if (m == "elems" || m == "Numeric" || m == "Int")
                     return applyArith("+", applyArith("-", bre->to, bre->from),
                                       Value::integer(1 - (inv.rExFrom() ? 1 : 0) - (inv.rExTo() ? 1 : 0)));
             }
         }
+    }
+    // `is-int` on a range with no finite end. Its top (or bottom) is `*`, `Inf`
+    // or NaN, none of which is an Int object, so the answer is always False —
+    // but only the finite arm above defined the method at all, so every such
+    // range answered X::Method::NotFound and took the whole expression with it.
+    // (The bigint arm just above claims the ranges that only look endless.)
+    if (inv.t == VT::Range && m == "is-int" &&
+        (inv.rTo() >= 9000000000000000000LL || inv.rFrom() <= -9000000000000000000LL))
+        return Value::boolean(false);
+    // …and `int-bounds` on one has no answer: there is no last integer. Only
+    // the finite arm defined it, so an infinite range answered
+    // X::Method::NotFound where Rakudo hands back a Failure.
+    if (inv.t == VT::Range && m == "int-bounds" &&
+        (inv.rTo() >= 9000000000000000000LL || inv.rFrom() <= -9000000000000000000LL))
+        return ioFailure("X::AdHoc", {}, "Cannot determine integer bounds");
+    // An endless range whose LOW end is FRACTIONAL steps by one FROM that
+    // fraction — `(1.5..*)` is 1.5, 2.5, 3.5 — where the integer arm below
+    // walks the whole numbers around it. Same shape as the string arm that
+    // follows, and for the same reason: the integer fields cannot say what the
+    // first element is. (S07-iterators/range-iterator.t pulls fourteen of
+    // these.)
+    if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL && inv.rNum() &&
+        rangeEnds(inv)) {
+        Value first = rangeEnds(inv)->from;
+        if (inv.rExFrom()) first = applyArith("+", first, Value::integer(1));
+        auto take = [&](long long k) {
+            Value o = Value::array(); o.isList = true;
+            Value cur = first;
+            for (long long i = 0; i < k; i++) { o.arr()->push_back(cur); cur = applyArith("+", cur, Value::integer(1)); }
+            return o;
+        };
+        if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
+        if (m == "min")  return first;
+        if (m == "max")  return Value::number(INFINITY);
+        if (m == "head" && args.empty()) return first;
+        if (m == "head") return take(std::max(0LL, args[0].toInt()));
+        if (m == "AT-POS" && !args.empty()) {
+            long long i = args[0].toInt();
+            if (i < 0) return Value::any();
+            return applyArith("+", first, Value::integer(i));
+        }
+        if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat")
+            return take(10000);          // the same bounded prefix the Int arm hands out
     }
     // An endless range whose LOW end is a STRING climbs by `succ`, not by
     // codepoint: `('a'..*)[^5]` is a, b, c, d, e. Reading the integer field gave

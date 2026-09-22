@@ -6731,7 +6731,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             lazy = inv.b || std::static_pointer_cast<LazySeqState>(inv.ext())->infinite;
         }
         else if (inv.t == VT::Array && inv.arr()) { *items.arr() = *inv.arr(); lazy = inv.b; }
-        else if (inv.t == VT::Range) { *items.arr() = inv.flatten();
+        else if (inv.t == VT::Range) {
+            // An ENDLESS range whose start is a string or a fraction cannot be
+            // walked from the integer fields — `("d"..*)` would pull codepoints
+            // and `(1.5..*)` whole numbers. `.list` knows how to step both, so
+            // ask it rather than flatten(), which only sees the fields.
+            const RangeEnds* re = rangeEnds(inv);
+            if (inv.rTo() >= 9000000000000000000LL && re &&
+                (re->from.t == VT::Str || inv.rNum())) {
+                ValueList none;
+                Value l = methodCall(inv, "list", none, nullptr);
+                if (l.t == VT::Array && l.arr()) *items.arr() = *l.arr();
+            }
+            else *items.arr() = inv.flatten();
             lazy = inv.b || inv.rTo() >= 9000000000000000000LL; } // infinite / `lazy`-marked range
         else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs
             ValueList none;

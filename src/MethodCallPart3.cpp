@@ -189,6 +189,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "abs" || m == "magnitude") return Value::number(std::abs(z));
         if (m == "conj") return Value::complex(inv.n, -inv.im());
         if (m == "sqrt") return complexSqrt(inv.n, inv.im());
+        // `$z.exp($base)` is `$base ** $z`, the same rule as the Real method
+        // below — the base used to be dropped, so `(i*pi).exp(2)` answered
+        // e**(i*pi) = -1 instead of 2**(i*pi) (S32-num/exp.t).
+        if (m == "exp" && !args.empty() && args[0].t != VT::Pair)
+            return applyArith("**", args[0], inv);
         if (m == "exp") { auto r = std::exp(z); return Value::complex(r.real(), r.imag()); }
         if (m == "log") { // optional base argument: log(z) / log(base)
             auto r = std::log(z);
@@ -360,73 +365,129 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::number(v);
     }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
-    if (m == "base" && !args.empty() && (inv.t == VT::Int || inv.t == VT::Bool)) { // Int -> string in base 2..36
-        long long b = args[0].toInt();
-        if (b < 2 || b > 36) return armedFailure("X::OutOfRange", "base argument to base out of range. Is: " + std::to_string(b) + ", should be in 2..36"); // (it clamped)
-        static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        // a BIG integer digits out by repeated division — toInt() would truncate
-        if (inv.big() && !inv.big()->fitsLL()) {
-            BigInt n = inv.big()->abs(), base((long long)b), q, r;
-            std::string d;
-            while (!n.isZero()) { BigInt::divmod(n, base, q, r); d = std::string(1, BD[r.fitsLL() ? r.toLL() : 0]) + d; n = q; }
-            if (d.empty()) d = "0";
-            return Value::str(inv.big()->sign < 0 ? "-" + d : d);
+    // `.base($base, $digits?)` for every Real, in EXACT integer arithmetic.
+    //
+    // The old implementation walked the fraction through a double, so every
+    // long expansion drifted into float noise after the sixteenth digit
+    // (`(2/3).base(10, 40)` ended `...074547720199916511774063`) and a tiny
+    // Rational lost its value entirely (`(1/10000000000).base(3)` was
+    // `0.000000`). Numerator and denominator are BigInts here and each digit is
+    // one exact divmod, so the answer is right at any length.
+    //
+    // The digit count, when it is not given, is what differs by type: a
+    // Rational gets six, or as many as its own denominator needs in this base,
+    // whichever is larger; a Num gets as many as eight decimal places are worth
+    // in this base — floor(8 / log10(base)), which is 8 in base 10, 6 in hex
+    // and 26 in binary, matching Rakudo. Both stop early when the expansion
+    // terminates; an EXPLICIT count pads with zeros instead. The last digit is
+    // rounded either way.
+    if (m == "base" && !args.empty() &&
+        (inv.t == VT::Int || inv.t == VT::Bool || inv.t == VT::Num || inv.t == VT::Rat)) {
+        Value bv = args[0];
+        if (bv.t == VT::Str && !bv.isAllomorph()) bv = numifyStrOrThrow(bv.s.str());
+        long long b = bv.toInt();
+        if (b < 2 || b > 36)
+            return armedFailure("X::OutOfRange",
+                "base argument to base out of range. Is: " + std::to_string(b) + ", should be in 2..36");
+        // Inf and NaN have no digits in any base, and this is a throw rather
+        // than a Failure (S32-num/base.t uses throws-like).
+        if (inv.t == VT::Num && !std::isfinite(inv.n))
+            throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                            "Cannot convert " + inv.toStr() + " to Int"};
+
+        bool whatever = args.size() > 1 && args[1].t == VT::Whatever;
+        long long want = -1;                      // -1 = "use the default"
+        if (args.size() > 1 && !whatever && args[1].t != VT::Pair) {
+            Value dv = args[1];
+            if (dv.t == VT::Str && !dv.isAllomorph()) dv = numifyStrOrThrow(dv.s.str());
+            if (dv.t == VT::Int && dv.big() && !dv.big()->fitsLL())
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Cannot unbox " + std::to_string(dv.big()->bitLength()) +
+                                " bit wide bigint into native integer. "
+                                "Did you mix int and Int or literals?"};
+            want = dv.toInt();
+            if (want < 0)
+                return armedFailure("X::OutOfRange",
+                    "digits argument to base out of range. Is: " + std::to_string(want) +
+                    ", should be in 0..*");
         }
-        long long n = inv.toInt();
-        if (n == 0) return Value::str("0");
-        bool neg = n < 0; unsigned long long u = neg ? -(unsigned long long)n : (unsigned long long)n;
-        std::string s;
-        while (u) { s = std::string(1, BD[u % b]) + s; u /= b; }
-        return Value::str(neg ? "-" + s : s);
-    }
-    // `.base` on a non-integer Real: the integer part in that base, then the
-    // fraction. With an explicit digit count the fraction is padded to it
-    // (`255.5.base(16,4)` is FF.8000); without one it runs until it terminates,
-    // and a non-terminating expansion stops at six digits — Rakudo's default,
-    // checked base by base ((1/3).base(2) is 0.010101, .base(3) is 0.1).
-    if (m == "base" && !args.empty() && (inv.t == VT::Num || inv.t == VT::Rat)) {
-        long long b = args[0].toInt();
-        if (b < 2 || b > 36) return armedFailure("X::OutOfRange", "base argument to base out of range. Is: " + std::to_string(b) + ", should be in 2..36"); // (it clamped)
-        long long want = args.size() > 1 && args[1].isNumeric() ? args[1].toInt() : -1;
-        static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        double x = inv.toNum();
-        bool neg = x < 0 || (inv.t == VT::Rat && inv.toNum() < 0);
-        if (neg) x = -x;
-        double ip = std::floor(x), fp = x - ip;
-        std::string istr;
-        { unsigned long long u = (unsigned long long)ip;
-          if (!u) istr = "0";
-          while (u) { istr = std::string(1, BD[u % (unsigned long long)b]) + istr; u /= (unsigned long long)b; } }
-        long long cap = want >= 0 ? want : (fp < 1e-12 ? 0 : 6);
-        std::string fstr;
-        double f = fp;
-        for (long long k = 0; k < cap; k++) {
-            f *= (double)b;
-            long long d = (long long)std::floor(f);
-            if (d < 0) d = 0; if (d >= b) d = b - 1;
-            fstr += BD[d];
-            f -= (double)d;
-            if (want < 0 && f < 1e-12) break;   // it terminated
+
+        // The value as an exact fraction. A double is a dyadic rational, so it
+        // converts without loss; an Int is itself over one.
+        rakupp::BigInt num, den(1);
+        bool neg = false;
+        if (inv.t == VT::Num) {
+            double x = inv.n;
+            neg = std::signbit(x); x = std::fabs(x);
+            int e = 0;
+            long long mant = (long long)std::ldexp(std::frexp(x, &e), 53);
+            e -= 53;
+            num = rakupp::BigInt(mant);
+            if (e >= 0) num = num * rakupp::BigInt(2).pow(e);
+            else        den = rakupp::BigInt(2).pow(-e);
+        } else if (inv.t == VT::Rat && inv.ratN() && inv.ratD()) {
+            num = *inv.ratN(); den = *inv.ratD();
+            neg = num.sign < 0;
+            if (den.isZero())
+                throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                "Attempt to divide by zero when calling .base"};
+        } else {
+            num = inv.big() ? *inv.big() : rakupp::BigInt(inv.toInt());
+            neg = num.sign < 0;
         }
-        // round the last digit when the expansion was cut short
-        if (!fstr.empty() && f >= 0.5) {
-            size_t k = fstr.size();
-            while (k-- > 0) {
-                const char* at = std::strchr(BD, fstr[k]);
+        num.makeAbs();
+
+        long long cap; bool pad;
+        if (want >= 0)      { cap = want;    pad = true;  }
+        else if (whatever)  { cap = 100000;  pad = false; }
+        else if (inv.t == VT::Num) {
+            cap = (long long)std::floor(8.0 / std::log10((double)b)); pad = false;
+        } else if (inv.t == VT::Rat) {
+            long long k = 0; rakupp::BigInt p(1);
+            while (rakupp::BigInt::cmpMag(p, den) <= 0 && k < 100000) { p = p * rakupp::BigInt(b); k++; }
+            cap = std::max(6LL, k); pad = false;
+        } else { cap = 0; pad = true; }           // an Int has no fraction at all
+
+        static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const rakupp::BigInt B(b);
+        rakupp::BigInt ip, rem;
+        rakupp::BigInt::divmod(num, den, ip, rem);
+        std::string frac;
+        frac.reserve((size_t)std::min(cap, 4096LL));
+        for (long long i = 0; i < cap; i++) {
+            if (rem.isZero()) { if (!pad) break; frac += '0'; continue; }
+            // divmod must not be handed `rem` as both dividend and remainder:
+            // it writes the output before it has finished reading the input.
+            rakupp::BigInt scaled = rem * B, d, next;
+            rakupp::BigInt::divmod(scaled, den, d, next);
+            rem = next;
+            frac += BD[d.fitsLL() ? (size_t)d.toLL() : 0];
+        }
+        // What is left over is at least half a digit when 2*rem >= den: round
+        // the last digit up and let the carry run into the integer part
+        // (`(98/99).base(10, 0)` is "1", not "0").
+        if (rakupp::BigInt::cmpMag(rem + rem, den) >= 0) {
+            size_t k = frac.size(); bool carry = true;
+            while (carry && k-- > 0) {
+                const char* at = std::strchr(BD, frac[k]);
                 long long d = at ? (long long)(at - BD) + 1 : b;
-                if (d < b) { fstr[k] = BD[d]; break; }
-                fstr[k] = '0';
-                if (k == 0) { // carry into the integer part
-                    unsigned long long u = (unsigned long long)ip + 1;
-                    istr.clear();
-                    if (!u) istr = "0";
-                    while (u) { istr = std::string(1, BD[u % (unsigned long long)b]) + istr; u /= (unsigned long long)b; }
-                }
+                if (d < b) { frac[k] = BD[d]; carry = false; }
+                else frac[k] = '0';
+            }
+            if (carry) ip = ip + rakupp::BigInt(1);
+        }
+        std::string istr;
+        if (ip.isZero()) istr = "0";
+        else {
+            rakupp::BigInt n = ip, q, r;
+            while (!n.isZero()) {
+                rakupp::BigInt::divmod(n, B, q, r);
+                istr = std::string(1, BD[r.fitsLL() ? (size_t)r.toLL() : 0]) + istr;
+                n = q;
             }
         }
-        std::string out = istr;
-        if (!fstr.empty()) out += "." + fstr;
-        return Value::str(neg ? "-" + out : out);
+        std::string out = frac.empty() ? istr : istr + "." + frac;
+        return Value::str(neg && out.find_first_not_of("0.") != std::string::npos ? "-" + out : out);
     }
     if (m == "polymod" && (inv.t == VT::Num || inv.t == VT::Rat)) {
         // non-integer polymod stays in Value arithmetic (Rat exactness, Num):
@@ -780,6 +841,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         double n = inv.toNum();
         if (std::isnan(n)) return Value::number(NAN); // sign(NaN) is NaN
         return Value::integer(n < 0 ? -1 : n > 0 ? 1 : 0);
+    }
+    // `$x.exp($base)` is `$base ** $x` — the inverse of `.log($base)`, and NOT
+    // e to the x with the argument thrown away, which is what this used to
+    // answer for `5.exp(2)` (148.4 instead of 32). Going through `**` keeps an
+    // Int base exact (`exp(2, 10)` is the Int 100) and lets a Complex base or
+    // exponent take the Complex candidate, as the sub form already did.
+    if (m == "exp" && !args.empty() && args[0].t != VT::Pair) {
+        // A custom Real reaches `**` as an opaque object and numifies to 0, so
+        // coerce it first — that is what runs its `.Bridge`
+        // (S32-num/real-bridge.t, `2.exp($neg-pi)`).
+        Value base = args[0];
+        if (base.t == VT::Object) base = methodCall(base, "Numeric", ValueList{});
+        return applyArith("**", base, inv);
     }
     if (m == "exp") return Value::number(std::exp(inv.toNum()));
     if (m == "log") {
