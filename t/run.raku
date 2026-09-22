@@ -1538,9 +1538,21 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     }
 
     # --stack-size: the recursion ceiling, exposed
+    #
+    # 128M, not the 64M this was written with. What the pair below proves is
+    # that the flag is HONOURED — a bigger stack takes more frames, and the
+    # guard fires instead of the process taking SIGSEGV. The frame COUNT that
+    # fits is not the contract, and 64M was calibrated on arm64, where 1000
+    # frames need 44M. x86_64 frames are wider: the same tree needs ~60M there,
+    # so 64M cleared it by a hair on macOS-x86_64 and not at all on
+    # linux-x86_64, which is the one runner this failed on (linux-aarch64 and
+    # macos-universal, both arm64, passed throughout). It passed on
+    # linux-x86_64 as late as 2026-09-14 and drifted over the line by
+    # 2026-09-22 on ordinary frame growth, which is a knife-edge number failing,
+    # not a ceiling being breached. 128M is ~2x the widest measurement.
     {
         my @deep = '-e', 'sub f($n) { $n == 0 ?? 0 !! 1 + f($n-1) }; say f(+@*ARGS[0])';
-        is(run-rakupp('--stack-size=64M', |@deep, '1000')[0], "1000\n", '--stack-size=64M: 1000 frames fit');
+        is(run-rakupp('--stack-size=128M', |@deep, '1000')[0], "1000\n", '--stack-size=128M: 1000 frames fit');
         my ($o, $e, $x) = run-rakupp-err('--stack-size=64', |@deep, '8000');
         ok($x == 1 && $e.contains('Too many levels of recursion'),
            '--stack-size=64 (MiB): 8000 frames do not, and the guard fires rather than SIGSEGV');
