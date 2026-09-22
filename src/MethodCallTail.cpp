@@ -1106,6 +1106,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (!applyArith("~~", other[i], self[i]).truthy()) return Value::boolean(false);
         return Value::boolean(true);
     }
+    // `.int-bounds($lo, $hi)` — the TWO-ARGUMENT form stores the bounds into
+    // its arguments and answers a Bool, so `(1..Inf).int-bounds(my $lo, my $hi)`
+    // is False with both left undefined where the no-argument form fails. It
+    // sat inside the finite arm, so an infinite range never reached it and the
+    // Failure blew the caller up instead of telling it there are none (RG-26).
+    if (inv.t == VT::Range && m == "int-bounds" && args.size() >= 2 &&
+        rwArgs && rwArgs->size() >= 2) {
+        Value b = methodCall(inv, "int-bounds", ValueList{});
+        const bool have = b.t == VT::Array && b.arr() && b.arr()->size() == 2;
+        if (have)
+            for (int k = 0; k < 2; k++) {
+                Value* lv = nullptr;
+                try { lv = lvalue((*rwArgs)[(size_t)k].get()); } catch (RakuError&) {}
+                if (lv) *lv = (*b.arr())[(size_t)k];
+            }
+        return Value::boolean(have);
+    }
     // A Range that starts at -Inf, Inf or NaN — see degenRange in Value.h.
     // Ahead of every other Range arm, because the integer fields it would
     // otherwise read hold the saturated int64 limits and answer nonsense:
@@ -1267,8 +1284,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.ofType() == "Str" || fracStart ||
                 (re && (nonFinite(re->from) || nonFinite(re->to))))
                 return ioFailure("X::AdHoc", {}, "Cannot determine integer bounds");
-            Value o = Value::array({Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)),
-                                    Value::integer(inv.rTo() - (inv.rExTo() ? 1 : 0))}); o.isList = true; return o;
+            // An excluded end only bites when a step LANDS on it, so the
+            // adjustment is for a whole-number endpoint alone: `(1..^5.0)` is
+            // (1, 4) but `(0..^5.5)` is (0, 5) — 5 is inside 5.5 whether or not
+            // the end is excluded. Subtracting unconditionally lost that last
+            // integer for every fractional end.
+            const bool wholeTop = !inv.rNum() || inv.im() == std::floor(inv.im());
+            const bool wholeBot = !inv.rNum() || inv.n == std::floor(inv.n);
+            Value o = Value::array({Value::integer(inv.rFrom() + (inv.rExFrom() && wholeBot ? 1 : 0)),
+                                    Value::integer(inv.rTo() - (inv.rExTo() && wholeTop ? 1 : 0))});
+            o.isList = true; return o;
         }
     }
     // an infinite range (…..Inf) must not materialise: only lazy views are defined

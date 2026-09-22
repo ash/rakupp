@@ -28119,9 +28119,34 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 // A fractional range's endpoints are n/im; rFrom/rTo are their
                 // floors, so `2.4 ~~ 0..^2.5` was False and every `.grep(1.5..2.5)`
                 // over measured data silently cut at the floor.
-                double v = l.toNum();
-                double lo = r.rNum() ? r.n : (double)r.rFrom(), hi = r.rNum() ? r.im() : (double)r.rTo();
-                res = (r.rExFrom() ? v > lo : v >= lo) && (r.rExTo() ? v < hi : v <= hi);
+                // A Str topic goes through `.Numeric`, and one that does not
+                // parse simply does not match — no exception, and NOT the 0 that
+                // toNum() answers, which put `"raku"` inside `-Inf..Inf` (RG-19).
+                Value topic = l;
+                if (l.t == VT::Str && !l.isAllomorph() && l.hashKind.empty()) {
+                    topic = numifyStr(l.s.str());
+                    if (topic.t == VT::Any || topic.t == VT::Nil)
+                        return Value::boolean(op != "~~");
+                }
+                // The endpoint OBJECTS where the range kept them: a BIGINT end
+                // does not fit the integer fields, so `2**70 ~~ 0..2**80` and
+                // `(2**64-1) ~~ uint64.Range` compared against a saturated
+                // 9.2e18 and came out False.
+                const RangeEnds* re = rangeEnds(r);
+                if (re && topic.isNumeric() && re->from.isNumeric() && re->to.isNumeric() &&
+                    !r.rNum()) {
+                    res = applyArith(r.rExFrom() ? ">" : ">=", topic, re->from).truthy() &&
+                          applyArith(r.rExTo() ? "<" : "<=", topic, re->to).truthy();
+                } else {
+                    // …and an UNCARRIED sentinel means genuinely unbounded, not
+                    // the int64 limit: every number above the start is in `1..*`.
+                    double v = topic.toNum();
+                    double lo = r.rNum() ? r.n
+                              : r.rFrom() <= -9000000000000000000LL ? -INFINITY : (double)r.rFrom();
+                    double hi = r.rNum() ? r.im()
+                              : r.rTo() >= 9000000000000000000LL ? INFINITY : (double)r.rTo();
+                    res = (r.rExFrom() ? v > lo : v >= lo) && (r.rExTo() ? v < hi : v <= hi);
+                }
             }
         } else if (r.t == VT::Type) {
             // a subset name on the RHS: base-chain + where-clause check
@@ -33571,6 +33596,17 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8")) {
         long long n = v.blobElems();
         return Value::integer(op == "-" ? -n : n);
+    }
+    // …but a Range with an infinite or NaN endpoint has no element count and
+    // still numifies: `+(1..*)` is Inf and `+(1..NaN)` is NaN, where `.elems`
+    // on either is a Failure (Range sheet RG-08). Reading the element count
+    // gave the 10,000-element prefix an endless range hands out.
+    if ((op == "+" || op == "-") && v.t == VT::Range) {
+        double sp;
+        if (rangeNumericSpecial(v, sp)) {
+            if (op == "-") sp = -sp;
+            return std::isfinite(sp) ? Value::integer((long long)sp) : Value::number(sp);
+        }
     }
     // Numeric context of a list/array/hash/range is its element count —
     // except a Proc / Proc::Async, which numifies to its exit status (+$proc).

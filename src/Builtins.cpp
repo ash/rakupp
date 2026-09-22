@@ -16092,8 +16092,17 @@ void Interpreter::registerBuiltins() {
         Value out = Value::array(); out.isList = true; out.b = true;
         for (auto& v : a) out.arr()->push_back(v); return out;
     };
-    B["eager"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.size() == 1) return a[0];
+    B["eager"] = [](Interpreter& I, ValueList& a) -> Value {
+        // `eager $x` is `$x.eager`: it REIFIES, so a Range comes back as its
+        // elements and a lazy Seq as a list. Handing the argument straight back
+        // left `eager (^10+5)/2` as the Range `2.5..^7.5` where Rakudo gives
+        // (2.5, 3.5, 4.5, 5.5, 6.5) — the sub form disagreed with the method
+        // form on the same value (S02-types/range.t, RG-30).
+        if (a.size() == 1) {
+            if (a[0].t == VT::Range || (a[0].t == VT::Array && a[0].ext()))
+                return I.methodCall(a[0], "eager", ValueList{});
+            return a[0];
+        }
         Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr()->push_back(v); return out;
     };
     // `pair($key, $value)` — the sub spelling of `$key => $value`, for a key

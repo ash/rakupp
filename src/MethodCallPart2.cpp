@@ -2128,6 +2128,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // value, so an UNHANDLED Failure throws there (Rakudo). The NUMERIC
         // coercions use it just as much — `.Int` on an unhandled Failure used to
         // return the hash's element count, a 2 out of nowhere.
+        // (`.raku` is deliberately NOT in this list, though Rakudo detonates
+        // there too. Two Roast files reach it on a Failure that Rakudo never
+        // makes — a failed `Grammar.parse` under 6.e and a missing symbol in
+        // S10-packages/scope.t both answer Nil there and a Failure here — so
+        // detonating would report those bugs from the wrong place and abort
+        // both files. Worth revisiting once .parse and symbol lookup answer
+        // Nil; until then the Range and Int-Num-Rat sheets record the
+        // difference.)
         if (m == "Str" || m == "gist" || m == "Int" || m == "Num" || m == "Rat" ||
             m == "Numeric" || m == "Real" || m == "FatRat" || m == "Complex") {
             auto h = inv.hash()->find("handled");
@@ -2731,6 +2739,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     // `*` is a singleton, so `Whatever.new` hands back the one that exists;
     // HyperWhatever has no instance to hand back and says so by name.
+    // `Range.new($min, $max, :excludes-min, :excludes-max)` — the same range the
+    // operators build, with the exclusions as nameds instead of carets. It was
+    // missing entirely, so every constructed range was X::Method::NotFound
+    // (RG-04; the `..` family and this share rtRangeVal, so the endpoint
+    // refusals and the coercions are the same rules).
+    if (inv.t == VT::Type && m == "new" && inv.s == "Range") {
+        ValueList pos;
+        bool exMin = false, exMax = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.pairVal()) {
+                if (a.s == "excludes-min") exMin = a.pairVal()->truthy();
+                else if (a.s == "excludes-max") exMax = a.pairVal()->truthy();
+                continue;
+            }
+            pos.push_back(a);
+        }
+        Value lo = pos.size() > 0 ? pos[0] : Value::integer(0);
+        Value hi = pos.size() > 1 ? pos[1] : Value::integer(0);
+        return rtRangeVal(lo, hi, exMin, exMax);
+    }
     if (inv.t == VT::Type && m == "new" && inv.s == "Whatever") return Value::whatever();
     if (inv.t == VT::Type && m == "new" && inv.s == "HyperWhatever")
         throwTypedV("X::Cannot::New", {{"type", Value::typeObj("HyperWhatever")}},
@@ -2739,15 +2767,52 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // type-object `.new` and answered 0 for every argument.
     if (inv.t == VT::Type && inv.s == "Num" && m == "new")
         return Value::number(args.empty() ? 0.0 : args[0].toNum());
+    // A NATIVE integer type's `.Range` is its exact two's-complement span, and a
+    // native float's is -Inf..Inf. S02-types/int-uint.t opens by asking each of
+    // them for `.Range.int-bounds` and could not get past line 24 without this;
+    // `Bool.Range` is Int's and `Rational.Range` is Rat's (RG-32).
+    if (inv.t == VT::Type && m == "Range") {
+        static const std::map<std::string, std::pair<const char*, const char*>> kNativeSpan = {
+            {"int8",   {"-128", "127"}},
+            {"uint8",  {"0", "255"}},
+            {"byte",   {"0", "255"}},
+            {"int16",  {"-32768", "32767"}},
+            {"uint16", {"0", "65535"}},
+            {"int32",  {"-2147483648", "2147483647"}},
+            {"uint32", {"0", "4294967295"}},
+            {"int64",  {"-9223372036854775808", "9223372036854775807"}},
+            {"uint64", {"0", "18446744073709551615"}},
+            {"int",    {"-9223372036854775808", "9223372036854775807"}},
+            {"uint",   {"0", "18446744073709551615"}},
+            {"atomicint", {"-9223372036854775808", "9223372036854775807"}},
+        };
+        auto it = kNativeSpan.find(inv.s.str());
+        if (it != kNativeSpan.end()) {
+            Value lo = numifyStrOrThrow(it->second.first);
+            Value hi = numifyStrOrThrow(it->second.second);
+            Value r = rtRangeVal(lo, hi, false, false);
+            // The 64-bit spans END on the int64 limits, which are also the
+            // sentinels for "no end at all" — so the endpoints have to be
+            // CARRIED or `int.Range` renders as -Inf..Inf and matches everything.
+            attachRangeEnds(r, lo, hi);
+            return r;
+        }
+        if (inv.s == "num" || inv.s == "num32" || inv.s == "num64")
+            return rtRangeVal(Value::number(-INFINITY), Value::number(INFINITY), false, false);
+    }
     if (inv.t == VT::Type && m == "Range" &&
-        (inv.s == "Int" || inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Num" || inv.s == "UInt")) {
+        (inv.s == "Int" || inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Num" ||
+         inv.s == "UInt" || inv.s == "Bool" || inv.s == "Rational")) {
         // The endpoints are ±Inf. The range stays int-backed and saturated for
         // arithmetic, but it must also CARRY them: without RangeEnds it rendered
         // as -9223372036854775808..9223372036854775807, and `Rat.Range eqv
         // -Inf..Inf` only passed because the old comparison expanded both sides.
         // Int is exclusive at both ends (no Int is infinite), UInt starts at 0.
         bool uint = inv.s == "UInt";
-        bool exFrom = inv.s == "Int", exTo = inv.s == "Int" || uint;
+        // `Bool.Range` is Int's, exclusive at both ends; `Rational.Range` is
+        // Rat's, inclusive.
+        bool intLike = inv.s == "Int" || inv.s == "Bool";
+        bool exFrom = intLike, exTo = intLike || uint;
         Value r = Value::range(uint ? 0 : LLONG_MIN, LLONG_MAX, exFrom, exTo);
         attachRangeEnds(r, uint ? Value::integer(0) : Value::number(-INFINITY),
                         Value::number(INFINITY));
@@ -6087,7 +6152,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `(1..5).Int` is 5, not 0. Value::toInt has no way to count one (a Str
         // range and an endless one both need the interpreter), so the coercion
         // methods ask .elems.
-        if (inv.t == VT::Range) { ValueList none; return methodCall(inv, "elems", none); }
+        if (inv.t == VT::Range) {
+            double sp;
+            if (rangeNumericSpecial(inv, sp))
+                return std::isfinite(sp) ? Value::integer((long long)sp) : Value::number(sp);
+            ValueList none; return methodCall(inv, "elems", none);
+        }
         // …and an Int that outgrew long long stays exact: toInt() saturates, so
         // `(2**64).Int` answered 9223372036854775807.
         if (inv.t == VT::Int && inv.big()) return Value::bigint(*inv.big());
@@ -6104,7 +6174,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value nv = numifyStrFailure(inv.toStr());
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
         }
-        if (inv.t == VT::Range) { ValueList none; return Value::number(methodCall(inv, "elems", none).toNum()); }
+        if (inv.t == VT::Range) {
+            double sp;
+            if (rangeNumericSpecial(inv, sp))
+                return std::isfinite(sp) ? Value::integer((long long)sp) : Value::number(sp);
+            ValueList none; return Value::number(methodCall(inv, "elems", none).toNum());
+        }
         return Value::number(inv.toNum());
     }
     if (m == "Numeric" && inv.t == VT::Complex) { // a Complex is Numeric already (this arm numified it to Num 0)
@@ -6142,7 +6217,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (inv.t == VT::Bool) return Value::integer(inv.b ? 1 : 0);
         // a Cool CONTAINER numifies to its element count, and as an Int:
-        // `(1,2).Numeric` is 2, not 2e0.
+        // `(1,2).Numeric` is 2, not 2e0. …but a Range with an infinite or NaN
+        // endpoint has no count and still numifies — see rangeNumericSpecial.
+        if (inv.t == VT::Range) {
+            double sp;
+            if (rangeNumericSpecial(inv, sp))
+                return std::isfinite(sp) ? Value::integer((long long)sp) : Value::number(sp);
+        }
         if (inv.t == VT::Range || inv.t == VT::Array ||
             (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Hash" || inv.hashKind == "Map")))
             { ValueList none; return methodCall(inv, "elems", none); }

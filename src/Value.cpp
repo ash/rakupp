@@ -1116,6 +1116,13 @@ ValueList Value::flatten() const {
                 num = num + den;
             }
         }
+        // …and an INT start keeps Ints, however the range ENDS: the element type
+        // follows the start, so `1..4.9` is (1, 2, 3, 4) and `1..3e0` is Ints
+        // too. Only the end was fractional there, and yielding Nums made the
+        // type depend on the wrong endpoint (RG-09).
+        else if (re && re->from.t == VT::Int)
+            for (double x = lo; rExTo() ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
+                out.push_back(Value::integer((long long)std::llround(x)));
         else for (double x = lo; rExTo() ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
             out.push_back(Value::number(x));
     } else if (t == VT::Range && ofType() == "Str") {

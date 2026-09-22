@@ -1073,6 +1073,33 @@ inline DegenRange degenRange(const Value& v) {
     return re->from.n < 0 ? DegenRange::Repeat : DegenRange::Empty;
 }
 
+// `+$range` — a Range in NUMERIC context. NOT simply `.elems`: an endless
+// range's `.elems` is a Failure, but numifying one is Inf, and a NaN endpoint
+// numifies to NaN where it has no count at all (Range sheet RG-08; the
+// asymmetry is Rakudo's, asserted by rakudo/rakudo#3637).
+//
+// The order matters: NaN first, then a start that is after its end — which is 0
+// even when the end is -Inf — then an infinite endpoint, and only then the
+// count. The count itself is floor(max - min - excludes-min) + 1, one less when
+// the span is a whole number and the end is excluded, which is exactly the
+// number of integer steps from the start that stay inside.
+inline bool rangeNumericSpecial(const Value& r, double& out) {
+    const RangeEnds* re = rangeEnds(r);
+    double lo, hi;
+    if (re && re->from.isNumeric() && re->to.isNumeric()) { lo = re->from.toNum(); hi = re->to.toNum(); }
+    else if (r.rNum()) { lo = r.n; hi = r.im(); }
+    else if (r.ofType() == "Str") return false;                 // a string range counts its list
+    else {
+        lo = (double)r.rFrom(); hi = (double)r.rTo();
+        if (r.rFrom() <= -9223372036854775807LL) lo = -INFINITY;
+        if (r.rTo()   >=  9223372036854775807LL) hi =  INFINITY;
+    }
+    if (std::isnan(lo) || std::isnan(hi)) { out = NAN; return true; }
+    if (lo > hi) { out = 0; return true; }
+    if (std::isinf(lo) || std::isinf(hi)) { out = INFINITY; return true; }
+    return false;                                               // finite: the ordinary count
+}
+
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }

@@ -366,8 +366,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // randDouble() is [0, 1), so the top endpoint never comes up however it
         // is written; only an excluded BOTTOM one can, and it is redrawn.
+        // randDouble() is [0, 1), so the top endpoint should never come up —
+        // but on a range narrower than a few ulps the multiply rounds UP and it
+        // does. Redraw for EITHER excluded endpoint, not only the bottom one
+        // (S02-types/range.t, ten thousand draws from `1..^(1+10e-15)`), with a
+        // bound so a range that can only produce its endpoints still returns.
         double v = lo + (hi - lo) * randDouble();
-        while (inv.rExFrom() && v == lo) v = lo + (hi - lo) * randDouble();
+        for (int tries = 0; tries < 64 &&
+                            ((inv.rExFrom() && v == lo) || (inv.rExTo() && v == hi)); tries++)
+            v = lo + (hi - lo) * randDouble();
         return Value::number(v);
     }
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
