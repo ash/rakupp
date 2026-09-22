@@ -59,6 +59,9 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE = false); // s
 // value into that value.
 bool coreEnumValue(const std::string& n, Value& out);
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
+// A custom Real (a `does Real` class with `.Bridge`) numifies through the object
+// itself — `toNum()` answers 0 for one. Defined in Builtins.cpp.
+double numValueOf(Interpreter& I, const Value& v);
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.
 bool isNativeTypeName(const std::string& n);
@@ -3043,7 +3046,8 @@ inline Value rtBExp(Interpreter& I, const Value& v) {
 }
 inline Value rtBLog(Interpreter& I, const Value& v) {
     if (v.t == VT::Complex) { ValueList none; return I.methodCall(v, "log", none); }
-    return rtLogReal(I, v.toNum(), 0.0);
+    // a custom Real has no numeric value of its own — ask it (numValueOf)
+    return rtLogReal(I, v.t == VT::Object ? numValueOf(I, v) : v.toNum(), 0.0);
 }
 // Fast-path STRING comparisons: two PLAIN Strs (no Version/IO/Buf hashKind tag,
 // no enum identity) compare byte-wise — exactly what applyArith's tail does for

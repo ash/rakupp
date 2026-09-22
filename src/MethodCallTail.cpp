@@ -3932,6 +3932,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Real numification protocol: built-in numerics answer .Bridge with a Num
     if (m == "Bridge" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool))
         return Value::number(inv.toNum());
+    // …and a class that DOES Real without writing its own `.Bridge` inherits
+    // the role's default, which delegates to `.Num`. It was X::Method::NotFound
+    // (S32-num/real-bridge.t, "Real.Bridge delegates to Num").
+    //
+    // Only for Real. A `Cool` class with a `.Numeric` of its own — S32-trig's
+    // NotComplex, whose .Numeric is a COMPLEX — must keep answering "no such
+    // method" here, because that refusal is what sends numValueOf on to
+    // `.Numeric` and keeps the imaginary part.
+    if (m == "Bridge" && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        !inv.obj()->cls->findMethod("Bridge")) {
+        bool isReal = false;
+        for (ClassInfo* c = inv.obj()->cls.get(); c && !isReal; c = c->parent.get()) {
+            if (c->name == "Real" || c->nativeParent == "Real") isReal = true;
+            if (c->doneRoles.count("Real")) isReal = true;
+        }
+        if (isReal) return Value::number(methodCall(inv, "Num", ValueList{}).toNum());
+    }
     // `has $.b handles *` — the CATCH-ALL delegation, and only that: it is a
     // fallback for names nothing else answers, so it belongs at the end of the
     // ladder. Named delegations (`handles <m1 m2>`) are real methods and are

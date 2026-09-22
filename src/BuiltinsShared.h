@@ -20,6 +20,9 @@
 #include <set>
 
 namespace rakupp {
+class Interpreter;
+// A custom Real numifies through its own `.Bridge`/`.Numeric` — see Builtins.cpp.
+double numValueOf(Interpreter& I, const Value& v);
 
 // An Instant in this engine is POSIX plus the ten pre-1972 leap seconds:
 // `Instant.from-posix` adds them and `.to-posix` takes them back off. Every

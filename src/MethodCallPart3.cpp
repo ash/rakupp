@@ -778,7 +778,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (it != builtins_.end()) { ValueList ra{inv, Value::number(strict(a0()))}; return it->second(*this, ra); }
         }
         if (m == "unpolar") { // $mag.unpolar($angle) — Complex from polar coordinates
-            double ang = args.empty() ? 0.0 : strict(a0());
+            double ang = args.empty() ? 0.0
+                       : a0().t == VT::Object ? numValueOf(*this, a0()) : strict(a0());
             return Value::complex(x * std::cos(ang), x * std::sin(ang));
         }
         if (m == "sin") return Value::number(std::sin(x));
@@ -904,7 +905,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                      std::log(std::complex<double>(args[0].n, args[0].im()));
             return Value::complex(r.real(), r.imag());
         }
-        if (!args.empty()) return rtLogReal(*this, inv.toNum(), args[0].toNum());
+        if (!args.empty()) return rtLogReal(*this, inv.toNum(), numValueOf(*this, args[0]));
         return rtLogReal(*this, inv.toNum(), 0.0);
     }
     if (m == "log10") return rtLogReal(*this, inv.toNum(), 10.0);

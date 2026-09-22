@@ -11684,9 +11684,13 @@ static std::string testDesc(const ValueList& a, size_t from) {
 }
 
 // First numeric argument, coercing a Cool object via its .Bridge/.Numeric method.
-static double numArg(Interpreter& I, ValueList& a) {
-    if (a.empty()) return 0;
-    Value v = a[0];
+// A custom Real — a class that `does Real` and defines `.Bridge` — has no
+// numeric value of its own for `toNum()` to read: it answers 0. Ask the object
+// for one instead, which is what `does Real` promises. Split out of numArg so
+// that anything numifying an ARGUMENT can use it, not just the single-argument
+// math builtins (S32-num/real-bridge.t).
+double numValueOf(Interpreter& I, const Value& in) {
+    Value v = in;
     if (v.t == VT::Object && v.obj()) {
         for (const char* acc : {"Bridge", "Numeric"}) {
             try { ValueList none; Value nv = I.methodCall(v, acc, none);
@@ -11694,6 +11698,9 @@ static double numArg(Interpreter& I, ValueList& a) {
         }
     }
     return v.toNum();
+}
+static double numArg(Interpreter& I, ValueList& a) {
+    return a.empty() ? 0 : numValueOf(I, a[0]);
 }
 
 // True named builtins (see Interpreter.h): real functions behind the hot
@@ -12809,7 +12816,11 @@ void Interpreter::registerBuiltins() {
     };
     B["is-approx"] = [](Interpreter& I, ValueList& a) -> Value {
         // Complex-aware: compare as points in the plane, |got - exp|
-        auto re = [](const Value& v) { return v.t == VT::Complex ? v.n : v.toNum(); };
+        // …and an Object numifies through its own `.Bridge`/`.Numeric`: a
+        // `does Real` class read as 0 here, so `is-approx $one, $one` compared
+        // 1 against 0 and every Bridge assertion in S32-num/real-bridge.t that
+        // put the custom type on the EXPECTED side failed.
+        auto re = [&I](const Value& v) { return v.t == VT::Complex ? v.n : numValueOf(I, v); };
         auto im = [](const Value& v) { return v.t == VT::Complex ? v.im() : 0.0; };
         double gr = a.size() > 0 ? re(a[0]) : 0, gi = a.size() > 0 ? im(a[0]) : 0;
         double er = a.size() > 1 ? re(a[1]) : 0, ei = a.size() > 1 ? im(a[1]) : 0;
@@ -14079,13 +14090,13 @@ void Interpreter::registerBuiltins() {
             return I.methodCall(list, rname, ma);
         };
     }
-    B["cis"] = [](Interpreter&, ValueList& a) -> Value {
-        double x = a.empty() ? 0.0 : a[0].toNum();
+    B["cis"] = [](Interpreter& I, ValueList& a) -> Value {
+        double x = a.empty() ? 0.0 : numValueOf(I, a[0]);   // a custom Real bridges
         return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
     };
-    B["unpolar"] = [](Interpreter&, ValueList& a) -> Value { // Complex from (magnitude, angle)
-        double r = a.empty() ? 0.0 : a[0].toNum();
-        double th = a.size() > 1 ? a[1].toNum() : 0.0;
+    B["unpolar"] = [](Interpreter& I, ValueList& a) -> Value { // Complex from (magnitude, angle)
+        double r = a.empty() ? 0.0 : numValueOf(I, a[0]);   // …and so does the angle
+        double th = a.size() > 1 ? numValueOf(I, a[1]) : 0.0;
         return Value::complex(r * std::cos(th), r * std::sin(th));
     };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSqrt(I, a.empty() ? Value::integer(0) : a[0]); };
@@ -14195,8 +14206,8 @@ void Interpreter::registerBuiltins() {
     }
     B["log"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { ValueList rest(a.begin() + 1, a.end()); return I.methodCall(a[0], "log", rest); }
-        double x = a.empty() ? 0 : a[0].toNum();
-        if (a.size() >= 2) return Value::number(std::log(x) / std::log(a[1].toNum())); // log($x, $base)
+        double x = a.empty() ? 0 : numValueOf(I, a[0]);
+        if (a.size() >= 2) return Value::number(std::log(x) / std::log(numValueOf(I, a[1]))); // log($x, $base)
         return rtBLog(I, a.empty() ? Value::integer(0) : a[0]); };
     B["log10"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) return I.methodCall(a[0], "log10", {});
