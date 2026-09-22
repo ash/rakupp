@@ -1114,7 +1114,9 @@ public:
     // argument a `where` clause checks, an element a matcher tests, what a
     // variable holds) is an ordinary object that `Pair.ACCEPTS` simply declines.
     // applyArith sees values only, so the callers holding one raise this
-    // through smartmatchValue().
+    // through smartmatchValue() — and evalBinary raises it for ANY operator at a
+    // site where no `*` is written, which is how `my $c = * > 100; $c eqv True`
+    // answers False rather than composing one more time.
     static thread_local bool valueSmartmatch_;
     // A regex match run on the CALLER's behalf rather than by the caller: an
     // eigenstate of a junction that is collapsing to a Bool, or the pattern
@@ -1729,6 +1731,10 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message);
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
+    // Did a Whatever / WhateverCode operand ARRIVE as a value (a variable, a
+    // return, an element) rather than come from a `*` written at this site?
+    // Currying is syntactic: only a written star composes.
+    static bool whateverArrivedAsValue(Binary* b, const Value& l, const Value& r);
     // `»`.method over a container, shared by the direct and the curried paths
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args);
     // thread_local like the call registers above: written per-block / per-
@@ -1953,6 +1959,37 @@ public:
         std::string q = tctx_.pkgPrefix + t;
         return classes_.count(q) ? q : t;
     }
+    // Is `t`, written as the type of a declaration, a name this unit knows?
+    //
+    // Rakudo refuses a declaration whose type it has never heard of — `my Foo
+    // $x` is a compile-time "Type 'Foo' is not declared" — and rakupp accepted
+    // every one of them, so a typo'd type silently declared an untyped
+    // variable. S02-types/int-uint.t leans on the refusal: it discovers which
+    // native types exist by `try EVAL "my $_ $var = 1"` for each candidate name,
+    // and with nothing refused it kept int1/int2/int4 and then died looking one
+    // up.
+    //
+    // The rule that governs this, as for DeclCheck's variable pass: a refusal
+    // must be a CERTAINTY. Anything that could name a type this function cannot
+    // see is answered "known" — a qualified name, a parameterization, a
+    // coercion, a `::T` capture, an empty type, and any name while the unit has
+    // imported something whose exports are not modelled here.
+    bool declTypeIsKnown(const std::string& t) const {
+        if (t.empty()) return true;
+        // `::T` is a type CAPTURE, not a reference; `Foo::Bar`, `Array[Int]`,
+        // `Int()` and anything non-alphanumeric are shapes this check does not
+        // model, so they pass.
+        for (char c : t)
+            if (!(isalnum((unsigned char)c) || c == '_')) return true;
+        if (isKnownTypeName(t) || isNativeTypeName(t)) return true;
+        if (classes_.count(t) || subsets_.count(t)) return true;
+        if (tctx_.pkgPrefix.empty() ? false : classes_.count(tctx_.pkgPrefix + t)) return true;
+        // a name the current package or any enclosing one declares
+        if (global_ && global_->find(t)) return true;
+        if (tctx_.cur && tctx_.cur->find(t)) return true;
+        return false;
+    }
+
     // `augment class Int {…}` on a built-in type: extra methods keyed by type name.
     // methodCall consults this for native values whose type has been augmented.
     std::unordered_map<std::string, std::unordered_map<std::string, Value>> builtinExt_;
@@ -3037,6 +3074,20 @@ inline Value rtPow(const Value& l, const Value& r) {
         if (!ovf) return Value::integer(res);
     }
     return applyArith("**", l, r);
+}
+// The same dispatch for a site where no `*` is WRITTEN. A Whatever, or a
+// WhateverCode, that reaches such a site ARRIVED as a value — out of a variable,
+// a return, an element — and is an ordinary object: `my $c = * > 100; $c eqv
+// True` is False on Rakudo, where currying is syntactic, and not a curry of the
+// `eqv`. Native codegen emits this wherever its own walk finds no literal star.
+// The one-shot is always consumed: applyArith's Int/Int fast path cannot fire
+// with a whateverish operand.
+inline Value applyArithValue(const char* op, const Value& l, const Value& r) {
+    if (l.t == VT::Whatever || r.t == VT::Whatever ||
+        (l.t == VT::Code && l.code() && l.code()->isWhateverCode) ||
+        (r.t == VT::Code && r.code() && r.code()->isWhateverCode))
+        Interpreter::valueSmartmatch_ = true;
+    return applyArith(op, l, r);
 }
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev = 1); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)

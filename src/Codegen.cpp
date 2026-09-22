@@ -328,6 +328,35 @@ struct Codegen {
         }
     }
 
+    // Is a `*` WRITTEN anywhere in here? Narrower than hasWhatever, which answers
+    // what COMPOSES; this answers what the emitted code can hand the runtime as a
+    // Whatever. Where it is false, a whateverish operand arrived as a value — out
+    // of a variable, a return, an element — and composes no further, which is the
+    // rule the interpreter's evalBinary applies (`my $c = * > 100; $c eqv True`
+    // is False, not one more curry).
+    // (the same shapes the interpreter's exprHasWhateverLit walks, so the two
+    // backends draw the line in the same place)
+    static bool hasStarLit(Expr* e) {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::Whatever:   return true;
+            case NK::Binary:     { auto* b = static_cast<Binary*>(e); return hasStarLit(b->lhs.get()) || hasStarLit(b->rhs.get()); }
+            case NK::Unary:      return hasStarLit(static_cast<Unary*>(e)->operand.get());
+            case NK::MethodCall: return hasStarLit(static_cast<MethodCall*>(e)->inv.get());
+            case NK::Index:      return hasStarLit(static_cast<Index*>(e)->base.get());
+            case NK::ChainExpr:  { for (auto& o : static_cast<ChainExpr*>(e)->operands) if (hasStarLit(o.get())) return true; return false; }
+            case NK::ListExpr:   { auto* l = static_cast<ListExpr*>(e);
+                                   return l->items.size() == 1 && hasStarLit(l->items[0].get()); }
+            default: return false;
+        }
+    }
+    // Which dispatch a written binary operator gets: the plain one where a `*` is
+    // present to compose, the value-site one where none is and a whateverish
+    // operand can only have arrived as a value.
+    static const char* starFn(Binary* b) {
+        return (hasStarLit(b->lhs.get()) || hasStarLit(b->rhs.get())) ? "applyArith" : "applyArithValue";
+    }
+
     // Expression in value position: a `*`-bearing expression becomes a WhateverCode closure.
     std::string exArg(Expr* e) {
         // A regex literal in argument position is the Regex object (not a $_ match).
@@ -1478,7 +1507,7 @@ struct Codegen {
                 if (b->op.size() > 1 && b->op[0] == 'R' && !ascii::isalnum((unsigned char)b->op[1])) {
                     // reverse metaop `a R/ b` == `b / a`
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
-                    return "applyArith(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
+                    return std::string(starFn(b)) + "(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
                 }
                 // Smartmatch on two values: the interpreter's rule, not
                 // applyArith's. A Callable matcher has to be INVOKED with the
@@ -1486,23 +1515,29 @@ struct Codegen {
                 // runs, so `200 ~~ (* > 100)` compared a Code object with a
                 // number and answered False. The right side is a MATCHER, so a
                 // `*` in it curries there rather than over the whole match.
-                if (b->op == "~~" || b->op == "!~~") {
-                    // A regex LITERAL on the left is the Regex OBJECT, not a
-                    // match against `$_`: `/a/ ~~ Callable` asks what a Regex is
-                    // (True). Emitted as a term it matched the topic and then
-                    // asked whether that Match was a Callable — False.
-                    std::string L = b->lhs->kind == NK::RegexLit ? exArg(b->lhs.get())
-                                                                 : ex(b->lhs.get());
-                    return "rtSmartmatch(RT, " + cesc(b->op) + ", " + L +
+                // Each SIDE composes on its own here (matcher()), which is also
+                // what makes a regex LITERAL on the left the Regex OBJECT rather
+                // than a match against `$_`: `/a/ ~~ Callable` asks what a Regex
+                // is (True), where a term-position regex matched the topic and
+                // then asked whether that Match was a Callable.
+                if (b->op == "~~" || b->op == "!~~")
+                    return "rtSmartmatch(RT, " + cesc(b->op) + ", " + matcher(b->lhs.get()) +
                            ", " + matcher(b->rhs.get()) + ")";
+                // The short-circuit infixes pick a SIDE, so each side composes on
+                // its own: `* > 2 && *.abs > 10` is two closures and the `&&`
+                // hands back the second. Emitted as plain terms the method-call
+                // half ran against the Whatever itself, and the `&&` answered
+                // something that was not callable at all.
+                if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//") {
+                    std::string L = exArg(b->lhs.get()), R = exArg(b->rhs.get());
+                    if (b->op == "&&" || b->op == "and")
+                        return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?(" + R + "):_a; }())";
+                    if (b->op == "||" || b->op == "or")
+                        return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?_a:(" + R + "); }())";
+                    // defined-or — including a Failure, which rtIsDefined knows about
+                    return "([&]()->Value{ Value _a=(" + L + "); return !rtIsDefined(_a)?(" + R + "):_a; }())";
                 }
                 std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
-                if (b->op == "&&" || b->op == "and")
-                    return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?(" + R + "):_a; }())";
-                if (b->op == "||" || b->op == "or")
-                    return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?_a:(" + R + "); }())";
-                if (b->op == "//") // defined-or — including a Failure, which rtIsDefined knows about
-                    return "([&]()->Value{ Value _a=(" + L + "); return !rtIsDefined(_a)?(" + R + "):_a; }())";
                 // A user `infix:<op>` that overloads this spelling. It wins for the
                 // operand shapes it has candidates for and only those, which is
                 // what rtUserInfix decides — the same two decisions evalBinary
@@ -1512,7 +1547,7 @@ struct Codegen {
                 if (std::string uf = userOpFn("infix:<" + b->op + ">"); !uf.empty())
                     return "rtUserInfix(" + userOpPtr(uf) + ", " + cesc(b->op) + ", " + L + ", " + R + ")";
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
-                return "applyArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
+                return std::string(starFn(b)) + "(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
             case NK::InterpStr: {
                 auto* s = static_cast<InterpStr*>(e);
@@ -1549,7 +1584,11 @@ struct Codegen {
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
                 std::string vl = argsVL(c->args);
-                if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", " + vl + ")";
+                // The CALLEE composes on its own — `(1 < * < 5)(3)` and
+                // `(* < 1)(0)` are calls OF that WhateverCode, not a bigger
+                // curry. Emitted as a plain term the chain ran eagerly and the
+                // call had a Bool in front of it.
+                if (c->callee) return "RT.callCallable(" + exArg(c->callee.get()) + ", " + vl + ")";
                 if (codeVars.count(c->name)) // a `my &name = …` variable called by bare name
                     return "RT.callCallable(" + mangleVar("&" + c->name) + ", " + vl + ")";
                 if (envSubs.count(c->name))  // a lexical sub registered in the runtime env
@@ -1658,7 +1697,12 @@ struct Codegen {
                            std::string(hashy ? "Value::makeHash()" : "Value::array()") + "; "
                            "return RT.methodCall(__s, " + cesc(name) + ", " + argsVL(m->args) + "); }())";
                 }
-                return "RT.methodCall(" + ex(m->inv.get()) + ", " + cesc(name) + ", " + argsVL(m->args) + ")";
+                // The INVOCANT composes on its own where the call itself does not
+                // — a metamodel macro asks about the star: `(* < 1).WHAT` is
+                // `(WhateverCode)`, and `(* < 1).^name` is the WhateverCode that
+                // answers "WhateverCode" per argument. (exArg is `ex` for every
+                // invocant without a `*` in it, so nothing else changes.)
+                return "RT.methodCall(" + exArg(m->inv.get()) + ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);

@@ -452,6 +452,20 @@ struct JsGen {
             case NK::Whatever: return !static_cast<WhateverExpr*>(e)->hyper;
             case NK::Binary: { auto* b = static_cast<Binary*>(e);
                 if (b->op == "..." || b->op == "...^" || b->op == "^..." || b->op == "^...^" || b->op == "xx") return false;
+                // A short-circuit infix picks a SIDE at run time, so it is not one
+                // closure over both: `* > 2 && * < 5` IS `* < 5`, arity one. Each
+                // operand is already emitted with exArg, so each composes alone.
+                if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//")
+                    return false;
+                // A smartmatch composes only on a BARE `*` written left — the
+                // `.grep(* ~~ /rx/)` matcher idiom. A `*` anywhere else belongs to
+                // ONE SIDE: `(* < 1) ~~ Callable` asks what that WhateverCode is.
+                // (either side, because a bare `*` on the RIGHT composes too —
+                // `$x ~~ *` is a WhateverCode on Rakudo. The native backend leans
+                // on applyArith's value-level curry for that one; there is no
+                // such thing here, so the composition has to be decided now.)
+                if (b->op == "~~" || b->op == "!~~")
+                    return b->lhs->kind == NK::Whatever || b->rhs->kind == NK::Whatever;
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary: return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
@@ -460,9 +474,26 @@ struct JsGen {
             // out here, the pair kept a literal Whatever as its key and `map` was
             // handed a Pair where it wanted a callable.
             case NK::Pair: { auto* p = static_cast<PairExpr*>(e); return hasWhatever(p->keyExpr.get()) || hasWhatever(p->value.get()); }
-            case NK::MethodCall: return hasWhatever(static_cast<MethodCall*>(e)->inv.get());
-            case NK::Call: return hasWhatever(static_cast<Call*>(e)->callee.get());
+            case NK::MethodCall: {
+                auto* m = static_cast<MethodCall*>(e);
+                if (!hasWhatever(m->inv.get())) return false;
+                // the metamodel MACROS answer about the star itself: `*.WHAT` is
+                // `(Whatever)` and `(* < 1).WHAT` is `(WhateverCode)`. `.WHICH` is
+                // not one of them — `.map(*.WHICH)` is per element.
+                static const std::set<string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHY"};
+                return m->meta || !kMetaMacros.count(m->method);
+            }
+            // a CALL of a `*` expression is that call, not a bigger curry:
+            // `(1 < * < 5)(3)` and `(* < 1)(0)` (the callee is emitted with exArg)
             case NK::Index: return hasWhatever(static_cast<Index*>(e)->base.get());
+            // A chained comparison composes like any other operator chain:
+            // `1 < * < 5` is one arity-one WhateverCode, the band predicate a
+            // `when` or a `.grep` is given. Left out here the chain ran EAGERLY
+            // against the Whatever itself and answered a Bool, so `when 1 < * < 5`
+            // took the same arm for every topic and `(1 < * < 5)(3)` died trying
+            // to call one. (The emitter below binds each operand to a temp once,
+            // so the star is read once and the arity comes out right.)
+            case NK::ChainExpr: { for (auto& o : static_cast<ChainExpr*>(e)->operands) if (hasWhatever(o.get())) return true; return false; }
             case NK::Range: return false;
             default: return false;
         }
@@ -676,6 +707,14 @@ struct JsGen {
 
     string nameTerm(NameTerm* n) {
         const string& name = n->name;
+        // `Foo:D` / `Foo:U` — the smiley rides on the type VALUE, which is what
+        // lets `.^name` report it and a smartmatch test definedness alongside the
+        // type. Dropped here, `Any:D.^name` said "Any" and `Any ~~ Any:D` was
+        // True. (Recursing without the constraint gives the base type back.)
+        if (n->defConstraint) {
+            NameTerm base = *n; base.defConstraint = 0;
+            return "R.smiley(" + nameTerm(&base) + ", " + std::to_string(n->defConstraint) + ")";
+        }
         if (sigillessVisible(name)) return mangleVar(name);   // a `\x` variable shadows any term
         if (jsInterop && name == "JS") return "R.JS";
         if (jsInterop && name == "JS::Object") return "R.JsObjectT";
@@ -1273,7 +1312,7 @@ struct JsGen {
     // ----------------------------------------------------------------- calls --
     string call(Call* c) {
         if (c->callee) {
-            string callee = ex(c->callee.get());
+            string callee = exArg(c->callee.get());   // `(1 < * < 5)(3)`: the callee composes alone
             return "R.callCode(" + callee + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         }
         const string& name = c->name;
@@ -1417,8 +1456,11 @@ struct JsGen {
             return "R.construct(" + ty + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         }
         string inv;
-        if (m->inv->kind == NK::Whatever) { if (wcArity.empty()) refuse("a method call on a bare *", m->line); inv = "_w" + std::to_string(++wcArity.back()); }
-        else inv = ex(m->inv.get());
+        // Outside a curry a bare `*` invocant is the Whatever ITSELF: hasWhatever
+        // sends every other `*.method` through exArg, so what reaches here is a
+        // metamodel macro (`(*).WHAT`), which answers about the star.
+        if (m->inv->kind == NK::Whatever) inv = wcArity.empty() ? "R.Whatever" : "_w" + std::to_string(++wcArity.back());
+        else inv = exArg(m->inv.get());   // `(* < 1).WHAT`: the invocant composes alone
         if (name == "result" && m->args.empty()) return "(await R.awaitP(" + inv + "))";
         bool substBlock = (name == "subst" || name == "subst-mutate") && std::any_of(m->args.begin(), m->args.end(), [](const std::unique_ptr<Expr>& a) { return a->kind == NK::BlockExpr; });
         if (substBlock) { fn().usesSlash = true; substSlash = true; }

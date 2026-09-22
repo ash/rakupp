@@ -32022,6 +32022,17 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
     return a;
 }
 
+// Is an operand a Whatever (or a curried WhateverCode) that came from somewhere
+// ELSE — a variable, a return, an element — rather than from a `*` written at
+// this site? Currying is syntactic, so only a written star composes.
+bool Interpreter::whateverArrivedAsValue(Binary* b, const Value& l, const Value& r) {
+    auto wish = [](const Value& v) {
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+    };
+    if (!wish(l) && !wish(r)) return false;
+    return !exprHasWhateverLit(b->lhs.get()) && !exprHasWhateverLit(b->rhs.get());
+}
+
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
     // `LIST Xxx n` / `LIST Zxx n`: the metaop inherits xx's THUNKY left — the
@@ -32086,6 +32097,7 @@ Value Interpreter::evalBinary(Binary* b) {
         Value lv = eval(b->lhs.get());
         Value rv = eval(b->rhs.get());
         if (Value* f = lexShadowedInfix(op, lv, rv)) return callCallable(*f, ValueList{lv, rv});
+        if (whateverArrivedAsValue(b, lv, rv)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, lv, rv); }
         return applyBinOp(op, lv, rv);
     }
     if (b->simpleOp == 1) {
@@ -32144,6 +32156,13 @@ Value Interpreter::evalBinary(Binary* b) {
         // sees the container instead of the value it stands for.
         if (l.hashKind == "Proxy") l = deproxy(l);
         if (r.hashKind == "Proxy") r = deproxy(r);
+        // A `*`, or a WhateverCode, that ARRIVED as a value composes no further:
+        // currying is SYNTACTIC, and only a star WRITTEN here takes part. `my $c
+        // = * > 100; $c eqv True` is False on Rakudo, where we curried the `eqv`
+        // and answered a WhateverCode — truthy, so every test of one passed.
+        // Costs a type check on the eager path and the AST walk only when an
+        // operand really is one.
+        if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -32390,6 +32409,14 @@ Value Interpreter::evalBinary(Binary* b) {
         return res;
     }
     if (op == "=:=" || op == "!=:=") {
+        // …but a written `*` curries first, as it does over every other operator:
+        // `(* =:= $x).WHAT` is a WhateverCode on Rakudo. This arm needs the AST
+        // (container identity is about SLOTS, not values), so it runs ahead of
+        // the value-level curry and used to answer a Bool.
+        if (exprHasWhateverLit(b->lhs.get()) || exprHasWhateverLit(b->rhs.get())) {
+            Value lw = eval(b->lhs.get()), rw = eval(b->rhs.get());
+            return applyArith(op, lw, rw);
+        }
         // container identity: two variables are =:= only when they are the SAME
         // slot (`my ($x, $y)` are two containers even while both hold Any).
         // Non-variable operands fall back to type+value identity (`1 =:= 1`).
@@ -38372,6 +38399,13 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*HOME") return dynVar("$*HOME");
             }
             if (ve->declare) {
+                // A declaration whose TYPE is a name nothing declares is the
+                // error Rakudo makes it — see declTypeIsKnown for how carefully
+                // that question is asked.
+                if (!ve->declType.empty() && !declTypeIsKnown(ve->declType))
+                    throwTypedV("X::Undeclared",
+                        {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}},
+                        "Type '" + ve->declType + "' is not declared");
                 if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                     if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, declInitial(ve, sigil));
                     return tctx_.curStateEnv->vars[ve->name];
@@ -39833,10 +39867,12 @@ Value Interpreter::eval(Expr* e) {
             // Measured on Rakudo 2026.08: `*.WHAT`, `*.WHO`, `*.HOW`, `*.VAR`
             // answer directly; `*.WHICH` is a WhateverCode.
             static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHY"};
-            if (((inv.t == VT::Whatever &&
-                  (mc->meta || !kMetaMacros.count(mc->method))) ||
-                 (inv.t == VT::Code && inv.code() && inv.code()->isWhateverCode &&
-                  !mc->meta && !kMetaMacros.count(mc->method))) &&
+            // …and a COMPOSED WhateverCode takes the same rule as a bare `*`:
+            // `(* < 1).^name` is a WhateverCode on Rakudo, where we answered the
+            // Str "WhateverCode" because a meta call on one was excluded here.
+            if ((inv.t == VT::Whatever ||
+                 (inv.t == VT::Code && inv.code() && inv.code()->isWhateverCode)) &&
+                (mc->meta || !kMetaMacros.count(mc->method)) &&
                 exprHasWhateverLit(mc->inv.get())) {
                 Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
                 code.code()->isWhateverCode = true;

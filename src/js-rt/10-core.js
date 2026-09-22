@@ -233,9 +233,22 @@ function parametric(base, of) {
     if (!t) { t = new RType(key, [base]); t.paramOf = of; t.paramBase = base; parametrics.set(key, t); }
     return t;
 }
+// `Foo:D` / `Foo:U` as a VALUE: a view of the type that also carries the
+// definedness constraint, so `.^name` reports it and a smartmatch tests it.
+// Object.create keeps the prototype chain, so it is still an RType and still
+// answers every method the base does.
+function smiley(t, d) {
+    if (!d) return t;
+    const c = Object.create(t);
+    c.smileyOf = t;
+    c.smiley = d;
+    c.name = t.name + (d === 1 ? ':D' : ':U');
+    return c;
+}
 function isa(v, tname) {
     const t = typeof tname === 'string' ? T[tname] : tname;
     if (!t) return false;
+    if (t.smiley) return isa(v, t.smileyOf) && (t.smiley === 1 ? defined(v) : !defined(v));
     if (t.paramOf) return typeOf(v).isa(t.paramBase) && v !== null && typeof v === 'object' && v.of === t.paramOf;   // an Array[Int] is an Array whose slots are typed Int
     if (v instanceof RJunction) return t === T.Junction || t === T.Mu;
     if (t.isSubset) return isaSubset(v, t);
@@ -741,7 +754,8 @@ function gist(v) {
     switch (typeof v) {
         case 'string': return v;
         case 'number': case 'bigint': case 'boolean': return str(v);
-        case 'function': return v.rname ? '&' + v.rname : '-> ;; $_? is raw = OUTER::<$_> { #`(Block|' + objId(v) + ') ... }';
+        case 'function': if (v.rtype === T.WhateverCode) return 'WhateverCode.new';   // `(* + 1).gist`
+            return v.rname ? '&' + v.rname : '-> ;; $_? is raw = OUTER::<$_> { #`(Block|' + objId(v) + ') ... }';
         case 'object':
             if (v === null) return 'Nil';
             if (v instanceof RType) return v === Nil ? 'Nil' : '(' + v.name + ')';
@@ -798,7 +812,8 @@ function raku(v) {
         case 'number': return Number.isInteger(v) ? String(v) : numRaku(v);
         case 'bigint': return v.toString();
         case 'boolean': return v ? 'Bool::True' : 'Bool::False';
-        case 'function': return v.rname ? 'sub ' + v.rname + ' (…) { #`(Sub|' + objId(v) + ') ... }' : '-> ;; $_? is raw = OUTER::<$_> { #`(Block|' + objId(v) + ') ... }';
+        case 'function': if (v.rtype === T.WhateverCode) return 'WhateverCode.new';   // `(* + 1).raku`
+            return v.rname ? 'sub ' + v.rname + ' (…) { #`(Sub|' + objId(v) + ') ... }' : '-> ;; $_? is raw = OUTER::<$_> { #`(Block|' + objId(v) + ') ... }';
         case 'object':
             if (v === null) return 'Nil';
             if (v instanceof RType) return v === Nil ? 'Nil' : v.name;
@@ -1013,7 +1028,7 @@ function complexArith(op, x, y) {
 Object.assign(R, { parametric,
     T, RType, Nil, Any, Mu, RNum, RRat, RPair, RSlip, REnum, RNamed, RObj, RWhatever, Whatever, RJunction,
     RakuError, RFailure, NextCtl, LastCtl, RedoCtl, RetCtl, ExitCtl, SuccCtl, RComplex,
-    typeOf, typeName, isType, defined, isa, truthy, so, not,
+    typeOf, typeName, isType, defined, isa, smiley, truthy, so, not,
     toNumeric, toFloat, toInt, big, mkRat, mkNum, numResult, normBig,
     add, sub, mul, div, mod, pow, neg, idiv, imod, gcd, lcm, bitand, bitor, bitxor, bitneg, shl, shr, abs, numify,
     numCmp, numeq, numne, lt, le, gt, ge, spaceship, leg, cmp, cmpNum, order, Less, Same, More,
