@@ -13073,9 +13073,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `when X` == `if $_ ~~ X`: a regex literal already matched $_ above;
                 // a Regex/Callable value is invoked; else a value/type smartmatch.
                 if (w->cond->kind == NK::RegexLit) match = boolify(cv);
-                else if (cv.t == VT::Regex) match = regexMatch(rxSubject(topic), cv.s, &cv).truthy();
-                else if (cv.t == VT::Code) match = boolify(callCallable(cv, {topic}));
-                else match = smartmatchValue("~~", topic, cv).truthy(); // $_ is a VALUE: a `*` in it does not curry
+                else match = rtWhenMatch(*this, topic, cv); // one rule, shared with native codegen
             }
             if (match) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
@@ -16902,6 +16900,12 @@ static Value containerFill(const Value& base) {
 }
 
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
+    // A Whatever — or a WhateverCode such as `*-1` — is an END-RELATIVE
+    // subscript however it arrived. Native codegen picks idxW when it can SEE
+    // the star written in the subscript; when the star came through a variable
+    // (`my $i = *-1; @a[$i]`) only the KEY knows, and this read element one.
+    if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode))
+        if (g_cbInterp) return g_cbInterp->idxW(base, key, isHash);
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
     if (key.t == VT::Range || (key.t == VT::Array && key.arr())) {
         Value out = Value::array(); out.isList = true;
@@ -31540,6 +31544,37 @@ bool Interpreter::pairAccepts(const Value& topic, const Value& pair) {
                 "then the key of the Pair should be a valid method name, not '" + pair.s + "'.");
         throw;
     }
+}
+
+// Smartmatch on two VALUES — what the native backend emits for `~~`/`!~~` and
+// for every `when`, so that a compiled match runs the interpreter's rules.
+//
+// A CALLABLE matcher is invoked with the topic. That arm lives in evalBinary,
+// which emitted code never reaches, so compiled `$x ~~ $matcher` fell through to
+// applyArith and compared a Code object with a number: `200 ~~ (* > 100)`
+// answered False. Everything else goes to smartmatchValue, the value-level entry
+// the junction and `where` paths already use — it knows Regex values, Str/object
+// ACCEPTS, Pair patterns, junctions, and that a Whatever which ARRIVED as a
+// value is a value rather than a curry.
+//
+// That last point is what issue #96 was: `when * < 1` evaluates to a
+// WhateverCode, and handing one to applyArith curried it a SECOND time. The
+// result was a Code object — truthy whatever the topic — so the first `when` arm
+// always won, and a compiled `given @a[$i] - @a[$i-1] { when * < 1 … }` printed
+// the opposite of what the interpreter printed.
+Value rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& r) {
+    const bool neg = op[0] == '!';
+    if (r.t == VT::Code && r.code()) {
+        Value rv = r;
+        Value m = I.callCallable(rv, ValueList{l});
+        // a regex Callable (`my regex pair {…}`) yields its MATCH, as in Rakudo
+        if (!neg && m.t == VT::Match) return m;
+        return Value::boolean(I.boolify(m) != neg);
+    }
+    return I.smartmatchValue(op, l, r);
+}
+bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
+    return rtSmartmatch(I, "~~", topic, cond).truthy();
 }
 
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {

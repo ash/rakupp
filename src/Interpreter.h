@@ -3041,6 +3041,15 @@ inline Value rtPow(const Value& l, const Value& r) {
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev = 1); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
+// `$l ~~ $r` / `$l !~~ $r` once BOTH sides are values. A Callable matcher is
+// INVOKED with the topic — the arm that lives in evalBinary, which emitted code
+// never runs — and everything else goes to the interpreter's own smartmatch,
+// which knows about Regex values, Str/object ACCEPTS, Pair patterns and
+// junctions (and that a `*` arriving as a VALUE is a value, not a curry).
+Value  rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& r);
+// `when X` == `if $_ ~~ X`: the same rule, as a verdict. The interpreter's
+// `when` and the native backend's both run this, so the two cannot drift.
+bool   rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond);
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
 std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body); // $!x/@!x/%!x references in a body
 std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^/$:/@_ in a signature-less body

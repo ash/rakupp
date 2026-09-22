@@ -279,15 +279,51 @@ struct Codegen {
                 // and a LHS `*` is repeated as a plain Whatever VALUE (`* xx 3` is
                 // (* * *)) — both handled at runtime, like the interpreter.
                 if (b->op == "xx") return false;
+                // Nor do the SHORT-CIRCUIT infixes: they inspect the left operand
+                // at run time and hand back one side or the other, so `* > 2 && *
+                // < 5` is not one two-argument closure — the `&&` sees a truthy
+                // WhateverCode on its left and IS the right side, `* < 5`, arity
+                // one (Rakudo answers the same, and so does the interpreter).
+                // Curried statically it read a second argument that no caller
+                // passes: `(* > 2 && * < 5)(9)` came back True.
+                if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//")
+                    return false;
+                // A smartmatch composes only when a BARE `*` is written on its
+                // LEFT — `.grep(* ~~ /rx/)`, the matcher idiom. A `*` anywhere
+                // else is part of ONE SIDE: `(* < 1) ~~ Callable` asks whether
+                // that WhateverCode is a Callable (True), and `$x ~~ *.foo` asks
+                // the curried method about $x. Currying the whole expression
+                // answered a closure to both. This is the rule evalBinary
+                // applies, spelled syntactically.
+                if (b->op == "~~" || b->op == "!~~") return b->lhs->kind == NK::Whatever;
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
-            // Only the invocant/callee is part of THIS whatever-curry; arguments are their
+            // Only the invocant is part of THIS whatever-curry; arguments are their
             // own closure scopes (e.g. `.grep(* %% 3)`), handled when each arg is emitted.
-            case NK::MethodCall: return hasWhatever(static_cast<MethodCall*>(e)->inv.get());
-            case NK::Call:       return hasWhatever(static_cast<Call*>(e)->callee.get());
+            case NK::MethodCall: {
+                auto* m = static_cast<MethodCall*>(e);
+                if (!hasWhatever(m->inv.get())) return false;
+                // The metamodel MACROS answer about the star itself rather than
+                // composing: `*.WHAT` is `(Whatever)` and `(* < 1).WHAT` is
+                // `(WhateverCode)`, both on Rakudo and in the interpreter, where
+                // curried they answered a closure. `.WHICH` is NOT one of them —
+                // `.map(*.WHICH)` asks each element for its identity.
+                static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHY"};
+                return m->meta || !kMetaMacros.count(m->method);
+            }
+            // A CALL whose callee is a `*` expression is the call OF that
+            // WhateverCode, not a bigger curry: `(* < 1)(0)` is False. (The
+            // interpreter's own whatever-literal walk has no Call arm either.)
             case NK::NqpOp:      { for (auto& x : static_cast<NqpOp*>(e)->args) if (hasWhatever(x.get())) return true; return false; }
             case NK::Index:      return hasWhatever(static_cast<Index*>(e)->base.get()); // *<key> / *[0]
+            // A chained comparison composes like any other operator chain:
+            // `1 < * < 5` is one WhateverCode of arity one (the chain emitter
+            // binds each operand once, so the star is read once too).
+            case NK::ChainExpr:  { for (auto& o : static_cast<ChainExpr*>(e)->operands) if (hasWhatever(o.get())) return true; return false; }
+            // (a LIST does not compose: `(* < 1, * > 9)` is two closures, and a
+            // trailing comma makes `(* < 1,)` a one-element list holding one —
+            // each item curries on its own, where argList already puts it)
             default: return false;
         }
     }
@@ -299,6 +335,12 @@ struct Codegen {
             requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
             return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
         }
+        // A LONE `*` is the Whatever VALUE, not a curry: `my $w = *`, `f(*)` and
+        // `@a[*]` all hand over the star itself, and Rakudo composes only when an
+        // OPERATOR is written around it. Curried, it became a one-argument
+        // identity closure, so `$w.WHAT` said `(Sub)` and every `$x ~~ Whatever`
+        // test a library makes answered False.
+        if (e->kind == NK::Whatever) return ex(e);
         // (the sequence op consumes `*` itself — hasWhatever already answers
         // false for all four `...` forms, so no special case is needed here)
         if (!hasWhatever(e)) return ex(e);
@@ -308,10 +350,13 @@ struct Codegen {
         int arity = wcArity.back();
         wcDepth--; wcArity.pop_back();
         std::string mk = "Value::closure([=](ValueList& " + an + ")->Value{ return " + body + "; })";
-        if (arity <= 1) return mk;
-        // multi-`*` lambda: the sequence op / sort reads the arity off the Code value
+        // It is a WhateverCode, and saying so is not cosmetic: the flag is how a
+        // subscript knows `*-1` counts from the end, how `.map`/`.sort` read the
+        // arity, and what `~~ WhateverCode` and `.WHAT` answer. Only the
+        // multi-`*` form used to carry it, so `my $i = *-1; @a[$i]` read element
+        // ONE and `(* < 1).WHAT` said `(Sub)`.
         return "([&]()->Value{ Value _c = " + mk + "; _c.code()->isWhateverCode = true; "
-               "_c.code()->whateverArity = " + std::to_string(arity) + "; return _c; }())";
+               "_c.code()->whateverArity = " + std::to_string(arity < 1 ? 1 : arity) + "; return _c; }())";
     }
 
     static bool isSlip(Expr* e) { return e->kind == NK::Unary && static_cast<Unary*>(e)->op == "|" && !static_cast<Unary*>(e)->postfix; }
@@ -1160,6 +1205,15 @@ struct Codegen {
                 if (!static_cast<NameTerm*>(e)->ofType.empty())
                     unsupported("the parameterized type '" + n + "[" +
                                 static_cast<NameTerm*>(e)->ofType + "]'");
+                // `Foo:D` / `Foo:U` — the smiley RIDES on the type value, which is
+                // what lets `.^name` report it, smartmatch test definedness
+                // alongside the type and `.^base_type` strip it back off. Emitted
+                // as a plain name the smiley was dropped, so `Any:D.^name` said
+                // "Any" and `Any ~~ Any:D` was True. Placed where the
+                // interpreter's NameTerm eval places it: ahead of every lookup.
+                if (int dc = static_cast<NameTerm*>(e)->defConstraint)
+                    return "([&]()->Value{ Value _t = Value::typeObj(" + cesc(n) + "); _t.i = " +
+                           std::to_string(dc) + "; return _t; }())";
                 if (n == "True")  return "Value::boolean(true)";
                 if (n == "False") return "Value::boolean(false)";
                 if (n == "Nil")   return "Value::nil()";
@@ -1244,6 +1298,19 @@ struct Codegen {
                                 Stmt* s = be->body[i].get();
                                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
                                     line(0, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                                // A block-final if/given IS the block's value, the
+                                // same way it is in a sub body and in a block
+                                // closure. Run as a plain statement its branch
+                                // value was dropped on the floor, so `my $x = do {
+                                // if … { 'y' } else { 'n' } }` — and every `do
+                                // given` — came back Any.
+                                else if (i + 1 == be->body.size() &&
+                                         (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
+                                    std::string rv = gensym("__rv");
+                                    line(0, "Value " + rv + " = Value::nil();"); // the seed IS the answer for an empty branch
+                                    stmtValue(s, 0, rv);
+                                    line(0, "return " + rv + ";");
+                                }
                                 else {
                                     // a value-context loop collects per-iteration values —
                                     // stmt() would discard them (`my @a = do for 1..3 {…}`)
@@ -1412,6 +1479,22 @@ struct Codegen {
                     // reverse metaop `a R/ b` == `b / a`
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                     return "applyArith(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
+                }
+                // Smartmatch on two values: the interpreter's rule, not
+                // applyArith's. A Callable matcher has to be INVOKED with the
+                // topic — that arm lives in evalBinary, which this code never
+                // runs, so `200 ~~ (* > 100)` compared a Code object with a
+                // number and answered False. The right side is a MATCHER, so a
+                // `*` in it curries there rather than over the whole match.
+                if (b->op == "~~" || b->op == "!~~") {
+                    // A regex LITERAL on the left is the Regex OBJECT, not a
+                    // match against `$_`: `/a/ ~~ Callable` asks what a Regex is
+                    // (True). Emitted as a term it matched the topic and then
+                    // asked whether that Match was a Callable — False.
+                    std::string L = b->lhs->kind == NK::RegexLit ? exArg(b->lhs.get())
+                                                                 : ex(b->lhs.get());
+                    return "rtSmartmatch(RT, " + cesc(b->op) + ", " + L +
+                           ", " + matcher(b->rhs.get()) + ")";
                 }
                 std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                 if (b->op == "&&" || b->op == "and")
@@ -1665,6 +1748,30 @@ struct Codegen {
 
     // Emit a statement sequence, honouring phasers: entry phasers first, the
     // body, then exit phasers (reverse); top-level END phasers are deferred.
+    // The MATCHER side of a smartmatch — the right of `~~`, the condition of a
+    // `when`. A `*` in it curries into a closure, exactly as it does in argument
+    // position, so `*.chars == 3` and `!(* < 1)` are asked ABOUT the topic. (The
+    // value-level curry applyArith does covers infix operators only; a method
+    // call or a prefix op on a `*` curries in the interpreter's evaluator, which
+    // emitted code never runs.) A BARE `*` is exempt: it is the always-matching
+    // value — `when *` is a `default` spelled with a star — and currying it would
+    // build a one-argument identity closure answering the topic's own truth.
+    std::string matcher(Expr* c) { return c->kind == NK::Whatever ? ex(c) : exArg(c); }
+
+    // `when X` == `if $_ ~~ X`. rtWhenMatch is the interpreter's own rule, so the
+    // compiled chain and the interpreted one cannot drift: a Regex or Callable
+    // condition is INVOKED with the topic, everything else is a value
+    // smartmatch. It replaced a plain `applyArith("~~", topic, cond)`, which
+    // curried a WhateverCode condition (`when * < 1`) a second time instead of
+    // asking it about the topic — a truthy Code object, so the first arm always
+    // won (issue #96). A regex LITERAL has already matched the topic by the time
+    // its Match is built, so that one is asked for its truth, as in the
+    // interpreter.
+    std::string whenCond(const std::string& topic, Expr* c) {
+        if (c->kind == NK::RegexLit) return "RT.boolify(" + ex(c) + ")";
+        return "rtWhenMatch(RT, " + topic + ", " + matcher(c) + ")";
+    }
+
     // A CATCH handler: bind $_ to the exception and run its when/default chain
     // (first match wins); unmatched exceptions are swallowed, matching rakupp.
     void emitCatchHandler(Block* cb, int ind) {
@@ -1679,7 +1786,7 @@ struct Codegen {
             if (s->kind == NK::WhenStmt) {
                 auto* w = static_cast<WhenStmt*>(s.get());
                 if (w->isDefault) line(ind, "{");
-                else line(ind, "if (applyArith(\"~~\", " + exv + ", " + ex(w->cond.get()) + ").truthy()) {");
+                else line(ind, "if (" + whenCond(exv, w->cond.get()) + ") {");
                 block(w->body.get(), ind + 1);
                 line(ind + 1, "goto " + done + ";");
                 line(ind, "}");
@@ -2512,7 +2619,7 @@ struct Codegen {
             if (st->kind == NK::WhenStmt) {
                 auto* w = static_cast<WhenStmt*>(st.get());
                 if (w->isDefault) line(ind + 1, "{");
-                else line(ind + 1, "if (applyArith(\"~~\", " + topic + ", " + ex(w->cond.get()) + ").truthy()) {");
+                else line(ind + 1, "if (" + whenCond(topic, w->cond.get()) + ") {");
                 blockValue(w->body.get(), ind + 2, dst);
                 line(ind + 2, "goto " + done + ";");
                 line(ind + 1, "}");
@@ -2555,7 +2662,7 @@ struct Codegen {
             if (st->kind == NK::WhenStmt) {
                 auto* w = static_cast<WhenStmt*>(st.get());
                 if (w->isDefault) line(ind + 1, "{");
-                else line(ind + 1, "if (applyArith(\"~~\", " + topic + ", " + ex(w->cond.get()) + ").truthy()) {");
+                else line(ind + 1, "if (" + whenCond(topic, w->cond.get()) + ") {");
                 block(w->body.get(), ind + 2);
                 line(ind + 2, "goto " + done + ";");
                 line(ind + 1, "}");
