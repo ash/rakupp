@@ -247,7 +247,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "Stringy") return Value::str(inv.toStr());
         // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
         // or (4.0+0i).narrow stops at the Num and never demotes to Int.
-        if (m == "narrow") return inv.im() == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
+        // A Complex narrows to its real part when the imaginary one is
+        // APPROXIMATELY zero — `$!im ≅ 0`, which is the absolute comparison
+        // because one side is zero. `exp(i * pi)` carries 1.22e-16i of rounding
+        // noise and an exact test kept it as a Complex (S32-num/narrow.t).
+        if (m == "narrow")
+            return std::fabs(inv.im()) <= 1e-15
+                 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
     }
 
     // Cool-style numeric coercion: an object that defines .Numeric/.Bridge (but

@@ -301,22 +301,34 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (m == "conj" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool)) return inv;
     // .lsb / .msb — least / most significant set bit of an Int (Nil for 0).
     if ((m == "lsb" || m == "msb") && (inv.t == VT::Int || inv.t == VT::Bool)) {
+        // A NEGATIVE number is measured in two's complement, where the top bit
+        // is the sign: `msb` is the length of |n| - 1, so -1 is 0 and both -255
+        // and -256 are 8. Measuring |n| instead answered 7 for -126 and -255
+        // (S32-num/int.t). The SUB form already had this rule; the method did
+        // not, and the two disagreed on the same number.
+        const bool neg = inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0;
         // a BIG integer counts its bits by halving — 64 bits is not the limit
         if (inv.big() && !inv.big()->fitsLL()) {
             BigInt n = inv.big()->abs(), two(2LL), q, r;
             if (n.isZero()) return Value::nil();
+            if (neg && m == "msb") n = n - BigInt(1);
             long long lsb = -1, bit = 0;
             while (!n.isZero()) {
                 BigInt::divmod(n, two, q, r);
                 if (!r.isZero() && lsb < 0) lsb = bit;
                 n = q; bit++;
             }
-            return Value::integer(m == "lsb" ? lsb : bit - 1);
+            // for a negative msb the loop already measured |n| - 1, whose
+            // LENGTH is the answer — not its top index
+            return Value::integer(m == "lsb" ? lsb : neg ? bit : bit - 1);
         }
         long long v = inv.toInt();
         if (v == 0) return Value::nil();
-        unsigned long long u = v < 0 ? (unsigned long long)(-v) : (unsigned long long)v;
-        return Value::integer(m == "lsb" ? rakupp::ctzll(u) : 63 - rakupp::clzll(u));
+        unsigned long long u = v < 0 ? (unsigned long long)(-(v + 1)) + 1ull : (unsigned long long)v;
+        if (m == "lsb") return Value::integer(rakupp::ctzll(u));
+        if (!neg) return Value::integer(63 - rakupp::clzll(u));
+        unsigned long long below = u - 1ull;                 // |v| - 1
+        return Value::integer(below == 0 ? 0 : 64 - rakupp::clzll(below));
     }
     if (m == "chop" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Complex))
         return methodCall(Value::str(inv.toStr()), "chop", std::move(args), rwArgs);
@@ -331,12 +343,31 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         for (size_t k = 0; k < keep; k++) r += cpToUtf8(cps[k]);
         return Value::str(r);
     }
-    // numeric .narrow — smallest type that holds the value exactly
+    // numeric .narrow — the narrowest type that holds the value.
+    //
+    // For a Num, Rakudo's test is APPROXIMATE: the value narrows when its `.Int`
+    // is `=~=` to it, a RELATIVE comparison against $*TOLERANCE (1e-15). That is
+    // what S32-num/narrow.t asserts — `((.1e0 + .2e0) * 10).narrow` is the Int
+    // 3, not 3.0000000000000004 — and an exact test cannot answer it.
+    //
+    // One half of that rule is NOT copied. `=~=` falls back to an ABSOLUTE
+    // comparison when either side is zero, which makes every number under 1e-15
+    // narrow to 0: Rakudo answers 0 for `1e-300.narrow`, destroying the value
+    // outright. Nothing in Roast asks for that, so a Num narrows to zero only
+    // when it IS zero. (Int-Num-Rat sheet N-19 records the whole rule as a
+    // Rakudo bug; this follows Roast where Roast speaks and declines the rest.)
     if (m == "narrow" && inv.isNumeric()) {
         if (inv.t == VT::Rat && inv.ratN() && inv.ratD() && inv.ratD()->fitsLL() && inv.ratD()->toLL() == 1)
             return Value::bigint(*inv.ratN());
-        if (inv.t == VT::Num && !std::isinf(inv.n) && !std::isnan(inv.n) && inv.n == (long long)inv.n)
-            return Value::integer((long long)inv.n);
+        if (inv.t == VT::Num && std::isfinite(inv.n)) {
+            // past the int64 range a double is still an exact integer — 1e20 and
+            // (2**70).Num both are — and numToIntExact converts without loss.
+            if (inv.n == std::trunc(inv.n)) return numToIntExact(inv.n);
+            double whole = std::trunc(inv.n);
+            if (whole != 0.0 &&
+                std::fabs(inv.n - whole) <= 1e-15 * std::fabs(inv.n))
+                return numToIntExact(whole);
+        }
         return inv;
     }
     // .UInt — Int coercion that fails on negatives

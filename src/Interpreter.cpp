@@ -17032,7 +17032,12 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     if (v.isAllomorph() && (type == "Str" || type == "Stringy" || type == v.hashKind))
         return true;
     switch (v.t) {
-        case VT::Int:     return type == "Int" || type == "Numeric" || type == "Real";
+        // UInt is `subset UInt of Int where * >= 0` — an Int matches it when it
+        // is not negative. (typeNameConforms already knew; this third path did
+        // not, so a `UInt` container refused every value once it started
+        // checking.)
+        case VT::Int:     if (type == "UInt") return !(v.big() ? v.big()->sign < 0 : v.i < 0);
+                          return type == "Int" || type == "Numeric" || type == "Real";
         case VT::Num:
             // an Instant/Duration rides on a Num but is not one: Rakudo's
             // `Instant ~~ Num` is False (Real and Numeric hold) — CBOR::Simple
@@ -25373,15 +25378,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // into an UNTYPED container, but a typed one has to look at it, and
             // looking at a Failure detonates it.
             if (a->op == "=" && a->target->kind == NK::VarExpr) {
-                static const std::set<std::string> kChecked = {
-                    "Int", "Num", "Rat", "Complex", "Str", "Bool",
+                static const std::set<std::string> kChecked = {   // UInt: see the twin set
+                    "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
                 };
                 auto undefOk = [&](const std::string& want) {
                     // an undefined value carries its TYPE; it must still be the
                     // declared type or a subtype (Int matches Int; Any does not)
                     std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
                     if (tn == want) return true;
-                    if (want == "Int" && tn == "IntStr") return true;
+                    if (want == "UInt" && (tn == "Int" || tn == "UInt" || tn == "IntStr")) return true;
+        if (want == "Int" && tn == "IntStr") return true;
                     if (want == "Num" && tn == "NumStr") return true;
                     if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
                     if (want == "Str" && (tn == "IntStr" || tn == "NumStr" ||
@@ -35244,8 +35250,12 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
     // but only into an UNTYPED one: the loop below detonates it when the target
     // has a declared nominal type, which is where the type check must look at
     // the value. An untyped target has no varDefault entry and falls through.)
+    // UInt is `subset UInt of Int where * >= 0`, so an assignment to one is
+    // checked like any other typed slot — rtTypeMatch already knows the rule.
+    // Without it here `my UInt $x = -42` simply stored the negative number
+    // (S32-num/int.t, "UInt rejects negative numbers").
     static const std::set<std::string> kChecked = {
-        "Int", "Num", "Rat", "Complex", "Str", "Bool",
+        "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
     };
     auto undefOk = [&](const std::string& want) {
         std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();

@@ -14515,6 +14515,19 @@ void Interpreter::registerBuiltins() {
     // Junction constructors: all()/any()/one()/none() (also written via & | ^).
     // (all/any/one/none are registered ONCE, earlier, with the one-arg rule —
     // a flattening duplicate here used to shadow it)
+    // `rand` is a TERM, not a sub: the Perl 5 call forms `rand()` and `rand($n)`
+    // are a compile-time X::Obsolete in Rakudo, which tells the reader to write
+    // `rand` or `$n.rand` instead. Registering the name here is what makes the
+    // CALL form reach an error that says so — it used to be
+    // X::Undeclared::Symbols, which names the wrong problem. The bare term never
+    // comes through a builtin at all (the lexer knows it), so it is unaffected.
+    B["rand"] = [](Interpreter&, ValueList& a) -> Value {
+        throw RakuError{Value::typeObj("X::Obsolete"),
+            a.empty()
+              ? std::string("Unsupported use of rand(); in Raku please use: rand")
+              : std::string("Unsupported use of rand(N); in Raku please use: N.rand "
+                            "for a random number in the range 0..^N")};
+    };
     B["ord"] = [](Interpreter& I, ValueList& a) -> Value {
         // bare `ord` (no argument) is the Perl-5-ism Rakudo rejects with X::Obsolete
         if (a.empty()) throw RakuError{Value::typeObj("X::Obsolete"),

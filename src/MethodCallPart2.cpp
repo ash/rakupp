@@ -3682,7 +3682,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (a.t == VT::Pair) { if (a.s == "value" && a.pairVal()) given = a.pairVal(); }
             else if (!given) given = &a;
         if (t == "Str" || t == "Cool") return Value::str(given ? given->toStr() : "");
-        if (t == "Int") return given ? Value::integer(given->toInt()) : Value::integer(0);
+        if (t == "Int") {
+            // `Int.new($x)` is `$x.Int`, so it takes anything that has one —
+            // a Str parses, a Rat or Num truncates, a Range counts. What it
+            // does NOT take is a TYPE OBJECT, which has no value to convert:
+            // Rakudo dies "Cannot create an Int from a 'Str' type object"
+            // where this answered 0 for every refusal it should have made
+            // (Int-Num-Rat sheet N-06; S32-num/int.t).
+            if (!given) return Value::integer(0);
+            if (given->t == VT::Type || given->t == VT::Any || given->t == VT::Nil)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot create an Int from a '" +
+                    (given->t == VT::Type ? given->s.str() : given->typeName()) +
+                    "' type object"};
+            if (given->t == VT::Str && !given->isAllomorph())
+                return numifyStrOrThrow(given->s.str());   // `Int.new("abc")` is X::Str::Numeric
+            if (given->t == VT::Num && !std::isfinite(given->n))
+                return armedFailure("X::Numeric::CannotConvert",
+                    "Cannot convert " + given->toStr() + " to Int");
+            // a Range, a List or an Array converts through its own .Int
+            if (given->t == VT::Range || given->t == VT::Array)
+                return methodCall(*given, "Int", ValueList{});
+            return Value::integer(given->toInt());
+        }
         if (t == "Real" || t == "Numeric") return Value::number(0.0); // (`Num.new` has its own arm above)
         if (t == "Bool") return Value::boolean(false);
         // `Mu.new` / `Any.new` — an instance of the bare root type: defined (so

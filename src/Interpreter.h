@@ -2945,18 +2945,28 @@ inline Value numToIntExact(double x) {
 // wide rational is a double first, and `floor(FatRat.new(10**55-1, 10**55))`
 // answered 1 for a number strictly below 1 — the sub form disagreed with the
 // method form on the same value (Rat::Precise renders exactly such a FatRat).
+// Inf, -Inf and NaN have no integer form and are passed THROUGH as the Nums
+// they are — `floor(NaN)` is NaN, not 0, and `floor(Inf)` is Inf, not the int64
+// maximum. The method forms already did this; the sub forms went straight to
+// numToIntExact and saturated (S32-num/rounders.t, Int-Num-Rat sheet N-13).
+inline bool rtNonFiniteReal(const Value& v) {
+    return v.t == VT::Num && !std::isfinite(v.n);
+}
 inline Value rtBFloor(Interpreter& I, const Value& v) {
     if (v.t == VT::Int) return v;
+    if (rtNonFiniteReal(v)) return v;
     if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "floor", none); }
     return numToIntExact(std::floor(v.toNum()));
 }
 inline Value rtBCeiling(Interpreter& I, const Value& v) {
     if (v.t == VT::Int) return v;
+    if (rtNonFiniteReal(v)) return v;
     if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "ceiling", none); }
     return numToIntExact(std::ceil(v.toNum()));
 }
 inline Value rtBRound(Interpreter& I, const Value& v) {
     if (v.t == VT::Int) return v;
+    if (rtNonFiniteReal(v)) return v;
     if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "round", none); }
     return numToIntExact(std::floor(v.toNum() + 0.5));
 }

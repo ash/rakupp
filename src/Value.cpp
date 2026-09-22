@@ -281,6 +281,14 @@ long long Value::toInt() const {
 // unparseable string is 0.0, which is what every caller here wanted anyway.
 static double strToNumOr0(const std::string& s) {
     if (s.empty()) return 0.0;
+    // A leading Unicode MINUS SIGN (U+2212) counts as a minus, the way the full
+    // numeric-string grammar already treats it — strtod stops dead at it, so
+    // `"−0".Num` came back as +0e0 where `"-0".Num` was -0e0 and Roast tells
+    // the two zeros apart through atan2 (S32-num/negative-zero.t).
+    if (s.compare(0, 3, "\xE2\x88\x92") == 0) {
+        std::string ascii = "-" + s.substr(3);
+        return strToNumOr0(ascii);
+    }
     const char* p = s.c_str();
     char* end = nullptr;
     errno = 0;
