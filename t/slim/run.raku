@@ -3,7 +3,7 @@
 # catchable, named X::Feature::NotBuilt instead of crashing or quietly
 # misbehaving, that the grammar's conflicts are loud errors naming the
 # alternatives, that the embedded manifest round-trips through --exe-info,
-# that the size budgets hold (-all ≤ 9.5 MB, bare --slim ≤ 9.75 MB on hello) —
+# that the size budgets hold (-all ≤ 8.75 MB, bare --slim ≤ 9.0 MB on hello) —
 # and, since P4, that the SCAN decides right: cuts what a program provably
 # does not use, keeps what it does (uniname calls, script assertions), keeps
 # EVERYTHING when a force-full trigger fires (and says so), and that max
@@ -124,15 +124,27 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # Every --exe binary now carries the C++ code generator, `--slim=-all hello`
 # included, because a hot loop in ANY compiled program may tier up.
 #
-# So this is not the four earlier re-pins' story of ordinary growth with
-# nothing left to carve. --slim has no `jit` feature to cut, and whether a
-# binary that will never tier up should carry the backend is a design question
-# this gate cannot answer; it is filed separately. The line moves so the gate
-# reports rather than blocks: dev-box arm64 measures 8,552,232 at 6a34c51a,
-# and the arm64-x86_64 spread recorded above (512,200) puts the wider slice at
-# ~9,064,000, which 9.5 MB clears by ~897 KB. Bare --slim keeps its 0.25 MB
-# gap at 9.75 MB. The relative gate below is unchanged and is still the one
-# that cannot go stale.
+# So this was not the four earlier re-pins' story of ordinary growth with
+# nothing left to carve, and it was NOT absorbed. There was something to carve:
+# the call was reachable by the LINKER and by nothing else. `--jit` is parsed in
+# main.cpp, and the only JIT a generated binary can switch on is copy-and-patch,
+# which lowers from the AST and emits no C++ at all — so emitJitKernel could
+# never run in an --exe binary, it was merely named there. It goes through
+# jit::g_emitKernel now, a pointer the CLI installs, and Codegen.cpp joins
+# Repl.cpp and the JS backend outside rakupp_rt. Measured on this box:
+# --slim=-all hello 8,552,232 -> 8,254,168, and a full --exe hello
+# 12,384,712 -> 12,086,616, both 298 KB lighter. (Less than Codegen.cpp.o's
+# 663,096, because the linker was already dead-stripping about half of what
+# the object carried.) nm finds no emitJitKernel or transpileToCpp in a
+# compiled binary now, and 77 of them in the CLI.
+#
+# So the line comes back down, to 8.75 MB and 9.0 MB. It does not go back to
+# the 8.0 MB it was at before the JIT: 8.0 would clear this box's 8,254,168 by
+# only 134 KB, and the arm64-x86_64 spread recorded above (512,200) puts the
+# wider slice near 8,766,000, which 8.0 does not clear at all. 8.75 clears the
+# wider slice by ~200 KB and this box by ~921 KB, which is a gate with teeth
+# rather than the 1.25 MB of slack the emergency line left. The relative gate
+# below is unchanged and is still the one that cannot go stale.
 my $full-size;
 my $all-size;
 
@@ -209,8 +221,8 @@ my $catch = probe('catch.raku', q:to/END/);
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim=-all hello runs', $out;
     $all-size = $bin.IO.s;
-    check $*KERNEL.name ne 'darwin' || $all-size <= 9.5 * 1024 * 1024,
-          "--slim=-all hello is within the 9.5 MB darwin budget ($all-size bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $all-size <= 8.75 * 1024 * 1024,
+          "--slim=-all hello is within the 8.75 MB darwin budget ($all-size bytes; darwin-only gate)";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -272,8 +284,8 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, 'bare --slim (= auto) compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
-    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 9.75 * 1024 * 1024,
-          "--slim hello is within the 9.75 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 9.0 * 1024 * 1024,
+          "--slim hello is within the 9.0 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
     check $full-size - $bin.IO.s >= 2 * 1024 * 1024,
           "bare --slim removes >= 2 MB from hello on this platform "
           ~ "(delta {$full-size - $bin.IO.s})";

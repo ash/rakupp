@@ -51,6 +51,27 @@ on arm64 and ≈525 KB over a DERIVED x86_64 figure (arm64 plus the
 The absolute budgets are a runaway check; the gate that cannot go stale is
 the relative one, full − slim ≥ 2 MB.*
 
+*Update 2026-09-23: the runaway check caught a runaway, and this time there
+was something to carve. The tier-up JIT's `jit::runIfReady` called
+`emitJitKernel` by name, so `Codegen.cpp` — the biggest object in the tree,
+663,096 bytes — had to join `rakupp_rt`, and CI's arm64 hello-all went
+7,350,920 to 8,300,504 in two days (+949,584, 57 page steps rather than one).
+The line was moved to 9.5 MB on 2026-09-22 to unblock CI. But nothing about
+that call could ever RUN in an `--exe` binary: `--jit` is parsed in
+`main.cpp`, and the only JIT a generated binary can switch on is
+copy-and-patch, which lowers from the AST and emits no C++ at all (see
+`rakuppCnpBundled`). It was a linker edge, not a reachable one. The call goes
+through `jit::g_emitKernel` now, a pointer the CLI installs, and
+`Codegen.cpp` joins `Repl.cpp` and the JS backend outside `rakupp_rt`:
+`--slim=-all hello` 8,552,232 → 8,254,168 on the dev box's arm64 build, a
+full `--exe` hello 12,384,712 → 12,086,616, both 298 KB lighter — less than
+the object's 663,096, because the linker was already dead-stripping about
+half of what it carried. `nm` finds no `emitJitKernel` or `transpileToCpp` in
+a compiled binary now, and 77 of them in the CLI. The gate comes back to
+≤ 8.75 MB for `-all`, bare `--slim` ≤ 9.0 MB — not to the pre-JIT 8.0, which
+would clear the dev box's 8,254,168 by only 134 KB and the derived x86_64
+figure (≈8,766,000) not at all.*
+
 ---
 
 ## Where we are — measured

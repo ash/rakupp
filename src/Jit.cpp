@@ -17,6 +17,9 @@
 #include "Jit.h"
 #include "Ast.h"
 #include "Cnp.h"
+// Codegen.h for CodegenError and nothing else: the emitter itself arrives as a
+// function pointer the CLI installs, so this TU carries no link edge to
+// Codegen.cpp and rakupp_rt does not drag the transpiler into every binary.
 #include "Codegen.h"
 #include "Interpreter.h"
 #include "Platform.h"   // dlopen/dlsym and their Win32 shims
@@ -45,6 +48,11 @@ namespace jit {
 
 bool g_on = false;
 bool onSlow() { return g_on; }
+
+// Null until the CLI installs Codegen's emitter — see Jit.h. A binary that
+// links rakupp_rt without main.cpp (every `--exe` binary) leaves it null and
+// runs the copy-and-patch backend or nothing.
+KernelEmitter g_emitKernel = nullptr;
 
 namespace {
 
@@ -777,7 +785,11 @@ void examine(Site* s) {
     // later, so emitting C++ here would be work thrown away.
     if (g_opt.backend == Backend::Cxx) {
         try {
-            s->src = emitJitKernel(s->emit, fnName, s->slots);
+            // Through the pointer, not the name: see Jit.h. configure() has
+            // already refused this backend when it is null, so reaching here
+            // without an emitter is a contradiction rather than a user error.
+            if (!g_emitKernel) throw CodegenError{"no C++ backend in this binary"};
+            s->src = g_emitKernel(s->emit, fnName, s->slots);
         } catch (const CodegenError& e) {
             s->why = e.msg;
             s->state.store(StIneligible, std::memory_order_release);
@@ -927,6 +939,15 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
         g_on = true;
         note(std::string("on — copy-and-patch for ") + cnp::arch() + ", threshold " +
              std::to_string(g_opt.threshold));
+        return;
+    }
+    // The emitter is the CLI's to install (Jit.h). A binary built without it
+    // says so here, in the same shape as a missing stencil table above, rather
+    // than accepting --jit and then refusing every loop one by one.
+    if (!g_emitKernel) {
+        std::cerr << "--jit: this binary carries no C++ backend — running interpreted"
+                     " (try --cnp, which needs no compiler)\n";
+        g_on = false;
         return;
     }
     if (g_cxx.empty() || g_inc.empty()) {

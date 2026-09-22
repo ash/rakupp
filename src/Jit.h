@@ -54,6 +54,22 @@ std::string parseSpec(const std::string& spec, Options& out);
 // cache (`sync`, `nocache`, `pch`) are not offered, because it has neither.
 std::string parseCnpSpec(const std::string& spec, Options& out);
 
+// The Cxx backend's emitter, installed by the CLI rather than called directly.
+//
+// Codegen.cpp is the `--exe` transpiler and the biggest object in the tree
+// (663 KB). A direct call from here would put it in rakupp_rt, and therefore in
+// every `--exe` binary — which can never reach it. `--jit` is a CLI flag parsed
+// in main.cpp, and the only JIT a generated binary can switch on is
+// copy-and-patch (rakuppCnpBundled below), which lowers from the AST and emits
+// no translation unit at all. So the CLI installs the emitter here and the
+// runtime calls through the pointer; null means this binary was built without
+// the Cxx backend, which configure() reports the way it reports a missing
+// stencil table. Same reasoning CMakeLists.txt already applies to Repl.cpp and
+// the JS backend.
+using KernelEmitter = std::string (*)(Stmt* loop, const std::string& fnName,
+                                      const std::vector<std::string>& slots);
+extern KernelEmitter g_emitKernel;
+
 // Install the options. Called once, from main, before the program runs.
 // `cxx` is the C++ compiler to build kernels with and `inc` the directory
 // holding the runtime headers — the same two main.cpp resolves for `--exe`.

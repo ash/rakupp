@@ -3636,6 +3636,12 @@ int main(int argc, char** argv) {
     // RUN reaches here, which is the whole of where the flag means anything —
     // the compile modes and the source tools returned long before this point.
     if (g_jitAsked && g_jitOpt.on) {
+        // The CLI is what owns the Cxx backend: Codegen.cpp is linked HERE, not
+        // into rakupp_rt, so no `--exe` binary carries the 663 KB transpiler it
+        // could never call (Jit.h says why). Installing the pointer is what
+        // makes `--jit` work, and leaving it null is what makes a generated
+        // binary refuse the backend cleanly.
+        rakupp::jit::g_emitKernel = &rakupp::emitJitKernel;
         if (g_jitOpt.backend == rakupp::jit::Backend::Cnp) {
             // Nothing to find: the stencils are already in this binary.
             rakupp::jit::configure(g_jitOpt, std::string(), std::string(), exePath);

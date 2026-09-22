@@ -138,6 +138,16 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
+# The C++ backend is CLI-only on the same reasoning, and it is the one that
+# costs the most: Codegen.cpp is the biggest object in the tree (663 KB), and no
+# `--exe` binary transpiles either. It was in the runtime because the tier-up
+# JIT called emitJitKernel BY NAME, which is a link edge whether or not the call
+# can ever run — and it cannot: `--jit` is parsed here in main.cpp, and the only
+# JIT a generated binary can switch on is copy-and-patch, which lowers from the
+# AST and emits no C++ at all (see rakuppCnpBundled). The call goes through
+# jit::g_emitKernel now, installed by main.cpp, so the edge is gone with it.
+set(RAKUPP_CODEGEN "${CMAKE_CURRENT_SOURCE_DIR}/src/Codegen.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_CODEGEN}")
 # `rakupp install`, `rakupp doc` and `rakupp upgrade` are Raku programs
 # compiled into the CLI: cmake/EmbedTools.cmake turns tools/install.raku,
 # tools/doc.raku, tools/upgrade.raku and the two guides `doc` reads into byte
@@ -470,7 +480,8 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   endif()
 endif()
 
-add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} ${RAKUPP_TOOLS})
+add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS}
+                      "${RAKUPP_CODEGEN}" ${RAKUPP_TOOLS})
 # The blob is a GENERATED source, so the generator has to have run before this
 # target compiles; nothing else links it.
 add_dependencies(rakupp rakupp_embed_tools)
