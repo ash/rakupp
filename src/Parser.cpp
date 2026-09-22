@@ -19,6 +19,7 @@
 #include <unordered_set>
 
 namespace rakupp {
+bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 
 // Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
 // whitespace. Covers ASCII plus the multibyte forms (NEL, NBSP, OGHAM SPACE,
@@ -10510,6 +10511,11 @@ StmtPtr Parser::parseStatementImpl() {
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
+            // An import brings type names this unit never spells; the
+            // declaration-type check stands down for such a unit (Program::
+            // importsModules).
+            if (!u->isNo && !u->module.empty() && !isPragmaName(u->module))
+                importsModules_ = true;
             // name adverbs on the USE: `use JSON::Class:ver<0.0.14+>` — capture
             // the version constraint so the loader can SKIP too-old candidates
             // (License::SPDX needs 0.0.14+; the vendored battery copy is 0.0.6,
@@ -11160,6 +11166,7 @@ Program Parser::parseProgram() {
     checkRedeclarations(prog.stmts, /*unitScope=*/true);
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
+    prog.importsModules = importsModules_;
     prog.mayHaveEnd = sawEndPhaser_;
     prog.langRev = langRev_;
     prog.usesRakuAst = usesRakuAst_;

@@ -172,6 +172,7 @@ private:
     // Program at the end of parseProgram.
     std::set<std::string> declTypeNames_;
     bool declTypesOpaque_ = false;
+    bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;

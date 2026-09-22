@@ -1974,7 +1974,7 @@ public:
     // see is answered "known" — a qualified name, a parameterization, a
     // coercion, a `::T` capture, an empty type, and any name while the unit has
     // imported something whose exports are not modelled here.
-    bool declTypeIsKnown(const std::string& t) const {
+    bool declTypeIsKnown(const std::string& t) {   // not const: unitCurrent() locks
         if (t.empty()) return true;
         // `::T` is a type CAPTURE, not a reference; `Foo::Bar`, `Array[Int]`,
         // `Int()` and anything non-alphanumeric are shapes this check does not
@@ -1984,6 +1984,21 @@ public:
         if (isKnownTypeName(t) || isNativeTypeName(t)) return true;
         if (classes_.count(t) || subsets_.count(t)) return true;
         if (tctx_.pkgPrefix.empty() ? false : classes_.count(tctx_.pkgPrefix + t)) return true;
+        // …and a name the UNIT declares anywhere, gathered from its AST before
+        // it runs. The registry alone is not enough: a top-level `my Bar $b` is
+        // hoisted, so it is created before `class Bar {}` has executed. Rakudo
+        // is position-SENSITIVE here and would refuse a forward reference; being
+        // lenient is the safe direction for a refusal that must be a certainty.
+        // …and a name the UNIT declares anywhere, which the parser already
+        // collects for the bare-name term rule. The registry alone is not
+        // enough: a top-level `my Bar $b` is hoisted, so its container exists
+        // before `class Bar {}` has executed. A unit whose declarations the
+        // parser could not enumerate — a cached Program, a computed
+        // `class ::(EXPR)` name — is opaque, and then nothing is refused.
+        if (const Program* unit = unitCurrent()) {
+            if (unit->typeNamesOpaque || unit->importsModules ||
+                unit->declaredTypeNames.count(t)) return true;
+        } else return true;
         // a name the current package or any enclosing one declares
         if (global_ && global_->find(t)) return true;
         if (tctx_.cur && tctx_.cur->find(t)) return true;

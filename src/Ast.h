@@ -1017,6 +1017,13 @@ struct Program {
     // rule.
     std::set<std::string> declaredTypeNames;
     bool typeNamesOpaque = true;
+    // Does this unit `use`/`need`/`import` a MODULE (as opposed to a pragma)?
+    // An import brings in type names this unit never spells, and a top-level
+    // `my Imported $x` is created before the `use` that would introduce the
+    // name has run — so the declaration-type check stands down entirely for
+    // such a unit rather than refuse a type it simply cannot see yet.
+    // Conservative default, kept by a DESERIALIZED Program.
+    bool importsModules = true;
     // Did the parser see an END phaser anywhere in this unit? False lets the
     // interpreter skip the whole-unit END walk, which is nearly every program.
     // A DESERIALIZED (cached/embedded) Program keeps the conservative default

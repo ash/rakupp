@@ -1138,6 +1138,15 @@ Value rtTypedDefault(const char* type, char sigil) {
 // built-in. Running the expression yields the real parameterized type object,
 // which is what `$h.push` then dispatches on.
 Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
+    // A declaration whose TYPE names nothing is the error Rakudo makes it —
+    // `my Foo $x` is "Type 'Foo' is not declared" there and declared an untyped
+    // variable here. See declTypeIsKnown for how carefully the question is
+    // asked: a refusal has to be a certainty, so every shape this cannot model
+    // is answered "known".
+    if (ve && !ve->declType.empty() && !ve->declTypeExpr && !declTypeIsKnown(ve->declType))
+        throwTypedV("X::Undeclared",
+            {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}},
+            "Type '" + ve->declType + "' is not declared");
     if (ve && ve->declTypeExpr && sigil == '$') {
         try {
             Value t = eval(ve->declTypeExpr.get());
@@ -1145,6 +1154,27 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
         } catch (RakuError&) {}   // unresolvable: fall back to the textual type
     }
     return typedDefault(ve ? ve->declType : std::string(), sigil);
+}
+
+// What a NATIVE container refuses outright, before wrapNative truncates.
+//
+// Rakudo takes any Int it can unbox and truncates it to the container's width —
+// `my int8 $x = 300` is 44 and `my uint8 $x = -1` is 255 — but a value too wide
+// for a native int AT ALL is an error naming the bit count, and a Str is a type
+// check failure however numeric its text. rakupp truncated both: `my int8 $x =
+// 'foo'` stored 0 and `my int64 $x = 2**63` wrapped to the minimum
+// (S02-types/int-uint.t; Int-Num-Rat sheet N-27).
+void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what) {
+    if (bits <= 0 || isFloat) return;
+    if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
+        throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
+            "Type check failed in assignment to " + what +
+            "; expected " + (bits == 64 ? "int" : "int" + std::to_string(bits)) +
+            " but got Str (\"" + v.s.str() + "\")"};
+    if (bits >= 64 && v.t == VT::Int && v.big() && !v.big()->fitsLL())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Cannot unbox " + std::to_string(v.big()->bitLength()) +
+            " bit wide bigint into native integer. Did you mix int and Int or literals?"};
 }
 
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
@@ -23285,7 +23315,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot); // torn-copy contract
                                 *slot = rv;
                             }
-                            if (nb) wrapNative(*slot, nb, nsg, nfl);
+                            if (nb) { nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"))); wrapNative(*slot, nb, nsg, nfl); }
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -23314,7 +23344,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             }
-                            if (nb) wrapNative(*slot, nb, nsg, nfl);
+                            if (nb) wrapNative(*slot, nb, nsg, nfl);   // arithmetic on a native WRAPS, it does not refuse
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -23341,7 +23371,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             ParStripe ws(*this, slot);
                             *slot = std::move(nv);
                         }
-                        if (nb) wrapNative(*slot, nb, nsg, nfl);
+                        if (nb) wrapNative(*slot, nb, nsg, nfl);   // arithmetic on a native WRAPS, it does not refuse
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
                         return sink ? Value::any() : *slot;
                     }
@@ -38399,13 +38429,6 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*HOME") return dynVar("$*HOME");
             }
             if (ve->declare) {
-                // A declaration whose TYPE is a name nothing declares is the
-                // error Rakudo makes it — see declTypeIsKnown for how carefully
-                // that question is asked.
-                if (!ve->declType.empty() && !declTypeIsKnown(ve->declType))
-                    throwTypedV("X::Undeclared",
-                        {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}},
-                        "Type '" + ve->declType + "' is not declared");
                 if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                     if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, declInitial(ve, sigil));
                     return tctx_.curStateEnv->vars[ve->name];

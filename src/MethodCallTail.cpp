@@ -1375,6 +1375,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (m == "max") return bre->to;
                 if (m == "is-int") return Value::boolean(bre->from.t == VT::Int);
                 if (m == "infinite") return Value::boolean(false);   // 1..2**70 only LOOKS endless
+                // `int64.Range` and `int.Range` END on the int64 limits, which
+                // are also the endless sentinel — so the integer bounds have to
+                // come from the carried endpoints or the range looks unbounded
+                // and int-bounds fails (S02-types/int-uint.t reads exactly this).
+                if (m == "int-bounds" && bre->from.t == VT::Int) {
+                    Value o = Value::array({
+                        inv.rExFrom() ? applyArith("+", bre->from, Value::integer(1)) : bre->from,
+                        inv.rExTo()   ? applyArith("-", bre->to,   Value::integer(1)) : bre->to});
+                    o.isList = true; return o;
+                }
                 if (m == "bounds") { Value o = Value::array({bre->from, bre->to}); o.isList = true; return o; }
                 if (m == "elems" || m == "Numeric" || m == "Int")
                     return applyArith("+", applyArith("-", bre->to, bre->from),
