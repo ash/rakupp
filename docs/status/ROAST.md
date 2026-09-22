@@ -31,12 +31,12 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~95% of all declared Roast tests pass** (207,985 / 219,915); on the
-stricter file bar, ~55% of files fully pass (798 / 1,464). The per-file breakdown
+**Headline: ~95% of all declared Roast tests pass** (208,408 / 219,867); on the
+stricter file bar, ~55% of files fully pass (810 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
-`not ok … # todo` lines as passes. Net of both it is 94.0% rather than 94.6% —
-1,240 assertions, 0.60% of the pass count. mutsu's equivalent shield is 1,438
+`not ok … # todo` lines as passes. Net of both it is 94.2% rather than 94.8% —
+1,241 assertions, 0.60% of the pass count. mutsu's equivalent shield is 1,438
 (0.66%), so it is a wash between the two; the measured breakdown is in
 [COUNTING.md](COUNTING.md#the-assertion-figures-net-of-skip-and-todo). (S15 —
 Unicode / strings / NFG — is a **fully-passing chapter** again: 91,752 of 91,752
@@ -44,17 +44,19 @@ assertions and all 81 of its files, on the strength of full UCD case tables,
 grapheme-level regex and complete `uniprop` coverage. The four that had regressed
 are back — the character-class predicates were too permissive at the start of an
 identifier and in general radix digits, and `uniprop("")` answered the empty
-string where Raku answers Nil. All 81 of its files pass in the run
-these figures come from.)
+string where Raku answers Nil. Eighty of its 81 files pass in the run these figures
+come from, and the 81st is `S15-nfg/concat-stable.t`, which timed out in that
+`-j6` sweep and passes 55/55 when run alone — the load effect COUNTING's timeout
+section describes, not a failure.)
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **798** | **55%** |
-| Partially passing | 564 | 39% |
-| No TAP output | 92 | 6% |
-| Timeouts | 10 | 0.7% |
+| **Fully passing** | **810** | **55%** |
+| Partially passing | 559 | 38% |
+| No TAP output | 89 | 6% |
+| Timeouts | 6 | 0.4% |
 
 (Both files that once wedged the harness with unkillable children are measured
 in-run now: `S04-statements/try.t` scores as an ordinary partial, and
@@ -69,7 +71,7 @@ entirely unmeasured territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**207,985 of ~219,915 declared tests — 94.6%**. "Declared" means every test the
+**208,408 of ~219,867 declared tests — 94.8%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -78,9 +80,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 207,985 / 213,149 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 207,985 / 217,651 (95.6%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 207,985 / 219,915 (94.6%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 208,408 / 213,458 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 208,408 / 217,718 (95.7%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 208,408 / 219,867 (94.8%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 95% is the per-test analog of the ~55% file coverage. Three notes on scope:
 
@@ -109,32 +111,32 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 61 | 70 | 0 | 16 | 7449/8100 | 92% |
-| S03 | Operators | 86 | 33 | 1 | 5 | 25704/26063 | 99% |
-| S04 | Blocks, statements, phasers | 34 | 39 | 0 | 4 | 1243/1488 | 84% |
-| S05 | Regexes & grammars | 40 | 54 | 0 | 4 | 5874/6273 | 94% |
-| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1574/1840 | 86% |
-| S07 | Iterators | 2 | 4 | 0 | 0 | 224/268 | 84% |
+| S02 | Literals, types, magicals | 66 | 67 | 0 | 14 | 7713/8307 | 93% |
+| S03 | Operators | 86 | 35 | 0 | 4 | 25773/26139 | 99% |
+| S04 | Blocks, statements, phasers | 34 | 39 | 0 | 4 | 1242/1488 | 83% |
+| S05 | Regexes & grammars | 40 | 54 | 0 | 4 | 5875/6273 | 94% |
+| S06 | Subroutines & signatures | 24 | 57 | 0 | 13 | 1579/1840 | 86% |
+| S07 | Iterators | 3 | 3 | 0 | 0 | 244/268 | 91% |
 | S09 | Data structures | 3 | 19 | 0 | 0 | 4003/4685 | 85% |
 | S10 | Packages | 2 | 7 | 0 | 0 | 55/104 | 53% |
 | S11 | Modules | 9 | 11 | 0 | 2 | 90/123 | 73% |
 | S12 | Objects & classes | 36 | 54 | 0 | 11 | 1403/1614 | 87% |
 | S13 | Overloading | 7 | 0 | 0 | 0 | 88/88 | 100% |
 | S14 | Roles | 7 | 16 | 0 | 2 | 283/333 | 85% |
-| S15 | Unicode / strings / NFG | 81 | 0 | 0 | 0 | 91807/91807 | 100% |
+| S15 | Unicode / strings / NFG | 80 | 0 | 1 | 0 | 91752/91752 | 100% |
 | S16 | I/O | 20 | 14 | 0 | 3 | 585/749 | 78% |
-| S17 | Concurrency (supply/promise/async) | 73 | 17 | 6 | 3 | 1249/1300 | 96% |
+| S17 | Concurrency (supply/promise/async) | 74 | 18 | 4 | 3 | 1308/1361 | 96% |
 | S19 | Command-line | 7 | 0 | 0 | 1 | 24/24 | 100% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 6/7 | 86% |
 | S24 | Testing | 11 | 4 | 0 | 2 | 95/112 | 85% |
 | S26 | Documentation (POD) | 10 | 17 | 0 | 0 | 407/587 | 69% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 14 | 0 | 0 | 0 | 465/465 | 100% |
-| S32 | Standard types (str/list/num/…) | 152 | 98 | 1 | 12 | 43086/44677 | 96% |
-| integration | Cross-feature programs | 78 | 32 | 1 | 8 | 1174/1250 | 94% |
-| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 648/723 | 90% |
+| S32 | Standard types (str/list/num/…) | 157 | 93 | 1 | 12 | 43132/44678 | 97% |
+| integration | Cross-feature programs | 79 | 32 | 0 | 8 | 1190/1267 | 94% |
+| 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 647/723 | 89% |
 | 6.d | v6.d language snapshot | 18 | 0 | 0 | 0 | 20310/20310 | 100% |
-| APPENDICES | — | 1 | 3 | 1 | 1 | 27/48 | 56% |
+| APPENDICES | — | 1 | 4 | 0 | 1 | 29/51 | 57% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
@@ -331,12 +333,25 @@ pass list. The one file that flapped across sweeps, `S17-supply/batch.t`, passes
 3/3 in isolation under BOTH binaries — it is the spec-timed supply flapper
 COUNTING's timeout section describes._
 
+_Snapshot 2026-09-22, main at `3d094bd`, the Range and Int-Num-Rat semantics
+sheets implemented (`-j6`, one pass): 810 / 1,464 files fully passing (55.3%);
+559 partial, 89 no-TAP, 6 timeout; 208,408 / 219,867 declared assertions
+(94.8%). The table and the headline figures above are from this run. Six files
+joined the list against a baseline worktree built at the parent commit:
+**S07-iterators/range-iterator.t** (83/103 to 103/103) and five of **S32-num** —
+base.t (47/63), exp.t (64/72), narrow.t (15/17), rand.t (111/113), rounders.t
+(137/143), all now whole. **S02-types/range.t** went 216/259 to 256/259 without
+joining it. The common cause across all of them: a Range keeps its endpoints as
+OBJECTS and a pair of int64 FIELDS it iterates over, and every one of those
+files asked a question — an infinite endpoint, a fractional one, a bigint, a
+string — that only the objects could answer; and `.base` computed its fraction
+through a double, which loses every digit past a mantissa._
+
 _Snapshot 2026-09-21, main at `5becd69` + a third per-file sitting
 (`--workers=3 --cpu=3`, one pass): 798 / 1,464 files fully passing (54.5%); 564
 partial, 92 no-TAP, 10 timeout; 207,985 / 219,915 declared assertions (94.6%).
 Ten files: **S12** 33 to 36, **S32** 150 to 152, **S02** 60 to 61, **S03** 85 to
-86, **S09**, **S14** and **MISC** one each. The table and the headline figures
-above are from this run.
+86, **S09**, **S14** and **MISC** one each.
 
 The one that unlocked more than itself: **a `my class` / `my role` is LEXICAL**.
 The name meant nothing outside its block in Rakudo and everything in ours, so
