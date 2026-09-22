@@ -120,13 +120,11 @@ check('a lexical rule (sigspace) expands into the prefix',
 check('sep-quantifier with a recursive element is not pruned',
       ltm-run('t16.raku', q{grammar G { token value { <array> | <number> }; token array { '[' [ <value>* % [ ',' ] ] ']' }; token number { \d+ } }; say G.parse('[1,2]', :rule<value>) ?? 'ok' !! 'nil';}),
       "ok\n");
-#    ... while a fully DECLARATIVE element keeps Rakudo's own behavior: the
-#    modeled sep-loop cannot reach a first element, so a non-empty list dies
-#    in ranking and the branch is pruned (oracle-verified on 2026.07; if
-#    Rakudo ever fixes this, this expectation flips WITH it)
-check('sep-quantifier with a declarative element prunes like Rakudo',
-      ltm-run('t17.raku', q{grammar G { token value { <array> | <jx> }; token array { '[' <number>* % ',' ']' }; token number { \d+ }; token jx { 'x' } }; say G.parse('[1]', :rule<value>) ?? 'ok' !! 'nil';}),
-      "nil\n");
+#    ... the fully DECLARATIVE element used to be checked here too, expecting
+#    the branch to be PRUNED as Rakudo prunes it. That expectation has now
+#    flipped — ahead of Rakudo rather than with it — and the case moved to
+#    t/regression/ltm-sep-quantifier-first-element.raku, which is rakupp-only
+#    for exactly that reason. This file stays runnable under both engines.
 check('sep-quantifier: empty list still matches',
       ltm-run('t18.raku', q{grammar G { token value { <array> | <jx> }; token array { '[' <number>* % ',' ']' }; token number { \d+ }; token jx { 'x' } }; say G.parse('[]', :rule<value>) ?? 'ok' !! 'nil';}),
       "ok\n");

@@ -246,19 +246,52 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                 cur = buildNode(body, cur, branch, states_[cur].litDepth, depth + 1);
                 if (cur < 0) return -1;
             }
-            // `X* % Y` (min 0): the FIRST element takes no leading separator,
-            // but the sep-included tail below models `(Y X)*` — so an accept
-            // that X's expansion places at its ENTRY (a recursive subrule, a
-            // {…}) would otherwise sit BEHIND the separator, unreachable, and
-            // the whole branch ranks as unmatchable (a JSON grammar's
-            // `<value>* % ','` reached through `|` pruned its only viable
-            // branch). Build one sep-free body copy whose exit stays DANGLING:
-            // terminating constructs put their accept at the loop entry where
-            // the ranking can reach it (oracle grid C1/C2/C10), while a fully
-            // declarative element leaves the copy accept-free and the branch
-            // still prunes — which is what Rakudo does too (grid C3-C6).
-            if (n->sep && n->min == 0 && mx != 0)
-                buildNode(body, cur, branch, states_[cur].litDepth, depth + 1);
+            // `X* % Y` (min 0) is `[ X [ Y X ]* ]?` — the FIRST element takes
+            // NO leading separator. The generic tail below models the whole
+            // thing as `(Y X)*`, which says every non-empty list OPENS with a
+            // separator; the NFA then rules the branch out the moment it sees
+            // an element there, and `|` prunes a branch that plainly matches.
+            // `token call { 'f(' <e>* % ',' ')' }` matched `f(1,2)` called
+            // directly and not through `<call> | <asg>` — nor even through
+            // `<call> | 'zzzz'`, where the other branch cannot match anything,
+            // which is what shows it to be pruning and not mis-ranking. The
+            // one input that survived was `f()`, the zero-element case the
+            // `(Y X)*` shape does model. Rakudo has the same bug (issue #94,
+            // roast's S05-metasyntax/proto-token-ltm.t covers `%` with `**2`,
+            // `**3..3`, `**1..*`, `?` and `+` — every quantifier but this one);
+            // we build the real shape instead.
+            //
+            // An element whose expansion TERMINATES the prefix (a recursive
+            // subrule, a `{…}`) still places its accept at this loop entry,
+            // reachable, because the zero-element ε to `join` is added first —
+            // that is what a JSON grammar's `<value>* % ','` needs to keep its
+            // only viable branch.
+            if (n->sep && n->min == 0 && mx != 0) {
+                int join = addState();
+                states_[cur].eps.push_back({join, 0});         // zero elements
+                int first = buildNode(body, cur, branch, states_[cur].litDepth, depth + 1);
+                if (first < 0) return join;                    // element ended the prefix
+                states_[first].eps.push_back({join, 0});       // exactly one element
+                if (states_[join].litDepth < states_[first].litDepth)
+                    states_[join].litDepth = states_[first].litDepth;
+                if (mx < 0) {                                  // unbounded: one ε-looped `Y X`
+                    int e = buildNode(n->sep.get(), first, branch, states_[first].litDepth, depth + 1);
+                    if (e >= 0) e = buildNode(body, e, branch, states_[e].litDepth, depth + 1);
+                    if (e >= 0) states_[e].eps.push_back({first, 0});
+                }
+                else {                                         // bounded tail, capped like the unroll
+                    long extra = mx - 1; if (extra > 8) extra = 8;
+                    int c2 = first;
+                    for (long i = 0; i < extra; i++) {
+                        c2 = buildNode(n->sep.get(), c2, branch, states_[c2].litDepth, depth + 1);
+                        if (c2 < 0) break;
+                        c2 = buildNode(body, c2, branch, states_[c2].litDepth, depth + 1);
+                        if (c2 < 0) break;
+                        states_[c2].eps.push_back({join, 0});
+                    }
+                }
+                return join;
+            }
             if (mx < 0) { // unbounded tail: one ε-looped copy (sep included)
                 int loopIn = cur;
                 int e;
