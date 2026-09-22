@@ -31,7 +31,7 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~95% of all declared Roast tests pass** (208,408 / 219,867); on the
+**Headline: ~95% of all declared Roast tests pass** (208,513 / 219,801); on the
 stricter file bar, ~55% of files fully pass (810 / 1,464). The per-file breakdown
 comes first below, then the per-test figures. That assertion figure is the
 **shielded** one, as every implementation's is: it counts `ok … # skip` and
@@ -71,7 +71,7 @@ entirely unmeasured territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**208,408 of ~219,867 declared tests — 94.8%**. "Declared" means every test the
+**208,513 of ~219,801 declared tests — 94.9%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -80,9 +80,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 208,408 / 213,458 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 208,408 / 217,718 (95.7%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 208,408 / 219,867 (94.8%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 208,513 / 213,562 (97.6%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 208,513 / 217,652 (95.8%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 208,513 / 219,801 (94.9%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 95% is the per-test analog of the ~55% file coverage. Three notes on scope:
 
@@ -111,7 +111,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 66 | 67 | 0 | 14 | 7713/8307 | 93% |
+| S02 | Literals, types, magicals | 66 | 68 | 0 | 13 | 7805/8411 | 93% |
 | S03 | Operators | 86 | 35 | 0 | 4 | 25773/26139 | 99% |
 | S04 | Blocks, statements, phasers | 34 | 39 | 0 | 4 | 1242/1488 | 83% |
 | S05 | Regexes & grammars | 40 | 54 | 0 | 4 | 5875/6273 | 94% |
@@ -132,7 +132,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S26 | Documentation (POD) | 10 | 17 | 0 | 0 | 407/587 | 69% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 14 | 0 | 0 | 0 | 465/465 | 100% |
-| S32 | Standard types (str/list/num/…) | 157 | 93 | 1 | 12 | 43132/44678 | 97% |
+| S32 | Standard types (str/list/num/…) | 157 | 93 | 1 | 12 | 43145/44678 | 97% |
 | integration | Cross-feature programs | 79 | 32 | 0 | 8 | 1190/1267 | 94% |
 | 6.c | v6.c language snapshot | 2 | 14 | 0 | 2 | 647/723 | 89% |
 | 6.d | v6.d language snapshot | 18 | 0 | 0 | 0 | 20310/20310 | 100% |
@@ -333,10 +333,15 @@ pass list. The one file that flapped across sweeps, `S17-supply/batch.t`, passes
 3/3 in isolation under BOTH binaries — it is the spec-timed supply flapper
 COUNTING's timeout section describes._
 
-_Snapshot 2026-09-22, main at `3d094bd`, the Range and Int-Num-Rat semantics
-sheets implemented (`-j6`, one pass): 810 / 1,464 files fully passing (55.3%);
-559 partial, 89 no-TAP, 6 timeout; 208,408 / 219,867 declared assertions
-(94.8%). The table and the headline figures above are from this run. Six files
+_Snapshot 2026-09-22, main at `b6d664c`, the Range and Int-Num-Rat semantics
+sheets implemented and three alignments past them (`-j6`, one pass): 810 /
+1,464 files fully passing (55.3%); 560 partial, 88 no-TAP, 6 timeout; 208,513 /
+219,801 declared assertions (94.9%). The three: a declaration naming an
+undeclared type is refused, as Rakudo refuses it, which took
+**S02-types/int-uint.t** from 0 (it died before its first assertion) to 92/104;
+a custom Real numifies through its own `.Bridge` wherever it is used, taking
+**S32-num/real-bridge.t** 188/201 to 200/201; and the native containers refuse
+a Str and an unboxable Int. The table and the headline figures above are from this run. Six files
 joined the list against a baseline worktree built at the parent commit:
 **S07-iterators/range-iterator.t** (83/103 to 103/103) and five of **S32-num** —
 base.t (47/63), exp.t (64/72), narrow.t (15/17), rand.t (111/113), rounders.t

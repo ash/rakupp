@@ -25,9 +25,9 @@ narrowest:
 | # | Measure | Current | Definition |
 |---|---|---|---|
 | 1 | **Files fully passing** | 810 / 1,464 (**~55%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 208,408 / 213,458 (~98%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 208,408 / 217,718 (~96%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 208,408 / 219,867 (**~95%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 2 | Assertions of **tests that ran** | 208,513 / 213,562 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 208,513 / 217,652 (~96%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 208,513 / 219,801 (**~95%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~55%)** and **measure 4 (all declared tests, ~95%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -39,8 +39,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (219,867) is ~2.1k larger
-than 3's (217,718) — those 2,149 tests live in 60 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (219,801) is ~2.1k larger
+than 3's (217,652) — those 2,149 tests live in 60 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
@@ -59,15 +59,15 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **219,867** declared tests. (This number
+denominator.** Our current run recovers **219,801** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
 can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 208,408 passes read two ways:
+So our same 208,513 passes read two ways:
 
-- **~95%** against *our* denominator (208,408 / 219,867) — *"of the tests we can
+- **~95%** against *our* denominator (208,513 / 219,801) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~95%** against the suite's *full* declared total —
@@ -397,9 +397,9 @@ The tail of the output is the summary block:
 
 ```
 Files fully passing:  810 / 1464  (55.3%)
-Assertions passed:    208408 / 213458  (97.6%)  of tests that ran
-Assertions passed:    208408 / 217718  (95.7%)  of tests planned by files that emitted a plan
-Assertions passed:    208408 / 219867  (94.8%)  of ALL declared tests (+2038 from 60 no-TAP and +111 from 5 timed-out files, read from source; 3 more have no static plan)
+Assertions passed:    208513 / 213562  (97.6%)  of tests that ran
+Assertions passed:    208513 / 217652  (95.8%)  of tests planned by files that emitted a plan
+Assertions passed:    208513 / 219801  (94.9%)  of ALL declared tests (+2038 from 60 no-TAP and +111 from 5 timed-out files, read from source; 3 more have no static plan)
 ```
 
 (The harness reads the Roast checkout from `$ROAST`, defaulting to
