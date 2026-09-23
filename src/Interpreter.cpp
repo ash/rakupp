@@ -30648,6 +30648,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         (*codeCache)[code] = prog;
         return prog;
     };
+    // Every Match this parse hands out — the finished tree, the `$/` a code
+    // block sees mid-match, a subrule's Cursor — shares ONE copy of the whole
+    // subject, so a submatch's `.orig`/`.target`/`.prematch`/`.postmatch`
+    // read the string being parsed, not just its own span (issue #99: an
+    // action computing a line number from `$/.orig.substr(0, $/.from)` got
+    // it relative to the enclosing match).
+    auto targetStr = std::make_shared<std::string>(input);
+    auto subMatch = [&input, targetStr](long f, long t) {
+        Value m = Value::matchVal(input.substr(f, t - f), f, t);
+        m.extM() = targetStr;
+        return m;
+    };
     // Inline `{ make … }` blocks in a token run during matching; their made value is
     // recorded here by span and applied to the node in build().
     auto pendingMakes = std::make_shared<std::map<std::pair<long, long>, Value>>();
@@ -30668,17 +30680,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Execute `code` with an overlay of the current rule params (as Str) and $/ (carrying
     // the named captures so far) temporarily bound; `:my`/assignments persist in tctx_.cur.
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
-    auto runCode = [this, &input, parseCode, pendingMakes](const std::string& code, long from, long to,
+    auto runCode = [this, &input, parseCode, pendingMakes, subMatch](const std::string& code, long from, long to,
                                              const NamedMap& named, const ParamMap& params,
                                              const std::vector<std::pair<long, long>>* caps = nullptr,
                                              const RxCursorCaps* cc = nullptr) -> Value {
         auto prog = parseCode(code);
         if (!prog) return Value::any();
         // build $/ over [from..to] with the named sub-captures attached
-        Value m = Value::matchVal(input.substr(from, to - from), from, to);
+        Value m = subMatch(from, to);
         for (auto& nm : named)
-            m.hashRef()[nm.first] = Value::matchVal(input.substr(nm.second.first, nm.second.second - nm.second.first),
-                                                  nm.second.first, nm.second.second);
+            m.hashRef()[nm.first] = subMatch(nm.second.first, nm.second.second);
         // …and where a name has OCCURRENCES rather than one span, the list it will
         // be in the finished match. The flat `named` map keeps only the last span
         // per name, so `<n> '+' <n> { $<n>.elems }` read 0 mid-match where the
@@ -30689,7 +30700,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 if (occ.empty()) continue;
                 bool asList = occ.size() > 1 || (cc->listNames && cc->listNames->count(kv.first));
                 auto one = [&](const ParseNode& pn) {
-                    return Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
+                    return subMatch(pn.from, pn.to);
                 };
                 if (!asList) { m.hashRef()[kv.first] = one(occ.back()); continue; }
                 Value lst = Value::array(); lst.isList = true;
@@ -30704,7 +30715,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (caps) {
             for (size_t ci = 0; ci < caps->size(); ci++) {
                 long cb = (*caps)[ci].first, ce = (*caps)[ci].second;
-                Value cv = cb >= 0 && ce >= cb ? Value::matchVal(input.substr(cb, ce - cb), cb, ce)
+                Value cv = cb >= 0 && ce >= cb ? subMatch(cb, ce)
                                                : Value::any();
                 m.arrRef().push_back(cv);
                 capSlots.push_back({"$" + std::to_string(ci), cv});
@@ -30851,13 +30862,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // The engine asks once per name whether a method exists; the call hands
     // the method a cursor as `self` (a Match at the call position carrying the
     // whole subject, so `self.pos` / `self.target` read as in Rakudo) and takes
-    // a returned Match as the subrule's match. The subject is copied for the
-    // cursor's `.orig` once, on the first call, and only then.
+    // a returned Match as the subrule's match. Its `.orig` is the parse's
+    // shared subject.
     gm.hooks.hasMethod = [g](const std::string& nm) -> bool {
         return g->findMethodForCall(nm) != nullptr;
     };
-    auto cursorOrig = std::make_shared<std::shared_ptr<std::string>>();
-    gm.hooks.callMethod = [this, g, &input, runCode, cursorOrig](
+    gm.hooks.callMethod = [this, g, runCode, targetStr](
             const std::string& name, const std::string& args, long pos,
             const NamedMap& named, const std::vector<std::pair<long, long>>& caps,
             const ParamMap& params, RxCursorCall& call, long& endOut, ParseNode& nodeOut) -> int {
@@ -30872,12 +30882,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             if (lst.t == VT::Array && lst.arr()) for (auto& e : *lst.arr()) av.push_back(e);
             else if (lst.t != VT::Any) av.push_back(lst);
         }
-        if (!*cursorOrig) *cursorOrig = std::make_shared<std::string>(input);
         auto cur = std::make_shared<GrammarCursor>();
-        cur->grammar = g; cur->input = *cursorOrig;
+        cur->grammar = g; cur->input = targetStr;
         cur->live = std::make_shared<RxCursorCall*>(&call);
         Value self = Value::matchVal("", pos, pos);
-        self.extM() = *cursorOrig;
+        self.extM() = targetStr;
         self.mdW().cursor = cur;
         Value r;
         try { r = invokeMethodChain(name, g, self, std::move(av), nullptr, method, owner); }
@@ -30940,7 +30949,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 tctx_.cur->vars[kv.first] = kv.second;
             }
         }
-        Value mv = Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
+        Value mv = subMatch(pn.from, pn.to);
         // Names captured INSIDE a positional group belong to that group's Match,
         // not to this one: `rule array { '{' ( <element> ','?)* '}' }` gives
         // `$0[i]<element>`, and `$/<element>` does not exist (Rakudo scopes a
@@ -30976,7 +30985,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     auto it = pn.capReps->find((int)ci);
                     if (it != pn.capReps->end())
                         for (auto& o : it->second) {
-                            Value om = Value::matchVal(input.substr(o.first, o.second - o.first), o.first, o.second);
+                            Value om = subMatch(o.first, o.second);
                             // each occurrence carries the SUBRULE children whose
                             // spans nest inside it — Cro::Uri's query action reads
                             // `$_<pchars>` per occurrence of `( <pchars> | … )*`
@@ -30987,7 +30996,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                     if (child.from >= o.first && child.to <= o.second) {
                                         consumedByGroup[kv.first]++;
                                         hits.arr()->push_back(child.name.empty()
-                                            ? Value::matchVal(input.substr(child.from, child.to - child.from), child.from, child.to)
+                                            ? subMatch(child.from, child.to)
                                             : build(child));
                                     }
                                 if (hits.arr()->size() == 1) om.hashRef()[kv.first] = (*hits.arr())[0];
@@ -31001,15 +31010,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
             auto& c = pn.caps[ci];
             if (c.first < 0) mv.arrRef().push_back(Value::nil());
-            else mv.arrRef().push_back(Value::matchVal(input.substr(c.first, c.second - c.first), c.first, c.second));
+            else mv.arrRef().push_back(subMatch(c.first, c.second));
         }
         for (auto& kv : pn.named)
             if (!pn.kids || !pn.kids->count(kv.first))
-                mv.hashRef()[kv.first] = Value::matchVal(input.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
+                mv.hashRef()[kv.first] = subMatch(kv.second.first, kv.second.second);
         // a leaf with no rule name is a plain $<x>=[…] capture: just its span, no actions
         auto buildChild = [&](const ParseNode& child) -> Value {
             if (child.name.empty())
-                return Value::matchVal(input.substr(child.from, child.to - child.from), child.from, child.to);
+                return subMatch(child.from, child.to);
             return build(child);
         };
         if (pn.kids) for (auto& kv : *pn.kids) {
