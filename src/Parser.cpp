@@ -1010,6 +1010,8 @@ bool Parser::typeWordAsTerm(const Token& t) const {
     return true;
 }
 
+static bool fusedQqww(const Token& t); // `<<X>>` fused by the lexer; defined beside qqwwList
+
 bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
@@ -1028,7 +1030,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "::" || // symbolic reference `::($name)` / `::Foo`
-                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
+                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || fusedQqww(t) || // ∞, «qw», <<qww>>
                    t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
                    (t.text == "//" && langRev_ >= 2) || // 6.e prefix `//$x` — "is it defined"
 
@@ -1178,7 +1180,7 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                      peek().kind == Tok::LParen ||     // Callable contextualizer `say &(%h<k>)()`
                      (peek().kind == Tok::Var && peek().text.size() > 1 &&
                       (peek().text[0] == '%' || peek().text[0] == '@' || peek().text[0] == '$')))) || // `say &%h<k>()`
-                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
+                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || fusedQqww(t) || // ∞, «qw», <<qww>>
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
             // A keyword that has nothing after it is not a keyword: `say if;` calls
@@ -2878,6 +2880,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             base = std::move(idx);
             continue;
+        } else if (!cur().spaceBefore &&
+                   (isOp("\xC2\xAB") || isOp("<<") || fusedQqww(cur()))) {
+            // the interpolating word-key subscript `%h«a $x»` / `%h<<a $x>>`:
+            // `%h{«…»}`. Tight on a term it is always the subscript, never a
+            // hyper infix — `@a«+»@b` is "Two terms in a row" in Rakudo.
+            std::vector<std::string> words;
+            takeQqwwWords(words);
+            if (words.empty()) { base = zenDecont(std::move(base)); continue; }
+            auto idx = std::make_unique<Index>();
+            idx->base = std::move(base);
+            idx->isHash = true;
+            idx->index = qqwwList(words);
+            base = std::move(idx);
+            continue;
         } else if (isOp("<") && !cur().spaceBefore) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             // On a numeric literal (`1<2`) this can only be a mistyped comparison —
@@ -3044,6 +3060,19 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance();
             bool mutate = false;
             if (isOp("=")) { advance(); mutate = true; } // .= mutating method call
+            // .«key» / .<<key>> postcircumfix:  %h.«a»  ==  %h«a»
+            if (!mutate && !hyperNext && !cur().spaceBefore &&
+                (isOp("\xC2\xAB") || isOp("<<") || fusedQqww(cur()))) {
+                std::vector<std::string> words;
+                takeQqwwWords(words);
+                if (words.empty()) { base = zenDecont(std::move(base)); continue; }
+                auto idx = std::make_unique<Index>();
+                idx->base = std::move(base);
+                idx->isHash = true;
+                idx->index = qqwwList(words);
+                base = std::move(idx);
+                continue;
+            }
             // .<key> postcircumfix:  $_.<key>  ==  $_<key>
             if (isOp("<") && !cur().spaceBefore) {
                 advance();
@@ -4112,15 +4141,20 @@ ExprPtr Parser::parseColonPair() {
         return pair;
     }
     // radix literal: :16<FF> / :2<1010> / :8<777>  (a number written in the given base)
-    if (isKind(Tok::IntLit) && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
+    // …and in guillemets, `:10«42»` / `:16<<2a>>`, which roast's val.t reads as
+    // the same number (and which the «…» SUBSCRIPT would otherwise take).
+    if (isKind(Tok::IntLit) && peek().kind == Tok::Op && !peek().spaceBefore &&
+        (peek().text == "<" || peek().text == "\xC2\xAB" || peek().text == "<<" || fusedQqww(peek()))) {
         int base = std::atoi(cur().text.c_str());
         if (base < 2 || base > 36)
             throw ParseError("Radix " + std::to_string(base) +
                              " out of range (allowed: 2..36)", cur().line,
                              "X::Syntax::Number::RadixOutOfRange",
                              {{"radix", std::to_string(base)}});
-        advance(); advance(); // radix and '<'
-        std::vector<std::string> words = readAngleWords(">");
+        advance(); // radix
+        std::vector<std::string> words;
+        if (isOp("<")) { advance(); words = readAngleWords(">"); }
+        else takeQqwwWords(words);
         std::string digits = words.empty() ? "" : words[0];
         // exponent form `:16<dead_beef*16**8>` / `:2<1.1*10**10>`: the part after
         // `*` is a base**exp multiplier, applied as a runtime multiplication so
@@ -4837,6 +4871,11 @@ ExprPtr Parser::parsePrimary() {
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
             arr->isList = true;
+            // qqww shares «…»'s word rules (it IS «…» under :v): an interpolated
+            // value splits into words, and a bare word splits at its
+            // interpolations — qqww{$y} with "a b" is ("a", "b")
+            const bool qq = protect && interp;
+            std::string qqFlags;
             size_t i = 0, n = raw.size();
             while (i < n) {
                 for (int w; i < n && (w = uniWsLen(raw, i, true)); ) i += w;
@@ -4851,7 +4890,19 @@ ExprPtr Parser::parsePrimary() {
                         seg += raw[i++];
                     }
                     (void)closed;
-                    if (q == '"' && interp)
+                    if (qq) {
+                        std::string lit = seg;
+                        if (q == '\'') {
+                            lit.clear();
+                            for (size_t k = 0; k < seg.size(); k++) {
+                                if (seg[k] == '\\' && k + 1 < seg.size() &&
+                                    (seg[k + 1] == q || seg[k + 1] == '\\')) { lit += seg[++k]; continue; }
+                                lit += seg[k];
+                            }
+                        }
+                        qqwwAddWord(*arr, qqFlags, std::string(1, q) + lit + q, allomorph);
+                    }
+                    else if (q == '"' && interp)
                         arr->items.push_back(parseInterpString(seg));
                     else {
                         // single-quote semantics: only \' and \\ unescape
@@ -4873,7 +4924,8 @@ ExprPtr Parser::parsePrimary() {
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
                     // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
                     ExprPtr cp, num;
-                    if (protect && (cp = angleColonPair(word))) // `:name(…)` word → Pair
+                    if (qq) qqwwAddWord(*arr, qqFlags, word, allomorph);
+                    else if (protect && (cp = angleColonPair(word))) // `:name(…)` word → Pair
                         arr->items.push_back(std::move(cp));
                     else if (allomorph && (num = angleWordNumeric(word))) {
                         auto al = std::make_unique<AllomorphLit>();
@@ -4885,6 +4937,7 @@ ExprPtr Parser::parsePrimary() {
                         arr->items.push_back(std::make_unique<StrLit>(word));
                 }
             }
+            if (qq) return qqwwFinish(std::move(arr), qqFlags, allomorph);
             // a single `<word>` is that element itself, not a one-item list
             if (arr->items.size() == 1) return std::move(arr->items[0]);
             return arr;
@@ -5647,23 +5700,14 @@ ExprPtr Parser::parsePrimary() {
                 arr->isList = true;
                 return arr;
             }
-            if (t.text == "\xC2\xAB") {
-                // guillemet word list « a b c » — qq:ww:v, same ladder as qqww
-                advance();
-                auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords("\xC2\xBB"))
-                    arr->items.push_back(qqwwWordItem(w));
-                arr->isList = true;
-                return arr;
-            }
-            if (t.text == "<<") {
-                // ASCII guillemets: `<<0 +4 'a b'>>` — qq:ww:v, same ladder as qqww
-                advance();
-                auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords(">>"))
-                    arr->items.push_back(qqwwWordItem(w));
-                arr->isList = true;
-                return arr;
+            // guillemet word list « a b c », and its ASCII spelling `<<0 +4 'a b'>>`
+            // (one word of which the lexer fuses: `<<ab>>`) — qq:ww:v, same
+            // ladder as qqww
+            if (t.text == "\xC2\xAB" || t.text == "<<" || fusedQqww(t)) {
+                std::vector<std::string> words;
+                takeQqwwWords(words);
+                if (words.empty()) { auto arr = std::make_unique<ArrayLit>(); arr->isList = true; return arr; }
+                return qqwwList(words);
             }
             if (t.text == "->" || t.text == "<->") {
                 // Perl 5's `Foo->new`: an arrow TIGHT on both sides is the old
@@ -6801,25 +6845,123 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     return nullptr;
 }
 
-// One word of a «…»/<<…>>/qqww list, processed with qq:ww:v semantics:
-// colonpair → Pair, quoted span → literal (double quotes interpolate),
-// bare numeric → allomorph, bare with $@{\ → interpolated string.
-// The three list forms MUST share this ladder — roast compares «…» against
-// qqww:v[…] element-for-element (S02-literals/allomorphic.t).
-ExprPtr Parser::qqwwWordItem(const std::string& w) {
-    if (ExprPtr cp = angleColonPair(w)) return cp;
+// A qq-word-list word that needs no run-time work: an allomorph when it spells
+// a number and the list val()s its words (`«42»`, `qqww:v[42]`), else a Str.
+static ExprPtr qqwwStaticWord(const std::string& w, bool val) {
+    if (val)
+        if (ExprPtr num = angleWordNumeric(w)) {
+            auto al = std::make_unique<AllomorphLit>();
+            al->num = std::move(num); al->str = w;
+            return al;
+        }
+    return std::make_unique<StrLit>(w);
+}
+
+// One word of a «…»/<<…>>/qqww list, appended to `arr` as one or more items
+// with their `__qqww` spelling in `flags`: `l` an item as it stands, `s` an
+// interpolated value to split on whitespace and val(), `w` to split only, `v`
+// a quoted interpolation to val() whole. Rakudo's qq:ww rules:
+//   colonpair → Pair; quoted span → one word (double quotes interpolate), and
+//   val()'d under :v — `«"4.5"»` is a RatStr; a bare word that interpolates
+//   is one word PER literal run and PER interpolation (`«a$x»` is ("a", "a")),
+//   and an interpolated value splits on whitespace (an empty one is no word).
+// «…» IS qqww:v, and roast compares the two element for element
+// (S02-literals/allomorphic.t), so both come through here.
+void Parser::qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val) {
+    if (w.size() > 1 && w[0] == ':')
+        if (ExprPtr cp = angleColonPair(w)) { arr.items.push_back(std::move(cp)); flags += 'l'; return; }
+    auto stringified = [](ExprPtr e) {
+        // stringified HERE, so the list cannot flatten `@a[]` into several items
+        // that the flags no longer line up with
+        auto mc = std::make_unique<MethodCall>();
+        mc->inv = std::move(e);
+        mc->method = "Str";
+        return mc;
+    };
+    // the text of an interpolation with nothing to interpolate, if that is what it is
+    auto staticText = [](const Expr* e, std::string& out) {
+        if (e->kind == NK::StrLit) { out = static_cast<const StrLit*>(e)->v; return true; }
+        if (e->kind != NK::InterpStr) return false;
+        out.clear();
+        for (auto& p : static_cast<const InterpStr*>(e)->parts) {
+            if (p->kind != NK::StrLit) return false;
+            out += static_cast<const StrLit*>(p.get())->v;
+        }
+        return true;
+    };
+    std::string text;
     if (w.size() >= 2 && (w.front() == '\'' || w.front() == '"') && w.back() == w.front()) {
         std::string inner = w.substr(1, w.size() - 2);
-        if (w.front() == '"') return parseInterpString(inner);
-        return std::make_unique<StrLit>(inner);
+        if (w.front() == '\'') { arr.items.push_back(qqwwStaticWord(inner, val)); flags += 'l'; return; }
+        ExprPtr is = parseInterpString(inner);
+        if (staticText(is.get(), text)) { arr.items.push_back(qqwwStaticWord(text, val)); flags += 'l'; return; }
+        if (val) { arr.items.push_back(stringified(std::move(is))); flags += 'v'; }
+        else { arr.items.push_back(std::move(is)); flags += 'l'; }
+        return;
     }
-    if (ExprPtr num = angleWordNumeric(w)) {
-        auto al = std::make_unique<AllomorphLit>();
-        al->num = std::move(num); al->str = w;
-        return al;
+    if (w.find_first_of("$@{\\") == std::string::npos) {
+        arr.items.push_back(qqwwStaticWord(w, val)); flags += 'l'; return;
     }
-    if (w.find_first_of("$@{\\") != std::string::npos) return parseInterpString(w);
-    return std::make_unique<StrLit>(w);
+    ExprPtr is = parseInterpString(w);
+    if (staticText(is.get(), text)) { arr.items.push_back(qqwwStaticWord(text, val)); flags += 'l'; return; }
+    for (auto& part : static_cast<InterpStr*>(is.get())->parts) {
+        if (part->kind == NK::StrLit) {
+            // a literal run (escapes already applied) is a word as it stands
+            arr.items.push_back(qqwwStaticWord(static_cast<StrLit*>(part.get())->v, val));
+            flags += 'l';
+        }
+        else { arr.items.push_back(stringified(std::move(part))); flags += val ? 's' : 'w'; }
+    }
+}
+
+// The finished list. Without run-time work, one word is that word, as `<a>` is
+// (`«a»` is "a"). With it, the list goes through `__qqww`; under val() a lone
+// interpolation that comes to exactly one word is that word (`«$x»`,
+// `qqww:v{$n}`), and otherwise — `qqww{$x}` — it stays a List.
+ExprPtr Parser::qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& flags, bool val) {
+    if (flags.find_first_not_of('l') == std::string::npos) {
+        if (arr->items.size() == 1) {
+            // a lone colonpair is a Pair VALUE, not a named argument: `f(«:a(1)»)`
+            if (arr->items[0]->kind == NK::Pair)
+                static_cast<PairExpr*>(arr->items[0].get())->parenned = true;
+            return std::move(arr->items[0]);
+        }
+        return arr;
+    }
+    auto c = std::make_unique<Call>();
+    c->name = "__qqww";
+    c->args.push_back(std::make_unique<StrLit>((val && flags.size() == 1 ? "c" : "n") + flags));
+    c->args.push_back(std::move(arr));
+    return c;
+}
+
+// A `<<X>>` the lexer fused into one hyper-metaop token, in a place where it
+// can only be a one-word `«X»` list: a term, or a subscript tight on a term.
+static bool fusedQqww(const Token& t) {
+    const std::string& s = t.text;
+    return t.kind == Tok::Op && s.size() > 4 && s.compare(0, 2, "<<") == 0 &&
+           s.compare(s.size() - 2, 2, ">>") == 0 &&
+           s.find_first_of("<>", 2) == s.size() - 2;
+}
+
+bool Parser::takeQqwwWords(std::vector<std::string>& words) {
+    if (isOp("\xC2\xAB")) { advance(); words = readAngleWords("\xC2\xBB"); return true; }
+    if (isOp("<<")) { advance(); words = readAngleWords(">>"); return true; }
+    if (fusedQqww(cur())) {
+        const std::string t = advance().text;
+        words = {t.substr(2, t.size() - 4)};
+        return true;
+    }
+    return false;
+}
+
+// The whole `«…»` / `<<…>>` list: qq:ww:v.
+ExprPtr Parser::qqwwList(const std::vector<std::string>& words) {
+    auto arr = std::make_unique<ArrayLit>();
+    arr->isList = true;
+    std::string flags;
+    for (auto& w : words) qqwwAddWord(*arr, flags, w, true);
+    return qqwwFinish(std::move(arr), flags, true);
 }
 
 // ---------------- string interpolation ----------------
@@ -6857,6 +6999,9 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     // a `<…>` word list may CONTAIN nested angle forms (`< :10<42> :16<2a> >`):
     // an inner `<` opens a nested group whose `>` is content, not the closer
     int depth = 0;
+    const bool qqww = close == "\xC2\xBB" || close == ">>"; // «…» / <<…>> (quotes are syntax)
+    int braces = 0;          // inside a `{…}` in a qqww word, quotes are code
+    bool afterQuote = false; // the token before was a quoted span: start a new word
     while (!(isOp(close) && depth == 0) && !isKind(Tok::End)) {
         // `<Zm8=>` — the lexer fused the word's trailing `=` with the closing angle
         // into a FAT ARROW. Inside a word list it is just those two characters, so
@@ -6883,6 +7028,27 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
                 toks_[pos_].text = ">>";
                 toks_.erase(toks_.begin() + pos_ + 1);
             }
+            // …and re-lex what the close leaves behind together with the operator
+            // tokens glued after it: `%h<<a b>>==1` lexes `>>=` + `=`, and the split
+            // alone leaves two assignments where the source has one `==`.
+            else if (toks_[pos_].text[0] != '>') {
+                std::string glued = toks_[pos_].text;
+                size_t j = pos_ + 1;
+                while (j < toks_.size() && !toks_[j].spaceBefore &&
+                       (toks_[j].kind == Tok::Op || toks_[j].kind == Tok::FatArrow))
+                    glued += toks_[j++].text;
+                if (j > pos_ + 1) {
+                    std::vector<Token> nt = Lexer(glued, false).tokenize();
+                    if (!nt.empty() && nt.back().kind == Tok::End) nt.pop_back();
+                    bool allOps = true;
+                    for (auto& k : nt) allOps = allOps && (k.kind == Tok::Op || k.kind == Tok::FatArrow);
+                    if (allOps && !nt.empty() && nt.size() < j - pos_) {
+                        for (auto& k : nt) { k.line = toks_[pos_].line; k.spaceBefore = false; }
+                        toks_.erase(toks_.begin() + pos_, toks_.begin() + j);
+                        toks_.insert(toks_.begin() + pos_, nt.begin(), nt.end());
+                    }
+                }
+            }
             return words;
         }
         // symmetric end-glue: `infix:<+>` lexes `+>` as ONE op token — the
@@ -6900,7 +7066,21 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         // word list <v8.OMG vfe.xxx> loses the prefix on the v+digit entries
         // (Cro::Uri's IPvFuture test hosts)
         std::string wt = t.kind == Tok::VersionLit ? "v" + t.text : t.text;
-        if (words.empty() || t.spaceBefore) words.push_back(wt);
+        bool sep = words.empty() || t.spaceBefore;
+        const bool quoted = qqww && (t.kind == Tok::StrLit || t.kind == Tok::StrInterp);
+        if (quoted) {
+            // the lexer took the quotes off; qqwwAddWord needs them back to keep
+            // `«"$y"»` one word, and so does code in a word (`«{"a b"}»`). Outside
+            // a block a quoted span is a word of its own, glued or not:
+            // `«x"a b"»` is ("x", "a b").
+            const char q = t.kind == Tok::StrInterp ? '"' : '\'';
+            wt = q + wt + q;
+        }
+        if ((quoted || afterQuote) && braces == 0) sep = true;
+        afterQuote = quoted && braces == 0;
+        if (qqww && t.kind == Tok::LBrace) braces++;
+        else if (qqww && t.kind == Tok::RBrace && braces > 0) braces--;
+        if (sep) words.push_back(wt);
         else words.back() += wt;
         advance();
     }
@@ -7162,6 +7342,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // ABC.chars[0] and "$s.uc.chars()" prints 3 (Rakudo's rule, probed).
             if (committedLen < var.size() && j < n &&
                 (raw[j] == '[' || raw[j] == '{' || raw[j] == '<' || raw[j] == '(' ||
+                 ((unsigned char)raw[j] == 0xC2 && j + 1 < n && (unsigned char)raw[j + 1] == 0xAB) ||
                  (raw[j] == '.' && j + 1 < n && (raw[j + 1] == '[' || raw[j + 1] == '{' || raw[j + 1] == '('))))
                 break;
             if (j < n && raw[j] == '[') {
@@ -7177,6 +7358,15 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // text, which is what keeps `"$name(see note)"` printing.
                 int d = 1; var += raw[j++];
                 while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                commit();
+            } else if (j + 1 < n && ((raw[j] == '<' && raw[j + 1] == '<') ||
+                                     ((unsigned char)raw[j] == 0xC2 && (unsigned char)raw[j + 1] == 0xAB))) {
+                // interpolating word subscript: "%h<<a $x>>" / "%h«a»"
+                const char* close = raw[j] == '<' ? ">>" : "\xC2\xBB";
+                size_t e = raw.find(close, j + 2);
+                if (e == std::string::npos) break;
+                var += raw.substr(j, e + 2 - j);
+                j = e + 2;
                 commit();
             } else if (j < n && raw[j] == '<') {
                 // angle-bracket hash subscript: %h<key>  @a<...>

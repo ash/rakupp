@@ -106,7 +106,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 // to a name outside this table is a refusal, so the histogram names the gap.
 const std::set<string> kBuiltins = {
     "item", "decont", "bindArray", "iterTopic", "parametric",
-    "opFn", "react", "supplyBlock", "whenever", "emit", "done", "sleepP", "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list",
+    "opFn", "react", "supplyBlock", "whenever", "emit", "done", "sleepP", "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list", "__qqww",
     "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",

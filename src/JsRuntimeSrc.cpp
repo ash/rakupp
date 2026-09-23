@@ -3020,6 +3020,8 @@ function radix(base, sv) {
     if (den > 1n) return ratResult(val, den);
     return normBig(val);
 }
+// `«a $x»` whose words interpolate (Parser::qqwwFinish): flags[0] c/n collapses a one-word result or not; then per item `l` as is, `s` split on whitespace + val(), `w` split only, `v` val() whole
+function qqww(flags, list) { flags = str(flags); const out = []; let k = 1; for (const x of itemsOf(list)) { const f = flags[k++]; if (f === 's' || f === 'w') { for (const w of str(x).split(/\s+/)) if (w !== '') out.push(f === 's' ? val(w) : w); } else if (f === 'v') out.push(val(str(x))); else out.push(x); } return flags[0] === 'c' && out.length === 1 ? out[0] : mkList(out); }
 function radixList(base, ...digits) { const bb = BigInt(Number(toInt(base))); let v = 0n; for (const d of digits) { if (d instanceof RNamed) continue; for (const x of itemsOf(d)) v = v * bb + BigInt(toInt(x)); } return normBig(v); }
 // val(Str): an allomorph when the string spells a number, else the string; MAIN's arguments come this way
 function val(s) { s = str(s); try { if (s === '') return new RAllo(0, '');   /* val("") is IntStr(0, "") — an empty `--opt=` value, an empty %*ENV entry */ if (s.trim() === '') return s; const n = strToNumeric(s); return new RAllo(n, s); } catch (e) { return s; } }
@@ -3091,14 +3093,14 @@ const OPS = {
 function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.length, y.length); let o = ''; for (let i = 0; i < n; i++) o += String.fromCharCode(f(x.charCodeAt(i) || 0, y.charCodeAt(i) || 0)); return o; }
 const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
 function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
-    if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
+)RKJS",
+R"RKJS(    if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
     if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
 // [op] LIST — the reduce metaoperator, with chaining for comparison ops
 const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~', 'before', 'after']);
 const isChainOp = (op) => CHAIN_OPS.has(op[0] === '!' ? op.slice(1) : op);   // [!after] chains like [after]
 const RIGHT_OPS = new Set(['**', '=>', 'xx', 'x']);
-)RKJS",
-R"RKJS(function reduceOp(op, v, triangle) {
+function reduceOp(op, v, triangle) {
     if (op === 'R,' && triangle) return mkSeq(arr(v).map((_, i, items) => mkList(items.slice(0, i + 1).reverse())));   // [\R,]: each prefix reversed
     if (op[0] === 'R' && !OPS[op] && OPS[op.slice(1)]) return reduceOp(op.slice(1), mkList(arr(v).slice().reverse()), triangle);   // [R-] 1,2,3 is 3-2-1: the list reversed, folded left ([\R-]: 3 1 0)
     const items = arr(v);
@@ -3208,7 +3210,7 @@ Object.assign(R, {
     say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
-    categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
+    categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, '__qqww': qqww, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
@@ -3248,12 +3250,12 @@ M(T.Mu, {
     sum: (s) => sumList(s), min: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], false, nm(a)) : minOf(s, posArgs(a)[0]), max: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], true, nm(a)) : maxOf(s, posArgs(a)[0]), minmax: (s, ...a) => { const f = posArgs(a)[0] ?? nm(a).get('by'); return f ? range(minOf(s, f), maxOf(s, f)) : minmax(s); }, unique: (s, ...a) => uniqueList(s, nm(a).get('as') || nm(a).get('with')), squish: (s) => squishList(s),
     head: (s, n) => headOf(s, n), tail: (s, n) => tailOf(s, n), keys: (s) => keysOf(s), values: (s) => valuesOf(s), kv: (s) => kvOf(s), pairs: (s) => pairsOf(s), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
     pick: (s, n) => pickFrom(s, n), roll: (s, n) => rollFrom(s, n), reduce: (s, f) => reduceList(f, s), produce: (s, f) => produceList(f, s), classify: (s, ...a) => classifyList(s, posArgs(a)[0], nm(a).get('as')), categorize: (s, ...a) => categorizeList(s, posArgs(a)[0], nm(a).get('as')), repeated: (s, ...a) => repeatedList(s, nm(a).get('as') || nm(a).get('with')),
-    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
+)RKJS",
+R"RKJS(    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
     any: (s) => junction('any', s), all: (s) => junction('all', s), none: (s) => junction('none', s), one: (s) => junction('one', s),
     Set: (s) => toSetty(s, T.Set), SetHash: (s) => toSetty(s, T.SetHash), Bag: (s) => toSetty(s, T.Bag), BagHash: (s) => toSetty(s, T.BagHash), Mix: (s) => toSetty(s, T.Mix), MixHash: (s) => toSetty(s, T.MixHash),
     Numeric: (s) => toNumeric(s), Int: (s) => toInt(toNumeric(s)), Num: (s) => mkNum(toFloat(s)), Rat: (s) => { const n = toNumeric(s); return n instanceof RRat ? n : isIntVal(n) ? mkRat(big(n), 1n) : floatToRat(toFloat(n)); }, Real: (s) => toNumeric(s),
-)RKJS",
-R"RKJS(    Stringy: (s) => str(s), chars: (s) => chars(s), uc: (s) => uc(s), lc: (s) => lc(s), tc: (s) => tc(s), tclc: (s) => tclc(s), fc: (s) => fc(s), wordcase: (s) => wordcase(s), flip: (s) => flip(s), trim: (s) => trim(s),
+    Stringy: (s) => str(s), chars: (s) => chars(s), uc: (s) => uc(s), lc: (s) => lc(s), tc: (s) => tc(s), tclc: (s) => tclc(s), fc: (s) => fc(s), wordcase: (s) => wordcase(s), flip: (s) => flip(s), trim: (s) => trim(s),
     'trim-leading': (s) => trimLeading(s), 'trim-trailing': (s) => trimTrailing(s), chomp: (s) => chomp(s), chop: (s, n) => chop(s, n), ord: (s) => ord(s), chr: (s) => chr(s), ords: (s) => ords(s), chrs: (s) => chrs(s),
     index: (s, n, st) => strIndex(s, n, st), rindex: (s, n, st) => strRindex(s, n, st), contains: (s, n, st) => contains(s, n, st), 'starts-with': (s, p) => startsWith(s, p), 'ends-with': (s, p) => endsWith(s, p),
     substr: (s, f, l) => substr(s, f, l), split: (s, ...a) => strSplit(s, posArgs(a)[0], posArgs(a)[1], nm(a)), words: (s, n) => words(s, n), lines: (s) => lines(s), comb: (s, p, l) => comb(s, p, l), indent: (s, n) => indent(s, n),
@@ -3314,10 +3316,10 @@ M(T.List, {
     'Hash': (s) => newHash(s), 'hash': (s) => newHash(s), 'Bag': (s) => toSetty(s, T.Bag), 'Set': (s) => toSetty(s, T.Set), 'Mix': (s) => toSetty(s, T.Mix), 'BagHash': (s) => toSetty(s, T.BagHash), 'SetHash': (s) => toSetty(s, T.SetHash), 'MixHash': (s) => toSetty(s, T.MixHash),
     'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
 });
-M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
-M(T.Range, { elems: (s) => s.elemsOrInf(), min: (s) => s.min(), max: (s) => s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
 )RKJS",
-R"RKJS(    list: (s) => mkList(s.arr()), List: (s) => mkList(s.arr()), Array: (s) => mkArray(s.arr()), reverse: (s) => s.reverse(), 'is-lazy': (s) => s.isInfinite(), 'infinite': (s) => s.isInfinite(), 'is-int': (s) => s.isIntRange(), sum: (s) => { if (s.isInfinite()) return Infinity; if (s.isIntRange() && !s.isInfinite()) { const lo = s.lo(), hi = s.hi(); if (lt(hi, lo)) return 0; return idiv(mul(add(lo, hi), add(sub(hi, lo), 1)), 2); } return sumList(s); },
+R"RKJS(M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
+M(T.Range, { elems: (s) => s.elemsOrInf(), min: (s) => s.min(), max: (s) => s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
+    list: (s) => mkList(s.arr()), List: (s) => mkList(s.arr()), Array: (s) => mkArray(s.arr()), reverse: (s) => s.reverse(), 'is-lazy': (s) => s.isInfinite(), 'infinite': (s) => s.isInfinite(), 'is-int': (s) => s.isIntRange(), sum: (s) => { if (s.isInfinite()) return Infinity; if (s.isIntRange() && !s.isInfinite()) { const lo = s.lo(), hi = s.hi(); if (lt(hi, lo)) return 0; return idiv(mul(add(lo, hi), add(sub(hi, lo), 1)), 2); } return sumList(s); },
     'int-bounds': (s) => mkList([s.lo(), s.hi()]), 'minmax': (s) => mkList([s.min(), s.max()]), 'iterator': (s) => s[Symbol.iterator](), 'ACCEPTS': (s, v) => s.contains(v), 'Int': (s) => s.elemsOrInf(), 'Numeric': (s) => s.elemsOrInf(), 'pick': (s, n) => pickFrom(s, n), 'roll': (s, n) => rollFrom(s, n), 'rand': (s) => rangeRand(s), 'Seq': (s) => new RSeq(s[Symbol.iterator](), s.isInfinite()), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)) });
 M(T.Hash, { elems: (s) => s.m.size, Bool: (s) => s.m.size > 0, Str: (s) => str(s), gist: (s) => s.gist(), raku: (s) => s.raku(), keys: (s) => mkSeq(s.keys()), values: (s) => mkSeq(s.values()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairs()), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
     'AT-KEY': (s, k) => hget(s, k), 'ASSIGN-KEY': (s, k, v) => hset(s, k, v), 'EXISTS-KEY': (s, k) => hexists(s, k), 'DELETE-KEY': (s, k) => hdelete(s, k), 'push': (s, ...i) => pushTo(s, ...i), 'append': (s, ...i) => pushTo(s, ...i), 'sort': (s, f) => sortList(s, f), 'list': (s) => mkList(s.pairs()), 'List': (s) => mkList(s.pairs()), 'Array': (s) => mkArray(s.pairs()),

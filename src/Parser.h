@@ -369,7 +369,10 @@ private:
     ExprPtr parseInterpString(const std::string& raw);
     ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
     ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
-    ExprPtr qqwwWordItem(const std::string& w);   // one «…»/<<…>>/qqww word with qq:ww:v semantics
+    void qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val); // one «…»/qqww word
+    ExprPtr qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& flags, bool val);
+    ExprPtr qqwwList(const std::vector<std::string>& words); // a whole «…»/<<…>> list, as Rakudo builds it
+    bool takeQqwwWords(std::vector<std::string>& words); // consume a «…»/<<…>> opener + words + closer, if one is here
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
     // The EXTENDED NAME suffix glued to a variable: `:foo`, `:foo<a b>`,
     // `:foo«a b»`, `:foo['a','b']`, `:foo('a','b')`. All of them name the SAME

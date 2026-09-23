@@ -14796,6 +14796,28 @@ void Interpreter::registerBuiltins() {
             for (auto& x : toList(a[i])) items.arr()->push_back(x);
         return I.methodCall(items, "join", ValueList{a[0]});
     };
+    // `«a $x»` whose words interpolate (Parser::qqwwList): a[0] is "c"/"n"
+    // (collapse a one-word result to that word, or not) then one letter per item
+    // of the list in a[1] — `l` an item as it stands, `s` an interpolated value
+    // to split on whitespace and val() word by word, `w` to split only, `v` a
+    // quoted interpolation to val() whole.
+    B["__qqww"] = [](Interpreter& I, ValueList& a) -> Value {
+        const std::string flags = a.size() > 0 ? a[0].toStr() : std::string("n");
+        ValueList items = a.size() > 1 ? toList(a[1]) : ValueList{};
+        ValueList out;
+        for (size_t k = 0; k < items.size(); k++) {
+            const char f = k + 1 < flags.size() ? flags[k + 1] : 'l';
+            if (f == 's' || f == 'w') {
+                Value s = I.methodCall(items[k], "Str", ValueList{});
+                for (auto& w : toList(I.methodCall(s, "words", ValueList{})))
+                    out.push_back(f == 's' ? rakupp::valAllomorph(w) : w);
+            }
+            else if (f == 'v') out.push_back(rakupp::valAllomorph(I.methodCall(items[k], "Str", ValueList{})));
+            else out.push_back(items[k]);
+        }
+        if (flags[0] == 'c' && out.size() == 1) return out[0];
+        return Value::list(out);
+    };
     // :16("2e") radix conversion — the value's digits parsed in the given base.
     // :256[a, b, c] — place-value digits in the given base; slips/arrays
     // in the list flatten (`:256[|@^a]`)

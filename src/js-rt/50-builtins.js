@@ -139,6 +139,8 @@ function radix(base, sv) {
     if (den > 1n) return ratResult(val, den);
     return normBig(val);
 }
+// `«a $x»` whose words interpolate (Parser::qqwwFinish): flags[0] c/n collapses a one-word result or not; then per item `l` as is, `s` split on whitespace + val(), `w` split only, `v` val() whole
+function qqww(flags, list) { flags = str(flags); const out = []; let k = 1; for (const x of itemsOf(list)) { const f = flags[k++]; if (f === 's' || f === 'w') { for (const w of str(x).split(/\s+/)) if (w !== '') out.push(f === 's' ? val(w) : w); } else if (f === 'v') out.push(val(str(x))); else out.push(x); } return flags[0] === 'c' && out.length === 1 ? out[0] : mkList(out); }
 function radixList(base, ...digits) { const bb = BigInt(Number(toInt(base))); let v = 0n; for (const d of digits) { if (d instanceof RNamed) continue; for (const x of itemsOf(d)) v = v * bb + BigInt(toInt(x)); } return normBig(v); }
 // val(Str): an allomorph when the string spells a number, else the string; MAIN's arguments come this way
 function val(s) { s = str(s); try { if (s === '') return new RAllo(0, '');   /* val("") is IntStr(0, "") — an empty `--opt=` value, an empty %*ENV entry */ if (s.trim() === '') return s; const n = strToNumeric(s); return new RAllo(n, s); } catch (e) { return s; } }
@@ -326,7 +328,7 @@ Object.assign(R, {
     say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
-    categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
+    categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, '__qqww': qqww, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
