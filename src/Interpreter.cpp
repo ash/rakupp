@@ -36218,6 +36218,26 @@ Value Interpreter::evalCall(Call* c) {
             }
         }
         Value f = eval(c->callee.get());
+        // `&name(…)` where `&name` was never declared is an UNDECLARED ROUTINE,
+        // and Raku reports it as one. Evaluating the `&`-variable answers an
+        // undefined Any, and invoking that said "Cannot invoke non-Callable
+        // value of type Any" — which names neither the routine nor the mistake.
+        // A DECLARED `my &f` that merely holds nothing keeps the invoke error,
+        // which is what it is. (roast S02-literals/string-interpolation.t asks
+        // for the routine's error through the interpolated spelling `"&nope()"`.)
+        if (!isDefined(f) && c->callee->kind == NK::VarExpr) {
+            auto* cv = static_cast<VarExpr*>(c->callee.get());
+            const std::string& cn = cv->name;
+            // …but a PACKAGE-STASH slot that happens to be empty is a value,
+            // not an undeclared name: `M37::<&nope>("arg")` is the Any-invoke
+            // identity coercion, which is what Rakudo answers and what
+            // t/regression/issue37-fez-zef-install.raku pins down. The same
+            // goes for any qualified spelling, which asks a stash rather than
+            // the lexical scope.
+            if (cn.size() > 1 && cn[0] == '&' && !cv->pkgSymbol &&
+                cn.find("::") == std::string::npos && !tctx_.cur->find(cn))
+                undeclaredRoutine(cn.substr(1));
+        }
         // `.&(*.tc)` on a Whatever chain COMPOSES (curry continues) instead of
         // applying the callee to the code object
         if (f.t == VT::Code && f.code() && f.code()->isWhateverCode &&
@@ -36337,7 +36357,14 @@ Value Interpreter::evalCall(Call* c) {
                 }
             }
         }
-        if (Value* f = tctx_.cur->find(callAmpName(c))) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        if (Value* f = tctx_.cur->find(callAmpName(c))) {
+            // …unless a TYPE the program declared carries the same name, in
+            // which case the BARE spelling is that type's coercion and the
+            // routine is reached as `&name(…)` — which arrives with a callee
+            // and so never gets here. See declaredTypeOutranksRoutine.
+            if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c->name)))
+                return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        }
         // sub-form container mutators AUTOVIVIFY their first argument's slot:
         // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
         // semantics; zef's ecosystem short-name index is built exactly this way).
@@ -36638,8 +36665,13 @@ Value Interpreter::evalCall(Call* c) {
         if (c->parenned && !c->callee) {
             bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
                            args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
+            // A MODULE or PACKAGE is a type here too. It is registered in
+            // pkgKind_ rather than classes_, so `module foo {}; foo()` was
+            // "Undefined routine 'foo'" where Rakudo answers the coercion type
+            // `foo(Any)` — the same answer it gives for a class.
             if ((args.empty() || typeArg) &&
-                (isKnownTypeName(c->name) || classes_.count(resolveClassAlias(c->name)))) {
+                (isKnownTypeName(c->name) || classes_.count(resolveClassAlias(c->name)) ||
+                 pkgKind_.count(c->name))) {
                 std::string tgt = classes_.count(resolveClassAlias(c->name))
                                       ? resolveClassAlias(c->name) : c->name;
                 return Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")");

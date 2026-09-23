@@ -1903,6 +1903,31 @@ public:
     std::map<std::string, std::shared_ptr<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
+    // Does a TYPE THIS PROGRAM DECLARED carry the name `n`, in scope here?
+    // Then a bare `n(…)` is that type's COERCION and not a routine of the same
+    // name — `&n(…)` is how the routine is reached. Raku resolves the bare
+    // spelling to the type whether the type is a class, a module or an enum,
+    // and roast declares each alongside a same-named sub to say so
+    // (S02-names-vars/names.t: `Day(0)` is the enum coercer, `foo()` a
+    // coercion type, and `&Day()` / `&foo()` are the subs).
+    //
+    // Scoped to types the program declares. A BUILT-IN's name is shared with a
+    // great many ordinary routines — rakupp has always let `sub Int` win for
+    // `Int(…)`, and the coercion arms further down evalCall are written for
+    // that — so re-ranking those is a separate question from this one.
+    //
+    // Cost: this sits on the routine-call path, so the three registry probes
+    // come first and the scope walk only runs for a name one of them knows.
+    // The registries are program-wide, and the walk is what makes the answer
+    // lexical: a `my class` declared in a scope we are not in must not
+    // outrank anything here.
+    bool declaredTypeOutranksRoutine(const std::string& n) {
+        if ((classes_.empty()   || !classes_.count(n)) &&
+            (pkgKind_.empty()   || !pkgKind_.count(n)) &&
+            (enumPairs_.empty() || !enumPairs_.count(n))) return false;
+        Value* v = tctx_.cur->find(n);
+        return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType.empty()));
+    }
     const std::string& resolveClassAlias(const std::string& n) {
         // NativeCall's legacy untyped-pointer name, still written by real
         // dists (OpenSSL's suite) — one static alias, so every Pointer

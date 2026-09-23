@@ -7524,7 +7524,12 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     argsrc += raw[k2]; k2++;
                 }
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr(fname + "(" + argsrc + ")")); }
+                // The `&` goes back in. Re-parsing the call WITHOUT it made the
+                // interpolated spelling mean something else than the same text
+                // in code: `&` says "the routine of this name", and dropping it
+                // let a TYPE of that name answer instead once a bare `Bar(…)`
+                // started resolving to the type's coercion.
+                try { result->parts.push_back(parseEmbeddedExpr("&" + fname + "(" + argsrc + ")")); }
                 catch (...) { rethrowIfObsolete(); }
                 i = k2 + 1;
                 continue;
