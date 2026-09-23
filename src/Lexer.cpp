@@ -3058,6 +3058,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         // an unspace isn't whitespace: `"xxxxxx"\.chars` keeps `.chars` tight-postfix
         bool spaced = (pos_ > before && pos_ != unspaceEnd_) || before == 0;
         if (eof()) break;
+        const size_t tokStart = pos_;
         char c = peek();
         Token t;
         // SLANG-PLAN §B: where no bareword starts, a slang literal may — `0rXIV`,
@@ -3545,6 +3546,18 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // (`+>` from `infix:<+>`) closes. Mixed tokens (`<=>`, the
                 // normalized hyper `<<+<<`) are content — neutral.
                 if (t.text == "<") angleWords_++;
+                else if (angleWords_ == 1 && !spaced && t.kind == Tok::Op &&
+                         t.text.size() > 1 && src_[tokStart] == '>' &&
+                         pos_ == tokStart + t.text.size()) {
+                    // the OUTERMOST closer glued to the operator after it:
+                    // `%h<a>==0` lexed `>=` + `=`, and no later split could put
+                    // `==` back together (nor `===`, `=~=`, `=:=`, `==>`, `=>`).
+                    // Emit the `>` alone and lex the rest afresh, after a term.
+                    t.text = ">";
+                    col_ -= (int)(pos_ - tokStart - 1);
+                    pos_ = tokStart + 1;
+                    angleWords_--;
+                }
                 else if (t.text[0] == '>' ||
                          (t.text.back() == '>' && t.text.find('<') == std::string::npos))
                     angleWords_--;
