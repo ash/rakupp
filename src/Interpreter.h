@@ -1071,6 +1071,13 @@ public:
     // `sink`: the statement's value is discarded (loop bodies etc.), so an
     // assignment need not materialize its (possibly large) result — skips the copy.
     Value exec(Stmt* s, bool sink = false); // returns last value (for implicit return)
+    // The declaration kinds exec hands off, so their locals are not charged to
+    // its frame — and through it to the depth of every Raku recursion. See the
+    // definition in Interpreter.cpp for why noinline is load-bearing.
+    [[gnu::noinline]] Value execDeclStmt(Stmt* s);
+    // The same for eval's construction and lookup shapes — and eval is entered
+    // twice per Raku call, so its frame counts double against recursion depth.
+    [[gnu::noinline]] Value evalRareExpr(Expr* e);
     Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
                      bool isFirst = true, bool isLast = true,

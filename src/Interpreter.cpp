@@ -5250,7 +5250,6 @@ static void sinkScanGather(Expr* e, std::vector<std::string>& out) {
         case NK::Assign:
             sinkScanGather(static_cast<Assign*>(e)->value.get(), out);
             return;
-        case NK::ListExpr:
             for (auto& it : static_cast<ListExpr*>(e)->items) sinkScanGather(it.get(), out);
             return;
         default: return;
@@ -9925,85 +9924,20 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         ci->ruleOrder.push_back(r.name);
 }
 
-Value Interpreter::exec(Stmt* s, bool sink) {
-#ifdef RAKUPP_NODE_COUNT
-    extern unsigned long long g_execStmts;
-    ++g_execStmts;
-#endif
-    if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
-    if (g_traceStmts) traceStmt(s);      // --trace (measured free: see CLI-BORROW-PLAN)
+// The declaration statements exec dispatches here, kept out of its frame.
+//
+// exec is one switch over every statement kind, and a switch's stack frame is
+// sized to the MAXIMUM over all its cases — so the ~100 Value temporaries that
+// `class`, `sub`, `enum`, `subset`, a named regex and `use` need between them
+// were charged to every ExprStmt and every loop body as well. They are load-time
+// work: a hot loop runs none of them. Splitting them out is worth roughly half
+// of exec's frame, which is worth the same again in recursion depth, because a
+// Raku call frame costs one exec and two evals of native stack.
+//
+// noinline is the whole point — without it the compiler is free to fold this
+// straight back into exec and undo the split.
+[[gnu::noinline]] Value Interpreter::execDeclStmt(Stmt* s) {
     switch (s->kind) {
-        case NK::ExprStmt: {
-            Expr* e = static_cast<ExprStmt*>(s)->e.get();
-            tctx_.curStmtExpr = e;   // the statement's own expression (see cooperative next/last/redo)
-            if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
-            // sink context: an assignment's result is discarded, so don't copy it
-            if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
-            // A bare regex STATEMENT whose value is discarded matches `$_` and sets
-            // `$/` — that is what it is written for. In VALUE position the same
-            // literal is the Regex object itself (see the RegexLit eval), which is
-            // the distinction Rakudo draws: `/b/;` sets `$/`, `do { /b/ }` does not.
-            // (After the assignment fast path: that is the hot statement shape, and
-            // a RegexLit is never an Assign.)
-            if (sink && e->kind == NK::RegexLit) {
-                auto* rl = static_cast<RegexLit*>(e);
-                if (!rl->isRx && !rl->isM && rl->declKind.empty()) {
-                    Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
-                    return regexMatch(rxSubject(topic), rl->pattern);
-                }
-            }
-            const unsigned long long refusalsBefore = g_subscriptRefusals;
-            Value r = eval(e);
-            // Rakudo sink semantics: a discarded FRESH object with a user-defined
-            // `sink` method has it invoked (HTTP::Status registers each instance in
-            // a table via `method sink { @codes[$!code] = self }`, created as bare
-            // `HTTP::Status.new: …` statements). Restricted to a method-call result:
-            // a value read back through a variable or an `is rw` routine is a
-            // container, and MoarVM does not descend a container to sink its
-            // contents (S04-statements/sink.t). The `VT::Object` test short-circuits
-            // for the common non-object result, so only sunk objects pay the probe.
-            if (sink && e->kind == NK::MethodCall &&
-                r.t == VT::Object && r.obj() && r.obj()->cls &&
-                r.obj()->cls->findMethod("sink"))
-                methodCall(r, "sink", ValueList{});
-            // Rakudo sink semantics: SINKING an unhandled Failure detonates it.
-            // A bare `$x div 0;` statement is where a soft-failing operation gets
-            // to be loud — nothing else looks at the value, so this is the last
-            // chance to notice. Without it the Failure evaporated silently.
-            // …and a failed Proc that is discarded (Rakudo's Proc.sink). Only when
-            // SUNK: the last statement of a sub or `do` block whose value is the
-            // Proc the caller wants must flow out (`sub run-it { run |@cmd }; my $p
-            // = run-it; if $p.exitcode …` died here). The same rule serves the
-            // test helpers that discard a block's result — see sinkValue.
-            //
-            // …and only when the value is not still IN a container. A statement
-            // that reads a variable or writes one hands the sink a Scalar, which
-            // Rakudo does not descend, and neither does a BLOCK's tail value:
-            // `silently({ $actual = RunProc.new.run('not-exists') })` is how
-            // App::RaCoCo checks a failing command, and sinking through the
-            // container killed the test instead.
-            bool contained = exprYieldsContainer(e) ||
-                             ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
-            // …except that a subscript which REFUSED never reached a container:
-            // `$str<k>` on a non-Associative is a Failure standing in for the
-            // element slot, not the slot itself, so sinking it detonates the way
-            // Rakudo does. Counting it as contained kept `"<div>$x$y</div>"` — a
-            // template whose `$y</div>` the parser reads as a subscript — quiet,
-            // and the truncated markup went out. The refusal has to have happened
-            // in THIS statement: `@a[0]` that reads back a Failure somebody stored
-            // there earlier is a real slot, and stays quiet (both verified against
-            // Rakudo). `@a[9]` past the end is a real element too, not a Failure.
-            if (contained && e->kind == NK::Index &&
-                g_subscriptRefusals != refusalsBefore &&
-                r.t == VT::Hash && r.hashKind == "Failure")
-                contained = false;
-            // Whatever this statement produced is now the most recent value a
-            // caller could sink — record how it arrived for the frame above.
-            tctx_.valContained = contained;
-            if (sink && !contained) sinkValue(r);
-            return r;
-        }
-        case NK::EmptyStmt: return Value::any();
         case NK::NamedRegexDecl: {
             auto* nr = static_cast<NamedRegexDecl*>(s);
             noteSymbolMutation("named-regex declaration");
@@ -10240,33 +10174,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             return Value::any();
-        }
-        case NK::Block: {
-            auto* b = static_cast<Block*>(s);
-            // A registered END belongs to program exit. The statement runners
-            // skip it (isBlockPhaser), so this is the UNIT-level path — a
-            // module's or an EVAL's mainline, which walks its statements
-            // itself — and all that happens here is the scope capture.
-            if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
-            // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
-            // own arguments to the best candidate (S06). Outside a proto it is just a
-            // block evaluating to `*`, which is what it stays.
-            if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
-                b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
-                static_cast<ExprStmt*>(b->stmts[0].get())->e &&
-                static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
-                return protoRedispatch();
-            // a statement-level `{}` with no statements is Rakudo's empty-hash
-            // composer, not a block (EVAL('{}') is {}, not Any)
-            if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
-                return Value::makeHash();
-            // statement-form phaser (`INIT my $x = …`): the declaration belongs
-            // to the ENCLOSING scope — run without a child env
-            if (b->stmtForm && !b->phaser.empty())
-                return execBlock(b, tctx_.cur, sink);
-            auto scope = std::make_shared<Env>();
-            scope->parent = tctx_.cur;
-            return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
         }
         case NK::SubDecl: {
             auto* sd = static_cast<SubDecl*>(s);
@@ -12098,6 +12005,131 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
             return Value::typeObj(clsName);
+        }
+        default: break;
+    }
+    return Value::any();   // unreachable: exec dispatches only the six above
+}
+
+Value Interpreter::exec(Stmt* s, bool sink) {
+#ifdef RAKUPP_NODE_COUNT
+    extern unsigned long long g_execStmts;
+    ++g_execStmts;
+#endif
+    if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
+    if (g_traceStmts) traceStmt(s);      // --trace (measured free: see CLI-BORROW-PLAN)
+    switch (s->kind) {
+        case NK::ExprStmt: {
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            tctx_.curStmtExpr = e;   // the statement's own expression (see cooperative next/last/redo)
+            if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
+            // sink context: an assignment's result is discarded, so don't copy it
+            if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
+            // A bare regex STATEMENT whose value is discarded matches `$_` and sets
+            // `$/` — that is what it is written for. In VALUE position the same
+            // literal is the Regex object itself (see the RegexLit eval), which is
+            // the distinction Rakudo draws: `/b/;` sets `$/`, `do { /b/ }` does not.
+            // (After the assignment fast path: that is the hot statement shape, and
+            // a RegexLit is never an Assign.)
+            if (sink && e->kind == NK::RegexLit) {
+                auto* rl = static_cast<RegexLit*>(e);
+                if (!rl->isRx && !rl->isM && rl->declKind.empty()) {
+                    Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
+                    return regexMatch(rxSubject(topic), rl->pattern);
+                }
+            }
+            const unsigned long long refusalsBefore = g_subscriptRefusals;
+            Value r = eval(e);
+            // Rakudo sink semantics: a discarded FRESH object with a user-defined
+            // `sink` method has it invoked (HTTP::Status registers each instance in
+            // a table via `method sink { @codes[$!code] = self }`, created as bare
+            // `HTTP::Status.new: …` statements). Restricted to a method-call result:
+            // a value read back through a variable or an `is rw` routine is a
+            // container, and MoarVM does not descend a container to sink its
+            // contents (S04-statements/sink.t). The `VT::Object` test short-circuits
+            // for the common non-object result, so only sunk objects pay the probe.
+            if (sink && e->kind == NK::MethodCall &&
+                r.t == VT::Object && r.obj() && r.obj()->cls &&
+                r.obj()->cls->findMethod("sink"))
+                methodCall(r, "sink", ValueList{});
+            // Rakudo sink semantics: SINKING an unhandled Failure detonates it.
+            // A bare `$x div 0;` statement is where a soft-failing operation gets
+            // to be loud — nothing else looks at the value, so this is the last
+            // chance to notice. Without it the Failure evaporated silently.
+            // …and a failed Proc that is discarded (Rakudo's Proc.sink). Only when
+            // SUNK: the last statement of a sub or `do` block whose value is the
+            // Proc the caller wants must flow out (`sub run-it { run |@cmd }; my $p
+            // = run-it; if $p.exitcode …` died here). The same rule serves the
+            // test helpers that discard a block's result — see sinkValue.
+            //
+            // …and only when the value is not still IN a container. A statement
+            // that reads a variable or writes one hands the sink a Scalar, which
+            // Rakudo does not descend, and neither does a BLOCK's tail value:
+            // `silently({ $actual = RunProc.new.run('not-exists') })` is how
+            // App::RaCoCo checks a failing command, and sinking through the
+            // container killed the test instead.
+            bool contained = exprYieldsContainer(e) ||
+                             ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
+            // …except that a subscript which REFUSED never reached a container:
+            // `$str<k>` on a non-Associative is a Failure standing in for the
+            // element slot, not the slot itself, so sinking it detonates the way
+            // Rakudo does. Counting it as contained kept `"<div>$x$y</div>"` — a
+            // template whose `$y</div>` the parser reads as a subscript — quiet,
+            // and the truncated markup went out. The refusal has to have happened
+            // in THIS statement: `@a[0]` that reads back a Failure somebody stored
+            // there earlier is a real slot, and stays quiet (both verified against
+            // Rakudo). `@a[9]` past the end is a real element too, not a Failure.
+            if (contained && e->kind == NK::Index &&
+                g_subscriptRefusals != refusalsBefore &&
+                r.t == VT::Hash && r.hashKind == "Failure")
+                contained = false;
+            // Whatever this statement produced is now the most recent value a
+            // caller could sink — record how it arrived for the frame above.
+            tctx_.valContained = contained;
+            if (sink && !contained) sinkValue(r);
+            return r;
+        }
+        case NK::EmptyStmt: return Value::any();
+        // ---- declarations: out of line, and out of this frame ----------
+        // A switch's frame is the MAX over its cases, so every Value a rare
+        // case needs is charged to the hot ones too. These six declare things
+        // — a class, a sub, an enum, a subset, a named regex, a `use` — which
+        // a program does at load time and a hot loop never does at all, and
+        // between them they carried most of exec's stack. Moved whole, into a
+        // function that cannot be inlined back: see execDeclStmt.
+        case NK::NamedRegexDecl:
+        case NK::SubsetDecl:
+        case NK::UseStmt:
+        case NK::SubDecl:
+        case NK::EnumDecl:
+        case NK::ClassDecl:
+            return execDeclStmt(s);
+        case NK::Block: {
+            auto* b = static_cast<Block*>(s);
+            // A registered END belongs to program exit. The statement runners
+            // skip it (isBlockPhaser), so this is the UNIT-level path — a
+            // module's or an EVAL's mainline, which walks its statements
+            // itself — and all that happens here is the scope capture.
+            if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
+            // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
+            // own arguments to the best candidate (S06). Outside a proto it is just a
+            // block evaluating to `*`, which is what it stays.
+            if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
+                b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
+                static_cast<ExprStmt*>(b->stmts[0].get())->e &&
+                static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
+                return protoRedispatch();
+            // a statement-level `{}` with no statements is Rakudo's empty-hash
+            // composer, not a block (EVAL('{}') is {}, not Any)
+            if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
+                return Value::makeHash();
+            // statement-form phaser (`INIT my $x = …`): the declaration belongs
+            // to the ENCLOSING scope — run without a child env
+            if (b->stmtForm && !b->phaser.empty())
+                return execBlock(b, tctx_.cur, sink);
+            auto scope = std::make_shared<Env>();
+            scope->parent = tctx_.cur;
+            return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
         }
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
@@ -38072,59 +38104,19 @@ struct NodeCountReport {
 }  // namespace
 #endif
 
-Value Interpreter::eval(Expr* e) {
-#ifdef RAKUPP_NODE_COUNT
-    ++g_evalNodes;
-#endif
-    // An element ASSIGNMENT asks its subscript twice: once to decide whether the
-    // subscript names many elements or one, and again through lvalue() to reach
-    // the slot. A subscript that calls something therefore ran its side effects
-    // TWICE — `@a[next-slot()] = $v` advanced the cursor by two and wrote into
-    // the wrong slot every time. Data::RandomKeep's reservoir is exactly that
-    // shape and silently dropped 13.7% of what it was offered. The first eval
-    // parks its answer here for the second one to collect, once.
-    if (!pendingSubscripts_.empty())
-        for (size_t i = 0; i < pendingSubscripts_.size(); i++)
-            if (pendingSubscripts_[i].first == e) {
-                Value v = std::move(pendingSubscripts_[i].second);
-                pendingSubscripts_.erase(pendingSubscripts_.begin() + i);
-                return v;
-            }
+// The expression shapes eval dispatches here, kept out of its frame.
+//
+// eval is one switch over every expression kind, and a switch's frame is sized
+// to the MAXIMUM over its cases. eval is also entered twice per Raku call, so
+// it is charged twice per frame of recursion depth — which makes a Value that
+// only a Range or an array literal ever needs expensive in a place that never
+// builds either. These ten are construction and lookup shapes, not the
+// arithmetic and variable reading a hot loop runs, so they pay for themselves
+// here instead.
+//
+// noinline, or the compiler folds it back and the split buys nothing.
+[[gnu::noinline]] Value Interpreter::evalRareExpr(Expr* e) {
     switch (e->kind) {
-        case NK::IntLit: {
-            auto* il = static_cast<IntLit*>(e);
-            return il->big.empty() ? Value::integer(il->v) : Value::bigint(BigInt::fromString(il->big));
-        }
-        case NK::NumLit: { auto* nl = static_cast<NumLit*>(e);
-            if (nl->imaginary) return Value::complex(0, nl->v);
-            if (nl->isRat) {
-                // Build once, then share the immutable BigInt parts on every
-                // eval (ratZ: an explicit zero denominator — `<42/0>` — is
-                // preserved). Both parts live in ONE holder published
-                // atomically: as two bare shared_ptrs, "set D, then N as the
-                // ready flag" was a data race on the control blocks themselves,
-                // so a racing reader could corrupt a refcount rather than merely
-                // read a stale pointer. Readers COPY the shared_ptrs out, which
-                // is safe — the holder is never mutated after publication.
-                if (const void* p = nl->ratCache.get()) {
-                    auto* parts = static_cast<const RatLitParts*>(p);
-                    Value v; v.t = VT::Rat;
-                    v.ratNM() = parts->n;
-                    v.ratDM() = parts->d;
-                    return v;
-                }
-                Value first = nl->bigNum.empty()
-                    ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
-                    : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
-                auto* mine = new RatLitParts{first.ratN(), first.ratD()};
-                if (nl->ratCache.publish(mine) != mine) delete mine; // another thread won
-                return first;
-            }
-            return Value::number(nl->v); }
-        // A pure read: the literal was NFC-normalized when it was constructed.
-        // Doing it here, in place, on a node every thread shares was a data race
-        // that corrupted the string — see StrLit in Ast.h.
-        case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
         case NK::AllomorphLit: {
             auto* al = static_cast<AllomorphLit*>(e);
             Value v = eval(al->num.get());
@@ -38186,6 +38178,667 @@ Value Interpreter::eval(Expr* e) {
             if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
             return mres;                                    // s/// returns the Match / List of matches
         }
+        case NK::SymbolicRef: {
+            auto* sr = static_cast<SymbolicRef*>(e);
+            bool callerHead = false;
+            std::string nm = symRefName(sr, &callerHead);
+            if (nm.empty())
+                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+            // `CALLER::<$y>` is the CALLER's `$y`, not ours: read it from the
+            // caller's frame (innermost entry of the dynamic chain), where the
+            // `is dynamic`/`$*` names live; anything else falls through to the
+            // lexical lookup, as before
+            if (callerHead && !tctx_.dynStack.empty() && tctx_.dynStack.back())
+                if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) return *p;
+            char c0 = nm[0];
+            if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
+                // resolve exactly as if it were the variable/routine of that name
+                VarExpr tmp(nm); tmp.line = e->line;
+                auto noSuch = [&]() {
+                    Value f = rakuppNewFailure();
+                    (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol"); // as the two sibling sites
+                    (*f.hash())["message"]   = Value::str("No such symbol '" + nm + "'");
+                    return f; // soft failure: falsey / undefined
+                };
+                // A PACKAGE-QUALIFIED variable that nobody declared is a miss,
+                // not an empty slot: `$::('Names::xx::dow')` on a language the
+                // dist never shipped answered an undefined Any (the "unset
+                // slot" reading `Foo::<bar>` gets), and Date::Names went on to
+                // build a names table out of nothing. Rakudo hands back
+                // X::NoSuchSymbol, and so does this — but only when neither the
+                // qualified global nor the package stash holds the name; a
+                // declared-but-undefined one still reads as its value.
+                if (nm.find("::") != std::string::npos && !tctx_.cur->find(nm)) {
+                    std::string pkg, key;
+                    bool inStash = false;
+                    if (splitPkgSymbol(nm, pkg, key)) {
+                        auto it = pkgStashes_.find(pkg);
+                        // both stash spellings: the sigilled key Rakudo uses
+                        // (`&foo`) and the bare one an older write may have left
+                        inStash = it != pkgStashes_.end() &&
+                                  (it->second->count(key) ||
+                                   it->second->count(nm.substr(nm.rfind("::") + 2)));
+                    }
+                    if (!inStash) return noSuch();
+                }
+                try { return eval(&tmp); }
+                catch (RakuError&) { return noSuch(); }
+            }
+            // sigilless: constant, then type / builtin resolution (NameTerm rules)
+            if (Value* p = tctx_.cur->find(nm)) return *p;
+            // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
+            // …except the native type names, which resolve like any type
+            if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
+                !isNativeTypeName(nm))
+                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
+            NameTerm tmp(nm); tmp.line = e->line;
+            tmp.symbolicStrict = true; // unknown capitalized names fail softly, not stub
+            return eval(&tmp);
+        }
+        case NK::NameTerm: {
+            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) {
+                // the Empty term: an empty Slip (a user `class Empty` shadows
+                // it). It is a SINGLETON — `Empty === Empty` is True, and `===`
+                // on a list is reference identity, so every mention has to hand
+                // back the same storage (sheet LA-06).
+                return emptySlipSingleton();
+            }
+            auto* nt = static_cast<NameTerm*>(e);
+            const std::string& n = nt->name;
+            // the deferred `::?CLASS`-in-a-role marker: the CONSUMING class,
+            // read off the live invocant (self.WHAT); a type-object self keeps
+            // its own name
+            if (n.rfind("::?CLASS", 0) == 0 &&
+                (n.size() == 8 || n[8] == '\x01')) {
+                if (Value* selfp = tctx_.cur->findSelf()) {
+                    if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls)
+                        return Value::typeObj(selfp->obj()->cls->name);
+                    if (selfp->t == VT::Type) return *selfp;
+                    return Value::typeObj(selfp->typeName());
+                }
+                // no invocant — the ROLE BODY. The role itself is the nearest
+                // honest answer; Mu answered nothing at all (see the parser).
+                if (n.size() > 9) return Value::typeObj(n.substr(9));
+                return Value::typeObj("Mu");
+            }
+            // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash
+            // (`Bool::.values` enumerates the enum's values). Same result as .WHO.
+            if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0 &&
+                nt->ofType.empty() && nt->defConstraint == 0) {
+                Value base = Value::typeObj(n.substr(0, n.size() - 2));
+                ValueList none;
+                return methodCall(base, "WHO", none);
+            }
+            if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
+                // …unless the base names a parameterized ROLE: `Q[Int]` puns it
+                // with the type argument(s) bound (the composed-into-class path
+                // handles `does Q[Int]` separately; this is direct use)
+                {
+                    auto rit = classes_.find(n);
+                    if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(n));
+                    if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
+                        !rit->second->decl->roleParams.empty()) {
+                        ValueList argv;
+                        std::string rest = nt->ofType;
+                        size_t pos = 0;
+                        while (pos <= rest.size()) {
+                            size_t c = rest.find(',', pos);
+                            std::string part = rest.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                            while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) part.erase(0, 1);
+                            while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
+                            if (!part.empty()) {
+                                // The arguments arrive here as TEXT, so each one is
+                                // resolved rather than wrapped: a `:name<value>`
+                                // colonpair is a NAMED argument (wrapped as a type
+                                // object it bound nothing and the parameter kept its
+                                // default), and a name that belongs to an ENUM is the
+                                // enum's own type object, which carries its values —
+                                // `BitEnum[MyBits]` needs both.
+                                if (part[0] == ':' && part.size() > 1) {
+                                    std::string key = part.substr(1), val;
+                                    size_t br = key.find_first_of("<(");
+                                    if (br != std::string::npos) {
+                                        char close = key[br] == '<' ? '>' : ')';
+                                        size_t e = key.rfind(close);
+                                        val = e != std::string::npos && e > br
+                                            ? key.substr(br + 1, e - br - 1) : std::string();
+                                        key = key.substr(0, br);
+                                    }
+                                    Value pr = Value::pair(key, br == std::string::npos
+                                                                ? Value::boolean(true)
+                                                                : Value::str(val));
+                                    pr.namedArg = true;
+                                    argv.push_back(pr);
+                                }
+                                else {
+                                    auto ep = enumPairs_.find(part);
+                                    argv.push_back(ep != enumPairs_.end() ? ep->second
+                                                                         : Value::typeObj(part));
+                                }
+                            }
+                            if (c == std::string::npos) break;
+                            pos = c + 1;
+                        }
+                        return makeRolePun(rit->second.get(), n, argv);
+                    }
+                }
+                Value ty = Value::typeObj(n);
+                // The parameter is the name as WRITTEN, so `Pointer[NativeCall::Types::void]`
+                // carried the qualified spelling into the type's own name and read
+                // back as a different type from `Pointer[void]`. Canonicalise each
+                // argument the way a bare name resolves.
+                // …and a parameter that NAMES A LEXICAL bound to a type IS that
+                // type: `constant RC4_INT = uint32; Buf[RC4_INT]` is a buffer of
+                // 32-bit elements. Kept as the written word it was a plain
+                // byte buffer of the same ELEMENT count, so PDF sized OpenSSL's
+                // RC4 key schedule at 258 bytes where the library writes 1,032 —
+                // heap corruption, and an encrypted document crashed the process
+                // about half the time.
+                {
+                    std::string canon;
+                    size_t pos = 0;
+                    while (pos <= nt->ofType.size()) {
+                        size_t c = nt->ofType.find(',', pos);
+                        std::string part = nt->ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                        std::string res = resolveClassAlias(part);
+                        if (res == part && !part.empty() && !isKnownTypeName(part) &&
+                            !isNativeTypeName(part) && !classes_.count(part) &&
+                            !subsets_.count(part))
+                            if (Value* bound = tctx_.cur->find(part))
+                                if (bound->t == VT::Type && !bound->s.empty()) res = bound->s;
+                        canon += res;
+                        if (c == std::string::npos) break;
+                        canon += ","; pos = c + 1;
+                    }
+                    ty.ofTypeM() = canon;
+                }
+                ty.i = nt->defConstraint;
+                return ty;
+            }
+            // `Foo:D` / `Foo:U` — the smiley rides on the type value (i), so the
+            // constraint survives into .^name, smartmatch and .^base_type
+            if (nt->defConstraint) { Value ty = Value::typeObj(n); ty.i = nt->defConstraint; return ty; }
+            if (n == "next" || n == "last" || n == "redo") {
+                if (tctx_.frameTop == tctx_.curLoopFrame) {
+                    tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative
+                    return Value::any();
+                }
+                if (n == "next") throw NextEx{};
+                if (n == "last") throw LastEx{};
+                throw RedoEx{};
+            }
+            if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
+            if (n == "succeed") { // exit the enclosing given
+                if (tctx_.frameTop == tctx_.curGivenFrame) {
+                    tctx_.givenCtl = 1; tctx_.givenV = Value::any(); return Value::any(); // cooperative
+                }
+                throw BreakGivenEx{};
+            }
+            if (n == "Nil") return Value::nil();
+            if (n == "Inf") return Value::number(INFINITY);
+            if (n == "NaN") return Value::number(NAN);
+            // CORE's enum members — True/False, Order, PromiseStatus, Signal,
+            // Endian, SeekType, ProtocolType — from the one list rtNameTerm and
+            // the MAIN command-line reader also read.
+            { Value c; if (coreEnumValue(n, c)) return c; }
+            static const std::set<std::string> types = {
+                "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
+                "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",
+                "Code", "Sub", "Block", "Junction", "Whatever", "Capture", "Stringy",
+                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash",
+                "Baggy", "Setty", "Mixy", "QuantHash", "Map", "Associative", "Positional",
+                "Version", "Blob", "Buf", "Compiler", "Seq", "IO::Path", "Iterable",
+                "Uni", "NFC", "NFD", "NFKC", "NFKD",
+            };
+            if (types.count(n)) return Value::typeObj(n);
+            // A sigilless term BOUND to a container slot (`my \p = @a[1]`) holds
+            // that slot's Proxy. Reading it as an rvalue must FETCH, exactly as
+            // the `$`-variable paths do: handing the Proxy itself back let it be
+            // copied into the assignment target, and a later write to that copy
+            // reached back into the array it aliased.
+            if (Value* p = tctx_.cur->find(n))
+                return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
+            if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
+            // AFTER the lexical lookups, as the codegen runtime's rtNameTerm has
+            // always done it: a sigilless parameter or constant named `i`, `e`,
+            // `pi`, `now`… is a name the program declared, and it must win over
+            // the built-in term of that spelling. Checking the constants first
+            // made `sub f(\i) { i }` return the imaginary unit.
+            { Value c; if (nameTermConstant(n, c, sixE())) return c; } // pi/e/i/tau/now/time/rand/nano
+            auto it = builtins_.find(n);
+            if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
+            // package-relative short name: bare `Path` answers `URI::Path` when no
+            // class/var/builtin claims it (see classAliases_)
+            {
+                const std::string& rn = resolveClassAlias(n);
+                // ::($name) resolution refuses to manufacture: a name no registry
+                // knows throws X::NoSuchSymbol instead of minting a stub type
+                // object — a stub and a real class are both undefined, so a
+                // caller could never tell the lookup failed. Ordinary NameTerms
+                // keep the lenient fallback (forward references rely on it).
+                // Pseudo-packages (`::GLOBAL.WHO`, EXPORT::DEFAULT::…) resolve
+                // through dedicated machinery, not the registries — pass them.
+                static const auto isPseudoPkg = [](const std::string& s) {
+                    static const std::set<std::string> ps = {
+                        "MY", "OUR", "CORE", "GLOBAL", "PROCESS", "COMPILING",
+                        "DYNAMIC", "CALLER", "CALLERS", "LEXICAL", "OUTER",
+                        "OUTERS", "SETTING", "UNIT", "CLIENT", "PARENT", "EXPORT"};
+                    if (ps.count(s)) return true;
+                    size_t c = s.find("::");
+                    return c != std::string::npos && ps.count(s.substr(0, c)) > 0;
+                };
+                bool known = classes_.count(rn) || subsets_.count(rn) ||
+                             pkgMeta_.count(rn) || isKnownTypeName(rn) ||
+                             isNativeTypeName(rn) || isPseudoPkg(rn);
+                // …but a `my class` / `my role` is LEXICAL: the name means
+                // nothing outside the block that declared it, so
+                // `{ my class R {}; }; R` is an undeclared name and not the
+                // type. The declaring scope is declEnv's parent, and it counts
+                // as in scope when it is still on the current chain — the same
+                // walk the redeclaration guard makes.
+                if (known && !isKnownTypeName(rn)) {
+                    auto ci = classes_.find(rn);
+                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isAnonDecl)
+                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                        "Undeclared name '" + n + "'"};
+                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isMy) {
+                        Env* site = ci->second->declEnv && ci->second->declEnv->parent
+                                  ? ci->second->declEnv->parent.get() : nullptr;
+                        bool inScope = !site;
+                        for (Env* en = tctx_.cur.get(); en && !inScope; en = en->parent.get())
+                            if (en == site) inScope = true;
+                        // …and the refusal is FINAL: the unit declares the name,
+                        // so the forward-reference leniency below would let it
+                        // through on the strength of a declaration this scope
+                        // cannot see.
+                        if (!inScope)
+                            throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                            "Undeclared name '" + n + "'"};
+                    }
+                }
+                // a class declared further down the file, used here as a VALUE
+                // (`G.parse($s, :actions(actions))`) — build it now, as a method
+                // call on it already does
+                if (!known && materializePendingType(rn)) known = true;
+                // The RakuAST:: namespace, after every ordinary way of knowing
+                // the name has failed — so a user's own `class RakuAST::Mine`
+                // is never gated, whether it was declared above this line
+                // (`classes_`) or below it (the pending-type build just above,
+                // which reads the unit's statements and therefore answers the
+                // same from the AST cache as from a fresh parse). What is left
+                // is Rakudo's own tree classes.
+                //
+                // The gate runs BEFORE the registry is consulted, on both the
+                // plain and the symbolic path, so the refusal never depends on
+                // whether the table happens to carry the name.
+                if (!known && isRakuAstName(rn)) {
+                    if (!rakuAstVisible()) {
+                        // …and the symbolic form answers a Failure carrying the
+                        // same exception, exactly as Rakudo's does — `try
+                        // ::('RakuAST::Node')` is how a module asks whether the
+                        // namespace is there at all, and a control jump would
+                        // break the probe it is written as.
+                        if (nt->symbolicStrict) {
+                            Value f = rakuppNewFailure();
+                            (*f.hash())["exception"] = Value::typeObj("X::Experimental");
+                            (*f.hash())["message"] =
+                                Value::str("Use of RakuAST is experimental; "
+                                           "please 'use experimental :rakuast;'");
+                            return f;
+                        }
+                        refuseRakuAst();
+                    }
+                    if (rakuAstClass(rn)) return Value::typeObj(rn);
+                }
+                if (!known && nt->symbolicStrict) {
+                    // …and the refusal is a Failure, not a throw: Rakudo's
+                    // ::('NoSuch') hands back a broken Failure whose
+                    // X::NoSuchSymbol fires on USE, so existence probes like
+                    // `try ::($n)` / `.defined` work without a control jump.
+                    // The exception slot carries the TYPE (failureDetonate
+                    // throws it), so `try ::($n); $!.^name` answers
+                    // X::NoSuchSymbol exactly as Rakudo's does.
+                    Value f = rakuppNewFailure();
+                    (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol");
+                    (*f.hash())["message"]   = Value::str("No such symbol '" + n + "'");
+                    return f;
+                }
+                // Format and Formatter arrived with 6.e; before it, the names
+                // are simply undeclared, so a 6.d program must not be able to
+                // reach the type — with a Format literal gated in the parser,
+                // Format.new was the remaining way in.
+                if ((n == "Format" || n == "Formatter") && !sixE())
+                    throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                                    "Undeclared name '" + n + "' (it arrived with 6.e)"};
+                if (!known) {
+                    // Known PARSE gaps stay lenient: constructs the parser does
+                    // not yet understand leak their keyword as a bare term, and
+                    // refusing it would abort whole roast files that otherwise
+                    // score. Each entry names its file; remove the entry when
+                    // the construct lands.
+                    static const std::set<std::string> parseGapWords = {
+                        "TEMP",  // the TEMP phaser        (S04 temp.t)
+                        "TR",    // TR/// transliteration  (S05 regex.t)
+                        "where", // trailing where-clause forms (S06 return.t)
+                    };
+                    if (parseGapWords.count(n)) return Value::typeObj(rn);
+                    // `use NativeCall` is a pragma here (the FFI is native to
+                    // the compiler), so nothing ever declares the PACKAGE —
+                    // but the name is still a term: NativeLibs re-exports it
+                    // ('NativeCall' => NativeCall) and suites probe it.
+                    if (n == "NativeCall") return Value::typeObj("NativeCall");
+                    // The lenient stub exists for FORWARD REFERENCES: a name the
+                    // unit declares further down. A name this unit never declares
+                    // is refused — Rakudo refuses it at compile time, and the
+                    // stub made `say dfdf` print "(dfdf)". A unit whose
+                    // declarations the parser could not enumerate (a cached
+                    // Program, a computed `class ::(EXPR)` name) stays lenient.
+                    const Program* unit = unitCurrent();
+                    bool declared = !unit || unit->typeNamesOpaque ||
+                                    unit->declaredTypeNames.count(n) ||
+                                    unit->declaredTypeNames.count(rn);
+                    if (!declared) { // a qualified forward ref still counts by its last segment
+                        size_t c = n.rfind("::");
+                        if (c != std::string::npos)
+                            declared = unit->declaredTypeNames.count(n.substr(c + 2)) > 0;
+                    }
+                    if (!declared)
+                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                            (ascii::isupper((unsigned char)n[0]) ? "Undeclared name '" : "Undefined routine '")
+                                + n + "'"};
+                }
+                return Value::typeObj(rn);
+            }
+        }
+        case NK::Range: {
+            auto* r = static_cast<RangeExpr*>(e);
+            Value from = eval(r->from.get());
+            Value to = eval(r->to.get());
+            // a WhateverCODE endpoint curries the whole range: `1..*-1` is a
+            // WhateverCode (bare `1..*` stays an infinite Range)
+            {
+                auto isWC = [](const Value& v) {
+                    return v.t == VT::Code && v.code() && v.code()->isWhateverCode;
+                };
+                if (isWC(from) || isWC(to)) {
+                    Value f2 = from, t2 = to;
+                    bool exF = r->exFrom, exT = r->exTo;
+                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    code.code()->isWhateverCode = true;
+                    long long ar = (isWC(from) ? std::max(1LL, from.code()->whateverArity) : 0)
+                                 + (isWC(to)   ? std::max(1LL, to.code()->whateverArity)   : 0);
+                    code.code()->whateverArity = ar ? ar : 1;
+                    code.code()->builtin = [f2, t2, exF, exT, isWC](Interpreter& I, ValueList& as) -> Value {
+                        size_t k = 0;
+                        auto feed = [&](const Value& side) -> Value {
+                            if (!isWC(side)) return side;
+                            long long n = std::max(1LL, side.code()->whateverArity);
+                            ValueList sub;
+                            for (long long j = 0; j < n && k < as.size(); j++) sub.push_back(as[k++]);
+                            return I.callCallable(side, std::move(sub));
+                        };
+                        Value lo = feed(f2), hi = feed(t2);
+                        // a bare `*` on the other side stays UNBOUNDED: `*-2..*` is
+                        // `{ $_ - 2 .. Inf }`, the LLONG extreme marking an endless
+                        // range as the plain `1..*` below does. .toInt() of a
+                        // Whatever was 0, so `@a[*-2..*; 0]` selected 2..0 — nothing.
+                        long long loI = lo.t == VT::Whatever ? (-9223372036854775807LL - 1) : lo.toInt();
+                        long long hiI = hi.t == VT::Whatever ? 9223372036854775807LL : hi.toInt();
+                        Value rr = Value::range(loI, hiI, exF, exT);
+                        return rr;
+                    };
+                    return code;
+                }
+            }
+            // a Date..Date range enumerates days eagerly (numeric Range can't
+            // hold Date endpoints; a century is only ~36k elements)
+            if (from.t == VT::Hash && from.hashKind == "Date" && from.hash() &&
+                to.t == VT::Hash && to.hashKind == "Date" && to.hash()) {
+                auto fld = [](const Value& v, const char* k) -> long long {
+                    auto it = v.hash()->find(k); return it != v.hash()->end() ? it->second.toInt() : 1;
+                };
+                long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (r->exFrom ? 1 : 0);
+                long long hi = civilToDays(fld(to, "year"), fld(to, "month"), fld(to, "day")) - (r->exTo ? 1 : 0);
+                Value arr = Value::array(); arr.isList = true;
+                // the endpoints' formatter rides along: `Date.new(…, :formatter($f))
+                // .. Date.new(…, :formatter($f))` joins as formatted dates
+                for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
+                return arr;
+            }
+            if (from.t == VT::Str && to.t == VT::Str) {
+                // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
+                // is the 128 ASCII chars ('<'..'F' includes the symbols between)
+                if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
+                    // a real Str Range VALUE: codepoints live in rFrom/rTo
+                    // (so elems/iteration arithmetic works), the endpoint
+                    // text DERIVES from those codepoints, ofType tags it
+                    // (raku/gist, smartmatch, and flatten() render chars from it)
+                    Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s),
+                                            r->exFrom, r->exTo);
+                    rr.ofTypeM() = "Str"; // endpoint text derives from the codepoints
+                    return rr;
+                }
+                return strRangeList(from.s, to.s, r->exFrom, r->exTo);
+            }
+            // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
+            // marks an infinite range, same as 1..Inf)
+            checkRangeEndpoint(from); checkRangeEndpoint(to);
+            // (the `^` markers survive: `1..^*` still excludes its endpoint, which
+            // is what .excludes-max and .raku report; a STRING endpoint opposite
+            // the Whatever stays a string — see the twin in rangeFromValues)
+            if (from.t == VT::Whatever && to.t == VT::Whatever)
+                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, r->exFrom, r->exTo);
+            if (to.t == VT::Whatever) {
+                Value rr = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
+                                        9223372036854775807LL, r->exFrom, r->exTo);
+                if (from.t == VT::Str) attachRangeEnds(rr, from, Value::number(INFINITY));
+                else if (endlessFracStart(from)) {           // `1.5..*` steps 1.5, 2.5, …
+                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = INFINITY;
+                    attachRangeEnds(rr, from, Value::number(INFINITY));
+                }
+                return rr;
+            }
+            if (from.t == VT::Whatever) {
+                Value rr = Value::range(-9223372036854775807LL - 1,
+                                        to.t == VT::Str ? (long long)u8FirstCp(to.s) : to.toInt(),
+                                        r->exFrom, r->exTo);
+                if (to.t == VT::Str) attachRangeEnds(rr, Value::number(-INFINITY), to);
+                return rr;
+            }
+            // Fractional numeric range: at least one endpoint is a non-integer
+            // Num/Rat. Keep the real endpoints (elements step by 1 from `from`).
+            {
+                // (see the twin in rtRangeVal: a MIXED string/numeric range keeps
+                // the string endpoint it was written with)
+                if ((from.t == VT::Str) != (to.t == VT::Str) &&
+                    (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
+                    if (from.t == VT::Str) return strLeftRange(from, to, r->exFrom, r->exTo);
+                    Value num = numifyStrOrThrow(to.s.str());   // `1.."b"` is X::Str::Numeric
+                    Value rr = Value::range(from.toInt(), num.toInt(), r->exFrom, r->exTo);
+                    setRangeEnds(rr, from, num);
+                    return rr;
+                }
+                // (…and a Num/Rat endpoint makes the elements Nums/Rats, whole or not)
+                bool fFrac = (from.t == VT::Num || from.t == VT::Rat);
+                bool tFrac = (to.t == VT::Num || to.t == VT::Rat);
+                if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
+                    std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
+                    Value rr = Value::range((long long)std::floor(from.toNum()),
+                                            (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
+                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = to.toNum();
+                    setRangeEnds(rr, from, to); // a Rat endpoint stays a Rat
+                    return rr;
+                }
+            }
+            {
+                Value rr = Value::range(from.toInt(), rangeTopInt(to), r->exFrom, r->exTo);
+                if (to.t == VT::Int && to.big()) rr.bigM() = to.big(); // keep the big bound (pick/roll sample it)
+                setRangeEnds(rr, from, to);
+                return rr;
+            }
+        }
+        case NK::Pair: {
+            auto* p = static_cast<PairExpr*>(e);
+            // `KEY => my $x` — the pair carries the CONTAINER, not a copy of its
+            // value, so binding the pair's value somewhere else and assigning
+            // through it writes back to `$x`. That is the out-parameter idiom:
+            // `get-options-from(@args, 'foo' => my $foo)` hands Getopt::Long a
+            // place to put the parsed option. Rakudo preserves the container for
+            // ANY variable on the right of `=>`; only the DECLARATION form is
+            // done here, which is where it carries the meaning — a plain
+            // `k => $x` keeps copying, so nothing that works today changes.
+            auto pairValueOf = [&](Expr* ve) -> Value {
+                if (ve && ve->kind == NK::VarExpr) {
+                    auto* vx = static_cast<VarExpr*>(ve);
+                    if (vx->declare && vx->name.size() > 1 && vx->name[0] == '$') {
+                        Value declared = evalValueOf(ve);   // runs the declaration
+                        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                            if (en->local(vx->name)) return makeEnvSlotProxy(en, vx->name);
+                        return declared;
+                    }
+                }
+                return evalValueOf(ve);
+            };
+            if (p->keyExpr) {
+                Value kv = eval(p->keyExpr.get());
+                // `* => 1` and `"a" => *` are WhateverCodes, not Pairs: the `=>`
+                // is an infix like any other and a `*` on either side curries it.
+                // `.map(* => Discover)` builds one pair per element, which is how
+                // a constant Map is written from a word list (Business::
+                // CreditCard's country tables read back empty without this).
+                // The BAREWORD-key form (`a => *`) is a pair literal in Rakudo,
+                // not an infix, and stays a Pair — that is the `p->key` branch
+                // below, which never gets here.
+                auto curries = [](const Value& v) {
+                    return v.t == VT::Whatever ||
+                           (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+                };
+                Value vv0 = pairValueOf(p->value.get());
+                if (curries(kv) || curries(vv0)) {
+                    Value kc = kv, vc = vv0;
+                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    code.code()->isWhateverCode = true;
+                    auto arityOf = [&](const Value& x) -> long long {
+                        if (x.t == VT::Whatever) return 1;
+                        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
+                            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+                        return 0;
+                    };
+                    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
+                    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
+                        size_t idx = 0;
+                        auto resolve = [&](const Value& x) -> Value {
+                            if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
+                            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
+                                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+                                ValueList sub;
+                                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
+                                return I.callCallable(x, sub);
+                            }
+                            return x;
+                        };
+                        Value k = resolve(kc);   // key first — argument order matters
+                        Value v = resolve(vc);
+                        Value pr = Value::pair(k.toStr(), v);
+                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+                        return pr;
+                    };
+                    return code;
+                }
+                Value pr = Value::pair(kv.toStr(), vv0);
+                markPairValueRO(pr, p->value.get());
+                // a non-string key (number, object, match, array, hash, code) is preserved
+                // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
+                if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
+                    kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
+                    kv.t == VT::Match || kv.t == VT::Code ||
+                    // a REGEX key stays a Regex: `.trans(/\s+/ => ' ')` matches with
+                    // it, and stringifying it turned the pattern text into a
+                    // character set that mangled the subject
+                    kv.t == VT::Regex ||
+                    kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
+                return pr;
+            }
+            {   // `:err(/pat/)` → Regex value
+                Value pr = Value::pair(p->key, pairValueOf(p->value.get()));
+                markPairValueRO(pr, p->value.get());
+                return pr;
+            }
+        }
+        default: break;
+    }
+    return Value::any();   // unreachable: eval dispatches only the ten above
+}
+
+Value Interpreter::eval(Expr* e) {
+#ifdef RAKUPP_NODE_COUNT
+    ++g_evalNodes;
+#endif
+    // An element ASSIGNMENT asks its subscript twice: once to decide whether the
+    // subscript names many elements or one, and again through lvalue() to reach
+    // the slot. A subscript that calls something therefore ran its side effects
+    // TWICE — `@a[next-slot()] = $v` advanced the cursor by two and wrote into
+    // the wrong slot every time. Data::RandomKeep's reservoir is exactly that
+    // shape and silently dropped 13.7% of what it was offered. The first eval
+    // parks its answer here for the second one to collect, once.
+    if (!pendingSubscripts_.empty())
+        for (size_t i = 0; i < pendingSubscripts_.size(); i++)
+            if (pendingSubscripts_[i].first == e) {
+                Value v = std::move(pendingSubscripts_[i].second);
+                pendingSubscripts_.erase(pendingSubscripts_.begin() + i);
+                return v;
+            }
+    switch (e->kind) {
+        case NK::IntLit: {
+            auto* il = static_cast<IntLit*>(e);
+            return il->big.empty() ? Value::integer(il->v) : Value::bigint(BigInt::fromString(il->big));
+        }
+        case NK::NumLit: { auto* nl = static_cast<NumLit*>(e);
+            if (nl->imaginary) return Value::complex(0, nl->v);
+            if (nl->isRat) {
+                // Build once, then share the immutable BigInt parts on every
+                // eval (ratZ: an explicit zero denominator — `<42/0>` — is
+                // preserved). Both parts live in ONE holder published
+                // atomically: as two bare shared_ptrs, "set D, then N as the
+                // ready flag" was a data race on the control blocks themselves,
+                // so a racing reader could corrupt a refcount rather than merely
+                // read a stale pointer. Readers COPY the shared_ptrs out, which
+                // is safe — the holder is never mutated after publication.
+                if (const void* p = nl->ratCache.get()) {
+                    auto* parts = static_cast<const RatLitParts*>(p);
+                    Value v; v.t = VT::Rat;
+                    v.ratNM() = parts->n;
+                    v.ratDM() = parts->d;
+                    return v;
+                }
+                Value first = nl->bigNum.empty()
+                    ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
+                    : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
+                auto* mine = new RatLitParts{first.ratN(), first.ratD()};
+                if (nl->ratCache.publish(mine) != mine) delete mine; // another thread won
+                return first;
+            }
+            return Value::number(nl->v); }
+        // A pure read: the literal was NFC-normalized when it was constructed.
+        // Doing it here, in place, on a node every thread shares was a data race
+        // that corrupted the string — see StrLit in Ast.h.
+        case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
+        // ---- the rare shapes, out of this frame -----------------------
+        // Same reason as exec's declarations: eval is one switch, its frame is
+        // the MAX over every case, and eval is entered TWICE per Raku call, so
+        // a Value that only a Range or a hash literal needs is charged to every
+        // recursion in the program. These build things — literals with their own
+        // parsing, a symbolic lookup, a bare name, list/array/hash construction,
+        // a Range, a Pair — and none of them is the arithmetic and variable
+        // reading a hot loop is made of. Whole, and not inlinable back.
+        case NK::AllomorphLit:
+        case NK::RegexLit:
+        case NK::SubstLit:
+        case NK::SymbolicRef:
+        case NK::NameTerm:
+        case NK::Range:
+        case NK::Pair:
+            return evalRareExpr(e);
         case NK::BoolLit: return Value::boolean(static_cast<BoolLit*>(e)->v);
         case NK::InterpStr: return evalInterp(static_cast<InterpStr*>(e));
         case NK::VarExpr: {
@@ -38842,384 +39495,12 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name.size() > 1 && ve->name[1] == '*') return Value::any();
             return defaultFor(sigil);
         }
-        case NK::SymbolicRef: {
-            auto* sr = static_cast<SymbolicRef*>(e);
-            bool callerHead = false;
-            std::string nm = symRefName(sr, &callerHead);
-            if (nm.empty())
-                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
-            // `CALLER::<$y>` is the CALLER's `$y`, not ours: read it from the
-            // caller's frame (innermost entry of the dynamic chain), where the
-            // `is dynamic`/`$*` names live; anything else falls through to the
-            // lexical lookup, as before
-            if (callerHead && !tctx_.dynStack.empty() && tctx_.dynStack.back())
-                if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) return *p;
-            char c0 = nm[0];
-            if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
-                // resolve exactly as if it were the variable/routine of that name
-                VarExpr tmp(nm); tmp.line = e->line;
-                auto noSuch = [&]() {
-                    Value f = rakuppNewFailure();
-                    (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol"); // as the two sibling sites
-                    (*f.hash())["message"]   = Value::str("No such symbol '" + nm + "'");
-                    return f; // soft failure: falsey / undefined
-                };
-                // A PACKAGE-QUALIFIED variable that nobody declared is a miss,
-                // not an empty slot: `$::('Names::xx::dow')` on a language the
-                // dist never shipped answered an undefined Any (the "unset
-                // slot" reading `Foo::<bar>` gets), and Date::Names went on to
-                // build a names table out of nothing. Rakudo hands back
-                // X::NoSuchSymbol, and so does this — but only when neither the
-                // qualified global nor the package stash holds the name; a
-                // declared-but-undefined one still reads as its value.
-                if (nm.find("::") != std::string::npos && !tctx_.cur->find(nm)) {
-                    std::string pkg, key;
-                    bool inStash = false;
-                    if (splitPkgSymbol(nm, pkg, key)) {
-                        auto it = pkgStashes_.find(pkg);
-                        // both stash spellings: the sigilled key Rakudo uses
-                        // (`&foo`) and the bare one an older write may have left
-                        inStash = it != pkgStashes_.end() &&
-                                  (it->second->count(key) ||
-                                   it->second->count(nm.substr(nm.rfind("::") + 2)));
-                    }
-                    if (!inStash) return noSuch();
-                }
-                try { return eval(&tmp); }
-                catch (RakuError&) { return noSuch(); }
-            }
-            // sigilless: constant, then type / builtin resolution (NameTerm rules)
-            if (Value* p = tctx_.cur->find(nm)) return *p;
-            // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
-            // …except the native type names, which resolve like any type
-            if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
-                !isNativeTypeName(nm))
-                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
-            NameTerm tmp(nm); tmp.line = e->line;
-            tmp.symbolicStrict = true; // unknown capitalized names fail softly, not stub
-            return eval(&tmp);
-        }
         case NK::SelfTerm: {
             Value* p = tctx_.cur->findSelf();
             if (!p)
                 throwTyped("X::Syntax::Self::WithoutObject", {},
                            "'self' used where no object is available");
             return *p;
-        }
-        case NK::NameTerm: {
-            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) {
-                // the Empty term: an empty Slip (a user `class Empty` shadows
-                // it). It is a SINGLETON — `Empty === Empty` is True, and `===`
-                // on a list is reference identity, so every mention has to hand
-                // back the same storage (sheet LA-06).
-                return emptySlipSingleton();
-            }
-            auto* nt = static_cast<NameTerm*>(e);
-            const std::string& n = nt->name;
-            // the deferred `::?CLASS`-in-a-role marker: the CONSUMING class,
-            // read off the live invocant (self.WHAT); a type-object self keeps
-            // its own name
-            if (n.rfind("::?CLASS", 0) == 0 &&
-                (n.size() == 8 || n[8] == '\x01')) {
-                if (Value* selfp = tctx_.cur->findSelf()) {
-                    if (selfp->t == VT::Object && selfp->obj() && selfp->obj()->cls)
-                        return Value::typeObj(selfp->obj()->cls->name);
-                    if (selfp->t == VT::Type) return *selfp;
-                    return Value::typeObj(selfp->typeName());
-                }
-                // no invocant — the ROLE BODY. The role itself is the nearest
-                // honest answer; Mu answered nothing at all (see the parser).
-                if (n.size() > 9) return Value::typeObj(n.substr(9));
-                return Value::typeObj("Mu");
-            }
-            // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash
-            // (`Bool::.values` enumerates the enum's values). Same result as .WHO.
-            if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0 &&
-                nt->ofType.empty() && nt->defConstraint == 0) {
-                Value base = Value::typeObj(n.substr(0, n.size() - 2));
-                ValueList none;
-                return methodCall(base, "WHO", none);
-            }
-            if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
-                // …unless the base names a parameterized ROLE: `Q[Int]` puns it
-                // with the type argument(s) bound (the composed-into-class path
-                // handles `does Q[Int]` separately; this is direct use)
-                {
-                    auto rit = classes_.find(n);
-                    if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(n));
-                    if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
-                        !rit->second->decl->roleParams.empty()) {
-                        ValueList argv;
-                        std::string rest = nt->ofType;
-                        size_t pos = 0;
-                        while (pos <= rest.size()) {
-                            size_t c = rest.find(',', pos);
-                            std::string part = rest.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
-                            while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) part.erase(0, 1);
-                            while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
-                            if (!part.empty()) {
-                                // The arguments arrive here as TEXT, so each one is
-                                // resolved rather than wrapped: a `:name<value>`
-                                // colonpair is a NAMED argument (wrapped as a type
-                                // object it bound nothing and the parameter kept its
-                                // default), and a name that belongs to an ENUM is the
-                                // enum's own type object, which carries its values —
-                                // `BitEnum[MyBits]` needs both.
-                                if (part[0] == ':' && part.size() > 1) {
-                                    std::string key = part.substr(1), val;
-                                    size_t br = key.find_first_of("<(");
-                                    if (br != std::string::npos) {
-                                        char close = key[br] == '<' ? '>' : ')';
-                                        size_t e = key.rfind(close);
-                                        val = e != std::string::npos && e > br
-                                            ? key.substr(br + 1, e - br - 1) : std::string();
-                                        key = key.substr(0, br);
-                                    }
-                                    Value pr = Value::pair(key, br == std::string::npos
-                                                                ? Value::boolean(true)
-                                                                : Value::str(val));
-                                    pr.namedArg = true;
-                                    argv.push_back(pr);
-                                }
-                                else {
-                                    auto ep = enumPairs_.find(part);
-                                    argv.push_back(ep != enumPairs_.end() ? ep->second
-                                                                         : Value::typeObj(part));
-                                }
-                            }
-                            if (c == std::string::npos) break;
-                            pos = c + 1;
-                        }
-                        return makeRolePun(rit->second.get(), n, argv);
-                    }
-                }
-                Value ty = Value::typeObj(n);
-                // The parameter is the name as WRITTEN, so `Pointer[NativeCall::Types::void]`
-                // carried the qualified spelling into the type's own name and read
-                // back as a different type from `Pointer[void]`. Canonicalise each
-                // argument the way a bare name resolves.
-                // …and a parameter that NAMES A LEXICAL bound to a type IS that
-                // type: `constant RC4_INT = uint32; Buf[RC4_INT]` is a buffer of
-                // 32-bit elements. Kept as the written word it was a plain
-                // byte buffer of the same ELEMENT count, so PDF sized OpenSSL's
-                // RC4 key schedule at 258 bytes where the library writes 1,032 —
-                // heap corruption, and an encrypted document crashed the process
-                // about half the time.
-                {
-                    std::string canon;
-                    size_t pos = 0;
-                    while (pos <= nt->ofType.size()) {
-                        size_t c = nt->ofType.find(',', pos);
-                        std::string part = nt->ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
-                        std::string res = resolveClassAlias(part);
-                        if (res == part && !part.empty() && !isKnownTypeName(part) &&
-                            !isNativeTypeName(part) && !classes_.count(part) &&
-                            !subsets_.count(part))
-                            if (Value* bound = tctx_.cur->find(part))
-                                if (bound->t == VT::Type && !bound->s.empty()) res = bound->s;
-                        canon += res;
-                        if (c == std::string::npos) break;
-                        canon += ","; pos = c + 1;
-                    }
-                    ty.ofTypeM() = canon;
-                }
-                ty.i = nt->defConstraint;
-                return ty;
-            }
-            // `Foo:D` / `Foo:U` — the smiley rides on the type value (i), so the
-            // constraint survives into .^name, smartmatch and .^base_type
-            if (nt->defConstraint) { Value ty = Value::typeObj(n); ty.i = nt->defConstraint; return ty; }
-            if (n == "next" || n == "last" || n == "redo") {
-                if (tctx_.frameTop == tctx_.curLoopFrame) {
-                    tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative
-                    return Value::any();
-                }
-                if (n == "next") throw NextEx{};
-                if (n == "last") throw LastEx{};
-                throw RedoEx{};
-            }
-            if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
-            if (n == "succeed") { // exit the enclosing given
-                if (tctx_.frameTop == tctx_.curGivenFrame) {
-                    tctx_.givenCtl = 1; tctx_.givenV = Value::any(); return Value::any(); // cooperative
-                }
-                throw BreakGivenEx{};
-            }
-            if (n == "Nil") return Value::nil();
-            if (n == "Inf") return Value::number(INFINITY);
-            if (n == "NaN") return Value::number(NAN);
-            // CORE's enum members — True/False, Order, PromiseStatus, Signal,
-            // Endian, SeekType, ProtocolType — from the one list rtNameTerm and
-            // the MAIN command-line reader also read.
-            { Value c; if (coreEnumValue(n, c)) return c; }
-            static const std::set<std::string> types = {
-                "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
-                "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",
-                "Code", "Sub", "Block", "Junction", "Whatever", "Capture", "Stringy",
-                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash",
-                "Baggy", "Setty", "Mixy", "QuantHash", "Map", "Associative", "Positional",
-                "Version", "Blob", "Buf", "Compiler", "Seq", "IO::Path", "Iterable",
-                "Uni", "NFC", "NFD", "NFKC", "NFKD",
-            };
-            if (types.count(n)) return Value::typeObj(n);
-            // A sigilless term BOUND to a container slot (`my \p = @a[1]`) holds
-            // that slot's Proxy. Reading it as an rvalue must FETCH, exactly as
-            // the `$`-variable paths do: handing the Proxy itself back let it be
-            // copied into the assignment target, and a later write to that copy
-            // reached back into the array it aliased.
-            if (Value* p = tctx_.cur->find(n))
-                return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
-            if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
-            // AFTER the lexical lookups, as the codegen runtime's rtNameTerm has
-            // always done it: a sigilless parameter or constant named `i`, `e`,
-            // `pi`, `now`… is a name the program declared, and it must win over
-            // the built-in term of that spelling. Checking the constants first
-            // made `sub f(\i) { i }` return the imaginary unit.
-            { Value c; if (nameTermConstant(n, c, sixE())) return c; } // pi/e/i/tau/now/time/rand/nano
-            auto it = builtins_.find(n);
-            if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
-            // package-relative short name: bare `Path` answers `URI::Path` when no
-            // class/var/builtin claims it (see classAliases_)
-            {
-                const std::string& rn = resolveClassAlias(n);
-                // ::($name) resolution refuses to manufacture: a name no registry
-                // knows throws X::NoSuchSymbol instead of minting a stub type
-                // object — a stub and a real class are both undefined, so a
-                // caller could never tell the lookup failed. Ordinary NameTerms
-                // keep the lenient fallback (forward references rely on it).
-                // Pseudo-packages (`::GLOBAL.WHO`, EXPORT::DEFAULT::…) resolve
-                // through dedicated machinery, not the registries — pass them.
-                static const auto isPseudoPkg = [](const std::string& s) {
-                    static const std::set<std::string> ps = {
-                        "MY", "OUR", "CORE", "GLOBAL", "PROCESS", "COMPILING",
-                        "DYNAMIC", "CALLER", "CALLERS", "LEXICAL", "OUTER",
-                        "OUTERS", "SETTING", "UNIT", "CLIENT", "PARENT", "EXPORT"};
-                    if (ps.count(s)) return true;
-                    size_t c = s.find("::");
-                    return c != std::string::npos && ps.count(s.substr(0, c)) > 0;
-                };
-                bool known = classes_.count(rn) || subsets_.count(rn) ||
-                             pkgMeta_.count(rn) || isKnownTypeName(rn) ||
-                             isNativeTypeName(rn) || isPseudoPkg(rn);
-                // …but a `my class` / `my role` is LEXICAL: the name means
-                // nothing outside the block that declared it, so
-                // `{ my class R {}; }; R` is an undeclared name and not the
-                // type. The declaring scope is declEnv's parent, and it counts
-                // as in scope when it is still on the current chain — the same
-                // walk the redeclaration guard makes.
-                if (known && !isKnownTypeName(rn)) {
-                    auto ci = classes_.find(rn);
-                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isAnonDecl)
-                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                                        "Undeclared name '" + n + "'"};
-                    if (ci != classes_.end() && ci->second->decl && ci->second->decl->isMy) {
-                        Env* site = ci->second->declEnv && ci->second->declEnv->parent
-                                  ? ci->second->declEnv->parent.get() : nullptr;
-                        bool inScope = !site;
-                        for (Env* en = tctx_.cur.get(); en && !inScope; en = en->parent.get())
-                            if (en == site) inScope = true;
-                        // …and the refusal is FINAL: the unit declares the name,
-                        // so the forward-reference leniency below would let it
-                        // through on the strength of a declaration this scope
-                        // cannot see.
-                        if (!inScope)
-                            throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                                            "Undeclared name '" + n + "'"};
-                    }
-                }
-                // a class declared further down the file, used here as a VALUE
-                // (`G.parse($s, :actions(actions))`) — build it now, as a method
-                // call on it already does
-                if (!known && materializePendingType(rn)) known = true;
-                // The RakuAST:: namespace, after every ordinary way of knowing
-                // the name has failed — so a user's own `class RakuAST::Mine`
-                // is never gated, whether it was declared above this line
-                // (`classes_`) or below it (the pending-type build just above,
-                // which reads the unit's statements and therefore answers the
-                // same from the AST cache as from a fresh parse). What is left
-                // is Rakudo's own tree classes.
-                //
-                // The gate runs BEFORE the registry is consulted, on both the
-                // plain and the symbolic path, so the refusal never depends on
-                // whether the table happens to carry the name.
-                if (!known && isRakuAstName(rn)) {
-                    if (!rakuAstVisible()) {
-                        // …and the symbolic form answers a Failure carrying the
-                        // same exception, exactly as Rakudo's does — `try
-                        // ::('RakuAST::Node')` is how a module asks whether the
-                        // namespace is there at all, and a control jump would
-                        // break the probe it is written as.
-                        if (nt->symbolicStrict) {
-                            Value f = rakuppNewFailure();
-                            (*f.hash())["exception"] = Value::typeObj("X::Experimental");
-                            (*f.hash())["message"] =
-                                Value::str("Use of RakuAST is experimental; "
-                                           "please 'use experimental :rakuast;'");
-                            return f;
-                        }
-                        refuseRakuAst();
-                    }
-                    if (rakuAstClass(rn)) return Value::typeObj(rn);
-                }
-                if (!known && nt->symbolicStrict) {
-                    // …and the refusal is a Failure, not a throw: Rakudo's
-                    // ::('NoSuch') hands back a broken Failure whose
-                    // X::NoSuchSymbol fires on USE, so existence probes like
-                    // `try ::($n)` / `.defined` work without a control jump.
-                    // The exception slot carries the TYPE (failureDetonate
-                    // throws it), so `try ::($n); $!.^name` answers
-                    // X::NoSuchSymbol exactly as Rakudo's does.
-                    Value f = rakuppNewFailure();
-                    (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol");
-                    (*f.hash())["message"]   = Value::str("No such symbol '" + n + "'");
-                    return f;
-                }
-                // Format and Formatter arrived with 6.e; before it, the names
-                // are simply undeclared, so a 6.d program must not be able to
-                // reach the type — with a Format literal gated in the parser,
-                // Format.new was the remaining way in.
-                if ((n == "Format" || n == "Formatter") && !sixE())
-                    throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                                    "Undeclared name '" + n + "' (it arrived with 6.e)"};
-                if (!known) {
-                    // Known PARSE gaps stay lenient: constructs the parser does
-                    // not yet understand leak their keyword as a bare term, and
-                    // refusing it would abort whole roast files that otherwise
-                    // score. Each entry names its file; remove the entry when
-                    // the construct lands.
-                    static const std::set<std::string> parseGapWords = {
-                        "TEMP",  // the TEMP phaser        (S04 temp.t)
-                        "TR",    // TR/// transliteration  (S05 regex.t)
-                        "where", // trailing where-clause forms (S06 return.t)
-                    };
-                    if (parseGapWords.count(n)) return Value::typeObj(rn);
-                    // `use NativeCall` is a pragma here (the FFI is native to
-                    // the compiler), so nothing ever declares the PACKAGE —
-                    // but the name is still a term: NativeLibs re-exports it
-                    // ('NativeCall' => NativeCall) and suites probe it.
-                    if (n == "NativeCall") return Value::typeObj("NativeCall");
-                    // The lenient stub exists for FORWARD REFERENCES: a name the
-                    // unit declares further down. A name this unit never declares
-                    // is refused — Rakudo refuses it at compile time, and the
-                    // stub made `say dfdf` print "(dfdf)". A unit whose
-                    // declarations the parser could not enumerate (a cached
-                    // Program, a computed `class ::(EXPR)` name) stays lenient.
-                    const Program* unit = unitCurrent();
-                    bool declared = !unit || unit->typeNamesOpaque ||
-                                    unit->declaredTypeNames.count(n) ||
-                                    unit->declaredTypeNames.count(rn);
-                    if (!declared) { // a qualified forward ref still counts by its last segment
-                        size_t c = n.rfind("::");
-                        if (c != std::string::npos)
-                            declared = unit->declaredTypeNames.count(n.substr(c + 2)) > 0;
-                    }
-                    if (!declared)
-                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                            (ascii::isupper((unsigned char)n[0]) ? "Undeclared name '" : "Undefined routine '")
-                                + n + "'"};
-                }
-                return Value::typeObj(rn);
-            }
         }
         case NK::ListExpr: {
             auto* l = static_cast<ListExpr*>(e);
@@ -40045,221 +40326,6 @@ Value Interpreter::eval(Expr* e) {
             return boolify(eval(t->cond.get())) ? eval(t->then.get()) : eval(t->els.get());
         }
         case NK::NqpOp: return evalNqpOp(static_cast<NqpOp*>(e));
-        case NK::Range: {
-            auto* r = static_cast<RangeExpr*>(e);
-            Value from = eval(r->from.get());
-            Value to = eval(r->to.get());
-            // a WhateverCODE endpoint curries the whole range: `1..*-1` is a
-            // WhateverCode (bare `1..*` stays an infinite Range)
-            {
-                auto isWC = [](const Value& v) {
-                    return v.t == VT::Code && v.code() && v.code()->isWhateverCode;
-                };
-                if (isWC(from) || isWC(to)) {
-                    Value f2 = from, t2 = to;
-                    bool exF = r->exFrom, exT = r->exTo;
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
-                    code.code()->isWhateverCode = true;
-                    long long ar = (isWC(from) ? std::max(1LL, from.code()->whateverArity) : 0)
-                                 + (isWC(to)   ? std::max(1LL, to.code()->whateverArity)   : 0);
-                    code.code()->whateverArity = ar ? ar : 1;
-                    code.code()->builtin = [f2, t2, exF, exT, isWC](Interpreter& I, ValueList& as) -> Value {
-                        size_t k = 0;
-                        auto feed = [&](const Value& side) -> Value {
-                            if (!isWC(side)) return side;
-                            long long n = std::max(1LL, side.code()->whateverArity);
-                            ValueList sub;
-                            for (long long j = 0; j < n && k < as.size(); j++) sub.push_back(as[k++]);
-                            return I.callCallable(side, std::move(sub));
-                        };
-                        Value lo = feed(f2), hi = feed(t2);
-                        // a bare `*` on the other side stays UNBOUNDED: `*-2..*` is
-                        // `{ $_ - 2 .. Inf }`, the LLONG extreme marking an endless
-                        // range as the plain `1..*` below does. .toInt() of a
-                        // Whatever was 0, so `@a[*-2..*; 0]` selected 2..0 — nothing.
-                        long long loI = lo.t == VT::Whatever ? (-9223372036854775807LL - 1) : lo.toInt();
-                        long long hiI = hi.t == VT::Whatever ? 9223372036854775807LL : hi.toInt();
-                        Value rr = Value::range(loI, hiI, exF, exT);
-                        return rr;
-                    };
-                    return code;
-                }
-            }
-            // a Date..Date range enumerates days eagerly (numeric Range can't
-            // hold Date endpoints; a century is only ~36k elements)
-            if (from.t == VT::Hash && from.hashKind == "Date" && from.hash() &&
-                to.t == VT::Hash && to.hashKind == "Date" && to.hash()) {
-                auto fld = [](const Value& v, const char* k) -> long long {
-                    auto it = v.hash()->find(k); return it != v.hash()->end() ? it->second.toInt() : 1;
-                };
-                long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (r->exFrom ? 1 : 0);
-                long long hi = civilToDays(fld(to, "year"), fld(to, "month"), fld(to, "day")) - (r->exTo ? 1 : 0);
-                Value arr = Value::array(); arr.isList = true;
-                // the endpoints' formatter rides along: `Date.new(…, :formatter($f))
-                // .. Date.new(…, :formatter($f))` joins as formatted dates
-                for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
-                return arr;
-            }
-            if (from.t == VT::Str && to.t == VT::Str) {
-                // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
-                // is the 128 ASCII chars ('<'..'F' includes the symbols between)
-                if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
-                    // a real Str Range VALUE: codepoints live in rFrom/rTo
-                    // (so elems/iteration arithmetic works), the endpoint
-                    // text DERIVES from those codepoints, ofType tags it
-                    // (raku/gist, smartmatch, and flatten() render chars from it)
-                    Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s),
-                                            r->exFrom, r->exTo);
-                    rr.ofTypeM() = "Str"; // endpoint text derives from the codepoints
-                    return rr;
-                }
-                return strRangeList(from.s, to.s, r->exFrom, r->exTo);
-            }
-            // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
-            // marks an infinite range, same as 1..Inf)
-            checkRangeEndpoint(from); checkRangeEndpoint(to);
-            // (the `^` markers survive: `1..^*` still excludes its endpoint, which
-            // is what .excludes-max and .raku report; a STRING endpoint opposite
-            // the Whatever stays a string — see the twin in rangeFromValues)
-            if (from.t == VT::Whatever && to.t == VT::Whatever)
-                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, r->exFrom, r->exTo);
-            if (to.t == VT::Whatever) {
-                Value rr = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
-                                        9223372036854775807LL, r->exFrom, r->exTo);
-                if (from.t == VT::Str) attachRangeEnds(rr, from, Value::number(INFINITY));
-                else if (endlessFracStart(from)) {           // `1.5..*` steps 1.5, 2.5, …
-                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = INFINITY;
-                    attachRangeEnds(rr, from, Value::number(INFINITY));
-                }
-                return rr;
-            }
-            if (from.t == VT::Whatever) {
-                Value rr = Value::range(-9223372036854775807LL - 1,
-                                        to.t == VT::Str ? (long long)u8FirstCp(to.s) : to.toInt(),
-                                        r->exFrom, r->exTo);
-                if (to.t == VT::Str) attachRangeEnds(rr, Value::number(-INFINITY), to);
-                return rr;
-            }
-            // Fractional numeric range: at least one endpoint is a non-integer
-            // Num/Rat. Keep the real endpoints (elements step by 1 from `from`).
-            {
-                // (see the twin in rtRangeVal: a MIXED string/numeric range keeps
-                // the string endpoint it was written with)
-                if ((from.t == VT::Str) != (to.t == VT::Str) &&
-                    (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
-                    if (from.t == VT::Str) return strLeftRange(from, to, r->exFrom, r->exTo);
-                    Value num = numifyStrOrThrow(to.s.str());   // `1.."b"` is X::Str::Numeric
-                    Value rr = Value::range(from.toInt(), num.toInt(), r->exFrom, r->exTo);
-                    setRangeEnds(rr, from, num);
-                    return rr;
-                }
-                // (…and a Num/Rat endpoint makes the elements Nums/Rats, whole or not)
-                bool fFrac = (from.t == VT::Num || from.t == VT::Rat);
-                bool tFrac = (to.t == VT::Num || to.t == VT::Rat);
-                if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
-                    std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
-                    Value rr = Value::range((long long)std::floor(from.toNum()),
-                                            (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
-                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = to.toNum();
-                    setRangeEnds(rr, from, to); // a Rat endpoint stays a Rat
-                    return rr;
-                }
-            }
-            {
-                Value rr = Value::range(from.toInt(), rangeTopInt(to), r->exFrom, r->exTo);
-                if (to.t == VT::Int && to.big()) rr.bigM() = to.big(); // keep the big bound (pick/roll sample it)
-                setRangeEnds(rr, from, to);
-                return rr;
-            }
-        }
-        case NK::Pair: {
-            auto* p = static_cast<PairExpr*>(e);
-            // `KEY => my $x` — the pair carries the CONTAINER, not a copy of its
-            // value, so binding the pair's value somewhere else and assigning
-            // through it writes back to `$x`. That is the out-parameter idiom:
-            // `get-options-from(@args, 'foo' => my $foo)` hands Getopt::Long a
-            // place to put the parsed option. Rakudo preserves the container for
-            // ANY variable on the right of `=>`; only the DECLARATION form is
-            // done here, which is where it carries the meaning — a plain
-            // `k => $x` keeps copying, so nothing that works today changes.
-            auto pairValueOf = [&](Expr* ve) -> Value {
-                if (ve && ve->kind == NK::VarExpr) {
-                    auto* vx = static_cast<VarExpr*>(ve);
-                    if (vx->declare && vx->name.size() > 1 && vx->name[0] == '$') {
-                        Value declared = evalValueOf(ve);   // runs the declaration
-                        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
-                            if (en->local(vx->name)) return makeEnvSlotProxy(en, vx->name);
-                        return declared;
-                    }
-                }
-                return evalValueOf(ve);
-            };
-            if (p->keyExpr) {
-                Value kv = eval(p->keyExpr.get());
-                // `* => 1` and `"a" => *` are WhateverCodes, not Pairs: the `=>`
-                // is an infix like any other and a `*` on either side curries it.
-                // `.map(* => Discover)` builds one pair per element, which is how
-                // a constant Map is written from a word list (Business::
-                // CreditCard's country tables read back empty without this).
-                // The BAREWORD-key form (`a => *`) is a pair literal in Rakudo,
-                // not an infix, and stays a Pair — that is the `p->key` branch
-                // below, which never gets here.
-                auto curries = [](const Value& v) {
-                    return v.t == VT::Whatever ||
-                           (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
-                };
-                Value vv0 = pairValueOf(p->value.get());
-                if (curries(kv) || curries(vv0)) {
-                    Value kc = kv, vc = vv0;
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
-                    code.code()->isWhateverCode = true;
-                    auto arityOf = [&](const Value& x) -> long long {
-                        if (x.t == VT::Whatever) return 1;
-                        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
-                            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
-                        return 0;
-                    };
-                    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
-                    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
-                        size_t idx = 0;
-                        auto resolve = [&](const Value& x) -> Value {
-                            if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
-                            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
-                                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
-                                ValueList sub;
-                                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
-                                return I.callCallable(x, sub);
-                            }
-                            return x;
-                        };
-                        Value k = resolve(kc);   // key first — argument order matters
-                        Value v = resolve(vc);
-                        Value pr = Value::pair(k.toStr(), v);
-                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
-                        return pr;
-                    };
-                    return code;
-                }
-                Value pr = Value::pair(kv.toStr(), vv0);
-                markPairValueRO(pr, p->value.get());
-                // a non-string key (number, object, match, array, hash, code) is preserved
-                // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
-                if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
-                    kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
-                    kv.t == VT::Match || kv.t == VT::Code ||
-                    // a REGEX key stays a Regex: `.trans(/\s+/ => ' ')` matches with
-                    // it, and stringifying it turned the pattern text into a
-                    // character set that mangled the subject
-                    kv.t == VT::Regex ||
-                    kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
-                return pr;
-            }
-            {   // `:err(/pat/)` → Regex value
-                Value pr = Value::pair(p->key, pairValueOf(p->value.get()));
-                markPairValueRO(pr, p->value.get());
-                return pr;
-            }
-        }
         case NK::BlockExpr: {
             auto* be = static_cast<BlockExpr*>(e);
             // `{*}` in EXPRESSION position inside a proto body (`my $r = {*}`) is the

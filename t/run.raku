@@ -1543,13 +1543,19 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     # that the flag is HONOURED — a bigger stack takes more frames, and the
     # guard fires instead of the process taking SIGSEGV. The frame COUNT that
     # fits is not the contract, and 64M was calibrated on arm64, where 1000
-    # frames need 44M. x86_64 frames are wider: the same tree needs ~60M there,
-    # so 64M cleared it by a hair on macOS-x86_64 and not at all on
-    # linux-x86_64, which is the one runner this failed on (linux-aarch64 and
-    # macos-universal, both arm64, passed throughout). It passed on
-    # linux-x86_64 as late as 2026-09-14 and drifted over the line by
+    # frames needed 44M at the time. x86_64 frames are wider: the same tree
+    # needed ~60M there, so 64M cleared it by a hair on macOS-x86_64 and not at
+    # all on linux-x86_64, which is the one runner this failed on
+    # (linux-aarch64 and macos-universal, both arm64, passed throughout). It
+    # passed on linux-x86_64 as late as 2026-09-14 and drifted over the line by
     # 2026-09-22 on ordinary frame growth, which is a knife-edge number failing,
-    # not a ceiling being breached. 128M is ~2x the widest measurement.
+    # not a ceiling being breached.
+    #
+    # The frames are cheaper since: splitting the declaration cases out of exec
+    # and the construction cases out of eval took 1000 frames from 44M to 28M on
+    # arm64. The line stays at 128M anyway. It was never the frame count that
+    # was worth asserting, and re-tightening it would only rebuild the
+    # knife-edge that made three pushes red.
     {
         my @deep = '-e', 'sub f($n) { $n == 0 ?? 0 !! 1 + f($n-1) }; say f(+@*ARGS[0])';
         is(run-rakupp('--stack-size=128M', |@deep, '1000')[0], "1000\n", '--stack-size=128M: 1000 frames fit');
