@@ -15696,7 +15696,6 @@ static bool betterCandidate(const std::vector<int>& candIn, int candScore,
 // wedging kill-proof under Rosetta).
 thread_local char* t_stackTop = nullptr;
 thread_local size_t t_stackLimit = 0;
-size_t rakuppCallerStackBytes();   // defined just below, for the embed hop
 static size_t currentThreadStackSize() {
 #if defined(_WIN32)
     ULONG_PTR low = 0, high = 0;
@@ -15729,10 +15728,6 @@ static size_t currentThreadStackSize() {
     return sz ? sz : (size_t(8) << 20);
 #endif
 }
-// The CALLING thread's stack, for the embed hop to decide whether it is worth
-// taking. Same measurement the recursion guard runs on, exposed because the
-// decision belongs to whoever is about to recurse.
-size_t rakuppCallerStackBytes() { return currentThreadStackSize(); }
 struct DepthGuard {
     int& d;
     explicit DepthGuard(int& dd) : d(dd) {

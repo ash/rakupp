@@ -146,64 +146,105 @@ void runMaybeBigStack(Interp* p, const std::function<void()>& body) {
 
 }  // namespace
 
-// The hop itself, as a method, because rk_call needs it too and lives in
-// ExtApi.cpp with no sight of `Interp`. own_stack says "run Raku on a thread
-// with a large stack", and until this it only half did: rk_eval and rk_run
-// hopped, while rk_call — the entry a language binding spends most of its time
-// in — ran on whatever stack the host thread had. A binding host reaching a
-// match tree through rk_call therefore recursed on the CALLER's stack, which on
-// Windows is about 1 MiB by default, and the guide's own examples took the
-// process down with them.
+// True on the worker itself, so a re-entry from inside an evaluation runs where
+// it already is. An extension that calls rk_eval mid-evaluation would otherwise
+// hand the job to a worker it IS, and wait for itself.
+static thread_local bool t_onEmbedWorker = false;
+
+void Interpreter::embedWorkerLoop() {
+    t_onEmbedWorker = true;
+    EmbedWorker& w = embedWorker_;
+    for (;;) {
+        std::unique_lock<std::mutex> lk(w.mu);
+        w.work.wait(lk, [&w] { return w.pending || w.stop; });
+        if (w.stop) return;
+        const std::function<void()>* job = w.job;
+        lk.unlock();
+        (*job)();                      // guarded by the caller: must not throw
+        lk.lock();
+        w.pending = false;
+        w.finished = true;
+        lk.unlock();
+        w.done.notify_one();
+    }
+}
+
+// The hop, as a method, because rk_call needs it too and lives in ExtApi.cpp
+// with no sight of `Interp`. own_stack says "run Raku on a thread with a large
+// stack", and it is kept for rk_call as much as for rk_eval — a binding host
+// does most of its work through the former and would otherwise recurse on
+// whatever stack it happened to call from, about 1 MiB on Windows.
 void Interpreter::runOnEmbedStack(const std::function<void()>& body) {
-    Interpreter* self = this;
-    if (!embedOwnStack_) {
+    // Already there, or never going: run here. `t_onEmbedWorker` covers the
+    // re-entrant case, embedOwnStack_ the host that did not ask.
+    if (!embedOwnStack_ || t_onEmbedWorker) {
         // Same GIL discipline as the hop below, on the caller's own thread.
         bool outermost = gilMainlineEnter();
         body();
         gilMainlineLeave(outermost);
         return;
     }
+    // The session's execution registers (current lexical scope first among
+    // them) are THREAD-LOCAL. The worker keeps its own between jobs now, but
+    // the CALLER still needs them: rk_call looks its routine up on the host's
+    // thread, before the hop, so the registers have to be visible there
+    // between entries. Parked here, loaded on the worker, parked there, loaded
+    // back — the same saveCtx/loadCtx handoff the engine's schedulers use at
+    // await. Nothing else is copied: what the worker keeps, it keeps.
     ExecContext parked;
     saveCtx(parked);
-    // The G1 grammar highwater is thread-local too, and the shim reads it on a
-    // LATER entry than the parse that set it (`rk-grammar-parse` answers Any,
-    // then `rk-grammar-diagnosis` asks why). A fresh worker per entry would
-    // start with an empty one and answer "no diagnosis" to every failed parse,
-    // which is what both binding guides' strict-parse example printed. So it
-    // rides the hop beside the registers, in both directions.
-    GrammarParseDiag parkedDiag = grammarParseDiag();
-    // rakuppMainOnBigStack takes a C callback, so the lambda rides across as
-    // its void* context.
-    struct Ctx { Interpreter* p; const std::function<void()>* fn; ExecContext* parked;
-                 GrammarParseDiag* diag; };
-    Ctx c{self, &body, &parked, &parkedDiag};
-    rakuppMainOnBigStack([](void* v) -> int {
-        auto* cc = (Ctx*)v;
-        // GIL ownership cannot ride the hop the way the registers do — a
-        // mutex belongs to the thread that locked it, and this thread dies
-        // with the evaluation. So each entry takes the engaged GIL HERE and
-        // hands it back before the thread ends (gilMainlineEnter/Leave);
-        // waiting first also means a still-running `start` worker finishes
-        // its yield window before this evaluation touches interpreter state.
-        bool outermost = cc->p->gilMainlineEnter();
-        cc->p->loadCtx(*cc->parked);
-        grammarParseDiag() = *cc->diag;
+    auto entry = [this, &body, &parked] {
+        // GIL ownership cannot ride a thread boundary — a mutex belongs to the
+        // thread that locked it — so each job takes the engaged GIL HERE and
+        // hands it back (gilMainlineEnter/Leave); waiting first also means a
+        // still-running `start` worker finishes its yield window before this
+        // job touches interpreter state.
+        bool outermost = gilMainlineEnter();
+        loadCtx(parked);
         // The worker IS the session's mainline while the body runs: `exit`
         // distinguishes the mainline (unwinds as ExitEx, catchable) from a
         // `start {}` worker (ends the process), by thread id.
-        auto prevMain = cc->p->mainThread_;
-        cc->p->mainThread_ = std::this_thread::get_id();
-        (*cc->fn)();
-        cc->p->mainThread_ = prevMain;
-        *cc->diag = grammarParseDiag();
-        cc->p->saveCtx(*cc->parked);
-        cc->p->gilMainlineLeave(outermost);
-        return 0;
-    }, &c);
-    // The registers return to THIS thread, so between evaluations the session
-    // is visible right here — rk_call from the host still finds its scope.
+        auto prevMain = mainThread_;
+        mainThread_ = std::this_thread::get_id();
+        body();
+        mainThread_ = prevMain;
+        saveCtx(parked);
+        gilMainlineLeave(outermost);
+    };
+    const std::function<void()> job = entry;
+
+    EmbedWorker& w = embedWorker_;
+    std::unique_lock<std::mutex> lk(w.mu);
+    if (!w.started) {
+        w.started = true;
+        // inlineOnFailure=false: this body is a LOOP, and running it here would
+        // never return. A refused thread leaves th unjoinable and the hop falls
+        // back to the caller's own stack, which is what a host without
+        // own_stack gets anyway.
+        w.th = BigStackThread([this] { embedWorkerLoop(); }, rakuppStackBytes(), false);
+    }
+    if (!w.th.joinable()) {          // no worker to hand it to
+        lk.unlock();
+        job();
+        loadCtx(parked);
+        return;
+    }
+    w.job = &job;
+    w.pending = true;
+    w.finished = false;
+    lk.unlock();
+    w.work.notify_one();
+    // Straight to the condvar. A bounded spin on the completion flag was tried
+    // here — this thread has nothing else to do, so a spin looks free — and
+    // measured WORSE: 5.4-7.3us per call against 4.6-5.2 sleeping, and 9.3
+    // against 5.2 on a 256 KB host thread. A spinning caller competes for the
+    // core with the worker it is waiting for, and delays the job it wants back.
+    lk.lock();
+    w.done.wait(lk, [&w] { return w.finished; });
+    lk.unlock();
+    // The registers return to THIS thread, so between entries the session is
+    // visible right here — rk_call from the host still finds its scope.
     loadCtx(parked);
-    grammarParseDiag() = parkedDiag;
 }
 
 extern "C" {

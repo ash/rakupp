@@ -290,15 +290,6 @@ RkValue extCallHere(ExtCtx* x, const Value& code, const RkValue* argv, size_t ar
     }
 }
 
-// A stack this big already holds far more interpreter frames than the guard
-// would ever allow — the POSIX main thread's own size. Below it (a default
-// Windows executable's 1 MiB, or a host thread someone sized down) the engine
-// runs out of native stack before the guard can stop it, which is the only
-// case worth paying a thread for.
-static bool callerStackIsTight() {
-    return rakuppCallerStackBytes() < (size_t(8) << 20);
-}
-
 // own_stack means "run Raku on a thread with a large stack", and a host reaches
 // most of the engine through rk_call rather than rk_eval — a language binding
 // walking a match tree makes one call per leaf. Running those on the CALLER's
@@ -306,20 +297,19 @@ static bool callerStackIsTight() {
 // where a default-linked executable's main thread has about 1 MiB and one
 // interpreter frame costs tens of KB. So the hop applies here too.
 //
-// Only at depth 0, and only when the caller's stack is actually tight. An
-// extension re-entering mid-evaluation is already on the engine's own stack,
-// and hopping under it would park a context the evaluation outside is still
-// using. extCallHere catches everything, including control flow, so nothing
-// escapes the worker's entry function.
+// Only at depth 0. An extension re-entering mid-evaluation is already on the
+// engine's own stack, and hopping under it would park a context the evaluation
+// outside is still using. extCallHere catches everything, including control
+// flow, so nothing escapes the worker's entry function.
 //
-// The condition matters: a hop is a thread create and join, measured at 20-34us
-// against 0.8us for the call itself, and a binding's lazy path is one call per
-// LEAF. Paying that on a host that already has room would be a 40x tax for
-// nothing. A persistent worker would make it cheap enough to stop asking; this
-// asks.
+// Unconditional otherwise. It used to ask whether the caller's stack was tight
+// first, because a hop was a thread create and join — 33us against 0.8us for
+// the call it carried, and a binding's lazy path is one call per LEAF. The
+// worker is persistent now and the handshake costs a fraction of that, so the
+// question is not worth asking: the answer only ever decided whether a host
+// crashed.
 RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
-    if (x->interp && x->interp->embedOwnStack() && x->interp->embedOutermost() &&
-        callerStackIsTight()) {
+    if (x->interp && x->interp->embedOwnStack() && x->interp->embedOutermost()) {
         RkValue out = nullptr;
         x->interp->runOnEmbedStack([&] { out = extCallHere(x, code, argv, argc); });
         return out;

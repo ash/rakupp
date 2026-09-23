@@ -72,9 +72,8 @@ std::vector<std::pair<std::string, int>> signalNamesAndNumbers(); // every Signa
 void srandSeed(long long s); // reseed the RNG (srand)
 void rakuppSetSeed(long long s); // --seed=N: what every thread's FIRST rand() seeds from, instead of time+pid
 void rakuppSetTrace(bool on);    // --trace: print every statement to stderr as it runs
-// The calling thread's stack size, the same measurement the recursion guard
-// takes. The embed hop reads it to decide whether the caller already has room.
-size_t rakuppCallerStackBytes();
+// The size a big-stack thread asks for: 1 GiB, or whatever --stack-size set.
+size_t rakuppStackBytes();
 // --stagestats: the module loads inside a run, in the order they began, with
 // nesting depth and inclusive wall time (a `use` inside a module is deeper).
 struct StageModuleLoad { std::string name; int depth; double ms; };
@@ -2114,23 +2113,31 @@ public:
         static void run_(void* p) { std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
     public:
         BigStackThread() = default;
-        template <typename F> explicit BigStackThread(F f) {
+        // `stackBytes` 0 takes the default. `inlineOnFailure` is the fallback for
+        // a one-shot body: if the thread cannot be created, run it here instead
+        // of losing the work. A body that LOOPS must pass false — running a
+        // worker loop on the caller would never return — and check joinable().
+        template <typename F> explicit BigStackThread(F f, size_t stackBytes = 0,
+                                                      bool inlineOnFailure = true) {
             // A second thread is about to run Raku code: the statement line stops
             // being one shared slot and becomes one per thread (see g_stmtLine).
             stmtLinesGoThreaded();
             auto* fn = new Fn{std::move(f)};
-            const size_t kStack = (size_t)256 << 20; // 256 MiB (virtual; committed on use)
+            const size_t kStack = stackBytes ? stackBytes
+                                             : (size_t)256 << 20; // 256 MiB (virtual; committed on use)
 #if defined(_WIN32)
             h_ = bigStackCreate(&BigStackThread::run_, fn, kStack);
             if (h_) joinable_ = true;
-            else { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else if (inlineOnFailure) { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else { std::unique_ptr<Fn> g(fn); }                              // …or tell the caller, via joinable()
 #else
             pthread_attr_t attr;
             pthread_attr_init(&attr);
             pthread_attr_setstacksize(&attr, kStack);
             auto entry = [](void* p) -> void* { BigStackThread::run_(p); return nullptr; };
             if (pthread_create(&h_, &attr, entry, fn) == 0) joinable_ = true;
-            else { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else if (inlineOnFailure) { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else { std::unique_ptr<Fn> g(fn); }                              // …or tell the caller, via joinable()
             pthread_attr_destroy(&attr);
 #endif
         }
@@ -2162,6 +2169,39 @@ public:
         }
         ~BigStackThread() { if (joinable_) detach(); } // daemon semantics, like drainWorkers' abandon
     };
+
+    // The embed hop's worker — ONE thread for the interpreter's lifetime, not
+    // one per entry.
+    //
+    // A host with own_stack set reaches Raku through rk_call far more often
+    // than through rk_eval: a binding's lazy path is one call per match-tree
+    // LEAF. Creating and joining a thread for each of those measured 33-34us
+    // against 0.8us for the call itself, and the cost is thread creation, not
+    // the stack size (1 MB: 28us, 1 GiB: 16us), so nothing about reserving less
+    // would have helped. A handshake over this mutex costs a fraction of it.
+    //
+    // Keeping the thread also keeps its THREAD-LOCALS, which is the other half.
+    // A fresh worker per entry started blank, so anything the engine keeps per
+    // thread and needs between host entries had to be copied across by hand —
+    // the execution registers were, and the G1 grammar highwater had to be
+    // added when both binding guides started printing "no diagnosis" for a
+    // failed strict parse. With one worker there is nothing to copy and no next
+    // one of those to find.
+    struct EmbedWorker {
+        std::mutex mu;
+        std::condition_variable work, done;
+        const std::function<void()>* job = nullptr;
+        bool pending = false, finished = false, stop = false, started = false;
+        BigStackThread th;
+        ~EmbedWorker() {
+            if (!th.joinable()) return;
+            { std::lock_guard<std::mutex> lk(mu); stop = true; }
+            work.notify_one();
+            th.join();
+        }
+    };
+    EmbedWorker embedWorker_;               // started on the first hop, stopped by ~EmbedWorker
+    void embedWorkerLoop();                 // the worker's body; defined in EmbedApi.cpp
     // A worker slot pairs the thread with a completion flag so finished workers can
     // be joined (and their big stacks released) as new ones spawn, instead of
     // accumulating unjoined until drainWorkers.

@@ -158,6 +158,9 @@ void rakuppSetLLException(bool on) { g_llException = on; } // --ll-exception (is
 static size_t g_stackBytes = (size_t)1 << 30;
 static bool g_stackExplicit = false;
 void rakuppSetStackBytes(size_t bytes) { g_stackBytes = bytes; g_stackExplicit = true; }
+// What the big-stack threads ask for, so the embed worker asks for the same as
+// the CLI's mainline rather than a second, quieter number.
+size_t rakuppStackBytes() { return g_stackBytes; }
 // --stagestats (Rakudo's flag): how long each phase took, and each module load
 // inside the run, on stderr once the run is over. Collected in rakuppRunOn;
 // the module loads come from the interpreter's own collector (Interpreter.h).
