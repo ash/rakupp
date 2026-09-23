@@ -1320,19 +1320,37 @@ static void markAnonDecl(Expr* e) {
 // `my Rat $x = 42` and `my Num $x = 1.5` are refused as firmly as the NaN.
 // (A NEGATED literal is an expression, not a literal, and falls through to the
 // ordinary run-time check: `my Int $x = -Inf` is X::TypeCheck::Assignment.)
-static void checkLiteralDeclType(const Expr* target, const Expr* value, int line) {
+// `varType` names the type of an ALREADY-declared target (`my Num $n; $n = 42`
+// is refused the same way); without it only a declaring target is judged.
+static void checkLiteralDeclType(const Expr* target, const Expr* value, int line,
+                                 const std::string* varType = nullptr) {
     if (!target || !value || target->kind != NK::VarExpr) return;
     auto* ve = static_cast<const VarExpr*>(target);
-    if (!ve->declare || ve->declType.empty() || ve->name.empty() || ve->name[0] != '$') return;
+    if (ve->name.empty() || ve->name[0] != '$') return;
+    if (!ve->declare && !varType) return;
+    const std::string& declType = ve->declare ? ve->declType : *varType;
+    if (declType.empty()) return;
     static const std::set<std::string> kInt = {"Int", "int", "int8", "int16", "int32",
         "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
     static const std::set<std::string> kRat = {"Rat", "rat", "rat32", "rat64", "FatRat"};
     static const std::set<std::string> kNum = {"Num", "num", "num32", "num64"};
-    const char* want = kInt.count(ve->declType) ? "Int"
-                     : kRat.count(ve->declType) ? "Rat"
-                     : kNum.count(ve->declType) ? "Num" : nullptr;
+    const char* want = kInt.count(declType) ? "Int"
+                     : kRat.count(declType) ? "Rat"
+                     : kNum.count(declType) ? "Num"
+                     : declType == "Complex" ? "Complex" : nullptr;
     if (!want) return;
     std::string got, spell;
+    // `<42+0i>` — the Complex literal angleWordNumeric builds, marked by the
+    // `<…>` spelling it leaves on the imaginary part. A source `42 + 0i` is an
+    // expression and is not judged.
+    if (value->kind == NK::Binary) {
+        auto* b = static_cast<const Binary*>(value);
+        if (b->op != "+" || !b->rhs || b->rhs->kind != NK::NumLit) return;
+        auto* im = static_cast<const NumLit*>(b->rhs.get());
+        if (!im->imaginary || im->raw.empty() || im->raw[0] != '<') return;
+        got = "Complex"; spell = im->raw;
+    }
+    else
     if (value->kind == NK::IntLit) {
         auto* il = static_cast<const IntLit*>(value);
         got = "Int";
@@ -1340,8 +1358,7 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
     }
     else if (value->kind == NK::NumLit) {
         auto* nl = static_cast<const NumLit*>(value);
-        if (nl->imaginary) return; // a Complex literal is a different question
-        got = nl->isRat ? "Rat" : "Num";
+        got = nl->imaginary ? "Complex" : nl->isRat ? "Rat" : "Num";
         spell = nl->raw;
     }
     else if (value->kind == NK::NameTerm) {
@@ -1351,13 +1368,17 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
     }
     else return;
     if (got == want || spell.empty()) return;
+    // a native reads "native variable", and suggests the boxed type's coercer
+    const bool native = !declType.empty() && ascii::islower((unsigned char)declType[0]);
+    const std::string coerce = native ? std::string(want) : declType;
     throw ParseError("Cannot assign a literal of type " + got + " (" + spell +
-                     ") to a variable (" + ve->name + ") of type " + ve->declType +
+                     ") to a " + (native ? "native " : "") + "variable (" + ve->name +
+                     ") of type " + declType +
                      ". You can declare the variable to be of type Real, or try to "
-                     "coerce the value with " + spell + "." + ve->declType + " or " +
-                     ve->declType + "(" + spell + ").",
+                     "coerce the value with " + spell + "." + coerce + " or " +
+                     coerce + "(" + spell + ").",
                      line, "X::Syntax::Number::LiteralType",
-                     {{"vartype", ve->declType}, {"value", spell}});
+                     {{"vartype", declType}, {"value", spell}});
 }
 
 ExprPtr Parser::parseExpr(int minbp) {
@@ -2169,7 +2190,15 @@ ExprPtr Parser::parseExpr(int minbp) {
                 lhs = std::move(call);
                 continue;
             }
-            if (in.op == "=") checkLiteralDeclType(lhs.get(), rhs.get(), cur().line);
+            if (in.op == "=") {
+                const std::string* known = nullptr;
+                if (lhs && lhs->kind == NK::VarExpr && !static_cast<VarExpr*>(lhs.get())->declare) {
+                    auto& frame = scalarDeclTypes_.back();
+                    auto it = frame.find(static_cast<VarExpr*>(lhs.get())->name);
+                    if (it != frame.end()) known = &it->second;
+                }
+                checkLiteralDeclType(lhs.get(), rhs.get(), lhs->line ? lhs->line : cur().line, known);
+            }
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
             // `=@=` and friends ARE plain assignment; only the container semantics
@@ -4394,6 +4423,7 @@ static ExprPtr angleWordNumeric(const std::string& w) {
             if (end2 == s + w.size() - 1) {
                 auto nl = std::make_unique<NumLit>(re);
                 auto ni = std::make_unique<NumLit>(im); ni->imaginary = true;
+                ni->raw = "<" + w + ">"; // marks the literal; see checkLiteralDeclType
                 auto b = std::make_unique<Binary>(); b->op = "+";
                 b->lhs = std::move(nl); b->rhs = std::move(ni);
                 return b;
@@ -6226,6 +6256,7 @@ ExprPtr Parser::parsePrimary() {
                     // Consume `= / :=` here so a caller's prefix can't capture the
                     // bare declarator as its operand first.
                     ExprPtr decl = parseDeclarator(name);
+                    noteScalarDecls(decl.get());
                     if (isKind(Tok::Op) && (cur().text == "=" || cur().text == ":=")) {
                         bool listTarget = decl->kind == NK::ListExpr;
                         if (decl->kind == NK::VarExpr) {
@@ -7592,11 +7623,26 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     return result;
 }
 
+// Record (or, for an untyped redeclaration, clear) the declared type of each
+// `$` variable a declarator introduces — see scalarDeclTypes_.
+void Parser::noteScalarDecls(const Expr* e) {
+    if (!e) return;
+    if (e->kind == NK::ListExpr) {
+        for (auto& it : static_cast<const ListExpr*>(e)->items) noteScalarDecls(it.get());
+        return;
+    }
+    if (e->kind != NK::VarExpr) return;
+    auto* ve = static_cast<const VarExpr*>(e);
+    if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
+    scalarDeclTypes_.back()[ve->name] = ve->declType;
+}
+
 // ---------------- statements ----------------
 std::unique_ptr<Block> Parser::parseBlock() {
     expectKind(Tok::LBrace, "{");
     size_t opMark = opUndo_.size(); // user operators are lexically scoped
     monkeyScopes_.push_back(0);
+    scalarDeclTypes_.emplace_back();
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -7607,6 +7653,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     }
     checkRedeclarations(blk->stmts);
     monkeyScopes_.pop_back();
+    scalarDeclTypes_.pop_back();
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -7913,7 +7960,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil" ||
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident)) sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek()); // remember the return type
+            else if (isKind(Tok::Ident)) {
+                sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek()); // remember the return type
+                // `--> Int Str` — a second type after the return constraint
+                if (peek().kind == Tok::Ident && knownTypeName(peek().text))
+                    throw ParseError("Malformed return value (return constraints only allowed "
+                                     "at the end of the signature)", cur().line,
+                                     "X::Syntax::Malformed", {{"what", "return value"}});
+            }
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
@@ -8244,6 +8298,13 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
                 }
             }
+            // `(Int Str $x)` — a second prefix type is refused, not read as a
+            // stray term that then died "expected )"
+            if (isKind(Tok::Ident) && knownTypeName(cur().text) &&
+                (peek().kind == Tok::Var || (peek().kind == Tok::Op && peek().text == "\\")))
+                throw ParseError("A parameter may only have one prefix type constraint",
+                                 cur().line, "X::Parameter::MultipleTypeConstraints",
+                                 {{"parameter", peek().text}});
             // …and a type capture AFTER the constraint: `Response ::RESPONSE = …`
             // constrains the parameter AND names whatever type actually arrived.
             // The capture branch above only fires when `::` OPENS the parameter,
@@ -10534,9 +10595,25 @@ StmtPtr Parser::parseStatementImpl() {
             }
             // typed scoped decl:  my Int sub / my Num constant / our Str sub
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) {
-                advance(); advance(); // strip scope and type
-                return parseStatement();
+                advance(); // scope
+                std::string prefixType = advance().text;
+                StmtPtr st = parseStatement();
+                // `my Bool sub f` — the prefix type IS the return type, checked
+                // like `--> Bool`; it used to be stripped and forgotten
+                if (st && st->kind == NK::SubDecl) {
+                    auto* sd = static_cast<SubDecl*>(st.get());
+                    if (sd->retType.empty()) sd->retType = prefixType;
+                }
+                return st;
             }
+            // `my Int Str $x` / `our Int Str sub f` — Rakudo parses a second
+            // prefix type and refuses it as not yet implemented
+            if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident &&
+                knownTypeName(peek().text) && knownTypeName(peek(2).text) &&
+                (peek(3).kind == Tok::Var || (peek(3).kind == Tok::Ident && declKw.count(peek(3).text))))
+                throw ParseError("Multiple prefix constraints not yet implemented. Sorry.",
+                                 t.line, "X::Comp::NYI",
+                                 {{"feature", "Multiple prefix constraints"}});
             // typed scoped decl with a parameterized type: `my Foo::Bar[Ber::Meow] constant …`
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::LBracket) {
                 size_t save = pos_;

@@ -1183,6 +1183,33 @@ void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string
             " bit wide bigint into native integer. Did you mix int and Int or literals?"};
 }
 
+// A native container cannot hold a type object, Nil included: `my int $x = Nil`
+// dies "Cannot unbox a type object (Nil) to int." rather than storing (Any).
+// The declared type is on a DECLARING target; a sized native assigned later is
+// known by its slot's natBits.
+static void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
+    if (rv.t != VT::Nil && rv.t != VT::Type) return;
+    const char* kind = nullptr;
+    if (target && target->kind == NK::VarExpr) {
+        auto* tv = static_cast<const VarExpr*>(target);
+        if (tv->declare && tv->name.size() > 1 && tv->name[0] == '$') {
+            const std::string& t = tv->declType;
+            if (t == "str") kind = "str";
+            else if (t.rfind("num", 0) == 0 && (t.size() == 3 || t == "num32" || t == "num64")) kind = "num";
+            else if (t == "int" || t == "uint" || t == "byte" ||
+                     ((t.rfind("int", 0) == 0 || t.rfind("uint", 0) == 0) &&
+                      ascii::isdigit((unsigned char)t.back())))
+                kind = "int";
+        }
+    }
+    if (!kind && slot && slot->natBits) kind = slot->natFloat ? "num" : "int";
+    if (!kind) return;
+    const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.s.str();
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "Cannot unbox a type object (" + what + ") to " +
+        (std::string(kind) == "int" ? "int." : std::string("a ") + kind + ".")};
+}
+
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
 static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
     if (bits <= 0) return;
@@ -19680,6 +19707,39 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 "Calling " + c.name + "(" + prof + ") will never work with "
                 "declared signature (" + sigt + ")"};
         }
+        // A LITERAL argument whose type can never satisfy the parameter's core
+        // nominal type is Rakudo's compile-time X::TypeCheck::Argument
+        // ("Calling f(Str) will never work"), not a binding failure: the call
+        // site alone decides it. Only the plain one-to-one shape is judged —
+        // no named or flattened arguments — and only an unadorned core type.
+        if (rwArgs && rwArgs->size() == args.size() && c.params) {
+            static const std::set<std::string> kCore = {"Int", "Str", "Num", "Rat", "Complex", "Bool"};
+            size_t i = 0;
+            bool bad = false;
+            for (auto& p : *c.params) {
+                if (p.invocant || p.named) continue;
+                if (p.slurpy || p.sigil != '$' || i >= args.size()) break;
+                const Expr* ae = (*rwArgs)[i].get();
+                const Value& av = args[i++];
+                if (!ae || isNamedArg(av)) break;
+                const bool lit = ae->kind == NK::StrLit || ae->kind == NK::InterpStr || ae->kind == NK::IntLit ||
+                                 (ae->kind == NK::NumLit && !static_cast<const NumLit*>(ae)->imaginary);
+                if (lit && kCore.count(p.type) && !p.coerce && !p.whereExpr && !p.hadWhere &&
+                    !p.subSig && !p.typeCapture && !rtTypeMatch(av, p.type)) { bad = true; break; }
+            }
+            if (bad) {
+                std::string prof, sigt;
+                for (auto& a : args) { if (!prof.empty()) prof += ", "; prof += a.typeName(); }
+                for (auto& p : *c.params) {
+                    if (p.invocant) continue;
+                    if (!sigt.empty()) sigt += ", ";
+                    sigt += (p.type.empty() ? std::string() : p.type + " ") + p.name;
+                }
+                throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+                    "Calling " + c.name + "(" + prof + ") will never work with "
+                    "declared signature (" + sigt + ")"};
+            }
+        }
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod, c.isBlock, whereVerified);
@@ -23565,6 +23625,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
                             Value rv = evalValueOf(a->value.get());
+                            nativeUndefCheck(rv, a->target.get(), slot);
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
                                 rv.readonly = rv.immutableBind = false;
@@ -25645,6 +25706,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
+            // …except in a native, which has no undefined value to reset to
+            nativeUndefCheck(rhs, a->target.get(), lv);
             const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
             Value dv = Value::any();
             // An ATTRIBUTE resets to its DECLARED TYPE object, not to bare Any:
@@ -25685,6 +25748,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // into an UNTYPED container, but a typed one has to look at it, and
             // looking at a Failure detonates it.
             if (a->op == "=" && a->target->kind == NK::VarExpr) {
+                nativeUndefCheck(rhs, a->target.get(), lv);
                 static const std::set<std::string> kChecked = {   // UInt: see the twin set
                     "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
                 };

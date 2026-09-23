@@ -334,6 +334,13 @@ private:
     std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)
     // `use MONKEY-TYPING` is lexically scoped: one frame per block, program frame at [0]
     std::vector<char> monkeyScopes_ = {0};
+    // Declared type of each `$` variable a block declares, one frame per block
+    // (pushed with monkeyScopes_) — so `my Num $n; $n = 42` can be refused at
+    // compile time like `my Num $n = 42`. Only the SAME block's frame is ever
+    // consulted: an inner block may rebind the name as a parameter, which this
+    // map never sees.
+    std::vector<std::map<std::string, std::string>> scalarDeclTypes_ = {{}};
+    void noteScalarDecls(const Expr* e);
     bool monkeyActive() const {
         for (char f : monkeyScopes_) if (f) return true;
         return false;
