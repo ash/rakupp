@@ -2115,10 +2115,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             const Expr* def = ca->def;
             std::shared_ptr<Env> declEnv = owner->declEnv;
+            // `has DateTime $.created .= now` — the default MUTATES the slot a
+            // construction seeds with the attribute's type object, so the
+            // thunk calls the method on that type (Red's timestamp columns)
+            std::string seedType = ca->type.empty() ? std::string("Any") : ca->type;
             Value thunk; thunk.t = VT::Code; thunk.setCode(std::make_shared<Callable>());
             thunk.code()->isMethod = true;
             thunk.code()->name = "build";
-            thunk.code()->builtin = [def, declEnv](Interpreter& I, ValueList& a) -> Value {
+            thunk.code()->builtin = [def, declEnv, seedType](Interpreter& I, ValueList& a) -> Value {
+                // (the parser desugars `.= m(…)` to `$!x.m(…)` on the attribute itself)
+                const MethodCall* mcd = def->kind == NK::MethodCall ? static_cast<const MethodCall*>(def) : nullptr;
+                if (mcd && mcd->inv && mcd->inv->kind == NK::VarExpr &&
+                    static_cast<const VarExpr*>(mcd->inv.get())->name.compare(0, 2, "$!") == 0) {
+                    auto* mc = mcd;
+                    auto saved = I.tctx_.cur;
+                    auto env = std::make_shared<Env>();
+                    env->parent = declEnv ? declEnv : I.tctx_.cur;
+                    env->define("self", a.empty() ? Value::any() : a[0]);
+                    I.tctx_.cur = env;
+                    struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx_.cur = s; } } r{I, saved};
+                    ValueList margs;
+                    for (auto& ae : mc->args) margs.push_back(I.eval(ae.get()));
+                    return I.methodCall(Value::typeObj(seedType), mc->method, std::move(margs));
+                }
                 auto env = std::make_shared<Env>();
                 env->parent = declEnv ? declEnv : I.tctx_.cur;
                 env->define("self", a.empty() ? Value::any() : a[0]);
