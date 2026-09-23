@@ -820,6 +820,11 @@ struct Block : Stmt {
     // loop may overwrite the topic in place instead of clearing and
     // re-inserting per iteration. Decided once; see Interpreter::flatLoopBody.
     DecidedOnce<signed char> flatLoop{-1};
+    // -1 = not yet decided, 0 = nothing to do, 1 = this block declares a `my`
+    // that a named sub hoisted into it closes over, so the container has to
+    // exist from block ENTRY rather than from the declaration statement. See
+    // Interpreter::predeclareSubClosures; decided once, like the two above.
+    DecidedOnce<signed char> subClosureDecls{-1};
     // Which loop phasers this body declares: bit 1 = NEXT, 2 = LAST, 4 = FIRST
     // (-1 = not yet scanned). A static property of the AST, decided once so
     // runLoopBody skips the per-iteration statement scan — and every phaser

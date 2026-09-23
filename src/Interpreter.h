@@ -1612,6 +1612,9 @@ public:
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
     void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr, bool everyDecl = false);
     void declareSkippedLexicals(const std::vector<StmtPtr>& stmts, Env* env) { hoistExprDecls(stmts, env, nullptr, /*everyDecl=*/true); }
+    // A `my` this block declares and a sub hoisted into it closes over exists
+    // from block entry, as the mainline's lexicals do. See Interpreter.cpp.
+    void predeclareSubClosures(Block* b, Env* env);
     // Pads (PADS-PLAN.md): build (or fetch) the layout for one owner body and
     // annotate its dominated VarExprs with (slot, owner). Cached per BODY
     // address; thread-safe (padMu_). `params` supplies the owner's parameter

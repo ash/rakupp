@@ -4446,6 +4446,158 @@ bool Interpreter::materializePendingType(const std::string& name) {
     return classes_.count(name) > 0;
 }
 
+// ---- a block's lexicals exist from the moment the block is ENTERED ---------
+//
+// hoistSubs (just below) puts a named sub in scope before the block's first
+// statement runs, because a named sub is visible across its whole enclosing
+// scope whatever its textual position. The CONTAINER it closes over has to be
+// there just as early — Raku allocates a block's lexicals when the block is
+// entered, not when the declaration statement executes — and a bare block did
+// not do that. So
+//
+//     { say foo(); say foo(); my $a; sub foo { $a++ } }
+//
+// gave each call a freshly auto-vivified `$a` and answered 0 twice, where the
+// IDENTICAL program at file scope answers 0, 1: the mainline has pre-declared
+// its top-level `my`s all along (the loop beside the pad install in run()).
+// Seven assertions of roast S02-names-vars/variables-and-packages.t are that
+// difference, across three idioms — a plain `my $a`, one with an initialiser,
+// and one filled by a BEGIN block.
+//
+// Only the names a hoisted sub MENTIONS are pre-declared, never every `my` in
+// the block. hoistExprDecls says what a blanket hoist costs — it disturbs loop
+// and gather per-iteration freshness — and the narrow rule needs no such
+// argument to be made: the sub's own capture is the thing being repaired, so
+// the sub's own free names are the whole of the list.
+
+// Every variable a body MENTIONS without declaring, nested bodies included
+// (an inner closure captures through its outer one just the same). Liberal on
+// purpose, and safe for being so: a name that is really the sub's own local
+// costs nothing, because only names the BLOCK declares are ever acted on, and
+// a mention this misses (inside a regex literal, say) simply leaves that case
+// as it was. Cheap because it runs once per block, for blocks with a sub.
+static void collectMentionedS(const Stmt* s, std::set<std::string>& out);
+static void collectMentionedB(const Block* b, std::set<std::string>& out) {
+    if (b) for (auto& s : b->stmts) collectMentionedS(s.get(), out);
+}
+static void collectMentionedE(const Expr* e, std::set<std::string>& out) {
+    if (!e) return;
+    auto each = [&](const std::vector<ExprPtr>& v) { for (auto& x : v) collectMentionedE(x.get(), out); };
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (!v->declare && !v->name.empty()) out.insert(v->name);
+            collectMentionedE(v->declDefault.get(), out);
+            collectMentionedE(v->declShape.get(), out);
+            break;
+        }
+        case NK::ListExpr:  each(static_cast<const ListExpr*>(e)->items); break;
+        case NK::ArrayLit:  each(static_cast<const ArrayLit*>(e)->items); break;
+        case NK::HashLit:   each(static_cast<const HashLit*>(e)->items); break;
+        case NK::InterpStr: each(static_cast<const InterpStr*>(e)->parts); break;
+        case NK::NqpOp:     each(static_cast<const NqpOp*>(e)->args); break;
+        case NK::ChainExpr: each(static_cast<const ChainExpr*>(e)->operands); break;
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e);
+            collectMentionedE(a->target.get(), out); collectMentionedE(a->value.get(), out); break; }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            collectMentionedE(b->lhs.get(), out); collectMentionedE(b->rhs.get(), out); break; }
+        case NK::Unary: collectMentionedE(static_cast<const Unary*>(e)->operand.get(), out); break;
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            collectMentionedE(c->callee.get(), out); each(c->args); break; }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            collectMentionedE(m->inv.get(), out); collectMentionedE(m->methodExpr.get(), out);
+            each(m->args); break; }
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            collectMentionedE(i->base.get(), out); collectMentionedE(i->index.get(), out); break; }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            collectMentionedE(t->cond.get(), out); collectMentionedE(t->then.get(), out);
+            collectMentionedE(t->els.get(), out); break; }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            collectMentionedE(r->from.get(), out); collectMentionedE(r->to.get(), out); break; }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            collectMentionedE(p->keyExpr.get(), out); collectMentionedE(p->value.get(), out); break; }
+        case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body)
+                                collectMentionedS(st.get(), out);
+                            break;
+        default: break;   // literals, regexes (their interpolations are text here), symbolic refs
+    }
+}
+static void collectMentionedS(const Stmt* s, std::set<std::string>& out) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: collectMentionedE(static_cast<const ExprStmt*>(s)->e.get(), out); break;
+        case NK::ReturnStmt: collectMentionedE(static_cast<const ReturnStmt*>(s)->value.get(), out); break;
+        case NK::Block: collectMentionedB(static_cast<const Block*>(s), out); break;
+        case NK::SubDecl: for (auto& st : static_cast<const SubDecl*>(s)->body)
+                              collectMentionedS(st.get(), out);
+                          break;
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches) { collectMentionedE(br.first.get(), out);
+                                           collectMentionedB(br.second.get(), out); }
+            collectMentionedB(i->elseBlock.get(), out); break; }
+        case NK::WhileStmt: case NK::RepeatStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            collectMentionedE(w->cond.get(), out); collectMentionedB(w->body.get(), out); break; }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            collectMentionedE(f->list.get(), out); collectMentionedB(f->body.get(), out); break; }
+        case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);
+            collectMentionedE(l->init.get(), out); collectMentionedE(l->cond.get(), out);
+            collectMentionedE(l->incr.get(), out); collectMentionedB(l->body.get(), out); break; }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            collectMentionedE(g->topic.get(), out); collectMentionedB(g->body.get(), out);
+            collectMentionedB(g->elseBody.get(), out); break; }
+        case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s);
+            collectMentionedE(w->cond.get(), out); collectMentionedB(w->body.get(), out); break; }
+        default: break;
+    }
+}
+
+void Interpreter::predeclareSubClosures(Block* b, Env* env) {
+    if (b->subClosureDecls == 0) return;             // decided already: nothing here
+    // The `my` declarations at THIS block's statement level, read exactly as the
+    // mainline's pre-declare reads its own: a bare declarator, the target of an
+    // initialising assignment, or a list of either (`my ($a, $b) = …`).
+    std::vector<const VarExpr*> decls;
+    auto one = [&](const Expr* x) {
+        if (!x || x->kind != NK::VarExpr) return;
+        auto* ve = static_cast<const VarExpr*>(x);
+        if (ve->declare && ve->declScope == "my" && !ve->name.empty()) decls.push_back(ve);
+    };
+    for (auto& s : b->stmts) {
+        if (s->kind != NK::ExprStmt) continue;
+        const Expr* e = static_cast<const ExprStmt*>(s.get())->e.get();
+        if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+        if (e && e->kind == NK::ListExpr)
+            for (auto& it : static_cast<const ListExpr*>(e)->items) one(it.get());
+        else one(e);
+    }
+    if (decls.empty()) { b->subClosureDecls = 0; return; }
+    std::set<std::string> mentioned;
+    for (auto& s : b->stmts) {
+        if (s->kind != NK::SubDecl) continue;
+        auto* sd = static_cast<SubDecl*>(s.get());
+        if (sd->isMethod || sd->name.empty()) continue;
+        for (auto& st : sd->body) collectMentionedS(st.get(), mentioned);
+    }
+    bool any = false;
+    for (const VarExpr* ve : decls) {
+        if (!mentioned.count(ve->name)) continue;
+        // The three shapes the mainline's pre-declare also leaves to the
+        // declaration itself, and for its reasons: a container trait decides
+        // what the variable IS (`my %h is Set`) and a plain Hash put here first
+        // would leave the trait nothing to replace; a parameterized declared
+        // type cannot be evaluated this early; a shaped array needs its dims.
+        if (!ve->containerIs.empty() && (ve->name[0] == '%' || ve->name[0] == '@')) continue;
+        if (ve->declTypeExpr || ve->declShape) continue;
+        any = true;
+        if (env->local(ve->name)) continue;
+        // A declared type that names nothing is the DECLARATION's error to
+        // raise, at its own line — not this pass's, at the top of the block.
+        try { env->define(ve->name, declInitial(ve, ve->name[0])); }
+        catch (RakuError&) {}
+    }
+    b->subClosureDecls = any ? 1 : 0;
+}
+
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
@@ -8453,27 +8605,31 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
     // sorting where the EVAL itself sits in its unit.
     EndUnitScope endUnit{*this, /*atSourcePosition=*/false};
     registerEnds(*prog);
-    // Pre-declare the unit's own top-level `my`s, as the MAINLINE does above —
-    // in Raku a declaration is a compile-time effect, so the container exists
-    // before the line that initialises it runs, and `(my @a) = […@a…]` can name
-    // the very variable it declares. EVAL'd code got none of that and died
-    // "Variable '@a' is not declared", which is how `.raku` of a
-    // self-referential array — whose whole rendering is that shape — could not
-    // be read back (roast S02-names-vars/list_array_perl.t).
-    for (auto& s : prog->stmts) {
-        if (s->kind != NK::ExprStmt) continue;
-        Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
-        if (!e || e->kind != NK::Assign) continue;
+    // A declaration takes effect at the start of ITS OWN statement, so
+    // `(my @a) = […@a…]` can name the very variable it declares — which is the
+    // shape `.raku` gives a self-referential array, and EVAL is how roast reads
+    // one back (S02-names-vars/list_array_perl.t). EVAL'd code had no
+    // pre-declaration at all and died "Variable '@a' is not declared".
+    //
+    // Scoped to the ONE statement on purpose. Doing the whole unit up front,
+    // which is what the mainline does beside its pad install, also made a
+    // mention in an EARLIER statement resolve: `EVAL '$foo; my $foo = 42'`
+    // stopped being X::Undeclared, where Rakudo refuses it and
+    // S04-declarations/my-6e.t (and its 6.c twin) checks that it does.
+    auto predeclareStmt = [this](Stmt* s) {
+        if (s->kind != NK::ExprStmt) return;
+        Expr* e = static_cast<ExprStmt*>(s)->e.get();
+        if (!e || e->kind != NK::Assign) return;
         Expr* t = static_cast<Assign*>(e)->target.get();
-        if (!t || t->kind != NK::VarExpr) continue;
+        if (!t || t->kind != NK::VarExpr) return;
         auto* ve = static_cast<VarExpr*>(t);
         // only a plain `my`: `state`, `our` and the trait/parameterized forms
         // own machinery that the declaration itself has to run
-        if (!ve->declare || ve->declScope != "my" || ve->name.empty()) continue;
-        if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) continue;
-        if (tctx_.cur->local(ve->name)) continue;
+        if (!ve->declare || ve->declScope != "my" || ve->name.empty()) return;
+        if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) return;
+        if (tctx_.cur->local(ve->name)) return;
         tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
-    }
+    };
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
@@ -8490,6 +8646,7 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         // entry in dev/findings/SPEC-DIVERGENCES.md, and regexBlockErrorStaysQuiet
         // reads this very message to keep such a block quiet).
         const bool ownedOutside = mainlinePH && tctx_.curLoopFrame != ExecContext::kNoFrame;
+        predeclareStmt(s.get());   // the declaration is in scope for its own initialiser
         try { last = exec(s.get()); }
         catch (RedoEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
         catch (NextEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
@@ -9081,6 +9238,12 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
     } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
     hasNestedSub = hoistSubs(b->stmts);
+    // …and the containers those subs close over, which are lexicals of THIS
+    // block and so exist from here on. Only for a block that has such a sub —
+    // and not for one running in a scope it does not own (a statement
+    // modifier's flattened branch), where a declaration belongs to the
+    // enclosing block and pre-making it here would leak.
+    if (hasNestedSub && !sharesScope) predeclareSubClosures(b, blockEnv);
     hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
     // The ENDs this block holds bind to THIS entry — the innermost scope that
     // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
