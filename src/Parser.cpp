@@ -2387,7 +2387,12 @@ ExprPtr Parser::parsePrefix(bool tight) {
         }
     }
     // user-defined prefix operator: `sub prefix:<§>` — symbolic (Op) or word (Ident)
-    if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userPrefix_.count(cur().text)) {
+    // A new candidate for a BUILT-IN word prefix keeps the built-in's
+    // precedence: Red's `multi prefix:<so>(Red::AST $a)` does not make
+    // `so $str ~~ /…/` read as `(so $str) ~~ /…/`. `so`/`not` are loose (the
+    // identifier path below parses them), not tight like a symbolic prefix.
+    if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userPrefix_.count(cur().text) &&
+        !(cur().kind == Tok::Ident && (cur().text == "so" || cur().text == "not"))) {
         auto u = std::make_unique<Unary>();
         u->op = advance().text;
         u->operand = parsePrefix(true);
@@ -4021,7 +4026,8 @@ static bool isPseudoPkg(const std::string& p) {
 // a module claims to export, so the chain form is not exotic.
 static bool isPseudoPkgPath(const std::string& p, std::string& effective) {
     if (p.empty()) return false;
-    size_t start = 0;
+    // `::CALLERS::<&x>` — a leading `::` names the same root (Red writes it so)
+    size_t start = p.size() > 2 && p.compare(0, 2, "::") == 0 ? 2 : 0;
     while (true) {
         size_t sep = p.find("::", start);
         std::string comp = sep == std::string::npos ? p.substr(start)
@@ -4676,6 +4682,14 @@ ExprPtr Parser::parsePrimary() {
         return sr;
     }
     // symbolic name reference in term position: `::Foo::Bar` → the named type/package
+    // `::CALLERS::<&x>` is `CALLERS::<&x>`: a leading `::` before a
+    // pseudo-package is the root it already names (Red's ResultSeq asks
+    // `::CALLERS::<&__RED_OPERATOR_LOADED__>`). Drop it and parse the rest.
+    if (isOp("::") && peek().kind == Tok::Ident) {
+        std::string pt = peek().text, eff;
+        if (pt.size() > 2 && pt.compare(pt.size() - 2, 2, "::") == 0) pt.resize(pt.size() - 2);
+        if (isPseudoPkgPath(pt, eff)) advance();
+    }
     if (isOp("::") && peek().kind == Tok::Ident) {
         advance(); // ::
         std::string name = advance().text;
@@ -5786,6 +5800,14 @@ ExprPtr Parser::parsePrimary() {
             // `True => 1` / `False => 1`, whose keys are the strings "True"/"False"
             // in Rakudo, not Bools. The `=>` infix turns a NameTerm into the key.
             // (…but not a slang's sigilless variable — `👍 => 666` under Slang::Emoji keys on its VALUE)
+            // Only a plain IDENTIFIER is autoquoted: a package-qualified name
+            // (`Red::AST => …`) is the TYPE, which is how Red keys the
+            // unconditional arm of a filter (`:{ Red::AST => $response }`).
+            if (peek().kind == Tok::FatArrow && !t.flag && name.find("::") != std::string::npos &&
+                name.compare(name.size() - 2, 2, "::") != 0) {
+                advance();
+                auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = true; return nt;
+            }
             if (peek().kind == Tok::FatArrow && !t.flag) { advance(); return std::make_unique<NameTerm>(name); }
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
@@ -6382,7 +6404,7 @@ ExprPtr Parser::parsePrimary() {
                     // dynamic chain (the plain-name approximation read our own $y)
                     if (pseudoPkg == "CALLER" || pseudoPkg == "CALLERS") {
                         auto sr = std::make_unique<SymbolicRef>();
-                        sr->pkg = "CALLER";
+                        sr->pkg = pseudoPkg;   // CALLERS walks every caller, CALLER one
                         if (keyExpr) sr->nameExpr = std::move(keyExpr);
                         else sr->nameExpr = std::make_unique<StrLit>(sym);
                         return sr;
@@ -9563,6 +9585,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 // trait loop, so `handles` was never captured.
                 if (a.sigil == '%' && isKind(Tok::LBrace) && !cur().spaceBefore) {
                     a.objKeyed = true; // {Mu:U}-shaped: type-object keys stay distinct
+                    // …and a plain `{Type}` shape is the KEY TYPE, recorded the
+                    // way `my %h{Type}` records it ("valueType,keyType"), so
+                    // `.keys` hands back the objects themselves. Red's
+                    // `has %!relationships{Attribute}` answered Str keys and
+                    // every `$rel.build-relationship` died on a string.
+                    if (peek().kind == Tok::Ident && peek(2).kind == Tok::RBrace && a.type.find(',') == std::string::npos)
+                        a.type = (a.type.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : a.type) + "," + peek().text;
                     int d = 0;
                     do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); }
                     while (d > 0 && !isKind(Tok::End));

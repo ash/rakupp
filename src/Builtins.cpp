@@ -337,7 +337,7 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
 bool isBuiltinRole(const std::string& n) {
     static const std::set<std::string> roles = {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
-        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy",
+        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy", "Sequence",
         "IO::Socket"};
     // …and the X:: exception roles (X::Comp, X::Syntax, X::IO, …), which the
     // generated table owns because Rakudo's hierarchy is what defines them.
@@ -3480,6 +3480,11 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
 // ValueObjAt (sheet LA-36). A PAIR is whichever its parts are (sheet HM-19):
 // `(a => 1)` is a value, `(a => [1])` is an object, because the Array inside it
 // is one — which is why two such pairs are not `===` and `.unique` keeps both.
+// …unless its class writes its own `method WHICH` answering a ValueObjAt.
+static bool userWhichIsValue(const Value& v) {
+    std::string w; bool isValue = false;
+    return g_userWhich && g_userWhich(v, w, isValue) && isValue;
+}
 bool whichIsObjAt(const Value& v) {
     if (v.t == VT::Pair)
         return (v.pairKey() && whichIsObjAt(*v.pairKey())) ||
@@ -3490,7 +3495,7 @@ bool whichIsObjAt(const Value& v) {
                                 v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
            (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "IO")) ||
            (v.t == VT::Num && v.hashKind == "Instant") ||
-           v.t == VT::Code || v.t == VT::Object;
+           v.t == VT::Code || (v.t == VT::Object && !userWhichIsValue(v));
 }
 std::string whichOf(const Value& v) {
     auto ratPart = [](const Value& r) {
@@ -3537,6 +3542,8 @@ std::string whichOf(const Value& v) {
         // baggyKeyStr (which keys on the RENDERING, `A<obj>` for every instance
         // of A) merged them: `set($x, $y).elems` was 1.
         case VT::Object:  if (v.obj()) {
+                              std::string w; bool isV = false;
+                              if (g_userWhich && g_userWhich(v, w, isV)) return w;
                               char buf[24];
                               std::snprintf(buf, sizeof buf, "|%p", (void*)v.obj());
                               return v.typeName() + buf;
@@ -4701,6 +4708,9 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             if (v.hashKind == "IntStr" || v.hashKind == "RatStr" || v.hashKind == "NumStr")
                 throw JsonFastUnsupported{"cannot serialise a Hash carrying an allomorph tag"};
             if (!v.hashKind.empty()) throw JsonFastUnsupported{"cannot serialise a Hash carrying a type tag (Date, DateTime, …)"};
+            // an object hash (`:{ 1 => 1 }`) stores each key under its WHICH
+            // ("Int|1"); the module writes `.key.Str`, which only it can reach
+            if (v.objKeyed) throw JsonFastUnsupported{"cannot serialise an object hash"};
             if (!v.hash()) { out += pretty ? "{\n}" : "{}"; return; }
             auto& h = *v.hash();
             // hashes iterate in INSERTION order here; :sorted-keys sorts by
@@ -6387,7 +6397,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 hit->second->howObj.obj()->cls &&
                 hit->second->howObj.obj()->cls->findMethod(mm)) {
                 ValueList ha; ha.reserve(args.size() + 1);
-                ha.push_back(tobj);
+                // `$obj.^m(…)` is `$obj.HOW.m($obj, …)` — the INSTANCE, not its
+                // type: Red's `self.^set-dirty(…)` in a model's TWEAK reads the
+                // row's own attributes through it
+                ha.push_back(inv.t == VT::Object ? inv : tobj);
                 for (auto& a : args) ha.push_back(a);
                 return methodCall(hit->second->howObj, mm, ha, rwArgs);
             }
@@ -6563,13 +6576,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (isSlurpy) continue;
                     if (isNamed) {
                         bool opt = ph.count("optional") && ph["optional"].truthy();
-                        if (!opt) {
-                            std::string key;
-                            if (ph.count("named_names") && ph["named_names"].arr() && !ph["named_names"].arr()->empty())
-                                key = (*ph["named_names"].arr())[0].toStr();
-                            else if (ph.count("name") && ph["name"].s.size() > 1)
-                                key = ph["name"].s.substr(1);
-                            if (!key.empty() && !named.count(key)) { ok = false; break; }
+                        std::string key;
+                        if (ph.count("named_names") && ph["named_names"].arr() && !ph["named_names"].arr()->empty())
+                            key = (*ph["named_names"].arr())[0].toStr();
+                        else if (ph.count("name") && ph["name"].s.size() > 1)
+                            key = ph["name"].s.substr(1);
+                        auto nit = key.empty() ? named.end() : named.find(key);
+                        if (!opt && !key.empty() && nit == named.end()) { ok = false; break; }
+                        // a SUPPLIED named must bind too: its type, and the
+                        // Positional/Associative an `@`/`%` sigil implies —
+                        // `\(…, :to(Str)) ~~ :(Str $v, :@to!)` is False (Red
+                        // picks its inflater by asking exactly that)
+                        if (nit != named.end()) {
+                            const Value& nv = nit->second;
+                            char sg = ph.count("name") && !ph["name"].s.empty() ? ph["name"].s[0] : '$';
+                            if (sg == '@' && !(nv.t == VT::Array || nv.t == VT::Range ||
+                                               typeOrSubsetMatches(nv, "Positional"))) { ok = false; break; }
+                            if (sg == '%' && !(nv.t == VT::Hash || typeOrSubsetMatches(nv, "Associative"))) { ok = false; break; }
+                            if (sg == '$' && ph.count("type") && !ph["type"].s.empty() &&
+                                ph["type"].s != "Mu" && ph["type"].s != "Any" &&
+                                !typeOrSubsetMatches(nv, ph["type"].s)) { ok = false; break; }
                         }
                         continue;
                     }
@@ -14505,27 +14531,57 @@ void Interpreter::registerBuiltins() {
     B["lc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBLc(I, a[0]); };
     B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), 0, 1)); };
     // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
-    auto boolCurry = [](bool negate, const Value& w) -> Value {
+    // (`userOp`: the program's own `prefix:<so>`/`prefix:<not>` candidates, as
+    // seen where the `not *…` was WRITTEN — the curried closure runs somewhere
+    // else, and Red's `grep(not *.name in <b c>)` must build a NotIn AST there)
+    auto boolCurry = [](bool negate, const Value& w, Value userOp = Value::any()) -> Value {
         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
         code.code()->isWhateverCode = true;
         code.code()->whateverArity = (w.t == VT::Code && w.code() && w.code()->whateverArity > 0) ? w.code()->whateverArity : 1;
         Value inner = w;
-        code.code()->builtin = [negate, inner](Interpreter& I, ValueList& xs) -> Value {
+        code.code()->builtin = [negate, inner, userOp](Interpreter& I, ValueList& xs) -> Value {
             Value v = inner.t == VT::Whatever ? (xs.empty() ? Value::any() : xs[0])
                                               : I.callCallable(inner, xs);
+            if (userOp.t == VT::Code && v.t == VT::Object && v.obj() && v.obj()->cls) {
+                try { return I.callCallable(userOp, ValueList{v}); }
+                catch (RakuError& e) {
+                    if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+                }
+            }
             bool b = I.boolify(v);
             return Value::boolean(negate ? !b : b);
         };
         return code;
     };
-    B["so"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
+    // `so`/`not` are word PREFIXES, and a program may add candidates to them
+    // (Red: `multi prefix:<so>(Red::AST $a)` builds SQL instead of a Bool).
+    // Same rule as evalUnary's for a symbolic prefix: an OBJECT operand tries
+    // the user's candidates first, and one none of them takes falls through
+    // to the built-in, as Rakudo's wider core candidate would take it.
+    auto userWordPrefix = [](Interpreter& I, const char* op, ValueList& a, Value& out) -> bool {
+        if (a.size() != 1 || a[0].t != VT::Object || !a[0].obj() || !a[0].obj()->cls) return false;
+        Value* f = I.tctx_.cur ? I.tctx_.cur->find(std::string("&prefix:<") + op + ">") : nullptr;
+        if (!f) return false;
+        try { out = I.callCallable(*f, ValueList{a[0]}); return true; }
+        catch (RakuError& e) {
+            if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+        }
+        return false;
+    };
+    B["so"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
-            return boolCurry(false, a[0]);
+            return boolCurry(false, a[0], [&]() {
+                Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<so>") : nullptr;
+                return f ? *f : Value::any(); }());
+        if (Value r; userWordPrefix(I, "so", a, r)) return r;
         return Value::boolean(!a.empty() && I.boolify(a[0]));
     };
-    B["not"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
+    B["not"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
-            return boolCurry(true, a[0]);
+            return boolCurry(true, a[0], [&]() {
+                Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<not>") : nullptr;
+                return f ? *f : Value::any(); }());
+        if (Value r; userWordPrefix(I, "not", a, r)) return r;
         return Value::boolean(a.empty() || !I.boolify(a[0]));
     };
     // Junction constructors: all()/any()/one()/none() (also written via & | ^).

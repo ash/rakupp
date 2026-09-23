@@ -239,6 +239,7 @@ extern std::function<Value(const Value&)> g_deproxy; // reads a Proxy container
 // and the key of a hash built from an object. Answers false when the value has
 // no user Str, leaving the existing rendering in place.
 extern std::function<bool(const Value&, std::string&)> g_userStr;
+extern std::function<bool(const Value&, std::string&, bool&)> g_userWhich; // an object's own `method WHICH`
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);
 // `errOut`/`errInherit`/`outMode` as in spawnCapture: capture, inherit ours, or

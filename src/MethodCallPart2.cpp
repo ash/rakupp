@@ -741,6 +741,33 @@ static const MacDistro& macDistro() {
 }
 #endif
 
+// `.^add_multi_method(name, &m)`: one more candidate in the class's group of
+// that name (a plain sub installed as a method takes the invocant as its first
+// positional; an existing single method becomes the group's first candidate).
+void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
+    if (cand.t == VT::Code && cand.code() && !cand.code()->isMethod &&
+        !cand.code()->subAsMethod) {
+        auto clone = std::make_shared<Callable>(*cand.code());
+        clone->subAsMethod = true;
+        Value c2; c2.t = VT::Code; c2.setCode(std::move(clone));
+        cand = std::move(c2);
+    }
+    auto it = ci->methods.find(mname);
+    if (it != ci->methods.end() && it->second.t == VT::Code && it->second.code() &&
+        it->second.code()->isMultiDispatcher)
+        it->second.code()->candidates.push_back(cand);
+    else {
+        Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+        disp.code()->name = mname;
+        disp.code()->isMultiDispatcher = true;
+        disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
+        if (it != ci->methods.end() && it->second.t == VT::Code)
+            disp.code()->candidates.push_back(it->second);
+        disp.code()->candidates.push_back(cand);
+        ci->methods[mname] = disp;
+    }
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
@@ -1988,8 +2015,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Attribute afterwards. (`~~` already consults the same list.)
         {
             auto rit = h.find(ATTR_ROLES_KEY);
+            // newest first: a LATER mixin wins over an earlier one, as it
+            // does in Rakudo (`$a does R[&x]` after `$a but R[&y]` answers &x)
             if (rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
-                for (auto& rn : *rit->second.arr()) {
+                for (auto ri = rit->second.arr()->rbegin(); ri != rit->second.arr()->rend(); ++ri) {
+                    const Value& rn = *ri;
                     auto cit = classes_.find(rn.s);
                     if (cit == classes_.end() || !cit->second) continue;
                     // A public ATTRIBUTE of the role is served by the slot the
@@ -2056,7 +2086,48 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // value, which a metaclass adding an attribute at runtime uses in place
         // of the `= default` a declaration would have written.
         if (m == "set_build" && !args.empty()) { h["build"] = args[0]; return args[0]; }
-        if (m == "build") return h.count("build") ? h["build"] : Value::any();
+        // `.build` without a set_build answers what Rakudo's does: Mu for an
+        // attribute with no default, the value itself for a literal one, and
+        // otherwise a METHOD thunk `(instance, Mu)` that computes it. Red's
+        // model constructor skips `$built =:= Mu` and calls `$built.(self, Mu)
+        // if $built ~~ Method`; every attribute answering Any made it register
+        // an Any id for each fresh row.
+        if (m == "build") {
+            if (h.count("build")) return h["build"];
+            const ClassAttr* ca = nullptr;
+            std::shared_ptr<ClassInfo> owner;
+            if (h.count("package") && h.count("name")) {
+                auto cit = classes_.find(h["package"].s);
+                std::string an = h["name"].toStr();
+                if (an.size() > 2 && an[1] == '!') an = an.substr(2);
+                if (cit != classes_.end() && cit->second) {
+                    owner = cit->second;
+                    for (auto& a : owner->attrs) if (a.name == an) { ca = &a; break; }
+                }
+            }
+            if (!ca) return Value::any();
+            if (ca->hasDefVal) return ca->defVal;
+            if (!ca->def) return ca->buildFn.t == VT::Code ? ca->buildFn : Value::typeObj("Mu");
+            switch (ca->def->kind) {
+                case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
+                    return eval(const_cast<Expr*>(ca->def));
+                default: break;
+            }
+            const Expr* def = ca->def;
+            std::shared_ptr<Env> declEnv = owner->declEnv;
+            Value thunk; thunk.t = VT::Code; thunk.setCode(std::make_shared<Callable>());
+            thunk.code()->isMethod = true;
+            thunk.code()->name = "build";
+            thunk.code()->builtin = [def, declEnv](Interpreter& I, ValueList& a) -> Value {
+                auto env = std::make_shared<Env>();
+                env->parent = declEnv ? declEnv : I.tctx_.cur;
+                env->define("self", a.empty() ? Value::any() : a[0]);
+                auto saved = I.tctx_.cur; I.tctx_.cur = env;
+                struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx_.cur = s; } } r{I, saved};
+                return I.eval(const_cast<Expr*>(def));
+            };
+            return thunk;
+        }
         if (m == "has_build") return Value::boolean(h.count("build") && h["build"].t == VT::Code);
         if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
         if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
@@ -2078,6 +2149,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (obj.t == VT::Object && obj.obj()) {
                 if (m == "set_value" && args.size() > 1) {
                     Value v = args[1];
+                    // `set_value(Mu $obj, Mu \value)` binds the value RAW: a
+                    // Proxy handed in stays a Proxy in the slot, so every later
+                    // read FETCHes afresh. Red backs each column attribute with
+                    // one over its column-data hash (`col.set_value: instance<>,
+                    // proxy`); storing the value it happened to FETCH first froze
+                    // a row's `.id` at Any before the INSERT assigned it.
+                    if (rwArgs && rwArgs->size() > 1 && (*rwArgs)[1] &&
+                        ((*rwArgs)[1]->kind == NK::VarExpr || (*rwArgs)[1]->kind == NK::NameTerm)) {
+                        const Expr* ve = (*rwArgs)[1].get();
+                        std::string vn = ve->kind == NK::VarExpr ? static_cast<const VarExpr*>(ve)->name
+                                                                 : static_cast<const NameTerm*>(ve)->name;
+                        if (Value* raw = tctx_.cur ? tctx_.cur->find(vn) : nullptr)
+                            if (raw->t == VT::Hash && raw->hashKind == "Proxy") v = *raw;
+                    }
                     if (sigil == '@' && v.t == VT::Range) { Value a = Value::array(); *a.arr() = v.flatten(); a.isList = true; v = a; }
                     obj.obj()->attrs[an] = v;
                     return v;
@@ -2685,6 +2770,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Type && inv.s == "Stash") {
         if (m == "new") { Value h = Value::makeHash(); h.hashKind = "Stash"; return h; }
+    }
+    // `ValueObjAt.new("Foo|1")` — how a class that is a VALUE type writes its
+    // own `method WHICH` (Red::Column, Red::AST); ObjAt.new the same for an
+    // object identity. Both are the tagged Str that `.WHICH` itself answers.
+    if (inv.t == VT::Type && (inv.s == "ObjAt" || inv.s == "ValueObjAt") && m == "new") {
+        const Value* str = nullptr;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { str = &a; break; }
+        // the one positional is required: `ObjAt.new(:val("x"))` is Rakudo's
+        // "Too few positionals" (S02-types/built-in.t)
+        if (!str)
+            throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+                "Too few positionals passed; expected 2 arguments but got 1"};
+        Value w = Value::str(str->toStr());
+        w.hashKind = inv.s;
+        return w;
     }
     if (inv.t == VT::Type && (inv.s == "Uni" || inv.s == "NFC" || inv.s == "NFD" || inv.s == "NFKC" || inv.s == "NFKD")) {
         if (m == "new") {
@@ -4420,31 +4520,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 noteSymbolMutation("runtime .^add_multi_method");
                 const std::string mname = args[0].toStr();
                 Value cand = args[1];
-                // a plain sub installed as a method takes the invocant as its first
-                // positional, exactly as the single-method path clones it to do
-                if (cand.t == VT::Code && cand.code() && !cand.code()->isMethod &&
-                    !cand.code()->subAsMethod) {
-                    auto clone = std::make_shared<Callable>(*cand.code());
-                    clone->subAsMethod = true;
-                    Value c2; c2.t = VT::Code; c2.setCode(std::move(clone));
-                    cand = std::move(c2);
+                if (ci->awaitingCompose) {   // queued until the base compose (see ClassInfo)
+                    ci->pendingMultis.emplace_back(mname, cand);
+                    return args[1];
                 }
-                auto it = ci->methods.find(mname);
-                if (it != ci->methods.end() && it->second.t == VT::Code && it->second.code() &&
-                    it->second.code()->isMultiDispatcher)
-                    it->second.code()->candidates.push_back(cand);
-                else {
-                    Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
-                    disp.code()->name = mname;
-                    disp.code()->isMultiDispatcher = true;
-                    disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
-                    // an existing single method of that name becomes the first candidate,
-                    // so adding a multi beside it does not silently drop it
-                    if (it != ci->methods.end() && it->second.t == VT::Code)
-                        disp.code()->candidates.push_back(it->second);
-                    disp.code()->candidates.push_back(cand);
-                    ci->methods[mname] = disp;
-                }
+                insertRuntimeMulti(ci.get(), mname, std::move(cand));
                 return args[1];
             }
             if (m == "add_parent" && !args.empty()) { // .^add_parent(Type) — runtime inheritance
@@ -4500,17 +4580,66 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 ci->doneRoles.insert(rn);
                 for (auto& dr : rit->second->doneRoles) ci->doneRoles.insert(dr);
+                // a built-in role the role composed first sits in its NATIVE-parent
+                // slot (`also does Sequence` in Red::ResultSeq); the class does it too
+                for (ClassInfo* r = rit->second.get(); r; r = r->parent.get())
+                    if (!r->nativeParent.empty() && isBuiltinRole(r->nativeParent))
+                        ci->doneRoles.insert(r->nativeParent);
+                // …and a PARAMETERIZED role's bindings, as a runtime mixin
+                // brings them: Red builds each model's ResultSeq class with
+                // `.^add_role: Red::ResultSeq[type]`, whose `method of { $of }`
+                // reads the parameter through the invocant's class. The pun
+                // carries its arguments first; the defaults fill the rest.
+                for (auto& b : rit->second->roleParamBindings) ci->roleParamBindings.push_back(b);
+                {
+                    ValueList noArgs;
+                    bindRoleParamsInto(ci.get(), rit->second.get(), noArgs, rit->second->declEnv);
+                }
                 return inv;
             }
             // rakupp composes types eagerly, so .^compose is a no-op returning the
             // type (modules call it after add_method/add_attribute to finalize).
             // These bare metamodel names must NOT shadow a user method of the same
             // name — `Cro.compose(...)` is a real method, not a MOP finalize call.
+            // A type whose METACLASS writes its own `compose` (a runtime type from
+            // `MyHOW.new_type`) composes through it — Red builds a model's
+            // columns there — unless this IS that compose deferring to the base.
+            if (m == "compose" && ci && !ci->findMethod(m) && !tctx_.metaForwarding.count("compose") &&
+                ci->howObj.t == VT::Object && ci->howObj.obj() && ci->howObj.obj()->cls) {
+                bool userCompose = false;
+                for (ClassInfo* c = ci->howObj.obj()->cls.get(); c && !userCompose; c = c->parent.get())
+                    if (c->methods.count("compose")) userCompose = true;
+                if (userCompose) {
+                    Value how = ci->howObj;
+                    try { methodCall(how, "compose", ValueList{inv}); }
+                    catch (RakuError& ce) {
+                        if (ce.message.find("to redispatch to") == std::string::npos &&
+                            ce.message.find("not in the dynamic scope of a dispatcher") == std::string::npos)
+                            throw;
+                    }
+                    if (ci->awaitingCompose) {   // its `nextsame` never reached the base
+                        ci->awaitingCompose = false;
+                        auto pend = std::move(ci->pendingMultis);
+                        ci->pendingMultis.clear();
+                        for (auto& pm : pend) insertRuntimeMulti(ci.get(), pm.first, pm.second);
+                    }
+                    return inv;
+                }
+            }
+            if (m == "set_rw" && ci && !ci->findMethod(m)) ci->classRw = true;
             if ((m == "compose" || m == "compose_repr" || m == "publish_method_cache" ||
                  m == "publish_type_cache" || m == "compose_attributes" || m == "set_rw" ||
                  m == "invalidate_method_caches" || m == "publish_boolification_spec") &&
-                !(ci && ci->findMethod(m)))
+                !(ci && ci->findMethod(m))) {
+                // the base compose INCORPORATES the multis queued since new_type
+                if (m == "compose" && ci && ci->awaitingCompose) {
+                    ci->awaitingCompose = false;
+                    auto pend = std::move(ci->pendingMultis);
+                    ci->pendingMultis.clear();
+                    for (auto& pm : pend) insertRuntimeMulti(ci.get(), pm.first, pm.second);
+                }
                 return inv;
+            }
             if (m == "set_name" || m == "set_shortname") {
                 // Rename the CLASS and publish it under the new name, then answer
                 // a type object carrying it: the caller holds a Value whose `s` is
@@ -4541,6 +4670,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (!vs.empty() && vs[0] == 'v') vs.erase(0, 1);
                 ci->ver = vs; return inv;
             }
+            // `.^rw` — was the class declared `is rw` (Red makes every column
+            // accessor of such a model writable); `.^set_rw` sets it
+            if (m == "rw" && args.empty()) return Value::boolean(ci->classRw);
             if (m == "set_auth" && !args.empty()) { ci->auth = args[0].toStr(); return inv; }
             if (m == "set_api"  && !args.empty()) { ci->api  = args[0].toStr(); return inv; }
             if (m == "ver")  return ci->ver.empty()  ? Value::any() : ([&]{ Value v = Value::str(ci->ver);  v.hashKind = "Version"; return v; }());
@@ -4562,10 +4694,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
                     a.name = an;
                     a.type = av.hash()->count("type") && (*av.hash())["type"].t == VT::Type ? (*av.hash())["type"].s.str() : std::string();
+                    // For `@`/`%` the Attribute's :type is the CONTAINER's type,
+                    // where a declaration's `has Int %h` names the element's:
+                    // Red adds `Attribute.new(:name<%!___ID_VALUES___>,
+                    // :type(Hash))` and then stores Ints in it. Only a
+                    // parameterization (`Hash[Int]`) constrains the elements.
+                    if (a.sigil == '@' || a.sigil == '%') {
+                        const Value& tv = (*av.hash())["type"];
+                        a.type = av.hash()->count("type") && tv.t == VT::Type ? tv.ofType() : std::string();
+                    }
                     a.rw = av.hash()->count("readonly") ? !(*av.hash())["readonly"].truthy() : false;
                     a.pub = av.hash()->count("has_accessor") ? (*av.hash())["has_accessor"].truthy() : false;
                     if (av.hash()->count("build") && (*av.hash())["build"].t == VT::Code)
                         a.buildFn = (*av.hash())["build"];
+                    // `.^attributes` hands back THIS object, roles mixed in and all:
+                    // Red adds `$attr does Red::Attr::Column(%data)` and then finds
+                    // its columns with `.^attributes.grep(Red::Attr::Column)`
+                    a.metaObj = av;
                     noteSymbolMutation("runtime .^add_attribute");
                     ci->attrs.push_back(a);
                 }
@@ -4582,6 +4727,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value stub = builtinCanStub(mn, ci->isGrammar);
                     if (stub.t == VT::Code) out.arr()->push_back(stub);
                 }
+                return out;
+            }
+            // .^private_method_table: the class's OWN private methods, name =>
+            // Method (without the `!`). Red scans it for row phasers
+            // (`method !before-create is before-create { … }`).
+            if (m == "private_method_table") {
+                Value out = Value::makeHash();
+                for (auto& kv : ci->methods)
+                    if (kv.first.size() > 1 && kv.first[0] == '!')
+                        (*out.hash())[kv.first.substr(1)] = kv.second;
                 return out;
             }
             if (m == "methods" || m == "method_names" || m == "method_table") {
@@ -5286,6 +5441,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // transaction with it. (`new` learned the same lesson above.)
     if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj() &&
         !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod(m))) {
+        // A CONTROL exception (`class CX::Red::Bool is X::Control`) is offered
+        // to the innermost CONTROL block first; `.resume` there carries on
+        // right after this throw, which is how Red's what-does-it-do explores
+        // both answers of a `not`/`so` over a column expression.
+        if (m == "throw" && inv.obj()->cls) {
+            bool control = false;
+            for (ClassInfo* c = inv.obj()->cls.get(); c && !control; c = c->parent.get())
+                if (c->name == "X::Control" || c->nativeParent == "X::Control" ||
+                    c->doneRoles.count("X::Control")) control = true;
+            if (control && runControlException(inv)) return Value::nil();
+        }
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
         // (Log::Async::Context throws a fresh Exception exactly for the walk)
@@ -6929,8 +7095,62 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 else if (a.s == "api") ci->api = a.pairVal()->toStr();
             }
         noteSymbolMutation("runtime .new_type");
+        ci->awaitingCompose = true;
         classes_[ci->name] = ci;
         return Value::typeObj(ci->name);
+    }
+    // `MyHOW.new_type(:name)` on a USER metaclass — a subclass of
+    // Metamodel::ClassHOW — creates a type whose .HOW is an instance of it (the
+    // very instance, when called on one: `Meta.new(:table(…)).new_type(…)`).
+    // Red makes every model alias this way (`::?CLASS.new_type(:$name)`), and
+    // the per-type state the metaclass keeps lives in that instance.
+    if (m == "new_type" && (inv.t == VT::Type || inv.t == VT::Object) && declaringType_.empty()) {
+        std::shared_ptr<ClassInfo> hcls;
+        if (inv.t == VT::Object && inv.obj()) hcls = inv.obj()->cls;
+        else if (inv.t == VT::Type) {
+            auto it = classes_.find(inv.s);
+            if (it == classes_.end()) it = classes_.find(resolveClassAlias(inv.s));
+            if (it != classes_.end()) hcls = it->second;
+        }
+        bool isHow = false;
+        for (ClassInfo* c = hcls.get(); c && !isHow; c = c->parent.get())
+            if (c->nativeParent == "Metamodel::ClassHOW") isHow = true;
+        if (isHow) {
+            auto ci = std::make_shared<ClassInfo>();
+            ci->name = "<anon|1>";
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "name") ci->name = a.pairVal()->toStr();
+                    else if (a.s == "ver") ci->ver = a.pairVal()->toStr();
+                    else if (a.s == "auth") ci->auth = a.pairVal()->toStr();
+                    else if (a.s == "api") ci->api = a.pairVal()->toStr();
+                }
+            // types are registered by name here, so a second type asking for a
+            // taken name (Red's Specialisable re-types a model under its own
+            // name) must not replace the one already there
+            if (classes_.count(ci->name)) {
+                static std::atomic<int> dup{0};
+                ci->name += "+" + std::to_string(++dup);
+            }
+            // Rakudo's new_type makes its metaobject with `self.new` — a FRESH
+            // one even when asked of an instance, and through the metaclass's
+            // own `new` (Red's re-checks its experimental roles there)
+            try { ci->howObj = methodCall(Value::typeObj(hcls->name), "new", ValueList{}); }
+            catch (RakuError&) { ci->howObj = Value::any(); }
+            if (ci->howObj.t != VT::Object || !ci->howObj.obj()) {
+                auto od = makePayload<ObjectData>();
+                od->cls = hcls;
+                ValueList noArgs;
+                runAttrDefaults(od, hcls, noArgs);
+                Value h; h.t = VT::Object; h.setObj(std::move(od));
+                ci->howObj = std::move(h);
+            }
+            if (ci->howObj.obj()) ci->howObj.obj()->attrs["__type"] = Value::typeObj(ci->name);
+            noteSymbolMutation("runtime .new_type (user HOW)");
+            ci->awaitingCompose = true;
+            classes_[ci->name] = ci;
+            return Value::typeObj(ci->name);
+        }
     }
     // The HOW forms of the MOP operations take the type as their FIRST argument —
     // `$t.HOW.add_method($t, …)` — where the `.^` spelling passes it implicitly
@@ -6959,7 +7179,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // neither side answers would bounce between this forward and the
             // .HOW fallback in the `^` ladder forever.
             "roles_to_compose", "attributes", "methods", "parents", "roles", "mro", "name",
-            "declares_method", "method_table", "attribute_table", "lookup", "find_method"};
+            "declares_method", "method_table", "private_method_table", "attribute_table", "lookup", "find_method"};
         if (howOps.count(m)) {
             // `HOW.foo(type)` IS `type.^foo` — but the `^` ladder's last resort is
             // to ask the .HOW back, so a name the metaclass INHERITS rather than

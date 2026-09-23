@@ -715,8 +715,14 @@ struct TopicAlias {
     Value* slot = nullptr; Env* sc = nullptr; Value orig;
     ~TopicAlias() {
         if (!slot || !sc) return;
-        auto it = sc->vars.find("$_");
-        if (it != sc->vars.end() && topicChanged(it->second, orig)) *slot = it->second;
+        // A destructor runs noexcept: comparing the topics can run user code
+        // (a Proxy's FETCH, an object's own comparison) and a Raku exception
+        // escaping here was std::terminate — Red's `given`-heavy row builder
+        // aborted the whole process. Failing to compare means "unchanged".
+        try {
+            auto it = sc->vars.find("$_");
+            if (it != sc->vars.end() && topicChanged(it->second, orig)) *slot = it->second;
+        } catch (...) {}
     }
 };
 
@@ -2998,6 +3004,18 @@ ValueList pathPartsPairs(const Value& v) {
     return out;
 }
 
+// One hash entry as iteration yields it: the Pair's key is the entry's REAL key
+// (hashEntryKey — a Set element's pairKey, an object hash's objKey), so `for
+// :{ Foo::Bar => 5 } -> $p` sees the type object and not its index string.
+static Value iterEntryPair(const Value& h, const std::string& k, const Value& stored) {
+    Value rk = hashEntryKey(h, k, stored);
+    Value sv = stored;
+    if (sv.pairKey()) sv.pairKeyM() = nullptr;   // the element rides on the Pair, not its value
+    Value p = Value::pair(rk.t == VT::Str ? rk.s.str() : k, std::move(sv));
+    if (!(rk.t == VT::Str && rk.hashKind.empty())) p.pairKeyM() = std::make_shared<Value>(rk);
+    return p;
+}
+
 static Value hashToPairs(const Value& v) {
     Value out = Value::array(); out.isList = true;
     if (!v.hash()) return out;
@@ -3436,6 +3454,7 @@ void rtCommaAssign(Value& l, const Value& r) {
 
 // Per-thread execution registers. One instance per real thread; the GIL still
 // serialises who runs. See the declaration in Interpreter.h.
+void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand); // MethodCallPart2.cpp
 static Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
 // The two live-target pointers above are FILE statics the constructor points at
 // the newest Interpreter — a SCRATCH one (a slang's host, an L10N table read)
@@ -3511,6 +3530,7 @@ std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 // interpreter publishes one here — same shape as g_subsetCheck above.
 std::function<Value(const Value&)> g_deproxy;
 std::function<bool(const Value&, std::string&)> g_userStr;
+std::function<bool(const Value&, std::string&, bool&)> g_userWhich;
 std::atomic<uint64_t> g_lexShadowMask{0};
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as
@@ -3560,6 +3580,22 @@ void Interpreter::adoptProcessStatics() {
         if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
         if (!v.obj()->cls->findMethod("Str")) return false;
         out = strOf(v);
+        return true;
+    };
+    // An OBJECT whose class writes its own `method WHICH` identifies by what
+    // that answers — `===`, `.unique`, a Set's elements. Red::Column is
+    // `ValueObjAt.new: self.gist`, so two columns built from one attribute are
+    // the same column, and a model's `UNIQUE (name)` is declared once, not once
+    // per `.column` call. `isValue` reports a ValueObjAt answer.
+    g_userWhich = [this](const Value& v, std::string& out, bool& isValue) {
+        if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
+        if (!v.obj()->cls->findMethod("WHICH")) return false;
+        thread_local int depth = 0;
+        if (depth > 8) return false;           // a WHICH asking its own identity
+        struct D { int& d; D(int& x) : d(x) { d++; } ~D() { d--; } } g{depth};
+        Value w = methodCall(v, "WHICH", ValueList{});
+        out = w.toStr();
+        isValue = w.t == VT::Str && w.hashKind == "ValueObjAt";
         return true;
     };
     g_lexInfixLookup = [this](const std::string& op) -> Value* { return lexInfixLookup(op); };
@@ -3813,7 +3849,14 @@ void Interpreter::setMatchVar(Value v) {
 // in the block env so a sibling reference resolves. We descend through EXPRESSION
 // nodes only — never into a nested Block/BlockExpr/SubDecl body, which owns its
 // own scope. Zero-cost for blocks with no expression-buried declarations.
-void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache) {
+void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache, bool everyDecl) {
+    // everyDecl (declareSkippedLexicals): a CATCH is about to run, and the throw
+    // may have jumped over `my` declarations in its block. Raku declares those
+    // at compile time, so the handler sees them — at their initial value — and
+    // Red's `CATCH { default { self.emit: model, $data, :error($_) } }` reads a
+    // `$data` whose `my $data = …` is the statement that died. Every plain `my`
+    // at statement level counts then, not just the branch-buried ones; doing it
+    // here, only once a handler runs, costs the non-throwing path nothing.
     // Narrow by design: only a plain `my` declared INSIDE a conditional branch
     // (a Ternary then/else, or an nqp::if/while/stmts arg) needs hoisting for a
     // SIBLING branch to see it. `state` is excluded (its persistence machinery
@@ -3893,7 +3936,8 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
         }
     };
     for (auto& s : stmts) {
-        if (s->kind == NK::ExprStmt) walkE(walkE, static_cast<const ExprStmt*>(s.get())->e.get(), false);
+        if (s->kind == NK::ExprStmt) walkE(walkE, static_cast<const ExprStmt*>(s.get())->e.get(), everyDecl);
+        else if (everyDecl && s->kind == NK::ReturnStmt) walkE(walkE, static_cast<const ReturnStmt*>(s.get())->value.get(), true);
         else walkModStmt(walkModStmt, s.get());
     }
     if (cache) *cache = found ? 1 : 0;
@@ -9004,6 +9048,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // block should carry on after the throwing statement).
     // 0 = handled, 1 = .resume (carry on at the next statement), 2 = unmatched → rethrow
     auto runCatch = [&](RakuError& e) -> int {
+        declareSkippedLexicals(b->stmts, tcx.cur.get());
         tcx.cur->define("$_", exceptionFor(e));
         tcx.cur->define("$!", exceptionFor(e));
         bool matched = false;
@@ -11126,6 +11171,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             }
             ci->isGrammar = cd->isGrammar;
             ci->isMonitor = cd->isMonitor;
+            ci->classRw = cd->classRw;
             // A grammar with no explicit parent derives from the built-in
             // Grammar type, as Rakudo's do (G, Grammar, Match, Capture, Cool,
             // Any, Mu) — nativeParent is the existing seam for a built-in
@@ -11386,6 +11432,41 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // runs that one as readily as a metaclass-added one.
                 if (key == "POPULATE") ci->hasPopulate = true;
                 ci->roleSubmethods.erase(key); // the class declares it ITSELF now
+            }
+            // A role in the PARENT slot (`class C does R` with no `is`) is walked,
+            // not copied — so a class's own `multi method m` group shadowed R's
+            // candidates for `m` instead of joining them, and the narrower role
+            // candidate never competed. Red's SQLite driver declares
+            // `multi method default-type-for-type($) is default` beside the
+            // `(Str)`, `(Numeric)`, … candidates its CommonSQL role supplies, and
+            // every Str column came out varchar(255) rather than text. Merge them
+            // here, own candidates first; a same-signature role candidate stays
+            // overridden, as it does for a role composed by copy.
+            if (!cd->isRole) {
+                std::vector<ClassInfo*> parentRoles;
+                for (ClassInfo* r = ci->parent && ci->parent->isRole ? ci->parent.get() : nullptr;
+                     r && r->isRole; r = r->parent.get())
+                    parentRoles.push_back(r);
+                for (auto& p : ci->extraParents)
+                    if (p && p->isRole) parentRoles.push_back(p.get());
+                for (ClassInfo* role : parentRoles)
+                    for (auto& kv : role->methods) {
+                        const Value& rv = kv.second;
+                        if (rv.t != VT::Code || !rv.code() || !rv.code()->isMultiDispatcher) continue;
+                        auto it = ci->methods.find(kv.first);
+                        if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
+                            !it->second.code()->isMultiDispatcher) continue;
+                        auto& cands = it->second.code()->candidates;
+                        for (auto& rc : rv.code()->candidates) {
+                            if (!rc.code() || rc.code()->isStub || rc.code()->isProto) continue;
+                            std::string sk = sigKeyParams(rc.code()->params);
+                            bool have = false;
+                            for (auto& c : cands)
+                                if (c.code() == rc.code() ||
+                                    (c.code() && sigKeyParams(c.code()->params) == sk)) { have = true; break; }
+                            if (!have) cands.push_back(rc);
+                        }
+                    }
             }
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
@@ -11758,6 +11839,32 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (!ca2.type.empty() && ca2.type.find("::") == std::string::npos &&
                     classes_.count(clsName + "::" + ca2.type))
                     ca2.type = clsName + "::" + ca2.type;
+            // The metaobject a MODULE-SUPPLIED DECLARATOR names (`model Foo`),
+            // made before the attribute traits run: a trait reaches it through
+            // the type (`$attr.package.^add-relationship(…)` in Red's
+            // `is relationship`), and must find Red's HOW there, not ours.
+            auto makeDeclaredHow = [&]() {
+            if (!cd->howName.empty() && ci->howObj.t != VT::Object) {
+                    auto hcit = classes_.find(resolveClassAlias(cd->howName));
+                    if (hcit != classes_.end() && hcit->second) {
+                        auto od = makePayload<ObjectData>();
+                        od->cls = hcit->second;
+                        od->attrs["__type"] = Value::typeObj(clsName);
+                        // A metaclass is an ordinary object and keeps state in its
+                        // own attributes across the hooks below (OO::Monitors holds
+                        // its lock Attribute in one). Built by hand, it had no slots
+                        // at all: `$!x = …` made one on assignment and looked fine,
+                        // while `@!x.push(…)` and `%!x{…} = …` mutated a temporary
+                        // and silently kept nothing. Give it the slots a constructed
+                        // object would have.
+                        ValueList noArgs;
+                        runAttrDefaults(od, hcit->second, noArgs);
+                        Value h; h.t = VT::Object; h.setObj(std::move(od));
+                        ci->howObj = std::move(h);
+                    }
+                }
+            };
+            makeDeclaredHow();
             // USER attribute traits evaluate now, in the EXECUTED class-body
             // scope: `is unmarshalled-by(&unmarsh-version)` (META6) names a
             // `my multi sub` declared inside the body, which exists only after
@@ -11875,25 +11982,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // runs that HOW's `compose`, which is where such a metaclass does its
             // work (Red's MetamodelX::Red::Model turns the attributes into
             // columns there).
-            if (!cd->howName.empty() && ci->howObj.t != VT::Object) {
-                auto hcit = classes_.find(resolveClassAlias(cd->howName));
-                if (hcit != classes_.end() && hcit->second) {
-                    auto od = makePayload<ObjectData>();
-                    od->cls = hcit->second;
-                    od->attrs["__type"] = Value::typeObj(clsName);
-                    // A metaclass is an ordinary object and keeps state in its
-                    // own attributes across the hooks below (OO::Monitors holds
-                    // its lock Attribute in one). Built by hand, it had no slots
-                    // at all: `$!x = …` made one on assignment and looked fine,
-                    // while `@!x.push(…)` and `%!x{…} = …` mutated a temporary
-                    // and silently kept nothing. Give it the slots a constructed
-                    // object would have.
-                    ValueList noArgs;
-                    runAttrDefaults(od, hcit->second, noArgs);
-                    Value h; h.t = VT::Object; h.setObj(std::move(od));
-                    ci->howObj = std::move(h);
-                }
-            }
+            makeDeclaredHow();
             // …and that metaclass DRIVES the declaration, not just its end.
             // Rakudo hands a class to its HOW one piece at a time — new_type,
             // then add_attribute per attribute, then add_method per method,
@@ -11989,6 +12078,19 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (c->methods.count("compose")) userCompose = true;
                 if (userCompose) {
                     ValueList ca; ca.push_back(Value::typeObj(clsName));
+                    // the metaclass's compose runs BEFORE the base one it defers
+                    // to, so a multi it adds is queued until then (see ClassInfo::
+                    // awaitingCompose) — and incorporated however the hook exits
+                    ci->awaitingCompose = true;
+                    struct Incorporate {
+                        ClassInfo* c;
+                        ~Incorporate() {
+                            c->awaitingCompose = false;
+                            auto pend = std::move(c->pendingMultis);
+                            c->pendingMultis.clear();
+                            for (auto& pm : pend) insertRuntimeMulti(c, pm.first, pm.second);
+                        }
+                    } incorporate{ci.get()};
                     try { methodCall(ci->howObj, "compose", ca); }
                     catch (RakuError& ce) {
                         // A `nextsame` past the mixin has no next candidate here,
@@ -12524,7 +12626,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                               lv.hashKind == "Set" || lv.hashKind == "SetHash" ||
                               lv.hashKind == "Bag" || lv.hashKind == "BagHash" ||
                               lv.hashKind == "Mix" || lv.hashKind == "MixHash")) {
-                        for (auto& kv : *lv.hash()) items.push_back(Value::pair(kv.first, kv.second));
+                        for (auto& kv : *lv.hash()) items.push_back(iterEntryPair(lv, kv.first, kv.second));
                     }
                     else items.push_back(lv);
                     ValueList& itemsR = liveArr ? *liveArr : items;
@@ -12917,7 +13019,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                       listv.hashKind == "Bag" || listv.hashKind == "BagHash" ||
                       listv.hashKind == "Mix" || listv.hashKind == "MixHash")) {
                 // a bare hash/set/bag iterates its Pairs (elem => True / count)
-                for (auto& kv : *listv.hash()) items.push_back(Value::pair(kv.first, kv.second));
+                for (auto& kv : *listv.hash()) items.push_back(iterEntryPair(listv, kv.first, kv.second));
             }
             else items.push_back(listv);
             ValueList& itemsR = liveArr ? *liveArr : items; // the list the loops walk
@@ -13079,7 +13181,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
             TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
             scope->define("$_", topic);
-            if (!g->params.empty()) { // `with X -> ($a, $b)`: the topic is the
+            // (only when the block will RUN: `with Hash -> % (:$times!)` on an
+            // undefined topic skips — binding it first died on the missing
+            // named, which is Red's Mock driver on every unexpected query)
+            if (!g->params.empty() && !skip) { // `with X -> ($a, $b)`: the topic is the
                                       // signature's single argument
                 ValueList one{topic};
                 one[0].namedArg = false;
@@ -13390,6 +13495,7 @@ std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead) {
         else if (nm.rfind("UNIT::",    0) == 0) nm = nm.substr(6);
         else if (nm.rfind("OUTER::",   0) == 0) nm = nm.substr(7);
         else if (nm.rfind("CALLER::",  0) == 0) { nm = nm.substr(8); if (callerHead) *callerHead = true; } // the caller's frame — see the read site
+        else if (nm.rfind("CALLERS::", 0) == 0) { nm = nm.substr(9); if (callerHead) *callerHead = true; }
         else if (nm.rfind("SETTING::", 0) == 0) nm = nm.substr(9);
         else if (nm.rfind("CORE::",    0) == 0) nm = nm.substr(6);
         else break;
@@ -13933,6 +14039,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             ValueList inner = (v.t == VT::Array && v.arr()) ? *v.arr()
                             : (v.t == VT::Range) ? v.flatten() : ValueList{v};
+            // The value binds as its `.Capture`, and a LIST's Capture makes every
+            // Str-keyed Pair in it a NAMED (Rakudo's List.Capture): Red's
+            // `is referencing(*.id, :model<Person>)` hands the trait a List,
+            // and `:$referencing! (&code, Str :$model!, *%rest)` takes it apart.
+            if (v.t == VT::Array && v.hashKind != "Capture")
+                for (auto& e : inner)
+                    if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
             for (auto& ip : *sp.subSig)
                 if (ip.named) {
                     std::string key = ip.namedKey.empty()
@@ -14744,6 +14857,13 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
                     if (ci->name == q || ci->doneRoles.count(q)) return true;
             // a subclass of a built-in (`class F is DateTime`) matches the built-in
             if (arg.obj() && arg.obj()->hasBoxed) return typeMatchesArg(arg.obj()->boxed, type);
+            // every X::* is an Exception — the rule `~~` already applies. A
+            // built-in exception the engine instantiated (X::Method::NotFound
+            // from a failed call) may carry no parent chain, so `Exception
+            // :$error` refused the `$_` of a CATCH (Red's `.^emit: $ast,
+            // :error($_)`), where `$_ ~~ Exception` said True.
+            if (type == "Exception" && arg.obj() && arg.obj()->cls &&
+                arg.obj()->cls->name.rfind("X::", 0) == 0) return true;
             return false;
         }
         // The undefined value conforms to Any and Mu only — both already answered
@@ -14774,6 +14894,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             // the where clause ADMITS the undefined, so the Int type object (and
             // every Int-derived one) conforms — `Int ~~ UInt` is True there
             if (type == "UInt") return typeNameConforms(arg.s, "Int", arg.ofType(), std::string());
+            // …and the UInt type object itself is its base, Int: `h(UInt)`
+            // picks `multi h(Int)` over `multi h($)` (Red maps a `UInt $.id`
+            // column to its SQL type that way)
+            if (arg.s == "UInt") return typeMatchesArg(Value::typeObj("Int"), type);
             if (typeNameConforms(arg.s, type, arg.ofType(), std::string())) return true;
             std::string ln = arg.s;
             size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
@@ -15503,6 +15627,28 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                  : typeMatchesArg(sval, "Associative"))) return -1;
             if (p.defConstraint == 1 && !isDefined(sval)) return -1;
             if (p.defConstraint == 2 && isDefined(sval)) return -1;
+            // A named with a SUB-SIGNATURE (`:$referencing! (&code, Str
+            // :$model!, *%rest)`) is a constraint too: the value must bind it,
+            // as its Capture, or the candidate is out. Red declares four such
+            // `is referencing` candidates told apart only by their inner
+            // signatures; unchecked, the first one won every call and then
+            // failed to bind. Lists and hashes only — an object destructures
+            // through its accessors, which scoring must not call.
+            if (p.subSig && ((sval.t == VT::Array && sval.arr()) || (sval.t == VT::Hash && sval.hash() && sval.hashKind.empty()))) {
+                ValueList inner;
+                if (sval.t == VT::Hash) {
+                    for (auto& kv : *sval.hash()) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
+                }
+                else {
+                    inner = *sval.arr();
+                    if (sval.hashKind != "Capture")
+                        for (auto& e : inner) if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
+                }
+                auto tmp = std::make_shared<Callable>();
+                tmp->params = p.subSig.get();
+                Value tv; tv.t = VT::Code; tv.setCode(tmp);
+                if (scoreCandidate(tv, inner) < 0) return -1;
+            }
             // Rakudo's candidate sort treats a candidate REQUIRING a named as narrower
             // than one that doesn't, ahead of positional-type comparison — Base64's
             // `:$pad!`/`:$uri!`/`:$str!` adverb multis (each `(Bool:D :$x!, |c)`) must
@@ -15990,7 +16136,10 @@ bool Interpreter::boolify(const Value& v) {
     // found counts, so a plain `so Int` / `so D` is still false.
     if (v.t == VT::Type && !v.s.empty()) {
         auto it = classes_.find(v.s);
-        if (it != classes_.end() && it->second)
+        // …a CLASS, that is: a ROLE's type object does not pun to run the
+        // role's Bool — `role R { method Bool { True } }; ?R` is False (Red's
+        // unset `Red::AST` filter must not read as present)
+        if (it != classes_.end() && it->second && !it->second->isRole)
             if (Value* b = it->second->findMethod("Bool"))
                 return const_cast<Interpreter*>(this)->invokeMethod(*b, v, {}).truthy();
     }
@@ -19782,6 +19931,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
         if (catchBlk) {
+            if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
             tcx.cur->define("$_", exceptionFor(e));
             tcx.cur->define("$!", exceptionFor(e));
             bool matched = false;
@@ -20368,6 +20518,16 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     else {
         std::string clsName = owner ? owner->name : std::string();
         rc.next = [this, name, nb, selfCopy, clsName](ValueList na) -> Value {
+            // A METACLASS's constructor (`class MyHOW is Metamodel::ClassHOW {
+            // method new(|c) { …; nextsame } }`, Red's model HOW): the built-in
+            // behind it has no `new` of its own here, and what it would do is
+            // the default construction — of the metaclass itself, not of the
+            // built-in. Its own methods are stepped over, so no recursion.
+            if ((name == "new" || name == "bless") && nb.rfind("Metamodel::", 0) == 0 &&
+                (selfCopy.t == VT::Type || selfCopy.t == VT::Object))
+                return methodCall(selfCopy.t == VT::Object && selfCopy.obj() && selfCopy.obj()->cls
+                                      ? Value::typeObj(selfCopy.obj()->cls->name) : selfCopy,
+                                  name, std::move(na), nullptr, /*skipOwn=*/true);
             Value binv = selfCopy;
             if (binv.t == VT::Type) binv = Value::typeObj(nb); // AttrProxy.new → Proxy.new
             // …and a CONSTRUCTOR redispatches on the built-in TYPE however it was
@@ -20572,11 +20732,21 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 int invocantSlot = 0;
                 if (s >= 0 && cand.code() && cand.code()->params)
                     for (auto& ip : *cand.code()->params) {
-                        if (!ip.invocant || !ip.defConstraint) continue;
-                        bool selfDef = isDefined(selfCopy);
-                        if ((ip.defConstraint == 1 && !selfDef) ||
-                            (ip.defConstraint == 2 && selfDef)) s = -1;
-                        else { s += 1000; invocantSlot = 1; }
+                        if (!ip.invocant) continue;
+                        if (ip.defConstraint) {
+                            bool selfDef = isDefined(selfCopy);
+                            if ((ip.defConstraint == 1 && !selfDef) ||
+                                (ip.defConstraint == 2 && selfDef)) { s = -1; break; }
+                            s += 1000; invocantSlot = 1;
+                        }
+                        // …and its TYPE: a candidate whose invocant type the object
+                        // is not is out, and a narrower one than Mu/Any outranks
+                        // it — Red's `(Red::Model:D:)` column accessor over the
+                        // `(Mu:D:)` placeholder a specialised model also carries
+                        if (!ip.type.empty() && ip.type != "Mu" && ip.type != "Any" && !ip.typeCapture) {
+                            if (!typeOrSubsetMatches(selfCopy, ip.type)) { s = -1; break; }
+                            invocantSlot += 2;
+                        }
                         break;
                     }
                 vec.insert(vec.begin(), invocantSlot);
@@ -20644,6 +20814,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         return Value::str("(" + shortName + ")");
                     if (c.name == "Str") return Value::str("");
                     if (c.name == "Bool") return Value::boolean(false);
+                }
+                // …and a PUBLIC ATTRIBUTE's accessor stands behind a multi of
+                // its name the same way. Red adds `multi method id(Mu:U:)` for
+                // the class-level column expression, which took the name from
+                // the `has $.id` accessor; a row's `.id` must still read it.
+                if (selfCopy.t == VT::Object && selfCopy.obj() && selfCopy.obj()->cls && as.empty()) {
+                    const ClassAttr* ca = selfCopy.obj()->cls->findAttr(c.name);
+                    if (ca && ca->pub) {
+                        auto it = selfCopy.obj()->attrs.find(c.name);
+                        if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
+                    }
                 }
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "No matching multi candidate for method " + c.name};
@@ -21003,6 +21184,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // does for subs — the method path missed all three arms, so a `let`
         // inside a method kept its new value straight through a die.
         if (!catchBlk) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
+        if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
         tcx.cur->define("$_", exceptionFor(e));
         tcx.cur->define("$!", exceptionFor(e));
         bool matched = false;
@@ -21647,7 +21829,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // plain string-keyed hash nothing: the test is the key type.
             // (a Str key too, now that the index is an identity string rather
             // than the key itself — `.keys` must answer "1", not `Str|1`)
-            if (base->hash() && !objHashKeyType(*base).empty()) {
+            // …and a SetHash/BagHash/MixHash keeps its element's object the
+            // same way: `$sh{$attr}++` must hand the Attribute back from .keys
+            // (Red counts dirty columns in a SetHash of them).
+            const bool quantObj = (base->hashKind == "SetHash" || base->hashKind == "BagHash" ||
+                                   base->hashKind == "MixHash") &&
+                                  !(subKey.t == VT::Str && subKey.hashKind.empty() && subKey.enumName.empty());
+            if (base->hash() && (quantObj || !objHashKeyType(*base).empty())) {
                 // DECONTAINERIZED: `my $k = [1,2]` is an itemized Array, and
                 // Rakudo's `.keys` answers the Array, not the item holding it.
                 Value stored = subKey; stored.itemized = false;
@@ -21883,7 +22071,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             if (invCls) {
                 Value* mv = invCls->findMethodForCall(mcName);
-                if (mv && mv->t == VT::Code && mv->code() && mv->code()->retRw) {
+                // a MULTI is rw when any candidate is (the dispatch picks which;
+                // a non-rw winner falls back to the held value) — Red's column
+                // methods `multi method num1(Mu:U:) is rw` return a Proxy
+                bool mvRw = mv && mv->t == VT::Code && mv->code() && mv->code()->retRw;
+                if (!mvRw && mv && mv->t == VT::Code && mv->code() && mv->code()->isMultiDispatcher)
+                    for (auto& cand : mv->code()->candidates)
+                        if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { mvRw = true; break; }
+                if (mvRw) {
                     static thread_local Value rwHold;
                     ValueList args;
                     for (auto& a : mc->args) args.push_back(eval(a.get()));
@@ -22043,6 +22238,26 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             !mc->meta && !mc->hyper && !mcName.empty()) {
             auto ait = base->hash()->find(mcName);
             if (ait != base->hash()->end()) return &ait->second;
+        }
+        // `$attr.get_value($obj)` names the object's own SLOT, so it is a
+        // target: Red counts dirty columns with
+        // `$!dirty-cols-attr.get_value(obj).{$_}++`, and a fresh object's slot
+        // for an attribute the metaclass added at runtime may not exist yet.
+        if (base->t == VT::Hash && base->hash() && base->hashKind == "Attribute" &&
+            mcName == "get_value" && mc->args.size() == 1 && !mc->meta && !mc->hyper) {
+            Value obj = eval(mc->args[0].get());
+            if (obj.t == VT::Object && obj.obj()) {
+                auto nit = base->hash()->find("name");
+                std::string an = nit != base->hash()->end() ? nit->second.toStr() : "";
+                char sigil = an.empty() ? '$' : an[0];
+                while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
+                auto& attrs = obj.obj()->attrs;
+                auto it = attrs.find(an);
+                if (it == attrs.end())
+                    it = attrs.emplace(an, sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash()
+                                                                        : Value::any()).first;
+                return &it->second;
+            }
         }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
@@ -23696,7 +23911,10 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     if (isBinding && vi < vals.size() &&
                         ((nm[0] == '@' && vals[vi].t == VT::Array) ||
                          (nm[0] == '%' && vals[vi].t == VT::Hash))) {
-                        *lvalue(tgt) = vals[vi];
+                        // …decontainerized: the list ELEMENT is an item, the
+                        // `@x` it binds to is not (`@bind.map` iterates it)
+                        Value bv = vals[vi]; bv.itemized = false;
+                        *lvalue(tgt) = std::move(bv);
                         vi++;
                         continue;
                     }
@@ -24538,12 +24756,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Hash && bp->hash() &&
                 (bp->hashKind == "SetHash" || bp->hashKind == "BagHash" || bp->hashKind == "MixHash")) {
-                std::string key = hashSubKey(eval(ix->index.get()), bp);
+                Value kv = eval(ix->index.get());
+                std::string key = hashSubKey(kv, bp);
                 Value rhs = evalValueOf(a->value.get());
                 bool del = bp->hashKind == "SetHash" ? !rhs.truthy() : rhs.toNum() == 0.0;
                 if (del) bp->hash()->erase(key);
-                else (*bp->hash())[key] = bp->hashKind == "SetHash" ? Value::boolean(true)
-                                      : bp->hashKind == "BagHash" ? Value::integer(rhs.toInt()) : rhs;
+                else {
+                    Value nv = bp->hashKind == "SetHash" ? Value::boolean(true)
+                             : bp->hashKind == "BagHash" ? Value::integer(rhs.toInt()) : rhs;
+                    // the element's own object, for .keys (see the lvalue arm)
+                    if (!(kv.t == VT::Str && kv.hashKind.empty() && kv.enumName.empty())) {
+                        Value stored = kv; stored.itemized = false;
+                        nv.pairKeyM() = std::make_shared<Value>(stored);
+                    }
+                    (*bp->hash())[key] = std::move(nv);
+                }
                 return sink ? Value::any() : rhs;
             }
         }
@@ -25681,9 +25908,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (fit != lv->hash()->end() && sit != lv->hash()->end()) {
             std::string bop = a->op.substr(0, a->op.size() - 1);
             Value cur = callCallable(fit->second, {});
-            Value nv = (bop == "^^" || bop == "xor")
-                ? (cur.truthy() ? (rhs.truthy() ? Value::nil() : cur) : rhs)
-                : applyBinOp(bop, cur, rhs);
+            Value nv;
+            bool overloaded = false;
+            // the same user-overload rule as the plain path below: Red's column
+            // Proxy FETCHes an AST, and `.num1 += 1` must build `num1 + ?`
+            if ((cur.t == VT::Object || rhs.t == VT::Object) && bop != "^^" && bop != "xor")
+                if (Value* f = tctx_.cur->find("&infix:<" + bop + ">"))
+                    try { nv = callCallable(*f, ValueList{cur, rhs}); overloaded = true; }
+                    catch (RakuError&) {}
+            if (!overloaded)
+                nv = (bop == "^^" || bop == "xor")
+                    ? (cur.truthy() ? (rhs.truthy() ? Value::nil() : cur) : rhs)
+                    : applyBinOp(bop, cur, rhs);
             proxyStore(*lv, nv);
             return sink ? Value::any() : nv;
         }
@@ -25837,7 +26073,14 @@ static void setRep(const std::string& k, const Value& v); // defined with setWra
 // negative and fractional weights; Set/Bag drop non-positive ones.
 static std::map<std::string, double> setWeights(const Value& v, int tier) {
     std::map<std::string, double> m;
-    if (v.t == VT::Hash && v.hash()) {
+    // Only an ASSOCIATIVE hash contributes its entries. Plenty of objects are
+    // hash-backed here without being one — an Attribute or Parameter
+    // meta-object, a Date, a Failure — and each of those is a single ELEMENT:
+    // Red's `%!relationships ∪= $attr` added the Attribute's four fields.
+    const bool assocHash = v.t == VT::Hash && v.hash() &&
+        (v.hashKind.empty() || v.hashKind == "Map" || v.hashKind == "Hash" || v.hashKind == "Stash" ||
+         v.hashKind.rfind("Set", 0) == 0 || v.hashKind.rfind("Bag", 0) == 0 || v.hashKind.rfind("Mix", 0) == 0);
+    if (assocHash) {
         bool isSetK = v.hashKind.find("Set") == 0;
         bool countK = settyTier(v) >= 1;
         for (auto& kv : *v.hash()) {
@@ -25853,9 +26096,11 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             // element key: ask the element itself, or `%h{Any} (|) set(…)` came
             // out with two keys for one element and compared unequal to the
             // same set built any other way.
-            const std::string ek = (!countK && !isSetK && kv.second.pairKey())
-                                 ? baggyKeyStr(*kv.second.pairKey()) : kv.first;
-            if (kv.second.pairKey()) setRep(ek, *kv.second.pairKey());
+            // (an object hash may instead keep the key in its objKey table)
+            const Value* ok = kv.second.pairKey() ? kv.second.pairKey().get()
+                            : (!countK && !isSetK) ? v.hash()->objKey(kv.first) : nullptr;
+            const std::string ek = (!countK && !isSetK && ok) ? baggyKeyStr(*ok) : kv.first;
+            if (ok) setRep(ek, *ok);
             m[ek] += w;
         }
     } else if (v.t == VT::Array || v.t == VT::Range) {
@@ -26881,6 +27126,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // a HyperWhatever on the RIGHT of a smartmatch is the always-matching
     // PATTERN (`@a ~~ **` holds for any list), not a curry
     if ((op == "~~" || op == "!~~") && r.t == VT::Whatever && r.b) skipCurry = true;
+    // composition COMPOSES Callables — a WhateverCode is one (`&f o *.succ`,
+    // Red's `&func o self.last-filter`); only a bare `*` curries it
+    if ((op == "o" || op == "\xE2\x88\x98") && l.t == VT::Code && r.t == VT::Code) {
+        Value fV = l, gV = r;
+        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        code.code()->builtin = [fV, gV](Interpreter& I, ValueList& a) -> Value {
+            return I.callCallable(fV, ValueList{ I.callCallable(gV, a) });
+        };
+        return code;
+    }
     // …and a Whatever that is a VALUE in a smartmatch (valueMatch) never curries:
     // `given * { when Pair {…} }` asks Pair.ACCEPTS(*), which is False, where the
     // curried WhateverCode was truthy and took the arm (Mathematica::Serializer's
@@ -27932,7 +28187,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // the two spellings of Any are one object — see isAnyTypeObject
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
         else if (l.t != r.t) same = false;
-        else if (l.t == VT::Object) same = (l.obj() == r.obj());
+        else if (l.t == VT::Object)
+            // …an object whose class writes its own WHICH is identified by it
+            same = (l.obj() == r.obj()) ||
+                   (l.obj() && r.obj() && l.obj()->cls && l.obj()->cls->findMethod("WHICH") &&
+                    whichOf(l) == whichOf(r));
         // a type object reached through an ALIAS (`%export<LanguageTag> =
         // LanguageTag::BCP47`, or a class's tail name) is the same object as the
         // class itself — Intl::LanguageTag's suite binds both and asks `=:=`;
@@ -28239,6 +28498,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `$x ~~ Foo:D` is the type test AND a definedness test
             if (r.i == 1 && !isDefined(l)) return Value::boolean(op != "~~");
             if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
+            // A SUBSET's type object conforms as its base type: `UInt ~~ Int`
+            // and `(subset Pos of Int where * > 0) ~~ Int` are True. Red maps a
+            // column's SQL type by dispatching on the attribute's type object,
+            // so a `UInt $.id` fell to the catch-all "varchar(255)" and SQLite
+            // refused the AUTOINCREMENT on it.
+            if (l.t == VT::Type && l.s != r.s && g_cbInterp &&
+                (l.s == "UInt" || g_cbInterp->subsets_.count(l.s))) {
+                bool sres = g_cbInterp->typeMatchesResolved(l, r.s);
+                if (sres) return Value::boolean(op == "~~");
+            }
             // A Pod block is an OBJECT; it is a hash here only as a
             // representation. typeMatchesArg owns what it conforms to — its own
             // podclass and Pod::Block — and, just as importantly, what it does
@@ -33319,7 +33588,10 @@ Value Interpreter::evalBinary(Binary* b) {
 static std::string privMixinKey(const std::string& name) { return "\x01" "p" + name; }
 
 static Value mixinAttrDefault(const ClassAttr& a) {
-    if (!a.type.empty() && a.type != "Mu" && a.type != "Any")
+    // `has Mu:U $!x` starts as Mu, not Any — Red tests `$!relationship-model<>
+    // =:= Mu` to learn that no model was loaded yet
+    if (a.type == "Mu") return Value::typeObj("Mu");
+    if (!a.type.empty() && a.type != "Any")
         return Value::typeObj(a.type);
     return Value::any();
 }
@@ -33385,8 +33657,23 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // to land in the map the signature hands out, or `.signature.params` answers
     // a Parameter that has forgotten its own trait (Getopt::Long reads every
     // option spec back that way).
-    if (!copy && base.t == VT::Hash &&
+    if (base.t == VT::Hash &&
         (base.hashKind == "Attribute" || base.hashKind == "Parameter") && base.hash()) {
+        // …and `$attr but R` is the same on a COPY of the map. Boxed into a
+        // generic object instead, it stopped being an Attribute at all: Red's
+        // `Attribute.new(…) but Red::Attr::Relationship[…]` (a relationship
+        // transferred to a model alias) had no `.type`.
+        if (copy) {
+            Value nb = base;
+            nb.setHash(makePayload<ValueMap>(*base.hash()));
+            if (auto rit = nb.hash()->find(ATTR_ROLES_KEY);
+                rit != nb.hash()->end() && rit->second.t == VT::Array && rit->second.arr()) {
+                Value fresh = Value::array(); fresh.isList = true;
+                *fresh.arr() = *rit->second.arr();
+                rit->second = std::move(fresh);   // the copy's role list is its own
+            }
+            base = std::move(nb);
+        }
         Value& roles = (*base.hash())[ATTR_ROLES_KEY];
         if (roles.t != VT::Array || !roles.arr()) { roles = Value::array(); roles.isList = true; }
         for (auto& rn : roleNames) roles.arr()->push_back(Value::str(rn));
@@ -33412,8 +33699,20 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
                 Value dv = mixinAttrDefault(a);
                 if (a.hasDefVal) dv = a.defVal;
                 else if (a.def) {
+                    // evaluated as a construction would: `self` is the Attribute
+                    // being mixed into (its own `$!x` already seeded above), and
+                    // the role's parameters are in scope — Red's
+                    // `has Bool $.no-prefetch = $!has-one // $no-prefetch // self.type ~~ Positional`
                     auto saved = tctx_.cur;
-                    if (role->declEnv) tctx_.cur = role->declEnv;
+                    auto denv = std::make_shared<Env>();
+                    denv->parent = role->declEnv ? role->declEnv : tctx_.cur;
+                    denv->define("self", base);
+                    for (ClassInfo* rb : roleInfos)
+                        for (auto& b : rb->roleParamBindings)
+                            if (!b.first.empty() && !denv->local(b.first)) denv->define(b.first, b.second);
+                    for (auto& b : role->roleParamBindings)
+                        if (!b.first.empty() && !denv->local(b.first)) denv->define(b.first, b.second);
+                    tctx_.cur = denv;
                     try { dv = eval(const_cast<Expr*>(a.def)); } catch (...) { dv = Value::any(); }
                     tctx_.cur = saved;
                 }
@@ -34685,7 +34984,12 @@ Value Interpreter::evalUnary(Unary* u) {
     // because `@chars[^(*-1)]` — everything but the last element — is how
     // ML::TriesWithFrequencies walks a word backwards; evaluated eagerly it built
     // an empty range, so every trie came out one node deep.
-    if ((v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode)) &&
+    // …SYNTACTICALLY: a `*` written as the operand curries, a Whatever that
+    // an expression merely evaluates to does not — `~(.get-value // "")` on
+    // Red's `ast-value *` is the string "*", and currying it looped forever.
+    if (((v.t == VT::Whatever && u->operand && u->operand->kind == NK::Whatever) ||
+         (v.t == VT::Code && v.code() && v.code()->isWhateverCode &&
+          !(u->operand && u->operand->kind == NK::VarExpr))) &&
         (u->op == "~" || u->op == "-" || u->op == "+" || u->op == "?" || u->op == "!" ||
          u->op == "so" || u->op == "not" || u->op == "+^" || u->op == "^" || u->op == "|")) {
         Value inner = v; std::string op = u->op;
@@ -34968,6 +35272,14 @@ void Interpreter::warnUninit(const std::string& msg) {
 }
 bool Interpreter::runControlWarn(const std::string& msg) {
     if (tctx_.controlHandlers.empty()) return false;
+    return runControlException(exceptionFor(RakuError{Value::typeObj("CX::Warn"), msg}));
+}
+// A CONTROL exception (`warn`'s CX::Warn, or a user class `is X::Control`) goes
+// to the innermost CONTROL block rather than to CATCH. True when the handler
+// `.resume`d (execution carries on after the throw); a handler that matched
+// without resuming leaves its block (ControlHandledEx); false = nobody took it.
+bool Interpreter::runControlException(const Value& ex) {
+    if (tctx_.controlHandlers.empty()) return false;
     // pop while running: a warn INSIDE the handler goes to the next one out
     auto handler = tctx_.controlHandlers.back();
     tctx_.controlHandlers.pop_back();
@@ -34977,7 +35289,6 @@ bool Interpreter::runControlWarn(const std::string& msg) {
         ~Repush() { t.controlHandlers.push_back(std::move(h)); }
     } repush{tctx_, handler};
 
-    Value ex = exceptionFor(RakuError{Value::typeObj("CX::Warn"), msg});
     auto env = std::make_shared<Env>();
     env->parent = handler.second;
     env->define("$_", ex);
@@ -35327,6 +35638,21 @@ std::string Interpreter::strOf(const Value& v) {
         auto mit = v.obj()->attrs.find("message");
         if (mit != v.obj()->attrs.end()) return strOf(mit->second);
         if (v.obj()->hasBoxed) return strOf(v.obj()->boxed);
+        // A class that does the built-in SEQUENCE role stringifies as its
+        // elements do (Sequence's `Str` is `self.cache.Str`): Red's ResultSeq
+        // is one, and `is $rs.map(*.col), (10, 20, 30)` compares that string.
+        bool sequence = v.obj()->cls->doesRole("Sequence");
+        // (a lone `does Sequence` lands in the native-parent slot instead)
+        for (ClassInfo* c = v.obj()->cls.get(); c && !sequence; c = c->parent.get())
+            if (c->nativeParent == "Sequence") sequence = true;
+        if (sequence) {
+            ValueList items;
+            if (objListItems(v, items)) {
+                std::string out;
+                for (size_t k = 0; k < items.size(); k++) { if (k) out += " "; out += strOf(items[k]); }
+                return out;
+            }
+        }
     }
     return v.toStr();
 }
@@ -38185,6 +38511,12 @@ struct NodeCountReport {
             // lexical lookup, as before
             if (callerHead && !tctx_.dynStack.empty() && tctx_.dynStack.back())
                 if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) return *p;
+            // `CALLERS::<&x>` asks EVERY caller, innermost out — Red's
+            // ResultSeq.grep checks `::CALLERS::<&__RED_OPERATOR_LOADED__>` to
+            // learn whether the code calling it imported Red's operators
+            if (callerHead && sr->pkg == "CALLERS")
+                for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
+                    if (*it) if (Value* p = dynInFrame(*it, nm)) return *p;
             char c0 = nm[0];
             if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
                 // resolve exactly as if it were the variable/routine of that name
@@ -38709,7 +39041,11 @@ struct NodeCountReport {
                            (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
                 };
                 Value vv0 = pairValueOf(p->value.get());
-                if (curries(kv) || curries(vv0)) {
+                // currying is SYNTACTIC: a `*` written there, not a Whatever a
+                // variable happens to hold (`my $k = *; $k => 1` is a Pair)
+                auto fromVar = [](const Expr* x) { return x && x->kind == NK::VarExpr; };
+                if ((curries(kv) && !fromVar(p->keyExpr.get())) ||
+                    (curries(vv0) && !fromVar(p->value.get()))) {
                     Value kc = kv, vc = vv0;
                     Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
                     code.code()->isWhateverCode = true;
@@ -38751,6 +39087,9 @@ struct NodeCountReport {
                     // it, and stringifying it turned the pattern text into a
                     // character set that mangled the subject
                     kv.t == VT::Regex ||
+                    // …and a TYPE OBJECT key stays the type: `(Int) => 1`,
+                    // Red's `:{ Red::AST => $response }`
+                    kv.t == VT::Type || kv.t == VT::Complex ||
                     kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
                 return pr;
             }

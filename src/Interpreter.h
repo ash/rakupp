@@ -1427,6 +1427,7 @@ public:
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).
     bool runControlWarn(const std::string& msg);
+    bool runControlException(const Value& ex);
     bool pairAccepts(const Value& topic, const Value& pair); // Pair.ACCEPTS (sheet HM-20)
     // The one-liner behind every "Use of uninitialized value …" that is raised
     // outside strOf: run the CONTROL handler, else print, unless `quietly`.
@@ -1609,7 +1610,8 @@ public:
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
-    void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr);
+    void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr, bool everyDecl = false);
+    void declareSkippedLexicals(const std::vector<StmtPtr>& stmts, Env* env) { hoistExprDecls(stmts, env, nullptr, /*everyDecl=*/true); }
     // Pads (PADS-PLAN.md): build (or fetch) the layout for one owner body and
     // annotate its dominated VarExprs with (slot, owner). Cached per BODY
     // address; thread-safe (padMu_). `params` supplies the owner's parameter

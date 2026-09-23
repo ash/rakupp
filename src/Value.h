@@ -1240,6 +1240,13 @@ struct ClassInfo {
     // sigil → value). Injected into the scope of the class's methods/submethods so
     // the role body sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
     std::vector<std::pair<std::string, Value>> roleParamBindings;
+    // A type made at RUNTIME by `new_type` is not composed yet: as in Rakudo,
+    // a multi added with `.^add_multi_method` joins the method table only when
+    // the base `compose` runs (Red's model compose asks `.^can` for a column
+    // accessor BEFORE its `nextsame`, and must not see the multis it queued).
+    bool awaitingCompose = false;
+    bool classRw = false;      // `class C is rw` — what `.^rw` answers
+    std::vector<std::pair<std::string, Value>> pendingMultis;
     // `state` inside a COMPOSED ROLE method belongs to the composition, not to the
     // role: two classes doing the same role each get their own slot. The Callable
     // is shared (it carries a once_flag and the native-call caches, so it must not
