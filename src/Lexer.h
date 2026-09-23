@@ -144,6 +144,17 @@ private:
 
     char peek(size_t off = 0) const;
     char advance();
+    // A BACKTRACK has to put `line_` and `col_` back along with `pos_`. Only
+    // `advance()` moves them, so text the lexer scans past and then re-reads
+    // counts its newlines twice. `tryRuleDecl` is where that showed: `token`,
+    // `rule` and `regex` are ordinary WORDS inside a `< … >` list, and each one
+    // starts a rule-declaration attempt that skips whitespace — newlines with
+    // it — looking for the `{` it never finds. roast's S02-literals/pairs.t
+    // names all three in one multi-line list, and every diagnostic after it
+    // came out two lines late.
+    struct Mark { size_t pos; int line, col; };
+    Mark mark() const { return {pos_, line_, col_}; }
+    void rewind(const Mark& m) { pos_ = m.pos; line_ = m.line; col_ = m.col; }
     bool eof() const { return pos_ >= src_.size(); }
     bool match(char c);
     void skipRegexComment(std::string& out); // `#` in a regex: to end of line, or an embedded #`(…) to its closer

@@ -858,7 +858,7 @@ void Lexer::skipWhitespaceAndComments() {
                         if (k < src_.size() && src_[k] == '=') while (peek() != '=') advance();
                     }
                     if (peek() == '=') { // loop top is always a (margin-stripped) line start
-                        size_t s2 = pos_;
+                        const Mark s2 = mark();
                         advance();
                         std::string w2;
                         while (isIdentCont(peek())) w2 += advance();
@@ -870,7 +870,7 @@ void Lexer::skipWhitespaceAndComments() {
                                 if (w2 == "begin") depth++;      // same-name block NESTS
                                 else if (depth > 0) depth--;     // closes the nested one
                                 else { // matching close of OUR block
-                                    if (capture) podData_ += renderPod(src_.substr(contentStart, s2 - contentStart));
+                                    if (capture) podData_ += renderPod(src_.substr(contentStart, s2.pos - contentStart));
                                     while (!eof() && peek() != '\n') advance();
                                     ended = true;
                                     break;
@@ -878,7 +878,7 @@ void Lexer::skipWhitespaceAndComments() {
                             }
                             // a different name — keep skipping
                         }
-                        pos_ = s2; // restore; consume the line below
+                        rewind(s2); // restore; consume the line below
                     }
                     while (!eof() && peek() != '\n') advance();
                     if (!eof()) advance();
@@ -2292,10 +2292,10 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     if (!out.empty() && out.back().kind == Tok::Ident &&
         (out.back().text == "sub" || out.back().text == "method" ||
          out.back().text == "submethod")) return false;
-    size_t save = pos_;
+    const Mark save = mark();
     std::string kw;
     while (!eof() && ascii::isalpha((unsigned char)peek())) kw += advance();
-    if (kw != "token" && kw != "rule" && kw != "regex") { pos_ = save; return false; }
+    if (kw != "token" && kw != "rule" && kw != "regex") { rewind(save); return false; }
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
@@ -2340,10 +2340,10 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     // an importer. Apache::LogFormat's test library exports `<timefmt>` so, and
     // asserted a whole log line against a pattern that matched nothing.
     while (peek() == 'i' && peek(1) == 's' && (peek(2) == ' ' || peek(2) == '\t')) {
-        size_t before = pos_;
+        const Mark before = mark();
         advance(); advance();                                    // is
         while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
-        if (!isIdentStart(peek())) { pos_ = before; break; }
+        if (!isIdentStart(peek())) { rewind(before); break; }
         while (isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) advance();
         if (peek() == '(' || peek() == '<') {                     // is export(:TAG) / is foo<a b>
             char open = peek(), close = open == '(' ? ')' : '>';
@@ -2353,7 +2353,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         }
         while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
     }
-    if (peek() != '{') { pos_ = save; return false; }
+    if (peek() != '{') { rewind(save); return false; }
     advance(); // {
     // Read the `{ … }`-delimited regex body with the same quote/block/char-class
     // awareness as the rx{…}/m{…} reader (see readPart): a `}` inside a string
@@ -2695,7 +2695,7 @@ Token Lexer::lexOperator(bool termBefore) {
           "lt", "gt", "le", "ge", "leg", "cmp", "unicmp", "before", "after"};
       if (guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
           (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
-          size_t save = pos_;
+          const Mark save = mark();
           std::string open = ro ? ">>" : "<<";
           advance(); advance(); // opening guillemet
           std::string word; bool rc;
@@ -2707,7 +2707,7 @@ Token Lexer::lexOperator(bool termBefore) {
               advance(); advance(); // closing guillemet
               return make(Tok::Op, open + word + close);
           }
-          pos_ = save; // not a word-infix hyper — fall through
+          rewind(save); // not a word-infix hyper — fall through
       }
       // Only a *symbolic* inner counts as hyper (`«+»`); an alphanumeric inner is a
       // guillemet word-list (`«x»`, `«ab»`), handled elsewhere — so require the first
@@ -2717,11 +2717,11 @@ Token Lexer::lexOperator(bool termBefore) {
       bool uniSymInner = false;
       { bool ro2;
         if (guill(0, ro2) && (unsigned char)peek(2) >= 0x80) {
-            size_t save = pos_;
+            const Mark save = mark();
             advance(); advance(); // opening guillemet
             bool rc2;
             uniSymInner = !eof() && !guill(0, rc2) && !unicodeLetterHere();
-            pos_ = save;
+            rewind(save);
         }
       }
       // an `R`-metaop inner is hyper too: `«R~«` is the reversed op — the R is
@@ -2736,7 +2736,7 @@ Token Lexer::lexOperator(bool termBefore) {
       if ((guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
           !ascii::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') ||
           (uniSymInner && guill(0, ro)) || (rMetaInner && guill(0, ro))) {
-        size_t save = pos_;
+        const Mark save = mark();
         std::string open = ro ? ">>" : "<<";
         advance(); advance(); // opening guillemet
         std::string inner; bool rc;
@@ -2754,7 +2754,7 @@ Token Lexer::lexOperator(bool termBefore) {
             aliasUniOp(inner);
             return make(Tok::Op, open + inner + close);
         }
-        pos_ = save; // not a hyper — fall through to the generic multibyte op
+        rewind(save); // not a hyper — fall through to the generic multibyte op
       }
     }
     // multibyte (UTF-8) operator, e.g. set ops ∪ ∩ ∈ ⊆
@@ -2777,7 +2777,7 @@ Token Lexer::lexOperator(bool termBefore) {
     }
     // hyper binary metaop: >>OP>> / <<OP<< / >>OP<< / <<OP>>  (e.g. @a >>->> @b)
     if ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<')) {
-        size_t save = pos_;
+        const Mark save = mark();
         std::string s; s += advance(); s += advance();
         std::string inner;
         // a MULTIBYTE inner counts (`>>÷>>`, `>><<`), so the byte-wise scan may
@@ -2814,7 +2814,7 @@ Token Lexer::lexOperator(bool termBefore) {
             s += inner; s += advance(); s += advance();
             return make(Tok::Op, s);
         }
-        pos_ = save; // not a hyper-binary; fall through to normal operator lexing
+        rewind(save); // not a hyper-binary; fall through to normal operator lexing
     }
     // `^…` / `^…^` — the Unicode ellipsis carrying a LEADING exclusion marker.
     // The ASCII spellings are in the table below; the `…` forms have to be
