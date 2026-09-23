@@ -113,7 +113,47 @@ logs and the reviews. This page is the complete list.
   — Int, Num, Rat, FatRat and the Real/Numeric roles, 28 items, 3 undeclared,
   rakupp differs on 26, six Rakudo bugs flagged (`7 mod 2.5`, a negative base
   to a negative power, `[lcm] ()`, `1 +< -64`, `narrow` losing the value,
-  `polymod` with a non-Int divisor).
+  `polymod` with a non-Int divisor);
+  [Sequence.md](semantics/Sequence.md) — the `...` operator, 29 items, 13
+  undeclared, rakupp differs on 28, two Rakudo bugs flagged (a `none`
+  endpoint taken for infinity, chained `^...^` keeping its end);
+  [Promise.md](semantics/Promise.md) — Promise, await, start, sleep, Lock,
+  Lock::Async, Lock::Soft and Semaphore, 36 items, 12 undeclared, rakupp
+  differs on 36, four Rakudo bugs flagged (a dying `:synchronous` then, a Nil
+  in a Channel hanging `await`, `sleep-timer NaN`, 32-bit Semaphore permits);
+  [Date-Time.md](semantics/Date-Time.md) — Instant, Duration, Date and
+  DateTime, 33 items, 4 undeclared, rakupp differs on 31, four Rakudo bugs
+  flagged (Date ranges compared by Str, a date-only DateTime string throwing
+  X::AdHoc, `.Str` rounding to second 60, `cmp` on DateTimes by Str);
+  [Proc-Async.md](semantics/Proc-Async.md) — Proc, Proc::Async, `run` and
+  `shell`, 37 items, 9 undeclared, rakupp differs on 36, two Rakudo bugs
+  flagged (a pre-spawn `.exitcode` of 1 that freezes the status, `IO::Pipe.read`
+  ignoring its count);
+  [Code-Introspection.md](semantics/Code-Introspection.md) — Code, Block,
+  Routine, Signature, Parameter, Attribute and WhateverCode, 37 items, 24
+  undeclared, rakupp differs on 37, eight Rakudo bugs flagged (`.multi`
+  answering 0, method signatures printing a double colon, `.prec` failing its
+  own return check, `.raku` spellings that do not re-parse, hand-built
+  Signatures that cannot bind, `Parameter.new` name handling, a null `.file`
+  on a WhateverCode, ForeignCode gist);
+  [Exception-Backtrace.md](semantics/Exception-Backtrace.md) — Exception,
+  Backtrace, Failure and the control-exception protocol, 36 items, 15
+  undeclared, rakupp differs on 35, three Rakudo bugs flagged (a rethrown
+  CX::Return replacing the value, a bare `succeed` yielding an engine null,
+  LEAVE running before NEXT in a loop);
+  [Set-Bag-Mix.md](semantics/Set-Bag-Mix.md) — Set, Bag, Mix, their hash
+  forms and the set operators, 44 items, 17 undeclared, rakupp differs on 44,
+  four Rakudo bugs flagged (`.Bag` truncating the source Mix, an uninitialised
+  `is Set` variable, set operators hanging on a Junction, a Hash intersection
+  ignoring false values); [Blob-Buf.md](semantics/Blob-Buf.md) — Blob, Buf,
+  the typed buffers and the encodings, 37 items, 21 undeclared, rakupp differs
+  on 37, nine Rakudo bugs flagged (`.bytes` of native-Int blobs, `allocate`
+  with an empty pattern hanging, `splice` past the end, signed `~&` and `~|`,
+  two endless recursions, `read-bits` and `write-ubits` off by bits);
+  [Grammar-Match.md](semantics/Grammar-Match.md) — Grammar, Match and
+  Regex as objects, 41 items, 23 undeclared, rakupp differs on 39, five Rakudo
+  bugs flagged (`.actions` answering NQPMu, a type-object topic warning instead
+  of False, `:nth` with `:x`, `:x(Nil)`, `.substr` with a regex).
 
 ## Reviews — before and after a release
 

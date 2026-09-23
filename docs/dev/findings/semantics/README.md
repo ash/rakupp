@@ -71,6 +71,15 @@ buckets or thread timing says so.
 | [IO.md](IO.md) | IO/Path, IO/Handle, io_operators, IO/Spec/Unix, IO/Special, IO/Pipe, IO/CatHandle, IO/Path/Parts | 26 | 7 | 14 | implementing 2026-09-20/21 (sheet items 2→12 of 26; Roast 704→707 files, S16-io/lines 3→111, S32-io/io-path 2→30, chdir 9→33, indir 0→24) |
 | [Range.md](Range.md) | Range, the `..` family and `prefix:<^>`, the Range candidates of `+ - * / cmp eqv` | 33 | 12 | 27 | implemented 2026-09-22 (S02-types/range.t 216/259 → 256/259, S07-iterators/range-iterator.t 83/103 → 103/103) |
 | [Int-Num-Rat.md](Int-Num-Rat.md) | Int, Num, Rat, Rational, Real, Numeric, Cool (numeric half), Rakudo/Internals coercions, Order, Polymod | 28 | 3 | 26 | implemented 2026-09-22 (S32-num 21 → 26 files, 3,424 → 3,465 assertions) |
+| [Sequence.md](Sequence.md) | Rakudo/SEQUENCE, the `...` candidates in operators | 29 | 13 | 28 | extracted 2026-09-23 |
+| [Promise.md](Promise.md) | Promise, Lock, Lock/Async, Lock/Soft, Semaphore, Awaiter, core.d/await, Scheduler, the `sleep` family | 36 | 12 | 36 | extracted 2026-09-23 |
+| [Date-Time.md](Date-Time.md) | Instant, Duration, Dateish, Date, DateTime, the leap-second table in Rakudo/Internals | 33 | 4 | 31 | extracted 2026-09-23 |
+| [Proc-Async.md](Proc-Async.md) | Proc, Proc/Async, the `run` and `shell` subs | 37 | 9 | 36 | extracted 2026-09-23 |
+| [Code-Introspection.md](Code-Introspection.md) | Code, Block, Routine, Signature, Parameter, Attribute, WhateverCode, ForeignCode, traits | 37 | 24 | 37 | extracted 2026-09-23 |
+| [Exception-Backtrace.md](Exception-Backtrace.md) | Exception, Backtrace, Failure, control (die/warn/fail/CX), the X:: attribute surface | 36 | 15 | 35 | extracted 2026-09-23 |
+| [Set-Bag-Mix.md](Set-Bag-Mix.md) | QuantHash, Setty/Set/SetHash, Baggy/Bag/BagHash, Mixy/Mix/MixHash, the set_* operator files | 44 | 17 | 44 | extracted 2026-09-23 |
+| [Blob-Buf.md](Blob-Buf.md) | Buf (Blob and Buf), Encoding and its registry, encoders and decoders | 37 | 21 | 37 | extracted 2026-09-23 |
+| [Grammar-Match.md](Grammar-Match.md) | Grammar, Match, Cursor, Regex, the Regex-taking Str routines | 41 | 23 | 39 | extracted 2026-09-23 |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
@@ -94,11 +103,8 @@ repo: it is a few dozen lines that parse the item format above.
 
 Candidates, in the order the method-surface probe of 2026-09-17 ranked them
 (the probe is described in the memory of that day and in the Supply sheet's
-method section): Proc::Async; Promise; Routine, Code,
-Parameter, Block, Attribute introspection; Instant, Duration, Date, DateTime;
-Set, Bag, Mix; Blob and Buf; Exception and Backtrace; Grammar and Match; the
-`...` sequence operator (which multi-character string ranges delegate to);
-then the compiler side: the precedence table, quote adverbs, sink context.
+method section): the compiler side: the precedence table, quote adverbs,
+sink context (in progress).
 
 ## Provenance
 
