@@ -153,7 +153,11 @@ logs and the reviews. This page is the complete list.
   [Grammar-Match.md](semantics/Grammar-Match.md) — Grammar, Match and
   Regex as objects, 41 items, 23 undeclared, rakupp differs on 39, five Rakudo
   bugs flagged (`.actions` answering NQPMu, a type-object topic warning instead
-  of False, `:nth` with `:x`, `:x(Nil)`, `.substr` with a regex).
+  of False, `:nth` with `:x`, `:x(Nil)`, `.substr` with a regex);
+  [Compiler-Side.md](semantics/Compiler-Side.md) — the precedence table, the
+  quote constructs and sink context, 34 items, 8 undeclared, rakupp differs on
+  32, one Rakudo bug flagged (a brace-delimited `qx` running a nested brace
+  group as its own command).
 
 ## Reviews — before and after a release
 

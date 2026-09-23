@@ -80,6 +80,7 @@ buckets or thread timing says so.
 | [Set-Bag-Mix.md](Set-Bag-Mix.md) | QuantHash, Setty/Set/SetHash, Baggy/Bag/BagHash, Mixy/Mix/MixHash, the set_* operator files | 44 | 17 | 44 | extracted 2026-09-23 |
 | [Blob-Buf.md](Blob-Buf.md) | Buf (Blob and Buf), Encoding and its registry, encoders and decoders | 37 | 21 | 37 | extracted 2026-09-23 |
 | [Grammar-Match.md](Grammar-Match.md) | Grammar, Match, Cursor, Regex, the Regex-taking Str routines | 41 | 23 | 39 | extracted 2026-09-23 |
+| [Compiler-Side.md](Compiler-Side.md) | Perl6/Grammar.nqp (precedence table, quote rules), Perl6/Actions.nqp (sink), Raku/Grammar.nqp compared | 34 | 8 | 32 | extracted 2026-09-23 |
 
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
@@ -101,10 +102,10 @@ its items are in that set — measure with both engines before believing a
 number. The probe harness for this lives in the session scratchpad, not the
 repo: it is a few dozen lines that parse the item format above.
 
-Candidates, in the order the method-surface probe of 2026-09-17 ranked them
-(the probe is described in the memory of that day and in the Supply sheet's
-method section): the compiler side: the precedence table, quote adverbs,
-sink context (in progress).
+Every candidate from the method-surface probe of 2026-09-17 (described in
+the memory of that day and in the Supply sheet's method section) now has a
+sheet. Further sheets come from new evidence: a Roast area that stays red
+after step two, or a module batch that fails on one type.
 
 ## Provenance
 
