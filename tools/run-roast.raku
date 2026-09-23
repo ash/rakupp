@@ -2,7 +2,7 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
 # substring against the path. The files run from one work queue, longest
@@ -33,6 +33,14 @@
 # and reconstructing it with `grep '[PASS]' | awk '{print $NF}'` over decorated
 # human-readable output makes the gate only as reliable as that output's framing.
 # It was not reliable: see the stderr note in run-with-timeout.
+#
+# --failed prints, after the summary, every file that did not fully pass —
+# partial, no-TAP, timed out or lost — one per line with its category and
+# passed/ran count, sorted by path, and under each file the source lines of its
+# failing tests (the first ten), located from Test's `Failed test … line N`
+# diagnostics on the child's stderr. --failed=FILE writes the bare paths to FILE
+# instead, one per line, sorted: the complement of --list, ready to feed back
+# in as PATTERNs (`build/rakupp tools/run-roast.raku $(cat FILE)`).
 
 my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  # set $ROAST to your Roast checkout
 use lib $?FILE.IO.parent.add('lib').Str;
@@ -154,7 +162,8 @@ END { rmtree($SCRATCH) }
 # it: prompt.t and S16-filehandles/io.t sat at their first read until the
 # timeout, and five files that finish in 0.1 s were counted as timeouts.
 #
-# Stderr is captured and dropped. Inherited, at --workers=4 the children's TAP
+# Stderr is captured, never printed: only --failed reads it, for the failing
+# tests' line numbers (see failed-lines). Inherited, at --workers=4 the children's TAP
 # diagnostics were written straight into the harness's own stream and spliced
 # mid-line into its per-file status lines, and RELEASING.md's gate is `awk
 # '{print $NF}'` over those lines — four files a run silently lost their path
@@ -166,8 +175,9 @@ my $SPAWN = Lock.new;
 sub run-with-timeout($bin, $file, $timeout) {
     my $proc = Proc::Async.new($bin, $file, :w);
     my $out = '';
+    my $err = '';
     $proc.stdout.tap(-> $chunk { $out ~= $chunk });
-    $proc.stderr.tap(-> $chunk { });
+    $proc.stderr.tap(-> $chunk { $err ~= $chunk });
     my $done = $SPAWN.protect({
         my $d = $proc.start(:cwd($SCRATCH.absolute));
         $proc.close-stdin;
@@ -176,7 +186,32 @@ sub run-with-timeout($bin, $file, $timeout) {
     await Promise.anyof($done, Promise.in($timeout));
     my $timedout = $done.status ne 'Kept';
     $proc.kill if $timedout;
-    return ($out, $timedout);
+    return ($out, $timedout, $err);
+}
+
+# The source lines of the failing tests in $file, from Test's diagnostics on
+# stderr: `# Failed test 'x' at PATH line N` (rakupp) or the same with `at PATH
+# line N` on the next `#` line (Rakudo), either one indented inside a subtest.
+# Only locations in $file itself count — not a module a test called into — and
+# each line is reported once, in order, so a failing subtest and its failing
+# inner test (which both point at the same line) print it once.
+sub failed-lines($err, $file) {
+    my $base = $file.IO.basename;
+    my @n;
+    my $armed = False;   # the previous line was a `Failed test` with no location
+    for $err.lines -> $ln {
+        my $t = $ln.trim-leading;
+        next unless $t.starts-with('#');
+        my $failed = $t.contains('Failed test');
+        if ($failed || $armed) && $t ~~ / 'at ' (\S+) ' line ' (\d+) / {
+            @n.push(+$1) if $0.IO.basename eq $base;
+            $armed = False;
+        }
+        else {
+            $armed = $failed;
+        }
+    }
+    @n.unique.List;
 }
 
 # ps prints cputime as [dd-]hh:mm:ss on Linux and as mm:ss.cc on macOS.
@@ -281,6 +316,9 @@ my $CPU         = ($*KERNEL.cpu-cores // 2) max 1;        # cores the running fi
 my $LISTFILE;
 my $TIMESFILE   = $?FILE.IO.parent.parent.add('docs/status/roast-lists/roast.times').Str;
 my $TIMES-GIVEN = False;                          # --times=FILE names the file to read AND rewrite
+my $FAILED      = False;                          # --failed: list the non-passing files at the end
+my $FAILEDFILE;                                   # --failed=FILE: write their paths there instead
+my $FAILED-SHOW = 10;                             # failing source lines shown per file by --failed
 my @patterns;
 for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
@@ -288,6 +326,8 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--cpu=' (\d+) $/    { $CPU = (+$0) max 1 }
     elsif $a ~~ /^ '-j' '='? (\d+) $/ { $CPU = (+$0) max 1; $WORKERS = 2 * $CPU }
     elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
+    elsif $a eq '--failed'            { $FAILED = True }
+    elsif $a ~~ /^ '--failed=' (.+) $/ { $FAILED = True; $FAILEDFILE = ~$0 }
     else { @patterns.push($a) }
 }
 # roast.times describes rakupp. Under another engine its wall times and CPU
@@ -547,6 +587,7 @@ say "run-roast: cpu budget $CPU cores over $WORKERS workers; {@files.elems - $sa
   ~ "{@demand.grep({ $_ < 0.25 }).elems} known to wait (last run's CPU samples)";
 
 my @fullypassing;   # the release gate's file LIST, collected as data not as text
+my @notpassing;     # [rel, mark, "passed/ran"] for every other file, for --failed
 my @result;         # per file position, set by whichever worker ran it
 my @wall;           # per file position, this run's wall seconds: the next run's ordering
 my $lock    = Lock.new;
@@ -601,12 +642,14 @@ my sub run-one($f) {
     # %SLOW-FILES values are rakupp seconds too: a spec-driven wall time still has
     # the engine's own work wrapped around it, so they scale with everything else.
     my $cap = %SLOW-FILES{$rel} ?? %SLOW-FILES{$rel} * $TIME-SCALE !! $TIMEOUT;
-    my ($out, $timedout) = run-with-timeout($BIN, $f, $cap);
+    my ($out, $timedout, $err) = run-with-timeout($BIN, $f, $cap);
     my $cpu = $lock.protect({ %cpu-sample{$f} });   # the last look the sampler took while it ran
     my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
-    # New fields go on the END: the unpack below is positional.
+    # New fields go on the END: the unpack below is positional. [9] is the
+    # worker's error slot, set only when this sub throws.
     [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
-     $skipped, $todofail, $cpu]; # an Array stays one item
+     $skipped, $todofail, $cpu, Nil,
+     ($FAILED && !$FAILEDFILE && ($failed || $timedout) ?? failed-lines($err, $f) !! ())]; # an Array stays one item
 }
 
 # Record a file the harness could not measure: no result at all, or a run that
@@ -619,6 +662,7 @@ my sub lose($k, $why) {
     @lost-files.push("$rel — $why");
     my $sp = static-plan(@files[$k]);
     $lost-declared += $sp if $sp > 0;
+    @notpassing.push([$rel, 'LOST', '—']);
     say sprintf('  [LOST]  %5s  %s', '—', $rel);
 }
 
@@ -666,6 +710,7 @@ my sub tally($k) {
             if $sp > 0 { $timeout-declared += $sp; $timeout-counted++ }
             else       { $tot-plan += $ran; $timeout-unknown++ }
         }
+        @notpassing.push([$rel, 'TIME', "$passed/$ran", $k]);
         say sprintf('  [TIME]  %5s  %s', "$passed/$ran", $rel);
         return;
     }
@@ -707,7 +752,9 @@ my sub tally($k) {
         %sec-part{$sec} += 1;
         $mark = 'part';
     }
-    @fullypassing.push($rel) if $mark eq 'PASS';
+    if $mark eq 'PASS'    { @fullypassing.push($rel) }
+    elsif $mark eq 'part' { @notpassing.push([$rel, 'part', "$passed/$ran", $k]) }
+    else                  { @notpassing.push([$rel, 'noTAP', '—']) }
     # live per-file result (skip the no-TAP noise, like the Python harness)
     if $mark ne '----' {
         say sprintf('  [%s]  %5s  %s', $mark, "$passed/$ran", $rel);
@@ -964,4 +1011,31 @@ say '| ' ~ (^@head.elems).map({ cell(@head[$_], $_) }).join(' | ') ~ ' |';
 say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 1)) ~ ':' }).join('|') ~ '|';
 for @rows -> $r {
     say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
+}
+
+# ---- --failed: every file that did not fully pass, printed last so it is the
+# thing left on screen. Sorted by path, the order --list uses.
+if $FAILED {
+    my @nf = @notpassing.sort(*[0]);
+    if $FAILEDFILE {
+        $FAILEDFILE.IO.spurt(@nf.map(*[0]).join("\n") ~ (@nf ?? "\n" !! ''));
+        say "";
+        say "Not-passing file list ({@nf.elems} paths) -> $FAILEDFILE";
+    }
+    else {
+        say "";
+        say "Files not fully passing ({@nf.elems}):";
+        for @nf -> $e {
+            say sprintf('  %-7s  %9s  %s', "[$e[1]]", $e[2], $e[0]);
+            next unless $e[3].defined;
+            my @n = @(@result[$e[3]][10] // ());
+            next unless @n;
+            my @src = @files[$e[3]].IO.lines;
+            for @n.head($FAILED-SHOW) -> $n {
+                say sprintf('        %5d: %s', $n, (@src[$n - 1] // '').trim);
+            }
+            say "               …and {@n.elems - $FAILED-SHOW} more failing line{@n.elems - $FAILED-SHOW == 1 ?? '' !! 's'}"
+                if @n > $FAILED-SHOW;
+        }
+    }
 }
