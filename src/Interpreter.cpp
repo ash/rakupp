@@ -1095,7 +1095,8 @@ static Value typedDefault(const std::string& type, char sigil) {
         // sized native integers wrap to their bit width on assignment
         static const struct { const char* n; int bits; bool sgn; } nts[] = {
             {"uint8",8,false},{"int8",8,true},{"byte",8,false},{"uint16",16,false},{"int16",16,true},
-            {"uint32",32,false},{"int32",32,true},{"uint64",64,false},{"int64",64,true}};
+            {"uint32",32,false},{"int32",32,true},{"uint64",64,false},{"int64",64,true},
+            {"uint",64,false},{"int",64,true}};   // the unsized spellings are 64-bit
         for (auto& t : nts) if (type == t.n) { Value v = Value::integer(0); v.natBits = t.bits; v.natSigned = t.sgn; return v; }
         // num32 rounds to float32 precision on assignment (num/num64 are already
         // double, so they need no truncation marker).
@@ -1170,14 +1171,17 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
 // check failure however numeric its text. rakupp truncated both: `my int8 $x =
 // 'foo'` stored 0 and `my int64 $x = 2**63` wrapped to the minimum
 // (S02-types/int-uint.t; Int-Num-Rat sheet N-27).
-void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what) {
+void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
     if (bits <= 0 || isFloat) return;
     if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
         throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
             "Type check failed in assignment to " + what +
             "; expected " + (bits == 64 ? "int" : "int" + std::to_string(bits)) +
             " but got Str (\"" + v.s.str() + "\")"};
-    if (bits >= 64 && v.t == VT::Int && v.big() && !v.big()->fitsLL())
+    // Too wide for a machine integer at ALL is refused whatever the declared
+    // width (`my int8 $x = 2**64` too); an unsigned one takes the full 64 bits.
+    if (v.t == VT::Int && v.big() &&
+        (sign ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
         throw RakuError{Value::typeObj("X::AdHoc"),
             "Cannot unbox " + std::to_string(v.big()->bitLength()) +
             " bit wide bigint into native integer. Did you mix int and Int or literals?"};
@@ -1217,6 +1221,17 @@ static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
         if (bits == 32) { float f = (float)v.toNum(); v = Value::number((double)f); }
         else            v = Value::number(v.toNum());
         v.natBits = bits; v.natFloat = true;
+        return;
+    }
+    // A full-width native holding a plain small Int that already fits is its
+    // own wrap: only the tags change. This is every assignment to a `my int`,
+    // so it must not pay for the general rebuild below.
+    // The flags reset here are the ones the rebuild below would have cleared.
+    if (bits == 64 && v.t == VT::Int && !v.x_ && !v.p_ && (sign || v.i >= 0) &&
+        v.enumName.empty() && v.enumType.empty() && v.hashKind.empty()) {
+        v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
+        v.isList = v.objKeyed = v.natFloat = false;
+        v.natBits = 64; v.natSigned = sign;
         return;
     }
     // A value wider than a long long must keep its LOW bits here, not saturate —
@@ -23625,7 +23640,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
                             Value rv = evalValueOf(a->value.get());
-                            nativeUndefCheck(rv, a->target.get(), slot);
+                            if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, a->target.get(), slot);
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
                                 rv.readonly = rv.immutableBind = false;
@@ -23637,7 +23652,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot); // torn-copy contract
                                 *slot = rv;
                             }
-                            if (nb) { nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"))); wrapNative(*slot, nb, nsg, nfl); }
+                            if (nb) {
+                                // only a Str or an over-wide bigint is refused — test
+                                // that before building the name the message needs
+                                if (rv.t == VT::Str || (rv.t == VT::Int && rv.big()))
+                                    nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
+                                wrapNative(*slot, nb, nsg, nfl);
+                            }
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -24016,6 +24037,9 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 // bits, and overwriting the Value outright threw the width away.
                 int nb = lv->natBits; bool ns = lv->natSigned, nf = lv->natFloat;
                 *lv = v;
+                if (nb && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
+                    nativeAssignCheck(*lv, nb, nf, tgt->kind == NK::VarExpr
+                                           ? static_cast<VarExpr*>(tgt)->name : std::string("$x"), ns);
                 if (nb) wrapNative(*lv, nb, ns, nf);
             }
         }
@@ -25818,6 +25842,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
         }
+        // A plain `=` into a native refuses what it cannot unbox (a Str, a
+        // bigint wider than 64 bits) before wrapping — `my int $x = 2**64`
+        // dies as it does in Rakudo; the pad lane above already did this for
+        // later assignments. Compound ops keep wrapping.
+        if (nb && a->op == "=" && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
+            nativeAssignCheck(*lv, nb, nf, a->target->kind == NK::VarExpr
+                                   ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"), ns);
         if (nb) wrapNative(*lv, nb, ns, nf);
         // A `constant` is immutable once it holds its value — `constant C = 5;
         // C = 6` silently succeeded and answered 6. Marked AFTER the initial
@@ -26768,6 +26799,20 @@ static bool isRefValue(const Value& v) {
 }
 
 static bool valueSmartmatchHook(const std::string& op, const Value& l, const Value& r, Value& out); // defined below, beside applyBinOp
+// Rakudo's `!=` between a native uint and a native int answers False whenever
+// the SIGNED operand is negative, whatever the other holds: `my uint $u = 3;
+// my int $i = -1; $u != $i` is False, and so is 255 (uint8) against -1 (int8).
+// The (uint, int) candidate short-circuits a negative the way `==` rightly
+// does. Roast's S02-types/signed-unsigned-native.t pins exactly that, so the
+// rule is reproduced — and only for two natives; a boxed Int compares plainly.
+static inline bool nativeMixedSignNe(const Value& l, const Value& r) {
+    auto uns = [](const Value& v) { return v.natBits && !v.natSigned && !v.natFloat; };
+    auto neg = [](const Value& v) {
+        return v.natBits && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0;
+    };
+    return (uns(l) && neg(r)) || (neg(l) && uns(r));
+}
+
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -26786,10 +26831,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '>': if (c1 == '\0') return Value::boolean(a > b);
                       if (c1 == '=') return Value::boolean(a >= b); break;
             case '=': if (c1 == '=') return Value::boolean(a == b); break;
-            case '!': if (c1 == '=') return Value::boolean(a != b); break;
+            case '!': if (c1 == '=') return Value::boolean(a != b && !nativeMixedSignNe(l, r)); break;
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // …and the same rule once an operand is too wide for the fast path (a
+    // uint64 above 2**63 is a BigInt)
+    if ((l.natBits | r.natBits) && op.size() == 2 && op[0] == '!' && op[1] == '=' &&
+        nativeMixedSignNe(l, r))
+        return Value::boolean(false);
     // one-shot (Interpreter::valueSmartmatch_): the left operand is a Whatever
     // VALUE in a smartmatch, not the literal `*` that curries. Consumed at once,
     // so the nested calls this one makes — an ACCEPTS method's own code — curry
@@ -32309,6 +32359,7 @@ int Interpreter::tryCondBool(Expr* e) {
         Value* p = padPtr(ve);
         if (!p) p = tctx_.cur->find(ve->name);
         if (!p || p->t != VT::Int || !p->hashKind.empty() || p->big()) return false;
+        if (p->natBits && op[0] == '!') return false; // see nativeMixedSignNe
         out = p->i;
         return true;
     };
