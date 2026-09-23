@@ -83,7 +83,7 @@ for @files -> $f {
     for blocks($f) -> (:key($line), :value($src)) {
         $tmp.spurt($src ~ "\n");
         my ($ac, $ao, $ae) = run-with-timeout($RAKUPP, ~$tmp, 12);
-        my ($bc, $bo, $be) = run-with-timeout('raku',   ~$tmp, 30);
+        my ($bc, $bo, $be) = run-with-timeout('rakudo', ~$tmp, 30);
         my $kind = do {
             # parens matter: junctive `|` binds TIGHTER than `eq`, so the
             # unparenthesised form chains into `$ac eq ('TIMEOUT'|$bc) eq

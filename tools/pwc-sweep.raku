@@ -51,7 +51,7 @@ sub esc(Str $s) {
 sub MAIN(Int :$from = 371, Int :$to = 386,
          Str :$repo = %*ENV<HOME> ~ '/perlweeklychallenge-club',
          Str() :$rakupp = $*EXECUTABLE.absolute,
-         Str :$rakudo = 'raku',
+         Str :$rakudo = 'rakudo',
          Str :$out = 'pwc-results.jsonl',
          Str :$tsv = '',        # every tested file's verdict this run
          Str :$files = '',      # path list that replaces the --from/--to walk

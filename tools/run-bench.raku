@@ -33,14 +33,23 @@
 #                          numbers stay exactly what they were without it.
 #
 # Override the binaries via environment:
-#     RAKUPP=/path/to/rakupp RAKUDO=raku ./build/rakupp tools/run-bench.raku
+#     RAKUPP=/path/to/rakupp RAKUDO=rakudo ./build/rakupp tools/run-bench.raku
 
 my $tools = $*PROGRAM.absolute.IO.parent;   # tools/
 my $repo  = $tools.parent;                  # repo root
 my $bench = $tools.add('bench');            # benchmark programs live here
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
-my $RAKUDO = %*ENV<RAKUDO> // 'raku';
+my $RAKUDO = %*ENV<RAKUDO> // 'rakudo';
+# `raku` may be rakupp on this machine (install.sh offers the alias), so the
+# Rakudo lane runs only a binary that says it is Rakudo.
+my $RAKUDO-OK = do {
+    my $p = try run($RAKUDO, '--version', :out, :err);
+    my $b = $p ?? $p.out.slurp(:close) ~ $p.err.slurp(:close) !! '';
+    note "run-bench: no Rakudo lane — $RAKUDO is not Rakudo{$b ?? " (it says «{$b.lines.head.trim}»)" !! ''}; set RAKUDO=/path/to/rakudo"
+        unless $b.contains('Rakudo');
+    $b.contains('Rakudo')
+};
 my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl twin
 
 my $tsv-path = '';
@@ -231,7 +240,7 @@ if $tfh {
         my $c = $p.out.slurp(:close).trim; $p.err.slurp(:close);
         $p.exitcode == 0 ?? $c !! ''
     };
-    my $rakudo-v = first-line([$RAKUDO, '--version']);
+    my $rakudo-v = $RAKUDO-OK ?? first-line([$RAKUDO, '--version']) !! '';
     my $mutsu-v  = $MUTSU.defined ?? first-line([$MUTSU, '--version']) !! '';
     my $rakupp-v = first-line([$RAKUPP, '--version']);
     my $cpu = do {
@@ -284,7 +293,7 @@ for @benches -> %b {
     my $built = compile-native($path, $nbin);
     my $oi = capture([$RAKUPP, $path]);
     my $on = $built ?? capture([$nbin]) !! Str;
-    my $or = capture([$RAKUDO, $path]);
+    my $or = $RAKUDO-OK ?? capture([$RAKUDO, $path]) !! Str;
     my $om = $MUTSU.defined ?? capture([$MUTSU, $path]) !! Str;
     my $op = $ppath.defined ?? capture([$PERL, $ppath]) !! Str;
     my $oracle = $or.defined ?? 'rakudo' !! 'interp';

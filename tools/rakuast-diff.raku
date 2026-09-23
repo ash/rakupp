@@ -61,7 +61,7 @@ sub dumps($file) {
     # `.AST` is Rakudo's compiler, so a BEGIN runs and a `use` loads.
     # A per-file cap: one pathological file must not stall the sweep. (Before
     # the oracle grew its visited set, anagrams.raku ran for twenty minutes.)
-    my $b = run('/usr/bin/perl', '-e', 'alarm 120; exec @ARGV', 'raku', $oracle, $file, :out, :err);
+    my $b = run('/usr/bin/perl', '-e', 'alarm 120; exec @ARGV', 'rakudo', $oracle, $file, :out, :err);
     my $theirs = $b.out.slurp(:close); $b.err.slurp(:close);
     ($ours, $theirs, $a.exitcode, $b.exitcode)
 }

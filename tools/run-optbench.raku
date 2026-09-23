@@ -14,7 +14,7 @@
 #
 #     ./build/rakupp tools/run-optbench.raku
 #
-# Override binaries via env: RAKUPP=/path/to/rakupp RAKUDO=raku
+# Override binaries via env: RAKUPP=/path/to/rakupp RAKUDO=rakudo
 
 my $tools  = $*PROGRAM.absolute.IO.parent;
 use lib $?FILE.IO.parent.add('lib').Str;
@@ -40,7 +40,16 @@ require-native(%PICK, :tool<run-optbench>, :verdict<INCONCLUSIVE>,
 my $HOST   = %PICK<host>;
 my $RAKUPP = %PICK<path>;
 note provenance-line('run-optbench', %PICK);
-my $RAKUDO = %*ENV<RAKUDO> // 'raku';
+my $RAKUDO = %*ENV<RAKUDO> // 'rakudo';
+# `raku` may be rakupp on this machine (install.sh offers the alias), so the
+# Rakudo lane runs only a binary that says it is Rakudo.
+my $RAKUDO-OK = do {
+    my $p = try run($RAKUDO, '--version', :out, :err);
+    my $b = $p ?? $p.out.slurp(:close) ~ $p.err.slurp(:close) !! '';
+    note "run-optbench: no Rakudo lane — $RAKUDO is not Rakudo{$b ?? " (it says «{$b.lines.head.trim}»)" !! ''}; set RAKUDO=/path/to/rakudo"
+        unless $b.contains('Rakudo');
+    $b.contains('Rakudo')
+};
 my $RUNS   = 6;   # 1 warm-up (discarded) + 5 measured
 
 # name => one-line note on which pass it showcases
@@ -130,7 +139,7 @@ for @benches -> %b {
     my $oi = output-of([$RAKUPP, $path]);    # interp
     my $gB = output-of([$base]);             # --exe
     my $gO = output-of([$opt]);              # --exe -O
-    my $oR = output-of([$RAKUDO, $path]);    # rakudo
+    my $oR = $RAKUDO-OK ?? output-of([$RAKUDO, $path]) !! Str;    # rakudo
     my $oracle = $oR.defined ?? 'rakudo' !! 'interp';
     my $ref    = $oR // $oi;
     my @bad;

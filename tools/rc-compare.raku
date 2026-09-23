@@ -72,7 +72,7 @@ for @tasks.kv -> $i, $task {
              !! extract(try qqx{curl -s -m 25 -G 'https://rosettacode.org/w/index.php' --data-urlencode 'title=$task' --data 'action=raw'} // '');
     unless $code { %tally<no-code>++; $log.say("$task\tno-code\t\t"); $log.flush; next }
     $f.IO.spurt($code);
-    my ($ro, $rx) = run-prog('raku', $f, 'rd');
+    my ($ro, $rx) = run-prog('rakudo', $f, 'rd');
     my ($uo, $ux) = run-prog($RAKUPP, $f, 'up');
     my $cat = $rx == 137 ?? 'rakudo-timeout' !! $rx != 0 ?? 'rakudo-error'
            !! $ux == 137 ?? 'rakupp-timeout' !! $ux != 0 ?? 'rakupp-error'

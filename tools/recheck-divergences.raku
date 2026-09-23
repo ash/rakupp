@@ -31,7 +31,7 @@ sub run-capped(Str $exe, Str $file, Int $secs = 10 --> Str) {
 
 sub MAIN(
     Str  :$rakupp!,                              #= the binary under test
-    Str  :$oracle = 'raku',                      #= the reference implementation
+    Str  :$oracle = 'rakudo',                    #= the reference implementation
     Str  :$spec   = '/Users/ash/raku-spec',      #= checkout holding the sweep data
     Str  :$out    = 'still-failing',             #= directory for the per-type reports
     Int  :$timeout = 10,                         #= seconds per example

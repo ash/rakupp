@@ -21,7 +21,7 @@ run_once() {  # $1 = out file, $2 = err file; echoes "exit<TAB>ms"
     b=$(basename "$inunit")
     case "$b" in
       *.sh) TZ=UTC perl -e 'alarm 30; exec "/bin/sh", $ARGV[0]' "$b" >"$1" 2>"$2" </dev/null;;
-      *)    TZ=UTC perl -e 'alarm 30; exec "raku","-I.","-Ilib","-I../lib",$ARGV[0]' "$b" >"$1" 2>"$2" </dev/null;;
+      *)    TZ=UTC perl -e 'alarm 30; exec "rakudo","-I.","-Ilib","-I../lib",$ARGV[0]' "$b" >"$1" 2>"$2" </dev/null;;
     esac
   )
   ec=$?

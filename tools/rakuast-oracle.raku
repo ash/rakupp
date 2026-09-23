@@ -37,7 +37,7 @@ for $list.IO.lines -> $f {
     my $t0  = now;
     my $dir = $f.IO.parent;
     my $abs = $dir.absolute;                # -I must be absolute: the child's cwd IS $dir
-    my $pr  = run 'raku', "-I$abs", "-I$abs/lib", '-e', $child, $f.IO.absolute,
+    my $pr  = run 'rakudo', "-I$abs", "-I$abs/lib", '-e', $child, $f.IO.absolute,
                   :in, :out, :err, :cwd($dir);
     my $closed = $pr.in.close;             # unassigned, a failed Proc is sunk and throws
     my $o = $pr.out.slurp(:close);
