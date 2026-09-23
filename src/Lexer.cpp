@@ -712,39 +712,51 @@ void Lexer::skipWhitespaceAndComments() {
         // swallowed the closing `>` and the rest of the line.
         if (c == '#' && angleWords_ == 0) {
             if (trackComments_) commentOffsets_.push_back(pos_);   // fudge probe; see Lexer.h
-            // `#`«…»` — the GUILLEMET spelling of the same embedded comment, and
-            // the tripled `#`«««…»»»` a module uses to comment out a whole
-            // signature (Terminal::Gauge). Both delimiters are two UTF-8 bytes,
-            // so this cannot ride the single-char path below; without it the
-            // commented-out text was lexed as code and its `-->` reported as an
-            // operator in term position.
+            // `#`«…»` and every other non-ASCII bracket — `#`『…』`, `#`〈…〉`,
+            // `#`（…）` — delimit the same embedded comment: any opener of
+            // category Ps (or the « guillemet), closed by its mirrored glyph.
+            // A REPEATED opener (`#`«««…»»»`, which a module uses to comment out
+            // a whole signature — Terminal::Gauge) closes only on the closer
+            // repeated as often. Without this path the `#` fell through to a
+            // line comment and ate the code after the closer.
             if ((peek(1) == '`' || peek(1) == '|' || peek(1) == '=') &&
-                (unsigned char)peek(2) == 0xC2 && (unsigned char)peek(3) == 0xAB) {
-                const int startLine = line_;
-                auto at = [&](size_t k, unsigned char b1) {
-                    return (unsigned char)peek(k) == 0xC2 && (unsigned char)peek(k + 1) == b1;
-                };
-                advance(); advance(); // # `
-                size_t rep = 0;
-                while (!eof() && at(0, 0xAB)) { advance(); advance(); rep++; }
-                auto runOf = [&](unsigned char b1) {  // how many of the pair start here
-                    size_t k = 0;
-                    while (at(k * 2, b1)) k++;
-                    return k;
-                };
-                auto eat = [&] { for (size_t k = 0; k < rep; k++) { advance(); advance(); } };
-                int d = 1;
-                while (!eof() && d > 0) {
-                    if (runOf(0xAB) >= rep)      { eat(); d++; }
-                    else if (runOf(0xBB) >= rep) { eat(); d--; }
-                    else advance();
+                (unsigned char)peek(2) >= 0xC2) {
+                unsigned char b0 = (unsigned char)peek(2);
+                size_t dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+                uint32_t cp = b0 & (0xFF >> (dlen + 1));
+                for (size_t k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)peek(2 + k) & 0x3F);
+                int32_t mir = -1;
+                if (cp == 0xAB || uniGeneralCategory(cp) == "Ps") mir = uniBidiMirror(cp);
+                if (mir < 0 && uniGeneralCategory(cp) == "Ps") mir = (int32_t)cp + 1;
+                if (mir >= 0) {
+                    const int startLine = line_;
+                    std::string O = src_.substr(pos_ + 2, dlen), C;
+                    uint32_t cc = (uint32_t)mir;
+                    if (cc < 0x800) { C += (char)(0xC0 | (cc >> 6)); C += (char)(0x80 | (cc & 0x3F)); }
+                    else if (cc < 0x10000) { C += (char)(0xE0 | (cc >> 12)); C += (char)(0x80 | ((cc >> 6) & 0x3F)); C += (char)(0x80 | (cc & 0x3F)); }
+                    else { C += (char)(0xF0 | (cc >> 18)); C += (char)(0x80 | ((cc >> 12) & 0x3F)); C += (char)(0x80 | ((cc >> 6) & 0x3F)); C += (char)(0x80 | (cc & 0x3F)); }
+                    advance(); advance(); // # `
+                    size_t rep = 0;
+                    while (!eof() && src_.compare(pos_, O.size(), O) == 0) { for (size_t k = 0; k < O.size(); k++) advance(); rep++; }
+                    auto runOf = [&](const std::string& D) {  // how many of D start here
+                        size_t k = 0;
+                        while (src_.compare(pos_ + k * D.size(), D.size(), D) == 0) k++;
+                        return k;
+                    };
+                    auto eat = [&](const std::string& D) { for (size_t k = 0; k < rep * D.size(); k++) advance(); };
+                    int d = 1;
+                    while (!eof() && d > 0) {
+                        if (runOf(O) >= rep)      { eat(O); d++; }
+                        else if (runOf(C) >= rep) { eat(C); d--; }
+                        else advance();
+                    }
+                    if (d > 0) {
+                        std::string open, close;
+                        for (size_t k = 0; k < rep; k++) { open += O; close += C; }
+                        runawayTerm(close, open, startLine);
+                    }
+                    continue;
                 }
-                if (d > 0) {
-                    std::string open, close;
-                    for (size_t k = 0; k < rep; k++) { open += "\xC2\xAB"; close += "\xC2\xBB"; }
-                    runawayTerm(close, open, startLine);
-                }
-                continue;
             }
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
             // bracket group only — the rest of the line still parses. The declarator
@@ -780,6 +792,12 @@ void Lexer::skipWhitespaceAndComments() {
                 if (d > 0) runawayTerm(std::string(rep, close), std::string(rep, open), startLine);
                 continue;
             }
+            // `#`` with no opening bracket after it — a space, a newline, an
+            // unspace, `#`!` — is an error in Rakudo, not a line comment
+            if (peek(1) == '`')
+                throw ParseError("Opening bracket required for #` comment", line_,
+                                 "X::Syntax::Comment::Embedded",
+                                 {{"line", std::to_string(line_)}, {"filename", "EVAL_0"}});
             if (peek(1) == '|') { // leading declarator pod `#| text` — record by line
                 advance(); advance(); // # |
                 while (peek() == ' ' || peek() == '\t') advance();
