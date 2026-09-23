@@ -313,6 +313,11 @@ private:
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
         bool possessive = false;         // `a*:` — grab greedily and never give any back
+        // Rep: does the atom (or its separator) capture? -1 = not asked yet. A
+        // possessive repetition KEEPS its grabs' captures (it never backtracks
+        // into them), so when the continuation then fails it has to put the
+        // capture state back itself — and only a capturing atom needs to pay.
+        mutable std::atomic<signed char> repCaptures{-1};
         std::unique_ptr<Node> sep;       // `X+ % Y` / `X+ %% Y` separator (null if none)
         bool sepTrail = false;           // `%%`: an optional TRAILING separator may follow the last item
         std::string repCode;             // `** { … }` — evaluate this at match time for (min,max)

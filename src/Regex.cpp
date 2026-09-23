@@ -3441,6 +3441,44 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // token semantics, and it kills exponential partition backtracking.
                     // Apply the separator on every iteration after the first (matchOne's
                     // own `count` check can't be used — it stays fixed at the outer count).
+                    //
+                    // The grabs' continuation returns true, so each capture they
+                    // make STAYS — nothing unwinds it if the continuation below
+                    // fails. Left alone, a `||` branch that failed after
+                    // `<m>?` handed its `$<m>` to the branch that won, as an extra
+                    // list element (issue #98). Mark the capture state first and
+                    // put it back on failure.
+                    signed char capt = n->repCaptures.load(std::memory_order_relaxed);
+                    if (capt < 0) {
+                        capt = (subtreeCaptures(child) || subtreeCaptures(sep)) ? 1 : 0;
+                        n->repCaptures.store(capt, std::memory_order_relaxed);
+                    }
+                    std::vector<std::pair<long, long>> markCaps;
+                    GrammarHooks::NamedMap markNamed;
+                    std::vector<std::pair<std::string, size_t>> markKids;
+                    std::map<int, std::vector<std::pair<long, long>>> markReps;
+                    if (capt) {
+                        markCaps = st.caps; markNamed = st.named; markReps = st.capReps;
+                        markKids.reserve(st.children.size());
+                        for (auto& ce : st.children) markKids.emplace_back(ce.first, ce.second.size());
+                    }
+                    auto unwind = [&]() {
+                        if (!capt) return;
+                        st.caps = std::move(markCaps); st.named = std::move(markNamed);
+                        st.capReps = std::move(markReps);
+                        // occurrences only ever go on at the END of a name's list,
+                        // so cutting each list back to its marked length (and
+                        // dropping names that were not there) is an exact undo
+                        size_t j = 0;
+                        for (auto it = st.children.begin(); it != st.children.end(); ) {
+                            while (j < markKids.size() && markKids[j].first < it->first) j++;
+                            if (j < markKids.size() && markKids[j].first == it->first) {
+                                it->second.resize(markKids[j].second);
+                                ++it;
+                            }
+                            else it = st.children.erase(it);
+                        }
+                    };
                     long cnt = count, q = p;
                     while (mx < 0 || cnt < mx) {
                         long np = -1;
@@ -3455,7 +3493,8 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         if (np < 0 || np == q) break;
                         q = np; cnt++;
                     }
-                    if (cnt >= mn) return finish(q, cnt);
+                    if (cnt >= mn && finish(q, cnt)) return true;
+                    unwind();
                     return false;
                 }
                 // Iterative greedy for a deterministic single-atom child
