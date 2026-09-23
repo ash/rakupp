@@ -1,9 +1,9 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # rakuast-oracle.raku — the Rakudo half of the RakuAST tree oracle
 # (docs/dev/plans/RAKUAST-PLAN.md, Part III, `--rakuast`): for every program
 # in LIST, ask the installed Rakudo for its RakuAST tree and record one row.
 #
-#   raku tools/rakuast-oracle.raku LIST OUT.tsv        # run from the corpus root
+#   rakudo tools/rakuast-oracle.raku LIST OUT.tsv        # run from the corpus root
 #
 # Runs under Rakudo, not rakupp — it measures the oracle. One CHILD process per
 # file: `.AST` is the compiler, so BEGIN blocks execute and `use` loads modules,

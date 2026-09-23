@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A Forth interpreter — a stack machine with a word dictionary. Where the Lisp
 # showcase walks a parse tree, this is the other classic model: source is a flat
 # stream of whitespace-separated *words*, each of which pushes a number or runs

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A TCP echo server and its client, in one self-contained program.
 #
 # Everything runs over the loopback interface (127.0.0.1), so no internet

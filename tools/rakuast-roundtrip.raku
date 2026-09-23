@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The round-trip property over real programs (RAKUAST-PLAN P1).
 #
 #     rakupp tools/rakuast-roundtrip.raku [DIR ...] [--tsv=FILE] [--verbose]

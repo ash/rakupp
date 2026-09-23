@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Lightweight interpreter performance guard — run before/after a change to catch
 # per-iteration regressions in the eval/exec hot path. Unlike tools/run-bench.raku
 # (which also times --exe and Rakudo across the full kernel set), this times only

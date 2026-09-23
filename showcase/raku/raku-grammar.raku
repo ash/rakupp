@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A grammar of Raku, written in Raku, run by rakupp.
 #
 # The other showcases parse a language rakupp is not. This one parses the

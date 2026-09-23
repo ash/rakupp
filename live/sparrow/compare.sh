@@ -23,7 +23,7 @@ set -e
 R="${RAKUPP:-rakupp}"
 R=$(command -v "$R") || { echo "no rakupp: put it on PATH or set RAKUPP=<path>" >&2; exit 1; }
 case "$R" in /*) ;; *) R=$(cd "$(dirname "$R")" && pwd)/$(basename "$R") ;; esac
-RAKU="${RAKU:-raku}"
+RAKU="${RAKU:-rakudo}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"

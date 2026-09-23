@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Generate src/unicode_names.cpp (NAMES + NUMV) and src/unicode_gen.cpp
 # (CATNAMES + GCAT) by parsing UnicodeData.txt directly — no dependency on a
 # host language's Unicode tables (Python's unicodedata lags the UCD by years).

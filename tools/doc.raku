@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # `rakupp doc SYMBOL ...` — offline lookup of a builtin, method, operator or
 # syntax form from the terminal (go doc, perldoc -f, pydoc). A Raku program
 # carried INSIDE the binary and dispatched by it, like install.raku.

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The --jit differential gate (docs/dev/plans/JIT-PLAN.md, gate 1).
 #
 # Every program is run TWICE by the same binary — once plainly, once with the

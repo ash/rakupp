@@ -1,8 +1,8 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A quine: this program prints its own source exactly and reads nothing
 # from disk. The whole source is stored once in the string $s, and printf
 # feeds $s back into itself, filling in the quote marks and the text.
-my $s = '#!/usr/bin/env raku
+my $s = '#!/usr/bin/env rakupp
 # A quine: this program prints its own source exactly and reads nothing
 # from disk. The whole source is stored once in the string $s, and printf
 # feeds $s back into itself, filling in the quote marks and the text.

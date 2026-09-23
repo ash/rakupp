@@ -1,11 +1,11 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # Emit the static RakuAST:: class table that src/RakuAstClasses.cpp includes.
 #
 # RUNS UNDER RAKUDO, not rakupp: it MEASURES Rakudo's own class hierarchy. The
 # table is checked in (src/rakuast-classes.inc) so a rakupp build needs no Raku
 # on the machine; this tool regenerates it when the oracle version moves.
 #
-#     raku tools/rakuast-class-table.raku > src/rakuast-classes.inc
+#     rakudo tools/rakuast-class-table.raku > src/rakuast-classes.inc
 #
 # What goes in, and why the seeds are what they are:
 #

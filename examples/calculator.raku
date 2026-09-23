@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A four-function calculator built from a Raku grammar and an actions class.
 #
 # The grammar describes the shape of an arithmetic expression; the actions

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Exact rational arithmetic. In Raku a decimal literal like 0.1 is a `Rat`
 # (a numerator/denominator pair), not a floating-point approximation, so
 # sums that famously go wrong in binary floating point stay exact here.

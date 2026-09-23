@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Re-measures the two tables in docs/guide/CACHING.md and prints them as
 # markdown, so the page can be re-recorded in one sitting instead of one cell at
 # a time. It exists because those tables went 2.4x stale between releases and

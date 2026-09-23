@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Generated coverage for the `-O` unboxed loop lanes (UNBOX-PLAN.md).
 #
 # This gate exists because the ordinary corpus does not exercise the pass. Of

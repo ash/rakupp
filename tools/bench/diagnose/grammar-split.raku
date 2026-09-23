@@ -6,7 +6,7 @@
 # between them is the result-building share of a capturing parse.
 #
 #     rakupp grammar-split.raku both 400 5
-#     raku   grammar-split.raku both 400 5
+#     rakudo grammar-split.raku both 400 5
 #     mode = cap | nocap | both | loop      (loop = parse forever, for `sample`)
 #
 # Runs unchanged under both engines — the comparison IS the measurement.

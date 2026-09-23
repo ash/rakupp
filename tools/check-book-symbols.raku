@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Every C++ name the Internals book cites, looked for in the source it describes.
 #
 #   rakupp tools/check-book-symbols.raku [PATH-SUBSTRING]

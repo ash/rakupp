@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Rank builtins and methods by how many corpus programs call them — the order
 # in which they enter the --target=js runtime (TRANSPILE-PLAN.md, P1: "the
 # order is not a guess"). Walks `rakupp --ast` output, so it counts what the

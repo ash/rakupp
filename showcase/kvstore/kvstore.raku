@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A tiny in-memory key–value server with a Redis-flavoured text protocol, over
 # raw TCP. Like the chat server it is concurrent — one `start` thread per
 # connection — but instead of broadcasting, the connections share a single

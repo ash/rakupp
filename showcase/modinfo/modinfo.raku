@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 #
 # modinfo — a Raku distribution inspector.
 #

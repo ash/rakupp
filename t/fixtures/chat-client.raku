@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A two-client checker for the chat showcase, run as its OWN process by t/run.raku
 # (rakupp is flaky holding two live client sockets in the same process that also
 # shell-launched the server, but a separate client process is fine). It connects

@@ -1,7 +1,7 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # The ORACLE half of the `--rakuast` tree dump (RAKUAST-PLAN Part III).
 #
-#     raku tools/rakuast-oracle-dump.raku [--attrs] FILE
+#     rakudo tools/rakuast-oracle-dump.raku [--attrs] FILE
 #
 # Prints Rakudo's own RakuAST tree for FILE in the serialization `rakupp
 # --rakuast FILE` prints, so comparing the two engines is a shell `diff` and

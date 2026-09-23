@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A Perl 5 interpreter. A Raku grammar parses a practical slice of Perl into an
 # AST, and a tree-walking evaluator runs it. This is Raku parsing its own
 # ancestor: the sigil variables ($ @ %), context (scalar vs list), string

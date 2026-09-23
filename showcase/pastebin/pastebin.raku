@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A tiny pastebin — a real HTTP/1.1 server written directly on IO::Socket::INET,
 # no framework. It parses requests by hand, keeps pastes in memory, and serves
 # a small HTML UI plus a JSON-ish API. Compile it with `--exe` and you have a

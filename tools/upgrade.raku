@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # `rakupp upgrade` — replace this engine with a newer release.
 #
 # A Raku program carried INSIDE the binary and dispatched by it, exactly as

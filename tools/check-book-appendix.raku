@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Appendix B's flag list, against the flag table the binary actually has.
 #
 #   rakupp tools/check-book-appendix.raku

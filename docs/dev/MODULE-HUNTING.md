@@ -66,7 +66,7 @@ oracle a controlled comparison rather than an approximation: the same harness,
 the same verdict classification, the engine as the only variable.
 
 ```bash
-raku tools/install.raku --test-only --to=<store> <Dist>
+rakudo tools/install.raku --test-only --to=<store> <Dist>
 ```
 
 A three-line shim that maps `test --to=S N` onto that command can be handed to

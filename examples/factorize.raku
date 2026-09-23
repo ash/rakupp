@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A little number-theory workshop: prime factorization, divisor counts, and
 # the two classic partners gcd and lcm. Shows trial-division factoring, hash
 # tallies for exponents, and Raku's built-in `gcd` / `lcm` infix operators

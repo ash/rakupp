@@ -12,7 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 
 R="${RAKUPP:?set RAKUPP=<path to the rakupp binary>}"
-RAKU="${RAKU:-raku}"
+RAKU="${RAKU:-rakudo}"
 
 # Both engines accept a comma-separated RAKULIB, so one setting serves both.
 if [ -n "$MODLIB" ]; then

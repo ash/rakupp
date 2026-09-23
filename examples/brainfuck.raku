@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A tiny Brainfuck interpreter. Brainfuck has just eight instructions that
 # operate on a tape of byte cells and a single data pointer:
 #

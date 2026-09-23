@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # ast-opportunity.raku — how much material would an AST-level `-O` actually have
 # to work with?
 #

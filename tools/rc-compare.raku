@@ -1,6 +1,6 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Compare Raku++ against Rakudo on RosettaCode Raku solutions.
-#   raku tools/rc-compare.raku [N=40] [skip=0] [rakupp=./build/rakupp]
+#   rakupp tools/rc-compare.raku [N=40] [skip=0] [rakupp=./build/rakupp]
 # Fetches Category:Raku tasks, extracts each first Raku solution, runs it under
 # both `raku` and rakupp (10s timeout, closed stdin), and tallies MATCH / DIFFER
 # / rakupp-error / rakudo-error / …  Results stream to rc-work/results.tsv.

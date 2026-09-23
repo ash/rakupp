@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The Linux floor gate: what the packaged release NEEDS from the machine that
 # runs it, read back from the binaries and held to the numbers the docs
 # promise (docs/guide/COMPILERS.md, "What runs where").

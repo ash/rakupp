@@ -1,7 +1,7 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # The `Doc::` view spec (RAKUAST-PLAN P5) — ONE FILE, TWO ENGINES.
 #
-#     raku  tools/rakuast-doc-spec.raku     # the oracle
+#     rakudo tools/rakuast-doc-spec.raku     # the oracle
 #     rakupp tools/rakuast-doc-spec.raku    # us
 #     …and `t/regression/rakuast-doc.raku` diffs the two.
 #

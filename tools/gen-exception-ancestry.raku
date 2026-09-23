@@ -1,7 +1,7 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # Generates src/exception_ancestry_gen.cpp — the X:: exception hierarchy.
 #
-#   raku tools/gen-exception-ancestry.raku > src/exception_ancestry_gen.cpp
+#   rakudo tools/gen-exception-ancestry.raku > src/exception_ancestry_gen.cpp
 #
 # RUNS UNDER RAKUDO, not rakupp: the table IS Rakudo's own metamodel, read off a
 # live `X::` package walk, and the point is to copy it rather than to re-derive

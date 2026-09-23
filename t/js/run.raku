@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The --target=js corpus gate (TRANSPILE-PLAN.md, gate 2).
 #
 # Every program in t/regression/ and examples/ is transpiled with

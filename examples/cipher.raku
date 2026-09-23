@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Three classic substitution ciphers, and a proof that each one round-trips:
 # encrypting a message and then decrypting it returns the original text.
 #

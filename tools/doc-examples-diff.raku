@@ -1,7 +1,7 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Run every ```raku block in docs/ on BOTH engines and classify the result.
 #
-#   raku tools/doc-examples-diff.raku [rakupp=build/rakupp] [PATH-SUBSTRING]
+#   rakupp tools/doc-examples-diff.raku [rakupp=build/rakupp] [PATH-SUBSTRING]
 #
 # Why this exists: the guides say their examples are verified, and they were —
 # against `rakupp` only. Running them on the permissive engine alone cannot

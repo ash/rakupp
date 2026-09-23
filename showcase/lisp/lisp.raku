@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A small but real Scheme, written with a Raku grammar for the reader and a
 # tree-walking evaluator for everything else. It has lexical closures, tail
 # positions, quote/quasiquote, `define`/`lambda`/`let`/`cond`/`and`/`or`, a

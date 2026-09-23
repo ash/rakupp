@@ -12,7 +12,7 @@
 #
 #     L=…/JSON--Fast-0.19/lib
 #     rakupp -I$L json-parse.raku --reps=3 d200.json d400.json d800.json d1600.json
-#     raku   -I$L json-parse.raku --reps=5 d200.json d400.json d800.json d1600.json
+#     rakudo -I$L json-parse.raku --reps=5 d200.json d400.json d800.json d1600.json
 #
 # Runs unchanged under both engines — the comparison IS the measurement.
 use JSON::Fast;

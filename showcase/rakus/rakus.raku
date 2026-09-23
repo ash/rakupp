@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # rakus — a static HTTP file server, on nothing but IO::Socket::INET.
 #
 # Point it at a directory and it serves the files inside over HTTP/1.1: correct

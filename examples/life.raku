@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Conway's Game of Life on a toroidal grid, rendered as ASCII frames.
 #
 # A cell lives into the next generation if it has 2 or 3 live neighbours;

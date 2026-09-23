@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The `--exe` differential gate (UNBOX-PLAN.md, gate 1).
 #
 # Every program the native backend accepts is compiled BOTH ways — with `-O`

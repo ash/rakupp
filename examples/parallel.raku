@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Concurrency: prime counting spread across worker threads, then a
 # producer/consumer pipeline over a Channel. Both are deterministic — the
 # work is split up and run in parallel, but the results are merged back in

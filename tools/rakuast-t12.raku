@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Run Rakudo's own RakuAST construction tests here, and publish the counts.
 #
 #     rakupp tools/rakuast-t12.raku [--tsv=FILE] [--only=SUBSTR]

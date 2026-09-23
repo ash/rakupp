@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A Python 3 interpreter. The interesting part is the off-side rule: Python
 # blocks are delimited by indentation, not braces. Like CPython, we don't try
 # to handle that in the grammar — a tokenizer pass turns indentation into

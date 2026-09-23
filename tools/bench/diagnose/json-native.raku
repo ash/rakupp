@@ -17,7 +17,7 @@
 #
 #     M=~/raku-modules/JSON-Native        # the module, with its library built
 #     rakupp -I$M/lib json-native.raku --reps=5 d200.json d400.json d800.json d1600.json
-#     raku   -I$M/lib json-native.raku --reps=5 d200.json d400.json d800.json d1600.json
+#     rakudo -I$M/lib json-native.raku --reps=5 d200.json d400.json d800.json d1600.json
 #
 # Sub-millisecond parses are the normal case here, so this reports microsecond
 # resolution where json-parse.raku's whole milliseconds would print "0 ms".

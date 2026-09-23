@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Generate src/unicode_case_gen.cpp — the Unicode case-mapping tables:
 #   * SIMPLE 1:1 upper/lower/title mappings (UnicodeData.txt fields 12/13/14)
 #   * FULL   1:N upper/lower/title mappings (SpecialCasing.txt, unconditional only)

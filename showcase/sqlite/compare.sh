@@ -23,7 +23,7 @@ R="${RAKUPP:?set RAKUPP=<path to the rakupp binary>}"
 # RAKUPP=build/rakupp from the repo root is the natural spelling — resolve it
 # against the CALLER's directory, since everything below runs from $HERE.
 case "$R" in /*) ;; */*) R="$START/$R" ;; esac
-RAKU="${RAKU:-raku}"
+RAKU="${RAKU:-rakudo}"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

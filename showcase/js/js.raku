@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A JavaScript/TypeScript interpreter. A Raku grammar parses a practical slice
 # of the language — functions, closures, arrows, classes with inheritance,
 # template literals, try/catch, for/for-of — into an AST, and a tree-walking

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Sleep sort: the famous joke sorting algorithm, which is really a
 # demonstration of concurrency wearing a funny hat.
 #

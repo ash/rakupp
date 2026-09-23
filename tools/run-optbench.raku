@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Optimizer showcase — times each program in tools/optbench/ compiled two ways:
 #
 #   * --exe      Raku++ transpiled to C++ and compiled (the optimizer OFF)

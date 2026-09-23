@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Benchmark harness — times each program in tools/bench/ on every engine it can
 # find and prints a comparison table:
 #   * interp — Raku++ interpreting the source

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A JSON parser and formatter. A Raku grammar (plus an actions class) turns JSON
 # text into native Raku values — objects become Hashes, arrays Arrays, scalars
 # Str/Int/Num/Bool — and a serializer turns them back into JSON, pretty-printed

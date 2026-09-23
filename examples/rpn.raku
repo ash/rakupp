@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A Reverse Polish Notation (postfix) calculator driven by an explicit stack.
 #
 # Postfix needs no parentheses and no precedence rules: read left to right,

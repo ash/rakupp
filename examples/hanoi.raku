@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Towers of Hanoi: move a stack of N disks from one peg to another, never
 # placing a larger disk on a smaller one. The recursive insight is tiny --
 # to move N disks, move the top N-1 out of the way, move the biggest, then

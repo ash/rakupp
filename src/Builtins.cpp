@@ -5627,15 +5627,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             o << ver << "\n" << auth << "\n" << api << "\n" << sha << "\n" << distId << "\n";
                         }
                         // bin/<name> also gets a NAMED, executable wrapper —
-                        // Rakudo's own template — so an installed command runs by
-                        // name under either engine once <prefix>/bin is on PATH.
-                        // (Rakudo adds -m/-j/-js backend variants; the bare name
-                        // is the one people run, and the only one written here.)
+                        // Rakudo's own template, but with a `rakupp` shebang: what
+                        // rakupp installed runs under rakupp. `env raku` handed the
+                        // command to Rakudo wherever that name was Rakudo's, and the
+                        // store (~/.raku) is one Rakudo reads too, so it ran there
+                        // without a word. (Rakudo adds -m/-j/-js backend variants;
+                        // the bare name is the one people run, and the only one
+                        // written here.)
                         if (rel.rfind("bin/", 0) == 0 && rel.find('/', 4) == std::string::npos && rel.size() > 4) {
                             std::string script = rel.substr(4);
                             std::string wpath = prefix + "/bin/" + script;
                             { std::ofstream w(wpath, std::ios::binary);
-                              w << "#!/usr/bin/env raku\n"
+                              w << "#!/usr/bin/env rakupp\n"
                                    "sub MAIN(:$name is copy, :$auth, :$ver, *@, *%) {\n"
                                    "    CompUnit::RepositoryRegistry.run-script(\"" << script
                                 << "\", :dist-name<" << name << ">, :$name, :$auth, :$ver);\n"

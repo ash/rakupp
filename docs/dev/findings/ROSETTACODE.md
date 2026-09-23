@@ -93,7 +93,7 @@ and genuine bugs. Confirmed bugs:
 ## Reproducing
 
 ```sh
-raku tools/rc-compare.raku [N=40] [skip=0] [rakupp=./build/rakupp]
+rakupp tools/rc-compare.raku [N=40] [skip=0] [rakupp=./build/rakupp]
 ```
 
 Fetched programs are cached in `rc-cache/`, keyed by task name (e.g.

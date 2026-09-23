@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # gen-examples.raku — turn ../examples/*.raku into playground/examples.js.
 #
 # A Raku rewrite of the former gen-examples.py: Raku.js generates its own

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Anagram classes. Two words are anagrams when they are the same multiset of
 # letters, so the trick is to give every word a canonical key — its letters
 # sorted into order — and let words with the same key fall into the same

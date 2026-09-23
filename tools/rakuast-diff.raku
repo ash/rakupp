@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The tree oracle: how close is the `.AST` view to Rakudo's own tree?
 #
 #     rakupp tools/rakuast-diff.raku [DIR ...] [--tsv=FILE] [--show=FILE] [--tally]
@@ -7,7 +7,7 @@
 # table, which CLASS the missing and the extra nodes are — the one question a
 # percentage cannot answer, and how the list of what is left gets written.
 #
-# Runs `rakupp --rakuast FILE` and `raku tools/rakuast-oracle-dump.raku FILE`
+# Runs `rakupp --rakuast FILE` and `rakudo tools/rakuast-oracle-dump.raku FILE`
 # over each program and diffs the two dumps. The number, per the plan, is
 # `1 − changed-lines ÷ oracle-lines`, where "changed" is what `diff` calls a
 # deletion from the oracle side: an oracle node with no counterpart at the same

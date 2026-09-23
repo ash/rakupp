@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A Markdown-to-HTML converter. Block structure (headings, lists, code fences,
 # blockquotes, rules, paragraphs) is recognised line by line; the inline layer
 # (**bold**, *italic*, `code`, [links](url), ![images](url)) is a Raku grammar

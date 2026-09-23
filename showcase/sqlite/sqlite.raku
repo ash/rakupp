@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A SQLite client — a real C library driven entirely from Raku through
 # NativeCall. Nothing here is a reimplementation: every query is executed by
 # `libsqlite3` itself, reached with `is native('sqlite3')`, and the terminal

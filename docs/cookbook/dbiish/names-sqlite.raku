@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # One program, three databases — the SQLite version.
 #   rakupp docs/cookbook/dbiish/names-sqlite.raku
 #

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # One program, three databases — the PostgreSQL version.
 #   rakupp docs/cookbook/dbiish/names-pg.raku
 #

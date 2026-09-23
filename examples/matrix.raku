@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Linear algebra by hand on arrays-of-arrays: multiply, transpose, an
 # identity matrix, and a 3x3 determinant. No library — just nested loops
 # and reductions. Everything stays exact `Int`, so the answers are precise.

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Three ways to reach the Fibonacci numbers, and a check that they agree.
 # Shows off lazy self-referential sequences, a fast-doubling recursion that
 # reaches deep into the sequence in a handful of steps, and Raku's

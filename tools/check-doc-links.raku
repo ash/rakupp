@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Every relative link in the documentation, resolved: the file it names, and —
 # this is the half nothing checked before — the HEADING it names.
 #

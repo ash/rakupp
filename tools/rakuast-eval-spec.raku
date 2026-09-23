@@ -1,11 +1,11 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # The `.EVAL`-on-a-tree spec — measured, one line per case.
 #
 # ENGINE-NEUTRAL, like tools/rakuast-deparse-spec.raku: run under Rakudo it
 # produces docs/dev/findings/rakuast/eval-2026.08.tsv, run under rakupp it has
 # to produce the same file, and t/regression/rakuast-eval.raku is that diff.
 #
-#     raku tools/rakuast-eval-spec.raku > docs/dev/findings/rakuast/eval-2026.08.tsv
+#     rakudo tools/rakuast-eval-spec.raku > docs/dev/findings/rakuast/eval-2026.08.tsv
 #
 # The first four cases are Part I's scope probes, rewritten from `EVAL q[…]` to
 # `.EVAL` on a constructed tree. They are the whole argument for the design: a

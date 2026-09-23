@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The Sierpinski triangle, drawn by an elementary cellular automaton.
 #
 # Rule 90 is the simplest rule that produces a fractal: each cell in the

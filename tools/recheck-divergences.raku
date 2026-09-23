@@ -9,7 +9,7 @@
 # a release, when the published numbers have to be right; use this in between.
 #
 #   rakupp tools/recheck-divergences.raku --rakupp=build-arm64/rakupp
-#   rakupp tools/recheck-divergences.raku --rakupp=… --out=/tmp/div --oracle=raku
+#   rakupp tools/recheck-divergences.raku --rakupp=… --out=/tmp/div --oracle=rakudo
 #
 # Writes one file per documented type into --out, worst-first, each entry holding
 # the code, Rakudo's output and ours — which is the form the fix work reads. The

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Pascal's triangle, and two things it secretly encodes.
 #
 # Shows off list building (each row grows from the one above by adding

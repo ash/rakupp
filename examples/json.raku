@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A JSON parser written as a Raku grammar plus an actions class.
 #
 # The grammar describes JSON's shape; the actions class turns each match into

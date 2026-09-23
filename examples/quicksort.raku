@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Quicksort the functional way: pick a pivot, partition the rest into the
 # elements below and above it with `.grep`, recurse on each half, and glue
 # the sorted pieces back together. Shows recursion, `.grep` with a pointy

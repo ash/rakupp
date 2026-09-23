@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # The DEPARSE spec for the classes rakupp renders — measured, one line per case.
 #
 # RUNS UNDER RAKUDO: it is the oracle half. Each case constructs a node with
@@ -7,7 +7,7 @@
 # implements and `t/regression/rakuast-deparse.raku` asserts, so when the oracle
 # moves, this is re-run and the diff is the work.
 #
-#     raku tools/rakuast-deparse-spec.raku > docs/dev/findings/rakuast/deparse-2026.08.tsv
+#     rakudo tools/rakuast-deparse-spec.raku > docs/dev/findings/rakuast/deparse-2026.08.tsv
 #
 # The vocabulary is the union of what Needle::Compile 0.0.12,
 # Intl::Format::Number 0.2.0 and RakuAST::Utils 0.0.3 name — the grep of their

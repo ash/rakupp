@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Check every `# → OUTPUT` annotation inside a ```raku block against what the
 # engine actually prints.
 #
@@ -9,7 +9,7 @@
 # (RECIPES.md). "MATCH" therefore does not mean "the documented output is
 # correct"; this fills that gap. See docs/dev/findings/REVIEW-GRAND-DOCS.md.
 #
-#   raku tools/check-doc-annotations.raku [ENGINE] [PATH-SUBSTRING]
+#   rakupp tools/check-doc-annotations.raku [ENGINE] [PATH-SUBSTRING]
 #
 # Run it from the repo root (or set RAKUPP_ROOT).
 #

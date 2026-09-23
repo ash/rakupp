@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The N-Queens puzzle: place N queens on an N by N board so that no two
 # share a row, column, or diagonal. This walks the classic backtracking
 # search — one queen per row, extending a partial placement column by

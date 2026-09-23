@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A command-line client for JSON APIs — the curl+jq of this repository, built
 # almost entirely out of our own modules: HTTP::Simple carries the request
 # (plain sockets, TLS, redirects, retries) and JSON::Native does every piece of

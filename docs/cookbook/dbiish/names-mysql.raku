@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # One program, three databases — the MySQL version (MariaDB uses this driver too).
 #   rakupp docs/cookbook/dbiish/names-mysql.raku
 #

@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Generate src/unicode_props2_gen.cpp — enumerated Unicode properties as
 # per-property range tables (lo, hi, value-index) plus a value-name table:
 #   Age, Line_Break, Word_Break, Sentence_Break, Grapheme_Cluster_Break,

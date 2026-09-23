@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Word-frequency analysis, the "wc | sort | uniq -c" of a single expression.
 # A paragraph is lower-cased and chopped into words with a regex (so commas
 # and full stops fall away), tallied into a `Bag` — Raku's built-in multiset,

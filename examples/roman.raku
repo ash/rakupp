@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Roman numerals in both directions: integer to numeral and back again,
 # round-tripping a set of numbers so that both conversions must agree.
 #

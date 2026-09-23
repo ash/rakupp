@@ -453,16 +453,17 @@ check $tlog.contains('verify: wrapper') && $tlog.contains('gate-hello'),
 check $tlog.contains('test FAILED: '), 'trace: a failing suite names the failing file';
 check %flaky<err>.contains('trace: '), 'trace: a failure points at the log';
 
-# ---- the raku name: a machine with none gains one in the store's bin/ -------
-# The wrappers' shebang is `#!/usr/bin/env raku` — Rakudo's own template; the
-# store is shared, so the template is too. Where nothing answers to that
-# name, install links <store>/bin/raku to this engine, so the one PATH entry
-# the user already needs (the store's bin/) also resolves the shebangs. A
-# machine WITH a raku keeps it. Pinned on a synthetic PATH holding only the
-# tools the installer runs, so the checks hold whether or not THIS machine
-# has a Rakudo. gzip is on the list because GNU tar execs it for -xzf
+# ---- the rakupp name: a PATH without it gains one in the store's bin/ -----
+# The wrappers' shebang is `#!/usr/bin/env rakupp` — what rakupp installed runs
+# under rakupp, never under whatever answers to `raku`. Where nothing on PATH
+# answers to rakupp (a build/ binary run by its path), install links
+# <store>/bin/rakupp to this engine, so the one PATH entry the user already
+# needs (the store's bin/) also resolves the shebangs. A PATH WITH a rakupp
+# keeps it. Pinned on a synthetic PATH holding only the tools the installer
+# runs, so the checks hold whatever this machine has on PATH, Rakudo included.
+# gzip is on the list because GNU tar execs it for -xzf
 # (bsdtar decompresses in-process, which is how its absence passed on macOS).
-my $tooldir = $tmp.add('tools-no-raku');
+my $tooldir = $tmp.add('tools-no-rakupp');
 $tooldir.mkdir;
 for <tar gzip rm shasum sha1sum openssl ln env> -> $t {
     my $w = run 'sh', '-c', "command -v $t", :out, :err;
@@ -480,24 +481,27 @@ sub installer4(*@args) {
     my $err = $p.err.slurp(:close);
     { exit => (try $p.exitcode) // 1, out => $out, err => $err }
 }
-my %noraku = installer4('Gate::Demo');
-my $rlink = $home4.add('.raku/bin/raku');
-check %noraku<exit> == 0 && $rlink.e, 'raku-name: a raku-less machine gains the link';
-check %noraku<err>.contains('linked: '), 'raku-name: ...said out loud';
+my %norakupp = installer4('Gate::Demo');
+my $rlink = $home4.add('.raku/bin/rakupp');
+check %norakupp<exit> == 0 && $rlink.e, 'rakupp-name: a PATH without rakupp gains the link';
+check %norakupp<err>.contains('linked: '), 'rakupp-name: ...said out loud';
+check !$home4.add('.raku/bin/raku').e, 'rakupp-name: ...and the name raku is never claimed';
+check $home4.add('.raku/bin/gate-hello').lines.head eq '#!/usr/bin/env rakupp',
+      'rakupp-name: the wrapper shebang names rakupp';
 my $bare = run 'env', "HOME={$home4}", "PATH={$home4.add('.raku/bin')}:{$tooldir}",
                'RAKULIB=', 'gate-hello', :out, :err;
 check $bare.out.slurp(:close) eq 'gate-hello 0.4.2',
-      'raku-name: the command runs by bare name through the link';
+      'rakupp-name: the command runs by bare name through the link';
 $bare.err.slurp(:close);
 my %chk4 = installer4('--check');
 check %chk4<exit> == 0 && %chk4<out>.contains('0 unreferenced'),
-      'raku-name: --check counts the link as infrastructure, not waste';
+      'rakupp-name: --check counts the link as infrastructure, not waste';
 my %again4 = installer4('--force', 'Gate::Demo');
 check %again4<exit> == 0 && !%again4<err>.contains('linked: '),
-      'raku-name: an existing link is left alone, silently';
-my $suite-has-raku = ?((%*ENV<PATH> // '').split(':').first({ $_ ne '' && .IO.add('raku').e }));
-check $suite-has-raku ?? !$home.add('.raku/bin/raku').e !! True,
-      'raku-name: a machine that answers to raku keeps its raku';
+      'rakupp-name: an existing link is left alone, silently';
+my $suite-has-rakupp = ?((%*ENV<PATH> // '').split(':').first({ $_ ne '' && .IO.add('rakupp').e }));
+check $suite-has-rakupp ?? !$home.add('.raku/bin/rakupp').e !! True,
+      'rakupp-name: a PATH that answers to rakupp gets no link';
 
 # ---- path installs: zef's rule — a `.`/`/` argument is a directory ----------
 # `rakupp install .` (or any path) installs the dist the directory holds:

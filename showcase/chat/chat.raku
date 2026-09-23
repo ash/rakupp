@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A concurrent multi-client chat server on raw TCP. Every accepted connection
 # gets its own `start` thread; a shared roster of clients is guarded by a Lock,
 # and each message is broadcast to everyone else. Unlike the pastebin (one

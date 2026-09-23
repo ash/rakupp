@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # A short tour of number theory, leaning on Raku's arbitrary-precision
 # integers (there is no 64-bit ceiling — factorials and Mersenne numbers
 # grow to whatever size they need) and the lazy sequence operator `...`.

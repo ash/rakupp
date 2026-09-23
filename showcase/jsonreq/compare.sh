@@ -20,7 +20,7 @@ R="${RAKUPP:?set RAKUPP=<path to the rakupp binary>}"
 # RAKUPP=build/rakupp from the repo root is the natural spelling — resolve it
 # against the CALLER's directory, since everything below runs from $HERE
 case "$R" in /*) ;; */*) R="$START/$R" ;; esac
-RAKU="${RAKU:-raku}"
+RAKU="${RAKU:-rakudo}"
 PORT="${PORT:-8123}"
 
 # Both engines accept a comma-separated RAKULIB, so one setting serves both.

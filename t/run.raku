@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # The rakupp example + showcase regression suite. Runs every example and
 # showcase with the same rakupp binary that runs this file ($*EXECUTABLE) and
 # checks output — byte-for-byte against a golden where the program is

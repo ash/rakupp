@@ -1,9 +1,9 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Drives compare.raku across two or more engines and prints the before/after
 # table. compare.raku measures ONE engine; this runs it under each in turn.
 #
-#   raku tools/bench/junction/drive.raku \
-#        before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=raku
+#   rakupp tools/bench/junction/drive.raku \
+#        before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=rakudo
 #
 # Each argument is LABEL=COMMAND. The FIRST label is the baseline every other
 # column is divided by; a label containing "rakudo" is reported but never used

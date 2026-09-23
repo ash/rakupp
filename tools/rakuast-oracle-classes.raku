@@ -1,9 +1,9 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # rakuast-oracle-classes.raku — the class histogram of a corpus's RakuAST
 # trees on the installed Rakudo: nodes and files per class, the 95%-coverage
 # head, the <=3-node tail. Part I of RAKUAST-PLAN.md sizes the target this way.
 #
-#   raku tools/rakuast-oracle-classes.raku ORACLE.tsv... > classes.tsv
+#   rakudo tools/rakuast-oracle-classes.raku ORACLE.tsv... > classes.tsv
 #
 # Walks the `ok` rows of rakuast-oracle.raku's output in ONE process (a child
 # per file would pay a Rakudo start-up per program). The price: state leaks

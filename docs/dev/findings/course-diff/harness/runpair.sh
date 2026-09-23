@@ -6,8 +6,8 @@ TMO="$S/timeout.sh"; RAKUPP=/Users/ash/raku++/build-arm64/rakupp; RES="$S/result
 export TZ=UTC
 D=$(mktemp -d) || exit 1
 cp "$F" "$D/s.raku"; cd "$D" || exit 1
-"$TMO" 12 raku    s.raku </dev/null >r1.out 2>/dev/null; rc1=$?
-"$TMO" 12 raku    s.raku </dev/null >r2.out 2>/dev/null; rc2=$?
+"$TMO" 12 rakudo  s.raku </dev/null >r1.out 2>/dev/null; rc1=$?
+"$TMO" 12 rakudo  s.raku </dev/null >r2.out 2>/dev/null; rc2=$?
 "$TMO" 12 "$RAKUPP" s.raku </dev/null >p.out 2>/dev/null; pc=$?
 V=""
 if [ "$rc1" = 124 ]; then V=RAKUDO-TIMEOUT

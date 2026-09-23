@@ -1,7 +1,7 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakudo
 # The `visit-children` spec (RAKUAST-PLAN P4) — ONE FILE, TWO ENGINES.
 #
-#     raku  tools/rakuast-visit-spec.raku     # the oracle
+#     rakudo tools/rakuast-visit-spec.raku     # the oracle
 #     rakupp tools/rakuast-visit-spec.raku    # us
 #     …and `t/regression/rakuast-visit.raku` diffs the two.
 #

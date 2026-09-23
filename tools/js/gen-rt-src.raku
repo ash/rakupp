@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Bake the JavaScript runtime (src/js-rt/*.js, concatenated in name order) into
 # src/JsRuntimeSrc.cpp, so `rakupp --target=js` writes the exact runtime it was
 # built with — the same scheme as tools/grammar/gen-shim-src.raku.

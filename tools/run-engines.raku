@@ -1,4 +1,4 @@
-#!/usr/bin/env raku
+#!/usr/bin/env rakupp
 # Engine table — every kernel in tools/optbench/ run by every engine this repo
 # has, side by side:
 #
