@@ -349,7 +349,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
         io.uvar(n.roleArgs.size());
         for (auto& ra : n.roleArgs) { F(io, ra.first); ioExprVec(io, ra.second); }
     }
-    F(io, n.isPackage); ioStmtVec(io, n.body);
+    F(io, n.isPackage); F(io, n.bracedBody); ioStmtVec(io, n.body);
     F(io, n.isMonitor);
     F(io, n.isModuleDecl);
     F(io, n.classRw);

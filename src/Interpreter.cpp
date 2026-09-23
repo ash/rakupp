@@ -8107,10 +8107,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             auto isPrologue = [](Stmt* s) {
                 if (s->kind == NK::UseStmt || s->kind == NK::EmptyStmt) return true;
                 if (s->kind == NK::SubDecl) return true; // hoistSubs already took it
-                // the `unit module Foo;` header itself (an empty-bodied package);
-                // a BRACED `module Foo { … }` carries statements and is not prologue
+                // the `unit module Foo;` header itself (a package with no body of
+                // its own); a BRACED `module Foo { … }` is a namespace and is not
+                // prologue — including the empty one, which carries no statements
+                // either and so needs the braces to tell it apart
                 if (s->kind == NK::ClassDecl) { auto* c = static_cast<ClassDecl*>(s);
-                    return c->isPackage && c->body.empty() && c->methods.empty(); }
+                    return c->isPackage && c->body.empty() && !c->bracedBody &&
+                           c->methods.empty(); }
                 return false;
             };
             for (auto& st : prog->stmts) {
@@ -10872,11 +10875,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     pkgMeta_[tctx_.pkgPrefix + cd->name] = pm;
                     if (!tctx_.pkgPrefix.empty()) pkgMeta_[cd->name] = pm;
                 }
-                // file-scoped `unit module Foo;` (empty body): register the name and
-                // set the package prefix so the rest of the file's `our sub`s / `our`
-                // vars publish under qualified names (Foo::name). The prefix persists
-                // to end-of-compunit; loadModule save/restores it so it can't leak.
-                if (cd->body.empty()) {
+                // file-scoped `unit module Foo;` (no body of its own): register the
+                // name and set the package prefix so the rest of the file's `our
+                // sub`s / `our` vars publish under qualified names (Foo::name). The
+                // prefix persists to end-of-compunit; loadModule save/restores it so
+                // it can't leak. An EMPTY BRACED body is not this form — it is a
+                // namespace with nothing in it — and asking `body.empty()` alone
+                // could not tell them apart, so `module foo {}` set the prefix and
+                // named everything after it `foo::…`.
+                if (cd->body.empty() && !cd->bracedBody) {
                     if (!cd->name.empty()) {
                         tctx_.cur->define(cd->name, Value::typeObj(cd->name));
                         tctx_.pkgPrefix += cd->name + "::";

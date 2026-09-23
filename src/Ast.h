@@ -802,6 +802,15 @@ struct ClassDecl : Stmt {
     // instance of. Empty for `class`/`role`/`grammar`, which use rakupp's own.
     std::string howName;
     bool isPackage = false;        // package / module: body runs in a namespace
+    // Did the declaration have BRACES? `module Foo { … }` runs its body in a
+    // namespace; `unit module Foo;` has no body of its own — the rest of the
+    // file is it — so the interpreter sets the package prefix and walks on.
+    // An EMPTY braced body is the case the two forms otherwise look identical
+    // in: `module Foo {}` carries no statements either, and was taken for the
+    // unit form, so it set the prefix and namespaced everything after it
+    // (`module foo {}; class Bar {}` named Bar `foo::Bar`). The parser knows
+    // which form it read; this is where it says so.
+    bool bracedBody = false;
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}
 };

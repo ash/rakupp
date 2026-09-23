@@ -9407,6 +9407,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             return cd; // empty body => interpreter just registers the name
         }
         advance(); // {
+        cd->bracedBody = true;   // …even when nothing is between the braces
         while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
             if (isIdent("has") &&

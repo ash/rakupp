@@ -20,7 +20,8 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 24; // v24: GrammarRuleDecl.lits — literal-value multi rules
+inline constexpr uint32_t kAstSerialVersion = 25; // v25: ClassDecl.bracedBody — `module Foo {}` is not `unit module Foo;`
+// v24: GrammarRuleDecl.lits — literal-value multi rules
 // and `is raw` on a plain-name loop parameter, which decide whether a write to
 // it is refused and with which message; the plain-name path kept only the name,
 // so a cached loop came back with every parameter looking untraited
