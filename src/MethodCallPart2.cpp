@@ -6137,6 +6137,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // that specific wrapper; otherwise pop the most-recent one (LIFO).
         if (m == "unwrap") {
             auto& ws = inv.code()->wrappers;
+            // the argument must be the handle `.wrap` returned
+            if (!args.empty() && !(args[0].t == VT::Hash && args[0].hashKind == "WrapHandle"))
+                throwTypedV("X::Routine::Unwrap", {},
+                            "Cannot unwrap routine: invalid wrap handle");
             if (!args.empty() && args[0].t == VT::Hash && args[0].hashKind == "WrapHandle" &&
                 args[0].hash()->count("wrapper")) {
                 const Value& target = (*args[0].hash())["wrapper"];

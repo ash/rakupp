@@ -5019,6 +5019,12 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // `Mu.new(1)` — the default constructor takes named arguments only
+    if (m == "new" && inv.t == VT::Type && inv.s == "Mu")
+        for (auto& a : args)
+            if (!(a.t == VT::Pair && a.namedArg))
+                throwTypedV("X::Constructor::Positional", {{"type", Value::typeObj("Mu")}},
+                            "Default constructor for 'Mu' only takes named arguments");
     // A handle's lazy `.lines` is read in full before a list method works on
     // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
     if (inv.t == VT::Array && inv.ext() && inv.arr() &&

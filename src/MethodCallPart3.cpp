@@ -4363,6 +4363,30 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         (inv.t == VT::Str || inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat))
         return Value::str(markFold(inv.toStr()));
     if (m == "trans") { // $s.trans(@from => @to) / .trans('abc' => 'xyz') / .trans('a..c' => 'A..C')
+        // what `.trans` takes: Pairs (or a list of them). A bare Regex is
+        // X::Str::Trans::InvalidArg; a key that is neither string-ish nor a
+        // Regex is X::Str::Trans::IllegalKey
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg) continue;
+            if (a.t == VT::Regex)
+                throwTypedV("X::Str::Trans::InvalidArg", {{"got", Value::typeObj("Regex")}},
+                            "Only Pair objects are allowed as arguments to Str.trans, got Regex");
+            if (a.t == VT::Pair) {
+                const Value* k = a.pairKey() ? a.pairKey().get() : nullptr;
+                auto badKey = [&](const Value& kv) {
+                    return kv.t == VT::Object && !(kv.obj() && kv.obj()->cls && kv.obj()->cls->findMethod("Str"));
+                };
+                std::vector<Value> ks;
+                if (k) {
+                    if (k->t == VT::Array && k->arr()) for (auto& x : *k->arr()) ks.push_back(x);
+                    else ks.push_back(*k);
+                }
+                for (auto& kv : ks)
+                    if (badKey(kv))
+                        throwTypedV("X::Str::Trans::IllegalKey", {{"key", kv}},
+                                    "An illegal key was passed to Str.trans: " + kv.typeName());
+            }
+        }
         std::string s = inv.toStr();
         // a string arg is taken char-by-char, but `X..Y` denotes an inclusive
         // codepoint range — and "\r\n" is ONE character (a single grapheme in

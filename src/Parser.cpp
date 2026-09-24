@@ -5170,6 +5170,12 @@ ExprPtr Parser::parsePrimary() {
         case Tok::SubstLit: {
             const Token& t = advance();
             checkNullRegex(t.text, t.line, /*branches=*/false);
+            // `s/a/b/i` — Perl 5's trailing modifiers; Raku writes them as adverbs
+            if (isKind(Tok::Ident) && !cur().spaceBefore && !cur().text.empty() &&
+                cur().text.find_first_not_of("igmsxe") == std::string::npos)
+                throw ParseError("Unsupported use of /" + cur().text + "; in Raku please use :" +
+                                 cur().text, cur().line, "X::Obsolete",
+                                 {{"old", "/" + cur().text}, {"replacement", ":" + cur().text}});
             return std::make_unique<SubstLit>(t.text, t.text2, t.flag);
         }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
@@ -8910,7 +8916,13 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
         }
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
-        if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
+        if (isOp(":")) {
+            // the invocant marker belongs to the FIRST parameter only
+            if (!params.empty())
+                throw ParseError("Can only use : as invocant marker in a signature after the first parameter",
+                                 cur().line, "X::Syntax::Signature::InvocantMarker", {});
+            advance(); p.invocant = true; params.push_back(std::move(p)); continue;
+        }
         parseParamTraits(p); // where / is / returns / of trait clauses
         // …and a destructuring sub-signature may sit after them too:
         // `@metas is copy [$, *@] = $.package-list` (App::ecogen). The check
@@ -9471,6 +9483,11 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             // ELEMENT type, not the return type — the last word used to win, so the
             // return type of that spelling was recorded as `Numeric`
             const bool elemOf = isIdent("of") && !s->retType.empty();
+            // `sub f(--> List) returns Str` — the return type, said twice
+            if (isIdent("returns") && !s->retType.empty())
+                throw ParseError("Redeclaration of return type for '" + s->name + "' (previous return type was " +
+                                 s->retType + ")", cur().line, "X::Redeclaration",
+                                 {{"symbol", s->name}, {"what", "return type for"}});
             advance();
             // `returns CArray[Str]` keeps its element parameter, as `--> …` does
             if (!elemOf) s->retType = cur().text + nativeRetParam(pos_);
@@ -11222,6 +11239,11 @@ StmtPtr Parser::parseStatementImpl() {
                 if (st && st->kind == NK::SubDecl) {
                     auto* sd = static_cast<SubDecl*>(st.get());
                     if (sd->retType.empty()) sd->retType = prefixType;
+                    // `my Int sub f(--> Str)` — a second, different return type
+                    else if (sd->retType != prefixType)
+                        throw ParseError("Redeclaration of return type for '" + sd->name +
+                                         "' (previous return type was " + prefixType + ")", t.line,
+                                         "X::Redeclaration", {{"symbol", sd->name}, {"what", "return type for"}});
                 }
                 // `my RT114506 constant Ticket .= new(…)` — the prefix type is the
                 // CONSTANT's type, which `.=` needs for its invocant

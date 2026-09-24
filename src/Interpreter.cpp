@@ -9036,6 +9036,7 @@ static bool isBlockPhaser(Stmt* s) {
     // from the phaser when it is written last: `sub f { 42; END … }` returns Nil,
     // and 42 is warned about as sink context.
     return p == "ENTER" || p == "LEAVE" || p == "KEEP" || p == "UNDO" || p == "FIRST" ||
+           p == "PRE" || p == "POST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE";
 }
 void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope) {
@@ -9050,7 +9051,15 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
         // ENTER fires on every block entry; FIRST fires once — in a loop body the loop
         // drives FIRST (suppressLoopFirst_), elsewhere FIRST behaves like a one-shot ENTER.
         if (b->phaser == "ENTER" || (b->phaser == "FIRST" && !suppressLoopFirst_)) {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        // PRE: a precondition, checked on entry — false is X::Phaser::PrePost
+        else if (b->phaser == "PRE") {
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+            Value r = execBlock(b, sc, /*sink=*/false);
+            if (!boolify(r))
+                throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("PRE")}, {"condition", Value::str(r.gist())}},
+                            "Precondition '" + r.gist() + "' failed");
+        } }
 }
 // The scope a registered END will run in: the most recent entry of the block
 // that holds it. `for 1..3 -> $i { END say $i }` therefore says 3 — one run,
@@ -9244,6 +9253,17 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     std::vector<Block*> leaves;
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LEAVE" || (ok ? b->phaser == "KEEP" : b->phaser == "UNDO")) leaves.push_back(b); }
+    // POST: a postcondition, checked when the block is left successfully
+    if (ok)
+        for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
+            if (b->phaser != "POST") continue;
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+            if (tctx_.leaveResult) sc->define("$_", *tctx_.leaveResult);   // POST sees the return value
+            Value r = execBlock(b, sc, /*sink=*/false);
+            if (!boolify(r))
+                throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("POST")}, {"condition", Value::str(r.gist())}},
+                            "Postcondition '" + r.gist() + "' failed");
+        }
     // A LEAVE/KEEP/UNDO phaser body runs to completion even though the block is
     // leaving via a cooperative return/next/last — those flags belong to the
     // OUTER control flow. Save and clear them around each phaser so execBlock's
@@ -12227,6 +12247,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         }
                     }
                 }
+                // a PACKAGE or MODULE is a namespace, not a class: it can be named
+                // but never inherited from
+                if (!handled && pkgKind_.count(tn))
+                    throwTypedV("X::Inheritance::Unsupported",
+                        {{"child-typename", Value::str(cd->name)}, {"parent", Value::typeObj(tn)}},
+                        (pkgKind_[tn] == 1 ? "module" : "package") + std::string(" ") + tn +
+                        " does not support inheritance, so " + cd->name + " cannot inherit from it");
                 if (!handled)
                     throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
                         "Class '" + cd->name + "' cannot inherit from '" + tn +
@@ -20775,7 +20802,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
         }
     } catch (ReturnEx& r) {
-        if (c.body) runLeavePhasers(*c.body);
+        if (c.body) {
+            struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
+            tcx.leaveResult = &r.v;
+            runLeavePhasers(*c.body);
+        }
         restore();
         // `return` returns from the innermost enclosing ROUTINE, not from a bare
         // Block: a block (e.g. `-> $x, $y {…}` passed to reduce/map) lets it fly
@@ -20848,7 +20879,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
         throw;
     }
-    if (c.body) runLeavePhasers(*c.body);
+    if (c.body) {
+        struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
+        tcx.leaveResult = &last;
+        runLeavePhasers(*c.body);
+    }
     tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
     if (topicWB && implicitTopic_local) {
@@ -22032,11 +22067,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // attribute switched for the rest of the program, and every indirect
     // reference in the file stayed unresolved. (The sub path always drained.)
     const size_t tempMark0 = tcx.cur && tcx.cur->ex ? tcx.cur->ex->tempRestores.size() : 0;
-    auto runLeaves = [&](bool ok) {
+    auto runLeaves = [&](bool ok, const Value* result = nullptr) {
         if (phasersDone || !c.body) return;
         const bool temps = tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0;
         if (!hasPhasers && !temps) return;
         phasersDone = true;
+        struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
+        tcx.leaveResult = result;   // POST's $_
         runLeavePhasers(*c.body, ok, tempMark0);
     };
     try {
@@ -22104,7 +22141,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             }
             if (trailingCatch && !explicitTailReturn) last = Value::nil();
         }
-    } catch (ReturnEx& r) { runLeaves(true); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
+    } catch (ReturnEx& r) { runLeaves(true, &r.v); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return checkRetType(c, std::move(r.v)); }
     catch (BreakGivenEx& b) {
@@ -22152,7 +22189,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         return checkRetType(c, le.hasVal ? std::move(le.v) : Value::nil());
     }
     catch (...) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
-    runLeaves(true);
+    runLeaves(true, &last);
     tcx.cur = saved;
     copyOutRw(c.params, env, rwArgs);
     // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
@@ -34428,6 +34465,14 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     if (op == "does" || op == "but") {
         Value base = eval(b->lhs.get());
+        // `does` changes the object it is applied to — a TYPE OBJECT (or an
+        // undefined `my $foo`) has no object to change; `but` makes a copy and
+        // is fine
+        if (op == "does" && (base.t == VT::Type || base.t == VT::Any) &&
+            !(b->lhs->kind == NK::VarExpr && static_cast<VarExpr*>(b->lhs.get())->name.size() > 1 &&
+              std::strchr("@%&", static_cast<VarExpr*>(b->lhs.get())->name[0])))
+            throwTypedV("X::Does::TypeObject", {{"type", base}},
+                        "Cannot use 'does' operator on a type object " + base.typeName() + ".");
         // `$f does NativeCall::Native[$f, $soname]` — NativeCall's own way of
         // turning a plain sub into a native call. The FFI is native to this
         // compiler, so there is no NativeCall.rakumod declaring the role; the
