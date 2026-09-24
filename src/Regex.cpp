@@ -1021,11 +1021,21 @@ Regex::NodePtr Regex::parseSeq() {
 // `<n>` twice. Alternatives do not add up — they are separate paths — so
 // `<n> | <n>` stays a lone Match. Quantified atoms are marked at parse time by
 // collectListNames; this is the other half of the same rule.
+// `<alias=rule>` also records under the rule's own name (the dotted
+// `<alias=.rule>` opts out) — the capture paths below double it up, so the
+// list-ness walks have to count it under both names as well.
+bool Regex::aliasAlsoRuleName(const Node* n) {
+    return !n->ruleAlias.empty() && !n->aliasDotted && !n->ruleName.empty()
+        && n->ruleName != n->ruleAlias && n->ruleName[0] != '&' && n->ruleName[0] != '$';
+}
+
 void Regex::countCaptureNames(const Node* n, std::map<std::string, int>& out) {
     if (!n || n->k == K::Look) return;   // zero-width assertions record nothing
     if (n->k == K::Subrule) {
-        if (n->ruleCapture && !n->ruleName.empty())
+        if (n->ruleCapture && !n->ruleName.empty()) {
             out[n->ruleAlias.empty() ? n->ruleName : n->ruleAlias] += 1;
+            if (aliasAlsoRuleName(n)) out[n->ruleName] += 1;   // `<tags=td>` fills `$<td>` too
+        }
         return;                                  // a subrule's own captures are its own
     }
     if (n->k == K::Alt || n->k == K::Conj) {
@@ -1117,6 +1127,10 @@ void Regex::collectListNames(const Node* n) {
     if (n->k == K::Subrule && n->ruleCapture && !n->ruleName.empty()) {
         if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
         listNames_->insert(n->ruleAlias.empty() ? n->ruleName : n->ruleAlias);
+        // `<tags=tag-directive>` also records under `tag-directive`, and under a
+        // quantifier that copy is an Array exactly as `$<tags>` is. Left a lone
+        // Match, YAMLish's `@<tag-directive>».ast` read no directives (#100).
+        if (aliasAlsoRuleName(n)) listNames_->insert(n->ruleName);
     }
     // a NAMED group alias is list-valued under a quantifier too:
     // `[\%$<bit>=[..]]+` gives $<bit> = [Match, Match, …] (URI::Encode's decoder)

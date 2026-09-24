@@ -400,6 +400,7 @@ private:
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
     void markRepeatedNames();             // …and the names a single path can reach twice
     static void countCaptureNames(const Node* n, std::map<std::string, int>& out);
+    static bool aliasAlsoRuleName(const Node* n); // `<alias=rule>` records under the rule name too
     bool ok_ = true;
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
     std::string badEscape_;              // unknown backslash sequence seen (e.g. "\\y")

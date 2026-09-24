@@ -540,6 +540,33 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
     }
 }
 
+# ---- a real module's own suite -------------------------------------------
+# YAMLish 0.1.2 (zef:leont, Artistic-2.0), vendored in t/fixtures/yamlish. It
+# is a large grammar with parameterised tokens, runtime-bounded quantifiers and
+# aliased captures, and three engine regressions broke it at once before
+# anything here noticed (issue #100). Its t/*.t run as shipped; a warning on
+# stderr fails the file too, since the suite passing while it printed "Use of
+# Nil" hundreds of times is how the third regression hid.
+section('t/fixtures/yamlish (YAMLish\'s own test suite)');
+{
+    my $ydir = $ROOT.add('t/fixtures/yamlish');
+    for dir($ydir.add('t')).grep(*.Str.ends-with('.t')).sort -> $t {
+        my $p = run($*EXECUTABLE, '-I', $ydir.add('lib').Str, $t.Str, :out, :err, :cwd($ydir.Str));
+        my $out = $p.out.slurp(:close);
+        my @err = $p.err.slurp(:close).lines.grep({ !.starts-with('#') });
+        my $green = $p.exitcode == 0
+            && $out.lines.first({ /^ '1..' \d+ $/ }).defined
+            && !$out.lines.grep(*.starts-with('not ok'))
+            && !@err;
+        ok($green, "yamlish: {$t.basename}");
+        unless $green {
+            diag("exit={$p.exitcode}");
+            diag("stdout: $_") for $out.lines.grep(*.starts-with('not ok')).head(20);
+            diag("stderr: $_") for @err.unique.head(10);
+        }
+    }
+}
+
 # ---- native codegen coverage -------------------------------------------
 # Every example and bench kernel must stay NATIVELY compilable: `--cpp` exits
 # 0 when the transpiler covers the program, 5 when `--exe` would fall back to

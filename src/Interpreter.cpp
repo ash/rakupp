@@ -32112,6 +32112,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                          code.find("..\xE2\x88\x9E") != std::string::npos;
         Value v = runCode(code, 0, 0, nm, pm);
         if (v.t == VT::Range) {
+            // A grammar parameter is bound as a Str, so `** { $min..* }` in a
+            // `token block(Int $min)` builds `"1"..*` — a range with a Str
+            // endpoint, whose integer fields are not filled. Rakudo numifies the endpoints;
+            // read the carried endpoint objects the same way (YAMLish, #100).
+            if (const RangeEnds* re = rangeEnds(v); re && (re->from.t == VT::Str || re->to.t == VT::Str)) {
+                long lo = (long)re->from.toInt() + (v.rExFrom() ? 1 : 0);
+                double top = re->to.t == VT::Whatever ? INFINITY : re->to.toNum();
+                long hi = unbounded || std::isinf(top) ? -1 : (long)re->to.toInt() - (v.rExTo() ? 1 : 0);
+                return {lo, hi};
+            }
             long lo = v.rFrom(), hi = unbounded ? -1 : (v.rExTo() ? v.rTo() - 1 : v.rTo());
             if (v.rTo() >= (long long)1e15) hi = -1;
             return {lo, hi};
@@ -32230,7 +32240,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // trailing newline). A SUCCESSFUL parse discards the log and fires
     // everything once in the normal bottom-up build — the proven path.
     auto completionLog = std::make_shared<std::vector<ParseNode>>();
-    bool replayBuild = false;  // building $/ for a replayed firing: build fires nothing
+    bool replayBuild = false;  // building $/ for a replayed firing: build fires nothing…
+    // …except beneath the replayed node, for a kid the log does not replay on
+    // its own. The replayed node builds its children, and one it shares with
+    // the final tree (the memo answered the second call, so it was logged once,
+    // as a tree node) or one the matcher inlined without logging (a
+    // single-character rule such as `space`) would otherwise have no `.made`.
+    // YAMLish's `<key>` tries `<single-key>` on `'a b'` before a list entry
+    // wins with `<single-quoted>`: single-key's action joined Nils (issue #100).
+    // Rakudo fires such a kid on every attempt, having no memo.
+    const ParseNode* replayRoot = nullptr;
+    std::set<std::tuple<std::string, long, long>> replayedKeys;
 
     // Turn the recorded parse tree into Match values, running actions bottom-up
     // so `$<child>.made` is available to a parent's action.
@@ -32445,7 +32465,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // dispatches to the winning candidate's method (`x:sym<y>`), falling
         // back to a method named after the proto itself. (A failure-replay
         // build dispatches its own method — build must not double-fire.)
-        if (!replayBuild) {
+        if (!replayBuild || (&pn != replayRoot && !replayedKeys.count({pn.name, pn.from, pn.to}))) {
             // A proto used as the parse ENTRY POINT (`.parse(:rule<string>)`)
             // records the winning candidate in actualRule and the PROTO in name.
             // Fire the candidate — and NOT the proto as well: an explicit `proto
@@ -32517,8 +32537,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             // effects of exactly such a parse)
             if (haveActions && actCls && !completionLog->empty()) {
                 replayBuild = true;
+                replayedKeys.clear();
+                for (auto& pn : *completionLog) replayedKeys.insert({pn.name, pn.from, pn.to});
                 for (auto& pn : *completionLog) {
                     Value mv;
+                    replayRoot = &pn;
                     try { mv = build(pn); } catch (...) { continue; }
                     if (!pn.actualRule.empty() && pn.actualRule != pn.name)
                         try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
@@ -32536,7 +32559,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                 pn.from, pn.to, mv.pairVal() ? "yes" : "no");
                     if (mv.pairVal()) (*pendingMakes)[{pn.from, pn.to}] = *mv.pairVal();
                 }
-                replayBuild = false;
+                replayBuild = false; replayRoot = nullptr;
             }
             tctx_.cur = savedScope;
             setMatchVar(Value::nil()); return Value::nil();
@@ -32557,9 +32580,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             };
             walk(tree);
             replayBuild = true;
+            replayedKeys.clear();
+            for (auto& pn : *completionLog)
+                if (!inTree.count({pn.name, pn.from, pn.to})) replayedKeys.insert({pn.name, pn.from, pn.to});
             for (auto& pn : *completionLog) {
                 if (inTree.count({pn.name, pn.from, pn.to})) continue;
                 Value mv;
+                replayRoot = &pn;
                 try { mv = build(pn); } catch (...) { continue; }
                 if (!pn.actualRule.empty() && pn.actualRule != pn.name)
                     try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
@@ -32575,7 +32602,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                         (*pendingMakesNamed)[{pn.actualRule, pn.from, pn.to}] = *mv.pairVal();
                 }
             }
-            replayBuild = false;
+            replayBuild = false; replayRoot = nullptr;
         }
         completionLog->clear(); // the normal bottom-up build fires the rest once
         // build with the match scope still current: a deferred `{ make … }`
