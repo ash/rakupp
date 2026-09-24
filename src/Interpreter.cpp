@@ -15101,6 +15101,23 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         v.typeName() + " (" + typeCheckRepr(v) + ")");
                 else v = coerceArray(v);
             }
+            // `sub f(&c)` takes a Callable: `f(5)` or `f(A)` (a type that is no
+            // Callable) is a binding failure
+            else if (p.sigil == '&' && p.type.empty() && !laxOverflow() &&
+                     v.t != VT::Code && v.t != VT::Regex && v.t != VT::Nil && v.t != VT::Any &&
+                     !(v.t == VT::Hash && v.hashKind == "Failure") &&
+                     ((v.t == VT::Type && !typeOrSubsetMatches(v, "Callable") &&
+                       !(v.s == "Code" || v.s == "Block" || v.s == "Sub" || v.s == "Method" || v.s == "Submethod" ||
+                         v.s == "Routine" || v.s == "Macro" || v.s == "Regex" || v.s == "WhateverCode" ||
+                         v.s == "Callable" || v.s == "Mu" || v.s == "Any")) ||
+                      v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
+                      (v.t == VT::Str && v.hashKind.empty()) ||
+                      (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->findMethod("CALL-ME") &&
+                       !typeOrSubsetMatches(v, "Callable"))))
+                throwTypedV("X::TypeCheck::Binding::Parameter",
+                    {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
+                    "Type check failed in binding to parameter '" + p.name + "'; expected Callable but got " +
+                    v.typeName() + " (" + typeCheckRepr(v) + ")");
             else if (p.sigil == '%') {
                 if (v.t == VT::Type && (v.s == "Associative" || v.s == "Hash" || v.s == "Map")) { /* raw, as above */ }
                 // An object that DOES Associative binds as itself — coercing it to
