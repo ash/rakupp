@@ -207,8 +207,22 @@ void Parser::expectKind(Tok k, const char* what) {
             return false;
         };
         if (k == Tok::LBrace && (cur().kind == Tok::End || cur().kind == Tok::RBrace) &&
-            !(cur().kind == Tok::End && cur().flag) && !modifierAfterBlock())
-            throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
+            !(cur().kind == Tok::End && cur().flag) && !modifierAfterBlock()) {
+            ParseError e("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
+            e.atEof = cur().kind == Tok::End;   // the REPL still asks for more
+            throw e;
+        }
+        // …the source ran out inside a block or an array composer: an unclosed
+        // `{ …` is X::Syntax::Missing, an unclosed `[1,2` X::Comp::FailGoal
+        if (cur().kind == Tok::End && !cur().flag && (k == Tok::RBrace || k == Tok::RBracket)) {
+            ParseError e(k == Tok::RBrace ? std::string("Missing block (source ended before '}')")
+                                          : std::string("Unable to parse expression in array composer; couldn't find final ']'"),
+                         cur().line, k == Tok::RBrace ? "X::Syntax::Missing" : "X::Comp::FailGoal",
+                         k == Tok::RBrace ? std::vector<std::pair<std::string, std::string>>{{"what", "'}'"}}
+                                          : std::vector<std::pair<std::string, std::string>>{{"dba", "array composer"}, {"goal", "']'"}});
+            e.atEof = true;
+            throw e;
+        }
         // …and a TERM where a closing bracket belongs, on the same line: two
         // terms in a row (`["a" "b"]`), which is what Rakudo calls it
         if ((k == Tok::RBracket || k == Tok::RParen || k == Tok::RBrace)) {
@@ -4185,6 +4199,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "X::Syntax::Variable::Match", {});
         }
         std::string vname = advance().text;
+        // `my $x :a` — an adverb cannot hang off a declaration
+        if (isOp(":") && cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore &&
+            (peek(2).kind == Tok::Semicolon || peek(2).kind == Tok::End))
+            throw ParseError("You can't adverb " + vname, cur().line, "X::Syntax::Adverb",
+                             {{"what", vname}});
         // `my @a()` / `my &a()` — the ()-shape syntax is reserved
         if (isKind(Tok::LParen) && !cur().spaceBefore && vname.size() > 1 &&
             (vname[0] == '@' || vname[0] == '&')) {

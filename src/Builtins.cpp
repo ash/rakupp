@@ -5019,6 +5019,15 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // `X::NYI.die` — throwing wants an exception INSTANCE, not its type object
+    if (inv.t == VT::Type && (m == "fail" || m == "die" || m == "throw" || m == "rethrow" || m == "resume") &&
+        (inv.s == "Exception" || inv.s.rfind("X::", 0) == 0))
+        throwTypedV("X::Parameter::InvalidConcreteness",
+            {{"expected", Value::typeObj(std::string(inv.s.c_str()))}, {"got", inv},
+             {"routine", Value::str(m)}, {"param", Value::str("self")},
+             {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
+            "Invocant of method '" + m + "' must be an object instance of type '" + std::string(inv.s.c_str()) +
+            "', not a type object of type '" + std::string(inv.s.c_str()) + "'.  Did you forget a '.new'?");
     // `Mu.new(1)` — the default constructor takes named arguments only
     if (m == "new" && inv.t == VT::Type && inv.s == "Mu")
         for (auto& a : args)

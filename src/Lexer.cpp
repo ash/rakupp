@@ -1356,9 +1356,25 @@ void Lexer::runawayQuote(const char* construct, const char* finalDelim, int star
 }
 
 void Lexer::runawayTerm(const std::string& close, const std::string& open, int startLine) const {
-    throw ParseError("Couldn't find terminator " + close + " (corresponding " + open +
-                         " was at line " + std::to_string(startLine) + ")",
-                     line_, true);
+    // Rakudo's X::Comp::FailGoal: `dba` names the construct by its opener,
+    // `goal` is what would have closed it (the low curly quote „ closes with
+    // either of two, hence the class). Still an end-of-input error, so the REPL
+    // goes on asking for a continuation line.
+    static const std::map<std::string, std::pair<std::string, std::string>> kinds = {
+        {"'", {"single quotes", "'"}}, {"\"", {"double quotes", "\""}},
+        {"\xE2\x80\x9E", {"low curly double quotes", "<[\xE2\x80\x9D\xE2\x80\x9C]>"}},   // „
+        {"\xE2\x80\x9A", {"low curly single quotes", "<[\xE2\x80\x99\xE2\x80\x98]>"}},   // ‚
+        {"\xE2\x80\x9C", {"curly double quotes", "\xE2\x80\x9D"}},                        // “
+        {"\xE2\x80\x98", {"curly single quotes", "\xE2\x80\x99"}},                        // ‘
+    };
+    auto it = kinds.find(open);
+    ParseError e("Couldn't find terminator " + close + " (corresponding " + open +
+                     " was at line " + std::to_string(startLine) + ")",
+                 line_, "X::Comp::FailGoal",
+                 {{"dba", it != kinds.end() ? it->second.first : std::string("quoted construct")},
+                  {"goal", it != kinds.end() ? it->second.second : close}});
+    e.atEof = true;
+    throw e;
 }
 
 // Index just past the balanced group that opens at src[p] — `(…)`, `[…]` or

@@ -5874,7 +5874,17 @@ int Interpreter::run(Program& prog) {
         // (`my $x = E if COND` at file scope must declare $x even when COND is
         // false) — the loop above only sees plain top-level ExprStmts
         hoistExprDecls(prog.stmts, global_.get(), nullptr);
-        for (auto* b : beginP) runPhaser(b);                                      // BEGIN: source order
+        // BEGIN: source order. What dies in one is a compile-time failure,
+        // X::Comp::BeginTime wrapping the original as `.exception`
+        for (auto* b : beginP) {
+            try { runPhaser(b); }
+            catch (RakuError& e) {
+                Value inner = exceptionFor(e);
+                std::string im = e.message;
+                throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
+                            "An exception occurred while evaluating a BEGIN: " + im);
+            }
+        }
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
         for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
@@ -12808,6 +12818,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // module's or an EVAL's mainline, which walks its statements
             // itself — and all that happens here is the scope capture.
             if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
+            // a BEGIN reached in place (an EVAL's unit): what dies in it is a
+            // compile-time failure, as at the top level
+            if (b->phaser == "BEGIN" && !b->stmtForm) {   // (`BEGIN my $x = …` declares out here: left alone)
+                b->phaser.clear();
+                struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
+                try { return exec(s, sink); }
+                catch (RakuError& e) {
+                    Value inner = exceptionFor(e);
+                    throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
+                                "An exception occurred while evaluating a BEGIN: " + e.message);
+                }
+            }
             // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
             // own arguments to the best candidate (S06). Outside a proto it is just a
             // block evaluating to `*`, which is what it stays.
@@ -14292,9 +14314,12 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
         if (sit != subsets_.end() && !sit->second.coerce) return;
     }
     if (typeOrSubsetMatches(v, p.type)) return;
-    throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+    // …carrying `expected` and `got` (a `Nil` parameter expects Nil itself)
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", p.type == "Nil" ? Value::nil() : Value::typeObj(p.type)},
+         {"symbol", Value::str(p.name)}},
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
-        p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
+        p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
 }
 
 // An ATTRIBUTIVE parameter (`submethod BUILD(:$!type = Any)`) ASSIGNS to the
@@ -25167,6 +25192,24 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         };
         return code;
     }
+    // `(1,2)[0] := 3`, `10[0] := 1`, `"Hi"[0] := 1`, `(Int)[0] := 1` — binding
+    // into something that is not a container is X::Bind. Only a LITERAL base is
+    // judged here (evaluating it twice cannot matter).
+    if (a->op == ":=" && a->target && a->target->kind == NK::Index) {
+        Expr* be = static_cast<Index*>(a->target.get())->base.get();
+        if (be && (be->kind == NK::ListExpr || be->kind == NK::IntLit || be->kind == NK::StrLit ||
+                   be->kind == NK::NumLit || be->kind == NK::NameTerm || be->kind == NK::InterpStr)) {
+            Value bv = eval(be);
+            // (only what is plainly NOT a container — a stash, an object with
+            // BIND-KEY and the like decide for themselves)
+            bool notContainer = bv.t == VT::Int || bv.t == VT::Num || bv.t == VT::Rat ||
+                                (bv.t == VT::Str && bv.hashKind.empty()) || bv.t == VT::Type ||
+                                (bv.t == VT::Array && bv.isList);
+            if (notContainer)
+                throwTypedV("X::Bind", {{"target", Value::str(bv.typeName())}},
+                            "Cannot bind to an element of a " + bv.typeName());
+        }
+    }
     // `constant @c = 1, 2, 3` / `constant %c = a => 1` / `constant $c = …` —
     // a constant holds a VALUE, coerced by its sigil as Rakudo does: `@` takes
     // anything Positional as it is and caches the rest into a List (`42` is
@@ -27152,7 +27195,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         // a `Nil`-typed variable holds nothing but Nil
                         if (di->second.t == VT::Type && di->second.s == "Nil" && rhs.t != VT::Nil)
                             throwTypedV("X::TypeCheck::Assignment",
-                                {{"got", rhs}, {"expected", Value::typeObj("Nil")}, {"symbol", Value::str(nm)}},
+                                {{"got", rhs}, {"expected", Value::nil()}, {"symbol", Value::str(nm)}},
                                 "Type check failed in assignment to " + nm + "; expected Nil but got " +
                                 rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
                         // a SUBSET-typed variable asks the subset — its base

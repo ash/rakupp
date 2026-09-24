@@ -5622,12 +5622,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                    inv.obj()->cls->name.rfind("CX::", 0) == 0;
         for (ClassInfo* c = inv.obj()->cls.get(); c && !exc; c = c->parent.get())
             if (c->name == "Exception") exc = true;
-        if (exc && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message"))) {
+        // a bare `Exception.new` / `X::AdHoc.new` has its message attribute
+        // but nothing in it: those two answer Rakudo's defaults (below)
+        const std::string& cn0 = inv.obj()->cls->name;
+        auto mAttr = inv.obj()->attrs.find("message");
+        const bool bareBuiltin = (cn0 == "Exception" || cn0 == "X::AdHoc") &&
+            (mAttr == inv.obj()->attrs.end() || !rtIsDefined(mAttr->second));
+        if (exc && !bareBuiltin && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message"))) {
             // A REDISPATCH (`method gist { nextsame }`) must not go back through
             // the object's own Str/gist, which is exactly what gistOf/strOf
             // would do — read the message directly instead.
             if (m.skipOwn) return Value::str(excMessageOf(*this, inv));
             return Value::str(m == "Str" ? strOf(inv) : gistOf(inv));
+        }
+        // …and one with no message at all says so, as Rakudo's defaults do
+        if (exc && bareBuiltin) {
+            const std::string tn = inv.obj()->cls->name;
+            if (tn == "X::AdHoc") {
+                auto pl = inv.obj()->attrs.find("payload");
+                return Value::str(pl != inv.obj()->attrs.end() && rtIsDefined(pl->second)
+                                  ? pl->second.toStr() : std::string("Unexplained error"));
+            }
+            return Value::str("Something went wrong in (" + tn + ")");
         }
     }
     // `.backtrace` on an exception object: the frames its .throw recorded
@@ -5729,7 +5745,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 m == "message" && ci->name == "X::AdHoc") {
                 auto pl = inv.obj()->attrs.find("payload");
                 if (pl != inv.obj()->attrs.end() && rtIsDefined(pl->second)) return Value::str(pl->second.toStr());
+                return Value::str("Unexplained error");   // a payload-less X::AdHoc (Rakudo's default)
             }
+            if ((it == inv.obj()->attrs.end() || !rtIsDefined(it->second)) &&
+                m == "payload" && ci->name == "X::AdHoc")
+                return Value::str("Unexplained error");
             return it != inv.obj()->attrs.end() ? it->second : Value::any();
         }
         // `has %.h handles <iterator list …>` — a NAMED delegation is a real method
