@@ -65,6 +65,7 @@ double numValueOf(Interpreter& I, const Value& v);
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.
 bool isNativeTypeName(const std::string& n);
+Value makeCollation();   // a fresh `Collation` (every level on)
 // Installation-repository prefixes, in resolution order.
 const std::vector<std::string>& rakuRepoPrefixes();
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
@@ -1755,6 +1756,7 @@ public:
     // `»`.method over a container, shared by the direct and the curried paths
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe = false);
     bool assignMultiDimSlice(Expr* target, const Value& rhs); // `\x` bound to `@a[*;0]`, assigned
+    Value withDimslipAsMultiDim(Index* ix, const std::function<Value()>& f); // `@a[|| @dims]` as `@a[d0;d1;…]`
     // thread_local like the call registers above: written per-block / per-
     // statement on every thread (the next TSan reports after the registers)
     static thread_local bool hoistingSubs_;

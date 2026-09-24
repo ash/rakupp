@@ -714,24 +714,35 @@ size_t ucaElements(std::vector<uint32_t>& cps, size_t i, std::vector<CE>& out) {
 
 // three-way UCA comparison of two codepoint sequences: -1 / 0 / 1
 int uniCollate(const std::vector<uint32_t>& acps, const std::vector<uint32_t>& bcps) {
+    static const int all[4] = {1, 1, 1, 1};
+    return uniCollateLevels(acps, bcps, all);
+}
+
+// The same, level by level as a `Collation` asks: each of primary, secondary,
+// tertiary and quaternary (the codepoint tie-break) is 1 (compare), 0 (skip)
+// or -1 (compare, reversed).
+int uniCollateLevels(const std::vector<uint32_t>& acps, const std::vector<uint32_t>& bcps,
+                     const int lv[4]) {
     std::vector<uint32_t> a = uniNormalize(acps, 0), b = uniNormalize(bcps, 0); // NFD (UCA S1.1)
     std::vector<CE> ea, eb;
     for (size_t i = 0; i < a.size(); ) i += ucaElements(a, i, ea); // (may erase consumed non-starters)
     for (size_t i = 0; i < b.size(); ) i += ucaElements(b, i, eb);
     for (int level = 0; level < 3; level++) {
+        if (!lv[level]) continue;
         size_t i = 0, j = 0;
         for (;;) {
             uint16_t wa = 0, wb = 0;
             while (i < ea.size()) { uint16_t w = level == 0 ? ea[i].l1 : level == 1 ? ea[i].l2 : ea[i].l3; i++; if (w) { wa = w; break; } }
             while (j < eb.size()) { uint16_t w = level == 0 ? eb[j].l1 : level == 1 ? eb[j].l2 : eb[j].l3; j++; if (w) { wb = w; break; } }
-            if (wa != wb) return wa < wb ? -1 : 1;
+            if (wa != wb) return (wa < wb ? -1 : 1) * lv[level];
             if (!wa) break; // both exhausted at this level
         }
     }
+    if (!lv[3]) return 0;
     // identical sort keys: the UCA conformance rule breaks ties by codepoint order
     for (size_t i = 0; i < acps.size() && i < bcps.size(); i++)
-        if (acps[i] != bcps[i]) return acps[i] < bcps[i] ? -1 : 1;
-    if (acps.size() != bcps.size()) return acps.size() < bcps.size() ? -1 : 1;
+        if (acps[i] != bcps[i]) return (acps[i] < bcps[i] ? -1 : 1) * lv[3];
+    if (acps.size() != bcps.size()) return (acps.size() < bcps.size() ? -1 : 1) * lv[3];
     return 0;
 }
 

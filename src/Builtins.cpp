@@ -9311,8 +9311,32 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return p;
         }
     }
+    // `$proc.stdout.native-descriptor` — a Promise of the descriptor the
+    // stream travels on. An uncaptured stream is the child's inherited copy of
+    // OURS, so that is the answer: 1 for stdout, 2 for stderr.
+    if (inv.t == VT::Hash && inv.hashKind == "Supply" && inv.hash() && inv.hash()->count("proc") &&
+        m == "native-descriptor") {
+        auto ps = std::make_shared<PromiseState>();
+        Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+        const bool err = inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "stderr";
+        ps->done = true; ps->result = Value::integer(err ? 2 : 1);
+        (*p.hash())["status"] = Value::str("Kept");
+        (*p.hash())["result"] = ps->result;
+        return p;
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
+        // A stream is either BOUND to a handle or USED as a Supply, never both:
+        // X::Proc::Async::BindOrUse whichever comes second
+        auto bindOrUse = [&](const std::string& handle, const std::string& use) {
+            throwTyped("X::Proc::Async::BindOrUse", {{"handle", handle}, {"use", use}},
+                       "Cannot both bind " + handle + " to a handle and also " + use);
+        };
         if (m == "stdout" || m == "stderr" || m == "Supply") {
+            for (const char* h : {"stdout", "stderr"})
+                if ((m == "Supply" || m == h) && inv.hash()->count(std::string("bound-") + h))
+                    bindOrUse(h, m == "Supply" ? "get the merged stream" : std::string("get the ") + h + " Supply");
+            if (m != "stderr") (*inv.hash())["used-stdout"] = Value::boolean(true);
+            if (m != "stdout") (*inv.hash())["used-stderr"] = Value::boolean(true);
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m);
             // `.stdout(:bin)` asks for the raw bytes: its taps keep Blob-kinded
@@ -9438,6 +9462,41 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // each end waits on its proc's hash for the spawn to dup2 it into place.
         // Both ends carry FD_CLOEXEC, so the reader's EOF arrives exactly when
         // the writer exits. First binding wins; after a start it's too late.
+        // `.bind-stdin($fh)` / `.bind-stdout($fh)` / `.bind-stderr($fh)` — the
+        // child's stream IS that handle's file. This IO layer keeps no open
+        // descriptor on a path-opened handle, so the bind opens the path (a
+        // standard handle lends its own 0/1/2); the spawn dup2s it into place.
+        if ((m == "bind-stdin" || m == "bind-stdout" || m == "bind-stderr") && !args.empty() &&
+            args[0].t == VT::Hash && args[0].hashKind == "FileHandle" && args[0].hash()) {
+            const bool in = m == "bind-stdin";
+            const std::string stream = m.s.substr(5);   // stdin / stdout / stderr
+            if (in && inv.hash()->count("w")) bindOrUse("stdin", "use :w");
+            if (!in && inv.hash()->count("used-" + stream)) bindOrUse(stream, "get the " + stream + " Supply");
+#if !defined(_WIN32)
+            const Value& h = args[0];
+            int fd = -1;
+            auto st = h.hash()->find("std");
+            auto fdi = h.hash()->find("fd");
+            auto pth = h.hash()->find("path");
+            if (st != h.hash()->end()) {
+                std::string w = st->second.toStr();
+                fd = fcntl(w == "in" ? 0 : w == "err" ? 2 : 1, F_DUPFD_CLOEXEC, 3);
+            }
+            else if (fdi != h.hash()->end()) fd = fcntl((int)fdi->second.toInt(), F_DUPFD_CLOEXEC, 3);
+            else if (pth != h.hash()->end())
+                fd = ::open(pth->second.toStr().c_str(),
+                            in ? (O_RDONLY | O_CLOEXEC) : (O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC), 0666);
+            if (fd >= 0) {
+                const char* key = in ? "bind-in-fd" : stream == "stdout" ? "bind-out-fd" : "bind-err-fd";
+                (*inv.hash())[key] = Value::integer(fd);
+                // the child writes the file now: the handle's own close must
+                // APPEND its (empty) buffer, not truncate the child's output away
+                if (!in) (*h.hash())["wrote"] = Value::boolean(true);
+            }
+#endif
+            if (!in) (*inv.hash())["bound-" + stream] = Value::boolean(true);
+            return Value::boolean(true);
+        }
         if (m == "bind-stdin") {
 #if !defined(_WIN32)
             if (!args.empty() && args[0].t == VT::Hash && args[0].hashKind == "Supply" &&

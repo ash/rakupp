@@ -2830,6 +2830,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["bpos"] = Value::integer(want);
             return Value::boolean(true);
         }
+        // `$*IN.get` takes ONE line from the stream. Every read of `$*IN` is a
+        // fresh handle, so loading the whole input into this one's line cache
+        // (the path below) threw the rest away with it: `say $*IN.get; say
+        // $*IN.get` answered the first line and then Nil.
+        if ((m == "get" || m == "getline") && isStdin &&
+            inv.hash()->find("lines") == inv.hash()->end() &&
+            !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
+            !inv.hash()->count("enc")) {
+            std::string line;
+            if (!std::getline(std::cin, line)) return Value::nil();
+            const bool keep = inv.hash()->count("chomp") && !(*inv.hash())["chomp"].truthy();
+            if (keep) line += std::cin.eof() ? "" : "\n";
+            else if (!line.empty() && line.back() == '\r') line.pop_back();
+            return Value::str(line);
+        }
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
             m == "slurp-rest" || m == "seek" || m == "tell") {
             if (inv.hash()->find("lines") == inv.hash()->end()) {

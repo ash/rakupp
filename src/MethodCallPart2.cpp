@@ -3796,6 +3796,41 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return bt;
     }
+    if (inv.t == VT::Type && inv.s == "Collation" && m == "new") return makeCollation();
+    // a Collation's levels: read them, `.set` them (in place, answering itself),
+    // and the gist Rakudo prints, whose `collation-level` packs level i as bit
+    // 2i when it is on and bit 2i+1 when it is reversed
+    if (inv.t == VT::Hash && inv.hashKind == "Collation" && inv.hash()) {
+        static const char* kLv[4] = {"primary", "secondary", "tertiary", "quaternary"};
+        for (const char* k : kLv) if (m == k) return (*inv.hash())[k];
+        if (m == "set") {
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal())
+                    for (const char* k : kLv)
+                        if (a.s == k) {
+                            const Value& pv = *a.pairVal();
+                            (*inv.hash())[k] = Value::integer(pv.t == VT::Bool ? (pv.b ? 1 : 0) : pv.toInt());
+                        }
+            return inv;
+        }
+        if (m == "collation-level") {
+            long long bits = 0;
+            for (int i = 0; i < 4; i++) {
+                long long v = (*inv.hash())[kLv[i]].toInt();
+                if (v > 0) bits |= 1LL << (2 * i);
+                else if (v < 0) bits |= 1LL << (2 * i + 1);
+            }
+            return Value::integer(bits);
+        }
+        if (m == "Country") return Value::str("International");
+        if (m == "Language") return Value::str("None");
+        if (m == "gist" || m == "Str" || m == "raku") {
+            std::string g = "collation-level => " + methodCall(inv, "collation-level", ValueList{}).toStr() +
+                            ", Country => International, Language => None";
+            for (const char* k : kLv) g += std::string(", ") + k + " => " + (*inv.hash())[k].toStr();
+            return Value::str(g);
+        }
+    }
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
         Value ex; bool haveEx = false; std::string msg;

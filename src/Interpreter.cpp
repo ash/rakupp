@@ -188,6 +188,12 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
 // compiled code, so the live revision is read through the same
 // ctor-set-pointer pattern the NativeCall trampoline uses.
 static Interpreter* g_revInterp = nullptr;
+
+// A block used as a subscript dimension that is NOT a WhateverCode: `{0,1}`.
+static bool isSliceBlock(const Value& k) {
+    return k.t == VT::Code && k.code() && !k.code()->isWhateverCode;
+}
+
 // X::Numeric::DivideByZero carries WHICH operator hit it and WHAT the numerator
 // was — `throws-like … using => 'infix:<%%>', numerator => 9` asks for both, and
 // a bare type object has neither to give.
@@ -9637,7 +9643,7 @@ bool isKnownTypeName(const std::string& n) {
         "Int", "UInt", "Num", "Rat", "FatRat", "Complex", "Numeric", "Real", "Bool",
         "Str", "Stringy", "Uni", "Blob", "Buf", "Stringy",
         "blob8", "buf8", "blob16", "buf16", "blob32", "buf32", "blob64", "buf64",
-        "utf8", "utf16", "utf32",
+        "utf8", "utf16", "utf32", "Collation",
         "Array", "List", "Seq", "Slip", "Range", "Positional", "Iterable", "Iterator",
         "Hash", "Map", "Associative", "Pair", "Enum", "Bag", "Set", "Mix",
         "BagHash", "SetHash", "MixHash", "Baggy", "Setty", "Mixy", "QuantHash",
@@ -16840,6 +16846,8 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
+    // the default Collation: every level on, in the usual direction
+    if (name == "$*COLLATION") return makeCollation();
     // the default `=~=` tolerance. A program that SETS it gets its own dynamic
     // and never reaches here; reading it used to answer Any, which is a value
     // no arithmetic can use.
@@ -16887,6 +16895,16 @@ Value Interpreter::dynVar(const std::string& name) {
 // implement: $*COLLATION and $*EXIT. Answering those `Any` is a gap we already
 // had, and turning a quiet gap into a detonating Failure is not a fix for it.
 // @*INC and %*INC are deliberately ABSENT — Rakudo raises NotFound for both.
+// A `Collation`: the four UCA levels, each 1 (compare), 0 (skip) or -1
+// (compare reversed) — what `coll`, `.collate` and `$*COLLATION` work with.
+Value makeCollation() {
+    Value c = Value::makeHash();
+    c.hashKind = "Collation";
+    for (const char* k : {"primary", "secondary", "tertiary", "quaternary"})
+        (*c.hash())[k] = Value::integer(1);
+    return c;
+}
+
 bool Interpreter::isBuiltinDynamic(const std::string& name) {
     static const std::set<std::string> kBuiltinDyn = {
         "$*ARGFILES", "$*COLLATION", "$*CWD", "$*DEFAULT-READ-ELEMS", "$*DISTRO",
@@ -20762,7 +20780,7 @@ bool Interpreter::assignMultiDimSlice(Expr* target, const Value& rhs) {
     for (auto& de : dims->items) {
         if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
         Value k = eval(de.get());
-        if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+        if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever || isSliceBlock(k)) anyMulti = true;
         keys.push_back(k);
     }
     if (!anyMulti) return false;
@@ -24223,7 +24241,14 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
             expand(child, d + 1, pref);
             pref.pop_back();
         };
-        const Value& k = keys[d];
+        const Value& k0 = keys[d];
+        // a BLOCK dimension (`@m[*; {0,1}]`) answers this level's indices when
+        // called with its size — a slice, unlike the WhateverCode `*-1`
+        Value kb;
+        if (isSliceBlock(k0))
+            kb = callCallable(k0, ValueList{Value::integer(
+                     node.t == VT::Array && node.arr() ? (long long)node.arr()->size() : 0)});
+        const Value& k = isSliceBlock(k0) ? kb : k0;
         if (k.t == VT::Whatever) {
             if (node.t == VT::Array && node.arr())
                 for (long long i = 0; i < (long long)node.arr()->size(); i++) emit1(Value::integer(i));
@@ -24367,7 +24392,68 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
 
 static bool endlessLow(const Value& v);   // defined with the range reducers below
 static bool endlessHigh(const Value& v);
+// `@a[|| @dims] = …` / `%h{|| <a b>, "c"}:delete` (6.e): the runtime list names
+// ONE dimension per element, which is exactly a `;` multidim subscript. Present
+// the subscript as that — each dimension bound to a hidden `$` variable, so a
+// list-valued one still slices — run `f` through the ordinary multidim
+// machinery, and put the `||` back.
+Value Interpreter::withDimslipAsMultiDim(Index* ix, const std::function<Value()>& f) {
+    // the dimensions: each element of the slipped list. `|| @dims` slips what
+    // @dims holds; `|| (0,1), 1` slips the comma list that follows, whose
+    // items are `(0,1)` and `1` — `@a[(0,1);1]`
+    ValueList path;
+    auto addSlip = [&](const Expr* e) {
+        Value dims = eval(static_cast<const Unary*>(e)->operand.get());
+        if (dims.t == VT::Array && dims.arr()) for (auto& d : *dims.arr()) path.push_back(d);
+        else if (dims.t == VT::Range) for (auto& d : dims.flatten()) path.push_back(d);
+        else path.push_back(dims);
+    };
+    if (ix->index->kind == NK::ListExpr) {
+        for (auto& it : static_cast<ListExpr*>(ix->index.get())->items) {
+            if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "dimslip")
+                path.push_back(eval(static_cast<Unary*>(it.get())->operand.get()));
+            else path.push_back(eval(it.get()));
+        }
+    }
+    else addSlip(ix->index.get());
+    auto le = std::make_unique<ListExpr>();
+    le->semicolon = true;
+    for (size_t k = 0; k < path.size(); k++) {
+        std::string nm = "$\x01dimslip" + std::to_string(k);
+        tctx_.cur->define(nm, path[k]);
+        auto ve = std::make_unique<VarExpr>(nm);
+        ve->line = ix->line;
+        le->items.push_back(std::move(ve));
+    }
+    ExprPtr saved = std::move(ix->index);
+    const bool savedMD = ix->multiDim;
+    ix->index = std::move(le);
+    ix->multiDim = true;
+    struct Restore { Index* ix; ExprPtr& saved; bool md;
+        ~Restore() { ix->index = std::move(saved); ix->multiDim = md; } } restore{ix, saved, savedMD};
+    return f();
+}
+
+static bool isDimslipIndex(const Expr* e) {
+    if (!e || e->kind != NK::Index) return false;
+    auto* ix = static_cast<const Index*>(e);
+    if (!ix->index || ix->multiDim) return false;
+    auto isSlip = [](const Expr* x) {
+        return x->kind == NK::Unary && static_cast<const Unary*>(x)->op == "dimslip";
+    };
+    if (isSlip(ix->index.get())) return true;
+    // `@a[|| (0,1), 1]` — the slip heads a list of further dimensions
+    if (ix->index->kind == NK::ListExpr) {
+        auto& items = static_cast<const ListExpr*>(ix->index.get())->items;
+        return !items.empty() && isSlip(items[0].get());
+    }
+    return false;
+}
+
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+    if (sixE() && a->op == "=" && isDimslipIndex(a->target.get()))
+        return withDimslipAsMultiDim(static_cast<Index*>(a->target.get()),
+                                     [&] { return evalAssignInner(a, sink); });
     // `* *= 2` / `* = 5` / `*.=succ` — a bare `*` on the LEFT of an assignment
     // curries, exactly as `++*` does: the result is a WhateverCode that mutates
     // the argument it is handed. What makes the mutation visible is the driver's
@@ -25202,7 +25288,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             for (auto& de : dims->items) {
                 if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
                 Value k = eval(de.get());
-                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever || isSliceBlock(k)) anyMulti = true;
                 keys.push_back(k);
             }
             if (!anyMulti)
@@ -28617,7 +28703,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
             return cps;
         };
-        int c = uniCollate(decode(l.toStr()), decode(r.toStr()));
+        // `coll` honours $*COLLATION's levels; `unicmp` always compares in full
+        int lv[4] = {1, 1, 1, 1};
+        if (op == "coll" && g_revInterp) {
+            Value* cv = Interpreter::findDynamicLenient("$*COLLATION");
+            if (cv && cv->t == VT::Hash && cv->hashKind == "Collation" && cv->hash()) {
+                const char* names[4] = {"primary", "secondary", "tertiary", "quaternary"};
+                for (int k = 0; k < 4; k++) {
+                    auto it = cv->hash()->find(names[k]);
+                    if (it != cv->hash()->end()) lv[k] = (int)it->second.toInt();
+                }
+            }
+        }
+        int c = uniCollateLevels(decode(l.toStr()), decode(r.toStr()), lv);
         return Value::orderVal(c);
     }
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
@@ -38063,9 +38161,15 @@ Value Interpreter::evalIndex(Index* idx) {
         return hashWhateverSlice(idx->adverb);
     }
 
+    // `@a[|| (0,1), 1]` — a slip heading further dimensions is a multidim subscript
+    if (sixE() && idx->index && idx->index->kind == NK::ListExpr && isDimslipIndex(idx))
+        return withDimslipAsMultiDim(idx, [&] { return evalIndex(idx); });
     // `@a[|| @dims]` / `%h{|| @keys}` — navigate nested dimensions from a runtime list
     // (each element is the index/key for one level).
     if (idx->index && idx->index->kind == NK::Unary && static_cast<const Unary*>(idx->index.get())->op == "dimslip") {
+        // an ADVERBED one (`:delete`, `:exists`, …) is the multidim subscript it names
+        if (sixE() && !idx->adverb.empty())
+            return withDimslipAsMultiDim(idx, [&] { return evalIndex(idx); });
         Value dims = eval(static_cast<const Unary*>(idx->index.get())->operand.get());
         ValueList path = (dims.t == VT::Array && dims.arr()) ? *dims.arr() : (dims.t == VT::Range ? dims.flatten() : ValueList{dims});
         // Navigating dimensions is the 6.e reading. Before it, `||` in a
@@ -38238,7 +38342,7 @@ Value Interpreter::evalIndex(Index* idx) {
             for (auto& de : dims->items) {
                 if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
                 Value k = eval(de.get());
-                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever || isSliceBlock(k)) anyMulti = true;
                 keys.push_back(k);
             }
             // a :delete'd (or :kv/:p/:v-reported) Array value decontainerizes to a List
@@ -39976,6 +40080,10 @@ Value Interpreter::eval(Expr* e) {
             // the `=~=` tolerance, readable as well as settable (a `my
             // $*TOLERANCE = …` is found by findDynamicLenient above and wins)
             if (ve->name == "$*TOLERANCE") return Value::number(1e-15);
+            // …and the process Collation, one per program: `$*COLLATION.set(…)`
+            // at the top level adjusts the one every later `coll` reads
+            if (ve->name == "$*COLLATION")
+                return global_->define(ve->name, makeCollation());
             if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
             if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
             if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {
