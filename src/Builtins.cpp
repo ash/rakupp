@@ -5019,6 +5019,11 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // A handle's lazy `.lines` is read in full before a list method works on
+    // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
+    if (inv.t == VT::Array && inv.ext() && inv.arr() &&
+        std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource)
+        forceLazy(inv);
     // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
     // the per-eigenstate answers, which collapses later. This used to live only in
     // the MethodCall eval arm, so every internal caller lost it — the one that
@@ -13931,7 +13936,11 @@ void Interpreter::registerBuiltins() {
         }
         return out;
     };
-    B["get"] = [](Interpreter&, ValueList&) -> Value {
+    B["get"] = [](Interpreter& I, ValueList& a) -> Value {
+        // `get($fh)` reads from that handle
+        for (auto& v : a)
+            if (!(v.t == VT::Pair && v.namedArg) && v.t != VT::Any && v.t != VT::Type && v.t != VT::Nil)
+                return I.methodCall(v, "get", ValueList{});
         std::string line; if (!std::getline(std::cin, line)) return Value::nil();
         if (!line.empty() && line.back() == '\r') line.pop_back();
         return Value::str(line);
@@ -14070,6 +14079,9 @@ void Interpreter::registerBuiltins() {
             (*h.hash())["encoding"] = Value::str(canon);
         }
         if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
+        // :chomp / :!chomp — whether lines come back without their terminator
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "chomp")
+            (*h.hash())["chomp"] = Value::boolean(!x.pairVal() || x.pairVal()->truthy());
         // :out-buffer(N) / :!out-buffer — how many bytes the handle may hold
         // back before they must reach the file. Absent, it keeps the default
         // block; :!out-buffer (False) makes every write land immediately, which
@@ -14519,6 +14531,25 @@ void Interpreter::registerBuiltins() {
         for (auto& nv : named) ma.push_back(nv);
         return I.methodCall(list, "minmax", ma);
     };
+    // What `chdir`/`indir` check before they move $*CWD: the path exists and,
+    // by default (`:d`), is a directory; `:r`/`:w`/`:x` add permission tests.
+    // Empty when it passes, else the os-error X::IO::Chdir carries.
+    static auto chdirRefusal = [](const std::string& to, const ValueList& a) -> std::string {
+        bool d = true, r = false, w = false, x = false;
+        for (auto& v : a)
+            if (v.t == VT::Pair && v.namedArg) {
+                bool on = !v.pairVal() || v.pairVal()->truthy();
+                if (v.s == "d") d = on; else if (v.s == "r") r = on;
+                else if (v.s == "w") w = on; else if (v.s == "x") x = on;
+            }
+        struct stat cst{};
+        if (::stat(to.c_str(), &cst) != 0) return "does not exist";
+        if (d && !S_ISDIR(cst.st_mode)) return "is not a directory";
+        if (r && ::access(to.c_str(), R_OK) != 0) return "did not pass :r test";
+        if (w && ::access(to.c_str(), W_OK) != 0) return "did not pass :w test";
+        if (x && ::access(to.c_str(), X_OK) != 0) return "did not pass :x test";
+        return "";
+    };
     B["chdir"] = [](Interpreter& I, ValueList& a) -> Value {
         // `chdir()` matches no candidate of the multi — which is the error the
         // caller sees, and the type a `CATCH` for a bad call is written against
@@ -14532,17 +14563,21 @@ void Interpreter::registerBuiltins() {
         // a relative IO::Path argument is relative to ITS OWN captured :CWD
         if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
             to = logicalJoin(a[0].ofType(), to);
-        if (::chdir(to.c_str()) != 0) {
-            struct stat cst{};
-            const bool exists = ::stat(to.c_str(), &cst) == 0;
-            const std::string why = !exists ? "does not exist" : "is not a directory";
+        // (the checks are Rakudo's; the process follows along when it can, so
+        // relative file operations keep resolving — `chdir $file, :!d` moves
+        // only $*CWD, as Rakudo's always does)
+        std::string abs = to.empty() || to[0] == '/' ? to : logicalJoin(old, to);
+        if (std::string why = chdirRefusal(abs, a); !why.empty())
             return I.ioFailure("X::IO::Chdir",
                                {{"path", Value::str(a[0].toStr())}, {"os-error", Value::str(why)}},
                                "Failed to change the working directory to '" + a[0].toStr() + "': " + why);
-        }
+        (void)::chdir(abs.c_str());
         I.logicalCwd_ = logicalJoin(old, to);
         // Rakudo's answer is the new cwd as an absolute IO::Path, based where you were
         Value p = Value::str(I.logicalCwd_); p.hashKind = "IO"; p.ofTypeM() = old;
+        // …and it IS `$*CWD = …`: a `$*CWD` the caller can see (`temp $*CWD`,
+        // `my $*CWD`) now holds it
+        if (Value* slot = I.findDynamicLenient("$*CWD")) *slot = p;
         return p;
     };
     // indir($path, &code) — run the block with the process directory changed,
@@ -14589,7 +14624,12 @@ void Interpreter::registerBuiltins() {
         return Value::str(out);
     };
     B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() < 2) return Value::any();
+        // indir($path, :d, :r, :w, :x, &code) — the block is the positional
+        // after the path, wherever the adverbs sit
+        Value code;
+        for (size_t k = 1; k < a.size(); k++)
+            if (a[k].t == VT::Code) { code = a[k]; break; }
+        if (a.empty() || code.t != VT::Code) return Value::any();
         std::string to = a[0].toStr();
         // a relative IO::Path argument is relative to ITS OWN captured :CWD
         if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
@@ -14597,23 +14637,39 @@ void Interpreter::registerBuiltins() {
         char buf[4096];
         std::string from = getcwd(buf, sizeof buf) ? buf : ".";
         std::string base = I.cwdName(), oldLogical = I.logicalCwd_;
-        if (::chdir(to.c_str()) != 0) {
-            // a Failure, not a throw: `indir($maybe, {…}) // handle-it` is how
-            // a caller copes with a directory that is not there, and the
-            // os-error is what tells the two refusals apart
-            struct stat cst{};
-            const bool exists = ::stat(to.c_str(), &cst) == 0;
-            const std::string why = !exists ? "does not exist" : "is not a directory";
+        std::string abs = to.empty() || to[0] == '/' ? to : logicalJoin(base, to);
+        // a Failure, not a throw: `indir($maybe, {…}) // handle-it` is how a
+        // caller copes with a directory that is not there, and the os-error
+        // is what tells the refusals apart
+        if (std::string why = chdirRefusal(abs, a); !why.empty())
             return I.ioFailure("X::IO::Chdir",
                                {{"path", Value::str(to)}, {"os-error", Value::str(why)}},
                                "Failed to change the working directory to '" + to + "': " + why);
-        }
+        (void)::chdir(abs.c_str());   // the process follows when it can (see chdir)
         I.logicalCwd_ = logicalJoin(base, to); // $*CWD keeps the caller's spelling
+        // …and the block runs under its OWN `$*CWD` — Rakudo's indir is
+        // `my $*CWD = $path; code()` — so a caller's `temp $*CWD` neither
+        // shadows it nor gets overwritten by the block
+        // (A `$*CWD` the caller already has is set for the duration and put
+        // back after, as `temp` would — the block's own lookups can reach that
+        // one lexically; with none, a fresh frame carries it.)
+        Value cwdv = Value::str(I.logicalCwd_); cwdv.hashKind = "IO"; cwdv.ofTypeM() = base;
+        auto denv = std::make_shared<Env>();
+        denv->parent = Interpreter::tctx_.cur;
+        Value* slot = I.findDynamicLenient("$*CWD");
+        Value slotWas = slot ? *slot : Value();
+        if (slot) *slot = cwdv; else denv->define("$*CWD", cwdv);
+        auto savedCur = Interpreter::tctx_.cur;
+        Interpreter::tctx_.cur = denv;
+        auto restore = [&] {
+            Interpreter::tctx_.cur = savedCur;
+            if (slot) *slot = slotWas;
+            ::chdir(from.c_str()); I.logicalCwd_ = oldLogical;
+        };
         Value r;
-        try { ValueList none; r = I.callCallable(a[1], none); }
-        catch (...) { ::chdir(from.c_str()); I.logicalCwd_ = oldLogical; throw; }   // restore on ANY exit
-        ::chdir(from.c_str());
-        I.logicalCwd_ = oldLogical;
+        try { ValueList none; r = I.callCallable(code, none); }
+        catch (...) { restore(); throw; }   // restore on ANY exit
+        restore();
         return r;
     };
     // (loop-control escaping a dies-ok/lives-ok block is a death — see those below)

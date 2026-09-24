@@ -1753,6 +1753,9 @@ static bool exprYieldsContainer(const Expr* e) {
 // unhandled Failure detonates; a Proc that exited unsuccessfully throws
 // X::Proc::Unsuccessful (Rakudo's Proc.sink). One rule, wherever the sink is.
 void Interpreter::sinkValue(const Value& r) {
+    // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
+    if (r.t == VT::Array && r.ext() && r.arr() &&
+        std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource) { forceLazy(r); return; }
     if (r.t != VT::Hash) return;
     if (r.hashKind == "Failure") { failureDetonate(r); return; }
     if (r.hashKind == "Proc") {
@@ -3185,6 +3188,10 @@ void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
 // under Rakudo, where an Array may be lazy too.
 static Value reifyIfFinite(const Value& v) {
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+    if (st->finiteSource) {   // a handle's lines: read to the end, keep the values
+        forceLazy(v);
+        Value r = Value::array(*v.arr()); r.isList = false; return r;
+    }
     if (!st->gatherSeq) return v;
     forceLazy(v);
     if (!st->exhausted) return v;
@@ -13326,7 +13333,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                     return forResult();
                 }
-                if (listv.t == VT::Array && listv.arr()) {
+                // (a LIVE lazy source — streaming, endless, an unfinished
+                // gather — has nothing cached yet: it is walked by the general
+                // loop below, which pulls one element per iteration)
+                const bool liveLazy = listv.ext() && [&] {
+                    auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
+                    return st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted));
+                }();
+                if (listv.t == VT::Array && listv.arr() && !liveLazy) {
                     auto arr = listv.arrS(); // share, don't copy the elements
                     // `$_` is rw-aliased to the elements when the source is a mutable
                     // `@`-variable, so `for @a { $_ *= 10 }` writes back into @a.
@@ -16450,6 +16464,7 @@ Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname,
 }
 
 Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe) {
+    forceLazy(inv);   // a finite lazy source (`$fh.lines».words`) is read in full first
     // A non-nodal method reaches the LEAVES: `[[1,2],[3,4]]».Str` is
     // `[["1","2"],["3","4"]]`, not two stringified rows, and `@data».are` over
     // a list of hashes answers a hash of types per element. rakupp stopped at
@@ -35131,6 +35146,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
 // below and the `|*` curry above it, so it lives in one place and the curried
 // form cannot drift from the direct one.
 static Value slipOf(const Value& v) {
+    forceLazy(v);   // a finite lazy Seq (a handle's `.lines`) slips all it has
     if (v.t == VT::Array && v.arr()) {
         Value out = Value::array();
         *out.arr() = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr(); // a shaped array slips its LEAVES
@@ -36212,6 +36228,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             args.push_back(regexLitValue(static_cast<RegexLit*>(a.get())));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
+            forceLazy(v);   // `f(|$fh.lines)` spreads every line a finite lazy Seq has
             // `|*` in an argument list is a WHATEVER-CURRY, not a spread: it is
             // the one-level flattener `@aoa.map(|*)` uses. Spreading it here put
             // a bare Whatever in the argument list, so `.map` mapped over
@@ -38510,6 +38527,9 @@ Value Interpreter::evalIndex(Index* idx) {
         else if (iv.t == VT::Range || iv.t == VT::Array)
             for (auto& e : iv.flatten()) if (e.isNumeric()) maxi = std::max(maxi, e.toInt());
         if (maxi >= 0) materializeLazy(base, (size_t)maxi + 1);
+        // an END-relative subscript (`*-1`, `*`) needs the whole of a finite one
+        else if (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code() && iv.code()->isWhateverCode))
+            forceLazy(base);
     }
 
     // Whatever-currying for subscripts: `*.<key>` / `*<key>` / `*[i]` yield a
@@ -40976,6 +40996,7 @@ Value Interpreter::eval(Expr* e) {
                     // flatten instead — five elements where Rakudo gives three, and
                     // the reason Digest::SHA2 saw its 16-word block arrive as
                     // sixteen separate arguments.
+                    forceLazy(v);   // a finite lazy Seq (`|$fh.lines`) slips all of itself
                     if (v.t == VT::Array && v.arr()) {
                         for (auto& x : *v.arr()) items.push_back(x); continue;
                     }

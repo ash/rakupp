@@ -789,7 +789,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         catch (NextEx&) { self->topicWriteback_ = nullptr; continue; }     // `next` skips
                         catch (RedoEx&) { self->topicWriteback_ = nullptr; (*spos)--; continue; } // `redo` retries
                         v = (*src.arr())[*spos - 1]; // keep the (possibly mutated) value
-                    } else match = applyArith("~~", v, pred).truthy();
+                    } else match = self->boolify(self->smartmatchValue("~~", v, pred));   // a Regex, a type, a value
                     if (match) { cache.push_back(v); return true; }
                 }
                 return false;
@@ -821,7 +821,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 bool match = !havePred ? true
                            : pred.t == VT::Regex ? regexMatch(v.toStr(), pred.s).truthy()
                            : pred.t == VT::Code ? predAnswerTruthy(*this, callCallable(pred, {v}), v)
-                                                : applyArith("~~", v, pred).truthy();
+                                                : boolify(smartmatchValue("~~", v, pred));
                 if (match) {
                     if (wantK) return Value::integer((long long)si);
                     if (wantP) return Value::pair(std::to_string(si), v);

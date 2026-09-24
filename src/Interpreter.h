@@ -998,6 +998,10 @@ struct LazySeqState {
     // up front is a deadlock whenever the producer is waiting on US, so a `for`
     // walks it live, one pull per iteration, the way it walks an endless one.
     bool streaming = false;
+    // A source that is FINITE and cheap to read to its end — a file handle's
+    // `.lines`. A `for` still walks it live (so `last` leaves the rest on the
+    // handle), but an eager context — list assignment, sinking — reads it all.
+    bool finiteSource = false;
     // A `gather` block, which is not run until something pulls from it. Its
     // finiteness is therefore UNKNOWN until then, and `.is-lazy` — the one
     // question that inspects a sequence without consuming it — forces that

@@ -3032,10 +3032,43 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (i >= (long long)es.size()) return lines[i];
                 return Value::str(lines[i].toStr() + es[i].toStr());
             };
+            // `.lines` is LAZY, one line per pull from the handle's own
+            // position: `for $fh.lines { …; last }` leaves the rest for the next
+            // `$fh.lines`, and `$fh.lines[1,2]` reads three lines, not all.
+            // A limit (`.lines(2)`) still takes eagerly.
             if (m == "lines") {
-                Value out = Value::array(); out.isList = true;
-                for (long long i = pos; i < (long long)lines.size(); i++) out.arr()->push_back(withEol(i));
-                (*inv.hash())["pos"] = Value::integer((long long)lines.size());
+                long long limit = -1;
+                for (auto& av : args)
+                    if (!(av.t == VT::Pair && av.namedArg) && (av.t == VT::Int || av.t == VT::Num))
+                        limit = av.toInt();
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                if (limit >= 0) {
+                    for (long long i = pos; i < (long long)lines.size() && i < pos + limit; i++)
+                        out.arr()->push_back(withEol(i));
+                    (*inv.hash())["pos"] = Value::integer(std::min<long long>(pos + limit, (long long)lines.size()));
+                    return out;
+                }
+                auto hs = inv.hashS();
+                auto st = std::make_shared<LazySeqState>();
+                st->streaming = true;
+                st->finiteSource = true;
+                st->appendNext = [hs](ValueList& cache) -> bool {
+                    auto li = hs->find("lines"), pi = hs->find("pos");
+                    if (li == hs->end() || pi == hs->end() || !li->second.arr()) return false;
+                    auto& ls = *li->second.arr();
+                    long long p = pi->second.toInt();
+                    if (p >= (long long)ls.size()) return false;
+                    pi->second = Value::integer(p + 1);
+                    Value v = ls[(size_t)p];
+                    auto ch = hs->find("chomp");
+                    auto eo = hs->find("line-eols");
+                    if (ch != hs->end() && !ch->second.truthy() && eo != hs->end() && eo->second.arr() &&
+                        p < (long long)eo->second.arr()->size())
+                        v = Value::str(v.toStr() + (*eo->second.arr())[(size_t)p].toStr());
+                    cache.push_back(v);
+                    return true;
+                };
+                out.extM() = st;
                 return out;
             }
             // get / getline: next line or Nil at EOF
@@ -3045,6 +3078,26 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
     }
     if (m == "lines" && inv.hashKind == "IO") {
+        // `:nl-in(…)` / `:chomp` shape the lines, exactly as they do on a
+        // handle — so open one with them and read through it
+        bool viaHandle = false;
+        for (auto& av : args)
+            if (av.t == VT::Pair && av.namedArg && (av.s == "nl-in" || av.s == "chomp")) viaHandle = true;
+        if (viaHandle) {
+            ValueList oa{inv};
+            ValueList la;
+            for (auto& av : args) {
+                if (av.t == VT::Pair && av.namedArg) oa.push_back(av);
+                else la.push_back(av);
+            }
+            Value h = callBuiltin("open", oa);
+            Value out = methodCall(h, "lines", la);
+            forceLazy(out);
+            Value res = Value::array(); res.isList = true; res.s = "Seq";
+            if (out.arr()) *res.arr() = *out.arr();
+            methodCall(h, "close", ValueList{});
+            return res;
+        }
         std::ifstream in(ioFsPath(inv), std::ios::binary); Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream raw; raw << in.rdbuf();
