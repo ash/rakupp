@@ -3430,10 +3430,13 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 }
                 continue;
             }
-            else if (isOp("&") || isOp("*") || isOp("+")) advance(); // .&fn / .*all / .+all — best effort
+            char allMode = 0;
+            if (isOp("*") || isOp("+")) allMode = advance().text[0];   // .*all / .+all
+            else if (isOp("&")) advance(); // .&fn — best effort
             auto mc = std::make_unique<MethodCall>();
             mc->inv = std::move(base);
             mc->maybe = maybe;
+            mc->allMode = allMode;
             mc->meta = metaCall;
             mc->mutate = mutate;
             mc->hyper = hyperNext; hyperNext = false;
@@ -8816,11 +8819,31 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
             if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
         }
-        // shaped-array parameter:  @a[3] / @a[3;3]  — skip the shape (parse-only)
+        // shaped-array parameter:  @a[3] / @a[4,*] / @a[3;3] — the argument must
+        // be declared with exactly that shape (`*` takes any size of its dimension)
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
-            int depth = 0;
-            do { if (isKind(Tok::LBracket)) depth++; else if (isKind(Tok::RBracket)) depth--; advance(); }
-            while (depth > 0 && !isKind(Tok::End));
+            advance(); // [
+            while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
+                if (isOp("*")) { advance(); p.shapeDims.push_back(-1); }
+                else if (isKind(Tok::IntLit) &&
+                         (peek().kind == Tok::Comma || peek().kind == Tok::Semicolon ||
+                          peek().kind == Tok::RBracket)) {
+                    p.shapeDims.push_back(std::stoll(advance().text));
+                }
+                else {   // an expression dimension: parsed, not checked
+                    int depth = 0;
+                    while (!isKind(Tok::End) && !(depth == 0 && (isKind(Tok::Comma) || isKind(Tok::Semicolon) ||
+                                                                 isKind(Tok::RBracket)))) {
+                        if (isKind(Tok::LBracket) || isKind(Tok::LParen)) depth++;
+                        else if (isKind(Tok::RBracket) || isKind(Tok::RParen)) depth--;
+                        advance();
+                    }
+                    p.shapeDims.push_back(-2);
+                }
+                if (!matchKind(Tok::Comma)) matchKind(Tok::Semicolon);
+            }
+            matchKind(Tok::RBracket);
+            if (p.name.empty() && p.sigil == '@') p.name = "@";   // anonymous: still bound, so it can be checked
         }
         if (matchOp("?")) p.optional = true;
         else if (matchOp("!")) p.required = true;
@@ -11097,6 +11120,14 @@ StmtPtr Parser::parseStatementImpl() {
                 return st;
             }
             // typed scoped decl:  my Int sub / my Num constant / our Str sub
+            // (`my T constant X` is lexical, as `my constant X` is)
+            auto markMyConstant = [&](StmtPtr& st) {
+                if (kw != "my" || !st || st->kind != NK::ExprStmt) return;
+                Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+                if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declScope == "constant")
+                    static_cast<VarExpr*>(e)->declMyConstant = true;
+            };
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) {
                 advance(); // scope
                 std::string prefixType = advance().text;
@@ -11121,6 +11152,7 @@ StmtPtr Parser::parseStatementImpl() {
                             ve->declType = prefixType;
                     }
                 }
+                markMyConstant(st);
                 return st;
             }
             // `my Int Str $x` / `our Int Str sub f` — Rakudo parses a second
@@ -11134,9 +11166,28 @@ StmtPtr Parser::parseStatementImpl() {
             // typed scoped decl with a parameterized type: `my Foo::Bar[Ber::Meow] constant …`
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::LBracket) {
                 size_t save = pos_;
-                advance(); advance(); // scope, type ident
-                int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
-                if (isKind(Tok::Ident) && declKw.count(cur().text)) return parseStatement();
+                advance(); // scope
+                std::string prefixType = advance().text;   // `Foo::Bar[Ber::Meow]`, spelled out
+                int d = 0;
+                do {
+                    if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--;
+                    prefixType += cur().text;
+                    advance();
+                } while (d > 0 && !isKind(Tok::End));
+                if (isKind(Tok::Ident) && declKw.count(cur().text)) {
+                    StmtPtr st = parseStatement();
+                    if (st && st->kind == NK::ExprStmt) {
+                        Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+                        if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                        if (e && e->kind == NK::VarExpr) {
+                            auto* ve = static_cast<VarExpr*>(e);
+                            if (ve->declare && ve->declScope == "constant" && ve->declType.empty())
+                                ve->declType = prefixType;
+                        }
+                    }
+                    markMyConstant(st);
+                    return st;
+                }
                 pos_ = save; // not a typed scoped decl — restore
             }
         }

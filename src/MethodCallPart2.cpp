@@ -5920,7 +5920,33 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             } else n = (long long)inv.code()->placeholders.size();
             return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
         }
-        if (m == "name") return Value::str(inv.code()->name);
+        if (m == "name") {
+            // An operator's name quotes its op the way Rakudo spells it: `<op>`
+            // normally, `«op»` when the op holds `<`/`>` — unless it also holds
+            // something «» would treat specially (a guillemet, a sigil), and
+            // then `<op>` again with the brackets backslashed: infix:«>=»,
+            // infix:<~~\>»>, infix:<$\>>.
+            const std::string nm = inv.code()->name;
+            size_t colon = nm.find(":<");
+            if (colon != std::string::npos && colon > 0 && nm.size() > colon + 3 && nm.back() == '>' &&
+                nm.find(':') == colon) {
+                std::string op = nm.substr(colon + 2, nm.size() - colon - 3);
+                if (op.find_first_of("<>") != std::string::npos) {
+                    bool special = op.find("\xC2\xAB") != std::string::npos ||
+                                   op.find("\xC2\xBB") != std::string::npos ||
+                                   op.find_first_of("$@%&") != std::string::npos;
+                    std::string out = nm.substr(0, colon + 1);
+                    if (!special) out += "\xC2\xAB" + op + "\xC2\xBB";
+                    else {
+                        out += "<";
+                        for (char ch : op) { if (ch == '<' || ch == '>') out += '\\'; out += ch; }
+                        out += ">";
+                    }
+                    return Value::str(out);
+                }
+            }
+            return Value::str(nm);
+        }
         // `&code.has-loop-phasers` / `&code.callable_for_phaser('FIRST')` — rak
         // runs a pattern's FIRST/NEXT/LAST phasers itself, around its own loop:
         // the phaser block becomes a Callable closing over the pattern's scope

@@ -1563,6 +1563,8 @@ public:
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
     // preUm/preOwner: a caller that has ALREADY resolved the method passes it in,
     // so the MRO is not walked again (see the definition).
+    Value callAllCandidates(const Value& inv, const std::string& mname, ValueList args, char mode,
+                            const std::vector<ExprPtr>* rwArgs); // `.+m` / `.*m`
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
                             ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
                             Value* preUm = nullptr, ClassInfo* preOwner = nullptr);

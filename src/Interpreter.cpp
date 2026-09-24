@@ -14732,6 +14732,24 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         env->define("%_", std::move(h));
     }
 
+    // a SHAPED array parameter (`@a[3]`, `@m[4,*]`) takes only an array
+    // declared with that shape: same number of dimensions, each the given size
+    // unless it is `*`. An unshaped array has no dimensions to match.
+    for (size_t i = 0; i < params.size(); i++) {
+        const Param& p = params[i];
+        if (p.shapeDims.empty() || p.slurpy || p.named) continue;
+        Value* bound = env->find(slotName(p, i));
+        if (!bound) continue;
+        const std::vector<long long>* sh = bound->t == VT::Array ? bound->shape().get() : nullptr;
+        bool ok = (sh && sh->size() == p.shapeDims.size()) ||
+                  (!sh && p.shapeDims.size() == 1 && p.shapeDims[0] == -1);   // `@a[*]`: any 1-dim array
+        for (size_t d = 0; ok && d < p.shapeDims.size(); d++)
+            if (p.shapeDims[d] >= 0 && (*sh)[d] != p.shapeDims[d]) ok = false;
+        if (!ok)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Constraint type check failed in binding to parameter '" + p.name +
+                "'; expected an array of the declared shape"};
+    }
     // a NATIVE-int parameter truncates its argument at bind time, as Rakudo's
     // does: `sub f(uint32 $n)` called with 2**40+5 binds 5. Digest::RIPEMD's
     // rotl leans on exactly this — without the wrap its accumulator grew a few
@@ -16390,6 +16408,45 @@ static bool isNodalMethod(const std::string& m) {
         "deepmap", "duckmap", "flatmap", "invert", "nodemap", "pick",
         "produce", "splice"};
     return kNodal.count(m) > 0;
+}
+
+// `.+m` / `.*m` — the results of every candidate, as a List. On a user object
+// each class of the MRO that declares the method runs it, most-derived first
+// (`$c.*foo` climbs C, B, A); otherwise the one method dispatch finds. `.*` of a
+// method nobody has is the empty List, `.+` of one dies.
+Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname, ValueList args,
+                                     char mode, const std::vector<ExprPtr>* rwArgs) {
+    Value l = Value::array(); l.isList = true;
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+        std::vector<ClassInfo*> mro;
+        std::set<ClassInfo*> seen;
+        std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+            if (!c || !seen.insert(c).second) return;
+            mro.push_back(c);
+            walk(c->parent.get());
+            for (auto& p : c->extraParents) walk(p.get());
+        };
+        walk(inv.obj()->cls.get());
+        bool any = false;
+        for (ClassInfo* c : mro) {
+            auto it = c->methods.find(mname);
+            if (it == c->methods.end()) continue;
+            any = true;
+            Value um = it->second;
+            l.arr()->push_back(invokeMethodChain(mname, c, inv, args, rwArgs, &um, c));
+        }
+        if (any) return l;
+    }
+    try { l.arr()->push_back(methodCall(inv, mname, std::move(args), rwArgs)); }
+    catch (RakuError& err) {
+        const Value& p = err.payload;
+        bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                        (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                         p.obj()->cls->name == "X::Method::NotFound");
+        if (mode == '*' && notFound) return l;
+        throw;
+    }
+    return l;
 }
 
 Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe) {
@@ -24365,6 +24422,20 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // asks for the library path, and `Compress::Zlib::Raw::Z_OK` the same.
         // Constants are not `our`, but Rakudo installs them in the package's
         // symbol table all the same, and we published nothing.
+        // a TYPED constant checks its value: `my IO::Path constant C = 42` dies
+        if (ve->declare && ve->declScope == "constant" && !ve->declType.empty() &&
+            ve->declType != "Mu" && ve->declType != "Any" && !ve->name.empty()) {
+            // (a parameterized role type `R[T]` is judged by the role it names —
+            // an instance of the pun does R)
+            std::string want = ve->declType.c_str();
+            if (size_t br = want.find('['); br != std::string::npos && br > 0) want = want.substr(0, br);
+            if (Value* p = tctx_.cur->find(ve->name))
+                if (!typeOrSubsetMatches(*p, want))
+                    throwTypedV("X::TypeCheck", {{"got", *p}, {"expected", Value::typeObj(ve->declType)}},
+                                "Type check failed in constant " + std::string(ve->name.c_str()) +
+                                "; expected " + std::string(ve->declType.c_str()) +
+                                " but got " + p->typeName());
+        }
         // …and outside any package a bare/`our` constant is still a PACKAGE
         // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL)
         if (ve->declare && ve->declScope == "constant" && tctx_.pkgPrefix.empty() &&
@@ -24783,7 +24854,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (a->op == "=" && a->target && a->target->kind == NK::VarExpr && a->value) {
         auto* cv = static_cast<VarExpr*>(a->target.get());
         const char sg = cv->name.empty() ? 0 : cv->name[0];
-        if (cv->declare && cv->declScope == "constant" && cv->declType.empty() &&
+        // `my Int constant @c` — a typed @/% constant would be a parameterized
+        // one, which Raku forbids
+        if (cv->declare && cv->declScope == "constant" && !cv->declType.empty() &&
+            (sg == '@' || sg == '%'))
+            throwTyped("X::ParametricConstant", {},
+                       "Parameterization of constants is forbidden");
+        if (cv->declare && cv->declScope == "constant" &&
             (sg == '@' || sg == '%' || sg == '$')) {
             Value v = eval(a->value.get());
             if (sg == '@') {
@@ -39574,9 +39651,18 @@ struct NodeCountReport {
                 return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
             // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
             // …except the native type names, which resolve like any type
+            // …but a RUN-TIME lookup `::('nope')` answers a soft Failure, as
+            // Rakudo's does, so `nok ::('lexical-elsewhere')` holds
             if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
-                !isNativeTypeName(nm) && nm != "utf8" && nm != "utf16" && nm != "utf32")
+                !isNativeTypeName(nm) && nm != "utf8" && nm != "utf16" && nm != "utf32") {
+                if (sr->nameExpr) {
+                    Value f = rakuppNewFailure();
+                    (*f.hash())["exception"] = Value::typeObj("X::NoSuchSymbol");
+                    (*f.hash())["message"]   = Value::str("No such symbol '" + nm + "'");
+                    return f;
+                }
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
+            }
             NameTerm tmp(nm); tmp.line = e->line;
             tmp.symbolicStrict = true; // unknown capitalized names fail softly, not stub
             return eval(&tmp);
@@ -41187,10 +41273,20 @@ Value Interpreter::eval(Expr* e) {
             // `my @foo; @foo.name` is "@foo" (sheet LA-21). Only the name knows
             // it: an anonymous `[1, 2].name` is the generic "element", which is
             // what the value-level arm still answers.
-            if (mc->inv && mc->inv->kind == NK::VarExpr && mc->args.empty() &&
+            if (mc->inv && mc->inv->kind == NK::VarExpr && mc->args.empty() && !mc->allMode &&
                 !mc->meta && !mc->hyper && !mc->methodExpr && mc->method == "name") {
                 const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
                 if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%')) return Value::str(vn);
+            }
+            // …and `@a.VAR.name` / `%h.VAR.name` / `&c.VAR.name` ask the same
+            if (mc->inv && mc->inv->kind == NK::MethodCall && mc->args.empty() && !mc->allMode &&
+                !mc->meta && !mc->hyper && !mc->methodExpr && mc->method == "name") {
+                auto* vm = static_cast<MethodCall*>(mc->inv.get());
+                if (vm->method == "VAR" && vm->args.empty() && vm->inv && vm->inv->kind == NK::VarExpr) {
+                    const std::string& vn = static_cast<VarExpr*>(vm->inv.get())->name;
+                    if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%' || vn[0] == '&'))
+                        return Value::str(vn);
+                }
             }
             {
                 Expr* dynInv = nullptr;
@@ -41653,6 +41749,14 @@ Value Interpreter::eval(Expr* e) {
                 };
                 return code;
             }
+            if (mc->hyper && mc->allMode && !mc->bang && !mc->meta) {   // `@o».*m` — each element's candidate list
+                Value out = Value::array(); out.isList = true;
+                for (auto& el : inv.t == VT::Array && inv.arr() ? *inv.arr() : ValueList{inv}) {
+                    Value d = el; d.itemized = false;
+                    out.arr()->push_back(callAllCandidates(d, mc->method, args, mc->allMode, nullptr));
+                }
+                return out;
+            }
             if (mc->hyper) { // >>.method : apply to each top-level element (structure-preserving, no deep flatten)
                 // `»!Foo::priv` — the private method, by its bare name: the class
                 // it names is each element's own
@@ -41690,6 +41794,10 @@ Value Interpreter::eval(Expr* e) {
             std::string prefixed;
             if (mc->bang || mc->meta) prefixed = (mc->bang ? "!" : "^") + mc->method;
             const std::string& mname = (mc->bang || mc->meta) ? prefixed : mc->method;
+            // `.+m` / `.*m` — the results of the candidates, as a List (one
+            // candidate here: the method that dispatch finds); `.*` of a
+            // method nobody has is the empty List, `.+` of one dies
+            if (mc->allMode) return callAllCandidates(inv, mname, std::move(args), mc->allMode, &mc->args);
             if (mc->maybe) {
                 try {
                     // `args` is dead after this call — the catch below reads only

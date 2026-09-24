@@ -391,6 +391,7 @@ struct MethodCall : Expr {
     ExprPtr methodExpr; // indirect call $obj."$name"() — method name computed at runtime
     std::vector<ExprPtr> args;
     bool maybe = false; // .?
+    char allMode = 0;   // .+ / .* — every candidate's result, as a List
     bool bang = false;  // $obj!priv — private-method call syntax
     bool mutate = false; // .= mutating call
     bool hyper = false;  // >>.method  (apply to each element)
@@ -582,6 +583,7 @@ struct Param {
     bool required = false; // explicit `!` on a named param
     bool invocant = false; // declared before ':' in signature
     bool pastDoubleSemi = false; // after `;;` — not a multi-invocant
+    std::vector<long long> shapeDims; // `@a[3]` / `@a[4,*]`: required shape (-1 = any size, -2 = unchecked)
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
     std::string coerceFrom; // the FROM type inside the parens ("" for `Foo()` = Any) — it is the
