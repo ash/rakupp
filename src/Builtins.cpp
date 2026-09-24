@@ -5679,18 +5679,55 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     if (m == "WHY") {
-        // declarator pod: `#| text` above a sub/method/class answers .WHY
+        // declarator pod: `#| text` above / `#= text` beside a declaration —
+        // answered as the Pod::Block::Declarator it is, knowing its declarand
+        // (WHEREFORE) and which part came before and which after; the `$=pod`
+        // entry for the same text learns its WHEREFORE here too
+        auto declarator = [&](const std::string& pod, const std::string& trail, int line) -> Value {
+            std::string lead = trail.empty() ? pod
+                             : pod == trail ? std::string()
+                             : pod.substr(0, pod.size() > trail.size() + 1 ? pod.size() - trail.size() - 1 : 0);
+            Value d = Value::makeHash(); d.hashKind = "Pod";
+            (*d.hash())["podclass"] = Value::str("Pod::Block::Declarator");
+            Value pc = Value::array(); pc.arr()->push_back(Value::str(pod));
+            (*d.hash())["contents"] = pc;
+            (*d.hash())["leading"] = lead.empty() ? Value::any() : Value::str(lead);
+            (*d.hash())["trailing"] = trail.empty() ? Value::any() : Value::str(trail);
+            (*d.hash())["WHEREFORE"] = inv;
+            bool linked = false;
+            for (auto& e : podDom_)
+                if (e.t == VT::Hash && e.hashKind == "Pod" && e.hash() && e.hash()->count("declLine")) {
+                    long long dl = (*e.hash())["declLine"].toInt();
+                    bool tr = e.hash()->count("trailingPod");
+                    if (line > 0 && (dl == line || (tr && dl == line + 1))) { (*e.hash())["WHEREFORE"] = inv; linked = true; }
+                }
+            // no line to go by (a package's doc): the first unlinked entry with this text
+            if (!linked)
+                for (auto& e : podDom_)
+                    if (e.t == VT::Hash && e.hashKind == "Pod" && e.hash() && e.hash()->count("declLine") &&
+                        !e.hash()->count("WHEREFORE") && e.toStr() == pod) {
+                        (*e.hash())["WHEREFORE"] = inv; break;
+                    }
+            return d;
+        };
         if (inv.t == VT::Code && inv.code() && !inv.code()->pod.empty())
-            return Value::str(inv.code()->pod);
+            return declarator(inv.code()->pod, inv.code()->podTrail, inv.code()->declLine);
         // a Parameter's own doc, plumbed from Param.pod at reflection time
-        if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash() && inv.hash()->count("why"))
-            return (*inv.hash())["why"];
+        if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash() && inv.hash()->count("why")) {
+            const Value& w = (*inv.hash())["why"];
+            if (w.t == VT::Str && !w.s.empty()) return declarator(w.s.str(), "", 0);
+            return w;
+        }
         if (inv.t == VT::Type) {
             auto it = classes_.find(inv.s);
             if (it != classes_.end() && !it->second->pod.empty())
-                return Value::str(it->second->pod);
+                return declarator(it->second->pod, it->second->podTrail,
+                                  it->second->decl ? it->second->decl->line : 0);
             auto pi = pkgPod_.find(inv.s); // a module/package keeps its own
-            if (pi != pkgPod_.end()) return Value::str(pi->second);
+            if (pi != pkgPod_.end()) {
+                auto pt = pkgPodTrail_.find(inv.s);
+                return declarator(pi->second, pt != pkgPodTrail_.end() ? pt->second : std::string(), 0);
+            }
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->pod.empty())
             return Value::str(inv.obj()->cls->pod);

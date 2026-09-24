@@ -9862,6 +9862,29 @@ static void* dlopenLib(const std::string& lib) {
 // An anonymous PUN of a parameterized role with its `[...]` params bound to
 // argv — what `P[%defaults].new` and `Q[Int].mk` dispatch on. A shallow copy of
 // the role's ClassInfo keeps its methods/attrs; only the param bindings differ.
+// The candidate of a parametric role GROUP that takes `n` positional
+// arguments: its required positionals are at most n and its positionals (or a
+// slurpy) reach n. An exact positional count wins over a fitting range; with
+// no fit the group's latest declaration answers, as before there were groups.
+std::shared_ptr<ClassInfo> Interpreter::pickRoleVariant(const std::shared_ptr<ClassInfo>& group, size_t n) {
+    std::vector<std::shared_ptr<ClassInfo>> all = group->roleVariants;
+    all.push_back(group);
+    std::shared_ptr<ClassInfo> fit;
+    for (auto& v : all) {
+        size_t req = 0, pos = 0; bool slurpy = false;
+        if (v->decl)
+            for (auto& p : v->decl->roleParams) {
+                if (p.named) continue;
+                if (p.slurpy) { slurpy = true; continue; }
+                pos++;
+                if (!p.optional && !p.defaultVal) req++;
+            }
+        if (pos == n && !slurpy) return v;
+        if (!fit && req <= n && (n <= pos || slurpy)) fit = v;
+    }
+    return fit ? fit : group;
+}
+
 Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv) {
     // An EXPLICIT parameterization type-checks its arguments: `role R[Any:D $x]`
     // refuses a type object and `role S[Str $q]` refuses a 42, which is how a
@@ -10538,7 +10561,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->retRw = sd->retRw;
                 c.code()->declFile = declFileNow();
                 c.code()->declLine = sd->line;
-                c.code()->pod = sd->pod;
+                c.code()->pod = sd->pod; c.code()->podTrail = sd->podTrail;
                 if (sd->deprecated) c.code()->deprecated = deprecationFor(sd);
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
@@ -10840,7 +10863,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     code.code()->params = &md->params;
                     code.code()->retType = qualifyDeclType(md->retType);
                     code.code()->retRw = md->retRw;
-                    code.code()->pod = md->pod;
+                    code.code()->pod = md->pod; code.code()->podTrail = md->podTrail;
                     if (md->deprecated) code.code()->deprecated = deprecationFor(md);
                     code.code()->body = &md->body;
                     code.code()->langRev = langRev_;
@@ -10957,6 +10980,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (!cd->pod.empty()) {
                         pkgPod_[tctx_.pkgPrefix + cd->name] = cd->pod;
                         if (!tctx_.pkgPrefix.empty()) pkgPod_[cd->name] = cd->pod;
+                        pkgPodTrail_[tctx_.pkgPrefix + cd->name] = cd->podTrail;
+                        if (!tctx_.pkgPrefix.empty()) pkgPodTrail_[cd->name] = cd->podTrail;
                     }
                 }
                 // name adverbs, literal or computed: `module Zef:ver($?DISTRIBUTION…)`
@@ -11122,7 +11147,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 : (!tctx_.pkgPrefix.empty() && declName.rfind(tctx_.pkgPrefix, 0) != 0
                     ? tctx_.pkgPrefix + declName : declName);
             ci->name = clsName;
-            ci->pod = cd->pod;
+            ci->pod = cd->pod; ci->podTrail = cd->podTrail;
             if (!cd->parent.empty()) {
                 // `is CORE::Exception` — the CORE:: qualifier names the SETTING's
                 // symbol, which is exactly what a bare name resolves to for us;
@@ -11168,7 +11193,16 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 const std::shared_ptr<ClassInfo>* rakuAstParent =
                     (it == classes_.end() && rakuAstVisible() && isRakuAstName(cd->parent))
                         ? rakuAstClass(cd->parent) : nullptr;
-                if (it != classes_.end()) ci->parent = it->second;
+                if (it != classes_.end()) {
+                    ci->parent = it->second;
+                    // `does R[a, b]` as the first composition: the candidate of
+                    // R's group whose signature takes that many arguments
+                    if (it->second->isRole && !it->second->roleVariants.empty()) {
+                        size_t n = 0;
+                        for (auto& ra : cd->roleArgs) if (ra.first == cd->parent) { n = ra.second.size(); break; }
+                        ci->parent = pickRoleVariant(it->second, n);
+                    }
+                }
                 else if (rakuAstParent) ci->parent = *rakuAstParent;
                 else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
                 else if (!cd->isRole && !cd->parentIsDoes)
@@ -11246,7 +11280,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
-                if (it != classes_.end() && it->second->isRole) composedRoles.push_back(it->second.get());
+                if (it != classes_.end() && it->second->isRole) {
+                    ClassInfo* r = it->second.get();
+                    if (!r->roleVariants.empty()) {
+                        size_t n = 0;
+                        for (auto& ra : cd->roleArgs) if (ra.first == rn) { n = ra.second.size(); break; }
+                        r = pickRoleVariant(it->second, n).get();
+                    }
+                    composedRoles.push_back(r);
+                }
             }
             // conflict detection: the same method (same signature for multis)
             // provided — as a real implementation — by two different roles must be
@@ -11637,7 +11679,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
                 // a method's own declarator pod — `#|` above it, `#=` below — is
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
-                code.code()->pod = md->pod;
+                code.code()->pod = md->pod; code.code()->podTrail = md->podTrail;
                 if (md->deprecated) code.code()->deprecated = deprecationFor(md.get());
                 code.code()->declFile = declFileNow();
                 code.code()->declLine = md->line;
@@ -11954,6 +11996,25 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (prev != classes_.end() && prev->second && prev->second->decl &&
                     prev->second->decl->isStubDecl && !prev->second->repr.empty())
                     ci->repr = prev->second->repr;
+            }
+            // a ROLE declared again under the same name with another signature is
+            // one more candidate of its group (`role R {}` beside `role R[$x] {}`);
+            // the earlier declarations ride along, the latest holds the name
+            if (!stubOverCompleted && cd->isRole) {
+                auto prev = classes_.find(clsName);
+                // …declared in the SAME scope (two `my role B` in sibling blocks
+                // are two roles), and with a parameter list somewhere among them
+                bool sameScope = prev != classes_.end() && prev->second && prev->second->declEnv &&
+                                 ci->declEnv && prev->second->declEnv->parent == ci->declEnv->parent;
+                bool parametric = cd->parameterized || !cd->roleParams.empty() ||
+                                  (prev != classes_.end() && prev->second && prev->second->decl &&
+                                   !prev->second->decl->roleParams.empty());
+                if (sameScope && parametric && prev->second->isRole &&
+                    prev->second.get() != ci.get() && prev->second->decl &&
+                    !prev->second->decl->isStubDecl) {
+                    ci->roleVariants = prev->second->roleVariants;
+                    if (prev->second->decl != cd) ci->roleVariants.push_back(prev->second);
+                }
             }
             if (!stubOverCompleted) classes_[clsName] = ci;
             // now the type resolves, dispatch the collected non-type `is` names to a

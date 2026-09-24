@@ -974,6 +974,30 @@ void Lexer::skipWhitespaceAndComments() {
                     continue;
                 }
             }
+            // the BRACKETED forms, `#|{ … }` / `#={ … }` (any bracket pair), may
+            // span lines: the text is the trimmed inside, recorded on the line a
+            // leading block ENDS on (the declaration follows it) and the line a
+            // trailing one STARTS on (it follows its declaration)
+            if ((peek(1) == '|' || peek(1) == '=') &&
+                (peek(2) == '{' || peek(2) == '(' || peek(2) == '[' || peek(2) == '<')) {
+                const bool lead = peek(1) == '|';
+                const int startLine = line_;
+                advance(); advance();                 // # | or # =
+                char open = peek(), close = open == '{' ? '}' : open == '(' ? ')' : open == '[' ? ']' : '>';
+                advance();
+                std::string txt; int d = 1;
+                while (!eof()) {
+                    char ch = peek();
+                    if (ch == open) d++;
+                    else if (ch == close && --d == 0) { advance(); break; }
+                    txt += advance();
+                }
+                size_t a = txt.find_first_not_of(" \t\r\n"), b = txt.find_last_not_of(" \t\r\n");
+                txt = a == std::string::npos ? std::string() : txt.substr(a, b - a + 1);
+                if (lead) leadPod_[line_] = txt;
+                else declPod_[startLine] = txt;
+                continue;
+            }
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
             // bracket group only — the rest of the line still parses. The declarator
             // comments #|[ ... ] / #=[ ... ] take the same multi-line bracket forms.

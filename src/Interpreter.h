@@ -1757,6 +1757,7 @@ public:
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe = false);
     bool assignMultiDimSlice(Expr* target, const Value& rhs); // `\x` bound to `@a[*;0]`, assigned
     Value withDimslipAsMultiDim(Index* ix, const std::function<Value()>& f); // `@a[|| @dims]` as `@a[d0;d1;…]`
+    std::shared_ptr<ClassInfo> pickRoleVariant(const std::shared_ptr<ClassInfo>& group, size_t n); // `does R[a,b]` → its arity's candidate
     // `is DEPRECATED` bookkeeping, read (and cleared) by `Deprecation.report`
     struct DeprecationRec { std::string kind, name, from, with; std::vector<int> lines; };
     std::vector<DeprecationRec> deprecations_;
@@ -2465,6 +2466,7 @@ public:
     // a module/package's own declarator pod (`#|` above, `#=` below), which is
     // what `M.WHY` answers — a package has no ClassInfo to hang it on
     std::unordered_map<std::string, std::string> pkgPod_;
+    std::map<std::string, std::string> pkgPodTrail_;   // …its `#=` part alone
     std::shared_ptr<ClassInfo> howModuleClsInfo_, howPackageClsInfo_;   // their metaobjects
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.

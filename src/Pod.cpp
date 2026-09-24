@@ -779,11 +779,45 @@ ValueList parsePod(const std::string& src) {
     std::string leading;
     for (size_t k = 0; k < lines.size(); k++) {
         std::string t = trim(lines[k]);
+        // `#|{ … }` / `#={ … }` — a BRACKETED declarator block, possibly over
+        // several lines: its trimmed inside is one block
+        if (t.size() > 2 && t[0] == '#' && (t[1] == '|' || t[1] == '=') &&
+            (t[2] == '{' || t[2] == '(' || t[2] == '[' || t[2] == '<')) {
+            const bool lead = t[1] == '|';
+            char open = t[2], close = open == '{' ? '}' : open == '(' ? ')' : open == '[' ? ']' : '>';
+            std::string body; int d = 1; size_t j = k; size_t pos = 3;
+            std::string cur = t;
+            while (true) {
+                for (; pos < cur.size(); pos++) {
+                    if (cur[pos] == open) d++;
+                    else if (cur[pos] == close && --d == 0) break;
+                    body += cur[pos];
+                }
+                if (d == 0 || j + 1 >= lines.size()) break;
+                body += '\n'; cur = lines[++j]; pos = 0;
+            }
+            size_t a = body.find_first_not_of(" \t\r\n"), b = body.find_last_not_of(" \t\r\n");
+            body = a == std::string::npos ? std::string() : body.substr(a, b - a + 1);
+            Value d2 = mkPod("Pod::Block::Declarator");
+            Value pc = Value::array(); pc.arr()->push_back(Value::str(body));
+            (*d2.hash())["contents"] = pc;
+            if (lead) (*d2.hash())["declLine"] = Value::integer((long long)j + 2);
+            else {
+                (*d2.hash())["declLine"] = Value::integer((long long)k + 1);
+                (*d2.hash())["trailingPod"] = Value::boolean(true);
+            }
+            top.push_back(d2);
+            k = j;
+            continue;
+        }
         if (t.rfind("#|", 0) == 0) { if (!leading.empty()) leading += ' '; leading += trim(t.substr(2)); continue; }
         if (!leading.empty()) {
             Value d = mkPod("Pod::Block::Declarator");
             Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
             (*d.hash())["contents"] = pc;
+            // the declaration it documents is on this line (1-based): `.WHY`
+            // links the entry back to its declarand through it
+            (*d.hash())["declLine"] = Value::integer((long long)k + 1);
             top.push_back(d);
             leading.clear();
         }
@@ -792,10 +826,37 @@ ValueList parsePod(const std::string& src) {
             // not inside a string literal: no quote opened before it on the line
             bool quoted = false;
             for (size_t q = 0; q < h; q++) if (t[q] == '\'' || t[q] == '"') quoted = !quoted;
+            // a whole-line `#=` right under another continues it: `#= multi`
+            // then `#= line` is ONE declarator block, "multi line"
+            if (!quoted && h == 0 && !top.empty() && top.back().hash() &&
+                top.back().hash()->count("trailRunEnd") &&
+                (*top.back().hash())["trailRunEnd"].toInt() == (long long)k) {
+                auto& c = *(*top.back().hash())["contents"].arr();
+                if (!c.empty()) c.back() = Value::str(c.back().toStr() + " " + trim(t.substr(h + 2)));
+                (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
+                continue;
+            }
+            // …and one right after a LEADING block for the same declaration
+            // (this line, or the line above) joins it: `#| a` + `#= b` is the
+            // one declarator block "a\nb"
+            if (!quoted && !top.empty() && top.back().hash() &&
+                top.back().hash()->count("declLine") && !top.back().hash()->count("trailingPod") &&
+                ((*top.back().hash())["declLine"].toInt() == (long long)k + 1 ||
+                 (h == 0 && (*top.back().hash())["declLine"].toInt() == (long long)k))) {
+                auto& c = *(*top.back().hash())["contents"].arr();
+                if (!c.empty()) c.back() = Value::str(c.back().toStr() + "\n" + trim(t.substr(h + 2)));
+                (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
+                continue;
+            }
             if (!quoted) {
                 Value d = mkPod("Pod::Block::Declarator");
                 Value pc = Value::array(); pc.arr()->push_back(Value::str(trim(t.substr(h + 2))));
                 (*d.hash())["contents"] = pc;
+                // a trailing one documents this line's declaration, or the one
+                // just above when it stands on a line of its own
+                (*d.hash())["declLine"] = Value::integer((long long)k + 1);
+                (*d.hash())["trailingPod"] = Value::boolean(true);
+                (*d.hash())["trailRunEnd"] = Value::integer((long long)k + 1);   // the run's last line so far
                 top.push_back(d);
             }
         }

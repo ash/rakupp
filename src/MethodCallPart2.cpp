@@ -2290,6 +2290,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // divider) and the caption from its config.
         if (m == "headers")  return h.count("headers") ? h["headers"] : Value::array();
         if (m == "caption")  return h.count("caption") ? h["caption"] : Value::str("");
+        // a declarator block's own three: what it documents, and its parts
+        if (m == "WHEREFORE") return h.count("WHEREFORE") ? h["WHEREFORE"] : Value::any();
+        if (m == "leading")   return h.count("leading") ? h["leading"] : Value::any();
+        if (m == "trailing")  return h.count("trailing") ? h["trailing"] : Value::any();
         if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s.str() : std::string("Pod::Block"));
         if (m == "defined" || m == "Bool") return Value::boolean(true);
         if (m == "Str" || m == "gist" || m == "raku") {
@@ -4443,6 +4447,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return builtinParse(args);
             }
+            // `.^candidates` / `R.HOW.candidates(R)` — every declaration of a
+            // parametric role group, earliest first (a lone role is its own one)
+            if (m == "candidates" && ci->isRole) {
+                Value out = Value::array(); out.isList = true;
+                for (size_t k = 0; k <= ci->roleVariants.size(); k++)
+                    out.arr()->push_back(Value::typeObj(ci->name));
+                return out;
+            }
             // metamodel (.^find_method / .^add_method / .^methods / .^lookup / .^can)
             if (m == "find_method" || m == "lookup") {
                 std::string mn = args.empty() ? "" : args[0].toStr();
@@ -6481,8 +6493,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     {
         bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) ||
                       (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-                       inv.obj()->cls->name == "Metamodel::ClassHOW");
+                       (inv.obj()->cls->name == "Metamodel::ClassHOW" ||
+                        inv.obj()->cls->name == "Metamodel::ParametricRoleGroupHOW"));
         if (howInv) {
+            // `R.HOW.candidates(R)` — the declarations of R's role group
+            if (m == "candidates" && !args.empty() && args[0].t == VT::Type) {
+                auto ci = classes_.find(args[0].s);
+                Value out = Value::array(); out.isList = true;
+                if (ci != classes_.end() && ci->second)
+                    for (size_t k = 0; k <= ci->second->roleVariants.size(); k++)
+                        out.arr()->push_back(Value::typeObj(args[0].s));
+                return out;
+            }
             if (m == "archetypes") {
                 Value a = Value::makeHash(); a.hashKind = "Archetypes";
                 bool role = inv.t == VT::Type && inv.s.find("Role") != std::string::npos;

@@ -438,6 +438,14 @@ std::string Value::toStr() const {
         return enumName;
     }
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
+    // a Pod block is the text of its contents (`~$=pod[0]`, `~$thing.WHY`)
+    if (t == VT::Hash && hashKind == "Pod" && hash() && hash()->count("contents")) {
+        std::string o;
+        const Value& c = hash()->at("contents");
+        if (c.t == VT::Array && c.arr()) for (auto& x : *c.arr()) o += x.toStr();
+        else o = c.toStr();
+        return o;
+    }
     switch (t) {
         case VT::Nil:
         case VT::Any:  return "";

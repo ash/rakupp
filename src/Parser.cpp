@@ -9128,6 +9128,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     {   // …the same for a routine: leading and trailing docs are joined, not
         // one-or-the-other (a parameter's own `#=` was claimed in the signature)
         std::string trail = trailingPodFor(subDeclLine);
+        s->podTrail = trail;
         if (!trail.empty()) s->pod = s->pod.empty() ? trail : s->pod + "\n" + trail;
     }
     // optional return type / traits up to block: skip until '{'
@@ -9706,6 +9707,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         int dl = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
         cd->pod = leadingPodFor(dl);
         std::string trail = trailingPodFor(dl);
+        cd->podTrail = trail;
         if (!trail.empty()) cd->pod = cd->pod.empty() ? trail : cd->pod + "\n" + trail;
     }
     cd->isRole = isRole;

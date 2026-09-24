@@ -711,6 +711,7 @@ struct SubDecl : Stmt {
     bool isOur = false;    // `our sub` — also installed in the package/global scope (visible to sibling blocks)
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
     std::string pod;       // `#|` leading declarator pod (.WHY)
+    std::string podTrail;  // …its `#=` trailing part alone (pod holds both, joined)
     bool isNative = false;    // `is native` — a C FFI call
     std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
     std::string nativeLibSub; // `is native(&sub)` — a sub name called at runtime for the lib path
@@ -784,8 +785,9 @@ struct ClassDecl : Stmt {
                                    // name is installed NOWHERE, not even in its own body
     bool classRw = false;          // `class Foo is rw` — every public attribute is writable
     ExprPtr nameExpr;              // `class ::(EXPR) { … }` — the name, computed when the decl runs
-    bool isStubDecl = false;
-    std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
+    bool isStubDecl = false;       // body was a bare `...` — a forward declaration, redeclarable
+    std::string pod;               // `#|` leading declarator pod (.WHY)
+    std::string podTrail;          // …its `#=` trailing part alone (pod holds both, joined)
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
     std::string ver, auth, api;
     // `module Zef:ver($?DISTRIBUTION.meta<version> // '*')` — the adverb may be an

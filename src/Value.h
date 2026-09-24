@@ -461,6 +461,7 @@ struct Callable {
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
+    std::string podTrail;                             // …its `#=` part alone
     bool isSigLiteral = false;                        // built by `:( … )` — a bare Signature, not a routine's
                                                       // (an unconstrained param is Mu there, Any on a routine)
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
@@ -1218,6 +1219,7 @@ struct ClassInfo {
     std::string repr; // `is repr("CStruct")` — NativeCall native memory layout
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
+    std::string podTrail; // …its `#=` part alone
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     // `method loader handles <a b>` — delegated name -> the METHOD to ask for the
     // target object. An attribute's `handles` is in ClassAttr::handles instead.
@@ -1236,6 +1238,9 @@ struct ClassInfo {
     Value howObj; // persistent .HOW metaobject — `T.HOW does SomeRole` mixins must stick (Method::Also)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
     ClassDecl* decl = nullptr; // the AST declaration (program-lifetime) — carries roleParams for parameterized roles
+    // the OTHER declarations of a parametric role group (`role R {}`, `role R[$x] {}`,
+    // …), earliest first; this ClassInfo is the latest. `does R[a, b]` picks by arity.
+    std::vector<std::shared_ptr<ClassInfo>> roleVariants;
     // `role R[$x, %h, Bool :$opt]` composed as `does R[42, %(...), :opt]` — the
     // role's value/type parameters bound to the composition's arguments (name incl.
     // sigil → value). Injected into the scope of the class's methods/submethods so
