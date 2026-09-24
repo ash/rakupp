@@ -2943,6 +2943,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->base = std::move(base);
                     zi->index = std::make_unique<WhateverExpr>();
                     zi->isHash = false;
+                    zi->zen = true;
                     base = std::move(zi);
                 }
                 else base = zenDecont(std::move(base));
@@ -2983,6 +2984,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->base = std::move(base);
                     zi->index = std::make_unique<WhateverExpr>();
                     zi->isHash = true;
+                    zi->zen = true;
                     base = std::move(zi);
                 }
                 else base = zenDecont(std::move(base));
@@ -3062,6 +3064,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                     zi->base = std::move(base);
                     zi->index = std::make_unique<WhateverExpr>();
                     zi->isHash = true;
+                    zi->zen = true;
                     zi->angleKey = true;   // `%h<>:k`, the ANGLE zen slice
                     base = std::move(zi);
                 }

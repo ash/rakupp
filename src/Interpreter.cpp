@@ -39338,6 +39338,22 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         // an unrecognised subscript adverb is an error (Rakudo: no postcircumfix
         // candidate → X::Adverb / dispatch failure): `@a[1]:zorp`, `%h<a>:kv:p:zip:zop`
+        // what an X::Adverb calls this subscript: a hash one is a "slice"; an
+        // array one is "element access" for one index and a "slice" for many;
+        // a zen slice names itself when no known adverb came along
+        auto adverbWhat = [&](bool nogoEmpty) -> std::string {
+            if (!idx->isHash) {   // an array names its zen and whatever slices outright
+                if (idx->zen) return "zen slice";
+                if (idx->index && idx->index->kind == NK::Whatever) return "whatever slice";
+            }
+            if (idx->zen && nogoEmpty) return "{} slice";
+            if (idx->isHash) return "slice";
+            Expr* ie = idx->index.get();
+            bool many = ie && (ie->kind == NK::ListExpr || ie->kind == NK::Range ||
+                               (ie->kind == NK::VarExpr && !static_cast<VarExpr*>(ie)->name.empty() &&
+                                static_cast<VarExpr*>(ie)->name[0] == '@'));
+            return many || idx->zen ? "slice" : "element access";
+        };
         if (!unknownAdv.empty()) {
             std::string list;
             for (auto& u : unknownAdv) { if (!list.empty()) list += " "; list += u; }
@@ -39345,7 +39361,23 @@ Value Interpreter::evalIndex(Index* idx) {
             // dispatch failure, because Rakudo's postcircumfix candidates for
             // an array take named adverbs it knows and nothing else — the two
             // differ, and roast reads the type (sheet LA-17).
-            throw RakuError{Value::typeObj(idx->isHash ? "X::Adverb" : "X::Multi::NoMatch"),
+            if (idx->isHash || !advSeen.empty() || idx->zen) {
+                // …carrying what a handler reads: the subscripted variable, the
+                // adverbs that were not understood, and the known ones that
+                // came with them
+                Value unexpected = Value::array(); unexpected.isList = true;
+                for (auto& u : unknownAdv) unexpected.arr()->push_back(Value::str(u));
+                Value nogo = Value::array(); nogo.isList = true;
+                for (auto& a2 : advSeen) if (a2 != "delete") nogo.arr()->push_back(Value::str(a2));
+                std::string src = idx->base->kind == NK::VarExpr
+                                ? static_cast<VarExpr*>(idx->base.get())->name
+                                : std::string(idx->isHash ? "%h" : "@a");
+                throwTypedV("X::Adverb",
+                    {{"what", Value::str(adverbWhat(nogo.arr()->empty()))}, {"source", Value::str(src)},
+                     {"unexpected", unexpected}, {"nogo", nogo}},
+                    "Unexpected adverbs passed to subscript: " + list);
+            }
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                 "Unexpected adverbs passed to subscript: " + list};
         }
         // a NATIVE array holds values, not containers: nothing to delete
@@ -39396,7 +39428,7 @@ Value Interpreter::evalIndex(Index* idx) {
                                     ") passed to slice on '" + src + "'.";
             Value f = rakuppNewFailure();
             (*f.hash())["exception"] = makeTypedEx("X::Adverb",
-                {{"what", Value::str("slice")}, {"source", Value::str(src)},
+                {{"what", Value::str(adverbWhat(false))}, {"source", Value::str(src)},
                  {"unexpected", Value::array()}, {"nogo", nogo}}, msg);
             (*f.hash())["message"] = Value::str(msg);
             return f;

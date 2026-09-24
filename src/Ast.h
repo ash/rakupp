@@ -407,6 +407,7 @@ struct Index : Expr { // base[idx] or base{key}
     ExprPtr index;
     bool isHash = false;
     bool multiDim = false; // @a[X;Y]: index is a ListExpr of dims, sliced level-by-level
+    bool zen = false;          // an adverbed ZEN slice `%h{}:k` / `@a[]:v` (its index is a stand-in Whatever)
     bool semicolonSub = false; // %h{a;b;c}: a `{; }` multidim brace subscript (parsed as nested Index)
     // `%h<a>` against `%h{'a'}` — Rakudo keeps them apart
     // (`Postcircumfix::LiteralHashIndex` against `HashIndex`) and the two mean
