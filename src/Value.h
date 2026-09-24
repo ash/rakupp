@@ -420,6 +420,7 @@ struct Callable {
     MixinInfo& mixinsRW() { if (!mixins.p) mixins.p = std::make_unique<MixinInfo>(); return *mixins.p; }
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
+    std::shared_ptr<std::string> deprecated;        // `is DEPRECATED`: what to use instead (null = not)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
     // A plain SUB installed as a method (`.^add_method($name, &sub)`): Rakudo
     // hands such a routine the invocant as its FIRST POSITIONAL, which is why

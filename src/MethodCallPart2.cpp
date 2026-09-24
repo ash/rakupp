@@ -3796,6 +3796,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return bt;
     }
+    // `Deprecation.report` — the deprecated calls seen so far, as Rakudo words
+    // them, and forgotten once reported (Nil when there are none)
+    if (inv.t == VT::Type && inv.s == "Deprecation" && m == "report") return deprecationReport();
     if (inv.t == VT::Type && inv.s == "Collation" && m == "new") return makeCollation();
     // a Collation's levels: read them, `.set` them (in place, answering itself),
     // and the gist Rakudo prints, whose `collation-level` packs level i as bit

@@ -10496,6 +10496,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->declFile = declFileNow();
                 c.code()->declLine = sd->line;
                 c.code()->pod = sd->pod;
+                if (sd->deprecated) c.code()->deprecated = deprecationFor(sd);
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
                 c.code()->isMethod = sd->isMethod;
@@ -10797,6 +10798,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     code.code()->retType = qualifyDeclType(md->retType);
                     code.code()->retRw = md->retRw;
                     code.code()->pod = md->pod;
+                    if (md->deprecated) code.code()->deprecated = deprecationFor(md);
                     code.code()->body = &md->body;
                     code.code()->langRev = langRev_;
                     code.code()->rakuAst = rakuAstPragma_;
@@ -11593,6 +11595,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // a method's own declarator pod — `#|` above it, `#=` below — is
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
                 code.code()->pod = md->pod;
+                if (md->deprecated) code.code()->deprecated = deprecationFor(md.get());
                 code.code()->declFile = declFileNow();
                 code.code()->declLine = md->line;
                 code.code()->isStub = stmtIsStub(md->body);
@@ -16905,6 +16908,44 @@ Value makeCollation() {
     return c;
 }
 
+// `is DEPRECATED(…)`: what to use instead, as the report words it
+std::shared_ptr<std::string> Interpreter::deprecationFor(SubDecl* sd) {
+    std::string with = "something else";
+    if (sd->deprecatedWith) with = eval(sd->deprecatedWith.get()).toStr();
+    return std::make_shared<std::string>(with);
+}
+
+// A call of a deprecated routine: remembered by (kind, name, package, advice),
+// with the line it was made from, until `Deprecation.report` collects them.
+void Interpreter::noteDeprecatedCall(const Callable& c, int line) {
+    std::lock_guard<std::mutex> lk(deprecM_);
+    std::string kind = c.isMethod ? "Method" : "Sub";
+    std::string from = c.pkg.empty() ? "GLOBAL" : c.pkg;
+    for (auto& r : deprecations_)
+        if (r.kind == kind && r.name == c.name && r.from == from && r.with == *c.deprecated) {
+            if (std::find(r.lines.begin(), r.lines.end(), line) == r.lines.end()) r.lines.push_back(line);
+            return;
+        }
+    deprecations_.push_back({kind, c.name, from, *c.deprecated, {line}});
+}
+
+Value Interpreter::deprecationReport() {
+    std::lock_guard<std::mutex> lk(deprecM_);
+    if (deprecations_.empty()) return Value::nil();
+    std::string out = "Saw " + std::to_string(deprecations_.size()) + " occurrence" +
+                      (deprecations_.size() == 1 ? "" : "s") + " of deprecated code.\n";
+    for (auto& r : deprecations_) {
+        out += std::string(80, '=') + "\n";
+        out += r.kind + " " + r.name + " (from " + r.from + ") seen at:\n";
+        out += "  " + progName() + ", line" + (r.lines.size() == 1 ? "" : "s") + " ";
+        for (size_t i = 0; i < r.lines.size(); i++) out += (i ? "," : "") + std::to_string(r.lines[i]);
+        out += "\nPlease use " + r.with + " instead.\n";
+    }
+    out += std::string(80, '-');
+    deprecations_.clear();
+    return Value::str(out);
+}
+
 bool Interpreter::isBuiltinDynamic(const std::string& name) {
     static const std::set<std::string> kBuiltinDyn = {
         "$*ARGFILES", "$*COLLATION", "$*CWD", "$*DEFAULT-READ-ELEMS", "$*DISTRO",
@@ -20075,6 +20116,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // caller.
     const int callLine = curLine_;
     tcx.callFrames.push_back({callLine, &codeVal});
+    if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } cfG{tcx, this, callLine};
@@ -21394,6 +21436,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // callCallableRaw — a method body advances curLine_ exactly like a sub's
     const int callLine = curLine_;
     tcx.callFrames.push_back({callLine, &codeVal});
+    if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct DynGuard { ExecContext& t; Interpreter* self; int line;
         ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } dynG{tcx, this, callLine};

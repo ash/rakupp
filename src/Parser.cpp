@@ -9267,6 +9267,18 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         if (isIdent("is") && peek().kind == Tok::Ident &&
             (peek().text == "rw" || peek().text == "raw"))
             s->retRw = true;
+        // `is DEPRECATED` / `is DEPRECATED("use X")` — calls get reported by
+        // `Deprecation.report`, naming what to use instead
+        if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "DEPRECATED") {
+            advance(); advance();
+            s->deprecated = true;
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                advance();
+                if (!isKind(Tok::RParen)) s->deprecatedWith = parseExpression();
+                expectKind(Tok::RParen, ")");
+            }
+            continue;
+        }
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {
@@ -9782,6 +9794,17 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         // `is hidden` — the class keeps out of its children's `nextsame` chain;
         // a trait, not a parent (not modelled, like `hides`)
         if (!isDoes && isIdent("hidden")) { advance(); continue; }
+        // `class A is DEPRECATED("…")` — a trait, not a parent (its report is not
+        // modelled; a routine's is)
+        if (!isDoes && isIdent("DEPRECATED")) {
+            advance();
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                while (d > 0 && !isKind(Tok::End));
+            }
+            continue;
+        }
         if (!isDoes && isIdent("export")) { // trait, not a parent class
             advance();
             // `is export(:TAG)` — consume the tag list too. Leaving it in the
