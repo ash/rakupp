@@ -24116,7 +24116,30 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 "Cannot modify an immutable List"};
         }
     }
+    // `constant &infix:<☄> := &infix:<☃>` then `multi infix:<☄>(…)`: the multi
+    // was HOISTED, so it already joined a dispatcher of its own under the name
+    // before the constant took the name over. It belongs to the aliased group
+    // (Rakudo: the one proto both names now share) — carry its candidates over.
+    Value priorDisp;
+    if (a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (ve->declare && ve->declScope == "constant" && ve->name.size() > 1 && ve->name[0] == '&')
+            if (Value* p = tctx_.cur->find(ve->name))
+                if (p->t == VT::Code && p->code() && p->code()->isMultiDispatcher) priorDisp = *p;
+    }
     Value r = evalAssignInner(a, sink);
+    if (priorDisp.t == VT::Code) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        Value* now = tctx_.cur->find(ve->name);
+        if (now && now->t == VT::Code && now->code() && now->code()->isMultiDispatcher &&
+            now->code() != priorDisp.code())
+            for (auto& c : priorDisp.code()->candidates) {
+                bool have = false;
+                for (auto& h : now->code()->candidates)
+                    if (h.code() == c.code() || (h.code() && c.code() && h.code()->body == c.code()->body)) { have = true; break; }
+                if (!have) now->code()->candidates.push_back(c);
+            }
+    }
     if (a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (ve->declare && ve->containerIs == "List")
@@ -27671,6 +27694,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         auto ends = [](const Value& v) -> ValueList {
             if (v.t != VT::Range) return v.flatten();
             ValueList e;
+            // the EMPTY minmax, Inf..-Inf, is the identity: it adds no extreme
+            if (const RangeEnds* re = rangeEnds(v))
+                if (re->from.t == VT::Num && re->to.t == VT::Num &&
+                    re->from.n == INFINITY && re->to.n == -INFINITY) return e;
             if (const RangeEnds* re = rangeEnds(v)) { e.push_back(re->from); e.push_back(re->to); }
             else if (v.ofType() == "Str") {
                 e.push_back(Value::str(cpToU8((uint32_t)v.rFrom())));
@@ -34981,7 +35008,13 @@ Value Interpreter::evalUnary(Unary* u) {
                              !static_cast<VarExpr*>(ie.get())->name.empty() &&
                              static_cast<VarExpr*>(ie.get())->name[0] == '$') ||
                             ie->kind == NK::ArrayLit;
-                pushFlat(eval(ie.get()), item);
+                Value v = eval(ie.get());
+                // with SEVERAL operands a Range is one of them, not its elements
+                // (the single-argument rule): `[min] 42..420000000000000, -700`
+                // is -700, and spreading it never finished
+                // (an ENDLESS one is still answered from its bounds, below)
+                if (v.t == VT::Range && le->items.size() > 1 && !isEndlessRange(v)) item = true;
+                pushFlat(std::move(v), item);
             }
         }
         else if (listInfix) { // a single @rows operand spreads ONE level

@@ -2305,8 +2305,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return Value::typeObj(lub);
         }
         if (m == "minmax") {
+            bool haveBlock = false;
+            for (auto& a : args)
+                if (a.t == VT::Code || (a.t == VT::Pair && a.s == "by")) haveBlock = true;
             // Range.minmax → the (min max) List; List.minmax → a min..max Range
-            if (inv.t == VT::Range) {
+            // (with a block, a Range orders its ELEMENTS like any list)
+            if (inv.t == VT::Range && !haveBlock) {
                 Value out = Value::array(); out.isList = true;
                 out.arr()->push_back(Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)));
                 out.arr()->push_back(Value::integer(inv.rTo() - (inv.rExTo() ? 1 : 0)));
@@ -2320,13 +2324,39 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Code) { mapper = a; break; }
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "by" && a.pairVal()) mapper = *a.pairVal();
+            // a TWO-parameter block is a comparator, as for min/max
+            bool comparator = false;
+            if (mapper.t == VT::Code && mapper.code()) {
+                auto* cc = mapper.code();
+                size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
+                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholders.size());
+                comparator = ar >= 2;
+            }
+            auto cmp = [&](const Value& a, const Value& ak, const Value& b, const Value& bk) {
+                if (!comparator) return valueCmp(ak, bk);
+                long long o = callCallable(mapper, ValueList{a, b}).toInt();
+                return o < 0 ? -1 : o > 0 ? 1 : 0;
+            };
             Value lo, hi, loK, hiK; bool started = false;
-            for (auto& v : items) {
+            ValueList each;
+            if (inv.t == VT::Range) each = inv.flatten();
+            else if (mapper.t == VT::Code) each = items;
+            else
+                // a RANGE element stands for its two ends — `.minmax` results
+                // combine that way — and the empty one (Inf..-Inf) for nothing
+                for (auto& v : items) {
+                    if (v.t != VT::Range) { each.push_back(v); continue; }
+                    Value mn = methodCall(v, "min", ValueList{}), mx = methodCall(v, "max", ValueList{});
+                    if (valueCmp(mn, mx) > 0) continue;
+                    each.push_back(mn); each.push_back(mx);
+                }
+            for (auto& v : each) {
+                if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
                 Value k = v;
-                if (mapper.t == VT::Code) { ValueList one{v}; k = callCallable(mapper, one); }
+                if (mapper.t == VT::Code && !comparator) { ValueList one{v}; k = callCallable(mapper, one); }
                 if (!started) { lo = hi = v; loK = hiK = k; started = true; continue; }
-                if (valueCmp(k, loK) < 0) { lo = v; loK = k; }
-                if (valueCmp(k, hiK) > 0) { hi = v; hiK = k; }
+                if (cmp(v, k, lo, loK) < 0) { lo = v; loK = k; }
+                if (cmp(v, k, hi, hiK) > 0) { hi = v; hiK = k; }
             }
             if (!started) { // no defined elements: Rakudo's empty minmax is Inf..-Inf
                 Value rr = Value::range(0, -1, false, false);
@@ -2377,6 +2407,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // `bag(1,1,2).max(:k)` is (1) — the element that occurs most — even
             // though the bare `.max` still compares whole pairs.
             const bool assocAdv = want && inv.t == VT::Hash;
+            // a TWO-parameter block is a COMPARATOR (`.min: { $^a <=> $^b }`),
+            // not a key mapper: it orders pairs of elements, as `sort`'s does
+            bool comparator = false;
+            if (mapper.t == VT::Code && mapper.code()) {
+                auto* cc = mapper.code();
+                size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
+                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholders.size());
+                comparator = ar >= 2;
+            }
             Value best, bestKey; bool started = false;
             std::vector<size_t> at;
             for (size_t i = 0; i < items.size(); i++) {
@@ -2385,9 +2424,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
                 Value key = v;
                 if (assocAdv && v.t == VT::Pair && v.pairVal()) key = *v.pairVal();
-                if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
+                if (mapper.t == VT::Code && !comparator) { ValueList one{v}; key = callCallable(mapper, one); }
                 if (!started) { best = v; bestKey = key; started = true; at = {i}; continue; }
-                int c = valueCmp(key, bestKey); // strict compare keeps the FIRST on ties
+                int c;
+                if (comparator) {
+                    Value o = callCallable(mapper, ValueList{v, best});
+                    c = (int)o.toInt();   // an Order: Less / Same / More
+                    c = c < 0 ? -1 : c > 0 ? 1 : 0;
+                }
+                else c = valueCmp(key, bestKey); // strict compare keeps the FIRST on ties
                 if ((!wantMax && c < 0) || (wantMax && c > 0)) { best = v; bestKey = key; at = {i}; }
                 else if (c == 0) at.push_back(i);
             }

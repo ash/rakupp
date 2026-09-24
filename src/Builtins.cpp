@@ -15789,6 +15789,19 @@ void Interpreter::registerBuiltins() {
                 try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
+            // whenever Promise.allof($p1.start, $p2.start) / .anyof(…) — a
+            // combinator over lazy process promises: realize it the way `await`
+            // does (every process runs, its output reaching the taps already
+            // registered), then fire once with the combinator
+            if (s.t == VT::Hash && s.hashKind == "Promise" && !s.ext() &&
+                s.hash()->count("kind") &&
+                ((*s.hash())["kind"].toStr() == "allof" || (*s.hash())["kind"].toStr() == "anyof")) {
+                ValueList aw{s};
+                I.callBuiltin("await", aw);
+                ValueList one{s};
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+            }
             // whenever over a SETTLED Promise binds the block to its RESULT, not the
             // promise object. (An unkept one still fires immediately with the object —
             // the full async react registration is still an open item.)
@@ -16726,6 +16739,7 @@ void Interpreter::registerBuiltins() {
             }
             if (kind == "anyof" || kind == "allof") {
                 Value* procP = nullptr;
+                std::vector<Value*> procs;                      // EVERY process member, not the last
                 std::vector<Value*> timers;                     // timer members (Promise.in/.at)
                 std::vector<std::shared_ptr<PromiseState>> pss; // start/spawn promises in the combinator
                 std::vector<Value*> psvals;
@@ -16733,7 +16747,7 @@ void Interpreter::registerBuiltins() {
                     if (q.t == VT::Hash && q.hashKind == "Promise") {
                         std::string k = q.hash()->count("kind") ? (*q.hash())["kind"].toStr() : "";
                         if (k == "timer") timers.push_back(&q);
-                        else if (k == "proc") procP = &q;
+                        else if (k == "proc") { procP = &q; procs.push_back(&q); }
                         else if (q.ext()) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext())); psvals.push_back(&q); }
                     }
                 }
@@ -16746,7 +16760,10 @@ void Interpreter::registerBuiltins() {
                     }
                     return L;
                 };
-                if (procP) I.runProcPromise(*procP, timers.empty() ? 0 : timerLeft(true));
+                // `Promise.allof($p1.start, $p2.start)` runs (drains, reaps) each
+                // process; anyof keeps its single-process behaviour
+                if (kind == "allof") for (auto* pp : procs) I.runProcPromise(*pp, timers.empty() ? 0 : timerLeft(true));
+                else if (procP) I.runProcPromise(*procP, timers.empty() ? 0 : timerLeft(true));
                 // WAIT for the member start-promises — anyof: until ANY settles (a
                 // timer member is the deadline); allof: until EVERY one settles.
                 // (They were ignored before, so `await Promise.anyof: $todo, $time-up`
