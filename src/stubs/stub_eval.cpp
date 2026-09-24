@@ -24,6 +24,9 @@ Lexer::Lexer(std::string, bool) {
 std::vector<Token> Lexer::tokenize() {
     featureMissing("eval", "EVAL/require/runtime-compiled regexes (the lexer)");
 }
+void Lexer::noteUserOp(const std::string&, bool) {
+    featureMissing("eval", "EVAL/require/runtime-compiled regexes (the lexer)");
+}
 Parser::Parser(std::vector<Token>) {
     featureMissing("eval", "EVAL/require/runtime-compiled regexes (the parser)");
 }

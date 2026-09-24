@@ -223,6 +223,11 @@ private:
     // site. A name that is not operator-shaped is ignored, so ordinary `my &cb`
     // costs one starts-with test.
     void registerOperatorVarName(const std::string& vname);
+    bool prefixOpCallAt(size_t i) const;   // `.:<op>` with its colon at toks_[i]
+    bool splitPostfixRun();                // `kΩ` → the declared postfixes `k` `Ω`
+    std::string sigillessTermName(const std::string& nm); // `\\term:<ℵ₀>` → `ℵ₀`
+    bool spacedAdverbAhead(bool allowTight = false); // ` :name` next, tight on its own
+    bool attachSpacedAdverb(ExprPtr& lhs); // …given to the loosest op of `lhs`
     void regInfix(const std::string& n, int bp) {
         auto it = userInfix_.find(n);
         opUndo_.push_back({'i', n, it != userInfix_.end(), it != userInfix_.end() ? it->second : 0, ""});

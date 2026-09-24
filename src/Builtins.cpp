@@ -14879,6 +14879,18 @@ void Interpreter::registerBuiltins() {
     // in the list flatten (`:256[|@^a]`)
     B["__radix-list"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::integer(0);
+        if (a[0].t == VT::Str) {   // a base past 64 bits, as its digits
+            BigInt b = BigInt::fromString(a[0].toStr()), acc(0LL);
+            auto addB = [&](const Value& d) {
+                acc = acc * b + (d.t == VT::Int && d.big() ? *d.big() : BigInt(d.toInt()));
+            };
+            for (size_t k = 1; k < a.size(); k++) {
+                if (a[k].t == VT::Array && a[k].arr())
+                    for (auto& e : *a[k].arr()) addB(e);
+                else addB(a[k]);
+            }
+            return Value::bigint(acc);
+        }
         long long base = a[0].toInt();
         // accumulate in int64 until the next place-shift would overflow, then
         // spill to BigInt — :256[16 bytes] is a 128-bit value (UUID.Str)
@@ -14903,6 +14915,21 @@ void Interpreter::registerBuiltins() {
         if (a.size() < 2) return Value::integer(0);
         int base = (int)a[0].toInt();
         std::string s = a[1].toStr();
+        // The STRING may name its own base, which then wins over the literal's:
+        // `:10('0b1110')` is 14, and so is `:10(':2<1110>')`.
+        // …but only when that letter is no DIGIT of the base: `:16("0d4a1185")`
+        // is hex, `0d` its first two digits
+        if (s.size() > 2 && s[0] == '0' && std::strchr("bodx", s[1]) && s[1] - 'a' + 10 >= base) {
+            base = s[1] == 'b' ? 2 : s[1] == 'o' ? 8 : s[1] == 'd' ? 10 : 16;
+            s = s.substr(2);
+        }
+        else if (s.size() > 3 && s[0] == ':' && ascii::isdigit((unsigned char)s[1])) {
+            size_t lt = s.find('<');
+            if (lt != std::string::npos && s.back() == '>') {
+                base = std::atoi(s.substr(1, lt - 1).c_str());
+                s = s.substr(lt + 1, s.size() - lt - 2);
+            }
+        }
         // Every character has to be a digit OF THAT BASE (or a separating `_`, or the
         // one radix point): `:16<fo>` is X::Str::Numeric, not 15. Stopping at the first
         // bad character silently turned a malformed colour like 'foobar' into a number

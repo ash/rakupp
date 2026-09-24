@@ -8517,6 +8517,20 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         return false;
     }() ? parsePod(src) : ValueList{});
     Lexer lexer(src);
+    // the caller's operator spellings, so `EVAL '"a" (C) "b"'` lexes `(C)` whole
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        for (auto& kv : e->vars) {
+            const std::string& n = kv.first;
+            size_t lt = n.find(":<");
+            if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
+                std::string kind = n.substr(1, lt - 1);
+                if (kind == "infix" || kind == "prefix" || kind == "postfix")
+                    lexer.noteUserOp(n.substr(lt + 2, n.size() - lt - 3), false);
+            }
+            // …and its sigilless TERMS that are no plain word (`my \term:<ℵ₀>`)
+            else if (!n.empty() && !std::strchr("$@%&", n[0]) && (unsigned char)n.back() >= 0x80)
+                lexer.noteUserOp(n, true);
+        }
     auto prog = std::make_shared<Program>();
     try {
         lexer.tolerant_ = true;
@@ -10734,6 +10748,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 tctx_.cur->define(ed->name, pairs);
                 if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);
                 if (ed->isExport && global_) global_->define(ed->name, pairs);
+            }
+            // an ANONYMOUS enum is valued as the Map of its members:
+            // `my %e = enum :: <foo bar>` is `{foo => 0, bar => 1}`
+            if (ed->name.empty()) {
+                Value m = Value::makeHash();
+                for (auto& p : *pairs.arr()) (*m.hash())[p.s] = p.pairVal() ? *p.pairVal() : Value::any();
+                m.hashKind = "Map";
+                return m;
             }
             return Value::any();
         }
@@ -16156,7 +16178,7 @@ static bool isNodalMethod(const std::string& m) {
     return kNodal.count(m) > 0;
 }
 
-Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args) {
+Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe) {
     // A non-nodal method reaches the LEAVES: `[[1,2],[3,4]]».Str` is
     // `[["1","2"],["3","4"]]`, not two stringified rows, and `@data».are` over
     // a list of hashes answers a hash of types per element. rakupp stopped at
@@ -16166,8 +16188,19 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         return !nodal && ((v.t == VT::Array && v.arr()) ||
                           (v.t == VT::Hash && v.hash() && v.hashKind.empty()));
     };
-    auto each = [&](const Value& el) {
-        return descends(el) ? hyperMethodEach(el, m, args) : methodCall(el, m, args);
+    auto each = [&](const Value& el) -> Value {
+        if (descends(el)) return hyperMethodEach(el, m, args, maybe);
+        if (!maybe) return methodCall(el, m, args);
+        // `».?name`: an element without the method answers Nil, not a death
+        try { return methodCall(el, m, args); }
+        catch (RakuError& err) {
+            const Value& p = err.payload;
+            bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                            (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                             p.obj()->cls->name == "X::Method::NotFound");
+            if (!notFound) throw;
+            return Value::any();
+        }
     };
     if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) {
         Value hout = Value::makeHash();
@@ -29045,10 +29078,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // between a user fixing it in a second and hunting for what the character
     // meant. Thrown here rather than at lex time because that is where Rakudo
     // throws it — a lexer error is not catchable by the `try` around it.
-    if (op == "\xE2\x89\xBC" || op == "\xE2\x89\xBD") {
-        bool sub = op == "\xE2\x89\xBC";
+    if (op == "\xE2\x89\xBC" || op == "\xE2\x89\xBD" || op == "(<+)" || op == "(>+)") {
+        bool sub = op == "\xE2\x89\xBC" || op == "(<+)";
         throw RakuError{Value::typeObj("X::AdHoc"),
-                        std::string(sub ? "≼" : "≽") + " was removed in v6.d, please use " +
+                        op + " was removed in v6.d, please use " +
                         (sub ? "⊆" : "⊇") + " operator instead"};
     }
     // `~<` and `~>` are RESERVED in Raku and defined by nobody — Rakudo parses
@@ -40507,7 +40540,11 @@ Value Interpreter::eval(Expr* e) {
             // A private call needs a `self` in scope — see requirePrivateCallScope.
             // A `self!"$name"()` has no name yet: it is checked once the name
             // expression has been evaluated, below.
-            if (mc->bang && !mc->methodExpr) requirePrivateCallScope(mc->method);
+            // `@o»!Foo::priv` names the class, whose `trusts` (unchecked here)
+            // is what lets it be called from outside
+            if (mc->bang && !mc->methodExpr &&
+                !(mc->hyper && mc->method.find("::") != std::string::npos))
+                requirePrivateCallScope(mc->method);
             // `/re/.method` operates on the Regex object; only bare /…/ in term
             // position matches $_ (so the invocant must not auto-match here) —
             // but an explicit `m//` DOES match, so `(m:g/b/).elems` counts the
@@ -40915,7 +40952,14 @@ Value Interpreter::eval(Expr* e) {
                 return code;
             }
             if (mc->hyper) { // >>.method : apply to each top-level element (structure-preserving, no deep flatten)
-                Value out = hyperMethodEach(inv, mc->method, args);
+                // `»!Foo::priv` — the private method, by its bare name: the class
+                // it names is each element's own
+                std::string hname = mc->method;
+                if (mc->bang) {
+                    size_t q = hname.rfind("::");
+                    hname = "!" + (q == std::string::npos ? hname : hname.substr(q + 2));
+                }
+                Value out = hyperMethodEach(inv, hname, args, mc->maybe);
                 if (mc->mutate) {
                     // `($a, $b)>>.=meth` writes each result back to that element's own
                     // container; a plain `@a>>.=meth` writes the whole list back to @a.

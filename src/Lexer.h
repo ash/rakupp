@@ -32,6 +32,11 @@ inline bool rakuIdentJoins(char sep, char next) {
     return (sep == '-' || sep == '\'') && rakuIdentStart(next);
 }
 
+// The string a `constant $var = "…"` (or `'…'`) in `src` binds, or "" when there
+// is no such declaration. Operator names written `infix:[$sym]` need it at LEX
+// and PARSE time, before any code has run.
+std::string constantStringFor(const std::string& src, const std::string& var);
+
 class Lexer {
 public:
     // `honourFudge` false tokenizes the source EXACTLY as given, rather than
@@ -107,6 +112,19 @@ private:
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
     std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
+    std::set<std::string> userTerms_;  // …of which these are TERMS (`sub term:<•>`): lexed as names
+    std::set<std::string> userWordInfix_; // declared WORD infixes (`infix:<dot>`), for `»dot«`
+    void scanUserOps();
+public:
+    // a spelling to lex whole (a declared operator, or a TERM lexed as a name);
+    // EVAL seeds the caller's operators here before tokenizing
+    void noteUserOp(const std::string& name, bool term);
+private:
+    bool tryUserOpToken(std::vector<Token>& out, bool spaced);
+    bool skipUniQuote(std::string& raw);   // `‘/’` in a regex: a literal span
+    // `$v **= 3` where the file redeclares `infix:<**>`: an ASCII spelling
+    // followed by `=` is its compound assignment, which the table lexes whole
+    bool userOpIsAssignPrefix(const std::string& uo) const;
     // A file that declares `sub prefix:</>` has taken the slash away from the
     // regex literal: from that declaration on, a `/` in term position is that
     // operator (Rakudo does the same — `/bc/` there becomes prefix-slash on a

@@ -1937,6 +1937,29 @@ Regex::NodePtr Regex::parseAtom() {
         }
         // (unreachable: every `<...>` branch above returns after eating its own `>`)
     }
+    // `‘…’` / `‚…’` / `‚…‘` / `“…”` / `„…”` / `｢…｣` — the Unicode quotes are
+    // literals too, like their ASCII spellings (no escapes are read inside)
+    if ((unsigned char)c == 0xE2 || (unsigned char)c == 0xEF) {
+        auto at = [&](size_t p, const char* b) { return pat_.compare(p, 3, b) == 0; };
+        std::vector<const char*> closers;
+        if (at(pos_, "\xE2\x80\x98") || at(pos_, "\xE2\x80\x9A"))       // ‘ ‚
+            closers = {"\xE2\x80\x99", "\xE2\x80\x98"};                  // ’ ‘
+        else if (at(pos_, "\xE2\x80\x9C") || at(pos_, "\xE2\x80\x9E"))  // “ „
+            closers = {"\xE2\x80\x9D", "\xE2\x80\x9C"};                  // ” “
+        else if (at(pos_, "\xEF\xBD\xA2"))                                  // ｢
+            closers = {"\xEF\xBD\xA3"};                                     // ｣
+        if (!closers.empty()) {
+            size_t end = std::string::npos;
+            for (const char* cl : closers) end = std::min(end, pat_.find(cl, pos_ + 3));
+            if (end != std::string::npos) {
+                std::string lit = pat_.substr(pos_ + 3, end - pos_ - 3);
+                pos_ = end + 3;
+                auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_;
+                n->lit = lit;
+                return n;
+            }
+        }
+    }
     if (c == '\'' || c == '"') {
         char q = c;
         pos_++;

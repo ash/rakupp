@@ -328,50 +328,7 @@ static std::string applyRakudoFudge(const std::string& src) {
 
 Lexer::Lexer(std::string src, bool honourFudge)
     : src_(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src)) {
-    // A file may DECLARE its own symbolic operators (`sub infix:<%%%>`), and a
-    // spelling like that has to be one token or the built-in table swallows a
-    // prefix of it (`%%%` lexed as `%%` then `%`, so `5 %%% 2` divided by an
-    // empty hash). Collect the declarations up front and try them, longest
-    // first, ahead of the table. Only THIS file's declarations are visible here;
-    // an imported ASCII operator still needs its module's own parse.
-    for (const char* cat : {"infix:<", "prefix:<", "postfix:<"}) {
-        size_t cl = std::strlen(cat);
-        for (size_t p = src_.find(cat); p != std::string::npos; p = src_.find(cat, p + 1)) {
-            size_t b = p;
-            while (b > 0 && ascii::isspace((unsigned char)src_[b - 1])) b--;
-            bool decl = false;
-            for (const char* kw : {"sub", "multi", "proto", "only"}) {
-                size_t kl = std::strlen(kw);
-                if (b >= kl && src_.compare(b - kl, kl, kw) == 0 &&
-                    (b == kl || !ascii::isalnum((unsigned char)src_[b - kl - 1]))) { decl = true; break; }
-            }
-            if (!decl) continue;
-            // …and not inside a LINE COMMENT. This scan runs over raw source, so a
-            // declaration quoted in a comment ("`sub prefix:</>` takes the slash")
-            // otherwise disables `/…/` for everything below it.
-            {
-                size_t ls = src_.rfind('\n', p);
-                ls = (ls == std::string::npos) ? 0 : ls + 1;
-                if (src_.find('#', ls) < p) continue;
-            }
-            size_t close = src_.find('>', p + cl);
-            if (close == std::string::npos) continue;
-            std::string name = src_.substr(p + cl, close - p - cl);
-            // `sub prefix:</>` (PDF::API6's PDF-name maker, `/'Outlines'`) takes
-            // the slash away from the regex literal for the rest of the file.
-            // One character, so the table lexes it whole already — what it needs
-            // is for the bare-`/` regex scan to stop claiming it.
-            if (name == "/" && std::strcmp(cat, "prefix:<") == 0)
-                slashPrefixAt_ = std::min(slashPrefixAt_, close + 1);
-            if (name.size() < 2) continue; // one character is always lexed whole
-            bool sym = true;
-            for (unsigned char c : name)
-                if (c > 127 || ascii::isalnum(c) || c == '_' || c == ' ') { sym = false; break; }
-            if (sym) userOps_.push_back(name);
-        }
-    }
-    std::sort(userOps_.begin(), userOps_.end(),
-              [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+    scanUserOps();
 }
 
 // A `#` inside a regex opens a comment. `#`( … )` / `#`[ … ]` / `#`{ … }` /
@@ -613,7 +570,256 @@ static bool isIdentMarkCP(uint32_t c) {
            (c >= 0x0591 && c <= 0x05BD) || (c >= 0x0610 && c <= 0x061A) ||
            (c >= 0x064B && c <= 0x065F) ||
            (c >= 0x1AB0 && c <= 0x1AFF) || (c >= 0x1DC0 && c <= 0x1DFF) ||
-           (c >= 0x20D0 && c <= 0x20FF) || (c >= 0xFE20 && c <= 0xFE2F);
+           (c >= 0x20D0 && c <= 0x20FF) || (c >= 0xFE20 && c <= 0xFE2F) ||
+           // …and every other mark the UCD names (Mn/Mc/Me). The ranges above
+           // missed the Indic vowel signs: `$पहला` ends in U+093E (Mc), and
+           // the name stopped one codepoint short of it.
+           (c >= 0x0900 && [&] { const std::string gc = uniGeneralCategory(c);
+                                 return !gc.empty() && gc[0] == 'M'; }());
+}
+
+// decode the UTF-8 codepoint at s[i]; `len` gets its byte length
+static uint32_t cpAt(const std::string& s, size_t i, int& len) {
+    unsigned char b = (unsigned char)s[i];
+    len = utf8Len(b);
+    if (len == 1 || i + len > s.size()) { len = 1; return b; }
+    uint32_t cp = b & (0xFF >> (len + 1));
+    for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3F);
+    return cp;
+}
+
+std::string constantStringFor(const std::string& src, const std::string& var) {
+    const std::string kw = "constant";
+    for (size_t p = src.find(kw); p != std::string::npos; p = src.find(kw, p + 1)) {
+        size_t i = p + kw.size();
+        while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+        if (src.compare(i, var.size(), var) != 0) continue;
+        i += var.size();
+        if (i < src.size() && (rakuIdentCont(src[i]) || src[i] == '-')) continue; // a longer name
+        while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+        if (i >= src.size() || src[i] != '=') continue;
+        i++;
+        while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+        if (i >= src.size() || (src[i] != '"' && src[i] != '\'')) continue;
+        size_t close = src.find(src[i], i + 1);
+        if (close == std::string::npos) continue;
+        return src.substr(i + 1, close - i - 1);
+    }
+    return "";
+}
+
+// A file may DECLARE its own operators and terms, and a spelling that the
+// built-in rules would cut apart has to be one token: `%%%` lexed as `%%` then
+// `%` (so `5 %%% 2` divided by an empty hash), `!≃` as `!` then `≃`, `T+` as
+// the word `T` then plus, `e²ˣ` as `e` squared then a stray `ˣ`. Collect the
+// declared spellings up front, from every bracket form (`<…>`, `«…»`, `<<…>>`,
+// `["…"]`, `[$constant]`), and try them longest first ahead of everything else.
+// A spelling that already lexes as ONE identifier (`infix:<avg>`) is left to the
+// word rules, and a one-codepoint operator is always lexed whole. Only THIS
+// file's declarations are visible here; an imported one still needs its
+// module's own parse.
+void Lexer::scanUserOps() {
+    for (const char* cat : {"infix:", "prefix:", "postfix:", "term:"}) {
+        const size_t cl = std::strlen(cat);
+        const bool term = cat[0] == 't';
+        for (size_t p = src_.find(cat); p != std::string::npos; p = src_.find(cat, p + 1)) {
+            if (p > 0 && (rakuIdentCont(src_[p - 1]) || src_[p - 1] == '-')) continue; // `myinfix:`
+            size_t b = p;
+            while (b > 0 && ascii::isspace((unsigned char)src_[b - 1])) b--;
+            if (b > 0 && (src_[b - 1] == '\\' || src_[b - 1] == '&')) {   // `my \term:<…>`
+                b--;
+                while (b > 0 && ascii::isspace((unsigned char)src_[b - 1])) b--;
+            }
+            bool decl = false;
+            for (const char* kw : {"sub", "multi", "proto", "only", "my", "our", "constant"}) {
+                size_t kl = std::strlen(kw);
+                if (b >= kl && src_.compare(b - kl, kl, kw) == 0 &&
+                    (b == kl || !ascii::isalnum((unsigned char)src_[b - kl - 1]))) { decl = true; break; }
+            }
+            if (!decl) continue;
+            // …and not inside a LINE COMMENT. This scan runs over raw source, so a
+            // declaration quoted in a comment ("`sub prefix:</>` takes the slash")
+            // otherwise disables `/…/` for everything below it.
+            {
+                size_t ls = src_.rfind('\n', p);
+                ls = (ls == std::string::npos) ? 0 : ls + 1;
+                if (src_.find('#', ls) < p) continue;
+            }
+            size_t o = p + cl;
+            std::string name;
+            size_t close = std::string::npos;
+            if (src_.compare(o, 2, "<<") == 0) {
+                close = src_.find(">>", o + 2);
+                if (close != std::string::npos) name = src_.substr(o + 2, close - o - 2);
+            } else if (src_.compare(o, 1, "<") == 0) {
+                close = src_.find('>', o + 1);
+                if (close != std::string::npos) name = src_.substr(o + 1, close - o - 1);
+            } else if (src_.compare(o, 2, "\xC2\xAB") == 0) {
+                close = src_.find("\xC2\xBB", o + 2);
+                if (close != std::string::npos) name = src_.substr(o + 2, close - o - 2);
+            } else if (src_.compare(o, 1, "[") == 0) {
+                close = src_.find(']', o + 1);
+                if (close != std::string::npos) {
+                    std::string in = src_.substr(o + 1, close - o - 1);
+                    size_t a = in.find_first_not_of(" \t"), z = in.find_last_not_of(" \t");
+                    if (a != std::string::npos) in = in.substr(a, z - a + 1);
+                    if (in.size() >= 2 && (in[0] == '"' || in[0] == '\'') && in.back() == in[0]) {
+                        name = in.substr(1, in.size() - 2);
+                        if (in[0] == '"' && name.find('\\') != std::string::npos) continue; // an escape: the parser decodes it
+                    }
+                    else if (!in.empty() && in[0] == '$')
+                        name = constantStringFor(src_, in);
+                }
+            }
+            if (close == std::string::npos) continue;
+            // trim the spaces an angle form may carry: `infix:< ⊕ >`
+            {
+                size_t a = name.find_first_not_of(" \t"), z = name.find_last_not_of(" \t");
+                name = a == std::string::npos ? "" : name.substr(a, z - a + 1);
+            }
+            // `sub prefix:</>` (PDF::API6's PDF-name maker, `/'Outlines'`) takes
+            // the slash away from the regex literal for the rest of the file.
+            // One character, so the table lexes it whole already — what it needs
+            // is for the bare-`/` regex scan to stop claiming it.
+            if (name == "/" && std::strcmp(cat, "prefix:") == 0)
+                slashPrefixAt_ = std::min(slashPrefixAt_, close + 1);
+            // a WORD infix this file declares (`infix:<dot>`) is a word the
+            // `»dot«` hyper form may wrap, like the built-in `»max«`
+            if (!term && std::strcmp(cat, "infix:") == 0 &&
+                !name.empty() && rakuIdentStart(name[0]) &&
+                std::all_of(name.begin(), name.end(), [](char c) { return rakuIdentCont(c); }))
+                userWordInfix_.insert(name);
+            noteUserOp(name, term);
+        }
+    }
+}
+
+void Lexer::noteUserOp(const std::string& name, bool term) {
+    auto wordish = [](const std::string& n) {
+        for (size_t i = 0; i < n.size();) {
+            unsigned char c = (unsigned char)n[i];
+            if (c < 0x80) {
+                // `-`/`'` join two word parts, never end one: `T-` is not a word
+                if (c == '-' || c == '\'') {
+                    if (i == 0 || i + 1 >= n.size()) return false;
+                    unsigned char d = (unsigned char)n[i + 1];
+                    if (!(d >= 0x80 || rakuIdentStart((char)d))) return false;
+                }
+                else if (!(ascii::isalnum(c) || c == '_')) return false;
+                i++;
+            } else {
+                int l; uint32_t cp = cpAt(n, i, l);
+                if (!(isLetterCP(cp) || isIdentMarkCP(cp))) return false;
+                i += l;
+            }
+        }
+        return true;
+    };
+    if (name.empty() || name.find_first_of(" \t\n") != std::string::npos) return;
+    if (wordish(name)) return;
+    int l0; cpAt(name, 0, l0);
+    if (!term && (size_t)l0 == name.size()) return;   // one codepoint: already whole
+    // The two set operators spelled with a word are the built-in's, and
+    // the built-in rules own them (`multi infix:<(elem)>` redeclares).
+    if (name == "(elem)" || name == "(cont)") return;
+    if (std::find(userOps_.begin(), userOps_.end(), name) == userOps_.end()) {
+        userOps_.push_back(name);
+        std::stable_sort(userOps_.begin(), userOps_.end(),
+                         [](const std::string& x, const std::string& y) { return x.size() > y.size(); });
+    }
+    if (term) userTerms_.insert(name);
+}
+
+// A declared spelling at the start of a token, ahead of every other rule: one
+// that begins like a WORD (`T+`, `e²ˣ`), a SIGIL (`@@`) or a paren (`(C)`)
+// would be claimed by those rules before lexOperator ever saw it, and a TERM
+// (`•`) is a name, not an operator. The word-like ones must start and end on a
+// boundary, or `T+` would split `MyT+1` and `x•` would split `max•`.
+// The multi-character operators the lexer knows, longest-match order.
+static const char* kLexOps[] = {
+    "==>", "<==", // feed operators (before == / <=)
+    "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
+    "!===", // negated value identity (before !== / ===)
+    "!=:=", // negated container identity (before != / =:=) — JSON::Class
+    "!=~=", // negated approximate equality (before != / =~=) — PDF::Content::Matrix
+    // container-typed assignment: `$x =@= LIST` assigns with ARRAY semantics
+    // whatever the target's sigil is, `=%=` with Hash, `=$=` with item. Before
+    // `=~=`/`==`/`=>` so the three-character form wins, and before `%=`, which
+    // would otherwise split `=%=` into `=` and a modulo-assign.
+    "=$=", "=@=", "=%=",
+    "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
+    // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
+    // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with
+    // word-lists (`+<a b>`), operator-name brackets, and comparison in one-pass parsing.
+    "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+>", "~>",
+    "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
+    "-->", "<->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
+    "..", "::", "<<", ">>",
+};
+
+bool Lexer::userOpIsAssignPrefix(const std::string& uo) const {
+    size_t e = pos_ + uo.size();
+    if (e >= src_.size() || src_[e] != '=') return false;
+    // …only for a BUILT-IN spelling a file redeclares; a new one (`%%%=`) is
+    // its own operator and then `=`, the assignment metaop over it
+    for (const char* op : kLexOps) if (uo == op) return true;
+    return false;
+}
+
+bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
+    if (userOps_.empty()) return false;
+    // tight after a word, a spelling that STARTS like a word would split one
+    // (`MyT+1`); a symbolic one is fine there: `3'bar1'` is a postfix on 3
+    const bool afterWord = pos_ > 0 && !spaced &&
+        (rakuIdentCont(src_[pos_ - 1]) || (unsigned char)src_[pos_ - 1] >= 0x80);
+    auto wordish0 = [](const std::string& uo) {
+        return (unsigned char)uo[0] >= 0x80 || rakuIdentStart(uo[0]);
+    };
+    if (!out.empty() && out.back().kind == Tok::Op && out.back().text == "." && !spaced) return false;
+    // a metaop over a WORD-shaped spelling, `RT+` / `XT*`: one name, which the
+    // parser splits into the metaop letters and the declared operator
+    if (!afterWord) {
+        size_t k = 0;
+        while (pos_ + k < src_.size() && (src_[pos_ + k] == 'R' || src_[pos_ + k] == 'X' ||
+                                          src_[pos_ + k] == 'Z')) k++;
+        if (k > 0)
+            for (const std::string& uo : userOps_) {
+                if (!rakuIdentStart(uo[0]) || userTerms_.count(uo) ||
+                    src_.compare(pos_ + k, uo.size(), uo) != 0) continue;
+                std::string all = src_.substr(pos_, k + uo.size());
+                for (size_t n = 0; n < all.size(); n++) advance();
+                Token t = make(Tok::Ident, all);
+                t.spaceBefore = spaced;
+                out.push_back(t);
+                return true;
+            }
+    }
+    for (const std::string& uo : userOps_) {
+        if (src_.compare(pos_, uo.size(), uo) != 0) continue;
+        if (afterWord && wordish0(uo)) continue;
+        bool isTerm = userTerms_.count(uo) != 0;
+        // `$v **= 3` in a file that redeclares `infix:<**>`: an ASCII spelling
+        // followed by `=` is its compound assignment, which the table lexes whole
+        if (!isTerm && userOpIsAssignPrefix(uo)) continue;
+        // ends on a word character: the next one must not continue it
+        size_t e = pos_ + uo.size();
+        if (e < src_.size()) {
+            unsigned char last = (unsigned char)uo.back();
+            if ((last < 0x80 && rakuIdentCont((char)last)) || last >= 0x80) {
+                if (rakuIdentCont(src_[e])) continue;
+                if ((unsigned char)src_[e] >= 0x80) {
+                    int l; uint32_t cp = cpAt(src_, e, l);
+                    if (isLetterCP(cp) || isIdentMarkCP(cp)) continue;
+                }
+            }
+        }
+        for (size_t k = 0; k < uo.size(); k++) advance();
+        Token t = make(isTerm ? Tok::Ident : Tok::Op, uo);
+        t.spaceBefore = spaced;
+        out.push_back(t);
+        return true;
+    }
+    return false;
 }
 
 void Lexer::skipWhitespaceAndComments() {
@@ -684,6 +890,16 @@ void Lexer::skipWhitespaceAndComments() {
             // zero-width unspace before a postfix dot: `"xxxxxx"\.chars`
             if (peek(1) == '.' && !ascii::isdigit((unsigned char)peek(2))) {
                 advance(); // backslash only; the '.' stays tight
+                unspaceEnd_ = pos_;
+                continue;
+            }
+            // …and before a call's paren, straight after the name or term it
+            // calls: `abs\(42)`, `A::foo\(42)`. Anywhere else (`f(\(1))`,
+            // `= \(1)`) the backslash makes a Capture, so the byte before it
+            // decides.
+            if (peek(1) == '(' && pos_ > 0 &&
+                (rakuIdentCont(src_[pos_ - 1]) || src_[pos_ - 1] == ')' || src_[pos_ - 1] == ']')) {
+                advance(); // backslash only; the '(' stays tight
                 unspaceEnd_ = pos_;
                 continue;
             }
@@ -984,7 +1200,15 @@ Token Lexer::lexNumber() {
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd') &&
         // `0x` with no digit at all is not a radix literal: `:0x` is the pair
         // shorthand x => 0, and `0x` followed by punctuation lexes as 0 then x
-        (ascii::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80)) {
+        (ascii::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80) &&
+        // …and `:0out-buffer` is `out-buffer => 0`: straight after a pair's `:`
+        // the digits are a VALUE and the letters its key, so a WORD there
+        // (`out-buffer`, `bstract`) is no radix. `:0x1f` is still hex.
+        !(pos_ > 0 && src_[pos_ - 1] == ':' && [&] {
+            size_t k = 2;
+            while (ascii::isalnum((unsigned char)peek(k)) || peek(k) == '_') k++;
+            return peek(k) == '-' && ascii::isalpha((unsigned char)peek(k + 1));
+        }())) {
         char base = peek(1);
         advance(); advance();
         std::string digits;
@@ -1332,7 +1556,7 @@ static bool quoteFeatAdverbs(const std::string& adverbs, std::string& feats) {
 bool Lexer::isQuoteKeyword(const std::string& w) {
     static const std::set<std::string> kQuoteWords = {
         "q", "qq", "Q", "rx", "m", "ms", "mm", "s", "S", "ss", "SS", "tr", "TR",
-        "qw", "Qw", "qqw", "qww", "qqww", "qx", "qqx",
+        "qw", "Qw", "qqw", "qww", "qqww", "qx", "qqx", "qto", "qqto", "Qto",
     };
     return kQuoteWords.count(w) > 0;
 }
@@ -1458,6 +1682,11 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (w.size() == 2 && w[0] == 'Q' && std::strchr("sahcbqf", w[1])) {
         shortAdv = std::string(":") + w[1] + " ";
         w = "Q";
+    }
+    // …and the heredoc ones: `qqto/END/` is `qq:to/END/`, likewise qto / Qto
+    else if (w == "qto" || w == "qqto" || w == "Qto") {
+        shortAdv = ":to ";
+        w = w.substr(0, w.size() - 2);
     }
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
     // A sigilless TERM of this name is declared above — `my \m`, a `\m`
@@ -1738,6 +1967,8 @@ bool Lexer::tryQuoteForm(Token& out) {
         // behind the keyword, and a declared `&q`/`&s` already wins over the
         // quote (quoteWordShadowedAt), which is where `$a ~ $b` lives.
         case '/': case '|': case '!': case '~': close = d; bracket = false; break;
+        // qx`pwd` — the backtick is the shell form's natural delimiter
+        case '`': if (!isExec) return false; close = d; bracket = false; break;
         case ',': // comma delimiter: bare `m,pat,` is documented Raku; bare
             // `s,`/`S,` stays a term/call — Rakudo disambiguates those via
             // declared-symbol lookup (`foo(S,S)` passes type args, roast
@@ -1859,6 +2090,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // (The other two scanners — the bare `/…/` one and tryRuleDecl —
             // already had this rule.)
             if (quoteAware && !inClass && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
+            if (quoteAware && !inClass && (unsigned char)ch >= 0x80 && skipUniQuote(raw)) continue;
             // a `#` comment runs to the end of the line: a delimiter inside it
             // is commentary, not the end of the pattern
             if (quoteAware && !p5 && !isRepl && !inClass && ch == '#') { skipRegexComment(raw); continue; }
@@ -2172,6 +2404,13 @@ Token Lexer::lexIdentOrVar() {
         }
         if (ascii::isdigit((unsigned char)peek())) {
             while (ascii::isdigit((unsigned char)peek())) name += advance();
+        } else if ((unsigned char)peek() >= 0x80 && name.size() == 1 && name[0] == '$' &&
+                   uniDigitValue(codepointHere()) >= 0) {
+            // `$١` — a match variable numbered in any script's digits is `$1`
+            while ((unsigned char)peek() >= 0x80 && uniDigitValue(codepointHere()) >= 0) {
+                name += (char)('0' + uniDigitValue(codepointHere()));
+                for (int n = utf8Len((unsigned char)peek()); n > 0 && !eof(); n--) advance();
+            }
         } else if (isIdentStart(peek()) || unicodeLetterHere()) {
             const size_t nameStart = pos_;
             consumeIdentChars(name);
@@ -2219,6 +2458,9 @@ Token Lexer::lexIdentOrVar() {
             if (!eof()) { advance(); advance(); } // »
             name += ":<" + op + ">";
         }
+        // `&term:<•>` is the code variable a bare `•` calls: its name is `&•`
+        if (name.compare(0, 7, "&term:<") == 0 && name.size() > 8 && name.back() == '>')
+            name = "&" + name.substr(7, name.size() - 8);
         return make(Tok::Var, name);
     }
     // version literal: v0.48  v6  v1.2.3+  v6.*  — parts are digits or '*'
@@ -2237,6 +2479,18 @@ Token Lexer::lexIdentOrVar() {
             else break;
         }
         if (peek() == '+') ver += advance();
+        // …and a trailing `-` (`v1.2.3-`), when nothing a subtraction would
+        // take follows it
+        else if (peek() == '-') {
+            // what comes after the `-` (spaces skipped) must not be an operand
+            size_t k = 1;
+            while (peek(k) == ' ' || peek(k) == '\t') k++;
+            char n = peek(k);
+            bool operand = ascii::isdigit((unsigned char)n) || n == '$' || n == '(' || n == '@' ||
+                           n == '%' || n == '-' || n == '_' || n == '"' || n == '\'' ||
+                           (k == 1 && ascii::isalpha((unsigned char)n));
+            if (!operand) ver += advance();
+        }
         // `v1(...)` is a CALL of a routine named v1, not a version literal — a
         // version is never invoked, and lexing it as one made `sub v1 {…}; v1()`
         // die with "Cannot invoke non-Callable value of type Version".
@@ -2299,8 +2553,12 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
-    if (isIdentStart(peek())) {
-        while (isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) name += advance();
+    if (isIdentStart(peek()) || unicodeLetterHere()) {
+        // the Unicode-aware identifier rules: `token número { … }`
+        if (unicodeLetterHere()) { for (int n = utf8Len((unsigned char)peek()); n > 0 && !eof(); n--) name += advance(); }
+        else name += advance();
+        consumeIdentChars(name);
+        while (rakuIdentJoins(peek(), peek(1))) { name += advance(); consumeIdentChars(name); }
         // protoregex multi variant: `:sym<dec>`, `:<null>`, or `:foo('x')`
         while (peek() == ':' && (peek(1) == '<' || isIdentStart(peek(1)))) {
             name += advance(); // ':'
@@ -2493,7 +2751,17 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     // A name TIGHT after `|` or `\` is a capture/sigilless PARAMETER name —
     // `-> \s, |q { … }` (Log::Async wraps a method with exactly this); the `q`
     // must not open a q{…} quote that swallows the block.
-    if (pv.kind == Tok::Op && (pv.text == "|" || pv.text == "\\") && !spaced) return true;
+    // …but only where `|` is a PREFIX: after a term it is the junction infix,
+    // and `q/a/|q/b/` is two quotes (integration/advent2014-day13.t)
+    if (pv.kind == Tok::Op && (pv.text == "|" || pv.text == "\\") && !spaced) {
+        if (pv.text == "|" && out.size() >= 2) {
+            Tok k = out[out.size() - 2].kind;
+            if (k == Tok::StrLit || k == Tok::StrInterp || k == Tok::IntLit || k == Tok::NumLit ||
+                k == Tok::RParen || k == Tok::RBracket || k == Tok::QwList || k == Tok::RegexLit)
+                return false;
+        }
+        return true;
+    }
     if (pv.kind == Tok::Ident) {
         static const std::set<std::string> decl = {
             "method", "submethod", "sub", "multi", "proto", "token", "rule",
@@ -2640,11 +2908,32 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
     }
 }
 
+// A Unicode-quoted span inside a regex, `‘/’` / `“…”` / `｢…｣`: a literal, so a
+// delimiter inside it is not the pattern's end. At its opener, append the
+// whole span to `raw` and answer true.
+bool Lexer::skipUniQuote(std::string& raw) {
+    const unsigned char a = (unsigned char)peek(), b = (unsigned char)peek(1), c = (unsigned char)peek(2);
+    std::vector<const char*> closers;
+    if (a == 0xE2 && b == 0x80 && (c == 0x98 || c == 0x9A))                   // ‘ ‚ … ’ ‘
+        closers = {"\xE2\x80\x99", "\xE2\x80\x98"};
+    else if (a == 0xE2 && b == 0x80 && (c == 0x9C || c == 0x9E))              // “ „ … ” “
+        closers = {"\xE2\x80\x9D", "\xE2\x80\x9C"};
+    else if (a == 0xEF && b == 0xBD && c == 0xA2) closers = {"\xEF\xBD\xA3"}; // ｢ … ｣
+    else return false;
+    size_t end = std::string::npos;
+    for (const char* cl : closers) end = std::min(end, src_.find(cl, pos_ + 3));
+    if (end == std::string::npos) return false;
+    end += 3;
+    while (pos_ < end) raw += advance();
+    return true;
+}
+
 bool Lexer::trySetOp(Token& out) {
     // current char is '('
     static const std::set<std::string> inners = {
         "|", "&", "-", "^", ".", "+", "elem", "cont", "<=", "<", ">=", ">",
         "==", "!=", "<>", "!elem", "(+)", "<+>", "<->",
+        "<+", ">+",   // 6.c's baggy (<+) / (>+), removed in 6.d
     };
     size_t p = pos_ + 1;
     std::string inner;
@@ -2687,6 +2976,16 @@ Token Lexer::lexOperator(bool termBefore) {
         if (c1 == 0xAB) { right = false; return true; } // «
         return false;
     };
+    // a spelling this file declared, wrapped: `»T-«`, `«==⨧»`
+    { bool ro, rc;
+      if (guill(0, ro))
+          for (const std::string& uo : userOps_) {
+              if (userTerms_.count(uo) || src_.compare(pos_ + 2, uo.size(), uo) != 0 ||
+                  !guill(2 + (int)uo.size(), rc)) continue;
+              for (size_t k = 0; k < uo.size() + 4; k++) advance();
+              return make(Tok::Op, std::string(ro ? ">>" : "<<") + uo + (rc ? ">>" : "<<"));
+          }
+    }
     { bool ro;
       // A word-form infix inner (`»min«`, `«max»`) is hyper too — but ONLY for
       // known word infixes, so guillemet word-lists (`«x»`, `«ab»`) stay lists.
@@ -2702,7 +3001,7 @@ Token Lexer::lexOperator(bool termBefore) {
           while (!eof() && ((unsigned char)peek() < 0x80) &&
                  (ascii::isalpha((unsigned char)peek()) || peek() == '_') && word.size() < 8)
               word += advance();
-          if (kWordInfix.count(word) && guill(0, rc)) {
+          if ((kWordInfix.count(word) || userWordInfix_.count(word)) && guill(0, rc)) {
               std::string close = rc ? ">>" : "<<";
               advance(); advance(); // closing guillemet
               return make(Tok::Op, open + word + close);
@@ -2829,30 +3128,10 @@ Token Lexer::lexOperator(bool termBefore) {
     // a spelling this file DECLARED (`sub infix:<%%%>`) wins over the table,
     // longest first — otherwise the table's `%%` would take a bite out of it
     for (const std::string& uo : userOps_)
-        if (src_.compare(pos_, uo.size(), uo) == 0) {
+        if (src_.compare(pos_, uo.size(), uo) == 0 && !userOpIsAssignPrefix(uo)) {
             for (size_t k = 0; k < uo.size(); k++) advance();
             return make(Tok::Op, uo);
         }
-    static const char* ops[] = {
-        "==>", "<==", // feed operators (before == / <=)
-        "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
-        "!===", // negated value identity (before !== / ===)
-        "!=:=", // negated container identity (before != / =:=) — JSON::Class
-        "!=~=", // negated approximate equality (before != / =~=) — PDF::Content::Matrix
-        // container-typed assignment: `$x =@= LIST` assigns with ARRAY semantics
-        // whatever the target's sigil is, `=%=` with Hash, `=$=` with item. Before
-        // `=~=`/`==`/`=>` so the three-character form wins, and before `%=`, which
-        // would otherwise split `=%=` into `=` and a modulo-assign.
-        "=$=", "=@=", "=%=",
-        "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
-        // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
-        // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with
-        // word-lists (`+<a b>`), operator-name brackets, and comparison in one-pass parsing.
-        "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+>", "~>",
-        "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
-        "-->", "<->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
-        "..", "::", "<<", ">>",
-    };
     // `+<` / `~<` shifts: only when `<` clearly isn't opening a word list
     // (`+<a b>` stays prefix-plus on a QwList). Shift uses follow with space,
     // a digit, `$`, `(` or `=` (compound assign).
@@ -2907,7 +3186,7 @@ Token Lexer::lexOperator(bool termBefore) {
         return make(Tok::Op, pfx);
     }
     // try longest first (skip the textual placeholder)
-    for (const char* op : ops) {
+    for (const char* op : kLexOps) {
         std::string s(op);
         bool ok = true;
         for (size_t k = 0; k < s.size(); k++) {
@@ -3105,6 +3384,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         // inside a bare `< … >` word list the content is words: no quotes, no
         // regexes, no q-forms — those characters glue into words as-is
         const bool inAngle = angleWords_ > 0;
+        if (!inAngle && tryUserOpToken(out, spaced)) continue;
         // …and a BACKSLASH escapes the next character there: `\<` and `\>` are the
         // literal angles (they must not open or close the list) and `\\` is one
         // backslash; anything else keeps both characters, as Rakudo does. Without
@@ -3125,8 +3405,17 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             const int startLine = line_;
             advance(); advance(); advance(); // ｢
             std::string raw;
-            while (!eof() && !((unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA3))
+            // the pair NESTS, like every bracketing quote: `｢a ｢\x｣ b｣` is one
+            int depth = 0;
+            for (;;) {
+                if (eof()) break;
+                bool op = (unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA2;
+                bool cl = (unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA3;
+                if (cl && depth == 0) break;
+                if (op) depth++;
+                else if (cl) depth--;
                 raw += advance();
+            }
             if (eof()) runawayTerm("\xEF\xBD\xA3", "\xEF\xBD\xA2", startLine);
             advance(); advance(); advance(); // ｣
             Token ct = make(Tok::StrLit, raw);
@@ -3483,9 +3772,23 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // wrapping brackets with `/^ \s* ['<' | '"'] /`.)
                 if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0))
                     { quote = ch; raw += advance(); continue; }
+                if ((unsigned char)ch >= 0x80 && !(angle > 0 && brack > 0) && skipUniQuote(raw)) continue;
                 if (ch == '{') { brace++; raw += advance(); continue; }
                 if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
                 if (brace > 0) { raw += advance(); continue; } // code block: consume raw
+                // `@( … )` / `$( … )` interpolate CODE, and a `/` in it (`@( rx/\d+/ )`)
+                // is that code's, not the closing delimiter: take the parens whole
+                if ((ch == '@' || ch == '$') && peek(1) == '(') {
+                    raw += advance(); raw += advance();
+                    int depth = 1;
+                    while (!eof() && depth > 0) {
+                        char cc = peek();
+                        if (cc == '(') depth++;
+                        else if (cc == ')') depth--;
+                        raw += advance();
+                    }
+                    continue;
+                }
                 // a `#` comment runs to the end of the line — a `/` inside it is
                 // commentary, not the closing delimiter
                 if (ch == '#') { skipRegexComment(raw); continue; }
