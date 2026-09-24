@@ -4677,7 +4677,11 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
         return false;
     }
     bool any = false;
-    bool saved = hoistingSubs_; hoistingSubs_ = true;
+    // restored however the pass ends: a hoisted declaration that THROWS (a
+    // redeclaration, say) left the flag set, and every later declaration in
+    // the program then believed it was being hoisted
+    struct HoistFlag { bool saved; HoistFlag() : saved(hoistingSubs_) { hoistingSubs_ = true; }
+                       ~HoistFlag() { hoistingSubs_ = saved; } } hoistFlag;
     // subs first: creating a type RUNS its traits, and a `trait_mod:<is>`
     // handler is an ordinary sub that has to be in scope by then
     for (auto& s : stmts) {
@@ -4696,7 +4700,6 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
             auto* cd = static_cast<ClassDecl*>(s.get());
             if (!classes_.count(cd->name)) pendingTypes_[cd->name] = cd;
         }
-    hoistingSubs_ = saved;
     return any;
 }
 
@@ -10825,7 +10828,20 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 tctx_.cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
-                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sname, code);
+                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) {
+                    // a DIFFERENT `our sub` of the same name already owns the
+                    // package slot: `{ our sub foo {…} }; { our sub foo {…} }`
+                    if (!sd->isMulti && !sd->isProto && !sd->isMethod) {   // methods live in their class
+                        if (Value* had = curPkgEnv_->local("&" + sname))
+                            if (had->t == VT::Code && had->code() && code.code() &&
+                                had->code()->body && had->code()->body != code.code()->body &&
+                                !had->code()->isMultiDispatcher)
+                                throwTypedV("X::Redeclaration",
+                                    {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
+                                    "Redeclaration of routine '" + sname + "'");
+                    }
+                    curPkgEnv_->define("&" + sname, code);
+                }
                 // and publish the fully-qualified name (Foo::Bar::name) so callers
                 // outside the module can reach an unexported `our sub` — the only
                 // way OpenSSL::Version::version_num etc. are invoked.
@@ -10901,6 +10917,64 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
+            // one name, two ONLY methods (or two tokens) in one package is a
+            // redeclaration — `multi` candidates and a proto's `:sym<…>` are not
+            if (!hoistingSubs_) {
+                std::set<std::string> seenM, seenR;
+                for (auto& md : cd->methods) {
+                    if (!md || md->isMulti || md->isProto || md->name.empty()) continue;
+                    if (!seenM.insert((md->isPrivate ? "!" : "") + md->name).second)
+                        throwTypedV("X::Redeclaration",
+                            {{"symbol", Value::str(md->name)}, {"what", Value::str("method")}},
+                            "Package '" + cd->name + "' already has a method '" + md->name +
+                            "' (did you mean to declare a multi method?)");
+                }
+                // …and the scoped forms, which sit in the body as statements:
+                // `my method foo …; my method foo …`, `our token foo …` twice
+                for (auto& st : cd->body) {
+                    if (!st) continue;
+                    if (st->kind == NK::SubDecl) {
+                        auto* sd = static_cast<SubDecl*>(st.get());
+                        if (sd->isMethod && !sd->isMulti && !sd->isProto && !sd->name.empty() &&
+                            !seenM.insert(sd->name).second)
+                            throwTypedV("X::Redeclaration",
+                                {{"symbol", Value::str(sd->name)}, {"what", Value::str("method")}},
+                                "Redeclaration of method '" + sd->name + "'");
+                    }
+                    else if (st->kind == NK::NamedRegexDecl) {
+                        auto* nr = static_cast<NamedRegexDecl*>(st.get());
+                        if (!nr->name.empty() && !seenR.insert(nr->name).second)
+                            throwTypedV("X::Redeclaration",
+                                {{"symbol", Value::str(nr->name)}, {"what", Value::str("regex")}},
+                                "Redeclaration of regex '" + nr->name + "'");
+                    }
+                }
+                // (a rule with a signature is a `multi rule` candidate — one of several)
+                for (auto& r : cd->rules)
+                    if (!r.name.empty() && r.params.empty() && r.lits.empty() && !seenR.insert(r.name).second)
+                        throwTypedV("X::Redeclaration",
+                            {{"symbol", Value::str(r.name)}, {"what", Value::str("method")}},
+                            "Package '" + cd->name + "' already has a regex '" + r.name + "'");
+            }
+            // `class C does InNoWayExist` — a role name nothing declares is
+            // X::InvalidType (a built-in role or type is fine, and a qualified
+            // or parameterized name is left to the loader)
+            if (!hoistingSubs_) {
+                auto unknownRole = [&](const std::string& rn) {
+                    if (rn.empty() || rn.find("::") != std::string::npos || rn.find('[') != std::string::npos) return false;
+                    if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn)) return false;
+                    if (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + rn)) return false;
+                    if (classes_.count(resolveClassAlias(rn))) return false;
+                    if (tctx_.cur->find(rn)) return false;   // an enum / constant / imported symbol
+                    return true;
+                };
+                std::vector<std::string> doesNames = cd->roles;
+                if (cd->parentIsDoes) doesNames.push_back(cd->parent);
+                for (auto& rn : doesNames)
+                    if (unknownRole(rn))
+                        throwTypedV("X::InvalidType", {{"typename", Value::str(rn)}},
+                                    "Invalid typename '" + rn + "'");
+            }
             // `class Foo does Maybe` where Maybe is an ENUM: that is role
             // composition (see the roles loop), never a parent class
             if (cd->parentIsDoes && !cd->parent.empty() && !classes_.count(cd->parent)) {
@@ -20383,6 +20457,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
         c.arityShape = applies;
     }
+    // the name the call site used — read once, before anything nested runs
+    const std::string* writtenName = tctx_.arityCallName;
+    tctx_.arityCallName = nullptr;
     if (arityCheck && c.arityShape == 1) {
         const bool unbounded = c.arityUnbounded;
         const int maxPos = c.arityMaxPos, reqPos = c.arityReqPos;
@@ -20410,9 +20487,23 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     sigt += (p.slurpy ? "*" : "") + std::string(p.named ? ":" : "") +
                             p.name + (p.optional && !p.named ? "?" : "");
                 }
-            throw RakuError{Value::typeObj("X::Signature::ArityMismatch"),
-                "Calling " + c.name + "(" + prof + ") will never work with "
-                "declared signature (" + sigt + ")"};
+            // Rakudo's class for "will never work" is X::TypeCheck::Argument,
+            // carrying the routine name, its signature and the argument types
+            // …when the call NAMED the routine; through an alias (`my &g = &f;
+            // g(…)`) only the run finds out, and that stays ArityMismatch
+            if (!writtenName || *writtenName != c.name)
+                throw RakuError{Value::typeObj("X::Signature::ArityMismatch"),
+                    "Calling " + c.name + "(" + prof + ") will never work with "
+                    "declared signature (" + sigt + ")"};
+            {
+                Value argTypes = Value::array(); argTypes.isList = true;
+                for (auto& a : args) if (!isNamedArg(a)) argTypes.arr()->push_back(Value::str(a.typeName()));
+                throwTypedV("X::TypeCheck::Argument",
+                    {{"objname", Value::str(c.name)}, {"signature", Value::str("(" + sigt + ")")},
+                     {"arguments", argTypes}},
+                    "Calling " + c.name + "(" + prof + ") will never work with "
+                    "declared signature (" + sigt + ")");
+            }
         }
         // A LITERAL argument whose type can never satisfy the parameter's core
         // nominal type is Rakudo's compile-time X::TypeCheck::Argument
@@ -27003,6 +27094,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 "; expected " + di->second.s + " but got " + rhs.typeName() +
                                 (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
                                                 : " " + rhs.gist())); // undef gist has its own parens
+                        // a `Nil`-typed variable holds nothing but Nil
+                        if (di->second.t == VT::Type && di->second.s == "Nil" && rhs.t != VT::Nil)
+                            throwTypedV("X::TypeCheck::Assignment",
+                                {{"got", rhs}, {"expected", Value::typeObj("Nil")}, {"symbol", Value::str(nm)}},
+                                "Type check failed in assignment to " + nm + "; expected Nil but got " +
+                                rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
                         // a SUBSET-typed variable asks the subset — its base
                         // type and its `where` — on every assignment:
                         // `my Int::Odd $b = 3; $b = 4` dies and keeps the 3
@@ -37582,8 +37679,10 @@ Value Interpreter::evalCall(Call* c) {
             // which case the BARE spelling is that type's coercion and the
             // routine is reached as `&name(…)` — which arrives with a callee
             // and so never gets here. See declaredTypeOutranksRoutine.
-            if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c->name)))
+            if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c->name))) {
+                tctx_.arityCallName = &c->name;
                 return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+            }
         }
         // sub-form container mutators AUTOVIVIFY their first argument's slot:
         // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
@@ -40179,6 +40278,26 @@ struct NodeCountReport {
                 return methodCall(base, "WHO", none);
             }
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
+                // A plain CLASS (or package/module) takes no parameters: `C[Int]`
+                // is X::NotParametric — unless it says what `[…]` means with a
+                // `^parameterize` of its own, or inherits a built-in that does
+                {
+                    auto cit = classes_.find(n);
+                    if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(n));
+                    if (cit != classes_.end() && cit->second && !cit->second->isRole) {
+                        ClassInfo* ci0 = cit->second.get();
+                        bool parametric = ci0->findMethod("^parameterize") != nullptr;
+                        for (ClassInfo* k = ci0; k && !parametric; k = k->parent.get())
+                            if (!k->nativeParent.empty() || k->isRole) parametric = true;
+                        if (!parametric)
+                            throwTypedV("X::NotParametric", {{"type", Value::typeObj(n)}},
+                                        n + " cannot be parameterized");
+                    }
+                    // …and a package or module never does
+                    else if (cit == classes_.end() && pkgKind_.count(n))
+                        throwTypedV("X::NotParametric", {{"type", Value::typeObj(n)}},
+                                    n + " cannot be parameterized");
+                }
                 // …unless the base names a parameterized ROLE: `Q[Int]` puns it
                 // with the type argument(s) bound (the composed-into-class path
                 // handles `does Q[Int]` separately; this is direct use)
@@ -40307,7 +40426,11 @@ struct NodeCountReport {
             // reached back into the array it aliased.
             if (Value* p = tctx_.cur->find(n))
                 return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
-            if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
+            // (a bare `foo;` is a call with no arguments — checked like `foo()`)
+            if (Value* f = tctx_.cur->find("&" + n)) {
+                tctx_.arityCallName = &n;
+                return callCallable(*f, {}, nullptr, /*ownFrame=*/false, /*arityCheck=*/true);
+            }
             // AFTER the lexical lookups, as the codegen runtime's rtNameTerm has
             // always done it: a sigilless parameter or constant named `i`, `e`,
             // `pi`, `now`… is a name the program declared, and it must win over

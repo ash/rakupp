@@ -4084,6 +4084,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // per-item type was being kept, so the list form silently declared
             // untyped scalars: Digest::SHA2's `my uint32 ($T1, $T2) = …` never
             // truncated, and every SHA-256 digest came out wrong.
+            // `my Int (Str $x)` — a type outside AND inside the list conflict
+            if (!type.empty() && !t2.empty())
+                throw ParseError("Variable " + dnm + " has conflicting types " + type + " and " + t2,
+                                 cur().line, "X::Syntax::Variable::ConflictingTypes",
+                                 {{"outer", type}, {"inner", t2}});
             ve->declType = t2.empty() ? type : t2;
             ve->declCoerce = coerce2.empty() ? coerceTo : coerce2;  // `my Int() ($a, $b)` / `my ($a, Int() $b)`
             if (t2.empty() && declSmiley && declSmiley != '_') ve->declSmiley = declSmiley;   // `my Int:D ($x = 5)`
@@ -8812,6 +8817,13 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
+            // `($bar :D)` — a smiley belongs on the TYPE, never after the name
+            if (isOp(":") && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_") &&
+                (peek(2).kind == Tok::RParen || peek(2).kind == Tok::Comma))
+                throw ParseError("Invalid typename '" + peek().text + "' in parameter declaration.",
+                                 cur().line, "X::Parameter::InvalidType",
+                                 {{"typename", peek().text}});
         } else if (anonSigilTok(cur())) {
             // anonymous sigil-only parameter, e.g. method concretize($, $, %, %)
             p.sigil = cur().text[0]; p.name = ""; advance();
@@ -9169,6 +9181,15 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             if (isKind(Tok::RBracket) && !nm.empty()) { advance(); w.push_back(nm); }
         }
         std::string opname = w.empty() ? "" : w[0];
+        // the SPECIAL FORMS the compiler handles itself cannot be overridden
+        {
+            static const std::set<std::string> specialInfix = {"=", ":=", "::=", "~~", ".", ".="};
+            if ((cat == "infix" && specialInfix.count(opname)) || (cat == "prefix" && opname == "|"))
+                throw ParseError("Cannot override " + cat + " operator '" + opname +
+                                 "', as it is a special form handled directly by the compiler",
+                                 cur().line, "X::Syntax::Extension::SpecialForm",
+                                 {{"category", cat}, {"opname", opname}});
+        }
         if ((cat == "circumfix" || cat == "postcircumfix") && w.size() >= 2) {
             // two bracket words: `circumfix:<⟦ ⟧>` — name carries both, open→close registered
             s->name = cat + ":<" + w[0] + " " + w[1] + ">";
@@ -10995,6 +11016,12 @@ StmtPtr Parser::parseStatement() {
         Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
         if (e && e->kind == NK::VarExpr) {
             auto* ve = static_cast<VarExpr*>(e);
+            // `my \foo;` — a sigilless name is BOUND at its declaration, so
+            // it needs something to bind
+            if (ve->declare && !ve->name.empty() && !std::strchr("$@%&", ve->name[0]) &&
+                (ve->declScope == "my" || ve->declScope == "our" || ve->declScope == "state"))
+                throw ParseError("Term definition requires an initializer", line,
+                                 "X::Syntax::Term::MissingInitializer", {});
             if (ve->declare && ve->declSmiley == 'D' && !ve->declDefault && !ve->declHasWhere && !ve->name.empty() &&
                 ve->name[0] == '$') {
                 const std::string ty = ve->declType + ":D";

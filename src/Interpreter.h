@@ -933,6 +933,7 @@ struct ExecContext {
     // invoking AT-POS/AT-KEY; a `return-rw` executing at exactly that frame
     // depth fills lvalueOut with lvalue(operand) — its target lives in the
     // object's shared containers, so the pointer survives the frame.
+    const std::string* arityCallName = nullptr; // the name a checked call was WRITTEN with (see the arity check)
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
     // A `:=` whose right side is a BLOCK (`my $v := do with … { … } else { … }`)
     // binds whatever container the block's TAIL expression names. The tail nodes
