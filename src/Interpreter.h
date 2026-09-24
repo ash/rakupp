@@ -1754,6 +1754,7 @@ public:
     static bool whateverArrivedAsValue(Binary* b, const Value& l, const Value& r);
     // `»`.method over a container, shared by the direct and the curried paths
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe = false);
+    bool assignMultiDimSlice(Expr* target, const Value& rhs); // `\x` bound to `@a[*;0]`, assigned
     // thread_local like the call registers above: written per-block / per-
     // statement on every thread (the next TSan reports after the registers)
     static thread_local bool hoistingSubs_;

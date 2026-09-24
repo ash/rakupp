@@ -38,6 +38,7 @@ private:
 size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len);  // byte end of the grapheme cluster at `pos`
 int uniCollate(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b); // UCA (DUCET) three-way compare
 int32_t uniCharByName(const std::string& name);            // name -> codepoint, or -1
+std::string uniSeqByName(const std::string& name);          // NAMED SEQUENCE -> its UTF-8, or "" (any case)
 std::string uniNameOf(uint32_t cp);                        // codepoint -> name, or ""
 bool uniNumValue(uint32_t cp, long long& num, long long& den);
 // probe form: false instead of throwing when --slim cut the table (lexer use)

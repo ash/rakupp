@@ -8932,6 +8932,15 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
 
 // ----------------- statements -----------------
 // A block-scoped phaser we run at entry/exit rather than in-place.
+// Is the body's LAST statement, in source order, a CATCH or CONTROL block?
+static bool trailingCatchBlock(const std::vector<StmtPtr>& body) {
+    if (body.empty()) return false;
+    const Stmt* s = body.back().get();
+    if (s->kind != NK::Block) return false;
+    auto* b = static_cast<const Block*>(s);
+    return b->isCatch || b->phaser == "CONTROL";
+}
+
 static bool isBlockPhaser(Stmt* s) {
     if (s->kind != NK::Block) return false;
     auto* b = static_cast<Block*>(s);
@@ -14753,6 +14762,9 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"buf32", {"buf32", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
         {"buf64", {"buf64", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
         {"utf8",  {"utf8", "Blob", "Positional", "Stringy"}},
+        {"utf16", {"utf16", "Blob", "Positional", "Stringy"}},
+        {"utf32", {"utf32", "Blob", "Positional", "Stringy"}},
+        {"ValueObjAt", {"ValueObjAt", "ObjAt"}},
         {"Uni",  {"Uni", "Positional", "Iterable"}},
         {"NFC",  {"NFC", "Uni", "Positional", "Iterable"}},
         {"NFD",  {"NFD", "Uni", "Positional", "Iterable"}},
@@ -20139,6 +20151,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 lastReal = k; break;
             }
+            // …except that a CATCH/CONTROL written LAST is the routine's last
+            // statement in Rakudo: what precedes it is sunk — a Failure there
+            // throws, into that very CATCH — and the routine answers Nil
+            const bool trailingCatch = isRoutine && trailingCatchBlock(*c.body);
+            if (trailingCatch) lastReal = nst;
             bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
@@ -20186,7 +20203,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 else
                     last = exec(s, i != lastReal); // non-final statements sink
                 if (tcx.returning) { // cooperative return reached this routine
-                    if (isRoutine) { tcx.returning = false; last = std::move(tcx.returnV); }
+                    if (isRoutine) { tcx.returning = false; last = std::move(tcx.returnV); explicitTailReturn = true; }
                     break; // a bare block propagates the flag to its routine
                 }
                 // A ROUTINE's implicit tail return decontainerizes; a bare
@@ -20195,6 +20212,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // that line, and `return $p` (above) sits on the block's side.
                 if (i == lastReal && isRoutine && !c.retRw && !explicitTailReturn) tcx.valContained = false;
             }
+            if (trailingCatch && !explicitTailReturn) last = Value::nil();
             if (lpc && !tcx.returning) { // driver-run loop phasers, in this invocation's env
                 if (lpc & 4) runNextPhasers(*c.body, env);
                 if (lpc & 2) runLastPhasers(*c.body);
@@ -20459,6 +20477,14 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
 // same branch again for the write-back). Calling a ternary uncontainered
 // rejected JSON::Fast's `nom-ws($text, $ord == -1 ?? $pos !! ++$pos)`, and with
 // it every distribution that reads JSON.
+// `array[num32]` → `num`: the element's KIND, as Rakudo names a native array
+// in its refusals ("Cannot bind to a native num array", for every width)
+static std::string nativeCategory(const std::string& arrayTypeName) {
+    std::string t = arrayTypeName.substr(6, arrayTypeName.size() - 7);
+    while (!t.empty() && ascii::isdigit((unsigned char)t.back())) t.pop_back();
+    return t;
+}
+
 static bool argIsNeverContainer(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
@@ -20476,6 +20502,10 @@ static bool argIsNeverContainer(const Expr* e) {
         case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
         case NK::InterpStr: case NK::AllomorphLit: case NK::ChainExpr: case NK::Range:
             return true;
+        // an ADVERBED subscript answers values, never the element's container:
+        // `@a[0]:exists`, `%h<k>:v`, `@a[0;1]:kv` bound to `\x` cannot be assigned
+        case NK::Index:
+            return !static_cast<const Index*>(e)->adverb.empty();
         default: return false;
     }
 }
@@ -20629,6 +20659,14 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             if (!p.isRw && argIsNeverContainer(ae)) {
                 if (Value* vp = env->local(p.name)) vp->readonly = true;
             }
+            // …and a CALL's immutable List/Seq result (`(%h{…}:v).sort`) is a
+            // value too: `\x` then holds no container, and `x = 1` dies as
+            // Rakudo's "Cannot modify an immutable Seq" does
+            else if (!p.isRw && p.sigil == '\\' && ae &&
+                     (ae->kind == NK::MethodCall || ae->kind == NK::Call)) {
+                if (Value* vp = env->local(p.name))
+                    if (vp->t == VT::Array && vp->isList && !vp->itemized) vp->readonly = true;
+            }
             env->x().rwLinks[p.name] = { ae, tctx_.cur };
             // A CHAIN of `is rw` parameters must ALSO reach the ORIGINAL
             // container. `outer($x is rw)` handing $x on to `inner($y is rw)`
@@ -20711,6 +20749,48 @@ void Interpreter::setupRwSlots(const std::vector<Param>* params, std::shared_ptr
 
 // After a mutation through a variable target, push the new value through the
 // caller's argument expression if the variable is a linked rw/raw param.
+// `\target` bound to `@a[*;0;0]` and then assigned: the value is spread over
+// the SLICE's slots, as `@a[*;0;0] = …` itself spreads it, rather than stored
+// whole in the first one. True when `target` was such a slice and is done.
+bool Interpreter::assignMultiDimSlice(Expr* target, const Value& rhs) {
+    if (!target || target->kind != NK::Index) return false;
+    auto* ix = static_cast<Index*>(target);
+    if (!ix->multiDim || !ix->adverb.empty() || !ix->index || ix->index->kind != NK::ListExpr)
+        return false;
+    auto* dims = static_cast<ListExpr*>(ix->index.get());
+    ValueList keys; bool anyMulti = false;
+    for (auto& de : dims->items) {
+        if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
+        Value k = eval(de.get());
+        if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+        keys.push_back(k);
+    }
+    if (!anyMulti) return false;
+    Value* root = lvalue(ix->base.get(), /*asInvocant=*/true);
+    if (!root) return false;
+    std::vector<ValueList> tuples = expandDimTuples(*root, keys);
+    ValueList vs = (rhs.t == VT::Array || rhs.t == VT::Range) ? rhs.flatten() : ValueList{rhs};
+    size_t vi = 0;
+    for (auto& tup : tuples) {
+        Value* node = root;
+        for (size_t d2 = 0; d2 < tup.size(); d2++) {
+            if (node->t == VT::Hash || (ix->isHash && d2 + 1 == tup.size() && node->t != VT::Array)) {
+                if (node->t != VT::Hash) *node = Value::makeHash();
+                node = &(*node->hash())[tup[d2].toStr()];
+            } else {
+                if (node->t != VT::Array) *node = Value::array();
+                long long i = tup[d2].toInt();
+                if (i < 0) negIndexThrow(i);
+                while ((long long)node->arr()->size() <= i) node->arr()->push_back(Value::any());
+                node = &(*node->arr())[i];
+            }
+        }
+        *node = vi < vs.size() ? vs[vi] : Value::any();
+        vi++;
+    }
+    return true;
+}
+
 void Interpreter::rwWriteThrough(Expr* target) {
     if (!target) return;
     std::string name;
@@ -20744,7 +20824,11 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // after-return closure case — IO::Capture::Simple's captured `$*OUT` writing
     // two rw hops away once the frames have gone — is NOT served by this path;
     // it needs the container model, big-area #2, and stays open.)
-    try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
+    try {
+        Expr* tgt = peelIncDec(it->second.first);
+        if (!assignMultiDimSlice(tgt, v))
+            if (Value* lv = lvalue(tgt)) *lv = v;
+    } catch (...) {}
     tctx_.cur = savedCur;
     // …and the ORIGINAL container behind the chain, when the hop above is not
     // it. While the frames are live the hop suffices — the intermediate frame
@@ -21411,6 +21495,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 lastReal = k; break;
             }
+            const bool trailingCatch = trailingCatchBlock(*c.body);   // as the sub path
+            if (trailingCatch) lastReal = nst;
             bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
@@ -21454,10 +21540,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     last = exec(s, i != lastReal); // non-final statements sink
                 if (tcx.returning) { // cooperative return reached this method boundary
                     tcx.returning = false; last = std::move(tcx.returnV);
+                    explicitTailReturn = true;   // an explicit return keeps its value
                     break;
                 }
                 if (i == lastReal && !c.retRw && !explicitTailReturn) tcx.valContained = false; // a method's tail decontainerizes too
             }
+            if (trailingCatch && !explicitTailReturn) last = Value::nil();
         }
     } catch (ReturnEx& r) { runLeaves(true); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
@@ -23274,6 +23362,20 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
         try { return methodCall(v, type.substr(sep + 2), ValueList{}); }
         catch (RakuError&) {}
     }
+    // an ENUM coerces by value (or by member name): `A(Any) $x` given 0 is A::b,
+    // what `A(0)` answers
+    {
+        auto ep = enumPairs_.find(type);
+        if (ep != enumPairs_.end() && ep->second.arr())
+            for (auto& p : *ep->second.arr()) {
+                Value* pv = p.pairVal();
+                bool hit = (v.t == VT::Str && !v.isAllomorph()) ? p.s.str() == v.s.str()
+                                                                  : (pv && valueEq(*pv, v));
+                if (!hit) continue;
+                if (Value* ev = tctx_.cur->find(type + "::" + p.s.str())) return *ev;
+                if (Value* ev = tctx_.cur->find(p.s.str())) return *ev;
+            }
+    }
     throw RakuError{Value::typeObj("X::Coerce::Impossible"),
         "Impossible coercion from '" + v.typeName() + "' into '" + type + "'"};
 }
@@ -24263,6 +24365,8 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
     bind(lst, rhs);
 }
 
+static bool endlessLow(const Value& v);   // defined with the range reducers below
+static bool endlessHigh(const Value& v);
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `* *= 2` / `* = 5` / `*.=succ` — a bare `*` on the LEFT of an assignment
     // curries, exactly as `++*` does: the result is a WhateverCode that mutates
@@ -24841,6 +24945,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         if (a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
+            // …nor anything to bind an element to: `@native[0] := $x`
+            if (!ix->isHash && ix->index && ix->base->kind == NK::VarExpr) {
+                Value* bs = nullptr;
+                try { bs = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                if (bs && bs->t == VT::Array && !bs->isList) {
+                    const std::string tn = bs->typeName();
+                    if (tn.compare(0, 6, "array[") == 0)
+                        throwTyped("X::Bind", {{"target", tn}},
+                                   "Cannot bind to a native " + nativeCategory(tn) + " array");
+                }
+            }
             if (!ix->index)
                 throwTypedV("X::Bind::ZenSlice",
                             {{"type", Value::typeObj(ix->isHash ? "Hash" : "Array")}},
@@ -25735,6 +25850,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
             // 9 for an unassigned slot (assignment refills, it does not redeclare)
             auto keepDefault = lv->elemDefault();
+            // A NATIVE array stores every element there and then, so it cannot
+            // take a list that never ends — at either end: `@num = -Inf..0e0` is
+            // refused as `0e0..Inf` is, with the action and the array's type
+            if (a->op == "=" && isNativeScalarName(keepType) &&
+                (isEndlessLazy(rhs) ||
+                 (rhs.t == VT::Range && (endlessLow(rhs) || endlessHigh(rhs)))))
+                throwTypedV("X::Cannot::Lazy",
+                            {{"action", Value::str("initialize")}, {"what", Value::str(lv->typeName())}},
+                            "Cannot initialize a " + lv->typeName() + " with a lazy list");
             // Shaped array assignment (`my @a[2;2] = …`) — the same routine the
             // native backend calls, so a shaped store means one thing in both.
             if (a->op == "=" && lv->shape() && !lv->shape()->empty()) {
@@ -25804,7 +25928,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // Array[Bool].new(Bool); coerceArray can only synthesise
                     // the Any, because it does not know the target's type).
                     const bool reset = rhs.t == VT::Nil;
+                    // a NATIVE numeric array unboxes each element: a Str (or any
+                    // other non-number) is refused, as Rakudo refuses it
+                    const bool natNum = !reset && isNativeScalarName(keepType) &&
+                                        keepType.compare(0, 3, "str") != 0;
                     for (auto& el : *nv.arr()) {
+                        if (natNum && el.t != VT::Nil && el.t != VT::Any && el.t != VT::Type &&
+                            !el.isNumeric() && el.t != VT::Bool)   // a hole takes the default
+                            throwTyped("X::AdHoc", {},
+                                "This type cannot unbox to a native " +
+                                std::string(keepType.compare(0, 3, "num") == 0 ? "number" : "integer") +
+                                ": P6opaque, " + el.typeName());
                         el = nilElemDefault(reset ? Value::nil() : el, proto);
                         // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
                         if (!want.empty() && !reset)
@@ -34939,6 +35073,21 @@ Value Interpreter::evalUnary(Unary* u) {
         if (name.empty())
             throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                             "require: empty module name"};
+        // Test is BUILT IN, as `use Test` treats it: nothing on disk to load
+        if (name == "Test") { usedTest_ = true; return Value::typeObj("Test"); }
+        // `require "InnerModule.rakumod"` — a FILE, found on the search path
+        // like its module name, and the answer is the string itself
+        for (const char* ext : {".rakumod", ".pm6", ".pm", ".raku"}) {
+            size_t el = std::strlen(ext);
+            if (name.size() > el && name.compare(name.size() - el, el, ext) == 0 &&
+                u->operand->kind != NK::SymbolicRef) {
+                std::string mod = name.substr(0, name.size() - el);
+                for (size_t k; (k = mod.find('/')) != std::string::npos; ) mod.replace(k, 1, "::");
+                try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true); }
+                catch (ParseError& pe) { throw RakuError{Value::typeObj("X::AdHoc"), pe.what()}; }
+                return Value::str(name);
+            }
+        }
         // A module that will not PARSE is fatal to a `use`, which is a
         // compile-time declaration — but `require` is a runtime call, and
         // Rakudo raises a catchable exception for it. Loaders are built on
@@ -38028,6 +38177,13 @@ Value Interpreter::evalIndex(Index* idx) {
             throw RakuError{Value::typeObj(idx->isHash ? "X::Adverb" : "X::Multi::NoMatch"),
                 "Unexpected adverbs passed to subscript: " + list};
         }
+        // a NATIVE array holds values, not containers: nothing to delete
+        if (wantDelete && !idx->isHash && base.t == VT::Array && !base.isList) {
+            const std::string tn = base.typeName();
+            if (tn.compare(0, 6, "array[") == 0)
+                throwTyped("X::Delete", {{"target", tn}},
+                           "Cannot delete from a native " + nativeCategory(tn) + " array");
+        }
         if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
             return multiDimRead(base); // all adverbs conditionally off → plain multidim read
         // …and the same for `%h{*}:delete($off)`: with every adverb switched off
@@ -38114,6 +38270,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     } else if (cur.t == VT::Array && cur.arr()) {
                         long long i = keys[d].toInt(), n = (long long)cur.arr()->size();
                         shapedBoundsCheck(shape, d, i);
+                        keys[d] = Value::integer(i);   // an ARRAY level's key is its Int index: ("0";0e0) reports (0, 0)
                         if (i < 0 || i >= n) { navOk = false; break; }
                         cur = (*cur.arr())[i];
                     } else navOk = false;
@@ -38128,6 +38285,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (wantDelete && exists) cur.hash()->erase(keys.back().toStr());
                 } else if (navOk && cur.t == VT::Array && cur.arr()) {
                     long long i = keys.back().toInt(), n = (long long)cur.arr()->size();
+                    keys.back() = Value::integer(i);
                     if (i >= 0 && i < n && isDefined((*cur.arr())[i])) { exists = true; val = (*cur.arr())[i]; }
                     if (wantDelete && exists) {
                         (*cur.arr())[i] = Value::any();
@@ -38169,6 +38327,7 @@ Value Interpreter::evalIndex(Index* idx) {
                             cur = it->second;
                         } else if (cur.t == VT::Array && cur.arr()) {
                             long long i = tup[d2].toInt(), n = (long long)cur.arr()->size();
+                            tup[d2] = Value::integer(i);   // an array level reports its Int index
                             if (i < 0 || i >= n) { navOk = false; break; }
                             cur = (*cur.arr())[i];
                         } else navOk = false;
@@ -38180,6 +38339,7 @@ Value Interpreter::evalIndex(Index* idx) {
                         if (wantDelete && exists) cur.hash()->erase(tup.back().toStr());
                     } else if (navOk && cur.t == VT::Array && cur.arr()) {
                         long long i = tup.back().toInt(), n = (long long)cur.arr()->size();
+                        tup.back() = Value::integer(i);
                         if (i >= 0 && i < n && isDefined((*cur.arr())[i])) { exists = true; val = (*cur.arr())[i]; }
                         if (wantDelete && exists) {
                             (*cur.arr())[i] = Value::any();
@@ -38576,6 +38736,19 @@ Value Interpreter::evalIndex(Index* idx) {
             for (long long k = from; k <= to; k++) indices.push_back(k);
         } else {
             Value iv = eval(idx->index.get());
+            // A Range held in a `$` container is ONE item, and an item index is
+            // its number: `@a[my $ = ^2]` is `@a[2]` (the elems), not a slice
+            // (a FINITE one: an endless `$r = 0..*` keeps slicing to the end,
+            // which issue #68 settled on, and could not be counted anyway)
+            if (iv.t == VT::Range && !endlessLow(iv) && !endlessHigh(iv)) {
+                const Expr* ie = idx->index.get();
+                if (ie->kind == NK::Assign) ie = static_cast<const Assign*>(ie)->target.get();
+                if (ie->kind == NK::VarExpr) {
+                    const std::string& vn = static_cast<const VarExpr*>(ie)->name;
+                    if (!vn.empty() && vn[0] == '$' && vn != "$_")
+                        iv = Value::integer((long long)iv.flatten().size());
+                }
+            }
             // Whatever-star index: `@a[*-1]` (WhateverCode called with the length),
             // `@a[*]` (all elements).
             if (iv.t == VT::Code && iv.code() && iv.code()->isWhateverCode)
@@ -38700,6 +38873,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 else if (lazyIdx) break; // lazy slice: stop at the first hole, don't default
                 else if (junctionIdx) continue; // junction index: a missing element threads to nothing
                 else out.arr()->push_back(missElem());
+            }
+            // a slice of a NATIVE array is a native array of the same type
+            // (`@ints[^2]` is `array[int].new(1, 2)`), not a List
+            if (base.t == VT::Array && !base.isList && junctionKind.empty() &&
+                isNativeScalarName(base.ofType())) {
+                out.isList = false;
+                out.ofTypeM() = base.ofType();
             }
             return out;
         }
@@ -38919,7 +39099,7 @@ struct NodeCountReport {
             // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
             // …except the native type names, which resolve like any type
             if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
-                !isNativeTypeName(nm))
+                !isNativeTypeName(nm) && nm != "utf8" && nm != "utf16" && nm != "utf32")
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
             NameTerm tmp(nm); tmp.line = e->line;
             tmp.symbolicStrict = true; // unknown capitalized names fail softly, not stub
@@ -40496,6 +40676,14 @@ Value Interpreter::eval(Expr* e) {
                 if (ve->declare && ve->declScope == "state" && tctx_.curStateEnv &&
                     tctx_.curStateEnv->vars.count(ve->name))
                     return tctx_.curStateEnv->vars[ve->name];
+                // `my C constant T .= new(…)` — a typed CONSTANT's `.=` calls on
+                // its declared type, as `my C $x .= new` does on its container's
+                if (ve->declare && ve->declScope == "constant" && !ve->declType.empty()) {
+                    NameTerm tn(ve->declType); tn.line = mc->line;
+                    Value typ = eval(&tn);
+                    ValueList cargs = evalArgs(mc->args);
+                    return assignChecked(mc->inv.get(), methodCall(typ, mc->method, cargs));
+                }
             }
             // `.dynamic` asks about the VARIABLE, not its value. A `*` twigil makes a
             // container dynamic and the NAME carries that; `is dynamic` does the same

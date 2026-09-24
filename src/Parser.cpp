@@ -1331,6 +1331,9 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
     if (!ve->declare && !varType) return;
     const std::string& declType = ve->declare ? ve->declType : *varType;
     if (declType.empty()) return;
+    // a COERCION type (`my Rat(Str) $v = 1`) decides at run time, where the
+    // refusal is X::TypeCheck::Assignment, not this compile-time wording
+    if (ve->declare && !ve->declCoerce.empty()) return;
     static const std::set<std::string> kInt = {"Int", "int", "int8", "int16", "int32",
         "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
     static const std::set<std::string> kRat = {"Rat", "rat", "rat32", "rat64", "FatRat"};
@@ -4133,6 +4136,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 // `my @a[;]` — an empty dimension: Rakudo declares that without a
                 // shape rather than looping on it
                 if (isKind(Tok::Semicolon)) { advance(); continue; }
+                // `my @arr[*]` — a dimension of ANY size: that is an ordinary,
+                // auto-extending array, so it declares no shape at all
+                if (isOp("*") && (peek().kind == Tok::RBracket)) { advance(); continue; }
                 dims->items.push_back(parseExpr(BP_COMMA + 1));
                 if (isKind(Tok::Semicolon) || isKind(Tok::Comma)) { advance(); continue; } // `[3;3]` or `[3,3]`
                 break;
@@ -6433,9 +6439,13 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = "require";
+                // A bare module NAME is a name, not an expression: `(require Test
+                // <&plan &is>)` read `Test <…>` as a call of a routine `Test`
+                if (isKind(Tok::Ident) && !(peek().kind == Tok::LParen && !peek().spaceBefore))
+                    u->operand = std::make_unique<StrLit>(advance().text);
                 // TIGHTER than a comparison, for the reason the statement form
                 // records below.
-                u->operand = parseExpr(BP_COMPARE + 1);
+                else u->operand = parseExpr(BP_COMPARE + 1);
                 // The optional IMPORT LIST, as the statement form takes it.
                 // `try require ::('Data::Dump::Tree') <&ddt>` is how a module
                 // makes a dependency optional, and `try` is what brings it
@@ -7597,8 +7607,15 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                                 for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
                                 cp = uniCharByName(up);
                             }
-                            if (cp < 0) throw ParseError("Unrecognized character name [" + tok + "]", cur().line);
-                            emitCp(cp);
+                            if (cp < 0) {
+                                // a NAMED SEQUENCE: several codepoints under one
+                                // name — `\c[woman facepalming]`, `\c[united states]`
+                                std::string seq = uniSeqByName(tok);
+                                if (seq.empty())
+                                    throw ParseError("Unrecognized character name [" + tok + "]", cur().line);
+                                lit += seq;
+                            }
+                            else emitCp(cp);
                         }
                     }
                     if (comma == std::string::npos) break;
@@ -10965,6 +10982,20 @@ StmtPtr Parser::parseStatementImpl() {
                     auto* sd = static_cast<SubDecl*>(st.get());
                     if (sd->retType.empty()) sd->retType = prefixType;
                 }
+                // `my RT114506 constant Ticket .= new(…)` — the prefix type is the
+                // CONSTANT's type, which `.=` needs for its invocant
+                else if (st && st->kind == NK::ExprStmt) {
+                    Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+                    if (e && e->kind == NK::MethodCall && static_cast<MethodCall*>(e)->mutate)
+                        e = static_cast<MethodCall*>(e)->inv.get();
+                    else if (e && e->kind == NK::Assign)
+                        e = static_cast<Assign*>(e)->target.get();
+                    if (e && e->kind == NK::VarExpr) {
+                        auto* ve = static_cast<VarExpr*>(e);
+                        if (ve->declare && ve->declScope == "constant" && ve->declType.empty())
+                            ve->declType = prefixType;
+                    }
+                }
                 return st;
             }
             // `my Int Str $x` / `our Int Str sub f` — Rakudo parses a second
@@ -11724,7 +11755,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
             if (e && e->kind == NK::VarExpr) {
                 auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&')
+                // …but a `constant &infix:<☄> := &infix:<☃>` ALIASES a routine
+                // that may still take candidates: `multi infix:<☄>` after it is fine
+                if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&' &&
+                    ve->declScope != "constant")
                     subs[ve->name.substr(1)] |= 1;
             }
             continue;

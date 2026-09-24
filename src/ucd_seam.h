@@ -37,12 +37,16 @@ namespace rakupp {
 namespace ucd {
 
 struct NameEnt { const char* name; uint32_t cp; };
+struct SeqEnt { const char* name; uint32_t off, len; };
 struct BlockEnt { uint32_t lo, hi; const char* name; };
 struct ScriptEnt { uint32_t lo, hi; const char* name; };
 struct BidiEnt { uint32_t lo, hi; const char* bc; };
 
 // feature `unicode-names` — unicode_names.cpp (tools/gen-unicode.raku)
 const NameEnt*  namesTable(size_t* n);   // sorted by name; n = entries
+// …and the NAMED SEQUENCES (unicode_seq_gen.cpp, tools/gen_unicode_seq.py):
+// sorted upper-cased names, each a run of `len` codepoints at `*cps + off`
+const SeqEnt*   seqTable(size_t* n, const uint32_t** cps);
 const int64_t*  numvTable(size_t* n);    // flat (cp,num,den) triples; n = int64 count (rows × 3)
 // The PROBE spelling: null when the feature is cut, instead of throwing. For
 // classification questions whose answer is almost always "no" — the LEXER asks

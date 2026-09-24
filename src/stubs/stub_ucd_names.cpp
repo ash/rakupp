@@ -15,6 +15,9 @@ namespace rakupp { namespace ucd {
 const NameEnt* namesTable(size_t*) {
     featureMissing("unicode-names", "uniname/uniparse (the Unicode name table)");
 }
+const SeqEnt* seqTable(size_t*, const uint32_t**) {
+    featureMissing("unicode-names", "\\c[…]/uniparse (the named-sequence table)");
+}
 const int64_t* numvTable(size_t*) {
     featureMissing("unicode-names", "unival (the Unicode numeric-value table)");
 }

@@ -201,7 +201,8 @@ set_source_files_properties("${RAKUPP_TOOLS}" PROPERTIES GENERATED TRUE)
 #   ucd_coll   the DUCET triple        (unicmp/coll/.collate)
 #   ucd_props  SCRIPTS, BLOCKS, BIDI   (uniprop by name, <:Script<…>>)
 #   parse      Lexer + Parser          (EVAL, require, runtime regexes)
-set(RAKUPP_UCD_NAMES_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_names.cpp")
+set(RAKUPP_UCD_NAMES_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_names.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_seq_gen.cpp")
 set(RAKUPP_UCD_COLL_SOURCES  "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_coll_gen.cpp")
 set(RAKUPP_UCD_PROPS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_scripts_gen.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_blocks_gen.cpp"

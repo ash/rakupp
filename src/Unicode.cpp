@@ -815,6 +815,34 @@ static std::string hangulSyllableName(uint32_t cp) {
     return std::string("HANGUL SYLLABLE ") + HANGUL_L[s / (21 * 28)] + HANGUL_V[(s / 28) % 21] + HANGUL_T[s % 28];
 }
 
+// A name that stands for SEVERAL codepoints: a UCD named sequence or an emoji
+// sequence (`woman facepalming`, `flag: Canada`, bare `Canada`). Case-blind,
+// as Rakudo's \c[…] is. "" when there is no such sequence.
+std::string uniSeqByName(const std::string& name) {
+    std::string up = name;
+    for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
+    const uint32_t* cps = nullptr;
+    size_t n; const ucd::SeqEnt* T = ucd::seqTable(&n, &cps);
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        int c = strcmp(up.c_str(), T[mid].name);
+        if (c == 0) {
+            std::string out;
+            for (uint32_t k = 0; k < T[mid].len; k++) {
+                uint32_t u = cps[T[mid].off + k];
+                if (u < 0x80) out += (char)u;
+                else if (u < 0x800) { out += (char)(0xC0 | (u >> 6)); out += (char)(0x80 | (u & 0x3F)); }
+                else if (u < 0x10000) { out += (char)(0xE0 | (u >> 12)); out += (char)(0x80 | ((u >> 6) & 0x3F)); out += (char)(0x80 | (u & 0x3F)); }
+                else { out += (char)(0xF0 | (u >> 18)); out += (char)(0x80 | ((u >> 12) & 0x3F)); out += (char)(0x80 | ((u >> 6) & 0x3F)); out += (char)(0x80 | (u & 0x3F)); }
+            }
+            return out;
+        }
+        if (c < 0) hi = mid; else lo = mid + 1;
+    }
+    return "";
+}
+
 int32_t uniCharByName(const std::string& name) {
     auto algo = [&](const char* pfx) -> int32_t {
         size_t pl = strlen(pfx);

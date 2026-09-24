@@ -2785,7 +2785,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (inv.t == VT::Type && inv.s == "IO::Special") {
-        if (m == "Str" || m == "gist" || m == "path") return Value::str("");
+        if (m == "gist") return Value::str("(Special)");   // as every type object gists
+        if (m == "Str" || m == "path") return Value::str("");
     }
     if (inv.t == VT::Type && inv.s == "Stash") {
         if (m == "new") { Value h = Value::makeHash(); h.hashKind = "Stash"; return h; }
@@ -3806,7 +3807,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (auto& a : args)
                 if (a.t == VT::Str && !a.namedArg) { msg = a.toStr(); haveEx = true;
                     ex = makeTypedEx("X::AdHoc", {{"message", Value::str(msg)}}, msg); break; }
-        if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be; }
+        if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type && be->t != VT::Any) { ex = *be; haveEx = true; } }
+        // …and with no `$!` either it still carries an exception: "Failed"
+        if (!haveEx) { msg = "Failed"; ex = makeTypedEx("X::AdHoc", {{"message", Value::str(msg)}}, msg); }
         Value f = rakuppNewFailure();
         (*f.hash())["exception"] = ex;
         if (!msg.empty()) (*f.hash())["message"] = Value::str(msg);

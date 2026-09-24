@@ -3572,8 +3572,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                           v.obj()->boxed.t == VT::Str))
                         : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
                         : (v.t == VT::Int || v.t == VT::Bool);
-                if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
-                    "Type check failed in binding; expected " + bt + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
+                // X::TypeCheck with the offending value, as Rakudo's native
+                // push/append/unshift report it (`throws-like …, got => Str`)
+                if (!ok) throwTypedV("X::TypeCheck",
+                    {{"got", v}, {"expected", Value::typeObj(bt)}, {"operation", Value::str(m.s)}},
+                    "Type check failed in " + m.s + " to " + bt + " array; expected " + bt +
+                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
             };
             // a shaped array (`my @a[2;2]`) has fixed dimensions — size-changing
             // operations are illegal
@@ -3707,11 +3711,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller " + m.s + "(Array:D, " + av.typeName() + ") — " + m.s + " takes no argument"};
                 if (inv.arr()->empty()) {
+                    // the WHAT is the container's own type: `array[int]` for a native one
+                    const std::string what = inv.typeName();
                     Value f = rakuppNewFailure();
                     (*f.hash())["exception"] = makeTypedEx("X::Cannot::Empty",
-                        {{"action", Value::str(m)}, {"what", Value::str("Array")}},
-                        "Cannot " + m + " from an empty Array");
-                    (*f.hash())["message"] = Value::str("Cannot " + m + " from an empty Array");
+                        {{"action", Value::str(m)}, {"what", Value::str(what)}},
+                        "Cannot " + m + " from an empty " + what);
+                    (*f.hash())["message"] = Value::str("Cannot " + m + " from an empty " + what);
                     return f;
                 }
                 Value v = m == "pop" ? inv.arr()->back() : inv.arr()->front();

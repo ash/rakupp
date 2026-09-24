@@ -250,6 +250,8 @@ static const std::vector<std::string>& exceptionAncestry(const std::string& t) {
 const std::vector<std::string>& typeAncestry(const std::string& t) {
     static const std::map<std::string, std::vector<std::string>> A = {
         {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
+        // a value type's identity IS an ObjAt, the narrower kind of one
+        {"ValueObjAt", {"ValueObjAt","ObjAt","Any","Mu"}},
         // an allomorph is Allomorph, Str AND its number (Rakudo's MRO order)
         {"IntStr",     {"IntStr","Allomorph","Str","Int","Stringy","Real","Numeric","Cool","Any","Mu"}},
         {"RatStr",     {"RatStr","Allomorph","Str","Rat","Stringy","Rational","Real","Numeric","Cool","Any","Mu"}},
@@ -12369,6 +12371,12 @@ void Interpreter::registerBuiltins() {
         (*f.hash())["exception"] = ex;
         (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
                              ? ex.obj()->attrs["message"] : Value::str("Failed");
+        // with no ROUTINE to return from, `fail` behaves like `die` (Rakudo):
+        // the exception itself is thrown where the fail was written
+        if (I.tctx_.curRoutineFrame == 0) {
+            std::string msg = (*f.hash())["message"].toStr();
+            throw RakuError{ex, msg};
+        }
         throw ReturnEx{f};
     };
     // val(Str) — a fully-numeric string becomes the matching allomorph
@@ -14354,8 +14362,15 @@ void Interpreter::registerBuiltins() {
                 if (b == std::string::npos) return;
                 nm = nm.substr(b, e - b + 1);
                 int32_t cp = uniCharByName(nm);
-                if (cp < 0) throw RakuError{Value::typeObj("X::Str::InvalidCharName"),
-                                            "Unrecognized character name [" + nm + "]"};
+                if (cp < 0) {
+                    // …or a NAMED SEQUENCE, several codepoints under one name
+                    std::string seq = uniSeqByName(nm);
+                    if (seq.empty())
+                        throw RakuError{Value::typeObj("X::Str::InvalidCharName"),
+                                        "Unrecognized character name [" + nm + "]"};
+                    out += seq;
+                    return;
+                }
                 out += cpToU8((uint32_t)cp);
             };
             for (char c : spec) { if (c == ',') { emit(cur); cur.clear(); } else cur += c; }
