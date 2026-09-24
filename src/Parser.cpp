@@ -9537,8 +9537,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             // two exported `f`s in one package, from different scopes, would
             // both land in its EXPORT — X::Export::NameClash
             // (the same scope twice is a plain redeclaration, reported elsewhere)
-            if (!typeStack_.empty() && !s->isMulti && !s->isMethod && !s->name.empty()) {
-                auto& seen = exportedSubs_[typeStack_.back()];
+            if ((!typeStack_.empty() || !exportPkgStack_.empty()) && !s->isMulti && !s->isMethod && !s->name.empty()) {
+                auto& seen = exportedSubs_[!typeStack_.empty() ? typeStack_.back() : exportPkgStack_.back()];
                 auto it = seen.find(s->name);
                 const int depth = (int)scalarDeclTypes_.size();
                 if (it == seen.end()) seen[s->name] = depth;
@@ -10261,6 +10261,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         advance(); // {
         cd->bracedBody = true;   // …even when nothing is between the braces
+        exportPkgStack_.push_back(cd->name);   // whose EXPORT an `is export` inside lands in
+        struct PopPkg { std::vector<std::string>& s; ~PopPkg() { s.pop_back(); } } popPkg{exportPkgStack_};
         while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
             if (isIdent("has") &&
