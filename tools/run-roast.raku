@@ -604,15 +604,21 @@ my $flushed = 0;    # files [0 ..^ $flushed) are tallied and printed
 # run-with-timeout): a fork is a fork.
 my $running   = 0;   # children alive right now
 my $completed = 0;   # children finished, in any order ($flushed lags: it is in file order)
+# Tests passed / tests discovered over the files finished so far, in completion
+# order like $completed. "Discovered" is the file's plan where it emitted one,
+# else what ran — the same per-file denominator tally() adds to $tot-plan.
+my $live-pass = 0;
+my $live-seen = 0;
 # The per-file lines come out in FILE ORDER, and the first file in that order
 # is a bulk file that starts late, so a terminal shows nothing for most of the
 # run. This line, on stderr and only when stderr is a terminal, says what is
 # happening in the meantime; the flush below wipes it before printing.
 sub progress() {
-    my ($d, $r) = $lock.protect({ ($completed, $running) });
-    $*ERR.print(sprintf("\r  %d/%d done, %d running, %.0f s ", $d, @files.elems, $r, (now - $T0).Num));
+    my ($d, $r, $tp, $ts) = $lock.protect({ ($completed, $running, $live-pass, $live-seen) });
+    $*ERR.print(sprintf("\r  %d/%d done, %d running, %d/%d tests passed, %.0f s ",
+                        $d, @files.elems, $r, $tp, $ts, (now - $T0).Num));
 }
-sub wipe-progress() { $*ERR.print("\r" ~ (' ' x 48) ~ "\r") }
+sub wipe-progress() { $*ERR.print("\r" ~ (' ' x 80) ~ "\r") }
 my %cpu-sample;
 my $sampling = True;
 sub sample-children() {
@@ -822,6 +828,8 @@ my sub worker() {
             @result[$k] = $r;
             $running--;
             $completed++;
+            $live-pass += $r[3];
+            $live-seen += $r[1] >= 0 ?? $r[1] !! $r[2];
             wipe-progress() if $*ERR.t && @result[$flushed].defined;
             while $flushed < @files.elems && @result[$flushed].defined {
                 tally($flushed);
