@@ -14597,7 +14597,18 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return Value::str("");
         return Value::str(pod2text(a[0]));
     };
-    B["uniparse"] = [](Interpreter&, ValueList& a) -> Value {
+    B["uniparse"] = [](Interpreter& I, ValueList& a) -> Value {
+        // an unknown name is a Failure (`fails-like … X::Str::InvalidCharName`),
+        // not an immediate throw
+        try { return I.callBuiltin("uniparse:impl", a); }
+        catch (RakuError& e) {
+            if (e.payload.t == VT::Type && e.payload.s == "X::Str::InvalidCharName")
+                return I.ioFailure("X::Str::InvalidCharName", {}, e.message);
+            throw;
+        }
+    };
+    B["parse-names"] = B["uniparse"];
+    B["uniparse:impl"] = [](Interpreter&, ValueList& a) -> Value {
         std::string out;
         for (auto& v : a) {
             std::string spec = v.toStr(), cur;

@@ -18327,6 +18327,35 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         out.extM() = st;
         return out;
     }
+    // `1..* X 42` / `42 X 1..*` — a cross with an endless side is endless and
+    // LAZY. Its order is the usual one (left side slowest), so an endless LEFT
+    // walks its elements against the whole right side, and an endless RIGHT
+    // never gets past the first left element — which is what Rakudo yields.
+    if (op[0] == 'X' && (endlessInt(l) || endlessInt(r))) {
+        auto nth = [this](Value src, size_t i) -> Value {
+            if (src.t == VT::Range) return Value::integer(src.rFrom() + (src.rExFrom() ? 1 : 0) + (long long)i);
+            materializeLazy(src, i + 1);
+            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+        };
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto idx = std::make_shared<size_t>(0);
+        bool leftEndless = endlessInt(l);
+        ValueList fin = leftEndless ? oneLevel(r) : oneLevel(l);
+        if (fin.empty()) { Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; }
+        Value endless = leftEndless ? l : r; std::string inner = sub;
+        st->appendNext = [this, nth, idx, fin, endless, leftEndless, inner](ValueList& cache) -> bool {
+            size_t i = (*idx)++;
+            Value x, y;
+            if (leftEndless) { x = nth(endless, i / fin.size()); y = fin[i % fin.size()]; }
+            else { x = fin[0]; y = nth(endless, i); }
+            cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
+                                                          : applyBinOp(inner, x, y));
+            return true;
+        };
+        out.extM() = st;
+        return out;
+    }
     if (op[0] == 'Z') {
         if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
         else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
@@ -18347,7 +18376,34 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         }
         else out.arr()->push_back(applyBinOp(sub, x, y));
     };
-    if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
+    if (op[0] == 'Z') {
+        // A side that ENDS in `*` extends: its last real element repeats for
+        // as long as the other side goes (`1, 2, 3, * Z 10..50`), and with
+        // both extended the zip never ends
+        auto extended = [](ValueList& v) {
+            if (v.size() > 1 && v.back().t == VT::Whatever) { v.pop_back(); return true; }
+            return false;
+        };
+        bool ea = extended(a), eb = extended(bb);
+        if (ea && eb) {
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto idx = std::make_shared<size_t>(0);
+            std::string inner = sub;
+            st->appendNext = [this, idx, a, bb, inner](ValueList& cache) -> bool {
+                size_t i = (*idx)++;
+                const Value& x = a[std::min(i, a.size() - 1)];
+                const Value& y = bb[std::min(i, bb.size() - 1)];
+                cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
+                                                              : applyBinOp(inner, x, y));
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (ea) while (a.size() < bb.size()) a.push_back(a.back());
+        if (eb) while (bb.size() < a.size()) bb.push_back(bb.back());
+        for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]);
+    }
     else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
     return out;
 }
@@ -24921,6 +24977,66 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return v;
         }
     }
+    // `my $r := substr-rw($str, 0, 5)` / `:= $str.substr-rw(0, 5)` — $r is a
+    // PROXY over that slice of $str: reading it reads the current text there,
+    // assigning splices into $str. The positions are fixed when it is bound,
+    // as in Rakudo (a sibling proxy keeps pointing at the same place when this
+    // one changes the string's length).
+    if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && a->value) {
+        Expr* invE = nullptr; const std::vector<ExprPtr>* srArgs = nullptr; size_t argOfs = 0;
+        if (a->value->kind == NK::MethodCall &&
+            static_cast<MethodCall*>(a->value.get())->method == "substr-rw") {
+            auto* mc = static_cast<MethodCall*>(a->value.get());
+            invE = mc->inv.get(); srArgs = &mc->args;
+        }
+        else if (a->value->kind == NK::Call && static_cast<Call*>(a->value.get())->name == "substr-rw" &&
+                 !static_cast<Call*>(a->value.get())->args.empty()) {
+            auto* c = static_cast<Call*>(a->value.get());
+            invE = c->args[0].get(); srArgs = &c->args; argOfs = 1;
+        }
+        if (invE && invE->kind == NK::VarExpr) {
+            const std::string vname = static_cast<VarExpr*>(invE)->name;
+            std::shared_ptr<Env> owner;
+            for (auto e = tctx_.cur; e; e = e->parent) if (e->local(vname)) { owner = e; break; }
+            ValueList pos;
+            for (size_t k = argOfs; k < srArgs->size(); k++) pos.push_back(eval((*srArgs)[k].get()));
+            bool plain = owner && !pos.empty() && pos.size() <= 2;
+            for (auto& pv : pos) if (pv.t != VT::Int) plain = false;
+            if (plain) {
+                long long from = pos[0].toInt();
+                long long len = pos.size() > 1 ? pos[1].toInt() : -1;   // -1: to the end
+                auto cur = [owner, vname](Interpreter& I) -> Value {
+                    Value* p = owner->local(vname);
+                    return p ? I.deproxy(*p) : Value::str("");
+                };
+                Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+                fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
+                    Value s = cur(I);
+                    ValueList sa{Value::integer(from)};
+                    if (len >= 0) sa.push_back(Value::integer(len));
+                    return I.methodCall(s, "substr", sa);
+                };
+                Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+                store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
+                    Value nv = sa.empty() ? Value::str("") : sa.back();
+                    Value s = cur(I);
+                    long long n = I.methodCall(s, "chars", ValueList{}).toInt();
+                    long long f = std::min(from, n), e = len < 0 ? n : std::min(n, from + len);
+                    std::string out = I.methodCall(s, "substr", ValueList{Value::integer(0), Value::integer(f)}).toStr()
+                                    + nv.toStr()
+                                    + I.methodCall(s, "substr", ValueList{Value::integer(e)}).toStr();
+                    if (Value* p = owner->local(vname)) *p = Value::str(out);
+                    return nv;
+                };
+                (*proxy.hash())["FETCH"] = fetch;
+                (*proxy.hash())["STORE"] = store;
+                Value* lv = lvalue(a->target.get());
+                *lv = proxy;
+                return proxy;
+            }
+        }
+    }
     // `(temp $indent) += 2` — `temp` yields the CONTAINER it just snapshotted,
     // so a compound assignment writes through it. Only the `temp $x = …`
     // spelling was handled, and the parenthesised one died "Target is not
@@ -25265,8 +25381,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
                     return b;
                 };
-                long long from = srArgs->size() > argOfs ? eval((*srArgs)[argOfs].get()).toInt() : 0;
-                long long len  = srArgs->size() > argOfs + 1 ? eval((*srArgs)[argOfs + 1].get()).toInt() : nch - from;
+                // The position may be a Range (`2..2`, `0^..^1`) naming both
+                // ends, or a Callable called with the length (`*-3`); the
+                // width a Callable (called with what is left), `*` or Inf
+                Value fv = srArgs->size() > argOfs ? eval((*srArgs)[argOfs].get()) : Value::integer(0);
+                long long from = 0, len = -1;
+                if (fv.t == VT::Range) {
+                    from = fv.rFrom() + (fv.rExFrom() ? 1 : 0);
+                    long long to = fv.rTo() - (fv.rExTo() ? 1 : 0);
+                    len = to - from + 1;
+                }
+                else if (fv.t == VT::Code) from = callCallable(fv, ValueList{Value::integer(nch)}).toInt();
+                else from = fv.toInt();
+                if (srArgs->size() > argOfs + 1) {
+                    Value lv = eval((*srArgs)[argOfs + 1].get());
+                    if (lv.t == VT::Whatever || (lv.t == VT::Num && std::isinf(lv.n))) len = nch - from;
+                    else if (lv.t == VT::Code) len = callCallable(lv, ValueList{Value::integer(nch - from)}).toInt();
+                    else len = lv.toInt();
+                }
+                if (len == -1 && fv.t != VT::Range) len = nch - from;
                 if (from < 0) negIndexThrow(from); // Rakudo: X::OutOfRange, no from-the-end wrap
                 if (from > nch) from = nch;
                 if (len < 0) len = 0; if (from + len > nch) len = nch - from;
@@ -31069,20 +31202,42 @@ static std::string applyCaseMark(const std::string& orig, const std::string& rep
 }
 
 // `:samecase` — each replacement character takes the case of the positionally
-// aligned character of the match (`oO` → `au` gives `aU`); once the match runs
-// out, the last seen case carries on.
+// aligned character of the match (`oO` → `au` gives `aU`); past the end of the
+// match the LAST character decides. A source character with no case (a space,
+// a digit) leaves the replacement character as it is — Rakudo's rule, so
+// `"a b"` over `FOO` is `fOo`.
 static std::string applySamecase(const std::string& orig, const std::string& repl) {
+    if (orig.empty()) return repl;
     std::string r = repl;
-    bool lastUpper = false, haveLast = false; size_t oi = 0;
     for (size_t i = 0; i < r.size(); i++) {
-        if (oi < orig.size()) {
-            unsigned char oc = orig[oi++];
-            if (ascii::isalpha(oc)) { lastUpper = ascii::isupper(oc); haveLast = true; }
-        }
-        if (haveLast && ascii::isalpha((unsigned char)r[i]))
-            r[i] = lastUpper ? ascii::toupper((unsigned char)r[i]) : ascii::tolower((unsigned char)r[i]);
+        unsigned char oc = orig[i < orig.size() ? i : orig.size() - 1];
+        if (!ascii::isalpha((unsigned char)r[i])) continue;
+        if (ascii::isupper(oc)) r[i] = ascii::toupper((unsigned char)r[i]);
+        else if (ascii::islower(oc)) r[i] = ascii::tolower((unsigned char)r[i]);
     }
     return r;
+}
+// …and under `:sigspace` it works WORD by word: the n-th word of the
+// replacement takes its case from the n-th word of the match (the last one
+// once the match runs out of words), whitespace untouched.
+static std::string applySamecaseWords(const std::string& orig, const std::string& repl) {
+    std::vector<std::string> ow;
+    for (size_t i = 0; i < orig.size(); ) {
+        while (i < orig.size() && ascii::isspace((unsigned char)orig[i])) i++;
+        size_t b = i;
+        while (i < orig.size() && !ascii::isspace((unsigned char)orig[i])) i++;
+        if (i > b) ow.push_back(orig.substr(b, i - b));
+    }
+    if (ow.empty()) return applySamecase(orig, repl);
+    std::string out; size_t wn = 0;
+    for (size_t i = 0; i < repl.size(); ) {
+        if (ascii::isspace((unsigned char)repl[i])) { out += repl[i++]; continue; }
+        size_t b = i;
+        while (i < repl.size() && !ascii::isspace((unsigned char)repl[i])) i++;
+        out += applySamecase(ow[wn < ow.size() ? wn : ow.size() - 1], repl.substr(b, i - b));
+        wn++;
+    }
+    return out;
 }
 
 // `target ~~ s/pat/repl/` as one runtime call — mirrors the evalBinary SubstLit
@@ -31594,6 +31749,19 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             return last > after ? last : start;             // start = "no chain found"
         };
+        // where a run of postfix subscripts starting at `j` ends (`[…]`, `<…>`,
+        // `{…}`, balanced), or `j` itself when there is none
+        auto subscriptsEnd = [&](size_t j) -> size_t {
+            while (j < s.size() && (s[j] == '[' || s[j] == '{' ||
+                                    (s[j] == '<' && j + 1 < s.size() && s[j + 1] != ' ' && s[j + 1] != '='))) {
+                char open = s[j], close = open == '[' ? ']' : open == '{' ? '}' : '>';
+                int d = 0; size_t k = j;
+                for (; k < s.size(); k++) { if (s[k] == open) d++; else if (s[k] == close && --d == 0) break; }
+                if (k >= s.size()) break;
+                j = k + 1;
+            }
+            return j;
+        };
         for (size_t i = 0; i < s.size(); i++) {
             if (s[i] == '\\' && i + 1 < s.size()) {
                 // the replacement side is qq-ish: decode the standard escapes
@@ -31666,8 +31834,31 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
                        ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
                         (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) nm += s[j++];
+                // …with its postfix subscripts, as in any interpolating string:
+                // `s/.*/$t[1]/`, `$h<key>`, `$h{$k}`, chained, then `.method()`
+                size_t k = subscriptsEnd(j);
+                size_t chainEnd = methodChain(i, k);
+                if (k > j || chainEnd != i) {
+                    size_t e = chainEnd != i ? chainEnd : k;
+                    try { r += evalString(s.substr(i, e - i)).toStr(); i = e - 1; continue; }
+                    catch (FeatureNotBuilt&) { throw; }
+                    catch (...) { }   // fall back to the bare variable
+                }
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
+            }
+            // `%h<key>` / `%h{$k}` — a hash interpolates only when subscripted
+            if (s[i] == '%' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
+                size_t j = i + 1;
+                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
+                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
+                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) j++;
+                size_t k = subscriptsEnd(j);
+                if (k > j) {
+                    try { r += evalString(s.substr(i, k - i)).toStr(); i = k - 1; continue; }
+                    catch (FeatureNotBuilt&) { throw; }
+                    catch (...) { }
+                }
             }
             if (s[i] == '@' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
                 size_t j = i + 1; std::string nm;
@@ -31767,7 +31958,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             r = a;
         }
         if (ignoremark) r = applyCaseMark(orig, r, samecase, true); // :m/:mm transfer marks (and case if :ii)
-        else if (samecase) r = applySamecase(orig, r);
+        else if (samecase) r = sigspace ? applySamecaseWords(orig, r) : applySamecase(orig, r);
         return r;
     };
     std::string out; long last = 0, occ = 0;
@@ -33440,6 +33631,58 @@ Value Interpreter::evalBinary(Binary* b) {
     // the replications group ELEMENT-major: ((e1r1 e1r2 …) (e2r1 …) …).
     // Only the plain numeric-count form takes this road; anything else falls
     // through to the generic value-based cross/zip.
+    // (…but only a LIST literal on the left is thunked: `$x++ Xxx 0` still
+    // runs its left side once, as Rakudo does)
+    if ((op == "Xxx" || op == "Zxx") && b->lhs && b->lhs->kind != NK::ListExpr) {
+        Value lv = eval(b->lhs.get());
+        Value rv = eval(b->rhs.get());
+        return applyBinOp(op, lv, rv);
+    }
+    // `L X&& (a, b)` / `L Zor (a, b)` — the short-circuiting infixes keep their
+    // thunky RIGHT side under X and Z: each element EXPRESSION of a literal
+    // right-hand list runs only when its left value needs it (and `andthen` /
+    // `orelse` topicalize it).
+    if (op.size() > 1 && (op[0] == 'X' || op[0] == 'Z') && b->rhs && b->rhs->kind == NK::ListExpr) {
+        static const std::set<std::string> thunky = {
+            "&&", "||", "and", "or", "andthen", "orelse", "notandthen", "//"};
+        const std::string inner = op.substr(1);
+        if (thunky.count(inner)) {
+            Value lv = eval(b->lhs.get());
+            ValueList ls;
+            if (lv.t == VT::Array && lv.arr() && !lv.itemized) ls = *lv.arr();
+            else if (lv.t == VT::Range) ls = lv.flatten();
+            else ls.push_back(lv);
+            auto& ritems = static_cast<ListExpr*>(b->rhs.get())->items;
+            auto one = [&](const Value& l, Expr* re) -> Value {
+                bool takeLeft;
+                if (inner == "&&" || inner == "and") takeLeft = !boolify(l);
+                else if (inner == "||" || inner == "or") takeLeft = boolify(l);
+                else if (inner == "//" || inner == "orelse") takeLeft = isDefined(l);
+                else if (inner == "andthen") takeLeft = !isDefined(l);
+                else takeLeft = isDefined(l);                   // notandthen
+                if (takeLeft) return inner == "andthen" ? Value::array() : l;
+                if (inner == "andthen" || inner == "orelse" || inner == "notandthen") {
+                    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                    env->define("$_", l);
+                    auto saved = tctx_.cur; tctx_.cur = env;
+                    Value v;
+                    try { v = eval(re); } catch (...) { tctx_.cur = saved; throw; }
+                    tctx_.cur = saved;
+                    return v;
+                }
+                return eval(re);
+            };
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            if (op[0] == 'X') {
+                for (auto& l : ls) for (auto& re : ritems) out.arr()->push_back(one(l, re.get()));
+            }
+            else {
+                for (size_t k = 0; k < ls.size() && k < ritems.size(); k++)
+                    out.arr()->push_back(one(ls[k], ritems[k].get()));
+            }
+            return out;
+        }
+    }
     if (op == "Xxx" || op == "Zxx") {
         Value rv = eval(b->rhs.get());
         if (rv.t == VT::Int || rv.t == VT::Num) {
