@@ -3804,6 +3804,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
            (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)))))
         return parsePrefix();
     std::string type, coerceTo;
+    char declSmiley = 0;            // `Int:D` — recorded on the variable below
     ExprPtr typeExpr;               // a parameterized declared type, as `Type[args]`
     bool indirectType = false;
     // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
@@ -3845,7 +3846,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                            (peek().text.size() == 1 && std::strchr("$@%&", peek().text[0])))); // typed anon `my Int % = …`
         if (looksType) {
             type = advance().text;
-            if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D / :U / :_ smiley
+            if (isOp(":") && peek().kind == Tok::Ident && !peek().spaceBefore) {  // :D / :U / :_ smiley
+                advance();
+                const std::string sm = advance().text;
+                if (sm != "D" && sm != "U" && sm != "_")
+                    throw ParseError("Invalid type smiley ':" + sm + "' used, only ':D', ':U' and ':_' are allowed",
+                                     cur().line, "X::InvalidTypeSmiley", {{"name", sm}});
+                declSmiley = sm[0];
+            }
             if (isKind(Tok::LBracket)) {
                 // the [T] parameter group is part of the TYPE: `my CArray[uint8]
                 // $hash .= new` must build a uint8 array, and dropping the group
@@ -4078,6 +4086,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // truncated, and every SHA-256 digest came out wrong.
             ve->declType = t2.empty() ? type : t2;
             ve->declCoerce = coerce2.empty() ? coerceTo : coerce2;  // `my Int() ($a, $b)` / `my ($a, Int() $b)`
+            if (t2.empty() && declSmiley && declSmiley != '_') ve->declSmiley = declSmiley;   // `my Int:D ($x = 5)`
             if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not yet enforced here
             if (isOp("=") ) { // per-item initializer: `my Int:D ($x = 5)`
                 advance();
@@ -4159,6 +4168,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         auto ve = std::make_unique<VarExpr>(vname);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         ve->declTypeExpr = std::move(typeExpr);
+        // the smiley: written on the type, else the `use variables` default
+        // (which applies to a TYPED declaration only)
+        if (declSmiley) ve->declSmiley = declSmiley;
+        else if (varsPragma_ && !type.empty() && (scope == "my" || scope == "our" || scope == "state")) {
+            ve->declSmiley = varsPragma_; ve->declSmileyImplicit = true;
+        }
+        if (ve->declSmiley == '_') ve->declSmiley = 0;
         // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
         // (no space) is a dimension list, not a subscript. Semicolons separate dims.
         if (ve->name[0] == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -4227,7 +4243,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             lastWillPhaser_.clear(); lastWillBlock_.reset();
         }
         // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
-        if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
+        if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); ve->declHasWhere = true; }
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {
@@ -7997,6 +8013,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     size_t opMark = opUndo_.size(); // user operators are lexically scoped
     monkeyScopes_.push_back(0);
     scalarDeclTypes_.emplace_back();
+    const char savedVarsPragma = varsPragma_;   // `use variables` is block-scoped
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -8008,6 +8025,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     checkRedeclarations(blk->stmts);
     monkeyScopes_.pop_back();
     scalarDeclTypes_.pop_back();
+    varsPragma_ = savedVarsPragma;
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -10952,7 +10970,32 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
     return s;
 }
 
+// A statement that is ONLY the declaration of a `:D` variable leaves it with
+// nothing to hold — `my Int:D $a;` is X::Syntax::Variable::MissingInitializer
+// (an `is default(…)` supplies one).
 StmtPtr Parser::parseStatement() {
+    const int line = cur().line;
+    StmtPtr st = parseStatementInner();
+    if (st && st->kind == NK::ExprStmt) {
+        Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+        if (e && e->kind == NK::VarExpr) {
+            auto* ve = static_cast<VarExpr*>(e);
+            if (ve->declare && ve->declSmiley == 'D' && !ve->declDefault && !ve->declHasWhere && !ve->name.empty() &&
+                ve->name[0] == '$') {
+                const std::string ty = ve->declType + ":D";
+                std::vector<std::pair<std::string, std::string>> at = {{"type", ty}};
+                if (ve->declSmileyImplicit) at.push_back({"implicit", ":D by pragma"});
+                throw ParseError("Variable definition of type " + ty +
+                                 (ve->declSmileyImplicit ? " (implicit :D by pragma)" : "") +
+                                 " requires an initializer", line,
+                                 "X::Syntax::Variable::MissingInitializer", at);
+            }
+        }
+    }
+    return st;
+}
+
+StmtPtr Parser::parseStatementInner() {
     while (matchKind(Tok::Semicolon)) {}
     int stmtLine = cur().line;
     size_t savedStart = stmtStart_;
@@ -11389,6 +11432,38 @@ StmtPtr Parser::parseStatementImpl() {
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
+            // `use variables :D` / `:U` / `:_` — the default type smiley for
+            // typed declarations in the rest of the enclosing block
+            if (u->module == "variables") {
+                const int ln = cur().line;
+                if (u->isNo)
+                    throw ParseError("Cannot use 'no' with pragma 'variables'", ln,
+                                     "X::Pragma::CannotWhat", {{"what", "no"}, {"name", "variables"}});
+                std::vector<std::string> smileys;
+                while (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace)) {
+                    if (isOp(":") && peek().kind == Tok::Ident) {
+                        advance();
+                        const std::string sm = advance().text;
+                        if (sm != "D" && sm != "U" && sm != "_")
+                            throw ParseError("Invalid type smiley ':" + sm + "' used, only ':D', ':U' and ':_' are allowed",
+                                             ln, "X::InvalidTypeSmiley", {{"name", sm}});
+                        smileys.push_back(sm);
+                    }
+                    else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident))
+                        throw ParseError("Don't know how to handle '" + cur().text + "' with pragma 'variables'", ln,
+                                         "X::Pragma::UnknownArg", {{"name", "variables"}, {"arg", cur().text}});
+                    else advance();
+                }
+                if (smileys.empty())
+                    throw ParseError("'variables' pragma expects one parameter out of :D, :U, :_", ln,
+                                     "X::Pragma::MustOneOf", {{"name", "variables"}});
+                if (smileys.size() > 1)
+                    throw ParseError("The 'variables' pragma takes only one argument", ln,
+                                     "X::Pragma::OnlyOne", {{"name", "variables"}});
+                varsPragma_ = smileys[0][0];
+                matchKind(Tok::Semicolon);
+                return u;
+            }
             // An import brings type names this unit never spells; the
             // declaration-type check stands down for such a unit (Program::
             // importsModules).

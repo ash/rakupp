@@ -178,6 +178,7 @@ private:
     std::string lastWillPhaser_;
     ExprPtr lastWillBlock_;
     std::vector<StmtPtr> pendingStmts_;
+    char varsPragma_ = 0;         // `use variables :D` / `:U` / `:_` in force (block-scoped)
     std::string lastOfType_;      // `of Type` met among a variable's traits
     bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
@@ -320,6 +321,7 @@ private:
 
     // statements
     StmtPtr parseStatement();
+    StmtPtr parseStatementInner();
     void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets

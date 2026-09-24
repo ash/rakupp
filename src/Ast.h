@@ -204,6 +204,9 @@ struct VarExpr : Expr {
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
     bool declExport = false;     // `our %x is export` — importers see the BARE name
+    char declSmiley = 0;         // `my Int:D $x` / `:U` / `:_` (explicit or `use variables`); 0 = none
+    bool declSmileyImplicit = false;
+    bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
     bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)

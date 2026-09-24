@@ -5889,6 +5889,7 @@ int Interpreter::run(Program& prog) {
                     Expr* e0 = static_cast<ExprStmt*>(s)->e.get();
                     if (e0 && e0->kind == NK::VarExpr) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
+                        if (ve0->declSmiley) global_->x().varSmiley[ve0->name] = ve0->declSmiley; // `my Int:D @a …;`
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
                             checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
@@ -15438,7 +15439,13 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         auto saved = tctx_.cur; tctx_.cur = env;
         bool ok = false;
         try {
-            Value cv = eval(const_cast<Expr*>(si.where));
+            Value cv;
+            if (si.whereBlock) cv = *si.whereBlock;
+            else {
+                cv = eval(const_cast<Expr*>(si.where));
+                if (si.where->kind == NK::BlockExpr && cv.t == VT::Code)
+                    const_cast<SubsetInfo&>(si).whereBlock = std::make_shared<Value>(cv);
+            }
             // `where EXPR` is a smartmatch: a Code/WhateverCode is called with
             // the value; anything else (a type, a junction like
             // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
@@ -15555,6 +15562,31 @@ void Interpreter::checkDeclDefault(const std::string& declType, char sigil, cons
                 {{"got", dv}, {"expected", expected}},
                 "Default value '" + (dv.t == VT::Nil ? std::string("Nil") : dv.gist()) +
                     "' will never bind to " + (attr ? "an attribute" : "a variable") + " of type " + shown);
+}
+
+// The `:D`/`:U` smiley a declared `@`/`%` variable puts on its ELEMENTS
+// (`my Int:D @a`), or 0. `symbol` is the variable's own name.
+char Interpreter::elemSmileyOf(const std::string& symbol) {
+    if (symbol.size() < 2 || (symbol[0] != '@' && symbol[0] != '%')) return 0;
+    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        auto si = en->xr().varSmiley.find(symbol);
+        if (si != en->xr().varSmiley.end()) return si->second;
+        if (en->local(symbol)) return 0;
+    }
+    return 0;
+}
+// …and the check: an element of a `:D` container must be defined, of a `:U`
+// one undefined (X::TypeCheck::Assignment naming the container).
+void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v) {
+    char sm = elemSmileyOf(symbol);
+    if (!sm) return;
+    const bool def = v.t != VT::Nil && isDefined(v);
+    if ((sm == 'D' && def) || (sm == 'U' && !def)) return;
+    std::string want = (type.empty() ? std::string("Any") : type) + (sm == 'D' ? ":D" : ":U");
+    throwTypedV("X::TypeCheck::Assignment",
+        {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(symbol)}},
+        "Type check failed for an element of " + symbol + "; expected " + want +
+        " but got " + (v.t == VT::Nil ? std::string("Nil") : v.typeName()));
 }
 
 void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
@@ -22229,7 +22261,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // from-json's `.List` and asks is-deeply)
                 else if (sigil == '@' && ve->containerIs == "List") init.isList = true;
             }
-            if (ve->declDefault) { // `is default(v)`: initial AND reset value
+            if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
+                if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
                 checkDeclDefault(ve->declType, sigil, dv, false);
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
@@ -26336,6 +26369,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ixt = static_cast<Index*>(a->target.get());
             checkElemType(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
+        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset,
+        // checked where the default lands)
+        if (a->op == "=" && a->target->kind == NK::Index && rhs.t != VT::Nil) {
+            auto* ixt = static_cast<Index*>(a->target.get());
+            if (ixt->base && ixt->base->kind == NK::VarExpr) {
+                const std::string& cn = static_cast<VarExpr*>(ixt->base.get())->name;
+                if (elemSmileyOf(cn)) {
+                    Value* cv = tctx_.cur->find(cn);
+                    checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(), rhs);
+                }
+            }
+        }
         tctx_.lastLvalueElemType.clear();
         // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
         // it writable. Ours bound every parameter as if `is copy` were always
@@ -26602,6 +26647,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
                         if (!want.empty() && !reset)
                             checkElemType(want, el, targetName('@'));
+                        checkElemSmiley(targetName('@'), want, el);   // `my Int:D @x = Nil` dies
                     }
                 }
                 // `=` REFILLS the same container (Raku identity): anything bound
@@ -26714,8 +26760,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value nv = coerceHash(rhs, /*store=*/a->op == "=", keepObjKeyed);
                 // a typed hash (`my Int %h = a => "x"`) checks every value in
                 if (std::string want = elemTypeOfSpec(keepType); !want.empty() && nv.hash())
-                    for (auto& kv : *nv.hash())
+                    for (auto& kv : *nv.hash()) {
                         checkElemType(want, kv.second, targetName('%'));
+                        checkElemSmiley(targetName('%'), want, kv.second);   // `my Int:D %h = a => Nil`
+                    }
                 if (lv->t == VT::Hash && lv->hash() && nv.hash() && lv->hash() != nv.hash()) {
                     *lv->hash() = *nv.hash(); // refill in place, keep container identity
                     nv.setHash(lv->hashS());
@@ -26780,6 +26828,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (di != en->xr().varDefault.end()) { dv = di->second; break; }
                 if (en->local(nm)) break; // owner scope reached, no declared default
             }
+            // …and a `:D` variable cannot reset to an undefined default
+            if (!isAttr && !isDefined(dv))
+                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                    auto si = en->xr().varSmiley.find(nm);
+                    if (si != en->xr().varSmiley.end()) {
+                        if (si->second == 'D') {
+                            std::string want = (dv.t == VT::Type ? std::string(dv.s.c_str()) : std::string("Any")) + ":D";
+                            throwTypedV("X::TypeCheck::Assignment",
+                                {{"got", Value::nil()}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+                                "Type check failed in assignment to " + nm + "; expected " + want + " but got Nil");
+                        }
+                        break;
+                    }
+                    if (en->local(nm)) break;
+                }
             *lv = dv;
         }
         else {
@@ -26810,6 +26873,28 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return false;
                 };
                 const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
+                // `my Int:D $x` takes only a defined value, `my Int:U $x` only
+                // a type object — checked BEFORE the store, so a refused
+                // assignment leaves the old value
+                if (!nm.empty() && nm[0] == '$')
+                    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                        auto si = en->xr().varSmiley.find(nm);
+                        if (si != en->xr().varSmiley.end()) {
+                            const bool def = isDefined(rhs);
+                            if ((si->second == 'D' && !def) || (si->second == 'U' && def)) {
+                                auto di = en->xr().varDefault.find(nm);
+                                std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
+                                                 ? std::string(di->second.s.c_str()) : std::string("Any");
+                                want += si->second == 'D' ? ":D" : ":U";
+                                throwTypedV("X::TypeCheck::Assignment",
+                                    {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+                                    "Type check failed in assignment to " + nm + "; expected " + want +
+                                    " but got " + rhs.typeName() + (def ? " (" + rhs.gist() + ")" : ""));
+                            }
+                            break;
+                        }
+                        if (en->local(nm)) break;
+                    }
                     // A typed container detonates a Failure rather than storing it:
                     // the type check has to look at the value. See the twin guard
                     // in the declaration path.
@@ -26846,6 +26931,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 "; expected " + di->second.s + " but got " + rhs.typeName() +
                                 (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
                                                 : " " + rhs.gist())); // undef gist has its own parens
+                        // a SUBSET-typed variable asks the subset — its base
+                        // type and its `where` — on every assignment:
+                        // `my Int::Odd $b = 3; $b = 4` dies and keeps the 3
+                        if (di->second.t == VT::Type && subsets_.count(std::string(di->second.s.c_str())) &&
+                            isDefined(rhs) && !typeOrSubsetMatches(rhs, std::string(di->second.s.c_str()))) {
+                            const std::string st = di->second.s.c_str();
+                            throwTypedV("X::TypeCheck::Assignment",
+                                {{"got", rhs}, {"expected", Value::typeObj(st)}, {"symbol", Value::str(nm)}},
+                                "Type check failed in assignment to " + nm + "; expected " + st +
+                                " but got " + rhs.typeName() + " (" + typeCheckRepr(rhs) + ")");
+                        }
                         break;
                     }
                     if (en->local(nm)) break;
@@ -26877,6 +26973,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             if (tv->declare && tv->declScope == "constant") lv->readonly = true;
         }
+
         // Binding a VALUE into a hash element puts it in the slot with no Scalar
         // container around it, so that element is immutable afterwards —
         // `%h<k> := 137` then `%h<k> = 666` is an error, as it is in Rakudo.
@@ -40933,6 +41030,7 @@ Value Interpreter::eval(Expr* e) {
                 // declaration always redefines: EVALs run in the caller's scope, so
                 // `my Ta $c` in one EVAL must not leave its type constraint on a later
                 // `my Tc $c`.
+                if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                     Value dv = eval(ve->declDefault.get());
                     checkDeclDefault(ve->declType, sigil, dv, false);

@@ -4904,7 +4904,72 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (m == "is_pun") return Value::integer(roleOf.empty() ? 0 : 1);
                 return roleOf.empty() ? Value::any() : Value::typeObj(roleOf);
             }
-            if (m == "parents") { // immediate parents; composed roles are not parents
+            // `.^parents` — every ancestor in MRO order, less Any and Mu; `:all`
+            // keeps those two, `:local` is the immediate parents only, `:tree`
+            // nests each immediate parent with its own tree. Composed roles are
+            // not parents.
+            if (m == "parents") {
+                bool all = false, local = false, tree = false;
+                for (auto& av : args)
+                    if (av.t == VT::Pair && (!av.pairVal() || av.pairVal()->truthy())) {
+                        if (av.s == "all") all = true;
+                        else if (av.s == "local") local = true;
+                        else if (av.s == "tree") tree = true;
+                    }
+                if (!local) {
+                    auto immediate = [](ClassInfo* c) {
+                        std::vector<ClassInfo*> r;
+                        if (c->parent && !c->parent->isRole) r.push_back(c->parent.get());
+                        for (auto& p : c->extraParents) if (p && !p->isRole) r.push_back(p.get());
+                        return r;
+                    };
+                    if (tree) {
+                        std::function<Value(ClassInfo*)> sub = [&](ClassInfo* c) -> Value {
+                            Value lst = Value::array();
+                            auto ps = immediate(c);
+                            if (ps.empty()) {   // the universal tail: [Any, [Mu]]
+                                Value mu = Value::array(); mu.arr()->push_back(Value::typeObj("Mu"));
+                                Value any = Value::array(); any.arr()->push_back(Value::typeObj("Any")); any.arr()->push_back(mu);
+                                lst.arr()->push_back(any);
+                                return lst;
+                            }
+                            for (ClassInfo* p : ps) {
+                                Value node = Value::array();
+                                node.arr()->push_back(Value::typeObj(p->name));
+                                Value rest = sub(p);
+                                for (auto& x : *rest.arr()) node.arr()->push_back(x);
+                                lst.arr()->push_back(node);
+                            }
+                            return lst;
+                        };
+                        Value out = sub(ci.get()); out.isList = true;
+                        return out;
+                    }
+                    std::vector<std::string> lin;
+                    std::function<void(ClassInfo*)> visit = [&](ClassInfo* c) {
+                        for (ClassInfo* p : immediate(c)) { lin.push_back(p->name); visit(p); }
+                    };
+                    visit(ci.get());
+                    Value out = Value::array(); out.isList = true;
+                    for (size_t i = 0; i < lin.size(); i++) {   // C3 for the simple diamond: keep the LAST
+                        bool later = false;
+                        for (size_t j = i + 1; j < lin.size(); j++) if (lin[j] == lin[i]) { later = true; break; }
+                        if (!later) out.arr()->push_back(Value::typeObj(lin[i]));
+                    }
+                    if (!ci->nativeParent.empty()) {
+                        const auto& anc = typeAncestry(ci->nativeParent);
+                        if (anc.empty() || anc[0] != ci->nativeParent)
+                            out.arr()->push_back(Value::typeObj(ci->nativeParent));
+                        else for (auto& a : anc)
+                            if (a != "Any" && a != "Mu" && (all || a != "Cool") && !isBuiltinRole(a))
+                                out.arr()->push_back(Value::typeObj(a));
+                    }
+                    if (all && !ci->isRole) {
+                        out.arr()->push_back(Value::typeObj("Any"));
+                        out.arr()->push_back(Value::typeObj("Mu"));
+                    }
+                    return out;
+                }
                 Value out = Value::array(); out.isList = true;
                 if (ci->parent && !ci->parent->isRole) out.arr()->push_back(Value::typeObj(ci->parent->name));
                 for (auto& p : ci->extraParents) if (p && !p->isRole) out.arr()->push_back(Value::typeObj(p->name));
@@ -5889,6 +5954,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (c->hasPrimed) { for (auto& sp : c->primedParams) out.push_back(sp.get()); }
             else if (c->params) for (auto& p : *c->params) out.push_back(&p);
         };
+        // a multi's arity/count are its PROTO's, which `.signature` renders
+        if ((m == "arity" || m == "count") && inv.code()->isMultiDispatcher) {
+            Value sig = methodCall(inv, "signature", ValueList{});
+            if (sig.t == VT::Hash && sig.hash() && sig.hash()->count(m)) return (*sig.hash())[m];
+        }
         if (m == "arity") {
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
             std::vector<const Param*> ps; countedParams(ps);
@@ -5896,7 +5966,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `hasPrimed || params` is "this routine has a parameter list at all".
             // A primed routine whose residual list is EMPTY must answer 0, not fall
             // through to the placeholder count.
-            if (inv.code()->hasPrimed || inv.code()->params) {
+            // (a placeholder block carries an EMPTY param list — its arity is
+            // the placeholders' count)
+            const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
+                                        (!inv.code()->params || inv.code()->params->empty());
+            if (!byPlaceholders && (inv.code()->hasPrimed || inv.code()->params)) {
                 for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional) n++;
             }
             else n = (long long)inv.code()->placeholders.size();
@@ -5906,7 +5980,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
             std::vector<const Param*> ps; countedParams(ps);
             long long n = 0; bool slurpy = false;
-            if (inv.code()->hasPrimed || inv.code()->params) for (const Param* pp : ps) {
+            const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
+                                        (!inv.code()->params || inv.code()->params->empty());
+            if (!byPlaceholders && (inv.code()->hasPrimed || inv.code()->params)) for (const Param* pp : ps) {
                 const Param& p = *pp;
                 if (p.named) continue;
                 // `*%opts` slurps NAMED arguments and accepts no positional at

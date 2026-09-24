@@ -380,6 +380,7 @@ struct EnvExtras {
     // converted. Git::Blame::File's porcelain walk turns on exactly that.
     std::map<std::string, std::string> varCoerce;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
+    std::map<std::string, char> varSmiley; // `my Int:D $x` — 'D' / 'U': what assignments must satisfy
     std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
 };
 
@@ -1383,6 +1384,8 @@ public:
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
+    char elemSmileyOf(const std::string& symbol);
+    void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v);
     void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr); // `is default(v)` vs the declared type
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
@@ -1687,7 +1690,10 @@ public:
     struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1;
                         int defConstraint = 0;             // the base type's :D / :U smiley
                         bool coerce = false;               // `of Str()` — coerce, then check
-                        std::shared_ptr<Env> declEnv; };   // the where-clause CLOSES over its declaration scope
+                        std::shared_ptr<Env> declEnv;      // the where-clause CLOSES over its declaration scope
+                        // a literal `where { … }` block, evaluated ONCE: one closure,
+                        // so a `state` inside it persists across checks, as in Rakudo
+                        std::shared_ptr<Value> whereBlock; };
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
