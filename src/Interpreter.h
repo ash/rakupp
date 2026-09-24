@@ -808,6 +808,7 @@ struct SupplyTapCtx {
 // This is the Stage-1 foundation for real concurrency; nothing swaps yet.
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
     // The invocant EXPRESSION of the method call currently being set up, for a
     // candidate whose invocant is declared `is rw` (`multi method push(::?CLASS:U
     // $_ is rw: …)` — how BinaryHeap autovivifies `my BinaryHeap::MinHeap $h`
@@ -1010,6 +1011,7 @@ struct LazySeqState {
     // question that inspects a sequence without consuming it — forces that
     // first pull so it can answer. `exhausted` records what the pull found.
     bool gatherSeq = false;
+    bool diedProbe = false; // a gather whose first run DIED: pulling (or sinking) re-raises it
     bool exhausted = false;
     bool forceProbed = false;   // forceLazy has already asked once whether it ends
     // `42 xx 2**62`: a repeat whose length is KNOWN but far too large to build.
@@ -1747,6 +1749,9 @@ public:
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
                        bool whereVerified = false, Env* sigEnv = nullptr);
     std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
+    void checkDeclTypeSane(const VarExpr* ve);
+    [[noreturn]] void throwUndeclaredVar(const std::string& name);
+    void checkNativeArrayParam(const std::string& t);
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,
                     const std::string& message); // typed exception OBJECT with attributes
@@ -2480,6 +2485,16 @@ public:
     // is a namespace here, not a type), so `.HOW` has nowhere else to learn it,
     // and Rakudo answers a different metaobject for each.
     std::unordered_map<std::string, signed char> pkgKind_;
+    std::set<std::string> rightAssocOps_; // user infixes declared `is assoc<right>`
+    // The most recent declaration of each package name, stub or full, class or
+    // package: a later `my package A` hides an earlier `my class A` as a type.
+    // (flags, not the node: an EVAL's AST may be gone by the next lookup)
+    struct LastDecl { const void* node = nullptr; bool isPackage = false, isStub = false; };
+    std::unordered_map<std::string, LastDecl> lastDecl_;
+    bool nameIsPackageNow(const std::string& n) const {
+        auto it = lastDecl_.find(n);
+        return it != lastDecl_.end() && it->second.isPackage;
+    }
     // a module/package's own declarator pod (`#|` above, `#=` below), which is
     // what `M.WHY` answers — a package has no ClassInfo to hang it on
     std::unordered_map<std::string, std::string> pkgPod_;

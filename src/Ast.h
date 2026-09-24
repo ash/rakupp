@@ -695,6 +695,8 @@ struct SubDecl : Stmt {
                          // expression names, so `$obj.meth(…) = v` writes through it
     ExprPtr retLiteral; // `--> 1` literal return: the body yields this value
     bool retLiteralPresent = false; // stays true after retLiteral is moved into the body
+    bool retViaReturns = false; // the type came from a `returns` trait (checked at declaration)
+    bool assocRight = false; // `is assoc<right>` on an operator: `[op]` reduces from the right
     bool isMulti = false;
     bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
     bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal
@@ -779,6 +781,8 @@ struct ClassDecl : Stmt {
     std::string parent; // first `is Parent` / `does Role`
     std::vector<std::string> extraParents; // additional `is Parent` (multiple inheritance)
     std::vector<std::string> roles; // additional `does Role` (methods composed in)
+    std::vector<std::string> hidesNames; // `hides Parent` — an unknown one is X::InvalidType
+    std::vector<std::string> trustsNames; // `trusts Foo` — an unknown one is X::Undeclared
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;
     std::vector<GrammarRuleDecl> rules; // grammar token/rule/regex

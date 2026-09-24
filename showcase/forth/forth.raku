@@ -44,7 +44,7 @@ sub parse-block(@toks, $ip is rw, @stop --> List) {
             my @false;
             if $ip < @toks.elems && @toks[$ip] eq 'else' {
                 $ip++;
-                @false = parse-block(@toks, $ip, <then>);
+                @false = parse-block(@toks, $ip, (<then>,));
             }
             $ip++;                                # consume `then`
             @nodes.push: { op => 'if', :$true, false => @false };
@@ -57,19 +57,19 @@ sub parse-block(@toks, $ip is rw, @stop --> List) {
             }
             else {                                # begin <cond> while <body> repeat
                 $ip++;                            # consume `while`
-                my $rest = parse-block(@toks, $ip, <repeat>);
+                my $rest = parse-block(@toks, $ip, (<repeat>,));
                 $ip++;                            # consume `repeat`
                 @nodes.push: { op => 'while', cond => $body, body => $rest };
             }
         }
         elsif $t eq 'do' {
-            my $body = parse-block(@toks, $ip, <loop>);
+            my $body = parse-block(@toks, $ip, (<loop>,));
             $ip++;                                # consume `loop`
             @nodes.push: { op => 'do', :$body };
         }
         elsif $t eq ':' {
             my $name = @toks[$ip++];
-            my $body = parse-block(@toks, $ip, <;>);
+            my $body = parse-block(@toks, $ip, (<;>,));
             $ip++;                                # consume `;`
             @nodes.push: { op => 'define', :$name, :$body };
         }

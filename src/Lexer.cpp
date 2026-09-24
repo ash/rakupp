@@ -772,8 +772,12 @@ bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
     // (`MyT+1`); a symbolic one is fine there: `3'bar1'` is a postfix on 3
     const bool afterWord = pos_ > 0 && !spaced &&
         (rakuIdentCont(src_[pos_ - 1]) || (unsigned char)src_[pos_ - 1] >= 0x80);
+    // (a non-ASCII start is word-like only when it is a LETTER: `↑↑` after a
+    // digit is an infix, `e²ˣ` after one would split a word)
     auto wordish0 = [](const std::string& uo) {
-        return (unsigned char)uo[0] >= 0x80 || rakuIdentStart(uo[0]);
+        if ((unsigned char)uo[0] < 0x80) return rakuIdentStart(uo[0]);
+        int l; uint32_t cp = cpAt(uo, 0, l);
+        return isLetterCP(cp) || isIdentMarkCP(cp);
     };
     if (!out.empty() && out.back().kind == Tok::Op && out.back().text == "." && !spaced) return false;
     // a metaop over a WORD-shaped spelling, `RT+` / `XT*`: one name, which the
@@ -805,7 +809,14 @@ bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
         size_t e = pos_ + uo.size();
         if (e < src_.size()) {
             unsigned char last = (unsigned char)uo.back();
-            if ((last < 0x80 && rakuIdentCont((char)last)) || last >= 0x80) {
+            bool wordEnd = last < 0x80 && rakuIdentCont((char)last);
+            if (last >= 0x80) {   // the last CODEPOINT decides: a letter, not a `↑`
+                size_t b = uo.size() - 1;
+                while (b > 0 && ((unsigned char)uo[b] & 0xC0) == 0x80) b--;
+                int l; uint32_t cp = cpAt(uo, b, l);
+                wordEnd = isLetterCP(cp) || isIdentMarkCP(cp);
+            }
+            if (wordEnd) {
                 if (rakuIdentCont(src_[e])) continue;
                 if ((unsigned char)src_[e] >= 0x80) {
                     int l; uint32_t cp = cpAt(src_, e, l);
@@ -3886,10 +3897,36 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 if (t.text == "<" && peek() == '>' && angleTermContext(out) &&
                     !(!out.empty() && out.back().kind == Tok::Op &&
                       (out.back().text == "." || out.back().text == "?.")))
+                {
+                    // `sub infix:<> () {}` — an operator with no name at all
+                    auto isCat = [](const std::string& w) {
+                        return w == "infix" || w == "prefix" || w == "postfix" || w == "circumfix" ||
+                               w == "postcircumfix" || w == "term" || w == "infix:" || w == "prefix:" ||
+                               w == "postfix:" || w == "circumfix:" || w == "postcircumfix:" || w == "term:";
+                    };
+                    size_t n = out.size();
+                    bool nullOp = (n >= 1 && out[n - 1].kind == Tok::Ident && isCat(out[n - 1].text)) ||
+                                  (n >= 2 && out[n - 1].kind == Tok::Op && out[n - 1].text == ":" &&
+                                   out[n - 2].kind == Tok::Ident && isCat(out[n - 2].text));
+                    size_t ls = src_.rfind('\n', pos_ ? pos_ - 1 : 0);
+                    ls = ls == std::string::npos ? 0 : ls + 1;
+                    size_t le = src_.find('\n', pos_);
+                    std::string pre = src_.substr(ls, pos_ + 1 - ls);
+                    std::string post = pos_ + 1 < src_.size()
+                        ? src_.substr(pos_ + 1, (le == std::string::npos ? src_.size() : le) - pos_ - 1) : std::string();
+                    if (nullOp)
+                        throw ParseError("Null operator is not allowed", line_, "X::Comp::Group",
+                                         {{"panic", "X::Syntax::Extension::Null"},
+                                          {"panic-msg", "Null operator is not allowed"},
+                                          {"panic-pre", pre}, {"panic-post", post},
+                                          {"worry", "Pair with <> really means an empty list, not null string; use "
+                                                    ":('') to represent the null string,\n  or :() to represent the "
+                                                    "empty list more accurately"}});
                     throw ParseError("Unsupported use of <>; in Raku please use "
                                      "lines() to read input, ('') for a null "
                                      "string or () for an empty list",
                                      line_, "X::Obsolete", {{"old", "<>"}});
+                }
                 if (t.text == "<" && peek() != ']' &&
                     (angleTermContext(out) ||
                      // `self<key>` — a postcircumfix on the term `self`, never a

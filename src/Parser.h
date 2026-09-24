@@ -171,6 +171,8 @@ private:
     // recorded as parseClass/parseSubset/parseEnum see them, handed to the
     // Program at the end of parseProgram.
     std::set<std::string> declTypeNames_;
+    std::map<std::string, const ClassDecl*> declClassDecls_; // class/package/module decls by name (for `T of U` checks)
+    std::map<std::string, int> earlyTypeUse_; // a capitalised bare term used before any declaration of it: name -> line
     bool declTypesOpaque_ = false;
     bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)

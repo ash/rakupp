@@ -20,6 +20,8 @@
 #include <unordered_set>
 
 namespace rakupp {
+bool isKnownTypeName(const std::string& n); // Interpreter.cpp
+
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 
 // Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
@@ -208,6 +210,29 @@ void Parser::expectKind(Tok k, const char* what) {
         };
         if (k == Tok::LBrace && (cur().kind == Tok::End || cur().kind == Tok::RBrace) &&
             !(cur().kind == Tok::End && cur().flag) && !modifierAfterBlock()) {
+            // `for 1,2,3, { say 3 }`: the block WAS there, and the expression
+            // before it swallowed it — a group whose sorrow says so
+            if (pos_ > 0 && toks_[pos_ - 1].kind == Tok::RBrace) {
+                int d = 0; size_t j = pos_ - 1;
+                for (;; j--) {
+                    if (toks_[j].kind == Tok::RBrace) d++;
+                    else if (toks_[j].kind == Tok::LBrace && --d == 0) break;
+                    if (j == 0) break;
+                }
+                if (d == 0 && j > 0) {
+                    std::string fn;
+                    if (toks_[j - 1].kind == Tok::Ident && toks_[j].spaceBefore) fn = toks_[j - 1].text;
+                    std::string sm = fn.empty() ? std::string("Expression needs parens to avoid gobbling block")
+                        : "Function '" + fn + "' needs parens to avoid gobbling block (or perhaps it's a class "
+                          "that's not declared or available in this scope?)";
+                    std::string pw = "block (apparently claimed by " + (fn.empty() ? std::string("expression") : "'" + fn + "'") + ")";
+                    throw ParseError(sm + "\nMissing " + pw, cur().line, "X::Comp::Group",
+                                     {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                                      {"sorrow-what", fn.empty() ? std::string("expression") : fn},
+                                      {"panic", "X::Syntax::Missing"}, {"panic-msg", "Missing " + pw},
+                                      {"panic-what", pw}});
+                }
+            }
             ParseError e("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             e.atEof = cur().kind == Tok::End;   // the REPL still asks for more
             throw e;
@@ -215,10 +240,10 @@ void Parser::expectKind(Tok k, const char* what) {
         // …the source ran out inside a block or an array composer: an unclosed
         // `{ …` is X::Syntax::Missing, an unclosed `[1,2` X::Comp::FailGoal
         if (cur().kind == Tok::End && !cur().flag && (k == Tok::RBrace || k == Tok::RBracket)) {
-            ParseError e(k == Tok::RBrace ? std::string("Missing block (source ended before '}')")
+            ParseError e(k == Tok::RBrace ? std::string("Missing block")
                                           : std::string("Unable to parse expression in array composer; couldn't find final ']'"),
                          cur().line, k == Tok::RBrace ? "X::Syntax::Missing" : "X::Comp::FailGoal",
-                         k == Tok::RBrace ? std::vector<std::pair<std::string, std::string>>{{"what", "'}'"}}
+                         k == Tok::RBrace ? std::vector<std::pair<std::string, std::string>>{{"what", "block"}}
                                           : std::vector<std::pair<std::string, std::string>>{{"dba", "array composer"}, {"goal", "']'"}});
             e.atEof = true;
             throw e;
@@ -2760,7 +2785,13 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             std::string savedClose = pcfxClose_; pcfxClose_ = close; // don't reopen the close inside content
             if (cur().text != close) call->args.push_back(circumfixOperand(parseExpression()));
             pcfxClose_ = savedClose;
-            if (cur().text == close) advance(); else error("expected postcircumfix closing '" + close + "'");
+            if (cur().text == close) advance();
+            else {
+                // Rakudo's goal-failure: the expression inside never found its closer
+                const std::string dba = "postcircumfix:sym<" + open + " " + close + ">";
+                throw ParseError("Unable to parse expression in " + dba + "; couldn't find final '" + close + "'",
+                                 cur().line, "X::Comp::FailGoal", {{"dba", dba}, {"goal", "'" + close + "'"}});
+            }
             base = std::move(call);
             continue;
         }
@@ -4877,6 +4908,14 @@ ExprPtr Parser::parsePrimary() {
         // stopping at the first `]` left a stray one behind. Test::Run flips its
         // comparison operator that way.
         int inner = 0;
+        // `&[doesntexist]` — a lone word that names no infix
+        if (isKind(Tok::Ident) && peek().kind == Tok::RBracket) {
+            Token probe = cur();
+            if (!classifyInfix(probe).valid && !userInfix_.count(probe.text) && !wordInfixSubs_.count(probe.text) &&
+                !userDeclarators_.count(probe.text))
+                throw ParseError("Missing infix inside []", cur().line, "X::Syntax::Missing",
+                                 {{"what", "infix inside []"}});
+        }
         while (!isKind(Tok::End)) {
             if (isKind(Tok::RBracket)) { if (!inner) break; inner--; }
             else if (isKind(Tok::LBracket)) inner++;
@@ -4905,7 +4944,12 @@ ExprPtr Parser::parsePrimary() {
             empty->parenned = true;
             call->args.push_back(std::move(empty));
         }
-        if (cur().text == close) advance(); else error("expected circumfix closing '" + close + "'");
+        if (cur().text == close) advance();
+        else {
+            const std::string dba = "circumfix:sym<" + open + " " + close + ">";
+            throw ParseError("Unable to parse expression in " + dba + "; couldn't find final '" + close + "'",
+                             cur().line, "X::Comp::FailGoal", {{"dba", dba}, {"goal", "'" + close + "'"}});
+        }
         return call;
     }
     // ::?CLASS / ::?ROLE / ::?PACKAGE — the lexically-enclosing type (compile-time)
@@ -6219,6 +6263,12 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Ident: {
             std::string name = t.text;
+            // a type used before this unit declares it (`GrammarUserClass`'s
+            // method naming a grammar declared below) — judged at the end
+            if (!t.flag && !name.empty() && ascii::isupper((unsigned char)name[0]) &&
+                name.find("::") == std::string::npos && peek().kind != Tok::FatArrow &&
+                !declClassDecls_.count(name) && !earlyTypeUse_.count(name))
+                earlyTypeUse_[name] = t.line;
             // A slang's sigilless variable (Slang::Emoji's 👍, flagged by the lexer's
             // seam): a TERM — never a call, and never auto-quoted before `=>`.
             if (t.flag) { advance(); auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = true; return nt; }
@@ -7276,9 +7326,25 @@ ExprPtr Parser::parsePrimary() {
             }
             // a bare IO verb as a term is a compile error in Raku ('put;' vs 'put()')
             // — only when the statement truly ends here (`say if …` has a modifier)
+            // (Rakudo: at the very end of the source it is a group whose panic is
+            // "seems to be malformed"; `put` has a message of its own)
             if ((name == "put" || name == "say" || name == "print") &&
-                (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace)))
-                throw ParseError("Unsupported use of bare '" + name + "'. In Raku please use: '" + name + "()'", cur().line);
+                (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace))) {
+                const std::string obs = "Unsupported use of bare \"" + name + "\". In Raku please use: ." + name +
+                    " if you meant to call it as a method on $_, or use an explicit invocant or argument, "
+                    "or use &" + name + " to refer to the function as a noun.";
+                if (isKind(Tok::End) && name != "put")
+                    throw ParseError("Argument to \"" + name + "\" seems to be malformed", cur().line, "X::Comp::Group",
+                                     {{"panic", "X::Comp::AdHoc"}, {"worry", obs}});
+                if (name == "put")
+                    throw ParseError("Function \"put\" may not be called without arguments (please use () or whitespace "
+                                     "to denote arguments, or &put to refer to the function as a noun, or use .put if "
+                                     "you meant to call it as a method on $_)", cur().line, "X::Comp::AdHoc", {});
+                throw ParseError(obs, cur().line, "X::Obsolete",
+                                 {{"old", "bare \"" + name + "\""},
+                                  {"replacement", "." + name + " if you meant to call it as a method on $_, or use an "
+                                   "explicit invocant or argument, or use &" + name + " to refer to the function as a noun"}});
+            }
             return std::make_unique<NameTerm>(name);
         }
         default:
@@ -8767,21 +8833,43 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 // selector read its bytes eight at a time without it. Other
                 // parameterised types stay bare here, as they always were.
                 bool keep = p.type == "CArray" || p.type == "Pointer";
+                const bool natArr = p.type == "array";
                 std::string inner;
                 int depth = 0;
                 do {
                     if (isKind(Tok::LBracket)) depth++; else if (isKind(Tok::RBracket)) depth--;
-                    if (keep) inner += cur().text;
+                    if (keep || natArr) inner += cur().text;
                     advance();
                 }
                 while (depth > 0 && !isKind(Tok::End));
                 if (keep) p.type += inner;
+                // `array[Int]` — a native array takes a native element type only;
+                // Rakudo finds out composing the type, at BEGIN time
+                if (natArr && inner.size() > 2 && ascii::isupper((unsigned char)inner[1]))
+                    throw ParseError("An exception occurred while parameterizing array: Can only parameterize array "
+                                     "with a native type, not " + inner.substr(1, inner.size() - 2),
+                                     cur().line, "X::Comp::BeginTime", {{"use-case", "parameterizing array"}});
             }
             // `R1 of Int $x` — the OF form of a parameterised type: the outer
             // type is what the parameter is checked against here
             while (isIdent("of") && peek().kind == Tok::Ident &&
                    (peek(2).kind == Tok::Var || peek(2).kind == Tok::Ident ||
-                    (peek(2).kind == Tok::Op && peek(2).text == "\\"))) { advance(); advance(); }
+                    peek(2).kind == Tok::RParen || peek(2).kind == Tok::Comma ||
+                    (peek(2).kind == Tok::Op && peek(2).text == "\\"))) {
+                // `P of Int` where P is a package, module or plain class: it
+                // takes no type parameter
+                auto dit = declClassDecls_.find(p.type);
+                if (dit != declClassDecls_.end() && dit->second) {
+                    const ClassDecl* pc = dit->second;
+                    bool parametric = pc->isRole || pc->isGrammar || !pc->parent.empty() ||
+                                      !pc->extraParents.empty() || !pc->roles.empty();
+                    for (auto& m : pc->methods) if (m && m->name == "^parameterize") parametric = true;
+                    if (pc->isPackage || !parametric)
+                        throw ParseError(p.type + " cannot be parameterized", cur().line,
+                                         "X::NotParametric", {{"type", p.type}});
+                }
+                advance(); advance();
+            }
             // coercion type Str(Cool)  OR  destructuring sub-signature  Pair ( :key($k), … )
             // Coercion is the tight single-ident form; anything else is a sub-signature.
             if (isKind(Tok::LParen)) {
@@ -9401,6 +9489,11 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                         // skip an optional value adverb `<…>` / `(…)`
                         continue;
                     }
+                    // `is export(WTF)` — a bare word names nothing declared
+                    if (d == 1 && isKind(Tok::Ident) && !importsModules_ && !knownTypeName(cur().text) &&
+                        (peek().kind == Tok::RParen || peek().kind == Tok::Comma))
+                        throw ParseError("Undeclared name:\n    " + cur().text + " used at line " +
+                                         std::to_string(cur().line), cur().line, "X::Undeclared::Symbols", {});
                     advance();
                 }
                 continue; // the `export` ident was not advanced past by the loop head
@@ -9500,7 +9593,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                 advance(); advance(); // `is` `assoc`
                 std::string kind;
                 if (isOp("<")) { advance(); auto w = readAngleWords(">"); if (!w.empty()) kind = w[0]; }
-                if (kind == "right") regSet('r', userInfixRight_, declInfix);
+                if (kind == "right") { regSet('r', userInfixRight_, declInfix); s->assocRight = true; }
                 else userInfixRight_.erase(declInfix);
                 continue;
             }
@@ -9580,9 +9673,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                 throw ParseError("Redeclaration of return type for '" + s->name + "' (previous return type was " +
                                  s->retType + ")", cur().line, "X::Redeclaration",
                                  {{"symbol", s->name}, {"what", "return type for"}});
+            const bool viaReturns = isIdent("returns");
             advance();
             // `returns CArray[Str]` keeps its element parameter, as `--> …` does
-            if (!elemOf) s->retType = cur().text + nativeRetParam(pos_);
+            if (!elemOf) { s->retType = cur().text + nativeRetParam(pos_); s->retViaReturns = viaReturns; }
+        } else if (isIdent("returns") && peek().kind != Tok::Ident && peek().kind != Tok::Var &&
+                   peek().kind != Tok::LBrace) {
+            // `returns !!!wtf???` — no type after the trait
+            throw ParseError("Malformed trait", cur().line, "X::Syntax::Malformed", {{"what", "trait"}});
         } else if (isOp("-->") && peek().kind == Tok::Ident) {
             advance(); s->retType = cur().text + nativeRetParam(pos_);
         } else if (isOp("-->") && (peek().kind == Tok::IntLit || peek().kind == Tok::NumLit ||
@@ -9782,6 +9880,20 @@ StmtPtr Parser::parseEnum() {
             else { declTypesOpaque_ = true; break; }
         }
     }
+    // `enum E (A => 1, 'B', C)`: quoted and pair keys are declared; a BARE
+    // name (`C`) is a reference to something declared elsewhere, so an
+    // undeclared one is refused like any other (`enum Animal (Cat, Dog)`)
+    else if (ed->values && ed->values->kind == NK::ListExpr) {
+        for (auto& it : static_cast<ListExpr*>(ed->values.get())->items) {
+            if (!it) continue;
+            if (it->kind == NK::StrLit)
+                declTypeNames_.insert(static_cast<StrLit*>(it.get())->v);
+            else if (it->kind == NK::Pair && !static_cast<PairExpr*>(it.get())->keyExpr)
+                declTypeNames_.insert(static_cast<PairExpr*>(it.get())->key);
+            else if (it->kind == NK::NameTerm) continue;
+            else { declTypesOpaque_ = true; break; }
+        }
+    }
     else if (ed->values)
         declTypesOpaque_ = true;
     return ed;
@@ -9817,6 +9929,58 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     if (null)
         throw ParseError("Null regex not allowed", line,
                          "X::Syntax::Regex::NullRegex", {});
+    if (!branches) return;
+    // `/\ X/` — an unspace; `/m ** 1 ..2/` — a spaced bare range. Both are
+    // compile-time refusals; quotes and character classes are left alone.
+    char q = 0; int cls = 0;
+    for (size_t i = 0; i < pat.size(); i++) {
+        char c = pat[i];
+        if (q) { if (c == '\\') i++; else if (c == q) q = 0; continue; }
+        if (cls) { if (c == '\\') i++; else if (c == ']') cls--; continue; }
+        if (c == '\'' || c == '"') { q = c; continue; }
+        if (c == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || ((pat[i + 1] == '-' || pat[i + 1] == '+') && i + 2 < pat.size() && pat[i + 2] == '['))) { cls = 1; continue; }
+        if (c == '#') { size_t nl = pat.find('\n', i); if (nl == std::string::npos) break; i = nl; continue; }
+        if (c == '\\' && i + 1 < pat.size()) {
+            if (pat[i + 1] == ' ')
+                throw ParseError("No unspace allowed in regex; if you meant to match the literal character, "
+                                 "please enclose in single quotes (' ') or use a backslashed form like \\x20",
+                                 line, "X::Syntax::Regex::Unspace",
+                                 {{"char", " "}, {"pre", "/" + pat.substr(0, i + 2)}, {"post", pat.substr(i + 2) + "/"}});
+            i++;
+            continue;
+        }
+        if (c == '*' && i + 1 < pat.size() && pat[i + 1] == '*') {
+            size_t j = i + 2;
+            while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
+            size_t d0 = j;
+            while (j < pat.size() && ascii::isdigit((unsigned char)pat[j])) j++;
+            if (j == d0) { i++; continue; }
+            size_t sp = j;
+            while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
+            bool sp1 = j > sp;
+            if (pat.compare(j, 2, "..") != 0) { i++; continue; }
+            size_t k = j + 2;
+            if (k < pat.size() && pat[k] == '^') k++;
+            size_t sp2s = k;
+            while (k < pat.size() && (pat[k] == ' ' || pat[k] == '\t')) k++;
+            bool sp2 = k > sp2s && k < pat.size() && (ascii::isdigit((unsigned char)pat[k]) || pat[k] == '*');
+            // `/m ** 1..-1/` — a negative end point: the range is malformed and
+            // the `-` an unrecognised metachar, so the regex never finds its end
+            if (!sp1 && j + 2 < pat.size() && pat[j + 2] == '-')
+                throw ParseError("Malformed Range\nUnrecognized regex metacharacter -\n"
+                                 "Unable to parse regex; couldn't find final '/'", line, "X::Comp::Group",
+                                 {{"sorrow", "X::Syntax::Regex::MalformedRange"}, {"sorrow-msg", "Malformed Range"},
+                                  {"panic", "X::Comp::AdHoc"}, {"panic-msg", "Unable to parse regex; couldn't find final '/'"}});
+            if (sp1)
+                throw ParseError("Spaces not allowed in bare range.", line, "X::Syntax::Regex::SpacesInBareRange",
+                                 {{"pre", "/" + pat.substr(0, j + 2)}, {"post", pat.substr(j + 2) + "/"}});
+            if (sp2)
+                throw ParseError("Malformed Range. If attempting to use variables for end points, "
+                                 "wrap the entire range in curly braces.", line, "X::Syntax::Regex::MalformedRange",
+                                 {{"pre", "/" + pat.substr(0, j + 2)}, {"post", pat.substr(j + 2) + "/"}});
+            i++;
+        }
+    }
 }
 
 void Parser::checkVirtualCallInDefault(size_t defStart) {
@@ -9976,7 +10140,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             expectKind(Tok::RParen, "expected ')' after ::( name expression");
         }
     }
-    if (!cd->name.empty()) declTypeNames_.insert(cd->name);
+    if (!cd->name.empty()) { declTypeNames_.insert(cd->name); declClassDecls_[cd->name] = cd.get(); }
     if (cd->nameExpr) declTypesOpaque_ = true; // the declared name is a run-time value
     // name adverbs: `module M:ver<0.19>:auth<zef:x>:api<2> { … }` — without
     // this, the `:` failed the brace check and the package took the UNIT-form
@@ -10041,6 +10205,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // dispatch is not modelled
     while (isIdent("is") || isIdent("does") || (isIdent("hides") && peek().kind == Tok::Ident)) {
         bool isDoes = isIdent("does");
+        if (isIdent("hides")) cd->hidesNames.push_back(peek().text);
         advance();
         // `is hidden` — the class keeps out of its children's `nextsame` chain;
         // a trait, not a parent (not modelled, like `hides`)
@@ -10527,7 +10692,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         if (isIdent("trusts")) { // `trusts Foo;` — parsed; access is unenforced anyway
             advance();
-            while (isKind(Tok::Ident) || isOp("::")) advance();
+            std::string tn;
+            while (isKind(Tok::Ident) || isOp("::")) tn += advance().text;
+            if (!tn.empty()) cd->trustsNames.push_back(tn);
             matchKind(Tok::Semicolon);
             continue;
         }
@@ -11045,6 +11212,24 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             is->isUnless = (kw == "unless");
             is->modifier = true; // postfix form: a `my` in the modified STMT leaks to the enclosing scope
             ExprPtr cond = parseExpression();
+            // `say 1 if 2 if 3 { … }` — only a LOOP modifier may follow a
+            // conditional one; a second condition is a missing semicolon
+            if (isKind(Tok::Ident) && (isIdent("if") || isIdent("unless") || isIdent("with") ||
+                                       isIdent("without") || isIdent("when"))) {
+                std::string pre, post;
+                if (src_ && stmtStart_ < toks_.size()) {
+                    const Token& st = toks_[stmtStart_];
+                    const Token& ct = cur();
+                    size_t a = st.off - st.text.size(), b = ct.off - ct.text.size();
+                    if (a <= b && b <= src_->size()) {
+                        pre = src_->substr(a, b - a);
+                        size_t e = src_->find('\n', b);
+                        post = src_->substr(b, (e == std::string::npos ? src_->size() : e) - b);
+                    }
+                }
+                throw ParseError("Missing semicolon", cur().line, "X::Syntax::Confused",
+                                 {{"reason", "Missing semicolon"}, {"pre", pre}, {"post", post}});
+            }
             is->branches.emplace_back(std::move(cond), wrapStmt(std::move(s)));
             return applyModifiers(std::move(is)); // chained modifiers: `X if A for B`
         }
@@ -11159,6 +11344,16 @@ StmtPtr Parser::parseStatementInner() {
 
 StmtPtr Parser::parseStatementImpl() {
     while (matchKind(Tok::Semicolon)) {}
+    // `infix:(&)` — a colonpair on an operator category is an adverb on
+    // nothing (and no label either)
+    if (cur().kind == Tok::Ident &&
+        (cur().text == "infix" || cur().text == "prefix" || cur().text == "postfix" ||
+         cur().text == "circumfix" || cur().text == "postcircumfix" || cur().text == "term") &&
+        peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
+        !peek(2).spaceBefore && peek(2).kind == Tok::Op && peek(2).text.size() > 1 && peek(2).text[0] == '(') {
+        std::string w = ":" + peek(2).text;
+        throw ParseError("You can't adverb " + w, cur().line, "X::Syntax::Adverb", {{"what", w}});
+    }
     // statement label:  LABEL: for ...   (ident + a colon with no space before it,
     // so `say :adverb` — space before the ':' — is a listop call, not a label)
     if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
@@ -11898,11 +12093,19 @@ StmtPtr Parser::parseStatementImpl() {
                                      cur().line, "X::Syntax::Malformed",
                                      {{"what", "loop spec (expected 3 parts separated by semicolon)"}});
                 auto ls = std::make_unique<LoopStmt>();
+                // `loop (a, b, c)` / `loop (a; b, c)`: fewer than three parts
+                auto partsGot = [&](const char* n) {
+                    std::string w = std::string("loop spec (expected 3 parts separated by semicolon, got ") + n + ")";
+                    throw ParseError("Malformed " + w, cur().line, "X::Syntax::Malformed", {{"what", w}});
+                };
                 if (!isKind(Tok::Semicolon)) ls->init = parseExpression();
+                if (isKind(Tok::RParen)) partsGot("1");
                 expectKind(Tok::Semicolon, ";");
                 if (!isKind(Tok::Semicolon)) ls->cond = parseExpression();
+                if (isKind(Tok::RParen)) partsGot("2");
                 expectKind(Tok::Semicolon, ";");
                 if (!isKind(Tok::RParen)) ls->incr = parseExpression();
+                if (isKind(Tok::Semicolon) && peek().kind != Tok::RParen) partsGot("more");
                 if (isKind(Tok::Semicolon))
                     throw ParseError("Malformed loop spec: too many semicolons",
                                      cur().line, "X::Syntax::Malformed",
@@ -12131,6 +12334,9 @@ StmtPtr Parser::parseStatementImpl() {
                             (nx.kind == Tok::LParen || nx.kind == Tok::LBracket ||
                              (nx.kind == Tok::Op && nx.text == ".")))
                             exprBlock = true;
+                        // `{ 1,2 },Nil` — a comma on the same line makes the
+                        // block one element of a list
+                        if (nx.kind == Tok::Comma && nx.line == toks_[i].line) exprBlock = true;
                     }
                     break;
                 }
@@ -12279,6 +12485,13 @@ Program Parser::parseProgram() {
     // rest, so the error it stopped on is the unit's
     if (isKind(Tok::End) && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
     checkRedeclarations(prog.stmts, /*unitScope=*/true);
+    // Illegal post-declaration: a class/role/grammar named as a term BEFORE the
+    // unit declares it is Rakudo's X::Undeclared::Symbols (with `post_types`)
+    if (!importsModules_ && !declTypesOpaque_)
+        for (auto& [n, ln] : earlyTypeUse_)
+            if (declClassDecls_.count(n) && !isKnownTypeName(n))
+                throw ParseError("Undeclared name:\n    " + n + " used at line " + std::to_string(ln) +
+                                 " (illegal post-declaration)", ln, "X::Undeclared::Symbols", {{"post_types", n}});
     prog.declaredTypeNames = std::move(declTypeNames_);
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.importsModules = importsModules_;

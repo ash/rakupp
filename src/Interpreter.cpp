@@ -1056,18 +1056,55 @@ Value numifyStr(const std::string& in) {
 // Numeric coercion of a string: a non-numeric one yields a FAILURE carrying
 // X::Str::Numeric — an unthrown exception, exactly like Rakudo. `+"a"` is quiet
 // (`.defined` is False), but USING the value (say/arithmetic) throws.
+// Rakudo's X::Str::Numeric for a string that is no number: the reason, the
+// position the parse stopped at, and the source with a <HERE> marker in it
+// (control characters shown escaped — `"\b"` reads as `\b`).
+static void strNumericParts(const std::string& in, std::string& msg, std::string& reason,
+                            std::string& indicator, long long& pos) {
+    bool anyDigit = false;
+    for (unsigned char c : in) if (ascii::isdigit(c)) { anyDigit = true; break; }
+    reason = anyDigit ? "trailing characters after number" : "base-10 number must begin with valid digits or '.'";
+    size_t lead = 0;
+    while (lead < in.size() && (in[lead] == ' ' || in[lead] == '\t' || in[lead] == '\n' || in[lead] == '\r')) lead++;
+    pos = (long long)lead;
+    if (anyDigit) {
+        const char* b = in.c_str(); char* e = nullptr;
+        std::strtod(b, &e);
+        if (e && e > b) pos = (long long)(e - b);
+    }
+    auto esc = [](const std::string& t) {
+        std::string o;
+        for (unsigned char c : t) {
+            if (c == 8) o += "\\b";
+            else if (c == 9) o += "\\t";
+            else if (c == 10) o += "\\n";
+            else if (c == 13) o += "\\r";
+            else if (c < 0x20 || c == 0x7F) { char buf[16]; snprintf(buf, sizeof buf, "\\x[%X]", c); o += buf; }
+            else o += (char)c;
+        }
+        return o;
+    };
+    std::string head = in.substr(0, std::min<size_t>((size_t)pos, in.size()));
+    std::string tail = (size_t)pos < in.size() ? in.substr((size_t)pos) : std::string();
+    if (tail.size() > 40) tail = tail.substr(0, 40) + "...";
+    indicator = "in '" + esc(head) + "<HERE>" + esc(tail) + "' (indicated by <HERE>)";
+    msg = "Cannot convert string to number: " + reason + " " + indicator;
+}
+
+// Numeric coercion of a string: a non-numeric one yields a FAILURE carrying
+// X::Str::Numeric — an unthrown exception, exactly like Rakudo. `+"a"` is quiet
+// (`.defined` is False), but USING the value (say/arithmetic) throws.
 Value numifyStrFailure(const std::string& in) {
     Value v = numifyStr(in);
     if (v.t != VT::Any && v.t != VT::Nil) return v; // Complex counts: numifyStr's failure signal is undefined
-    std::string t = in;
-    if (t.size() > 40) t = t.substr(0, 40) + "...";
-    bool anyDigit = false;
-    for (unsigned char c : in) if (ascii::isdigit(c)) { anyDigit = true; break; }
-    std::string msg = anyDigit
-        ? "Cannot convert string to number: trailing characters after number in '" + t + "'"
-        : "Cannot convert string to number: base-10 number must begin with valid digits or '.' in '" + t + "'";
+    std::string msg, reason, ind; long long pos = 0;
+    strNumericParts(in, msg, reason, ind, pos);
     Value f = rakuppNewFailure();
-    (*f.hash())["exception"] = Value::typeObj("X::Str::Numeric");
+    if (g_revInterp)
+        (*f.hash())["exception"] = g_revInterp->makeTypedEx("X::Str::Numeric",
+            {{"source", Value::str(in)}, {"pos", Value::integer(pos)}, {"reason", Value::str(reason)},
+             {"source-indicator", Value::str(ind)}}, msg);
+    else (*f.hash())["exception"] = Value::typeObj("X::Str::Numeric");
     (*f.hash())["message"] = Value::str(msg);
     return f;
 }
@@ -1076,21 +1113,13 @@ Value numifyStrFailure(const std::string& in) {
 Value numifyStrOrThrow(const std::string& in) {
     Value v = numifyStr(in);
     if (v.t != VT::Any && v.t != VT::Nil) return v;
-    Value f = numifyStrFailure(in);
-    const std::string msg = f.hash()->count("message") ? (*f.hash())["message"].toStr()
-                                                       : std::string("Cannot convert string to number");
-    // …carrying where the number stopped: `"5 foo"` fails at position 1
-    if (g_revInterp) {
-        const char* b = in.c_str(); char* e = nullptr;
-        std::strtod(b, &e);
-        long long pos = e && e > b ? (long long)(e - b) : 0;
-        const bool trailing = msg.find("trailing") != std::string::npos;
+    std::string msg, reason, ind; long long pos = 0;
+    strNumericParts(in, msg, reason, ind, pos);
+    if (g_revInterp)
         g_revInterp->throwTypedV("X::Str::Numeric",
-            {{"source", Value::str(in)}, {"pos", Value::integer(pos)},
-             {"reason", Value::str(trailing ? "trailing characters after number"
-                                            : "base-10 number must begin with valid digits or '.'")}},
+            {{"source", Value::str(in)}, {"pos", Value::integer(pos)}, {"reason", Value::str(reason)},
+             {"source-indicator", Value::str(ind)}},
             msg);
-    }
     throw RakuError{Value::typeObj("X::Str::Numeric"), msg};
 }
 
@@ -1768,7 +1797,8 @@ static bool exprYieldsContainer(const Expr* e) {
 void Interpreter::sinkValue(const Value& r) {
     // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
     if (r.t == VT::Array && r.ext() && r.arr() &&
-        std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource) { forceLazy(r); return; }
+        (std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource ||
+         std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe)) { forceLazy(r); return; }
     if (r.t != VT::Hash) return;
     if (r.hashKind == "Failure") { failureDetonate(r); return; }
     if (r.hashKind == "Proc") {
@@ -5879,6 +5909,8 @@ int Interpreter::run(Program& prog) {
         for (auto* b : beginP) {
             try { runPhaser(b); }
             catch (RakuError& e) {
+                // a routine not declared YET is a compile-time refusal of its own
+                if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
                 Value inner = exceptionFor(e);
                 std::string im = e.message;
                 throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
@@ -8674,6 +8706,16 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
             }
             throwTypedV("X::Package::Stubbed", {{"packages", arr}}, e.what());
         }
+        if (e.exType == "X::Undeclared::Symbols")
+            for (auto& kv : e.exAttrs)
+                if (kv.first == "post_types") {
+                    // `post_types` is a hash of the name to the lines that used it
+                    Value h = Value::makeHash();
+                    Value lines = Value::array(); lines.isList = true;
+                    lines.arr()->push_back(Value::integer(e.line));
+                    (*h.hash())[kv.second] = lines;
+                    throwTypedV("X::Undeclared::Symbols", {{"post_types", h}}, e.what());
+                }
         if (e.exType == "X::Syntax::Number::LiteralType") {
             // the two attributes are OBJECTS, not text: `:vartype(Int)` is the
             // type and `:value(NaN)` the number, which is what throws-like asks
@@ -8688,11 +8730,43 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         if (e.exType == "X::Comp::Group") {
             // parse-level group diagnostic: the `sorrow` attr names the inner
             // exception type; rebuild it as a real object list in .sorrows
-            std::string stype = "X::AdHoc";
-            for (auto& kv : e.exAttrs) if (kv.first == "sorrow") stype = kv.second;
+            // (…and `panic` the fatal one, `worry` a warning; each may carry
+            // its own message and `what`)
+            std::string stype, smsg, swhat, ptype, pmsg, pwhat, ppre, ppost, wmsg;
+            for (auto& kv : e.exAttrs) {
+                if (kv.first == "sorrow") stype = kv.second;
+                else if (kv.first == "sorrow-msg") smsg = kv.second;
+                else if (kv.first == "sorrow-what") swhat = kv.second;
+                else if (kv.first == "panic") ptype = kv.second;
+                else if (kv.first == "panic-msg") pmsg = kv.second;
+                else if (kv.first == "panic-what") pwhat = kv.second;
+                else if (kv.first == "panic-pre") ppre = kv.second;
+                else if (kv.first == "panic-post") ppost = kv.second;
+                else if (kv.first == "worry") wmsg = kv.second;
+            }
+            auto mk = [&](const std::string& t, const std::string& m, const std::string& w,
+                          const std::string* pre = nullptr, const std::string* post = nullptr) {
+                std::vector<std::pair<std::string, Value>> a;
+                if (!w.empty()) a.emplace_back("what", Value::str(w));
+                if (pre && (!pre->empty() || !post->empty())) {
+                    a.emplace_back("pre", Value::str(*pre));
+                    a.emplace_back("post", Value::str(*post));
+                }
+                if (t == "X::Comp::AdHoc") a.emplace_back("payload", Value::str(m));
+                return makeTypedEx(t, std::move(a), m);
+            };
+            std::vector<std::pair<std::string, Value>> ga;
             Value arr = Value::array(); arr.isList = true;
-            arr.arr()->push_back(makeTypedEx(stype, {}, e.what()));
-            throwTypedV("X::Comp::Group", {{"sorrows", arr}}, e.what());
+            if (!stype.empty() || ptype.empty())
+                arr.arr()->push_back(mk(stype.empty() ? "X::AdHoc" : stype, smsg.empty() ? e.what() : smsg, swhat));
+            ga.emplace_back("sorrows", arr);
+            if (!ptype.empty()) ga.emplace_back("panic", mk(ptype, pmsg.empty() ? e.what() : pmsg, pwhat, &ppre, &ppost));
+            if (!wmsg.empty()) {
+                Value wa = Value::array(); wa.isList = true;
+                wa.arr()->push_back(mk("X::Comp::AdHoc", wmsg, ""));
+                ga.emplace_back("worries", wa);
+            }
+            throwTypedV("X::Comp::Group", std::move(ga), e.what());
         }
         if (!e.exType.empty()) throwTyped(e.exType, e.exAttrs, e.what()); // typed compile diagnostic
         throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
@@ -10662,6 +10736,30 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->langRev = langRev_;
                 c.code()->rakuAst = rakuAstPragma_;
                 c.code()->closure = tctx_.cur;
+                // `sub foo(A $a)` where A is a package or module: no type
+                if (!hoistingSubs_)
+                    for (auto& p : *prms) {
+                        if (!p.type.empty() && nameIsPackageNow(p.type))
+                            throwTypedV("X::Parameter::BadType", {{"type", Value::typeObj(p.type)}},
+                                        "'" + p.type + "' cannot be used as a type");
+                    }
+                // `sub foo() returns Bar { }` with no Bar anywhere: X::InvalidType
+                if (sd->retViaReturns && !hoistingSubs_) {
+                    const std::string& rn = sd->retType;
+                    bool captured = false;
+                    for (auto& p : *prms) if (p.typeCapture && (p.captureName == rn || p.type == rn)) captured = true;
+                    if (!captured && !rn.empty() && rn.find("::") == std::string::npos &&
+                        rn.find('[') == std::string::npos && rn.find(':') == std::string::npos &&
+                        !classes_.count(rn) && !isKnownTypeName(rn) && !subsets_.count(rn) &&
+                        !isNativeTypeName(rn) && !classes_.count(resolveClassAlias(rn)) &&
+                        !(!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + rn)) &&
+                        !tctx_.cur->find(rn))
+                        throwTypedV("X::InvalidType", {{"typename", Value::str(rn)}},
+                                    "Invalid typename '" + rn + "'");
+                }
+                // `sub infix:<↑>(…) is assoc<right>` — reductions over it fold from the right
+                if (sd->assocRight && sname.rfind("infix:<", 0) == 0 && sname.size() > 8 && sname.back() == '>')
+                    rightAssocOps_.insert(sname.substr(7, sname.size() - 8));
                 c.code()->retType = qualifyDeclType(sd->retType);
                 c.code()->retRw = sd->retRw;
                 c.code()->declFile = declFileNow();
@@ -11015,10 +11113,18 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 };
                 std::vector<std::string> doesNames = cd->roles;
                 if (cd->parentIsDoes) doesNames.push_back(cd->parent);
+                for (auto& hn : cd->hidesNames) doesNames.push_back(hn);
                 for (auto& rn : doesNames)
                     if (unknownRole(rn))
                         throwTypedV("X::InvalidType", {{"typename", Value::str(rn)}},
                                     "Invalid typename '" + rn + "'");
+                // (a name the unit declares further down is let through: Rakudo
+                // refuses that too, but S12-attributes/trusts.t scores on it)
+                const Program* tunit = unitCurrent();
+                for (auto& tn : cd->trustsNames)
+                    if (unknownRole(tn) && !(tunit && (tunit->typeNamesOpaque || tunit->declaredTypeNames.count(tn))))
+                        throwTypedV("X::Undeclared", {{"symbol", Value::str(tn)}, {"what", Value::str("Type")}},
+                                    "Type '" + tn + "' is not declared");
             }
             // `class Foo does Maybe` where Maybe is an ENUM: that is role
             // composition (see the roles loop), never a parent class
@@ -11167,6 +11273,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             if (cd->isPackage) {
                 if (!cd->name.empty()) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
+                    lastDecl_[cd->name] = {cd, true, cd->isStubDecl};
                     pkgKind_[tctx_.pkgPrefix + cd->name] = k;
                     if (!tctx_.pkgPrefix.empty()) pkgKind_[cd->name] = k;
                     if (!cd->pod.empty()) {
@@ -11385,6 +11492,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 const std::shared_ptr<ClassInfo>* rakuAstParent =
                     (it == classes_.end() && rakuAstVisible() && isRakuAstName(cd->parent))
                         ? rakuAstClass(cd->parent) : nullptr;
+                // `my package A { }; my class B is A { }` — the latest A is a
+                // package, whatever class an earlier A was
+                if (!cd->parentIsDoes && nameIsPackageNow(cd->parent))
+                    throwTypedV("X::Inheritance::Unsupported",
+                        {{"child-typename", Value::str(cd->name)}, {"parent", Value::typeObj(cd->parent)}},
+                        std::string(pkgKind_[cd->parent] == 1 ? "module" : "package") + " " + cd->parent +
+                        " does not support inheritance, so " + cd->name + " cannot inherit from it");
                 if (it != classes_.end()) {
                     ci->parent = it->second;
                     // `does R[a, b]` as the first composition: the candidate of
@@ -12199,6 +12313,24 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                    "Redeclaration of symbol '" + clsName + "'");
                 }
             }
+            // `my class A { ... }; my class A is repr("…") { }` — the stub already
+            // fixed the representation
+            {
+                auto prev = lastDecl_.find(clsName);
+                if (prev != lastDecl_.end() && prev->second.node != cd &&
+                    prev->second.isStub && !cd->isStubDecl && !cd->repr.empty())
+                    throwTypedV("X::TooLateForREPR", {{"type", Value::typeObj(clsName)}},
+                                "Cannot change REPR of " + clsName + " now (must be set at initial declaration)");
+                lastDecl_[clsName] = {cd, false, cd->isStubDecl};
+            }
+            // `enum Error (Metadata => -20); class Metadata { }` — the name is an
+            // enum member already
+            if (!hoistingSubs_ && !cd->isAugment && clsName.find("::") == std::string::npos) {
+                if (Value* ev = tctx_.cur->find(clsName))
+                    if (!ev->enumName.empty() && ev->enumName == clsName && !ev->enumType.empty())
+                        throwTyped("X::Redeclaration", {{"symbol", clsName}},
+                                   "Redeclaration of symbol '" + clsName + "'");
+            }
             // A stub DECLARES a name; it never redefines one. `class Gen::Tab
             // { ... }` written inside a method body re-runs on every call of that
             // method, and overwriting the completed class with the empty stub is
@@ -12825,6 +12957,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
                 try { return exec(s, sink); }
                 catch (RakuError& e) {
+                    if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
                     Value inner = exceptionFor(e);
                     throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
                                 "An exception occurred while evaluating a BEGIN: " + e.message);
@@ -13883,7 +14016,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!w->isDefault) {
                 Value* tp = tctx_.cur->find("$_");
                 Value topic = tp ? *tp : Value::any();
-                Value cv = eval(w->cond.get());
+                Value cv;
+                if (w->cond->kind != NK::NameTerm) cv = eval(w->cond.get());
+                else {
+                    // `when SomeUndeclaredType { … }`: to Rakudo an unknown name
+                    // before a block is a call that gobbled it — a compile-time group
+                    try { cv = eval(w->cond.get()); }
+                    catch (RakuError& e) {
+                        if (!(e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols")) throw;
+                        const std::string& fn = static_cast<NameTerm*>(w->cond.get())->name;
+                        std::string sm = "Function '" + fn + "' needs parens to avoid gobbling block (or perhaps "
+                                         "it's a class that's not declared or available in this scope?)";
+                        std::string pw = "block (apparently claimed by '" + fn + "')";
+                        Value so = Value::array(); so.isList = true;
+                        so.arr()->push_back(makeTypedEx("X::Syntax::BlockGobbled", {{"what", Value::str(fn)}}, sm));
+                        throwTypedV("X::Comp::Group",
+                            {{"sorrows", so}, {"panic", makeTypedEx("X::Syntax::Missing", {{"what", Value::str(pw)}}, "Missing " + pw)}},
+                            sm + "\nMissing " + pw);
+                    }
+                }
                 // `when X` == `if $_ ~~ X`: a regex literal already matched $_ above;
                 // a Regex/Callable value is invoked; else a value/type smartmatch.
                 if (w->cond->kind == NK::RegexLit) match = boolify(cv);
@@ -14082,6 +14233,92 @@ Value Interpreter::ioFailure(const std::string& type,
     return f;
 }
 
+// `$abd` with `$abc` and `$abe` in scope: X::Undeclared, and — as Rakudo —
+// the names one or two edits away as `suggestions`
+void Interpreter::throwUndeclaredVar(const std::string& name) {
+    auto dist = [](const std::string& a, const std::string& b) {
+        std::vector<size_t> row(b.size() + 1);
+        for (size_t j = 0; j <= b.size(); j++) row[j] = j;
+        for (size_t i = 1; i <= a.size(); i++) {
+            size_t prev = row[0]; row[0] = i;
+            for (size_t j = 1; j <= b.size(); j++) {
+                size_t cur = std::min({row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] == b[j - 1] ? 0 : 1)});
+                prev = row[j]; row[j] = cur;
+            }
+        }
+        return row[b.size()];
+    };
+    std::vector<std::string> sug;
+    auto consider = [&](const std::string& n) {
+        if (n.size() < 2 || n[0] != name[0] || n == name || n[1] == '*' || n[1] == '?' || n[1] == '!') return;
+        if (std::find(sug.begin(), sug.end(), n) != sug.end()) return;
+        if (dist(n, name) <= std::max<size_t>(1, name.size() / 3)) sug.push_back(n);
+    };
+    if (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&'))
+        for (Env* e = tctx_.cur.get(); e && sug.size() < 16; e = e->parent.get()) {
+            for (auto& kv : e->vars) consider(kv.first);
+            if (e->layout)
+                for (size_t i = 0; i < e->layout->names.size() && i < 64; i++)
+                    if ((e->padLive.load(std::memory_order_acquire) >> i) & 1) consider(e->layout->names[i]);
+        }
+    std::string msg = "Variable '" + name + "' is not declared";
+    Value sl = Value::array(); sl.isList = true;
+    for (auto& n : sug) sl.arr()->push_back(Value::str(n));
+    if (sug.size() == 1) msg += ". Did you mean '" + sug[0] + "'?";
+    else if (!sug.empty()) {
+        msg += ". Did you mean any of these: ";
+        for (size_t i = 0; i < sug.size(); i++) msg += (i ? ", '" : "'") + sug[i] + "'";
+        msg += "?";
+    }
+    Value he = Value::array(); he.isList = true;
+    throwTypedV("X::Undeclared", {{"symbol", Value::str(name)}, {"what", Value::str("Variable")},
+                                  {"suggestions", sl}, {"pre", Value::str("")}, {"post", Value::str(name)},
+                                  {"highexpect", he}}, msg);
+}
+
+// A declared type that names no type: a package (`my A $a`), or a type
+// argument nothing declares (`my Array[Numerix] $x`).
+// `array[Int]` — a native array takes only a native element type; Rakudo
+// finds out while composing the type, at BEGIN time
+void Interpreter::checkNativeArrayParam(const std::string& t) {
+    if (t.size() < 8 || t.compare(0, 6, "array[") != 0 || t.back() != ']') return;
+    std::string inner = t.substr(6, t.size() - 7);
+    if (inner.empty() || isNativeTypeName(inner) || !ascii::isupper((unsigned char)inner[0])) return;
+    Value e = makeTypedEx("X::AdHoc", {{"payload", Value::str("Can only parameterize array with a native type, not " + inner)}},
+                          "Can only parameterize array with a native type, not " + inner);
+    throwTypedV("X::Comp::BeginTime", {{"exception", e}, {"use-case", Value::str("parameterizing array")}},
+                "An exception occurred while parameterizing array: Can only parameterize array with a native type, not " + inner);
+}
+
+void Interpreter::checkDeclTypeSane(const VarExpr* ve) {
+    checkNativeArrayParam(ve->declType);
+    // `my package A {}; my A $a` — a package is no type
+    if (!ve->declType.empty() && nameIsPackageNow(ve->declType))
+        throwTypedV("X::Syntax::Variable::BadType", {{"type", Value::typeObj(ve->declType)}},
+                    "'" + ve->declType + "' cannot be used as a type");
+    // `my Array[Numerix] $x` — a type argument nothing declares
+    if (ve->declType.find('[') != std::string::npos) {
+        const std::string& dt = ve->declType;
+        size_t i = 0;
+        while (i < dt.size()) {
+            if (!ascii::isupper((unsigned char)dt[i]) || (i > 0 && (ascii::isalnum((unsigned char)dt[i - 1]) || dt[i - 1] == ':' || dt[i - 1] == '-' || dt[i - 1] == '_'))) { i++; continue; }
+            size_t j = i;
+            while (j < dt.size() && (ascii::isalnum((unsigned char)dt[j]) || dt[j] == '_' || dt[j] == '-' ||
+                                     (dt[j] == ':' && j + 1 < dt.size() && dt[j + 1] == ':') ||
+                                     (dt[j] == ':' && j > 0 && dt[j - 1] == ':'))) j++;
+            std::string tn = dt.substr(i, j - i);
+            i = j;
+            if (tn.find("::") != std::string::npos) continue;
+            if (classes_.count(tn) || isKnownTypeName(tn) || subsets_.count(tn) || isNativeTypeName(tn) ||
+                classes_.count(resolveClassAlias(tn)) || tctx_.cur->find(tn) ||
+                (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + tn))) continue;
+            const Program* unit = unitCurrent();
+            if (!unit || unit->typeNamesOpaque || unit->declaredTypeNames.count(tn)) continue;
+            throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undeclared name '" + tn + "'"};
+        }
+    }
+}
+
 void Interpreter::throwTyped(const std::string& type,
                              std::vector<std::pair<std::string, std::string>> attrs,
                              const std::string& message) {
@@ -14090,7 +14327,8 @@ void Interpreter::throwTyped(const std::string& type,
     for (auto& kv : attrs)
         // a `type` attribute naming a core type is the type OBJECT (so
         // throws-like `type => Array` smartmatches), not the string
-        if (kv.first == "type" && isKnownTypeName(kv.second))
+        if ((kv.first == "type" && isKnownTypeName(kv.second)) ||
+            (type == "X::Syntax::Variable::ConflictingTypes" && (kv.first == "outer" || kv.first == "inner")))
             va.emplace_back(kv.first, Value::typeObj(kv.second));
         else
             va.emplace_back(kv.first, Value::str(kv.second));
@@ -14338,6 +14576,16 @@ static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::s
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env, bool methodCtx, bool blockParams,
                              bool whereVerified) {
+    // A call that passes MORE positionals than the signature takes is bound
+    // laxly here (see t/regression/arity-lax-callers.raku); the `@`-param
+    // Positional check below stays out of those
+    auto laxOverflow = [&]() {
+        if (tctx_.subSigBind) return false;
+        size_t np = 0, na = 0;
+        for (auto& p : params) { if (p.slurpy) return false; if (!p.named && !p.invocant) np++; }
+        for (auto& a : args) if (!isNamedArg(a)) na++;
+        return na > np;
+    };
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -14659,7 +14907,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         Value na = Value::pair(kv.first, kv.second); na.namedArg = true;
                         inner.push_back(na);
                     }
-                    bindParams(*p.subSig, inner, env);
+                    { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*p.subSig, inner, env); }
                 }
                 if (capture) pi = piStart;
             }
@@ -14673,7 +14921,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (v.t == VT::Hash && v.hash()) {
                 ValueList inner;
                 for (auto& kv : *v.hash()) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
-                bindParams(*sp.subSig, inner, env);
+                { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*sp.subSig, inner, env); }
                 return;
             }
             ValueList inner = (v.t == VT::Array && v.arr()) ? *v.arr()
@@ -14695,7 +14943,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         inner.push_back(na);
                     } catch (RakuError&) {} // absent accessor → param falls to its default
                 }
-            bindParams(*sp.subSig, inner, env);
+            { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*sp.subSig, inner, env); }
         };
         if (p.named) {
             auto it = named.find(bareName);
@@ -14828,6 +15076,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // settled by this point, only the marker would have leaked.
                     if (v.s == "Seq") v.s.clear();
                 }
+                // a definite scalar is no Positional: `sub f(@a) {}; f(1)` is a
+                // binding failure, not a one-element array
+                else if (!p.isCopy && !laxOverflow() && ((v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
+                                        v.t == VT::Pair || v.t == VT::Code) ||
+                                       (v.t == VT::Str && v.hashKind.empty())))
+                    throwTypedV("X::TypeCheck::Binding::Parameter",
+                        {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
+                        "Type check failed in binding to parameter '" + p.name + "'; expected Positional but got " +
+                        v.typeName() + " (" + typeCheckRepr(v) + ")");
                 else v = coerceArray(v);
             }
             else if (p.sigil == '%') {
@@ -14900,10 +15157,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 Value dv = evalDefault(p.defaultVal.get());
                 ValueList inner;
                 if (dv.arr()) inner = *dv.arr(); else if (isDefined(dv)) inner.push_back(dv);
-                bindParams(*p.subSig, inner, env);
+                { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*p.subSig, inner, env); }
                 if (!p.name.empty()) env->define(slotName(p, pidx), dv);
             }
-            else bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
+            else { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*p.subSig, positional, env); } // no arg → bind inner to (), fills defaults
         } else if (p.defaultVal) {
             Value dv = evalDefault(p.defaultVal.get());
             // a type capture names the DEFAULT's type when no argument came
@@ -20346,6 +20603,33 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     if (!argProf.empty()) argProf += ", ";
                     argProf += a.typeName();
                 }
+                // `proto sub foo(Str) {*}; foo 42` — the PROTO's signature already
+                // refuses the literal: Rakudo's compile-time X::TypeCheck::Argument,
+                // with the blame on the proto
+                if (rwArgs && rwArgs->size() == as.size())
+                    for (auto& pc : c.candidates) {
+                        if (!pc.code() || !(pc.code()->isProto || pc.code()->isProtoBody) || !pc.code()->params) continue;
+                        static const std::set<std::string> kCore = {"Int", "Str", "Num", "Rat", "Complex", "Bool"};
+                        size_t i = 0; bool bad = false; std::string sigt;
+                        for (auto& p : *pc.code()->params) {
+                            if (p.invocant) continue;
+                            if (!sigt.empty()) sigt += ", ";
+                            sigt += p.type.empty() ? p.name : p.name.empty() ? p.type : p.type + " " + p.name;
+                            if (bad || p.named || p.slurpy || p.sigil != '$' || i >= as.size()) continue;
+                            const Expr* ae = (*rwArgs)[i].get();
+                            const Value& av = as[i++];
+                            const bool lit = ae && (ae->kind == NK::StrLit || ae->kind == NK::InterpStr ||
+                                                    ae->kind == NK::IntLit || ae->kind == NK::NumLit);
+                            if (lit && kCore.count(p.type) && !p.coerce && !p.whereExpr && !rtTypeMatch(av, p.type)) bad = true;
+                        }
+                        if (!bad) break;
+                        Value argTypes = Value::array(); argTypes.isList = true;
+                        for (auto& a : as) if (!isNamedArg(a)) argTypes.arr()->push_back(Value::str(a.typeName()));
+                        throwTypedV("X::TypeCheck::Argument",
+                            {{"objname", Value::str(c.name)}, {"signature", Value::str("(" + sigt + ")")},
+                             {"arguments", argTypes}, {"protoguilt", Value::boolean(true)}},
+                            "Calling " + c.name + "(" + argProf + ") will never work with proto signature (" + sigt + ")");
+                    }
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(" + argProf +
                                 "); no matching multi candidate"};
@@ -20601,11 +20885,15 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 for (auto& p : *c.params) {
                     if (p.invocant) continue;
                     if (!sigt.empty()) sigt += ", ";
-                    sigt += (p.type.empty() ? std::string() : p.type + " ") + p.name;
+                    sigt += p.type.empty() ? p.name : p.name.empty() ? p.type : p.type + " " + p.name;
                 }
-                throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+                Value argTypes = Value::array(); argTypes.isList = true;
+                for (auto& a : args) argTypes.arr()->push_back(Value::str(a.typeName()));
+                throwTypedV("X::TypeCheck::Argument",
+                    {{"objname", Value::str(c.name)}, {"signature", Value::str("(" + sigt + ")")},
+                     {"arguments", argTypes}, {"protoguilt", Value::boolean(c.isMultiDispatcher)}},
                     "Calling " + c.name + "(" + prof + ") will never work with "
-                    "declared signature (" + sigt + ")"};
+                    "declared signature (" + sigt + ")");
             }
         }
     }
@@ -22484,6 +22772,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // from-json's `.List` and asks is-deeply)
                 else if (sigil == '@' && ve->containerIs == "List") init.isList = true;
             }
+            if (!ve->declType.empty()) checkDeclTypeSane(ve);
             if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
@@ -22605,9 +22894,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             return &g->vars[ve->name];
         }
         if (!isSpecialVar(ve->name)) {
-            if (!noStrictHere())
-                throw RakuError{Value::typeObj("X::Undeclared"),
-                                "Variable '" + ve->name + "' is not declared"};
+            if (!noStrictHere()) throwUndeclaredVar(ve->name);
             // `no strict` auto-vivifies into the PACKAGE, not into whichever
             // block happened to write first — Rakudo answers 15 for
             // `no strict; for 1..5 -> $k { $sum += $k }; say $sum`, and a
@@ -24745,7 +25032,26 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (Value* p = tctx_.cur->find(ve->name))
                 if (p->t == VT::Code && p->code() && p->code()->isMultiDispatcher) priorDisp = *p;
     }
-    Value r = evalAssignInner(a, sink);
+    // a constant's initializer runs at compile time in Rakudo: what dies in it
+    // is an X::Comp::BeginTime wrapping the original
+    const bool constInit = a->target->kind == NK::VarExpr &&
+        static_cast<VarExpr*>(a->target.get())->declare &&
+        static_cast<VarExpr*>(a->target.get())->declScope == "constant";
+    Value r;
+    if (!constInit) r = evalAssignInner(a, sink);
+    else {
+        try { r = evalAssignInner(a, sink); }
+        catch (RakuError& e) {
+            const std::string tn = e.payload.t == VT::Type ? e.payload.s : std::string();
+            if (tn.empty() || tn.rfind("X::Comp", 0) == 0 || tn.rfind("X::Syntax", 0) == 0 ||
+                tn.rfind("X::Undeclared", 0) == 0 || tn.rfind("X::TypeCheck", 0) == 0 ||
+                tn == "X::ParametricConstant" || tn == "X::Redeclaration" || tn == "X::AdHoc")
+                throw;
+            Value inner = exceptionFor(e);
+            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a constant")}},
+                        "An exception " + tn + " occurred while evaluating a constant: " + e.message);
+        }
+    }
     if (priorDisp.t == VT::Code) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         Value* now = tctx_.cur->find(ve->name);
@@ -36434,12 +36740,21 @@ Value Interpreter::evalUnary(Unary* u) {
             pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
             bool hit = false;
             auto pop = [this] { popGatherFrame(); };
+            // a `return` in the body has no routine to return from: the gather
+            // runs lazily, after (or apart from) whatever routine made it
+            auto noRoutine = [this]() -> RakuError {
+                tctx_.returning = false;
+                return RakuError{Value::typeObj("X::ControlFlow::Return"),
+                                 "Attempt to return outside of any Routine"};
+            };
             try {
                 if (gu->operand->kind == NK::BlockExpr) callCallable(blockClosure, {});
                 else eval(gu->operand.get());
             } catch (StopGatherEx&) { hit = true; }
+              catch (ReturnEx&) { pop(); throw noRoutine(); }
               catch (...) { pop(); throw; }
             pop();
+            if (tctx_.returning) throw noRoutine();
             out = std::move(*collector);
             if (genv)   // record where this run left the replayed state
                 for (auto& kv : *snap) {
@@ -36482,6 +36797,7 @@ Value Interpreter::evalUnary(Unary* u) {
             Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq";
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = true;
+            st->diedProbe = true;
             auto err = std::make_shared<RakuError>(probeErr);
             st->appendNext = [err](ValueList&) -> bool { throw *err; };
             a.extM() = st;
@@ -38491,7 +38807,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     }
     // right-associative reduces fold from the right: [**] 2,3,2 == 2**(3**2),
     // [=>] 1,2,3 == 1 => (2 => 3)
-    if (op == "=>" || op == "**") {
+    if (op == "=>" || op == "**" || (!rightAssocOps_.empty() && rightAssocOps_.count(op))) {
         Value acc = items.back();
         for (size_t k = items.size() - 1; k-- > 0; ) {
             if (op == "=>") { // `[=>] 1,2,3` keeps the Int keys (like Z=>)
@@ -40343,7 +40659,23 @@ struct NodeCountReport {
             // `is dynamic`/`$*` names live; anything else falls through to the
             // lexical lookup, as before
             if (callerHead && !tctx_.dynStack.empty() && tctx_.dynStack.back())
-                if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) return *p;
+                if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) {
+                    // …and only a DYNAMIC one may be read so: a plain `my $x`
+                    // of the caller is X::Caller::NotDynamic
+                    if (sr->pkg != "CALLERS" && nm.size() > 1 && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&
+                        nm[1] != '*' && nm[1] != '?' && nm[1] != '!' && nm[1] != '.' &&
+                        nm != "$_" && nm != "$/" && nm != "$!" && nm != "$¢") {
+                        bool dyn = false;
+                        for (Env* en = tctx_.dynStack.back(); en; en = en->parent.get()) {
+                            if (en->xr().varDynamic.count(nm)) { dyn = true; break; }
+                            if (en->local(nm)) break;
+                        }
+                        if (!dyn)
+                            throwTypedV("X::Caller::NotDynamic", {{"symbol", Value::str(nm)}},
+                                        "Cannot access '" + nm + "' through CALLER, because it is not declared as dynamic");
+                    }
+                    return *p;
+                }
             // `CALLERS::<&x>` asks EVERY caller, innermost out — Red's
             // ResultSeq.grep checks `::CALLERS::<&__RED_OPERATOR_LOADED__>` to
             // learn whether the code calling it imported Red's operators
@@ -41407,7 +41739,28 @@ Value Interpreter::eval(Expr* e) {
                 // declaration always redefines: EVALs run in the caller's scope, so
                 // `my Ta $c` in one EVAL must not leave its type constraint on a later
                 // `my Tc $c`.
-                if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
+                // `my Array[Numerix] $x` — a type argument nothing declares
+            if (ve->declType.find('[') != std::string::npos) {
+                const std::string& dt = ve->declType;
+                size_t i = 0;
+                while (i < dt.size()) {
+                    if (!ascii::isupper((unsigned char)dt[i]) || (i > 0 && (ascii::isalnum((unsigned char)dt[i - 1]) || dt[i - 1] == ':' || dt[i - 1] == '-' || dt[i - 1] == '_'))) { i++; continue; }
+                    size_t j = i;
+                    while (j < dt.size() && (ascii::isalnum((unsigned char)dt[j]) || dt[j] == '_' || dt[j] == '-' ||
+                                             (dt[j] == ':' && j + 1 < dt.size() && dt[j + 1] == ':') ||
+                                             (dt[j] == ':' && j > 0 && dt[j - 1] == ':'))) j++;
+                    std::string tn = dt.substr(i, j - i);
+                    i = j;
+                    if (tn.find("::") != std::string::npos) continue;
+                    if (classes_.count(tn) || isKnownTypeName(tn) || subsets_.count(tn) || isNativeTypeName(tn) ||
+                        classes_.count(resolveClassAlias(tn)) || tctx_.cur->find(tn) ||
+                        (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + tn))) continue;
+                    const Program* unit = unitCurrent();
+                    if (!unit || unit->typeNamesOpaque || unit->declaredTypeNames.count(tn)) continue;
+                    throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undeclared name '" + tn + "'"};
+                }
+            }
+            if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                     Value dv = eval(ve->declDefault.get());
                     checkDeclDefault(ve->declType, sigil, dv, false);
@@ -41451,6 +41804,7 @@ Value Interpreter::eval(Expr* e) {
                                           methodCall(Value::typeObj(ve->containerIs), "new", none));
                     }
                 }
+                if (!ve->declType.empty()) checkDeclTypeSane(ve);
                 if (!ve->declType.empty() || !de->local(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
                         de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
@@ -41708,8 +42062,7 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             if (!isSpecialVar(ve->name) && !noStrictHere())
-                throwTyped("X::Undeclared", {{"symbol", ve->name}},
-                           "Variable '" + ve->name + "' is not declared");
+                throwUndeclaredVar(ve->name);
             // an UNBOUND dynamic (`@*META-CANDIDATES // <defaults>`) must read as
             // undefined so `//` takes the fallback — a defined empty array made
             // Test::META search zero META candidates. (Rakudo hands back a
