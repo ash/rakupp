@@ -4322,6 +4322,10 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
     std::string s = sym;
     if (pkg == "PROCESS" && s.size() > 1 &&
         std::strchr("$@%&", s[0]) && !std::strchr("*!?.^", s[1])) s = s.substr(0, 1) + "*" + s.substr(1);
+    // GLOBAL::<$x> is the PACKAGE variable `$GLOBAL::x` — assignable before
+    // anything declares it, as `$GLOBAL::x = …` already is — not a lexical `$x`
+    else if (pkg == "GLOBAL" && s.size() > 1 && s[0] == '$' && !std::strchr("*!?.^:", s[1]))
+        s = "$GLOBAL::" + s.substr(1);
     return s;
 }
 
@@ -5379,6 +5383,14 @@ ExprPtr Parser::parsePrimary() {
                 sr->nameExpr = std::make_unique<StrLit>(stripPseudoPkg(raw));
                 sr->line = ln; return sr;
             }
+            // `$CALLERS::x` — the nearest caller that has one: every frame up
+            if (raw.size() > 1 && std::strchr("$@%&", raw[0]) &&
+                (raw.find("CALLERS::") == 1 || raw.find("CALLERS::") == 2)) {
+                auto sr = std::make_unique<SymbolicRef>();
+                sr->pkg = "CALLERS";
+                sr->nameExpr = std::make_unique<StrLit>(stripPseudoPkg(raw));
+                sr->line = ln; return sr;
+            }
             // `$OUTER::a` is the lookup `OUTER::<$a>` already performs: each
             // OUTER steps one scope OUT before the name is resolved. Merely
             // stripping the qualifier — what the other pseudo-packages below
@@ -5423,6 +5435,13 @@ ExprPtr Parser::parsePrimary() {
                 (raw.compare(1, 6, "CORE::") == 0 || raw.compare(1, 9, "SETTING::") == 0)) {
                 e->viaPseudoPkg = true;
                 e->pseudoPkg    = "CORE";
+            }
+            // `$OUR::x` names the CURRENT package's `our $x` — which an inner
+            // block may have declared, out of lexical reach (roast pseudo-6*.t)
+            if (raw.size() > 6 && raw[0] == '$' && raw.compare(1, 5, "OUR::") == 0 &&
+                raw.find("::", 6) == std::string::npos) {
+                e->viaPseudoPkg = true;
+                e->pseudoPkg    = "OUR";
             }
             e->line = ln; return e;
         }
@@ -11113,6 +11132,13 @@ StmtPtr Parser::parseStatementImpl() {
                 // to End swallowed the block's `}` (the CSS cluster: CSS::Module,
                 // ::CSS3::Selectors, ::Specification). Balanced (…) / […] keep
                 // an inner `}`/`,` (a version range's parens) from ending it.
+                // `require Stub:file($path)` — the one adverb that is not ignored
+                if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                    peek().text == "file" && peek(2).kind == Tok::LParen) {
+                    advance(); advance(); advance(); // : file (
+                    u->fileExpr = parseExpression();
+                    expectKind(Tok::RParen, ")");
+                }
                 int depth = 0;
                 while (!isKind(Tok::End)) {
                     if (depth == 0 && (isKind(Tok::Semicolon) || isKind(Tok::RBrace) ||

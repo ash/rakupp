@@ -8344,6 +8344,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // dist's OWN suite — which `rakupp test` runs with the dist's lib in
     // front — must exercise the shadow, which keeps the same surface.
     std::vector<std::string> searchOrder = libPaths_;
+    // `PROCESS::<$REPO> := CompUnit::Repository::FileSystem.new(:prefix(…))`
+    // puts a source tree at the head of the chain: its prefix (and those of
+    // the FileSystem repos it chains to) is searched first
+    {
+        std::vector<std::string> repoDirs;
+        Value* rv = findDynamicLenient("$*REPO");
+        for (int hop = 0; rv && hop < 16; hop++) {
+            if (rv->t != VT::Object || !rv->obj() || !rv->obj()->cls ||
+                rv->obj()->cls->name != "CompUnit::Repository::FileSystem") break;
+            auto& at = rv->obj()->attrs;
+            if (at.count("prefix")) repoDirs.push_back(at["prefix"].toStr());
+            auto nx = at.find("next-repo");
+            rv = nx != at.end() ? &nx->second : nullptr;
+        }
+        searchOrder.insert(searchOrder.begin(), repoDirs.begin(), repoDirs.end());
+    }
     if (!shadowLibDir_.empty() && isShadowedModule(name)) {
         searchOrder.erase(std::remove(searchOrder.begin(), searchOrder.end(), shadowLibDir_),
                           searchOrder.end());
@@ -10452,6 +10468,33 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // `use NQPHLL:from<NQP>` / `use QAST:from<NQP>`: Rakudo's own compiler
                 // guts, which a slang's legacy role imports. Nothing to load here.
                 if (u->fromLang == "NQP") return Value::any();
+                // `require Stub:file($path)`: the FILE is loaded (its directory
+                // searched for its stem), and what it declares lands in the
+                // package Stub — `Stub::<InnerClass>` reaches the class
+                if (u->isRequire && u->fileExpr) {
+                    std::string path = eval(u->fileExpr.get()).toStr();
+                    size_t sl = path.rfind('/');
+                    std::string dir = sl == std::string::npos ? "." : path.substr(0, sl);
+                    std::string stem = sl == std::string::npos ? path : path.substr(sl + 1);
+                    for (const char* ext : {".rakumod", ".pm6", ".pm", ".raku"}) {
+                        size_t el = std::strlen(ext);
+                        if (stem.size() > el && stem.compare(stem.size() - el, el, ext) == 0) {
+                            stem = stem.substr(0, stem.size() - el); break;
+                        }
+                    }
+                    std::set<std::string> before;
+                    for (auto& kv : classes_) before.insert(kv.first);
+                    libPaths_.insert(libPaths_.begin(), dir);
+                    try { loadModule(stem, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
+                    catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
+                    libPaths_.erase(libPaths_.begin());
+                    auto& stash = pkgStashes_[u->module];
+                    if (!stash) stash = std::make_shared<ValueMap>();
+                    for (auto& kv : classes_)
+                        if (!before.count(kv.first) && kv.first.find("::") == std::string::npos)
+                            (*stash)[kv.first] = Value::typeObj(kv.first);
+                    return Value::any();
+                }
                 loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 // `use Mod <name:alias>` — import that routine under a second name.
@@ -13754,6 +13797,9 @@ std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead) {
     std::string sig;
     if (!nm.empty() && std::strchr("$@%&", nm[0])) { sig = nm.substr(0, 1); nm = nm.substr(1); }
     for (;;) {
+        // `CALLER::` joined in front of a sigiled name (`CALLER::&SETTING::not`):
+        // once the head is off, the sigil is exposed — set it aside and go on
+        if (sig.empty() && !nm.empty() && std::strchr("$@%&", nm[0])) { sig = nm.substr(0, 1); nm = nm.substr(1); }
         if      (nm.rfind("GLOBAL::",  0) == 0) nm = nm.substr(8);
         else if (nm.rfind("OUR::",     0) == 0) nm = tctx_.pkgPrefix + nm.substr(5);
         else if (nm.rfind("MY::",      0) == 0) nm = nm.substr(4);
@@ -39276,6 +39322,9 @@ struct NodeCountReport {
             }
             // sigilless: constant, then type / builtin resolution (NameTerm rules)
             if (Value* p = tctx_.cur->find(nm)) return *p;
+            // `CORE::<CORE-SETTING-REV>` — the language revision's letter
+            if (nm == "CORE-SETTING-REV")
+                return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
             // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
             // …except the native type names, which resolve like any type
             if (!classes_.count(nm) && !nm.empty() && ascii::islower((unsigned char)nm[0]) &&
@@ -39901,6 +39950,19 @@ Value Interpreter::eval(Expr* e) {
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
             char sigil = ve->name.empty() ? '$' : ve->name[0];
+            // `CORE::<CORE-SETTING-REV>` — the language revision's letter
+            if (ve->name == "CORE-SETTING-REV" && !tctx_.cur->find(ve->name))
+                return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
+            // `$OUR::x` inside a package is THAT package's variable — found
+            // under its qualified name, and never a same-named outer lexical
+            // (`$OUR::x30` in `package A36` does not see GLOBAL's `our $x30`)
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "OUR" && !ve->declare &&
+                !tctx_.pkgPrefix.empty() && ve->name.size() > 1) {
+                const std::string q = "$" + tctx_.pkgPrefix + ve->name.substr(1);
+                if (Value* p = tctx_.cur->find(q)) return *p;
+                if (global_) if (Value* p = global_->find(q)) return *p;
+                return Value::any();
+            }
             // From 6.e, LEXICAL:: means what it says. A `$*dyn` is not a lexical
             // — it is found by walking the caller chain — so asking for one
             // through LEXICAL:: is an error there, where before it quietly

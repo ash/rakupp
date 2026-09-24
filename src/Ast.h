@@ -946,6 +946,7 @@ struct UseStmt : Stmt {
     std::string verReq; // `use Foo:ver<0.0.14+>` — version constraint ('' = any)
     std::string fromLang; // `use NQPHLL:from<NQP>` — a foreign-language load; NQP is a no-op here (see exec)
     ExprPtr ifCond; // `use Foo:if(EXPR)` — load only when EXPR is true (the ecosystem `if` dist's adverb)
+    ExprPtr fileExpr; // `require Stub:file($path)` — load that FILE into the package Stub
     std::string arg; // first string argument, e.g. `use lib 'lib'`
     std::vector<std::string> importArgs; // `use Mod <tag !flag>` — passed to sub EXPORT
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`
