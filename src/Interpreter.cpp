@@ -5812,7 +5812,20 @@ int Interpreter::run(Program& prog) {
         for (auto* s : mainline) {
             tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
-                !static_cast<SubDecl*>(s)->isMethod) { applySubTraits(static_cast<SubDecl*>(s)); continue; } // hoisted
+                !static_cast<SubDecl*>(s)->isMethod) {
+                auto* sd = static_cast<SubDecl*>(s);
+                applySubTraits(sd);
+                // A leading `unit module Foo;` has now set pkgPrefix, but this
+                // `our sub` was already defined by hoistSubs (bare) — publish it
+                // under its qualified name so `Foo::name()` resolves. The
+                // module-LOADING loop has always done this; the mainline did
+                // not, so a program headed `unit module Quux;` could reach its
+                // own `$Quux::v` but not its own `Quux::deep()`.
+                if (sd->isOur && !tctx_.pkgPrefix.empty())
+                    if (Value* c = tctx_.cur->find("&" + sd->name))
+                        global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
+                continue; // hoisted
+            }
             // a bare `my $x;` (no init) must not clobber a value a phaser already set
             std::string nm = topDecl(s, hasInit);
             if (!nm.empty() && !hasInit && global_->local(nm)) {
