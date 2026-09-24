@@ -1077,8 +1077,21 @@ Value numifyStrOrThrow(const std::string& in) {
     Value v = numifyStr(in);
     if (v.t != VT::Any && v.t != VT::Nil) return v;
     Value f = numifyStrFailure(in);
-    throw RakuError{Value::typeObj("X::Str::Numeric"),
-                    f.hash()->count("message") ? (*f.hash())["message"].toStr() : "Cannot convert string to number"};
+    const std::string msg = f.hash()->count("message") ? (*f.hash())["message"].toStr()
+                                                       : std::string("Cannot convert string to number");
+    // …carrying where the number stopped: `"5 foo"` fails at position 1
+    if (g_revInterp) {
+        const char* b = in.c_str(); char* e = nullptr;
+        std::strtod(b, &e);
+        long long pos = e && e > b ? (long long)(e - b) : 0;
+        const bool trailing = msg.find("trailing") != std::string::npos;
+        g_revInterp->throwTypedV("X::Str::Numeric",
+            {{"source", Value::str(in)}, {"pos", Value::integer(pos)},
+             {"reason", Value::str(trailing ? "trailing characters after number"
+                                            : "base-10 number must begin with valid digits or '.'")}},
+            msg);
+    }
+    throw RakuError{Value::typeObj("X::Str::Numeric"), msg};
 }
 
 static Value defaultFor(char sigil) {
@@ -8758,9 +8771,10 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
         const bool ownedOutside = mainlinePH && tctx_.curLoopFrame != ExecContext::kNoFrame;
         predeclareStmt(s.get());   // the declaration is in scope for its own initialiser
         try { last = exec(s.get()); }
-        catch (RedoEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
-        catch (NextEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
-        catch (LastEx&) { if (ownedOutside) throw; throw RakuError{Value::typeObj("X::ControlFlow"), "last without a supporting loop construct"}; }
+        // (named as Rakudo names them: the illegal control and what encloses it)
+        catch (RedoEx&) { if (ownedOutside) throw; throwTypedV("X::ControlFlow", {{"illegal", Value::str("redo")}, {"enclosing", Value::str("loop construct")}}, "redo without loop construct"); }
+        catch (NextEx&) { if (ownedOutside) throw; throwTypedV("X::ControlFlow", {{"illegal", Value::str("next")}, {"enclosing", Value::str("loop construct")}}, "next without loop construct"); }
+        catch (LastEx&) { if (ownedOutside) throw; throwTypedV("X::ControlFlow", {{"illegal", Value::str("last")}, {"enclosing", Value::str("loop construct")}}, "last without loop construct"); }
         catch (ReturnEx&) {
             // with an enclosing routine, `return` in the EVAL returns from IT;
             // top-level it is the spec'd control-flow error
@@ -10736,6 +10750,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         else if (rl->kind == NK::NameTerm)
                             repr = static_cast<const NameTerm*>(rl)->name; // `--> True`/`--> Nil`
                     }
+                    bool viaMethod = false;   // `27.return` — Rakudo raises that one at run time, untyped
                     std::function<bool(const Stmt*)> hasRetVal = [&](const Stmt* st) -> bool {
                         if (!st) return false;
                         if (st->kind == NK::ReturnStmt)
@@ -10746,7 +10761,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             const Expr* e2 = static_cast<const ExprStmt*>(st)->e.get();
                             if (e2 && e2->kind == NK::MethodCall &&
                                 static_cast<const MethodCall*>(e2)->method == "return")
-                                return true;
+                                return viaMethod = true;
                         }
                         if (st->kind == NK::Block) {
                             for (auto& b : static_cast<const Block*>(st)->stmts)
@@ -10765,7 +10780,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     };
                     for (auto& st : sd->body)
                         if (hasRetVal(st.get()))
-                            throwTyped("X::Comp",
+                            throwTyped(viaMethod ? "X::AdHoc" : "X::Comp",
                                 {{"payload", repr}},
                                 "No return arguments allowed when return value " +
                                 repr + " is already specified in the signature");
@@ -18611,8 +18626,11 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
     // <<op=>> cycle the RHS over the whole array. hyperCore already enforced
     // this for the plain hyper forms; the compound path silently cycled.
     if (strictL && strictR && la != rhs.size())
-        throw RakuError{Value::typeObj("X::HyperOp::NonDWIM"),
-            "Lists on either side of non-dwimmy hyperop are not of the same length"};
+        throwTypedV("X::HyperOp::NonDWIM",
+            {{"left-elems", Value::integer((long long)la)}, {"right-elems", Value::integer((long long)rhs.size())},
+             {"operator", Value::str(inner)}, {"recursing", Value::boolean(false)}},
+            "Lists on either side of non-dwimmy hyperop of infix:<" + inner + "> are not of the same length\n"
+            "left: " + std::to_string(la) + " elements, right: " + std::to_string(rhs.size()) + " elements");
     size_t n = (!strictL && strictR && rhs.size() < la) ? rhs.size() : la;
     if (!rhs.empty() && lhsExpr && lhsExpr->kind == NK::ListExpr) {
         auto& items = static_cast<ListExpr*>(lhsExpr)->items;
@@ -28748,8 +28766,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 // real part falls back to the absolute test (nothing to scale by).
                 if (std::fabs(z.imag()) >
                     tol * (z.real() == 0.0 ? 1.0 : std::fabs(z.real())))
-                    throw RakuError{Value::typeObj("X::Numeric::Real"),
-                                    "Cannot convert " + orig.toStr() + " to Real: imaginary part not zero"};
+                    if (g_revInterp) g_revInterp->throwTypedV("X::Numeric::Real",
+                                {{"target", Value::typeObj("Real")}, {"source", orig},
+                                 {"reason", Value::str("imaginary part not zero")}},
+                                "Cannot convert " + orig.toStr() + " to Real: imaginary part not zero");
                 return z.real();
             };
             return applyArith(op, Value::number(toReal(a, l)), Value::number(toReal(b, r)));
@@ -33129,6 +33149,13 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
 // dies, as does a dwimmy side that is known-infinite in a position where no
 // finite side dictates the length. Hash keysets follow Rakudo: both strict →
 // union, one strict → that side's keys, both dwimmy → intersection.
+// the infix a hyper is applying, for X::HyperOp::NonDWIM's `operator`
+static thread_local const std::string* g_hyperOpName = nullptr;
+struct HyperOpName {
+    const std::string* prev;
+    explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
+    ~HyperOpName() { g_hyperOpName = prev; }
+};
 Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
         Value* lroot, Value* rroot, bool wantSlots) {
@@ -33164,9 +33191,22 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         }
         return apply(x, y, xs, ys);
     };
-    auto dwimDie = [&]() -> RakuError {
-        return RakuError{Value::typeObj("X::HyperOp::NonDWIM"),
-            "Lists on either side of non-dwimmy hyperop are not of the same length"};
+    auto dwimDie = [&](size_t le = 0, size_t re = 0) -> RakuError {
+        const std::string opn = g_hyperOpName ? *g_hyperOpName : std::string();
+        Value opv = Value::any();
+        if (!opn.empty()) {
+            if (Value* f = tctx_.cur->find("&infix:<" + opn + ">")) opv = *f;
+            else {   // a built-in infix: a routine value that answers its name
+                opv = Value::closure([](ValueList&) { return Value::nil(); });
+                opv.code()->name = "infix:<" + opn + ">";
+            }
+        }
+        const std::string msg = "Lists on either side of non-dwimmy hyperop of infix:<" + opn +
+            "> are not of the same length\nleft: " + std::to_string(le) + " elements, right: " +
+            std::to_string(re) + " elements";
+        return RakuError{makeTypedEx("X::HyperOp::NonDWIM",
+            {{"left-elems", Value::integer((long long)le)}, {"right-elems", Value::integer((long long)re)},
+             {"operator", opv}, {"recursing", Value::boolean(false)}}, msg), msg};
     };
     static const std::set<std::string> settyKinds = {
         "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
@@ -33272,11 +33312,11 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     if (lInf) n = ra.size();
     else if (rInf) n = la.size();
     else if (strictL && strictR) {
-        if (la.size() != ra.size()) throw dwimDie();
+        if (la.size() != ra.size()) throw dwimDie(la.size(), ra.size());
         n = la.size();
     }
-    else if (strictL) { if (!lIter && rIter) throw dwimDie(); n = la.size(); }
-    else if (strictR) { if (!rIter && lIter) throw dwimDie(); n = ra.size(); }
+    else if (strictL) { if (!lIter && rIter) throw dwimDie(la.size(), ra.size()); n = la.size(); }
+    else if (strictR) { if (!rIter && lIter) throw dwimDie(la.size(), ra.size()); n = ra.size(); }
     else n = std::max(la.size(), ra.size());
     // materialize the first n elements of an infinite side (cycle unit / count-up)
     auto fill = [&](const Value& v, ValueList& out) {
@@ -33614,6 +33654,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         Value ll = l, rr = r;
+        HyperOpName hon{inner};
         return hyperCore(ll, rr, strictL, strictR,
             [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
     }
@@ -34314,6 +34355,7 @@ Value Interpreter::evalBinary(Binary* b) {
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             Value ll = l, rr = r;
+            HyperOpName hon{inner};
             return hyperCore(ll, rr, strictL, strictR,
                 [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
         }
@@ -40015,8 +40057,10 @@ Value Interpreter::evalIndex(Index* idx) {
                     }
                     // a Str is a one-item list: "ab"[0] is "ab"
                     if (i == 0) return base;
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0"};
+                    throwTypedV("X::OutOfRange",
+                        {{"what", Value::str("Index")}, {"got", Value::integer(i)},
+                         {"range", Value::str("0..0")}},
+                        "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0");
                 }
                 // any other SCALAR (Pair, Int, …) is a one-item list too:
                 // (a scalar one-item-list base cannot reach here: this block is

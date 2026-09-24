@@ -3173,9 +3173,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // the SINGLE string positional that is NOT ISO-shaped (no
                     // dashes): "2012/04" etc. — invalid temporal format
                     // (multiple positionals are the y,m,d form, digits legal)
-                    throwTyped("X::Temporal::InvalidFormat",
-                        {{"invalid-str", a.s},
-                         {"format", inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp"}},
+                    throwTypedV("X::Temporal::InvalidFormat",
+                        {{"invalid-str", Value::str(a.s)}, {"target", Value::str(inv.s)},
+                         {"format", Value::str(inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp")}},
                         "Invalid " + inv.s + " string '" + a.s +
                         "'; use " + (inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp") + " instead");
                 } else if (a.t == VT::Str && a.s.find('-', 1) != std::string::npos) {
@@ -3229,9 +3229,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                     // wording: X::DateTime::InvalidFormat is not
                                     // a Raku type, and this was the only site
                                     // that used it
-                                    throwTyped("X::Temporal::InvalidFormat",
-                                        {{"invalid-str", is},
-                                         {"format", "an ISO 8601 timestamp"}},
+                                    throwTypedV("X::Temporal::InvalidFormat",
+                                        {{"invalid-str", Value::str(is)}, {"target", Value::str("DateTime")},
+                                         {"format", Value::str("an ISO 8601 timestamp")}},
                                         "Invalid DateTime string '" + is +
                                         "'; use an ISO 8601 timestamp instead");
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
@@ -6444,9 +6444,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // relative to the real part (see the twin in evalBinary's `<=>` arm); a
         // zero real part has nothing to scale by and uses the bare tolerance
         if (std::fabs(inv.im()) > tol * (inv.n == 0.0 ? 1.0 : std::fabs(inv.n)))
-            throw RakuError{Value::typeObj("X::Numeric::Real"),
-                            "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
-                            cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero"};
+            throwTypedV("X::Numeric::Real",
+                        {{"target", Value::typeObj(m)}, {"source", inv},
+                         {"reason", Value::str("imaginary part not zero")}},
+                        "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
+                        cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero");
         Value re = Value::number(inv.n);
         if (m == "Int") return Value::integer((long long)inv.n);
         if (m == "Rat" || m == "FatRat") return methodCall(re, m, {});

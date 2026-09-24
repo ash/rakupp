@@ -194,6 +194,32 @@ void Parser::expectKind(Tok k, const char* what) {
                 default: break;
             }
         }
+        // a block was due and none came: `for 1, 2`, `for () { sub }`
+        // (…but `loop { … } while 1` is a misplaced modifier, Rakudo's
+        // X::Syntax::Confused: a `while`/`until` straight after a `}`)
+        auto modifierAfterBlock = [&]() {
+            for (size_t j = pos_; j-- > 0; ) {
+                const Token& tk = toks_[j];
+                if (tk.kind == Tok::Ident && (tk.text == "while" || tk.text == "until"))
+                    return j > 0 && toks_[j - 1].kind == Tok::RBrace;
+                if (tk.kind == Tok::Semicolon || tk.kind == Tok::LBrace || tk.kind == Tok::RBrace) return false;
+            }
+            return false;
+        };
+        if (k == Tok::LBrace && (cur().kind == Tok::End || cur().kind == Tok::RBrace) &&
+            !(cur().kind == Tok::End && cur().flag) && !modifierAfterBlock())
+            throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
+        // …and a TERM where a closing bracket belongs, on the same line: two
+        // terms in a row (`["a" "b"]`), which is what Rakudo calls it
+        if ((k == Tok::RBracket || k == Tok::RParen || k == Tok::RBrace)) {
+            switch (cur().kind) {
+                case Tok::Var: case Tok::Ident: case Tok::IntLit: case Tok::NumLit:
+                case Tok::StrLit: case Tok::StrInterp:
+                    throw ParseError("Two terms in a row", cur().line, "X::Syntax::Confused",
+                                     {{"reason", "Two terms in a row"}});
+                default: break;
+            }
+        }
         error(std::string("expected ") + what);
     }
     advance();
@@ -3222,7 +3248,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // S02-lexical-conventions/minimal-whitespace.t wants X::Obsolete).
             if (peek().spaceBefore && peek().kind != Tok::Ident)
                 throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
-                                 cur().line, "X::Obsolete", {});
+                                 cur().line, "X::Obsolete", {{"old", "."}, {"replacement", "~"}});
             advance();
             bool mutate = false;
             if (isOp("=")) { advance(); mutate = true; } // .= mutating method call
@@ -4138,6 +4164,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (vn.size() > 1 && ascii::isdigit((unsigned char)vn[1]))
                 throw ParseError("Cannot declare a numeric variable " + vn, cur().line,
                                  "X::Syntax::Variable::Numeric", {});
+            // `constant $?FILE = …` — a compile-time `?` constant is not yet implemented
+            if (vn.size() > 2 && vn[1] == '?' && scope == "constant")
+                throw ParseError("Constants with a '?' twigil not yet implemented. Sorry.", cur().line,
+                                 "X::Comp::NYI", {{"feature", "Constants with a '?' twigil"}});
+            // `my $::("foo")` — an indirect name cannot be DECLARED
+            if (vn.size() == 1 && peek().kind == Tok::Op && peek().text == "::")
+                throw ParseError("Cannot declare a variable by indirect name (use a hash instead?)",
+                                 cur().line, "X::Syntax::Variable::IndirectDeclaration", {});
             if (vn.size() > 2 && (vn[1] == '!' || vn[1] == '?') &&
                 (scope == "my" || scope == "our" || scope == "state" || scope == "constant"))
                 throw ParseError("Cannot use twigil '" + std::string(1, vn[1]) +
@@ -4151,6 +4185,17 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "X::Syntax::Variable::Match", {});
         }
         std::string vname = advance().text;
+        // `my @a()` / `my &a()` — the ()-shape syntax is reserved
+        if (isKind(Tok::LParen) && !cur().spaceBefore && vname.size() > 1 &&
+            (vname[0] == '@' || vname[0] == '&')) {
+            if (vname[0] == '@')
+                throw ParseError("The ()-shape syntax in array declarations is reserved", cur().line,
+                                 "X::Syntax::Reserved", {{"reserved", "()-shape syntax in array declarations"},
+                                                         {"instead", "[]"}});
+            throw ParseError("The ()-shape syntax in routine declarations is reserved (maybe use :() to declare a longname?)",
+                             cur().line, "X::Syntax::Reserved",
+                             {{"reserved", "()-shape syntax in routine declarations"}, {"instead", " (maybe use :() to declare a longname?)"}});
+        }
         rejectPackagedDynamic(vname, cur().line);   // `my $*FOO::BAR` — see the helper
         vname += readExtendedNameSuffix();          // `my $today:foo<a b>` — one symbol
         // `my &infix:<plus> = sub ($a, $b) {…}` — an OPERATOR declared by
@@ -4312,6 +4357,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         throw ParseError("Malformed " + what, cur().line,
                          "X::Syntax::Malformed", {{"what", what}});
     }
+    // `constant * = 3` — a constant needs a NAME
+    if (scope == "constant")
+        throw ParseError("Missing constant name", cur().line, "X::Syntax::Missing", {{"what", "constant name"}});
     error("expected variable after declarator");
 }
 
@@ -5974,7 +6022,15 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Op: {
             if (t.text == "..." || t.text == "!!!" || t.text == "???") { // stub / yada operators
-                auto c = std::make_unique<Call>(); c->name = advance().text; return c;
+                auto c = std::make_unique<Call>(); c->name = advance().text;
+                // `!!! 42` / `... "not yet"` — the stub's message follows it
+                switch (cur().kind) {
+                    case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::Var:
+                        if (cur().line == t.line) c->args.push_back(parseExpr(BP_COMMA + 1));
+                        break;
+                    default: break;
+                }
+                return c;
             }
             if (t.text == ":") return parseColonPair();
             // sink-assignment to an anonymous container: `@ = (…)` / `$ = …`
@@ -6207,6 +6263,11 @@ ExprPtr Parser::parsePrimary() {
             // "'self' used where no object is available" and took the
             // remaining 135 tests of that file down with us. A SPACE before
             // the paren keeps the term, as it does there.
+            // `qr/…/` — Perl 5's regex quote
+            if (name == "qr" && peek().kind == Tok::Op && !peek().spaceBefore &&
+                (peek().text == "/" || peek().text == "{"))
+                throw ParseError("Unsupported use of qr for regex quoting; in Raku please use rx//", t.line,
+                                 "X::Obsolete", {{"old", "qr for regex quoting"}, {"replacement", "rx//"}});
             if (name == "self" && peek().kind != Tok::FatArrow &&
                 !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
                 advance(); // `self => v` stays an autoquoted pair key
@@ -8941,7 +9002,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // class-invocant form. The check above runs before the trait loop, so
         // this spelling used to die "expected ) (got ':')".
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
-        if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+        if (matchOp("=")) {
+            p.defaultVal = parseExpr(BP_ASSIGN);
+            // a trait or constraint AFTER the default is out of place
+            if (isIdent("is") || isIdent("where"))
+                throw ParseError("Cannot put " + std::string(isIdent("is") ? "trait" : "post constraint") +
+                                 " on parameter " + p.name + " after its default value", cur().line,
+                                 "X::Parameter::AfterDefault",
+                                 {{"type", isIdent("is") ? "trait" : "post constraint"},
+                                  {"modifier", cur().text}});
+        }
         // `is rw` cannot combine with a default value (X::Trait::Invalid):
         // an rw param must bind a writable container, a default is a fresh value
         if (p.isRw && p.defaultVal)
@@ -11715,6 +11785,9 @@ StmtPtr Parser::parseStatementImpl() {
             return applyModifiers(std::move(es));
         }
         if (kw == "sub") {
+            // `sub` with nothing after it — no name, no signature, no block
+            if (peek().kind == Tok::RBrace || peek().kind == Tok::Semicolon || peek().kind == Tok::End)
+                throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             advance();
             StmtPtr d = parseSub(false);
             // A routine declaration is a TERM in Raku, so a comma strings several
