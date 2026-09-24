@@ -2214,6 +2214,9 @@ ExprPtr Parser::parseExpr(int minbp) {
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
                 if (!nm.empty() && (nm[0] == '@' || nm[0] == '%')) listAssign = true;
+                // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
+                auto* dv = static_cast<VarExpr*>(lhs.get());
+                if (dv->declare && dv->declScope == "constant") listAssign = true;
             }
             else if (lhs->kind == NK::SymbolicRef) {
                 // `@::($n) = 1,2,3` / `%::($n) = …` — a sigilled symbolic deref
@@ -3591,6 +3594,12 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
     while (isIdent("is") || isIdent("does") || isIdent("returns") || isIdent("of") ||
            (isIdent("will") && peek().kind == Tok::Ident)) {
         bool wasIs = isIdent("is");
+        // `my $a is default(…) of Int` — the type as a trait, in any position
+        if (isIdent("of") && peek().kind == Tok::Ident && ascii::isupper((unsigned char)peek().text[0])) {
+            advance();
+            lastOfType_ = advance().text;
+            continue;
+        }
         // `will leave {…}` / `will undo {…}` / `will keep {…}` on a variable
         // declaration: capture the phaser + block; the declarator emits them as
         // a synthetic phaser statement over this variable (Log::Async's suite
@@ -4079,6 +4088,27 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (!matchKind(Tok::Comma)) break;
         }
         expectKind(Tok::RParen, ")");
+        // `my ($a, $b) is default(42)` / `is dynamic` — a trait after the list
+        // applies to EVERY variable in it. Each one needs its own default
+        // expression, so the traits are re-parsed once per variable.
+        if (isIdent("is") || isIdent("will")) {
+            size_t traitsAt = pos_, traitsEnd = pos_;
+            for (auto& it : list->items) {
+                VarExpr* v = dynamic_cast<VarExpr*>(it.get());
+                if (!v)
+                    if (auto* as = dynamic_cast<Assign*>(it.get())) v = dynamic_cast<VarExpr*>(as->target.get());
+                if (!v) continue;
+                pos_ = traitsAt;
+                lastIsDynamic_ = false;
+                skipTraits(scope != "has", &v->declDefault);
+                if (lastIsDynamic_) { v->declDynamic = true; lastIsDynamic_ = false; }
+                traitsEnd = pos_;
+            }
+            if (traitsEnd == traitsAt) skipTraits(scope != "has");
+            else pos_ = traitsEnd;
+            lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false;
+            lastWillPhaser_.clear(); lastWillBlock_.reset();
+        }
         return list;
     }
     if (isKind(Tok::Var)) {
@@ -4169,8 +4199,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (!keyType.empty())
             ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
-        lastWillPhaser_.clear(); lastWillBlock_.reset();
+        lastWillPhaser_.clear(); lastWillBlock_.reset(); lastOfType_.clear();
         skipTraits(scope != "has", &ve->declDefault);
+        if (!lastOfType_.empty()) {
+            if (ve->declType.empty() || ve->declType.find(',') == std::string::npos) ve->declType = lastOfType_;
+            lastOfType_.clear();
+        }
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
         if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
@@ -6549,6 +6583,8 @@ ExprPtr Parser::parsePrimary() {
                         if (decl->kind == NK::VarExpr) {
                             const std::string& nm = static_cast<VarExpr*>(decl.get())->name;
                             listTarget = !nm.empty() && (nm[0] == '@' || nm[0] == '%');
+                            // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
+                            if (static_cast<VarExpr*>(decl.get())->declScope == "constant") listTarget = true;
                         }
                         auto as = std::make_unique<Assign>();
                         as->op = advance().text;
@@ -8264,9 +8300,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
         }
     };
+    bool pastDoubleSemi = false;   // `($a;; $b)` — what follows takes no part in multi dispatch
     while (!isKind(closeTok) && !isKind(Tok::End)) {
-        if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
+        // a `;` HERE is the second half of `;;` — the parameter before it
+        // already consumed the first as its separator
+        if (isKind(Tok::Semicolon)) {
+            advance();
+            pastDoubleSemi = true;
+            continue;
+        }
         Param p;
+        p.pastDoubleSemi = pastDoubleSemi;
         const int paramLine = cur().line; // where THIS parameter starts — its `#|` sits above it
         // return-type constraint `--> Type` — always last; discarded. Skip to the
         // end of the signature so smileys (IO::Path:D) and parametrised types
@@ -10012,6 +10056,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             // space and holds variables.)
             if (isKind(Tok::LParen)) {
                 advance();
+                size_t firstListAttr = cd->attrs.size();
                 while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
                     if (isKind(Tok::Var)) {
                         std::string vn = advance().text;
@@ -10034,6 +10079,30 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     matchKind(Tok::Comma);
                 }
                 matchKind(Tok::RParen);
+                // `has ($.x, $.y) is rw is default(42)` — the traits apply to
+                // every attribute of the list; a default expression is parsed
+                // once per attribute so each owns its own
+                while (isIdent("is") && peek().kind == Tok::Ident) {
+                    advance();
+                    std::string tn = advance().text;
+                    size_t argAt = pos_, argEnd = pos_;
+                    for (size_t k = firstListAttr; k < cd->attrs.size(); k++) {
+                        auto& la = cd->attrs[k];
+                        if (tn == "rw") la.rw = true;
+                        else if (tn == "required") la.required = true;
+                        else if (tn == "built") la.built = true;
+                        if (isKind(Tok::LParen)) {
+                            advance();
+                            ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
+                            while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance();
+                            if (isKind(Tok::RParen)) advance();
+                            if (tn == "default" && arg) la.defaultTrait = std::move(arg);
+                            argEnd = pos_;
+                            pos_ = argAt;
+                        }
+                    }
+                    pos_ = argEnd;
+                }
                 matchKind(Tok::Semicolon);
                 continue;
             }
@@ -10075,6 +10144,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     // default and left the attribute unwritable
                     // (Date::Calendar::Gregorian declares two of them).
                     if (tr == "where") { a.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
+                    // `has $.a of Int` — the type, spelled as a trait
+                    if (tr == "of" && isKind(Tok::Ident) && ascii::isupper((unsigned char)cur().text[0])) {
+                        a.type = advance().text;
+                        continue;
+                    }
                     if (tr == "handles") { // handles <m1 m2> / handles "m" / handles 'm'
                         // …and the RENAMING forms, `handles(:local<remote>, …)` /
                         // `handles(local => 'remote')`: the class exposes the KEY and
@@ -10210,9 +10284,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             // and thrown away with every other known trait's, so
                             // `has $.a is default(42)` read as (Any). An explicit
                             // initialiser still wins — `is default(42) = 768` is
-                            // 768 — so this only fills an empty slot.
-                            if (known && utn == "default" && arg && !a.def)
-                                a.def = std::move(arg);
+                            // 768 — but `.VAR.default` answers 42 either way.
+                            if (known && utn == "default" && arg)
+                                a.defaultTrait = std::move(arg);
                             else if (!known) a.userTraits.emplace_back(utn, std::move(arg));
                         }
                         else if (!known) a.userTraits.emplace_back(utn, nullptr);
@@ -10986,6 +11060,13 @@ StmtPtr Parser::parseStatementImpl() {
                 // same name again, as Rakudo allows for my-scoped types)
                 if (wasMy && st && st->kind == NK::ClassDecl)
                     static_cast<ClassDecl*>(st.get())->isMy = true;
+                // `my constant X = …` stays lexical (a bare one is `our`)
+                if (wasMy && st && st->kind == NK::ExprStmt) {
+                    Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+                    if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                    if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declScope == "constant")
+                        static_cast<VarExpr*>(e)->declMyConstant = true;
+                }
                 // `anon class C {…}` keeps the NAME C — `.^name` answers it —
                 // but installs the symbol nowhere, so `C` afterwards is
                 // undeclared, and so is a `C` inside the body.

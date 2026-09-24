@@ -380,6 +380,7 @@ struct EnvExtras {
     // converted. Git::Blame::File's porcelain walk turns on exactly that.
     std::map<std::string, std::string> varCoerce;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
+    std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
 };
 
 // The pad slot table for one pad OWNER — the main program's mainline, or a
@@ -969,6 +970,7 @@ struct ExecContext {
     // `has C $.x is rw` must reject 42/Mu; roast S14-roles/basic.t)
     std::string lastLvalueAttrType;
     const void* lastLvalueAttrWhere = nullptr; // the attr's `where {…}` Expr, checked beside the type
+    const Expr* lastLvalueAttrDefault = nullptr; // the attr's `is default(…)`: what `.attr = Nil` resets to
     // `@a[0] = v` / `%h<k> = v` — the ELEMENT type of the container the
     // subscript reached, recorded by the Index lvalue arm so the assignment can
     // enforce it (`my Int @a; @a[1] = $*ERR` throws; roast S02-types/array.t)
@@ -1377,6 +1379,7 @@ public:
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
+    void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr); // `is default(v)` vs the declared type
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {

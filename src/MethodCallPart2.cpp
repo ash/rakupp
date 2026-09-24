@@ -658,6 +658,13 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             // the sigil would turn the object straight back into the
             // plain Hash it was declared not to be.
             if (!userContainer) dv = typedContainer(coerceToSigil(dv, at.sigil), at);
+            // `has @.a is default(42)` — on a positional or associative the
+            // trait is the ELEMENT default, as `my @a is default(42)` is
+            if (at.defaultTrait && (at.sigil == '@' || at.sigil == '%') &&
+                (dv.t == VT::Array || dv.t == VT::Hash)) {
+                ensureEnv();
+                dv.elemDefaultM() = std::make_shared<Value>(eval(const_cast<Expr*>(at.defaultTrait)));
+            }
             od->attrs[slot] = dv;
         }
     }
@@ -3162,8 +3169,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         haveNamedField = true;
                     }
                 } else if (a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
-                           !a.s.empty() && ascii::isdigit((unsigned char)a.s[0]) &&
-                           posN == 1) {
+                           !a.s.empty() && posN == 1) {
                     // the SINGLE string positional that is NOT ISO-shaped (no
                     // dashes): "2012/04" etc. — invalid temporal format
                     // (multiple positionals are the y,m,d form, digits legal)

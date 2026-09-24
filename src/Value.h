@@ -1137,6 +1137,7 @@ struct ClassAttr {
     std::string type; // declared type name (`has Int $.x`), "" = Mu
     std::string containerIs; // `has %.a is Set` — container type trait
     const Expr* def = nullptr; // borrowed from AST
+    const Expr* defaultTrait = nullptr; // `is default(V)`, borrowed from AST
     const Expr* where = nullptr; // `where {…}` constraint, borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`

@@ -3773,11 +3773,20 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     }
     // `|c` is a capture, not a `*`-slurpy — it renders with its own leading `|`
     bool capture = p.slurpy && p.slurpyKind == 0 && (p.sigil == '|' || p.sigil == '\\');
-    if (capture) return o + "|" + p.name;
+    auto subSigStr = [&]() -> std::string {   // `%h ($a, $b)` — a destructuring sub-signature
+        if (!p.subSig) return "";
+        std::string ss = " (";
+        for (size_t k = 0; k < p.subSig->size(); k++) {
+            if (k) ss += ", ";
+            ss += renderParam((*p.subSig)[k], true);
+        }
+        return ss + ")";
+    };
+    if (capture) return o + "|" + p.name + subSigStr();
     if (p.slurpy) o += p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+" : "*";
     // the anonymous-but-typed case: `Int` in a signature, `Int $` alone. An
     // anonymous UNTYPED one is `$` either way — there would be nothing left.
-    if (inSignature && p.name.empty() && !p.type.empty() && !p.named && !p.slurpy &&
+    if (inSignature && p.name.empty() && !p.type.empty() && !p.named && !p.slurpy && p.sigil == '$' &&
         !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
         renderDefault(p).empty()) {
         o.pop_back();   // the space renderParam put after the type name
@@ -3796,7 +3805,8 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
             o += ":" + (p.namedKey.empty() ? bare : p.namedKey) + "(" + inner + ")";
         }
     }
-    else o += var;
+    else o += (p.sigil == '\\' && !p.name.empty() ? "\\" : "") + var;   // `\x` keeps its backslash
+    o += subSigStr();
     std::string def = renderDefault(p);
     if (p.named) { if (p.required) o += "!"; }
     else if (p.optional && def.empty() && !p.slurpy) o += "?";
@@ -3814,7 +3824,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     q->name = p.name; q->sigil = p.sigil; q->type = p.type; q->namedKey = p.namedKey;
     q->aliasBoth = p.aliasBoth; q->aliasKeys = p.aliasKeys; q->pod = p.pod;
     q->slurpyKind = p.slurpyKind; q->named = p.named; q->slurpy = p.slurpy;
-    q->optional = p.optional; q->required = p.required; q->invocant = p.invocant;
+    q->optional = p.optional; q->required = p.required; q->invocant = p.invocant; q->pastDoubleSemi = p.pastDoubleSemi;
     q->defConstraint = p.defConstraint; q->coerce = p.coerce; q->coerceFrom = p.coerceFrom;
     q->isRw = p.isRw; q->isCopy = p.isCopy;
     q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
@@ -3847,6 +3857,7 @@ Value makeSignature(const Callable* c) {
         c->placeholders.empty()) {
         Value s = Value::makeHash(); s.hashKind = "Signature";
         (*s.hash())["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
+        (*s.hash())["rakustr"] = Value::str("(;; Mu $_? is raw = OUTER::<$_>)");
         (*s.hash())["arity"] = Value::integer(0);
         (*s.hash())["count"] = Value::integer(1);
         Value params = Value::array(); params.isList = true;
@@ -3854,8 +3865,8 @@ Value makeSignature(const Callable* c) {
         (*pv.hash())["str"] = Value::str("$_? is raw = OUTER::<$_>");
         (*pv.hash())["name"] = Value::str("$_");
         (*pv.hash())["usage-name"] = Value::str("_");
-        (*pv.hash())["type"] = Value::str("Any");
-        (*pv.hash())["type-obj"] = Value::typeObj("Any");
+        (*pv.hash())["type"] = Value::str("Mu");
+        (*pv.hash())["type-obj"] = Value::typeObj("Mu");   // Rakudo: the implicit topic is Mu
         (*pv.hash())["optional"] = Value::boolean(true);
         (*pv.hash())["slurpy"] = Value::boolean(false);
         (*pv.hash())["named"] = Value::boolean(false);
@@ -3868,8 +3879,8 @@ Value makeSignature(const Callable* c) {
         (*s.hash())["params"] = std::move(params);
         return s;
     }
-    std::string sig = "(";
-    long long arity = 0, count = 0; bool slurpy = false, first = true;
+    std::string sig = "(", rsig = "(";
+    long long arity = 0, count = 0; bool slurpy = false, first = true, prevPastSemi = false;
     for (const Param* pp : ps) {
         const Param& p = *pp;
         // The INVOCANT counts. Rakudo reports `method file(Bool $v = True)` as
@@ -3880,9 +3891,11 @@ Value makeSignature(const Callable* c) {
         // RENDERED here: the Callable does not know the class it was declared
         // in, so `Mu $:` would be a worse answer than leaving it out.
         if (p.invocant) { count++; arity++; continue; }
-        if (!first) sig += ", ";
+        if (!first) { std::string sep = p.pastDoubleSemi && !prevPastSemi ? ";; " : ", "; sig += sep; rsig += sep; }
         first = false;
+        prevPastSemi = p.pastDoubleSemi;
         sig += renderParam(p, /*inSignature=*/true);
+        rsig += renderParam(p);
         // `*%opts` slurps NAMED arguments and takes no positional at all, so it
         // does not make the count Inf — only *@ / **@ / +@ do. Every method
         // carries an implicit one, which is how this reached signatures that never
@@ -3896,10 +3909,11 @@ Value makeSignature(const Callable* c) {
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
     // (Rakudo separates with a space either way, so an empty parameter list
     // renders as `( --> Str)`)
-    if (c && !c->retType.empty()) sig += " --> " + c->retType;
-    sig += ")";
+    if (c && !c->retType.empty()) { sig += " --> " + c->retType; rsig += " --> " + c->retType; }
+    sig += ")"; rsig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash())["str"] = Value::str(sig);
+    if (rsig != sig) (*s.hash())["rakustr"] = Value::str(rsig);
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
@@ -3923,7 +3937,14 @@ Value makeSignature(const Callable* c) {
         // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
         (*pv.hash())["str"] = Value::str(renderParam(p));
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
-        (*pv.hash())["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
+        // (a sigilless `\x` or capture `|c` carries no sigil: its name is it)
+        const bool sigilless = p.sigil == '|' || p.sigil == '\\';
+        (*pv.hash())["name"] = Value::str(p.name.size() > 1 || (sigilless && !p.name.empty())
+                                              ? p.name : std::string());
+        // `.twigil`: `$*a` → "*", `$!a` → "!", `$.a` → "."
+        (*pv.hash())["twigil"] = Value::str(
+            !sigilless && p.name.size() > 2 && std::strchr("*!.?^:=~", p.name[1])
+                ? std::string(1, p.name[1]) : std::string());
         // `.usage-name` is the name without its sigil AND its twigil, so the
         // dynamic `Str @*l` is usable as plain `l`
         {
@@ -3957,6 +3978,13 @@ Value makeSignature(const Callable* c) {
             else if (p.coerce && !p.type.empty())
                 tv = Value::typeObj(p.type + "(" +
                                     (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")");
+            // a LITERAL parameter `:(3)` is typed by its literal
+            else if (p.type.empty() && p.litVal &&
+                     (p.litVal->kind == NK::IntLit || p.litVal->kind == NK::StrLit ||
+                      p.litVal->kind == NK::NumLit || p.litVal->kind == NK::BoolLit))
+                tv = Value::typeObj(p.litVal->kind == NK::IntLit ? "Int"
+                                  : p.litVal->kind == NK::StrLit ? "Str"
+                                  : p.litVal->kind == NK::NumLit ? "Num" : "Bool");
             else tv = Value::typeObj(
                 !p.type.empty() ? p.type
                 : p.sigil == '@' ? "Positional"
@@ -3980,7 +4008,7 @@ Value makeSignature(const Callable* c) {
         (*pv.hash())["capture"] = Value::boolean(p.slurpy && p.slurpyKind == 0 &&
                                                (p.sigil == '|' || p.sigil == '\\'));
         (*pv.hash())["invocant"] = Value::boolean(p.invocant);
-        (*pv.hash())["multi-invocant"] = Value::boolean(true); // only `;;` makes it False
+        (*pv.hash())["multi-invocant"] = Value::boolean(!p.pastDoubleSemi); // only `;;` makes it False
         // `.prefix`/`.suffix`/`.modifier` — how the parameter is SPELLED
         (*pv.hash())["prefix"] = Value::str(
             !p.slurpy ? "" : p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+"
@@ -3989,7 +4017,14 @@ Value makeSignature(const Callable* c) {
                                                   : (p.optional && !p.defaultVal ? "?" : ""));
         (*pv.hash())["modifier"] = Value::str(p.defConstraint == 1 ? ":D"
                                           : p.defConstraint == 2 ? ":U" : "");
-        (*pv.hash())["named"] = Value::boolean(p.named);
+        // a `*%h` slurpy takes the NAMED arguments, and says so
+        (*pv.hash())["named"] = Value::boolean(p.named || (p.slurpy && p.sigil == '%'));
+        // `sub h(::T $x)` — the type variables the parameter captures
+        if (p.typeCapture && !p.type.empty()) {
+            Value tc = Value::array(); tc.isList = true;
+            tc.arr()->push_back(Value::str(p.type));
+            (*pv.hash())["type_captures"] = std::move(tc);
+        }
         // `.default` is a Callable producing the default — undefined when the
         // parameter has none
         if (p.defaultVal) {
@@ -4003,7 +4038,9 @@ Value makeSignature(const Callable* c) {
         // with no default at all `.default` is the Code TYPE OBJECT — the
         // attribute's declared type — not a bare Any
         else (*pv.hash())["default"] = Value::typeObj("Code");
-        (*pv.hash())["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
+        // a named parameter is optional unless marked `!`
+        (*pv.hash())["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr ||
+                                                  (p.named && !p.required));
         (*pv.hash())["slurpy"] = Value::boolean(p.slurpy);
         // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
         // answers its literal value; otherwise Mu (matches Rakudo's use in Cro)
@@ -4020,6 +4057,18 @@ Value makeSignature(const Callable* c) {
                 else if (le->kind == NK::IntLit) cj.arr()->push_back(Value::integer(static_cast<IntLit*>(le)->v));
                 else if (le->kind == NK::NumLit) cj.arr()->push_back(Value::number(static_cast<NumLit*>(le)->v));
                 else if (le->kind == NK::BoolLit) cj.arr()->push_back(Value::boolean(static_cast<BoolLit*>(le)->v));
+            }
+            // …and a `where` clause joins it: a block or a smartmatch target
+            // (`where { $_ %% 2 }`, `where Int`), so `5 ~~ $p.constraints`
+            // asks it: a Callable that evaluates the clause when asked and
+            // smartmatches the candidate against it.
+            if (p.whereExpr) {
+                const Expr* we = p.whereExpr.get();
+                Value wc; wc.t = VT::Code; wc.setCode(std::make_shared<Callable>());
+                wc.code()->builtin = [we](Interpreter& I, ValueList& a) -> Value {
+                    return Value::boolean(I.attrWhereOk(we, a.empty() ? Value::any() : a[0]));
+                };
+                cj.arr()->push_back(std::move(wc));
             }
             (*pv.hash())["constraints"] = std::move(cj);
         }
@@ -6556,7 +6605,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "Signature") {
         if (m == "raku" || m == "gist" || m == "Str") {
             std::string body = inv.hash()->count("str") ? (*inv.hash())["str"].toStr() : "()";
-            // .raku is the signature literal; .gist/.Str are the bare parens
+            // .raku is the signature literal; .gist/.Str are the bare parens —
+            // and .raku keeps an anonymous typed parameter's sigil (`:(Int $)`)
+            if (m == "raku" && inv.hash()->count("rakustr")) body = (*inv.hash())["rakustr"].toStr();
             return Value::str(m == "raku" ? ":" + body : body);
         }
         if (m == "returns" || m == "of") {
@@ -6695,6 +6746,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
 
     if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
+        // `.raku` is how the parameter is written, typed: `Int $a`, `Mu $_? …`
+        if (m == "raku" && inv.hash()->count("str")) {
+            std::string str = (*inv.hash())["str"].toStr();
+            auto ti = inv.hash()->find("type-obj");
+            std::string ty = ti != inv.hash()->end() && ti->second.t == VT::Type ? std::string(ti->second.s.c_str()) : std::string();
+            // an unwritten type shows only when it is Mu (a block's or a
+            // signature literal's `$a`): Any and the sigil-implied
+            // Positional/Associative/Callable stay silent, as in Rakudo
+            if (ty == "Mu" && !str.empty() && std::strchr("$@%&\\|*", str[0]))
+                str = "Mu " + str;
+            return Value::str(str);
+        }
         if ((m == "name" || m == "named" || m == "optional" || m == "slurpy" ||
              m == "constraints" || m == "named_names" || m == "usage-name" ||
              m == "raw" || m == "copy" || m == "rw" || m == "capture" ||
@@ -7540,14 +7603,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto fc = [](std::string s) { for (auto& c : s) c = (char)ascii::tolower((unsigned char)c); return s; };
         if (m == "register") {
             // pull name + alternative-names off the given Encoding-doing object
+            // Every name — the main one and the alternatives — must be free;
+            // an overlap is X::Encoding::AlreadyRegistered naming the clash.
             if (!args.empty()) {
                 Value& enc = args[0];
-                try { userEncodings[fc(methodCall(enc, "name", {}).toStr())] = enc; } catch (...) {}
+                std::vector<std::string> names;
+                try { names.push_back(methodCall(enc, "name", {}).toStr()); } catch (RakuError&) {}
                 try {
                     Value alts = methodCall(enc, "alternative-names", {});
-                    if (alts.t == VT::Array && alts.arr())
-                        for (auto& a : *alts.arr()) userEncodings[fc(a.toStr())] = enc;
-                } catch (...) {}
+                    for (auto& a : alts.flatten()) names.push_back(a.toStr());
+                } catch (RakuError&) {}   // the method is optional
+                for (auto& n : names)
+                    if (userEncodings.count(fc(n)))
+                        throwTyped("X::Encoding::AlreadyRegistered", {{"name", n}},
+                                   "An encoding with name '" + n + "' has already been registered");
+                for (auto& n : names) userEncodings[fc(n)] = enc;
             }
             return Value::nil();
         }
@@ -7564,12 +7634,40 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (!known.count(key))
             throwTyped("X::Encoding::Unknown", {{"name", name}},
                        "Unknown string encoding '" + name + "'");
+        // the CANONICAL name, and the others it answers to (Rakudo's table)
+        static const std::vector<std::pair<std::string, std::vector<std::string>>> canon = {
+            {"utf8", {"utf-8"}},
+            {"ascii", {}},
+            {"iso-8859-1", {"latin-1", "latin1"}},
+            {"utf16", {"utf-16"}},
+            {"utf16le", {"utf-16le", "utf16-le", "utf-16-le"}},
+            {"utf16be", {"utf-16be", "utf16-be", "utf-16-be"}},
+            {"windows-932", {"windows932"}},
+            {"windows-1251", {"windows1251"}},
+            {"windows-1252", {"windows1252"}},
+        };
+        std::string cname = key;
+        Value altv = Value::array(); altv.isList = true;
+        for (auto& ce : canon) {
+            bool hit = ce.first == key;
+            for (auto& a : ce.second) if (a == key) hit = true;
+            if (!hit) continue;
+            cname = ce.first;
+            for (auto& a : ce.second) altv.arr()->push_back(Value::str(a));
+            break;
+        }
         Value e = Value::makeHash(); e.hashKind = "Encoding";
-        (*e.hash())["name"] = Value::str(name);
+        (*e.hash())["name"] = Value::str(cname);
+        (*e.hash())["alternative-names"] = altv;
         return e;
     }
     if (inv.t == VT::Hash && inv.hashKind == "Encoding") {
         if (m == "name") return (*inv.hash())["name"];
+        if (m == "alternative-names") {
+            auto it = inv.hash()->find("alternative-names");
+            if (it != inv.hash()->end()) return it->second;
+            Value none = Value::array(); none.isList = true; return none;
+        }
         if (m == "decoder") {
             Value d = Value::makeHash(); d.hashKind = "Decoder";
             (*d.hash())["buffer"] = Value::str("");
@@ -7962,7 +8060,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (auto& x : toList(pos[0])) items.push_back(x);
         }
         else for (auto& a : pos) items.push_back(a);
+        // a COERCION key type (`Set.^parameterize(Int())`, keyof `Int(Any)`)
+        // coerces each element to its target, which is also where a bad one
+        // croaks (X::Str::Numeric for "a" → Int)
+        std::string coerceTarget;
+        {
+            const std::string of = inv.ofType();
+            size_t lp = of.find('(');
+            if (lp != std::string::npos && lp > 0 && of.back() == ')') coerceTarget = of.substr(0, lp);
+        }
+        if (!coerceTarget.empty())
+            for (auto& x : items) {
+                if (x.t == VT::Pair && x.pairKey()) continue;
+                x = coerceToType(x, coerceTarget);
+                if (x.t == VT::Hash && x.hashKind == "Failure") sinkValue(x);   // "a" as an Int key croaks (X::Str::Numeric)
+            }
         Value out = makeBaggy(items, inv.s, /*pairsAsElements=*/true);
+        if (!coerceTarget.empty()) { if (out.hash()) out.ofTypeM() = inv.ofType(); return out; }
         if (!inv.ofType().empty() && out.hash()) { // Set[Str].new(...) enforces the key type
             for (auto& kv : *out.hash()) {
                 Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);

@@ -389,7 +389,20 @@ static std::string hashSubKey(const Value& k, const Value* base = nullptr) {
     if (base && base->t == VT::Hash) {
         static const std::set<std::string> kQuant = {
             "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-        if (kQuant.count(base->hashKind)) return baggyKeyStr(k);
+        if (kQuant.count(base->hashKind)) {
+            // a COERCIVE key type (`SetHash[Int()]`) converts the subscript as
+            // the constructor converts elements: `%qh{"42"}` is the Int 42,
+            // and `%qh{"a"}` croaks X::Str::Numeric
+            const std::string of = base->ofType();
+            size_t lp = of.find('(');
+            if (g_revInterp && lp != std::string::npos && lp > 0 && of.back() == ')' &&
+                k.t != VT::Type) {
+                Value ck = g_revInterp->coerceToType(k, of.substr(0, lp));
+                if (ck.t == VT::Hash && ck.hashKind == "Failure") g_revInterp->sinkValue(ck);
+                return baggyKeyStr(ck);
+            }
+            return baggyKeyStr(k);
+        }
     }
     if (k.t == VT::Any || k.t == VT::Type) { warnUninitKey(k); return std::string(); }
     return k.toStr();
@@ -572,6 +585,34 @@ static bool valueEqv(const Value& a, const Value& b) {
         return valueEqv(g_deproxy(a), b);
     if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash() && g_deproxy)
         return valueEqv(a, g_deproxy(b));
+    // Two Parameters are eqv when they are SPELLED alike: a default is a
+    // fresh closure per signature, so comparing it would say `:($a = 2)` is
+    // not eqv to itself (Rakudo: True, and a default's value is not compared)
+    if (a.t == VT::Hash && b.t == VT::Hash && a.hashKind == "Parameter" &&
+        b.hashKind == "Parameter" && a.hash() && b.hash()) {
+        auto str = [](const Value& v) {
+            auto it = v.hash()->find("str");
+            return it == v.hash()->end() ? std::string() : it->second.toStr();
+        };
+        return str(a) == str(b);
+    }
+    // …and two Signatures when their parameters are, one for one (the cached
+    // renderings differ between `:(Int)` and its reparsed `:(Int $)`)
+    if (a.t == VT::Hash && b.t == VT::Hash && a.hashKind == "Signature" &&
+        b.hashKind == "Signature" && a.hash() && b.hash()) {
+        auto get = [](const Value& v, const char* k) {
+            auto it = v.hash()->find(k);
+            return it == v.hash()->end() ? Value::any() : it->second;
+        };
+        for (const char* k : {"arity", "count", "returns"})
+            if (!valueEqv(get(a, k), get(b, k))) return false;
+        Value pa = get(a, "params"), pb = get(b, "params");
+        size_t na = pa.arr() ? pa.arr()->size() : 0, nb = pb.arr() ? pb.arr()->size() : 0;
+        if (na != nb) return false;
+        for (size_t i = 0; i < na; i++)
+            if (!valueEqv((*pa.arr())[i], (*pb.arr())[i])) return false;
+        return true;
+    }
     // the two spellings of Any are one object — see isAnyTypeObject
     if (a.t != b.t && isAnyTypeObject(a) && isAnyTypeObject(b)) return true;
     // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
@@ -5843,6 +5884,7 @@ int Interpreter::run(Program& prog) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
+                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
                             if (ve0->name[0] == '@' || ve0->name[0] == '%') {
                                 // container stays empty; v is the ELEMENT default —
                                 // but the DECLARED type still applies, so build the
@@ -10939,7 +10981,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.where = a.whereExpr.get(); ca.type = resolveAttrTypeAlias(a.type, ci->name); ca.requiredWhy = a.requiredWhy;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def || a.sigil != '$' ? a.def.get() : a.defaultTrait.get(); ca.defaultTrait = a.defaultTrait.get(); ca.where = a.whereExpr.get(); ca.type = resolveAttrTypeAlias(a.type, ci->name); ca.requiredWhy = a.requiredWhy;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ca.objKeyed = a.objKeyed;
@@ -11631,8 +11673,16 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 ca.objKeyed = a.objKeyed;
                 ca.inlined = a.inlined;
                 if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
-                ca.def = a.def.get();
+                ca.def = a.def || a.sigil != '$' ? a.def.get() : a.defaultTrait.get(); ca.defaultTrait = a.defaultTrait.get();
                 ca.where = a.whereExpr.get();
+                // the default must fit the declared type — judged here, at
+                // composition, as Rakudo does (a role's type may be a capture
+                // still unbound, so only a class is checked)
+                if (a.defaultTrait && !cd->isRole && a.sigil == '$' && !ca.type.empty()) {
+                    Value dv;
+                    try { dv = eval(a.defaultTrait.get()); } catch (RakuError&) { dv = Value::any(); }
+                    checkDeclDefault(ca.type, '$', dv, true);
+                }
                 ca.declId = &a;
                 // user traits (`is json-name(…)`) evaluate AFTER the class body
                 // runs — see the deferred pass below the body-exec block
@@ -13057,11 +13107,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // scalar container does not flatten in list context. `@a`, ranges, and lists still
             // flatten. $_ is exempt from the sigil rule: it BINDS what it topicalizes, so its
             // container-ness rides in on the value's own flag (`given @a { for $_ {} }` iterates).
+            // (A `constant $c` is no container either: `for $c` iterates it.)
+            auto isConstantVar = [&](const std::string& nm) {
+                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                    if (en->xr().varConstant.count(nm)) return true;
+                    if (en->local(nm)) return false;
+                }
+                return false;
+            };
             bool scalarItem = !viaIterator &&
                 (listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
                  && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
-                 && static_cast<VarExpr*>(fs->list.get())->name != "$_"));
+                 && static_cast<VarExpr*>(fs->list.get())->name != "$_"
+                 && !isConstantVar(static_cast<VarExpr*>(fs->list.get())->name)));
             // Each element of an ARRAY lives in its own scalar container, so
             // iterating one hands the body an ITEMIZED value: over `my @t =
             // (1,2),(3,4)`, Rakudo's `for @t { say $_.raku }` says `$(1, 2)`.
@@ -15439,6 +15498,33 @@ std::string containerNameOf(const Expr* e, char sigil) {
 //     throws X::TypeCheck::Assignment).
 // The predicate is nominal conformance, not `~~`: a Junction smart-matches Int
 // and is still an illegal Int element, which is Rakudo's rule too.
+// `my Int $a is default("foo")` — the default has to fit the declared type,
+// or the declaration dies: X::Parameter::Default::TypeCheck for a variable,
+// X::TypeCheck::Attribute::Default for an attribute. A NATIVE type has no
+// default at all (X::Comp::Trait::NotOnNative). Nil fits no type.
+void Interpreter::checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr) {
+    std::string t = declType.substr(0, declType.find(','));   // `%h{Str}` → value type
+    if (t.empty() || t == "Mu" || t == "Any") return;   // (an object hash's implicit value type is Any)
+    if (ascii::islower((unsigned char)t[0])) {
+        if (attr) return;
+        throwTyped("X::Comp::Trait::NotOnNative", {{"type", "is"}, {"subtype", "default"}},
+                   "Can't use trait 'is default' on a native.");
+    }
+    if (typeOrSubsetMatches(dv, t)) return;
+    if (!classes_.count(t) && !isKnownTypeName(t)) return;   // a type we cannot judge
+    std::string shown = sigil == '@' ? "Array[" + t + "]" : sigil == '%' ? "Hash[" + t + "]" : t;
+    Value expected = Value::typeObj(t);
+    if (sigil == '@' || sigil == '%') {
+        expected = Value::typeObj(sigil == '@' ? "Array" : "Hash");
+        expected.ofTypeM() = t;
+        expected.s = shown;
+    }
+    throwTypedV(attr ? "X::TypeCheck::Attribute::Default" : "X::Parameter::Default::TypeCheck",
+                {{"got", dv}, {"expected", expected}},
+                "Default value '" + (dv.t == VT::Nil ? std::string("Nil") : dv.gist()) +
+                    "' will never bind to " + (attr ? "an attribute" : "a variable") + " of type " + shown);
+}
+
 void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
     if (v.t == VT::Nil) return;
     // A PARAMETERISED element type constrains TWICE: the value must be that
@@ -22017,6 +22103,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
+                checkDeclDefault(ve->declType, sigil, dv, false);
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
                     init.elemDefaultM() = std::make_shared<Value>(dv);
                 else { init = dv; de->x().varDefault[ve->name] = dv; }
@@ -22370,6 +22457,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
             Value subKey = eval(idx->index.get());                      // key eval BEFORE the stripe (user code)
             checkObjHashKey(*base, subKey);
+            // a coercive QuantHash key type (`SetHash[Int()]`): the element
+            // STORED is the coerced key, so `.keys` answers 666, not "666"
+            if (!base->hashKind.empty() && subKey.t != VT::Type) {
+                const std::string of = base->ofType();
+                size_t lp = of.find('(');
+                if (lp != std::string::npos && lp > 0 && of.back() == ')') {
+                    subKey = coerceToType(subKey, of.substr(0, lp));
+                    if (subKey.t == VT::Hash && subKey.hashKind == "Failure") sinkValue(subKey);
+                }
+            }
             std::string key = hashSubKey(subKey, base);
             // On an OBJECT-KEYED hash keep the object the subscript named, so
             // `.keys` can hand it back instead of its stringification. Costs a
@@ -22394,6 +22491,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // caller's write-through needs no lock to keep the runtime alive;
             // same-slot torn values remain the user's race, as documented.
             Interpreter::ParStripe insStripe(*this, base->hash());
+            // a NEW key starts as the hash's `is default(…)` (see the array arm)
+            if (base->elemDefault() && base->hashKind.empty() && !base->hash()->count(key))
+                return &((*base->hash())[key] = *base->elemDefault());
             return &(*base->hash())[key];
         } else {
             // `$obj[$i] = v` on an OBJECT whose class defines AT-POS: assign through
@@ -22516,8 +22616,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Index " + std::to_string(i) + " for dimension 1 out of range (must be 0.." +
                     std::to_string((*base->shape())[0] - 1) + ")"};
+            bool grown = (long long)base->arr()->size() <= i;
             while ((long long)base->arr()->size() <= i)
                 base->arr()->push_back(containerFill(*base));
+            // the slot being NAMED starts as the container's default, so
+            // `@a[0]++` under `is default(42)` counts from 42 (an assignment
+            // just overwrites it; the gaps stay holes)
+            if (grown && base->elemDefault()) (*base->arr())[i] = *base->elemDefault();
             return &(*base->arr())[i];
         }
     }
@@ -22939,6 +23044,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // (roast S12-attributes/clone.t died "expected LeObject but got Str")
             tcx.lastLvalueAttrType.clear();
             tcx.lastLvalueAttrWhere = nullptr;
+            tcx.lastLvalueAttrDefault = nullptr;
             for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                 for (auto& at : ci->attrs)
                     if (at.name == mcName) {
@@ -22946,6 +23052,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             ascii::isupper((unsigned char)at.type[0]))
                             tcx.lastLvalueAttrType = at.type;
                         if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
+                        if (at.sigil == '$') tcx.lastLvalueAttrDefault = at.defaultTrait;
                         goto attrTypeDone;
                     }
             attrTypeDone:
@@ -24258,6 +24365,16 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // asks for the library path, and `Compress::Zlib::Raw::Z_OK` the same.
         // Constants are not `our`, but Rakudo installs them in the package's
         // symbol table all the same, and we published nothing.
+        // …and outside any package a bare/`our` constant is still a PACKAGE
+        // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL)
+        if (ve->declare && ve->declScope == "constant" && tctx_.pkgPrefix.empty() &&
+            !ve->declMyConstant && !ve->name.empty() && tctx_.cur != global_ &&
+            !global_->local(ve->name)) {
+            if (Value* p = tctx_.cur->find(ve->name)) {
+                noteSymbolMutation("constant publish");
+                global_->define(ve->name, *p);
+            }
+        }
         if (ve->declare && ve->declScope == "constant" && !tctx_.pkgPrefix.empty() &&
             !ve->name.empty()) {
             if (Value* p = tctx_.cur->find(ve->name)) {
@@ -24656,6 +24773,61 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return nv;
         };
         return code;
+    }
+    // `constant @c = 1, 2, 3` / `constant %c = a => 1` / `constant $c = …` —
+    // a constant holds a VALUE, coerced by its sigil as Rakudo does: `@` takes
+    // anything Positional as it is and caches the rest into a List (`42` is
+    // (42,), a Seq its List); `%` takes anything Associative (a Bag, a Pair, a
+    // Hash literal) and turns a list into a Map; `$` and sigilless decontainerize,
+    // so `for $c { … }` iterates the list rather than seeing one item.
+    if (a->op == "=" && a->target && a->target->kind == NK::VarExpr && a->value) {
+        auto* cv = static_cast<VarExpr*>(a->target.get());
+        const char sg = cv->name.empty() ? 0 : cv->name[0];
+        if (cv->declare && cv->declScope == "constant" && cv->declType.empty() &&
+            (sg == '@' || sg == '%' || sg == '$')) {
+            Value v = eval(a->value.get());
+            if (sg == '@') {
+                bool positional = (v.t == VT::Array && !v.itemized && v.s != "Seq") || v.t == VT::Range ||
+                                  (v.t == VT::Object && typeOrSubsetMatches(v, "Positional"));
+                if (!positional) {
+                    if (v.t == VT::Object) v = methodCall(v, "cache", {});   // a user type's own .cache
+                    else {
+                        Value l = Value::array(); l.isList = true;
+                        if (v.t == VT::Array && v.s == "Seq") for (auto& x : *v.arr()) l.arr()->push_back(x);
+                        else if (v.t == VT::Hash && !v.hashKind.empty() && v.hashKind != "Map") l.arr()->push_back(v);
+                        else if (v.t == VT::Hash) l = methodCall(v, "list", {});
+                        else l.arr()->push_back(v);
+                        if (l.t == VT::Array) { l.isList = true; l.s.clear(); }
+                        v = l;
+                    }
+                    if (!((v.t == VT::Array) || v.t == VT::Range ||
+                          (v.t == VT::Object && typeOrSubsetMatches(v, "Positional"))))
+                        throwTypedV("X::TypeCheck", {{"got", v}, {"expected", Value::typeObj("Positional")}},
+                                    "Type check failed for constant " + cv->name +
+                                    "; expected Positional but got " + v.typeName());
+                }
+                v.itemized = false;
+            }
+            else if (sg == '%') {
+                bool assoc = (v.t == VT::Hash && !v.itemized) || v.t == VT::Pair ||
+                             (v.t == VT::Object && typeOrSubsetMatches(v, "Associative"));
+                if (!assoc) {
+                    v = methodCall(v, "Map", {});
+                    if (!(v.t == VT::Hash || v.t == VT::Pair ||
+                          (v.t == VT::Object && typeOrSubsetMatches(v, "Associative"))))
+                        throwTypedV("X::TypeCheck", {{"got", v}, {"expected", Value::typeObj("Associative")}},
+                                    "Type check failed for constant " + cv->name +
+                                    "; expected Associative but got " + v.typeName());
+                }
+                v.itemized = false;
+            }
+            else if (v.t == VT::Array || v.t == VT::Hash) v.itemized = false;
+            Value* lv = lvalue(a->target.get());
+            *lv = v;
+            lv->readonly = true;
+            if (sg == '$') tctx_.cur->x().varConstant.insert(cv->name);
+            return v;
+        }
     }
     // `(temp $indent) += 2` — `temp` yields the CONTAINER it just snapshotted,
     // so a compound assignment writes through it. Only the `temp $x = …`
@@ -25903,6 +26075,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
+        tctx_.lastLvalueAttrDefault = nullptr;
         Value* lv = lvalue(a->target.get());
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
@@ -26061,8 +26234,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // died the type check instead of emptying the port.
         if (a->op == "=" && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
             const std::string& aty = tctx_.lastLvalueAttrType;
-            rhs = (!aty.empty() && aty != "Mu" && aty != "Any")
+            rhs = tctx_.lastLvalueAttrDefault ? eval(const_cast<Expr*>(tctx_.lastLvalueAttrDefault))
+                : (!aty.empty() && aty != "Mu" && aty != "Any")
                       ? Value::typeObj(aty) : Value::any();
+            tctx_.lastLvalueAttrDefault = nullptr;
             tctx_.lastLvalueAttrType.clear();
             tctx_.lastLvalueAttrWhere = nullptr;
         }
@@ -26332,7 +26507,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // same rule scalars already followed — `@a[0] = Nil` leaves (Any),
             // not a Nil. (A bare List keeps its Nils; only containers reset.)
             auto* ix = static_cast<Index*>(a->target.get());
-            Value* bp = ix->base->kind == NK::VarExpr ? lvalue(ix->base.get()) : nullptr;
+            // …an accessor's container too: `$obj.h<o> = Nil` (a plain,
+            // argument-less call names the attribute; anything else could
+            // have effects a second evaluation would repeat)
+            bool plainAccessor = ix->base->kind == NK::MethodCall && [&] {
+                auto* bm = static_cast<MethodCall*>(ix->base.get());
+                return bm->args.empty() && !bm->methodExpr && !bm->meta && !bm->hyper &&
+                       bm->inv->kind == NK::VarExpr;
+            }();
+            Value* bp = nullptr;
+            if (ix->base->kind == NK::VarExpr) bp = lvalue(ix->base.get());
+            else if (plainAccessor) { try { bp = lvalue(ix->base.get()); } catch (RakuError&) {} }
             if (bp && bp->elemDefault()) *lv = *bp->elemDefault();          // `is default(…)`
             else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
             else *lv = Value::any();
@@ -26356,7 +26541,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         bool done = false;
                         for (auto& at : c->attrs)
                             if (at.name == an) {
-                                if (!at.type.empty() && at.type != "Mu" && at.type != "Any")
+                                if (at.defaultTrait) dv = eval(const_cast<Expr*>(at.defaultTrait));
+                                else if (!at.type.empty() && at.type != "Mu" && at.type != "Any")
                                     dv = Value::typeObj(at.type);
                                 done = true; break;
                             }
@@ -40373,6 +40559,7 @@ Value Interpreter::eval(Expr* e) {
                 // `my Tc $c`.
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                     Value dv = eval(ve->declDefault.get());
+                    checkDeclDefault(ve->declType, sigil, dv, false);
                     if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
                         // …but the DECLARED type still applies: `my Int @a is
                         // default(0)` is an Array[Int], and building a bare
@@ -41347,6 +41534,26 @@ Value Interpreter::eval(Expr* e) {
             if (mc->method == "VAR" && !mc->methodExpr && !mc->meta &&
                 mc->inv->kind == NK::VarExpr) {
                 auto* ivar = static_cast<VarExpr*>(mc->inv.get());
+                // `$!a.VAR` — the attribute's container: its `is default` value
+                if (ivar->name.size() > 2 && ivar->name[0] == '$' && ivar->name[1] == '!') {
+                    Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+                    (*sc.hash())["name"] = Value::str(ivar->name);
+                    Value dv = Value::any();
+                    if (Value* self = tctx_.cur->findSelf())
+                        if (self->t == VT::Object && self->obj() && self->obj()->cls)
+                            for (ClassInfo* k = self->obj()->cls.get(); k; k = k->parent.get()) {
+                                bool hit = false;
+                                for (auto& a : k->attrs)
+                                    if (a.name == ivar->name.substr(2)) {
+                                        if (a.defaultTrait) dv = eval(const_cast<Expr*>(a.defaultTrait));
+                                        hit = true; break;
+                                    }
+                                if (hit) break;
+                            }
+                    (*sc.hash())["default"] = dv;
+                    (*sc.hash())["value"] = inv;
+                    return sc;
+                }
                 if (ivar->name.size() > 1 && ivar->name[0] == '$' &&
                     (ascii::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_' ||
                      ivar->name[1] == '*')) { // $*dynamic vars answer .VAR.dynamic

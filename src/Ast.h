@@ -204,6 +204,7 @@ struct VarExpr : Expr {
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
     bool declExport = false;     // `our %x is export` — importers see the BARE name
+    bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
@@ -580,6 +581,7 @@ struct Param {
     bool optional = false;
     bool required = false; // explicit `!` on a named param
     bool invocant = false; // declared before ':' in signature
+    bool pastDoubleSemi = false; // after `;;` — not a multi-invocant
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
     std::string coerceFrom; // the FROM type inside the parens ("" for `Foo()` = Any) — it is the
@@ -758,6 +760,7 @@ struct AttrDecl {
     std::vector<std::pair<std::string, ExprPtr>> userTraits;
     ExprPtr whereExpr;  // `has Numeric $.lat where {…}` — checked on construction and assignment
     ExprPtr def;        // optional default
+    ExprPtr defaultTrait; // `is default(V)` — what `$!a.VAR.default` answers (and the value when there is no `= …`)
 };
 
 struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::string> params;
