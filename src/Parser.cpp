@@ -6150,7 +6150,17 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = true; return nt;
             }
-            if (peek().kind == Tok::FatArrow && !t.flag) { advance(); return std::make_unique<NameTerm>(name); }
+            // `name => value` is a TERM, as in Rakudo: the pair is built here,
+            // so it binds even where an infix at `=>`'s precedence would not —
+            // `%h ~~ b => 'foo'` smartmatches against the pair, not `(%h ~~ b) => 'foo'`
+            if (peek().kind == Tok::FatArrow && !t.flag) {
+                advance();   // name
+                advance();   // =>
+                auto p = std::make_unique<PairExpr>();
+                p->key = name;
+                p->value = parseExpr(BP_ASSIGN);
+                return p;
+            }
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
             // `Nil` is a TERM, never a routine. Falling through to the general
@@ -8280,7 +8290,12 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
                                   // `make { …, content => $x.split(',')>>.trim }` composer
                                   (pv.kind == Tok::Op &&
                                    (pv.text == ">>" || pv.text == "<<" ||
-                                    pv.text == "\xC2\xBB" || pv.text == "\xC2\xAB"));
+                                    pv.text == "\xC2\xBB" || pv.text == "\xC2\xAB")) ||
+                                  // …and a WHATEVER glued to the dot: `:status(*.so)` is a
+                                  // WhateverCode, not a call on the topic
+                                  (pv.kind == Tok::Op && pv.text == "*" && !tk.spaceBefore &&
+                                   k >= 2 && (toks_[k - 2].kind == Tok::LParen || toks_[k - 2].kind == Tok::Comma ||
+                                              toks_[k - 2].kind == Tok::FatArrow));
                 if (!termBefore) { isHash = false; break; }
             }
         }

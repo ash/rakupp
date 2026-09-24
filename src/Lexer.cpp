@@ -1778,7 +1778,11 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
     // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`,
     // and before `/` too (`s :g /pat//`, `qw /a b/` — Rakudo accepts both)
-    { size_t ws = p; while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
+    // (a q/qq/Q may even have its delimiter on the NEXT line: `q\n<…>`)
+    { const bool nlOk = (w == "q" || w == "qq" || w == "Q");
+      size_t ws = p;
+      while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t' ||
+                                  (nlOk && (src_[ws] == '\n' || src_[ws] == '\r')))) ws++;
       if (ws > p && ws < src_.size() &&
           (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<' ||
            src_[ws] == '/')) p = ws;

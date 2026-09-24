@@ -3470,6 +3470,7 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
     ValueList items;
     if (v.t == VT::Array) items = *v.arr();
     else if (v.t == VT::Pair) items.push_back(v);
+    else if (v.t == VT::Range && !v.itemized) items = v.flatten();   // `my %h = 1..4` is 1 => 2, 3 => 4
     else if (v.t == VT::Object && g_objListItems && g_objListItems(v, items)) { /* filled above */ }
     else if (v.t != VT::Nil && v.t != VT::Any) items.push_back(v);
     // The key a value stands for in a plain / object hash: an OBJECT hash keys
@@ -5890,6 +5891,10 @@ int Interpreter::run(Program& prog) {
                     if (e0 && e0->kind == NK::VarExpr) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
                         if (ve0->declSmiley) global_->x().varSmiley[ve0->name] = ve0->declSmiley; // `my Int:D @a …;`
+                        // the SHAPE is evaluated when the declaration runs — the
+                        // hoist saw `my int @m[$size; $size]` before $size was set
+                        if (ve0->declShape && ve0->name[0] == '@' && !ve0->declDefault)
+                            global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->declShape.get()), ve0->declType));
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
                             checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
@@ -8978,7 +8983,7 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
         std::cout << ind << (ok ? "ok " : "not ok ") << testNum_;
         if (!isSkip) std::cout << " - " << desc;
         if (!directive.empty()) std::cout << " # " << directive;
-        std::cout << "\n";
+        std::cout << "\n" << std::flush;   // see the top-level line below
         if (realFail) {
             std::cerr << "# Failed test" << (desc.empty() ? "" : " '" + desc + "'")
                       << " at " << srcFile_ << " line " << curLine_ << "\n";
@@ -8992,7 +8997,10 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
     os << (ok ? "ok " : "not ok ") << testNum_;
     if (!isSkip) os << " - " << desc;
     if (!directive.empty()) os << " # " << directive;
-    std::cout << os.str() << "\n";
+    // Flushed per result: on a pipe stdout is block-buffered, so a file the
+    // harness kills at its timeout lost every result it had already reported
+    // (the `[TIME] 0/0` lines — scheduler tests that pass 26/26 standalone)
+    std::cout << os.str() << "\n" << std::flush;
     if (realFail) {
         failCount_++;
         std::cerr << "# Failed test" << (desc.empty() ? "" : " '" + desc + "'")
@@ -10893,6 +10901,21 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
+            // `class Foo does Maybe` where Maybe is an ENUM: that is role
+            // composition (see the roles loop), never a parent class
+            if (cd->parentIsDoes && !cd->parent.empty() && !classes_.count(cd->parent)) {
+                bool isEnum = false;
+                try {
+                    NameTerm tn(cd->parent);
+                    Value et = eval(&tn);
+                    isEnum = et.t == VT::Array && !et.enumType.empty() && et.enumName.empty();
+                } catch (...) {}
+                if (isEnum) {
+                    cd->roles.insert(cd->roles.begin(), cd->parent);
+                    cd->parent.clear();
+                    cd->parentIsDoes = false;
+                }
+            }
             // already created by the hoist pass at scope entry — re-running it
             // would build a SECOND ClassInfo, and objects made in between would
             // then belong to a type that is no longer the one the name resolves to
@@ -11425,7 +11448,36 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             " cannot compose it");
                 }
                 ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
-                if (it == classes_.end()) continue;
+                // `class Foo does Maybe` for an ENUM Maybe: the class gets a
+                // public `$.Maybe` (set by `.new(Maybe => No)`) and a method per
+                // member answering whether it is the one held
+                if (it == classes_.end()) {
+                    Value en;
+                    try {
+                        NameTerm tn(rn);
+                        Value et = eval(&tn);
+                        if (et.t == VT::Array && !et.enumType.empty() && et.enumName.empty())
+                            en = methodCall(et, "enums", ValueList{});
+                    } catch (...) {}
+                    if (en.t == VT::Hash && en.hash()) {
+                        bool have = false;
+                        for (auto& a : ci->attrs) if (a.name == rn) have = true;
+                        if (!have) { ClassAttr ca; ca.name = rn; ca.sigil = '$'; ca.pub = true; ci->attrs.push_back(ca); }
+                        const std::string attr = rn;
+                        for (auto& kv : *en.hash()) {
+                            const std::string key = kv.first;
+                            Value m = Value::closure([attr, key](ValueList& a) -> Value {
+                                if (a.empty() || a[0].t != VT::Object || !a[0].obj()) return Value::boolean(false);
+                                auto at = a[0].obj()->attrs.find(attr);
+                                return Value::boolean(at != a[0].obj()->attrs.end() &&
+                                                      at->second.enumName.c_str() == key);
+                            });
+                            m.code()->isMethod = true;
+                            if (!ci->methods.count(key)) ci->methods[key] = m;
+                        }
+                    }
+                    continue;
+                }
                 // …and everything the role composes THROUGH ITS OWN PARENT SLOT:
                 // `role B does A` puts A there rather than in B's own tables, so a
                 // class that takes B as its parent walks the chain and finds A's
@@ -23289,6 +23341,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     if (e->kind == NK::Call) {
         auto* c = static_cast<Call*>(e);
         Value* fp = c->name.empty() ? nullptr : tcx.cur->find(callAmpName(c));
+        // `$code() = v` — an `is rw` routine held in a variable
+        if (!fp && c->name.empty() && c->callee && c->callee->kind == NK::VarExpr)
+            fp = tcx.cur->find(static_cast<VarExpr*>(c->callee.get())->name);
         bool rw = false;
         if (fp && fp->t == VT::Code && fp->code()) {
             rw = fp->code()->retRw;
@@ -23697,6 +23752,23 @@ bool Interpreter::topicWriteThroughObject(Expr* topic, const Value& v) {
 }
 
 bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
+    // `for $pair.value -> $v is rw { … }` — the loop aliases the pair's own
+    // value container (a Pair built from a container shares it)
+    if (listExpr && listExpr->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(listExpr);
+        if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper && !mc->methodExpr &&
+            mc->inv && mc->inv->kind == NK::VarExpr) {
+            Value* p = nullptr;
+            try { p = lvalue(mc->inv.get()); } catch (...) { p = nullptr; }
+            if (p && p->t == VT::Pair && p->pairVal() && !p->pairValRO) {
+                Value* slot = p->pairVal();
+                if (slot->t == VT::Array || slot->t == VT::Hash) return false;   // iterates, not one item
+                slots.push_back(slot);
+                return true;
+            }
+        }
+        return false;
+    }
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
     auto* le = static_cast<ListExpr*>(listExpr);
     if (le->items.empty()) return false;
@@ -34415,8 +34487,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // Reject only what is DEFINITELY not a role — a parameterized role
         // (`R[42]`) doesn't evaluate to a type object here, so a whitelist would
         // wrongly refuse it.
-        if (op == "does" && (rhs.t == VT::Int || rhs.t == VT::Str || rhs.t == VT::Num ||
-                             rhs.t == VT::Rat || rhs.t == VT::Bool || rhs.t == VT::Complex))
+        if (op == "does" && rhs.enumName.empty() &&   // an ENUM value mixes in as its role
+            (rhs.t == VT::Int || rhs.t == VT::Str || rhs.t == VT::Num ||
+             rhs.t == VT::Rat || rhs.t == VT::Bool || rhs.t == VT::Complex))
             throwTypedV("X::AdHoc", {},
                         "Cannot use 'does' operator on a " + base.typeName() +
                         ", did you mean 'but'?");
@@ -35264,6 +35337,23 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         Value method = Value::closure([vm](ValueList&) { return vm; });
         method.code()->isMethod = true;
         nc->methods[vm.typeName()] = method;
+        // …and an ENUM value mixes in its enum as a role: a method per
+        // member, True for the one mixed in (`$x but Maybe(Yes)` answers
+        // `.Yes` True and `.No` False)
+        if (!vm.enumName.empty() && !vm.enumType.empty()) {
+            Value en;
+            try {   // the enum TYPE as its name resolves (not a bare type object)
+                NameTerm tn(std::string(vm.enumType.c_str()));
+                en = methodCall(eval(&tn), "enums", ValueList{});
+            } catch (...) {}
+            if (en.t == VT::Hash && en.hash())
+                for (auto& kv : *en.hash()) {
+                    const bool mine = kv.first == vm.enumName.c_str();
+                    Value m = Value::closure([mine](ValueList&) { return Value::boolean(mine); });
+                    m.code()->isMethod = true;
+                    if (!nc->methods.count(kv.first)) nc->methods[kv.first] = m;
+                }
+        }
     }
     // `but :name(value)` — mix one attribute with a public read accessor.
     for (auto& p : pairs) {

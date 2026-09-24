@@ -12699,6 +12699,17 @@ void Interpreter::registerBuiltins() {
             if (x.t == VT::Pair && x.s == "skip-all") { skipAll = true; reason = x.pairVal() ? x.pairVal()->toStr() : ""; }
             else if (x.t == VT::Str && x.s == "skip-all") skipAll = true;
         }
+        if (skipAll && I.subtestDepth_ > 0) {
+            // inside a subtest it RETURNS from the subtest's Sub, leaving the
+            // subtest a pass — which needs a Sub to return from: a Block body
+            // is refused (Rakudo says so rather than skipping the whole file)
+            if (!I.subtestIsSub_.empty() && !I.subtestIsSub_.back())
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot use `plan skip-all` inside a subtest whose body is a Block; make it a Sub"};
+            I.planned_ = 0;
+            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1..0 # SKIP " << reason << "\n" << std::flush;
+            throw ReturnEx{Value::nil()};
+        }
         if (skipAll) { I.planned_ = 0; std::cout << "1..0 # SKIP " << reason << "\n" << std::flush; throw ExitEx{0}; }
         // `plan *` means "no plan" — the count comes from done-testing, and nothing
         // is printed up front (File::Which's suite opens with it)
@@ -14189,6 +14200,11 @@ void Interpreter::registerBuiltins() {
                 if (v.pairVal()->t == VT::Code) code = *v.pairVal();
             }
         }
+        struct SubMark {
+            Interpreter& I;
+            SubMark(Interpreter& i, bool isSub) : I(i) { I.subtestIsSub_.push_back(isSub); }
+            ~SubMark() { I.subtestIsSub_.pop_back(); }
+        } mark{I, code.t == VT::Code && code.code() && !code.code()->isBlock};
         return Value::boolean(I.runSubtestFrame(desc, [&]() {
             if (code.t == VT::Code) I.callCallable(code, {});
         }));

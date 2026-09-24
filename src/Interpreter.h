@@ -2685,6 +2685,7 @@ private:
     long failCount_ = 0;
     bool usedTest_ = false;
     int subtestDepth_ = 0;
+    std::vector<bool> subtestIsSub_; // per open subtest: its body is a Sub (so `plan skip-all` can return from it)
     bool subtestFailed_ = false;
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
     // Source line of the statement currently executing (test diagnostics).

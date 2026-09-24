@@ -5996,6 +5996,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             } else n = (long long)inv.code()->placeholders.size();
             return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
         }
+        // `&f.callwith(…)` calls it; `&f.nextwith(…)` calls it and RETURNS that
+        // from the routine we are in, as a tail call (roast S04-statements/goto.t)
+        if (m == "callwith" || m == "nextwith") {
+            ValueList ca;
+            for (auto& x : args) ca.push_back(x);
+            Value r = callCallable(inv, ca);
+            if (m == "callwith") return r;
+            throw ReturnEx{r};
+        }
         if (m == "name") {
             // An operator's name quotes its op the way Rakudo spells it: `<op>`
             // normally, `«op»` when the op holds `<`/`>` — unless it also holds
