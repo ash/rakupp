@@ -996,7 +996,7 @@ std::string Value::typeName() const {
                     "num", "num32", "num64", "str"};
                 if (kNative.count(ofType())) return "array[" + ofType() + "]";
             }
-            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : "List";
+            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.

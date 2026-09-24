@@ -45,9 +45,10 @@ check $p.private,  False,   '.private is False for a public call';
 check $p.message,  "No such method 'nope' for invocant of type 'Priv'",
       'a public miss keeps the plain wording';
 
-# the private method that DOES exist is unaffected
-check (try { Priv.new!known(); 'no-throw' } // $!.message),
-      "Private method call to 'known' outside the defining class",
+# the private method that DOES exist is unaffected — and calling it from
+# outside any class is refused at COMPILE time, as Rakudo does
+check (try { EVAL q[Priv.new!known()]; 'no-throw' } // $!.^name),
+      'X::Method::Private::Unqualified',
       'a private call from outside the class is still refused, before any lookup';
 class Ok { method !known() { 'here' }; method go() { self!known() } }
 check Ok.new.go(), 'here', 'an existing private method still dispatches through the `!name` key';
@@ -63,7 +64,8 @@ check ($first.private, $second.private), (True, False),
 # attribute set the first throw registered, so `$!.method` after this died with
 # an X::Method::NotFound of its own.
 class Late { method go() { my $m = 'nope'; self!"$m"() } }
-try { Priv.new!known() };                # bare-type X::Method::NotFound, no attrs
+sub outside() { Priv.new!known() }       # (inside a routine: refused at run time)
+try { outside() };                       # bare-type X::Method::NotFound, no attrs
 check (try { Late.new.go(); 'no-throw' } // $!.method), 'nope',
       'a later payload-carrying throw still declares its own attributes';
 

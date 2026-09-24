@@ -13505,7 +13505,11 @@ void Interpreter::registerBuiltins() {
     // stub / yada operators
     B["!!!"] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
     B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
-    B["???"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << (a.empty() ? "Stub code executed" : a[0].toStr()) << "\n"; return Value::nil(); };
+    // `???` WARNS — through `warn`, so a CONTROL block sees the CX::Warn
+    B["???"] = [](Interpreter& I, ValueList& a) -> Value {
+        ValueList wa{Value::str(a.empty() ? std::string("Stub code executed") : a[0].toStr())};
+        return I.callBuiltin("warn", wa);
+    };
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
     // `:out($fh)` / `:err($fh)` on run() and shell() alike: the adverb is not a
     // flag but a SINK. Read as a mere boolean it captures the stream and drops

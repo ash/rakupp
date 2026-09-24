@@ -2310,6 +2310,27 @@ bool Lexer::tryQuoteForm(Token& out) {
         out.flag = (w == "S" || w == "SS" || w == "TR"); // uppercase: non-mutating, returns the new string
         return true;
     }
+    if (isRegex || true) {
+        // a COMPILE-time adverb (`:i`, `:s`, `:r`, …) needs a value known at
+        // compile time: `m:i(@*ARGS[0])/foo/` is X::Value::Dynamic
+        static const char* kCompileTime[] = {"i", "ignorecase", "ii", "samecase", "m", "ignoremark", "mm",
+                                             "samemark", "s", "sigspace", "ss", "samespace", "r", "ratchet"};
+        for (const char* nm : kCompileTime) {
+            std::string pat = std::string(":") + nm + "(";
+            size_t at = adverbs.find(pat);
+            if (at == std::string::npos) continue;
+            size_t k = at + pat.size();
+            int d = 1; bool dyn = false;
+            for (; k < adverbs.size() && d > 0; k++) {
+                char ch = adverbs[k];
+                if (ch == '(') d++; else if (ch == ')') d--;
+                else if (ch == '$' || ch == '@' || ch == '%' || ch == '&') dyn = true;
+            }
+            if (dyn)
+                throw ParseError(std::string("Adverb ") + nm + " value must be known at compile time",
+                                 line_, "X::Value::Dynamic", {{"what", std::string("Adverb ") + nm}});
+        }
+    }
     if (isRegex) {
         // matcher-only adverbs are illegal on an rx// literal (no match to drive)
         if (w == "rx") {
@@ -2396,6 +2417,22 @@ Token Lexer::lexIdentOrVar() {
     // stay untouched. Inside a `< … >` word list everything is words.
     if (sig == '$' && angleWords_ == 0) {
         char c1 = peek(1);
+        // `${۳}` — Perl 5's braced capture variable (any decimal digits)
+        if (c1 == '{') {
+            size_t q = pos_ + 2; long long val = 0; int nd = 0;
+            while (q < src_.size()) {
+                int l; uint32_t cp = cpAt(src_, q, l);
+                int dv = ndDigitValue(cp);
+                if (dv < 0) break;
+                val = val * 10 + dv; nd++; q += l;
+            }
+            if (nd && q < src_.size() && src_[q] == '}') {
+                std::string old = src_.substr(pos_, q + 1 - pos_);
+                std::string repl = "$" + std::to_string(val > 0 ? val - 1 : 0);
+                throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
+                                 line_, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+            }
+        }
         if (c1 == '^' && ascii::isupper((unsigned char)peek(2)) &&
             !(ascii::isalnum((unsigned char)peek(3)) || peek(3) == '_'))
             throw ParseError("Unsupported use of $^" + std::string(1, peek(2)) +

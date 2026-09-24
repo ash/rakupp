@@ -10821,12 +10821,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                     c.code()->nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
+                    // (an anonymous one, `*@`, has no name to report)
+                    const std::string pn = p.name.size() > 1 ? p.name : std::string();
                     if (p.defaultVal && p.slurpy)
-                        throwTyped("X::Parameter::Default", {{"how", "slurpy"}, {"parameter", p.name}},
-                            "Cannot put default on slurpy parameter " + p.name);
+                        throwTyped("X::Parameter::Default", {{"how", "slurpy"}, {"parameter", pn}},
+                            "Cannot put default on slurpy parameter " + (pn.empty() ? std::string("") : pn));
                     if (p.defaultVal && p.required)
-                        throwTyped("X::Parameter::Default", {{"how", "required"}, {"parameter", p.name}},
-                            "Cannot put default on required parameter " + p.name);
+                        throwTyped("X::Parameter::Default", {{"how", "required"}, {"parameter", pn}},
+                            "Cannot put default on required parameter " + pn);
                 }
                 // a `--> 42` / `--> "foo"` / `--> Nil` constraint forbids
                 // `return <value>` anywhere in the body (compile error in Rakudo)
@@ -11262,6 +11264,18 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
                 { // nested decls, if any — under this package's prefix so an inner
                   // `augment class B` resolves the nested A::B
+                    // …but a plain `class B { }` in the augment, where A::B is
+                    // already complete, declares it a second time
+                    for (auto& st : cd->body)
+                        if (st && st->kind == NK::ClassDecl) {
+                            auto* nd = static_cast<ClassDecl*>(st.get());
+                            if (nd->isAugment || nd->isStubDecl || nd->name.empty()) continue;
+                            auto pit = classes_.find(cd->name + "::" + nd->name);
+                            if (pit != classes_.end() && pit->second && pit->second->decl &&
+                                pit->second->decl != nd && !pit->second->decl->isStubDecl)
+                                throwTyped("X::Redeclaration", {{"symbol", nd->name}},
+                                           "Redeclaration of symbol '" + nd->name + "'");
+                        }
                     std::string savedPrefix = tctx_.pkgPrefix;
                     tctx_.pkgPrefix = cd->name + "::";
                     try { for (auto& st : cd->body) exec(st.get()); }
@@ -15378,6 +15392,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"List",  {"List", "Positional", "Iterable", "Cool"}},
         {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
         {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
+        // `.backtrace` answers a Backtrace (a List of frames here)
+        {"Backtrace", {"Backtrace", "List", "Positional", "Iterable", "Cool"}},
         // a Range is Positional as well as Iterable: `("0".."9") ~~ Positional`
         // is how a module asks "is this a set of things I can draw from"
         {"Range", {"Range", "Positional", "Iterable", "Cool"}},
@@ -21204,6 +21220,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (c.body) runLeavePhasers(*c.body);
         tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
         return le.hasVal ? le.v : Value::nil(); // `leave` exits this block with its value
+    } catch (ControlHandledEx& che) {
+        // THIS body's CONTROL handled a warning without .resume: the routine
+        // (or `try` block) is left normally, answering Nil — as execBlock does
+        // for a bare block's CONTROL. Anybody else's: unwind through.
+        const bool mine = c.controlScan == 1 && che.handler == static_cast<Block*>((Stmt*)c.controlBlkCache);
+        if (c.body) runLeavePhasers(*c.body, /*ok=*/mine);
+        if (!mine) runLetRestoresOf(tcx.cur);
+        tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
+        if (mine) return Value::nil();
+        throw;
     } catch (...) {
         if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
         runLetRestoresOf(tcx.cur); // unsuccessful exit
@@ -23448,6 +23474,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
         if ((mcName == "AT-KEY" || mcName == "AT-POS") && !mc->args.empty() && !mc->meta) {
             Value* base = lvalue(mc->inv.get());
+            // the element type of a typed container binds this store too
+            if (base) tctx_.lastLvalueElemType = elemTypeOf(*base);
             if (mcName == "AT-KEY") {
                 if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
                 Value k = eval(mc->args[0].get());
@@ -26935,6 +26963,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             tctx_.lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(a->target.get());
             checkElemType(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
+        }
+        // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
+        if (a->op == "=" && a->target->kind == NK::MethodCall && !tctx_.lastLvalueElemType.empty()) {
+            auto* mct = static_cast<MethodCall*>(a->target.get());
+            std::string want = tctx_.lastLvalueElemType;
+            tctx_.lastLvalueElemType.clear();
+            if (mct->method == "AT-KEY" || mct->method == "AT-POS")
+                checkElemType(want, rhs, containerNameOf(mct->inv.get(), mct->method == "AT-KEY" ? '%' : '@'));
         }
         // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset,
         // checked where the default lands)
@@ -31245,6 +31281,37 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         ~WiredGuard() { if (active) I->tctx_.cur = std::move(saved); }
     } wiredGuard{this, savedCurWired, wired};
     std::string pat = pattern;
+    // `m:x(2)/ab/` / `m:2x/ab/` — exactly N matches: search globally, then keep
+    // the first N, or fail when there are fewer
+    {
+        long long xN = -1; size_t xp = std::string::npos, xe = 0;
+        if ((xp = pat.find(":x(")) != std::string::npos && (xp == 0 || pat[xp - 1] == ' ')) {
+            size_t close = pat.find(')', xp + 3);
+            if (close != std::string::npos) {
+                std::string arg = pat.substr(xp + 3, close - xp - 3);
+                bool digits = !arg.empty() && arg.find_first_not_of("0123456789") == std::string::npos;
+                xN = digits ? std::stoll(arg) : evalString(arg).toInt();
+                xe = close + 1;
+            }
+        }
+        else {
+            for (size_t i = 0; i + 2 < pat.size(); i++) {
+                if (pat[i] != ':' || (i > 0 && pat[i - 1] != ' ') || !ascii::isdigit((unsigned char)pat[i + 1])) continue;
+                size_t j = i + 1; while (j < pat.size() && ascii::isdigit((unsigned char)pat[j])) j++;
+                if (j < pat.size() && pat[j] == 'x' && (j + 1 == pat.size() || pat[j + 1] == ' ' || pat[j + 1] == ':')) {
+                    xN = std::stoll(pat.substr(i + 1, j - i - 1)); xp = i; xe = j + 1; break;
+                }
+            }
+        }
+        if (xN >= 0 && xp != std::string::npos) {
+            std::string rest = pat.substr(0, xp) + ":g " + pat.substr(xe < pat.size() && pat[xe] == ' ' ? xe + 1 : xe);
+            Value all = regexMatch(subject, rest, rxVal, declKind);
+            Value out = Value::array(); out.isList = true;
+            if (all.t == VT::Array && all.arr() && (long long)all.arr()->size() >= xN)
+                for (long long k = 0; k < xN; k++) out.arr()->push_back((*all.arr())[(size_t)k]);
+            return out;
+        }
+    }
     bool global = false;
     for (const char* adv : {":g ", ":global "}) // :g / :global adverb
         { size_t gp = pat.find(adv); if (gp != std::string::npos) { global = true; pat.erase(gp, strlen(adv)); } }
@@ -42534,6 +42601,15 @@ Value Interpreter::eval(Expr* e) {
             // reaching past the invocant's own override (e.g. `self.Parent::meth`
             // called from within an override, as in zef's `self.Zef::Distribution::meta`).
             if (!mc->methodQual.empty() && !mc->meta) {
+                // `1.List::join` — the invocant is not of the qualifying type
+                // (judged for the built-in types, whose conformance is certain)
+                if (isKnownTypeName(mc->methodQual) && !classes_.count(mc->methodQual) &&
+                    !typeOrSubsetMatches(inv, mc->methodQual))
+                    throwTypedV("X::Method::InvalidQualifier",
+                        {{"method", Value::str(mc->method)}, {"invocant", inv},
+                         {"qualifier-type", Value::typeObj(mc->methodQual)}},
+                        "Cannot dispatch to method " + mc->method + " on " + mc->methodQual +
+                        " because it is not inherited or done by " + inv.typeName());
                 auto cit = classes_.find(mc->methodQual);
                 if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(mc->methodQual));
                 if (cit != classes_.end() && cit->second->findMethod(mc->method)) {

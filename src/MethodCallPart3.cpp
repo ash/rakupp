@@ -4136,6 +4136,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 rxIdx = (int)i;
                 break;
             }
+    // `.match(/a/ & /b/)` — a Junction needle autothreads: a Junction of the
+    // per-eigenstate answers
+    if ((m == "match" || m == "contains" || m == "starts-with" || m == "ends-with") &&
+        !args.empty() && isJunction(args[0])) {
+        Value out = Value::array(); out.enumName = args[0].enumName;
+        for (auto& e : *args[0].arr()) {
+            ValueList a2 = args; a2[0] = e;
+            out.arr()->push_back(methodCall(inv, m, std::move(a2)));
+        }
+        return out;
+    }
     // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex.
     // An ARRAY needle is its elements joined by a space (`.match([1,2,3])`).
     if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() && !args.empty() &&
@@ -4373,7 +4384,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "Only Pair objects are allowed as arguments to Str.trans, got Regex");
             if (a.t == VT::Pair) {
                 const Value* k = a.pairKey() ? a.pairKey().get() : nullptr;
+                // (a bare `Any.new`/`Mu.new` is no key either: nothing Cool about it)
                 auto badKey = [&](const Value& kv) {
+                    if (rtIsDefined(kv) && (kv.typeName() == "Any" || kv.typeName() == "Mu")) return true;
                     return kv.t == VT::Object && !(kv.obj() && kv.obj()->cls && kv.obj()->cls->findMethod("Str"));
                 };
                 std::vector<Value> ks;
@@ -4383,7 +4396,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 for (auto& kv : ks)
                     if (badKey(kv))
-                        throwTypedV("X::Str::Trans::IllegalKey", {{"key", kv}},
+                        throwTypedV("X::Str::Trans::IllegalKey", {{"key", rtIsDefined(kv) && (kv.typeName() == "Any" || kv.typeName() == "Mu") ? Value::typeObj(kv.typeName()) : kv}},
                                     "An illegal key was passed to Str.trans: " + kv.typeName());
             }
         }

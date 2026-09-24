@@ -3193,6 +3193,31 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (cur().kind == Tok::StrInterp) mc->methodExpr = parsePrimary();
             else mc->method = advance().text;
             mc->bang = true; // private call: only valid with a self in scope
+            if (!quotedName) {
+                // outside any type an unqualified `1!foo` names nobody's method;
+                // a qualified one into a CORE type is a permission refusal,
+                // since no built-in trusts a user package
+                const std::string& nm = mc->method;
+                size_t q = nm.rfind("::");
+                const std::string here = typeStack_.empty() ? std::string() : typeStack_.back();
+                const bool selfInv = mc->inv &&
+                    (mc->inv->kind == NK::SelfTerm ||
+                     (mc->inv->kind == NK::NameTerm && static_cast<NameTerm*>(mc->inv.get())->name == "self") ||
+                     (mc->inv->kind == NK::VarExpr && static_cast<VarExpr*>(mc->inv.get())->name == "self"));
+                if (q == std::string::npos && here.empty() && routineDepth_ == 0 && !selfInv)
+                    throw ParseError("Calling private method '" + nm + "' must be fully qualified with the "
+                                     "package containing that private method.", cur().line,
+                                     "X::Method::Private::Unqualified", {{"method", nm}});
+                if (q != std::string::npos) {
+                    std::string pkg = nm.substr(0, q), meth = nm.substr(q + 2);
+                    if (pkg != here && !declClassDecls_.count(pkg) && (isKnownTypeName(pkg) || pkg == "X"))
+                        throw ParseError("Cannot call private method '" + meth + "' on package " + pkg +
+                                         " because it does not trust " + (here.empty() ? "GLOBAL" : here),
+                                         cur().line, "X::Method::Private::Permission",
+                                         {{"method", meth}, {"calling-package", here.empty() ? "GLOBAL" : here},
+                                          {"source-package", pkg}});
+                }
+            }
             // Same rule the public `."name"()` path keeps (S12): a quoted name
             // must be immediately called. Bare `self!"$m"` used to parse as a
             // no-argument call, so `self!"$m" = 5` wrote into nothing.
@@ -7725,6 +7750,42 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             fF = feats.find('f') != std::string::npos;
         }
     }
+    // A `$` that starts no variable must be backslashed: `"$"`, `"a $, b"`;
+    // and `"${۳}"` is Perl 5's capture spelling. Top-level text only — a
+    // `{ … }` closure in the string is code.
+    if (fS) {
+        int depth = 0;
+        for (size_t i = 0; i < raw.size(); i++) {
+            char c = raw[i];
+            if (c == '\\' && fB) { i++; continue; }
+            if (fC && c == '{') { depth++; continue; }
+            if (fC && c == '}' && depth > 0) { depth--; continue; }
+            if (depth || c != '$') continue;
+            char d = i + 1 < raw.size() ? raw[i + 1] : '\0';
+            if (d == '\0' || d == ' ' || d == '\t' || d == '\n' || d == ',')
+                throw ParseError("Non-variable $ must be backslashed", cur().line,
+                                 "X::Backslash::NonVariableDollar", {});
+            if (d == '{') {
+                size_t q = i + 2; long long val = 0; int nd = 0;
+                while (q < raw.size()) {
+                    unsigned char b = (unsigned char)raw[q];
+                    int l = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+                    if (q + l > raw.size()) l = 1;
+                    uint32_t cp = l == 1 ? b : (uint32_t)(b & (0xFF >> (l + 1)));
+                    for (int k = 1; k < l; k++) cp = (cp << 6) | ((unsigned char)raw[q + k] & 0x3F);
+                    int dv = uniDigitValue(cp);
+                    if (dv < 0) break;
+                    val = val * 10 + dv; nd++; q += l;
+                }
+                if (nd && q < raw.size() && raw[q] == '}') {
+                    std::string old = raw.substr(i, q + 1 - i);
+                    std::string repl = "{$" + std::to_string(val > 0 ? val - 1 : 0) + "}";
+                    throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
+                                     cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+                }
+            }
+        }
+    }
     auto result = std::make_unique<InterpStr>();
     std::string lit;
     auto flush = [&]() {
@@ -9473,6 +9534,18 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         }
         if (isIdent("export")) {
             s->isExport = true;
+            // two exported `f`s in one package, from different scopes, would
+            // both land in its EXPORT — X::Export::NameClash
+            // (the same scope twice is a plain redeclaration, reported elsewhere)
+            if (!typeStack_.empty() && !s->isMulti && !s->isMethod && !s->name.empty()) {
+                auto& seen = exportedSubs_[typeStack_.back()];
+                auto it = seen.find(s->name);
+                const int depth = (int)scalarDeclTypes_.size();
+                if (it == seen.end()) seen[s->name] = depth;
+                else if (it->second != depth)
+                    throw ParseError("A symbol &" + s->name + " has already been exported", cur().line,
+                                     "X::Export::NameClash", {{"symbol", "&" + s->name}});
+            }
             // `is export(:foo :bar)` — capture the tag names. A tag that is not
             // DEFAULT/MANDATORY is published only when the importer asks for it
             // (`use Mod :foo`), as in Rakudo; a plain `is export` has none and is
@@ -10672,6 +10745,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         a.def = parseExpr((a.sigil == '@' || a.sigil == '%') ? BP_ZIP : BP_ASSIGN);
                         checkVirtualCallInDefault(defStart);
                     }
+                }
+                // `has $.a syntax error;` — a bare word straight after the
+                // declaration, on its line, is two terms in a row
+                if (cur().kind == Tok::Ident && pos_ > 0 && cur().line == toks_[pos_ - 1].line) {
+                    static const std::set<std::string> kAfterAttr = {
+                        "is", "handles", "where", "will", "of", "does", "but", "and", "or", "if", "unless",
+                        "for", "with", "without", "when", "while", "until", "given", "xor", "andthen", "orelse"};
+                    if (!kAfterAttr.count(cur().text))
+                        throw ParseError("Two terms in a row", cur().line, "X::Syntax::Confused",
+                                         {{"reason", "Two terms in a row"}});
                 }
                 // a newline may end the declaration (`has $.cl = { … }` with no
                 // ';'): don't skip INTO the next class-body statement hunting one
@@ -12522,6 +12605,28 @@ void Parser::enforceStmtSep() {
                          {{"old", "-> as postfix"},
                           {"replacement", "either . to call a method, or whitespace "
                                           "to delimit a pointy block"}});
+    // `when Real { 1 } when Str { 2 }` — a statement's closing brace ends the
+    // line or meets a `;`: anything else after it is Rakudo's strange text
+    // (any vertical whitespace counts as the line's end — VT, FF, CR, NEL,
+    // LS and PS as much as LF)
+    auto vertBetween = [&]() {
+        if (!src_) return false;
+        const Token& ct = cur();
+        size_t a = pv.off, b = ct.off - ct.text.size();
+        if (a > b || b > src_->size()) return false;
+        for (size_t i = a; i < b; i++) {
+            unsigned char c = (unsigned char)(*src_)[i];
+            if (c == '\n' || c == 0x0B || c == 0x0C || c == '\r') return true;
+            if (c == 0xC2 && i + 1 < b && (unsigned char)(*src_)[i + 1] == 0x85) return true;
+            if (c == 0xE2 && i + 2 < b && (unsigned char)(*src_)[i + 1] == 0x80 &&
+                ((unsigned char)(*src_)[i + 2] == 0xA8 || (unsigned char)(*src_)[i + 2] == 0xA9)) return true;
+        }
+        return false;
+    };
+    if (pv.kind == Tok::RBrace && pos_ - 1 == lastBlockClose_ && cur().line == pv.line &&
+        !isKind(Tok::Semicolon) && !vertBetween())
+        throw ParseError("Strange text after block (missing semicolon or comma?)", cur().line,
+                         "X::Syntax::Confused", {{"reason", "Strange text after block (missing semicolon or comma?)"}});
     if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line) {
         // A `[` here was read as a bracketed INFIX whose brackets do not spell an
         // operator — `@a [0]` — and naming that is more use than "two terms in a

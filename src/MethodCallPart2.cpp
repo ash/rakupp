@@ -3214,6 +3214,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             }
                         }
                         size_t zp = is.find_first_of("Zz+-", tp + 1);
+                        // a timestamp that carries its own offset takes no :timezone
+                        if (zp != std::string::npos)
+                            for (auto& na : args)
+                                if (na.t == VT::Pair && na.namedArg && na.s == "timezone")
+                                    throwTypedV("X::DateTime::TimezoneClash", {},
+                                        "DateTime.new(Str): :timezone argument not allowed with a timestamp offset");
                         if (zp != std::string::npos) {
                             if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
                             else {
