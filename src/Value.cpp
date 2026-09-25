@@ -81,9 +81,15 @@ struct ReprCycleGuard {
 
 std::string dateGist(const ValueMap& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
-    char buf[48];
-    const char* ys = f("year") > 9999 ? "+" : ""; // ISO 8601: years past 9999 carry a leading +
-    if (isDate) std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lld", ys, f("year"), f("month"), f("day"));
+    char buf[64];
+    // ISO 8601: years past 9999 carry a leading +, and a negative year keeps
+    // four digits AFTER its sign (`-0001`, where %04lld made it `-001`)
+    char ybuf[32];
+    long long yr = f("year");
+    if (yr < 0) std::snprintf(ybuf, sizeof ybuf, "-%04lld", -yr);
+    else std::snprintf(ybuf, sizeof ybuf, "%s%04lld", yr > 9999 ? "+" : "", yr);
+    const char* ys = ybuf;
+    if (isDate) std::snprintf(buf, sizeof buf, "%s-%02lld-%02lld", ys, f("month"), f("day"));
     else {
         long long tz = f("timezone");
         char suf[12];
@@ -93,11 +99,11 @@ std::string dateGist(const ValueMap& h, bool isDate) {
         auto sit = h.find("second");
         double sd = sit != h.end() ? sit->second.toNum() : 0.0;
         if (sd != (double)(long long)sd)
-            cnum::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
-                          ys, f("year"), f("month"), f("day"), f("hour"), f("minute"), sd, suf);
+            cnum::snprintf(buf, sizeof buf, "%s-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
+                          ys, f("month"), f("day"), f("hour"), f("minute"), sd, suf);
         else
-            std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s",
-                          ys, f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"), suf);
+            std::snprintf(buf, sizeof buf, "%s-%02lld-%02lldT%02lld:%02lld:%02lld%s",
+                          ys, f("month"), f("day"), f("hour"), f("minute"), f("second"), suf);
     }
     return buf;
 }
@@ -1003,6 +1009,9 @@ std::string Value::gist() const {
 std::string Value::typeName() const {
     if (!enumType.empty()) return enumType; // enum value / enum type object -> its enum type
     if (isAllomorph()) return hashKind;     // IntStr / RatStr / NumStr / ComplexStr
+    // an Instant/Duration rides on an exact Int or Rat (or a Num, from `now`)
+    if ((t == VT::Int || t == VT::Rat || t == VT::Num) &&
+        (hashKind == "Instant" || hashKind == "Duration")) return hashKind;
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";

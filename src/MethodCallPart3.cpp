@@ -1489,6 +1489,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "No such method 'IO' for invocant of type '" +
                             (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
         if (inv.t == VT::Nil) return Value::nil();
+        // An IO::Path is its own .IO: rebuilding it here re-stamped :CWD with
+        // the current $*CWD, so a relative path taken inside `indir` resolved
+        // against the new directory instead of the one it was made in.
+        if (inv.t == VT::Str && inv.hashKind == "IO") return inv;
         // "" is not a path. Accepting it made `$maybe-a-name.IO` hand back a
         // path that every later operation treated as the current directory.
         if (inv.t == VT::Str && inv.s.empty())

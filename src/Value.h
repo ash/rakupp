@@ -964,7 +964,8 @@ inline bool retTypeCoerces(const std::string& rt) {
 
 inline bool identityScalar(const Value& v) {
     return (v.t == VT::Str && v.hashKind == "Buf") ||
-           (v.t == VT::Num && (v.hashKind == "Instant" || v.hashKind == "Duration"));
+           ((v.t == VT::Num || v.t == VT::Int || v.t == VT::Rat) &&
+            (v.hashKind == "Instant" || v.hashKind == "Duration"));
 }
 inline Value& identify(Value& v) { v.extM() = std::make_shared<char>(); return v; }
 

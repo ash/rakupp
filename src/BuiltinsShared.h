@@ -10,6 +10,7 @@
 #endif
 #include <sys/stat.h>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -31,12 +32,70 @@ double numValueOf(Interpreter& I, const Value& v);
 // that pair, and every timestamp came out ten seconds early).
 inline constexpr double kInstantEpochOffset = 10.0;
 
+// …and every leap second since. An Instant is TAI: POSIX + 10 + the leap
+// seconds inserted before it, as Rakudo keeps it. These are the POSIX times of
+// the midnight FOLLOWING each inserted second — the one POSIX reading two UTC
+// moments share (Rakudo::Internals' leap-second-posix list).
+inline constexpr long long kLeapSecondPosix[] = {
+      78796800,   94694400,  126230400,  157766400,  189302400,  220924800,
+     252460800,  283996800,  315532800,  362793600,  394329600,  425865600,
+     489024000,  567993600,  631152000,  662688000,  709948800,  741484800,
+     773020800,  820454400,  867715200,  915148800, 1136073600, 1230768000,
+    1341100800, 1435708800, 1483228800 };
+
+// TAI − POSIX for the POSIX second `p` (Instant.from-posix). A `p` that IS one
+// of the shared readings means the midnight after the leap second, unless
+// `preferLeap` asks for the leap second itself (23:59:60).
+inline long long taiOffsetForPosix(long long p, bool preferLeap = false) {
+    long long off = 10;
+    for (long long lp : kLeapSecondPosix) {
+        if (lp < p) { off++; continue; }
+        if (lp == p && !preferLeap) off++;
+        break;
+    }
+    return off;
+}
+
+// The inverse (Instant.to-posix) for a TAI whose floor is `n`: the offset to
+// take off, and whether that instant falls inside a leap second.
+inline long long posixOffsetForTai(long long n, bool& inLeap) {
+    long long off = 10; inLeap = false;
+    for (long long lp : kLeapSecondPosix) {   // `lp + off`, not `n - off`: n may be near LLONG_MIN
+        if (lp + off < n) { off++; continue; }
+        inLeap = (n == lp + off);
+        return off;
+    }
+    return off;
+}
+
+// floor() of a seconds count as a long long, clamped: the leap table only needs
+// to know which side of 1972..2017 a far-away instant falls on
+inline long long floorSecsLL(double x) {
+    if (!(x == x)) return 0;
+    if (x <= -9.2e18) return -9200000000000000000LL;
+    if (x >= 9.2e18) return 9200000000000000000LL;
+    return (long long)std::floor(x);
+}
+
+// Is `y-m-d` a day that ended in a leap second (23:59:60 UTC exists on it)?
+inline bool isLeapSecondDate(long long y, long long m, long long d) {
+    // days-from-civil (Howard Hinnant), inlined to keep this header free-standing
+    long long yy = y - (m <= 2);
+    long long era = (yy >= 0 ? yy : yy - 399) / 400;
+    long long yoe = yy - era * 400;
+    long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long long next = (era * 146097 + doe - 719468 + 1) * 86400;   // the following midnight
+    for (long long lp : kLeapSecondPosix) if (lp == next) return true;
+    return false;
+}
+
 // Seconds since the epoch, on the same clock the `now` term reads (so timer
 // promises and `now` arithmetic can't disagree — by a truncated fraction, or by
 // the offset above: `sleep-until(now - 5)` compares against this).
 inline double epochNowSecs() {
-    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count()
-           + kInstantEpochOffset;
+    double p = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    return p + (double)taiOffsetForPosix((long long)std::floor(p));
 }
 
 // Seconds on that same clock for a user-supplied POINT IN TIME — the argument of
@@ -51,7 +110,7 @@ inline double epochNowSecs() {
 // covered by t/regression/datetime-timer-clock.raku.
 inline double instantSecsOf(const Value& v) {
     double s = v.toNum();
-    if (v.hashKind == "DateTime") s += kInstantEpochOffset;
+    if (v.hashKind == "DateTime") s += (double)taiOffsetForPosix((long long)std::floor(s));
     return s;
 }
 

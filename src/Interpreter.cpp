@@ -54,6 +54,7 @@ static char** rakupp_environ() { return environ; }
 #include <regex>
 #include <set>
 #include "Pod.h"
+#include "DeclCheck.h"
 #include <sstream>
 #if !defined(_WIN32)
 #include <dirent.h>   // Windows gets the FindFirstFile-based shim from Platform.h
@@ -1256,10 +1257,20 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // variable here. See declTypeIsKnown for how carefully the question is
     // asked: a refusal has to be a certainty, so every shape this cannot model
     // is answered "known".
-    if (ve && !ve->declType.empty() && !ve->declTypeExpr && !declTypeIsKnown(ve->declType))
-        throwTypedV("X::Undeclared",
-            {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}},
-            "Type '" + ve->declType + "' is not declared");
+    // Rakudo reports it as a group: the undeclared type (with its "Did you
+    // mean" suggestions) as the sorrow, and the declaration it broke as the panic.
+    if (ve && !ve->declType.empty() && !ve->declTypeExpr && !declTypeIsKnown(ve->declType)) {
+        auto sug = typeSuggestions(ve->declType);
+        Value sl = Value::array(); sl.isList = true;
+        for (auto& n : sug) sl.arr()->push_back(Value::str(n));
+        std::string msg = "Type '" + ve->declType + "' is not declared" + didYouMean(sug);
+        Value und = makeTypedEx("X::Undeclared",
+            {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}, {"suggestions", sl}}, msg);
+        Value sorrows = Value::array(); sorrows.isList = true;
+        sorrows.arr()->push_back(und);
+        Value panic = makeTypedEx("X::Syntax::Malformed", {{"what", Value::str("my")}}, "Malformed my");
+        throwTypedV("X::Comp::Group", {{"sorrows", sorrows}, {"panic", panic}}, msg + "\nMalformed my");
+    }
     if (ve && ve->declTypeExpr && sigil == '$') {
         try {
             Value t = eval(ve->declTypeExpr.get());
@@ -9024,8 +9035,13 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             size_t lt = n.find(":<");
             if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
                 std::string kind = n.substr(1, lt - 1);
+                std::string opn = n.substr(lt + 2, n.size() - lt - 3);
                 if (kind == "infix" || kind == "prefix" || kind == "postfix")
-                    lexer.noteUserOp(n.substr(lt + 2, n.size() - lt - 3), false);
+                    lexer.noteUserOp(opn, false);
+                else if ((kind == "circumfix" || kind == "postcircumfix") && opn.find(' ') != std::string::npos) {
+                    lexer.noteUserOp(opn.substr(0, opn.find(' ')), false);
+                    lexer.noteUserOp(opn.substr(opn.find(' ') + 1), false);
+                }
             }
             // …and its sigilless TERMS that are no plain word (`my \term:<ℵ₀>`)
             else if (!n.empty() && !std::strchr("$@%&", n[0]) && (unsigned char)n.back() >= 0x80)
@@ -9047,7 +9063,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 size_t lt = n.find(":<");
                 if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
                     std::string kind = n.substr(1, lt - 1);
-                    if (kind == "infix" || kind == "prefix" || kind == "postfix")
+                    if (kind == "infix" || kind == "prefix" || kind == "postfix" ||
+                        kind == "circumfix" || kind == "postcircumfix")
                         parser.declareUserOp(kind, n.substr(lt + 2, n.size() - lt - 3));
                 }
             }
@@ -9148,6 +9165,20 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         if (std::string ph = firstBlockPlaceholder(prog->stmts); !ph.empty())
             throwTyped("X::Placeholder::Mainline", {{"placeholder", ph}},
                        "Cannot use placeholder parameter " + ph + " in the mainline");
+    // An undeclared variable is a COMPILE error in EVAL'd code as it is in a
+    // file (issue #32's gate, which only the main program went through):
+    // `EVAL 'sub greet($name) { say "hello, $nam" }'` dies although greet never
+    // runs. The pass sees only the snippet, so a name the calling scope binds
+    // at run time is no finding.
+    // (…and an EVAL written where `no strict` holds inherits the lax pragma)
+    if (mainlinePH && declCheckEnabled() && !noStrictHere()) {
+        auto us = findUndeclaredVars(*prog, src, libPaths_);
+        for (auto& u : us) {
+            if (tctx_.cur && tctx_.cur->find(u.name)) continue;
+            if (isSpecialVar(u.name)) continue;
+            throwUndeclaredVar(u.name, &u.inScope);
+        }
+    }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
@@ -10292,6 +10323,12 @@ bool isKnownTypeName(const std::string& n) {
     // routine return type in NativeHelpers::Array and friends
     if (n == "CArray" || n == "Pointer" ||
         n.rfind("CArray[", 0) == 0 || n.rfind("Pointer[", 0) == 0) return true;
+    return coreTypeNames().count(n) > 0;
+}
+
+// The core type names isKnownTypeName answers for, as a set a caller can walk
+// (the "Did you mean" suggestions rank a misspelled type against them).
+const std::set<std::string>& coreTypeNames() {
     static const std::set<std::string> t = {
         "Mu", "Any", "Cool", "Junction", "Whatever", "WhateverCode", "Nil",
         "Int", "UInt", "Num", "Rat", "FatRat", "Complex", "Numeric", "Real", "Bool",
@@ -10338,7 +10375,86 @@ bool isKnownTypeName(const std::string& n) {
         "Rational", "PositionalBindFailover", "Sequence", "Awaitable",
         "Scheduler", "ForeignCode", "NFC", "NFD", "NFKC", "NFKD",
     };
-    return t.count(n) > 0;
+    return t;
+}
+
+// Rakudo's "Did you mean" distance (Perl6::World's levenshtein): an edit that
+// only changes case costs 0.1, a sigil traded for another sigil 0.5, any other
+// substitution, insertion, deletion or adjacent transposition 1.
+static double suggestDistance(const std::string& a, const std::string& b) {
+    auto sig = [](char c) { return c == '$' || c == '@' || c == '%' || c == '&' || c == '|'; };
+    auto sub = [&](char x, char y) -> double {
+        if (x == y) return 0;
+        if (ascii::tolower((unsigned char)x) == ascii::tolower((unsigned char)y)) return 0.1;
+        if (sig(x) && sig(y)) return 0.5;
+        return 1;
+    };
+    size_t n = a.size(), m = b.size();
+    std::vector<std::vector<double>> d(n + 1, std::vector<double>(m + 1, 0));
+    for (size_t i = 0; i <= n; i++) d[i][0] = (double)i;
+    for (size_t j = 0; j <= m; j++) d[0][j] = (double)j;
+    for (size_t i = 1; i <= n; i++)
+        for (size_t j = 1; j <= m; j++) {
+            double c = std::min({d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + sub(a[i - 1], b[j - 1])});
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
+                c = std::min(c, d[i - 2][j - 2] + 1);
+            d[i][j] = c;
+        }
+    return d[n][m];
+}
+
+// ". Did you mean 'X'?" / ". Did you mean any of these: 'X', 'Y'?", or nothing
+std::string didYouMean(const std::vector<std::string>& sug) {
+    if (sug.empty()) return "";
+    if (sug.size() == 1) return ". Did you mean '" + sug[0] + "'?";
+    std::string m = ". Did you mean any of these: ";
+    for (size_t i = 0; i < sug.size(); i++) m += (i ? ", '" : "'") + sug[i] + "'";
+    return m + "?";
+}
+
+// The names among `cands` close enough to `name` to suggest, nearest first and
+// at most five, the way Rakudo's levenshtein_candidate_heuristic trims them.
+std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands) {
+    std::vector<std::pair<double, std::string>> hits;
+    double bound = std::max(1.0, name.size() / 3.0);
+    for (auto& c : cands) {
+        if (c == name || c.empty()) continue;
+        if (c.size() + 3 < name.size() || name.size() + 3 < c.size()) continue;
+        double dd = suggestDistance(name, c);
+        if (dd <= bound) hits.push_back({dd, c});
+    }
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const auto& x, const auto& y) { return x.first < y.first; });
+    std::vector<std::string> out;
+    for (auto& h : hits)
+        if (std::find(out.begin(), out.end(), h.second) == out.end() && out.size() < 5) out.push_back(h.second);
+    return out;
+}
+
+// A misspelled TYPE name: the core types and every type this program declared
+std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
+    std::vector<std::string> cands(coreTypeNames().begin(), coreTypeNames().end());
+    for (auto& kv : classes_)
+        if (!kv.first.empty() && kv.first.rfind("X::", 0) != 0 && kv.first.find('[') == std::string::npos)
+            cands.push_back(kv.first);
+    return suggestNames(name, cands);
+}
+
+// A misspelled ROUTINE name: the built-in routines and the `&` names in scope
+std::vector<std::string> Interpreter::routineSuggestions(const std::string& name) {
+    std::vector<std::string> cands;
+    for (auto& kv : builtins_)
+        if (!kv.first.empty() && kv.first[0] != '_' && kv.first.find(':') == std::string::npos &&
+            builtinVisible(kv.first))
+            cands.push_back(kv.first);
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
+        for (auto& kv : e->vars)
+            if (kv.first.size() > 1 && kv.first[0] == '&') cands.push_back(kv.first.substr(1));
+        if (e->layout)
+            for (auto& nm : e->layout->names)
+                if (nm.size() > 1 && nm[0] == '&') cands.push_back(nm.substr(1));
+    }
+    return suggestNames(name, cands);
 }
 
 // macOS resolves a bare unversioned libssl/libcrypto name to the /usr/lib
@@ -12281,6 +12397,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                              {"composer", Value::typeObj(rn)}},
                             rn + " is not composable, so " + cd->name +
                             " cannot compose it");
+                    // a role that is still only a stub (`role R { ... }`, never
+                    // completed) has no variant to compose
+                    if (it != classes_.end() && it->second->isRole && it->second->roleVariants.empty() &&
+                        it->second->decl && it->second->decl->isStubDecl)
+                        throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", rn}},
+                                   "No appropriate parametric role variant available for '" + rn + "'");
                 }
                 ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 // `class Foo does Maybe` for an ENUM Maybe: the class gets a
@@ -13027,10 +13149,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         {{"child-typename", Value::str(cd->name)}, {"parent", Value::typeObj(tn)}},
                         (pkgKind_[tn] == 1 ? "module" : "package") + std::string(" ") + tn +
                         " does not support inheritance, so " + cd->name + " cannot inherit from it");
-                if (!handled)
-                    throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
+                if (!handled) {
+                    auto sug = typeSuggestions(tn);
+                    Value sl = Value::array(); sl.isList = true;
+                    for (auto& n : sug) sl.arr()->push_back(Value::str(n));
+                    throwTypedV("X::Inheritance::UnknownParent",
+                        {{"child", Value::str(cd->name)}, {"parent", Value::str(tn)}, {"suggestions", sl}},
                         "Class '" + cd->name + "' cannot inherit from '" + tn +
-                        "' because it is unknown"};
+                        "' because it is unknown" + didYouMean(sug));
+                }
             }
             // Class-body subs are hoisted into the body scope NOW, before the
             // method traits below run: a `trait_mod:<is>` handler is an ordinary
@@ -15076,32 +15203,31 @@ Value Interpreter::ioFailure(const std::string& type,
 
 // `$abd` with `$abc` and `$abe` in scope: X::Undeclared, and — as Rakudo —
 // the names one or two edits away as `suggestions`
-void Interpreter::throwUndeclaredVar(const std::string& name) {
-    auto dist = [](const std::string& a, const std::string& b) {
-        std::vector<size_t> row(b.size() + 1);
-        for (size_t j = 0; j <= b.size(); j++) row[j] = j;
-        for (size_t i = 1; i <= a.size(); i++) {
-            size_t prev = row[0]; row[0] = i;
-            for (size_t j = 1; j <= b.size(); j++) {
-                size_t cur = std::min({row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] == b[j - 1] ? 0 : 1)});
-                prev = row[j]; row[j] = cur;
-            }
-        }
-        return row[b.size()];
-    };
-    std::vector<std::string> sug;
+void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<std::string>* extra) {
+    std::vector<std::string> cands;
+    if (extra) for (auto& n : *extra) if (n != name && n.size() > 1) cands.push_back(n);
     auto consider = [&](const std::string& n) {
-        if (n.size() < 2 || n[0] != name[0] || n == name || n[1] == '*' || n[1] == '?' || n[1] == '!') return;
-        if (std::find(sug.begin(), sug.end(), n) != sug.end()) return;
-        if (dist(n, name) <= std::max<size_t>(1, name.size() / 3)) sug.push_back(n);
+        if (n.size() < 2 || n == name || n[1] == '*' || n[1] == '?' || n[1] == '!') return;
+        if (n[0] != '$' && n[0] != '@' && n[0] != '%' && n[0] != '&') return;
+        cands.push_back(n);
     };
-    if (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&'))
-        for (Env* e = tctx_.cur.get(); e && sug.size() < 16; e = e->parent.get()) {
+    if (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) {
+        for (Env* e = tctx_.cur.get(); e && cands.size() < 4096; e = e->parent.get()) {
             for (auto& kv : e->vars) consider(kv.first);
             if (e->layout)
                 for (size_t i = 0; i < e->layout->names.size() && i < 64; i++)
                     if ((e->padLive.load(std::memory_order_acquire) >> i) & 1) consider(e->layout->names[i]);
         }
+        // inside a method, the class's attributes: `$name` where `has $.name` meant `$!name`
+        if (Value* sp = tctx_.cur ? tctx_.cur->findSelf() : nullptr) {
+            ClassInfo* ci = nullptr;
+            if (sp->t == VT::Object && sp->obj()) ci = sp->obj()->cls.get();
+            else if (sp->t == VT::Type) { auto it = classes_.find(sp->s); if (it != classes_.end()) ci = it->second.get(); }
+            for (ClassInfo* c = ci; c; c = c->parent.get())
+                for (auto& a : c->attrs) cands.push_back(std::string(1, a.sigil) + "!" + a.name);
+        }
+    }
+    std::vector<std::string> sug = suggestNames(name, cands);
     std::string msg = "Variable '" + name + "' is not declared";
     Value sl = Value::array(); sl.isList = true;
     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
@@ -15611,6 +15737,28 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         // the method env) and does NOT consume a positional argument — the dispatch
         // matched it. Consuming one here would shift every following parameter.
         if (p.invocant) {
+            // `method x(Foo:D:)` — the invocant's smiley is enforced like any
+            // parameter's: `Foo.x` on a :D invocant is X::Parameter::InvalidConcreteness
+            if (p.defConstraint == 1 || p.defConstraint == 2)
+                if (Value* sp = env->find("self")) {
+                    bool def = isDefined(*sp) || (sp->t == VT::Hash && sp->hashKind == "Failure");
+                    if ((p.defConstraint == 1) != def) {
+                        std::string rn = tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+                                         tctx_.curRoutineVal->code() ? tctx_.curRoutineVal->code()->name : "";
+                        std::string ty = p.type.empty() ? std::string("Any") : p.type;
+                        std::string gt = sp->typeName();
+                        bool conc = p.defConstraint == 1;
+                        throwTypedV("X::Parameter::InvalidConcreteness",
+                            {{"expected", Value::typeObj(ty)}, {"got", *sp}, {"routine", Value::str(rn)},
+                             {"param", Value::str(p.name.empty() ? "self" : p.name)},
+                             {"should-be-concrete", Value::boolean(conc)},
+                             {"param-is-invocant", Value::boolean(true)}},
+                            "Invocant of method '" + rn + "' must be " +
+                            (conc ? "an object instance" : "a type object") + " of type '" + ty +
+                            "', not " + (conc ? "a type object" : "an object instance") + " of type '" + gt +
+                            "'.  Did you forget a " + (conc ? "'.new'?" : "'multi'?"));
+                    }
+                }
             // `method x(Int $a:)` — the invocant is type-checked too
             if (!p.type.empty() && !p.typeCapture && p.type.rfind("::", 0) != 0 && !p.coerce)
                 if (Value* sp = env->find("self"))
@@ -19574,6 +19722,12 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     // `my Str $s = <42>` and `my Int $i = <42>` both hold
     if (v.isAllomorph() && (type == "Str" || type == "Stringy" || type == v.hashKind))
         return true;
+    // an Instant/Duration rides on an Int, Rat or Num but is not one: Rakudo's
+    // `Instant ~~ Num` is False (Real and Numeric hold) — CBOR::Simple tests Num
+    // before Instant and tagged every Instant as a float
+    if ((v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num) &&
+        (v.hashKind == "Instant" || v.hashKind == "Duration"))
+        return type == "Numeric" || type == "Real" || type == v.hashKind;
     switch (v.t) {
         // UInt is `subset UInt of Int where * >= 0` — an Int matches it when it
         // is not negative. (typeNameConforms already knew; this third path did
@@ -31929,6 +32083,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
         if (r.t == VT::Whatever) return Value::boolean(op == "~~");
+        // `$datetime ~~ $date`: does the moment fall on that civil day (and a
+        // Date against a Date: the same day)
+        if (r.t == VT::Hash && r.hashKind == "Date" && r.hash() &&
+            l.t == VT::Hash && (l.hashKind == "DateTime" || l.hashKind == "Date") && l.hash()) {
+            auto f = [](const Value& v, const char* k) {
+                auto it = v.hash()->find(k); return it == v.hash()->end() ? 0LL : it->second.toInt();
+            };
+            res = f(l, "year") == f(r, "year") && f(l, "month") == f(r, "month") && f(l, "day") == f(r, "day");
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         // list ~~ list where the PATTERN holds a Whatever: `**` matches any RUN of
         // elements (including none), so (1,2,4,8) ~~ (1,**,8) holds, while a
         // plain `*` matches exactly ONE — (1,2,3) ~~ (1,*,3)
@@ -35640,9 +35804,19 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
 // Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
 // Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
 static void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
-    if (!(op == "+" || op == "-") || !res.isNumeric() || !res.hashKind.empty()) return;
+    if (!(op == "+" || op == "-" || op == "%") || !res.isNumeric() || !res.hashKind.empty()) return;
     bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
     bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
+    if (op == "%") {   // Duration % Real is a Duration; nothing else stays temporal
+        if (ld && !ri && !rd) {
+            if (res.t == VT::Num && std::isfinite(res.n) && g_revInterp) {
+                Value b = res; b = g_revInterp->methodCall(b, "Rat", ValueList{});
+                if (b.t == VT::Rat) res = b;
+            }
+            res.hashKind = "Duration"; identify(res);
+        }
+        return;
+    }
     if (!(li || ri || ld || rd)) return;
     // two points in time do not add up to a third
     if (op == "+" && li && ri)
@@ -35650,6 +35824,13 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
                         "Cannot resolve caller infix:<+>(Instant:D, Instant:D)"};
     if (op == "-") res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
     else res.hashKind = (li || ri) ? "Instant" : "Duration";
+    // a Duration is a Rat (Rakudo's `has Rat $.tai`): `Duration.new(4.5) - 1e0`
+    // is Duration.new(3.5), not a float
+    if (res.hashKind == "Duration" && res.t == VT::Num && std::isfinite(res.n) && g_revInterp) {
+        Value b = res; b.hashKind = "";
+        b = g_revInterp->methodCall(b, "Rat", ValueList{});
+        if (b.t == VT::Rat) { b.hashKind = "Duration"; res = b; }
+    }
     identify(res); // the sum is a new Instant/Duration, with its own identity
 }
 
@@ -36062,6 +36243,16 @@ Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const 
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    // `$datetime ~~ $date` asks whether the moment falls on that civil day
+    // (Rakudo's Date.ACCEPTS(DateTime)), not whether the two are the same value
+    if ((op == "~~" || op == "!~~") && r.t == VT::Hash && r.hashKind == "Date" && r.hash() &&
+        l.t == VT::Hash && l.hashKind == "DateTime" && l.hash()) {
+        auto f = [](const Value& v, const char* k) {
+            auto it = v.hash()->find(k); return it == v.hash()->end() ? 0LL : it->second.toInt();
+        };
+        bool same = f(l, "year") == f(r, "year") && f(l, "month") == f(r, "month") && f(l, "day") == f(r, "day");
+        return Value::boolean(op == "~~" ? same : !same);
+    }
     // an OBJECT-like built-in (a Promise, a Vow, a Channel, …) smartmatches by
     // identity, as Any.ACCEPTS does — never by comparing its fields as a Hash
     if (r.t == VT::Hash && !r.hashKind.empty() && r.hash() && (op == "~~" || op == "!~~") &&
@@ -36727,7 +36918,10 @@ Value Interpreter::evalBinary(Binary* b) {
                     // an instant: it names a civil day and carries no clock fields.
                     if (v.hashKind == "Date") return dateNumeric(v);
                     double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
-                    if (v.hash() && v.hash()->count("second")) { double s = (*v.hash())["second"].toNum(); p += s - std::floor(s); }
+                    if (v.hash() && v.hash()->count("second")) {
+                        double s = (*v.hash())["second"].toNum(); p += s - std::floor(s);
+                        if (s >= 60) p += 1.0;   // :60 stores the posix of :59; it is one TAI second on
+                    }
                     long long ip = (long long)std::floor(p);
                     for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
                     return p;
@@ -36744,6 +36938,44 @@ Value Interpreter::evalBinary(Binary* b) {
                     if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
                     return res;
                 };
+                // DateTime against DateTime, and DateTime ± a duration, go through
+                // the EXACT Instant (a Rat, leap seconds counted): the double here
+                // made `$dt1 - $dt2` 59826610.48000002 and read 23:59:60 and the
+                // midnight after it as the same moment
+                auto exactInst = [&](const Value& v) {
+                    Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
+                };
+                if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
+                    (op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" ||
+                     op == "<=>" || op == "-")) {
+                    Value diff = applyArith("-", exactInst(l), exactInst(r));
+                    if (op == "-") {
+                        if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
+                        diff.hashKind = "Duration"; return identify(diff);
+                    }
+                    int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
+                    if (op == "<=>") return Value::orderVal(c);
+                    bool res = op == "<" ? c < 0 : op == ">" ? c > 0 : op == "<=" ? c <= 0
+                             : op == ">=" ? c >= 0 : op == "==" ? c == 0 : c != 0;
+                    return Value::boolean(res);
+                }
+                auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
+                    Value b = by; b.hashKind = "";
+                    Value inst = applyArith(minus ? "-" : "+", exactInst(dt), b);
+                    inst.hashKind = "Instant";
+                    long long tz = dt.hash() && dt.hash()->count("timezone") ? (*dt.hash())["timezone"].toInt() : 0;
+                    Value res = methodCall(Value::typeObj("DateTime"), "new",
+                        ValueList{inst, Value::pair("timezone", Value::integer(tz))});
+                    if (dt.hash() && dt.hash()->count("formatter") && res.t == VT::Hash && res.hash())
+                        (*res.hash())["formatter"] = (*dt.hash())["formatter"];
+                    return res;
+                };
+                if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
+                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
+                    return moveDT(l, r, op == "-");
+                if (op == "+" && r.hashKind == "DateTime" &&
+                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
+                    return moveDT(r, l, false);
                 if (ldt && rdt && (op == "<" || op == ">" || op == "<=" || op == ">=" ||
                                    op == "==" || op == "!=" || op == "<=>")) {
                     double a = dtSec(l), c = dtSec(r);
@@ -38841,6 +39073,60 @@ Value Interpreter::evalUnary(Unary* u) {
                 return Value::boolean(true);
             }
         }
+        // `[Z&&] (1,0,1), (1,2,++$x)` — the metaop keeps its thunky RIGHT side
+        // in the reduce form too, exactly as the infix `L Z&& (…)` does: each
+        // element expression of a literal list runs only when the value beside
+        // it needs it. (It ran every element up front, and then once more.)
+        if (op.size() > 1 && (op[0] == 'X' || op[0] == 'Z') && u->operand->kind == NK::ListExpr &&
+            static_cast<ListExpr*>(u->operand.get())->items.size() >= 2) {
+            static const std::set<std::string> thunkyZ = {
+                "&&", "||", "and", "or", "andthen", "orelse", "notandthen", "//"};
+            const std::string inner = op.substr(1);
+            auto& its = static_cast<ListExpr*>(u->operand.get())->items;
+            bool literalTail = true;
+            for (size_t k = 1; k < its.size(); k++) if (its[k]->kind != NK::ListExpr) literalTail = false;
+            if (thunkyZ.count(inner) && literalTail) {
+                auto one = [&](const Value& l, Expr* re) -> Value {
+                    bool takeLeft;
+                    if (inner == "&&" || inner == "and") takeLeft = !boolify(l);
+                    else if (inner == "||" || inner == "or") takeLeft = boolify(l);
+                    else if (inner == "//" || inner == "orelse") takeLeft = isDefined(l);
+                    else if (inner == "andthen") takeLeft = !isDefined(l);
+                    else takeLeft = isDefined(l);                   // notandthen
+                    if (takeLeft) return inner == "andthen" ? Value::array() : l;
+                    if (inner == "andthen" || inner == "orelse" || inner == "notandthen") {
+                        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                        env->define("$_", l);
+                        auto saved = tctx_.cur; tctx_.cur = env;
+                        Value v;
+                        try { v = eval(re); } catch (...) { tctx_.cur = saved; throw; }
+                        tctx_.cur = saved;
+                        return v;
+                    }
+                    return eval(re);
+                };
+                Value lv = eval(its[0].get());
+                ValueList ls;
+                if (lv.t == VT::Array && lv.arr() && !lv.itemized) ls = *lv.arr();
+                else if (lv.t == VT::Range) ls = lv.flatten();
+                else ls.push_back(lv);
+                for (size_t k = 1; k < its.size(); k++) {
+                    auto& ritems = static_cast<ListExpr*>(its[k].get())->items;
+                    ValueList next;
+                    if (op[0] == 'X') {
+                        for (auto& l : ls) for (auto& re : ritems) next.push_back(one(l, re.get()));
+                    }
+                    else {
+                        for (size_t j = 0; j < ls.size() && j < ritems.size(); j++)
+                            next.push_back(one(ls[j], ritems[j].get()));
+                    }
+                    ls = std::move(next);
+                }
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                for (auto& v : ls) out.arr()->push_back(v);
+                return out;
+            }
+        }
         // short-circuit reduces THUNK their operands: `[&&] 0, ++$x` decides at
         // the 0 and must never run the increment; scan forms freeze the partials
         // once decided ([\&&] 1,0,++$x is (1 0 0) with $x untouched)
@@ -40013,6 +40299,32 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     auto od = makePayload<ObjectData>();
     od->cls = ci;
     od->attrs["message"] = Value::str(e.message);
+    // An undeclared routine or type carries Rakudo's "Did you mean" hashes —
+    // `routine_suggestion<huc>` is ["uc"] — recovered from the name the message
+    // quotes, since every site that throws it names the symbol that way.
+    if (tn == "X::Undeclared::Symbols") {
+        auto quoted = [&](const std::string& lead) -> std::string {
+            if (e.message.rfind(lead, 0) != 0) return "";
+            size_t q = e.message.find('\'', lead.size());
+            return q == std::string::npos ? "" : e.message.substr(lead.size(), q - lead.size());
+        };
+        std::string rn = quoted("Undefined routine '"), tyn = quoted("Undeclared name '");
+        Value rs = Value::makeHash(), ts = Value::makeHash();
+        std::vector<std::string> sug;
+        if (!rn.empty()) sug = routineSuggestions(rn);
+        else if (!tyn.empty()) sug = typeSuggestions(tyn);
+        if (!sug.empty()) {
+            Value sl = Value::array(); sl.isList = true;
+            for (auto& n : sug) sl.arr()->push_back(Value::str(n));
+            (*(rn.empty() ? ts : rs).hash())[rn.empty() ? tyn : rn] = sl;
+            if (e.message.find("Did you mean") == std::string::npos)
+                od->attrs["message"] = Value::str(e.message + didYouMean(sug));
+        }
+        od->attrs["routine_suggestion"] = rs;
+        od->attrs["type_suggestion"] = ts;
+        for (const char* an : {"routine_suggestion", "type_suggestion"})
+            if (!ci->findAttr(an)) { ClassAttr a; a.name = an; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+    }
     // an X::AdHoc's .payload is whatever was passed to `die` — for `die "msg"`
     // that's the message itself, and the same holds for anything parented to it
     if (isAdHocKind(tn)) od->attrs["payload"] = Value::str(e.message);

@@ -750,6 +750,8 @@ struct AttrDecl {
     char sigil = '$';
     std::string containerIs; // `has %.a is Set` — container type trait
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
+    bool twigilWritten = false; // spelled `$.x`/`$!x`, not a bare `has $x` (which also
+                                // names `$x` in the class); false is the lenient default
     bool rw = false;    // `is rw` — public accessor is writable
     bool required = false; // `is required` — .new must be given a value for it
     bool built = false;    // `is built` — a PRIVATE attr .new may still set by name

@@ -886,8 +886,10 @@ void Lexer::skipWhitespaceAndComments() {
             if (uws) { for (int k = 0; k < uws; k++) advance(); continue; }
         }
         // unspace: backslash + whitespace run is ignored and JOINS the tokens
-        // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore)
-        if (c == '\\') {
+        // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore).
+        // Not inside a bare `< … >` word list: there a backslash is only a
+        // character, and `<$\ $|>` is the two words `$\` and `$|`.
+        if (c == '\\' && angleWords_ == 0) {
             // unspace also joins across Unicode whitespace, not just ASCII. An
             // unspace run is never word-quote content, so the non-breaking
             // spaces count here unconditionally: `foo\<NBSP>.lc` is `foo().lc`.
@@ -2187,6 +2189,11 @@ bool Lexer::tryQuoteForm(Token& out) {
     // nest like Raku char classes, so don't shield the delimiter inside `[ ]` there.
     bool p5 = adverbs.find("P5") != std::string::npos || adverbs.find("Perl5") != std::string::npos;
     int startLine = line_; // set again below, once the opening delimiter is consumed
+    // A bare `Q` has NO escapes, not even of its own closing delimiter:
+    // `Q[a escape\]` is the text `a escape\` (roast S17-procasync's quoting tests)
+    bool rawQ = word0 == "Q";
+    for (const char* a : {":b ", ":backslash ", ":q ", ":qq ", ":single ", ":double "})
+        if (adverbs.find(a) != std::string::npos) rawQ = false;
     // `isRepl` marks the SECOND half of s/pat/repl/ — Rakudo names that part
     // rather than reporting a plain missing terminator.
     auto readPart = [&](bool quoteAware, bool blocks, bool isRepl = false) -> std::string {
@@ -2200,7 +2207,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         bool classOpen = false; // just opened a P5 class: a `]` here is a member
         while (!eof()) {
             char ch = peek();
-            if (ch == '\\') { classOpen = false; advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
+            if (ch == '\\' && !rawQ) { classOpen = false; advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
             if (interpChain && (ch == '$' || ch == '@' || ch == '%' || ch == '&')) {
                 raw += advance();
                 for (size_t e = interpChainEnd(src_, pos_); pos_ < e; ) raw += advance();
@@ -3629,6 +3636,15 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         if (inAngle && c == '\\') {
             advance();
             std::string w;
+            // …but whitespace is not escaped: it still separates the words, so
+            // `<$\ $|>` is `$\` and `$|`
+            char nx = eof() ? '\0' : peek();
+            if (nx == ' ' || nx == '\t' || nx == '\n' || nx == '\r') {
+                Token wt = make(Tok::Ident, "\\");
+                wt.spaceBefore = spaced;
+                out.push_back(wt);
+                continue;
+            }
             char e = eof() ? '\0' : advance();
             if (e == '<' || e == '>' || e == '\\') w += e;
             else { w += '\\'; if (e) w += e; }

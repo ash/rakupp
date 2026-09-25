@@ -3540,7 +3540,7 @@ bool whichIsObjAt(const Value& v) {
            (v.t == VT::Hash && (v.hashKind == "Hash" || v.hashKind == "SetHash" ||
                                 v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
            (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "IO")) ||
-           (v.t == VT::Num && v.hashKind == "Instant") ||
+           (v.isNumeric() && v.hashKind == "Instant") ||
            v.t == VT::Code || (v.t == VT::Object && !userWhichIsValue(v));
 }
 std::string whichOf(const Value& v) {
@@ -8816,8 +8816,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             throw RakuError{Value::typeObj("X::NYI"),
                             m + " is not yet implemented. Sorry."};
         if (m == "slurp-rest")
-            throw RakuError{Value::typeObj("X::Obsolete"),
-                            "Unsupported use of slurp-rest; in Raku please use slurp with IO::CatHandle"};
+            throwTyped("X::Obsolete", {{"old", "slurp-rest"}, {"replacement", "slurp"},
+                                       {"when", "with IO::CatHandle"}},
+                       "Unsupported use of slurp-rest; in Raku please use slurp with IO::CatHandle");
         if (m == "Str") return Value::str("<closed IO::CatHandle>");
     }
     if (inv.t == VT::Type && inv.s == "IO::Special" && m == "new") {
@@ -8845,15 +8846,42 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return v;
     }
     if ((inv.t == VT::Type && inv.s == "Duration" ||
-         inv.t == VT::Num && inv.hashKind == "Duration") && m == "new") {
-        // Duration is a number of seconds, tagged so .WHAT/.^name answer Duration
-        Value d = Value::number(args.empty() ? 0.0 : args[0].toNum());
+         inv.isNumeric() && inv.hashKind == "Duration") && m == "new") {
+        // Duration is a number of seconds, tagged so .WHAT/.^name answer Duration —
+        // and kept EXACT: `Duration.new(4.5)` is the Rat 4.5, not a float
+        Value d = args.empty() ? Value::integer(0) : args[0];
+        if (!d.isNumeric()) {   // "meow" is X::Str::Numeric, thrown here and not handed back
+            d = methodCall(d, "Numeric", ValueList{});
+            if (d.t == VT::Hash && d.hashKind == "Failure") methodCall(d, "throw", ValueList{});
+        }
+        d.hashKind = "";
+        d = applyArith("+", d, Value::integer(0));
+        // …and a Rat, as Rakudo's `has Rat $.tai` makes it: Duration.new(6) and
+        // Duration.new(4.5) - 1.5 are the same value (Inf/NaN stay as they are)
+        if (d.t == VT::Int || (d.t == VT::Num && std::isfinite(d.n))) {
+            Value r = methodCall(d, "Rat", ValueList{});
+            if (r.t == VT::Rat) d = r;
+        }
         d.hashKind = "Duration";
         return identify(d);
     }
-    if (inv.t == VT::Num && inv.hashKind == "Duration") {
-        if (m == "Num" || m == "Real") return Value::number(inv.n);
-        if (m == "Int") return Value::integer((long long)inv.n);
+    if (inv.isNumeric() && (inv.hashKind == "Duration" || inv.hashKind == "Instant")) {
+        Value bare = inv; bare.hashKind = "";
+        // `.tai` is the Rational underneath (Duration.new(Inf).tai is still one)
+        if (m == "tai") return bare.t == VT::Rat ? bare : methodCall(bare, "Rat", ValueList{});
+        if (m == "raku" && inv.hashKind == "Duration")
+            return Value::str("Duration.new(" + methodCall(bare, "raku", ValueList{}).toStr() + ")");
+        if (m == "raku") {   // Rakudo's spelling: back through the POSIX reading, leap flag and all
+            bool inLeap = false;
+            long long off = posixOffsetForTai(floorSecsLL(bare.toNum()), inLeap);
+            Value px = applyArith("-", bare, Value::integer(off));
+            return Value::str("Instant.from-posix(" + methodCall(px, "raku", ValueList{}).toStr() +
+                              (inLeap ? ",True" : "") + ")");
+        }
+        if (m == "Num") return Value::number(inv.toNum());
+        if (m == "Real" || m == "Bridge" || m == "narrow" || m == "Rat" || m == "FatRat" || m == "Numeric")
+            return m == "Real" && inv.hashKind == "Instant" ? inv : methodCall(bare, m, args);
+        if (m == "Int") return methodCall(bare, "Int", args);
     }
     if (inv.t == VT::Type && m == "bits") { // native int/num width (2026.06 addition)
         static const std::map<std::string, int> widths = {
@@ -8868,10 +8896,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // `$instant.to-posix` — the POSIX seconds and whether this is a leap second.
     // rakupp's Instant is TAI (POSIX + 10), so the trip back subtracts them.
     if (m == "to-posix" && inv.hashKind == "Instant") { // (any numeric answered it: `5.to-posix` is no method on Rakudo)
+        // TAI back to POSIX: the leap seconds inserted so far come off, and the
+        // second value says whether the Instant lies INSIDE one (Rakudo's rule)
+        Value t = inv; t.hashKind = "";
+        bool inLeap = false;
+        long long off = posixOffsetForTai(floorSecsLL(t.toNum()), inLeap);
         Value o = Value::array(); o.isList = true;
-        o.arr()->push_back(applyArith("-", inv.hashKind == "Instant" ? inv : Value::number(inv.toNum()),
-                                    Value::integer(10)));
-        o.arr()->push_back(Value::boolean(false));
+        o.arr()->push_back(applyArith("-", t, Value::integer(off)));
+        o.arr()->push_back(Value::boolean(inLeap));
         return o;
     }
     if (m == "Instant" && (inv.hashKind == "Instant" || (inv.t == VT::Type && inv.s == "Instant")))
@@ -8884,7 +8916,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         throwTypedV("X::Cannot::New", {{"class", Value::typeObj("Instant")}},
                     "Cannot make a Instant object using .new");
     if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric()) {
-        ValueList mk{Value::number(inv.toNum() - 10.0)};  // Instant is POSIX + 10
+        ValueList mk{inv};  // DateTime.new(Instant) takes the leap seconds back off
         if (sixE()) { // 6.e: `.DateTime(:timezone = $*TZ)`, as on Date
             bool given = false;
             for (auto& a2 : args)
@@ -8911,7 +8943,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
         // — and it is an Instant, not a bare Num: untagged, its .^name was "Num"
         // and `===` compared it by value.
-        Value v = Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
+        // …and every leap second before it. `from-posix($p, True)` reads a POSIX
+        // time two UTC moments share as the leap second rather than the midnight.
+        Value p = args.empty() ? Value::integer(0) : args[0];
+        if (!p.isNumeric()) p = Value::number(p.toNum());
+        p.hashKind = "";
+        bool prefer = args.size() > 1 && !args[1].namedArg && args[1].truthy();
+        Value v = applyArith("+", p, Value::integer(
+            taiOffsetForPosix(floorSecsLL(p.toNum()), prefer)));
         v.hashKind = "Instant";
         return identify(v);
     }

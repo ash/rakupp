@@ -489,8 +489,11 @@ public:
         if (b <= a) return d_ + a;
         std::size_t k = b - a;
         for (std::size_t j = a; j < b; j++) d_[j].~T();
-        // off the FRONT of a long vector: step the start instead of moving the tail
-        if (a == 0 && n_ - b > 8 && bitwiseRelocOk()) {
+        // off the FRONT of a long vector: step the start instead of moving the
+        // tail. Nothing is relocated, so this needs no bitwiseRelocOk(): gating
+        // it on that kept libstdc++ (whose std::string points into itself) on
+        // the per-element move — concat-stable.t ran 26 s on Linux, 1.8 s on macOS.
+        if (a == 0 && n_ - b > 8) {
             d_ += k; c_ -= k; off_ += k; n_ -= k;
             return d_;
         }
