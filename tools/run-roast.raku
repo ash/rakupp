@@ -310,6 +310,23 @@ sub static-plan($file) {
     return -1;
 }
 
+# The `#?rakudo` fudge directives a file carries, as verb => count: the ones
+# rakupp's lexer applies (applyRakudoFudge in src/Lexer.cpp) — bare `#?rakudo`
+# and `#?rakudo.moar`; another backend's lines are ignored there and here. A
+# `#?rakudo N skip` counts as one directive, not N tests: how many tests a
+# directive covers is only known once it is applied, and the TAP says that
+# (the skipped / todo-failed counts). An empty hash means the file has none.
+sub fudge-directives($file --> Hash) {
+    my %v;
+    my @lines = try { $file.IO.lines } // ();
+    for @lines -> $ln {
+        next unless $ln ~~ /^ \s* '#?rakudo' ['.' (\S+)]? \s+ [\d+ \s+]? (\w+) /;
+        next if $0.defined && ~$0 ne 'moar';
+        %v{~$1}++;
+    }
+    %v
+}
+
 my $T0          = now;                            # the run's own wall clock, for the summary
 my $WORKERS     = 2 * (($*KERNEL.cpu-cores // 4) max 1);  # threads; most park in a child — see the scheduling note
 my $CPU         = ($*KERNEL.cpu-cores // 2) max 1;        # cores the running files may add up to (-j=N / --cpu=N)
@@ -473,6 +490,15 @@ my $tot-pass = 0;
 my $tot-plan = 0;
 my $notap-declared = 0;   # tests declared by no-TAP files that never emitted a plan (all failing)
 my $notap-counted  = 0;   # how many no-TAP files we recovered a static plan from
+# Files carrying #?rakudo directives (see fudge-directives), and how they fared.
+my %fz-verbs;             # directive verb -> count, over the whole run
+my %fz-marks;             # outcome (PASS/part/noTAP/TIME/LOST) -> fudged files
+my $fz-files = 0;
+my $fz-pass  = 0;         # assertions passed in fudged files
+my $fz-decl  = 0;         # their declared tests (plan, else what ran, else static plan)
+my $fz-skip  = 0;         # `ok … # skip` lines they emitted
+my $fz-todofail = 0;      # `not ok … # todo` lines they emitted
+my $fz-todopass = 0;      # fudged files are where a stale todo shows up as a pass
 my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncountable
 my $timeout-declared = 0; # tests declared by timed-out files that never emitted a plan
 my $timeout-counted  = 0; # how many timed-out files we recovered a static plan from
@@ -655,19 +681,35 @@ my sub run-one($f) {
     # worker's error slot, set only when this sub throws.
     [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
      $skipped, $todofail, $cpu, Nil,
-     ($FAILED && !$FAILEDFILE && ($failed || $timedout) ?? failed-lines($err, $f) !! ())]; # an Array stays one item
+     ($FAILED && !$FAILEDFILE && ($failed || $timedout) ?? failed-lines($err, $f) !! ()), # an Array stays one item
+     fudge-directives($f), $out.lines.grep({ .starts-with('ok ') && .lc.contains('# todo') }).elems];
 }
 
 # Record a file the harness could not measure: no result at all, or a run that
 # threw. Its declared tests still go into the denominator — a file that leaves
 # the ratio entirely is the one outcome that IMPROVES the headline, which is
 # exactly the hole COUNTING.md's measure 4 was built to close for parse errors.
+# Count file $k into the fudge statistics if it carries any directives. %v is
+# its fudge-directives(); the rest are its TAP counts and its denominator.
+my sub fudge-tally(%v, $mark, $passed, $decl, $skipped, $todofail, $todopass) {
+    return unless %v;
+    $fz-files++;
+    %fz-verbs{$_} += %v{$_} for %v.keys;
+    %fz-marks{$mark}++;
+    $fz-pass += $passed;
+    $fz-decl += $decl max 0;
+    $fz-skip += $skipped;
+    $fz-todofail += $todofail;
+    $fz-todopass += $todopass;
+}
+
 my sub lose($k, $why) {
     my $rel = @files[$k].substr($ROOT.chars + 1);
     $lost += 1;
     @lost-files.push("$rel — $why");
     my $sp = static-plan(@files[$k]);
     $lost-declared += $sp if $sp > 0;
+    fudge-tally(fudge-directives(@files[$k]), 'LOST', 0, $sp, 0, 0, 0);
     @notpassing.push([$rel, 'LOST', '—']);
     say sprintf('  [LOST]  %5s  %s', '—', $rel);
 }
@@ -680,6 +722,8 @@ my sub tally($k) {
     my $r = @result[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
     my ($skipped, $todofail) = $r[6] // 0, $r[7] // 0;
+    my %fzv = $r[11] // {};
+    my $todopass = $r[12] // 0;
     if ($r[9] // Nil).defined {   # run-one threw; the worker caught it and said so here
         lose($k, ~$r[9]);
         return;
@@ -716,6 +760,8 @@ my sub tally($k) {
             if $sp > 0 { $timeout-declared += $sp; $timeout-counted++ }
             else       { $tot-plan += $ran; $timeout-unknown++ }
         }
+        fudge-tally(%fzv, 'TIME', $passed, ($planned >= 0 ?? $planned !! static-plan($f) max $ran),
+                    $skipped, $todofail, $todopass);
         @notpassing.push([$rel, 'TIME', "$passed/$ran", $k]);
         say sprintf('  [TIME]  %5s  %s', "$passed/$ran", $rel);
         return;
@@ -758,6 +804,9 @@ my sub tally($k) {
         %sec-part{$sec} += 1;
         $mark = 'part';
     }
+    fudge-tally(%fzv, $mark eq '----' ?? 'noTAP' !! $mark, $passed,
+                ($planned >= 0 ?? $planned !! $ran == 0 ?? static-plan($f) !! $ran),
+                $skipped, $todofail, $todopass);
     if $mark eq 'PASS'    { @fullypassing.push($rel) }
     elsif $mark eq 'part' { @notpassing.push([$rel, 'part', "$passed/$ran", $k]) }
     else                  { @notpassing.push([$rel, 'noTAP', '—']) }
@@ -985,6 +1034,29 @@ say sprintf("  of which shielded:  %d skipped + %d todo-failed = %d (%.2f%% of t
             $tot-skip, $tot-todofail, $shielded, $tot-pass ?? 100 * $shielded / $tot-pass !! 0);
 say sprintf("Assertions passed NET of skip/todo: %d / %d  (%.1f%%)  of ALL declared tests",
             $net, $declared, $declared ?? 100 * $net / $declared !! 0);
+
+# ---- Files with #?rakudo fudge directives: how many, which verbs, how they did.
+# The skip/todo figures above cover the suite's own skip()/todo() calls too;
+# these are the ones in files that carry directives, which is where the
+# lexer's rewriting (or, for a foreign engine on a raw checkout, its absence)
+# shows. A todo that PASSES is a directive the engine has outgrown.
+say "";
+if $fz-files {
+    my $fzn = $fz-pass - $fz-skip - $fz-todofail;
+    say sprintf("Fudged files:         %d / %d carry #?rakudo directives (%s)",
+                $fz-files, @files.elems,
+                %fz-verbs.sort({ -.value, .key }).map({ "{.value} {.key}" }).join(', '));
+    say "  outcome:            ", <PASS part noTAP TIME LOST>.grep({ %fz-marks{$_} })
+                                   .map({ "$_ {%fz-marks{$_}}" }).join('   ');
+    say sprintf("  assertions:         %d / %d passed (%.1f%%); %d skipped + %d todo-failed shielded, %d NET (%.1f%%)",
+                $fz-pass, $fz-decl, $fz-decl ?? 100 * $fz-pass / $fz-decl !! 0,
+                $fz-skip, $fz-todofail, $fzn, $fz-decl ?? 100 * $fzn / $fz-decl !! 0);
+    say sprintf("  todo that passed:   %d (candidates for a stale directive)", $fz-todopass);
+}
+else {
+    say "Fudged files:         none of the {@files.elems} carry #?rakudo directives"
+        ~ ($FOREIGN ?? ' (a pre-fudged checkout?)' !! '');
+}
 
 # ---- Per-synopsis breakdown, formatted paste-ready for the ROAST.md table ----
 sub sec-order($s) {
