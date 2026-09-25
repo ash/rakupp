@@ -338,20 +338,38 @@ changing it unilaterally would make our figure incomparable rather than more
 honest. The net figure is here so that anyone can do the subtraction, and so
 that a future sitting cannot quietly grow the shield without it showing.
 
-On 2026-09-25 the NET line was replaced. It kept the shielded tests in its
-denominator, so they counted as failures. The line that took its place counts
-only the tests with no skip or todo on them. Every skipped or todo-marked test,
-including one that passes under a todo (`ok N # todo`), is left out of **both**
-the passed count and the declared total. What remains is the share of the tests
-that the suite and its fudge directives expect to pass that actually do:
+On 2026-09-25 the NET line and the "of which shielded" line were replaced by
+one line. It counts only the tests with no skip or todo on them: every skipped
+or todo-marked test, including one that passes under a todo (`ok N # todo`),
+is left out of **both** the passed count and the declared total. What remains
+is the share of the tests that the suite and its fudge directives expect to
+pass that actually do:
 
 ```
-Assertions passed without skip/todo: 216472 / 218837  (98.9%)  of declared tests not under a skip or todo (1684 left out)
+Assertions passed without skip/todo: 216439 / 218837  (98.9%)  left out: 1186 skipped + 292 todo-failed + 206 todo-passed = 1684
 ```
 
-The 1,684 are the 1,478 shielded tests plus 206 that passed under a todo. The
-same caveat applies: those include the suite's own `skip()`/`todo()` calls, so
-the todo-passes outnumber the "Passed" column of the fudge-directive table.
+The fudge-directive table below it now splits those same 1,684 tests by where
+the skip or todo came from, and its Total row equals the line above. Both are
+counted with one rule (`parse-tap`'s, where `# skip` wins over `# todo`, so each
+line counts once). The table counts tests, not directive lines (`#?rakudo 3
+skip` is three), and a TAP line is credited to a directive when its reason
+matches. What no directive accounts for is the test code's own
+`skip()`/`todo()` calls:
+
+```
+| Source                     | Files | Skipped | Todo-failed | Todo-passed | Tests | No-result |
+|----------------------------|------:|--------:|------------:|------------:|------:|----------:|
+| #?rakudo skip              |   151 |     928 |           0 |           0 |   928 |        28 |
+| #?rakudo todo              |   180 |       0 |         262 |         191 |   453 |        54 |
+| #?rakudo eval              |     5 |      48 |           0 |           0 |    48 |         0 |
+| #?rakudo emit              |     5 |       — |           — |           — |     — |         — |
+| skip()/todo() in test code |    39 |     210 |          30 |          15 |   255 |         — |
+| Total                      |     — |    1186 |         292 |         206 |  1684 |        82 |
+```
+
+No-result is the one column still in directive lines: directives whose tests
+never appeared in the output, so there is nothing to count them in tests.
 
 ## Zero-regression discipline
 

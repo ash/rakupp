@@ -281,7 +281,9 @@ sub parse-tap($out) {
                 my $is-skip = $lc.contains('# skip');
                 my $is-todo = $lc.contains('# todo');
                 $skipped++     if $is-skip;
-                $todo-failed++ if $is-todo && !$isok;
+                # One kind per line, skip first: the same rule tap-mark applies,
+                # so the fudge table's rows add up to these totals.
+                $todo-failed++ if $is-todo && !$isok && !$is-skip;
                 $todo-passed++ if $is-todo && $isok && !$is-skip;
                 if $isok || $is-skip || $is-todo {
                     $passed++;
@@ -349,10 +351,18 @@ sub fudge-directives($file, $out --> Hash) {
     return {} unless @d;
     my %seen;   # "todo|reason" / "skip|reason" -> [passed, failed, skipped]
     for $out.lines -> $ln {
-        next unless $ln.starts-with('ok ') || $ln.starts-with('not ok ');
-        next unless $ln ~~ / .* '#' \s* $<kind>=[:i todo | skip] [\s+ $<why>=(.*)]? $ /;
-        my $todo = $<kind>.lc eq 'todo';
-        my $c = %seen{($todo ?? 'todo' !! 'skip') ~ '|' ~ ($<why> // '').trim} //= [0, 0, 0];
+        next unless $ln.starts-with('ok') || $ln.starts-with('not ok');
+        next unless $ln.contains('#');
+        # parse-tap's rule exactly (`# skip` wins over `# todo`), so what the
+        # directives are credited with never exceeds the file's own totals
+        my $lc = $ln.lc;
+        my $todo;
+        if    $lc.contains('# skip') { $todo = False }
+        elsif $lc.contains('# todo') { $todo = True }
+        else                         { next }
+        my $why = $todo ?? ($ln ~~ / .* '# ' [:i todo] $<why>=(.*) $ /)
+                        !! ($ln ~~ / .* '# ' [:i skip] $<why>=(.*) $ /);
+        my $c = %seen{($todo ?? 'todo' !! 'skip') ~ '|' ~ ($why ?? (~$<why>).trim !! '')} //= [0, 0, 0];
         if !$todo                   { $c[2]++ }
         elsif $ln.starts-with('ok') { $c[0]++ }
         else                        { $c[1]++ }
@@ -540,6 +550,10 @@ my $notap-counted  = 0;   # how many no-TAP files we recovered a static plan fro
 # no-result, files] (see fudge-directives).
 my %fz;
 my $fz-files = 0;   # distinct files with any directive (a file can have several verbs)
+# Skip/todo tests no directive was credited with — the test code's own
+# skip()/todo() calls, in any file: [todo-passed, todo-failed, skipped, files].
+# With the directive rows they add up to the summary's left-out count.
+my @fz-own = 0, 0, 0, 0;
 my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncountable
 my $timeout-declared = 0; # tests declared by timed-out files that never emitted a plan
 my $timeout-counted  = 0; # how many timed-out files we recovered a static plan from
@@ -731,13 +745,18 @@ my sub run-one($f) {
 # the ratio entirely is the one outcome that IMPROVES the headline, which is
 # exactly the hole COUNTING.md's measure 4 was built to close for parse errors.
 # Add one file's fudge-directives() to the run's totals.
-my sub fudge-tally(%v) {
+my sub fudge-tally(%v, $skipped = 0, $todofail = 0, $todopass = 0) {
     $fz-files++ if %v;
+    my @credited = 0, 0, 0;   # todo-passed, todo-failed, skipped
     for %v.kv -> $verb, @c {
         my $t = %fz{$verb} //= [0 xx 6];
         $t[$_] += @c[$_] for ^5;
         $t[5]++;
+        @credited[$_] += @c[$_ + 1] for ^3;
     }
+    my @own = $todopass - @credited[0], $todofail - @credited[1], $skipped - @credited[2];
+    @fz-own[$_] += @own[$_] for ^3;
+    @fz-own[3]++ if @own.any > 0;
 }
 
 my sub lose($k, $why) {
@@ -759,11 +778,11 @@ my sub tally($k) {
     my $r = @result[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
     my ($skipped, $todofail, $todopass) = $r[6] // 0, $r[7] // 0, $r[12] // 0;
-    fudge-tally($r[11] // {});
     if ($r[9] // Nil).defined {   # run-one threw; the worker caught it and said so here
         lose($k, ~$r[9]);
         return;
     }
+    fudge-tally($r[11] // {}, $skipped, $todofail, $todopass);
     if $timedout {
         $timeout++;
         %sec-time{$sec} += 1;
@@ -1059,51 +1078,49 @@ say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d
             $tot-pass, $declared, $dpct, $notap-declared, $notap-counted,
             $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown,
             ($lost ?? sprintf(" — and +%d from %d LOST file%s, which %s not measured at all", $lost-declared, $lost, $lost == 1 ?? '' !! 's', $lost == 1 ?? 'was' !! 'were') !! ''));
-# What the pass count is SHIELDED by. Both categories are legitimately counted as
-# passes above; this line says how many.
-my $shielded = $tot-skip + $tot-todofail;
-say sprintf("  of which shielded:  %d skipped + %d todo-failed = %d (%.2f%% of the pass count)",
-            $tot-skip, $tot-todofail, $shielded, $tot-pass ?? 100 * $shielded / $tot-pass !! 0);
-# Only the tests with no skip or todo on them, on both sides: every skipped or
+# Only the tests with no skip or todo on them, on both sides. The headline counts
+# `ok … # skip` and `not ok … # todo` as passes; here every skipped or
 # todo-marked test (a todo that passes too) leaves the passed count AND the
-# declared total. Of the tests expected to pass, how many do.
-my $fudged    = $shielded + $tot-todopass;
+# declared total. Of the tests expected to pass, how many do. The fudge table
+# below splits the same left-out tests by where their skip/todo came from.
+my $fudged    = $tot-skip + $tot-todofail + $tot-todopass;
 my $must-pass = $declared - $fudged;
 my $do-pass   = $tot-pass - $fudged;
-say sprintf("Assertions passed without skip/todo: %d / %d  (%.1f%%)  of declared tests not under a skip or todo (%d left out)",
-            $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0, $fudged);
+say sprintf("Assertions passed without skip/todo: %d / %d  (%.1f%%)  left out: %d skipped + %d todo-failed + %d todo-passed = %d",
+            $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0,
+            $tot-skip, $tot-todofail, $tot-todopass, $fudged);
 
-# ---- Files with #?rakudo fudge directives: how many, which verbs, how they did.
-# The skip/todo figures above cover the suite's own skip()/todo() calls too;
-# these are the ones in files that carry directives, which is where the
-# lexer's rewriting (or, for a foreign engine on a raw checkout, its absence)
-# shows. A todo that PASSES is a directive the engine has outgrown.
+# ---- Where the left-out tests' skip/todo came from: each #?rakudo verb, and
+# the test code's own skip()/todo() calls (anything no directive was credited
+# with, in any file). Counted with parse-tap's rule, so the Total row is the
+# summary's left-out breakdown exactly. Tests, not directive lines: `#?rakudo 3
+# skip` is three. A todo that PASSES is a directive the engine has outgrown.
 say "";
-if %fz {
-    my @verbs = %fz.keys.sort({ -%fz{$_}[0], $_ });
-    my @tot = [Z+] @verbs.map({ %fz{$_} });
-    @tot[5] = $fz-files;
-    my @fh = <Directive Found Files Passed Failed Skipped No-result>;
+{
+    my @verbs = %fz.keys.sort({ -(%fz{$_}[1] + %fz{$_}[2] + %fz{$_}[3]), $_ });
+    my @fh = <Source Files Skipped Todo-failed Todo-passed Tests No-result>;
     my @fr;
-    for (|@verbs.map({ ["#?rakudo $_", |%fz{$_}] }), ['Total', |@tot]) -> $r {
-        my ($v, $n, $p, $fl, $sk, $nr, $files) = @$r;
-        @fr.push($v eq '#?rakudo emit'
-                 ?? [$v, ~$n, ~$files, '—', '—', '—', '—']
-                 !! [$v, ~$n, ~$files, ~$p, ~$fl, ~$sk, ~$nr]);
+    my @sum = 0, 0, 0, 0;   # skipped, todo-failed, todo-passed, no-result
+    for @verbs -> $v {
+        my ($n, $p, $fl, $sk, $nr, $files) = @(%fz{$v});
+        if $v eq 'emit' { @fr.push(["#?rakudo emit", ~$files, '—', '—', '—', '—', '—']); next }
+        @fr.push(["#?rakudo $v", ~$files, ~$sk, ~$fl, ~$p, ~($sk + $fl + $p), ~$nr]);
+        @sum[0] += $sk; @sum[1] += $fl; @sum[2] += $p; @sum[3] += $nr;
     }
+    my ($op, $of, $os, $ofiles) = @fz-own;
+    @fr.push(['skip()/todo() in test code', ~$ofiles, ~$os, ~$of, ~$op, ~($os + $of + $op), '—']);
+    my @t = @sum[0] + $os, @sum[1] + $of, @sum[2] + $op;
+    @fr.push(['Total', '—', ~@t[0], ~@t[1], ~@t[2], ~([+] @t), ~@sum[3]]);
     my @fw = (^@fh).map(-> $i { (@fh[$i], |@fr.map(*[$i])).map(*.chars).max });
     my &row = -> @c { '| ' ~ (^@c).map({ $_ == 0 ?? @c[$_] ~ ' ' x (@fw[$_] - @c[$_].chars)
                                                !! ' ' x (@fw[$_] - @c[$_].chars) ~ @c[$_] }).join(' | ') ~ ' |' };
-    say "Fudge directives: {@tot[0]} in $fz-files of {@files.elems} files";
+    say "Skipped and todo tests by source ({$fz-files} of {@files.elems} files carry #?rakudo directives"
+        ~ (!%fz && $FOREIGN ?? '; a pre-fudged checkout?' !! '') ~ "):";
     say row(@fh);
     say '|' ~ (^@fh).map({ $_ == 0 ?? '-' x (@fw[$_] + 2) !! ('-' x (@fw[$_] + 1)) ~ ':' }).join('|') ~ '|';
     say row($_) for @fr;
-    say "Passed/Failed are tests under a todo (a passing one may be a stale directive); "
-      ~ "Skipped, tests a skip/eval never ran; No-result, directives whose tests never appeared.";
-}
-else {
-    say "Fudge directives: none in the {@files.elems} files"
-        ~ ($FOREIGN ?? ' (a pre-fudged checkout?)' !! '');
+    say "Todo-passed is a todo the engine has outgrown; No-result, directive lines whose tests never appeared "
+      ~ "in the output. Files for the test-code row: files with a skip/todo no directive accounts for.";
 }
 
 # ---- Per-synopsis breakdown, formatted paste-ready for the ROAST.md table ----
