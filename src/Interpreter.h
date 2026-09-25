@@ -1846,7 +1846,7 @@ public:
     // `tempMark` is how many `temp` restores the scope already owed on ENTRY: a
     // block that runs in an env it did not create (a statement-modifier loop body
     // reuses the caller's) must unwind only the temps IT pushed.
-    void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0);
+    void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
@@ -2138,7 +2138,8 @@ public:
     // language object does not follow it (see rakuIntrospection).
     int mainLangRev_ = 1;
     bool mainLangRevSet_ = false;
-    int beginDepth_ = 0;   // >0 while a BEGIN phaser runs: `BEGIN $*RAKU.version` is the compiling unit's
+    int beginDepth_ = 0;
+    std::unordered_map<std::string, std::string> unitPkgByFile_;   // source file → its `unit module`/`unit package` name   // >0 while a BEGIN phaser runs: `BEGIN $*RAKU.version` is the compiling unit's
     std::atomic<bool> symbolsFrozen_{false};
     std::thread::id mainThread_;
     void noteSymbolMutation(const char* what);

@@ -175,6 +175,8 @@ private:
     // whose metaobject is a MetamodelX::Red::Model.
     std::map<std::string, std::string> userDeclarators_;
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
+    std::set<std::string> declaredSubNames_; // plain `sub name` declarations seen so far (a listop, for `?? f !!`)
+    std::set<std::string> sigillessRO_; // …of those, the `my \x = …` ones: a value, not a container (assigning dies)
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way

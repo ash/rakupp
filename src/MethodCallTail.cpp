@@ -740,6 +740,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 throwTyped("X::Cannot::Lazy", {{"action", "roll"}}, "Cannot roll a lazy list");
             if (m == "List" && !inv.isList)
                 throwTyped("X::Cannot::Lazy", {{"action", "List"}}, "Cannot List a lazy list");
+            if (m == "Capture")
+                throwTyped("X::Cannot::Lazy", {{"action", "create a Capture from"}},
+                           "Cannot create a Capture from a lazy list");
             if (kLazyFailure.count(m))
                 return armedFailure("X::Cannot::Lazy", "Cannot " + m + " a lazy list");
             if (kLazyThrow.count(m))
@@ -1139,10 +1142,36 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // @a.Capture — elements become positional arguments, Pairs become named ones
     // (so the nameds sort to the back of the rendering, as in `\(2, :a(1))`)
     if (inv.t == VT::Array && inv.hashKind.empty() && m == "Capture") {
+        // a LAZY list cannot become a Capture: there is no end to take apart
+        if (inv.ext() && std::static_pointer_cast<LazySeqState>(inv.ext())->infinite)
+            throwTypedV("X::Cannot::Lazy", {{"action", Value::str("create a Capture from")}},
+                        "Cannot create a Capture from a lazy list");
         ValueList items = toList(inv);
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         for (auto& e : items) if (e.t != VT::Pair) c.arr()->push_back(e);
-        for (auto& e : items) if (e.t == VT::Pair) c.arr()->push_back(e);
+        // …and each Pair is a NAMED part, keyed by its key's Str
+        for (auto& e : items)
+            if (e.t == VT::Pair) {
+                Value p = e;
+                if (e.pairKey()) {
+                    const Value& k = *e.pairKey();
+                    std::string ks = k.t == VT::Type ? k.s.str()
+                                   : k.t == VT::Object ? methodCall(k, "Str", ValueList{}).toStr() : strOf(k);
+                    p = Value::pair(ks, e.pairVal() ? *e.pairVal() : Value::any());
+                }
+                p.namedArg = true;
+                c.arr()->push_back(p);
+            }
+        return c;
+    }
+    // a RANGE unpacks into its attributes
+    if (inv.t == VT::Range && m == "Capture") {
+        Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        auto named = [&](const char* k, Value v) { Value p = Value::pair(k, std::move(v)); p.namedArg = true; c.arr()->push_back(p); };
+        named("excludes-max", Value::boolean(inv.rExTo()));
+        named("excludes-min", Value::boolean(inv.rExFrom()));
+        named("max", methodCall(inv, "max", ValueList{}));
+        named("min", methodCall(inv, "min", ValueList{}));
         return c;
     }
 
@@ -4223,6 +4252,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // rather than inventing an empty Capture.
     if (m == "Capture") {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        // code, Whatevers and Failures have nothing to unpack either
+        if (inv.t == VT::Whatever || inv.t == VT::Code ||
+            (inv.t == VT::Type && inv.s == "Failure") ||
+            (inv.t == VT::Hash && inv.hashKind == "Failure"))
+            throw RakuError{Value::typeObj("X::Cannot::Capture"),
+                            "Cannot unpack or Capture `" + inv.gist() + "`."};
         if (inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) return c;
         if (inv.t == VT::Complex) {
             c.arr()->push_back(Value::pair("im", Value::number(inv.im())));

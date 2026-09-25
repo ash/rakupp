@@ -103,6 +103,15 @@ template <class T>
 class RVec {
     T* d_ = nullptr;
     std::size_t n_ = 0, c_ = 0;
+    // Slots erased off the FRONT without moving the rest: d_ sits off_ slots
+    // into its allocation, whose true start and size are d_ - off_ and
+    // c_ + off_. `@a.shift` in a loop was a memmove of the whole tail each
+    // time (S15-nfg/concat-stable.t spent 80% of its 8 s there).
+    std::size_t off_ = 0;
+    void freeBuf() {
+        if (d_) dealloc(d_ - off_, c_ + off_);
+        off_ = 0;
+    }
 
     // The FIRST allocation is exactly what was asked for, and only then does
     // capacity double. Rounding the first block up instead (to four, say, so a
@@ -211,7 +220,7 @@ class RVec {
     RAKUPP_NOINLINE void reseat(std::size_t k) {
         T* nd = k ? alloc(k) : nullptr;
         relocate(nd, d_, n_);
-        dealloc(d_, c_);
+        freeBuf();
         d_ = nd;
         c_ = k;
     }
@@ -236,7 +245,7 @@ class RVec {
             T* nd = alloc(nc);
             relocate(nd, d_, at);
             relocate(nd + at + k, d_ + at, n_ - at);
-            dealloc(d_, c_);
+            freeBuf();
             d_ = nd;
             c_ = nc;
         }
@@ -291,13 +300,14 @@ public:
             for (; n_ < o.n_; n_++) ::new (static_cast<void*>(d_ + n_)) T(o.d_[n_]);
         }
     }
-    RVec(RVec&& o) noexcept : d_(o.d_), n_(o.n_), c_(o.c_) {
+    RVec(RVec&& o) noexcept : d_(o.d_), n_(o.n_), c_(o.c_), off_(o.off_) {
         o.d_ = nullptr;
         o.n_ = o.c_ = 0;
+        o.off_ = 0;
     }
     ~RVec() {
         destroyAll();
-        dealloc(d_, c_);
+        freeBuf();
     }
 
     RVec& operator=(const RVec& o) {
@@ -307,12 +317,14 @@ public:
     RVec& operator=(RVec&& o) noexcept {
         if (this != &o) {
             destroyAll();
-            dealloc(d_, c_);
+            freeBuf();
             d_ = o.d_;
             n_ = o.n_;
             c_ = o.c_;
+            off_ = o.off_;
             o.d_ = nullptr;
             o.n_ = o.c_ = 0;
+            o.off_ = 0;
         }
         return *this;
     }
@@ -477,6 +489,11 @@ public:
         if (b <= a) return d_ + a;
         std::size_t k = b - a;
         for (std::size_t j = a; j < b; j++) d_[j].~T();
+        // off the FRONT of a long vector: step the start instead of moving the tail
+        if (a == 0 && n_ - b > 8 && bitwiseRelocOk()) {
+            d_ += k; c_ -= k; off_ += k; n_ -= k;
+            return d_;
+        }
         if (bitwiseRelocOk()) {
             std::memmove(static_cast<void*>(d_ + a), static_cast<const void*>(d_ + b),
                          (n_ - b) * sizeof(T));
@@ -495,6 +512,7 @@ public:
         std::swap(d_, o.d_);
         std::swap(n_, o.n_);
         std::swap(c_, o.c_);
+        std::swap(off_, o.off_);
     }
 
 private:
@@ -516,7 +534,7 @@ private:
             throw;
         }
         relocate(nd, d_, n_);
-        dealloc(d_, c_);
+        freeBuf();
         d_ = nd;
         c_ = nc;
         n_++;

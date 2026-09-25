@@ -896,7 +896,11 @@ my sub take-next() {
         # free the budget ~6.8 s in — worth ~6 s off the whole run, which is
         # otherwise floor-bound by batch.t's own wait. `< 0.25` is the same
         # "known to wait" threshold the run's opening summary line reports.
-        if !@taken[$k] && (@demand[$k] < 0.25 || $load == 0 || $load + @demand[$k] <= $CPU) {
+        # (`$load < 1e-6`, not `== 0`: $load is a float sum of demands, and the
+        # adds and subtracts in whatever order the files finish can leave a
+        # residual like 1e-16 — then a file whose demand alone exceeds $CPU is
+        # never admitted and every worker spins on -1 forever)
+        if !@taken[$k] && (@demand[$k] < 0.25 || $load < 1e-6 || $load + @demand[$k] <= $CPU) {
             @taken[$k] = True;
             $running++;
             $load += @demand[$k];

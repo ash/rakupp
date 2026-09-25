@@ -1231,6 +1231,8 @@ static Value typedDefault(const std::string& type, char sigil) {
         if (sigil == '%' && type.find(',') != std::string::npos) v.objKeyed = true;
         return v;
     }
+    // `my &f` holds the Callable type object until something is assigned
+    if (sigil == '&') return Value::typeObj(type.empty() ? "Callable" : type);
     return defaultFor(sigil);
 }
 // The COMPILER needs the same answer: `my Int @a` is an Array[Int] whether the
@@ -2664,7 +2666,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         if (!seqHaveDir && !hasGen && !infinite && !endCode && !succSeed) {
             auto& es = *out.arr();
             for (size_t k = 0; k < es.size(); k++)
-                if (es[k].isNumeric() && r.isNumeric() && es[k].toNum() == endVal) {
+                if (es[k].isNumeric() && r.isNumeric() && applyArith("==", es[k], r).truthy()) {
                     es.resize(exclusive ? k : k + 1); return out;
                 }
         }
@@ -3673,6 +3675,13 @@ std::function<bool(const Value&, ValueList&)> g_objListItems;
         "- using '$_' or any placeholder variable, as they imply a block scope"};
 }
 static Value coerceHash(const Value& v, bool store = false, bool objKeyed = false) {
+    // a CAPTURE's hash is its NAMED part only: `%(\( (:a(2)) ))` is empty
+    if (v.t == VT::Array && v.hashKind == "Capture" && v.arr()) {
+        Value h = Value::makeHash();
+        for (auto& e : *v.arr())
+            if (e.t == VT::Pair && e.namedArg) (*h.hash())[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
+        return h;
+    }
     if (v.t == VT::Hash) { // already a hash: copy entries (value semantics for my %h = %other)
         bool quant = v.hashKind.rfind("Set", 0) == 0 || v.hashKind.rfind("Bag", 0) == 0 ||
                      v.hashKind.rfind("Mix", 0) == 0;
@@ -9124,7 +9133,13 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             }
             throwTypedV("X::Comp::Group", std::move(ga), e.what());
         }
-        if (!e.exType.empty()) throwTyped(e.exType, e.exAttrs, e.what()); // typed compile diagnostic
+        if (!e.exType.empty()) {   // typed compile diagnostic — and where it was found
+            auto at = e.exAttrs;
+            bool haveLine = false;
+            for (auto& kv : at) if (kv.first == "line") haveLine = true;
+            if (!haveLine && e.line > 0) at.emplace_back("line", std::to_string(e.line));
+            throwTyped(e.exType, at, e.what());
+        }
         throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
     // a placeholder in the EVAL mainline has no signature to attach to (only
@@ -9508,7 +9523,7 @@ static bool isBlockPhaser(Stmt* s) {
     // and 42 is warned about as sink context.
     return p == "ENTER" || p == "LEAVE" || p == "KEEP" || p == "UNDO" || p == "FIRST" ||
            p == "PRE" || p == "POST" ||
-           p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE";
+           p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE" || p == "TEMP";
 }
 void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope) {
     // NEXT phasers run in REVERSE declaration order (like LEAVE)
@@ -9717,7 +9732,7 @@ static void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::s
     }
 }
 
-void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark) {
+void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
     // "Updated <mirror>" and "Failed to update <mirror>" for the same fetch.)
@@ -9725,7 +9740,8 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LEAVE" || (ok ? b->phaser == "KEEP" : b->phaser == "UNDO")) leaves.push_back(b); }
     // POST: a postcondition, checked when the block is left successfully
-    if (ok)
+    // (a normal exit with an undefined value still counts: only KEEP/UNDO care)
+    if (postOk < 0 ? ok : postOk != 0)
         for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
             if (b->phaser != "POST") continue;
             auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
@@ -11889,6 +11905,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // named everything after it `foo::…`.
                 if (cd->body.empty() && !cd->bracedBody) {
                     if (!cd->name.empty()) {
+                        unitPkgByFile_[declFileNow()] = tctx_.pkgPrefix + cd->name;   // CLIENT:: asks
                         tctx_.cur->define(cd->name, Value::typeObj(cd->name));
                         tctx_.pkgPrefix += cd->name + "::";
                         if (curPkgEnv_ == global_) curPkgEnv_ = tctx_.cur; // `our` installs here
@@ -22459,7 +22476,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (c.body) {
             struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
             tcx.leaveResult = &r.v;
-            runLeavePhasers(*c.body);
+            // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure)
+            runLeavePhasers(*c.body, isDefined(r.v) && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"), 0, 1);
         }
         restore();
         // `return` returns from the innermost enclosing ROUTINE, not from a bare
@@ -22549,7 +22567,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.body) {
         struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
         tcx.leaveResult = &last;
-        runLeavePhasers(*c.body);
+        runLeavePhasers(*c.body, isDefined(last) && !(last.t == VT::Hash && last.hashKind == "Failure"), 0, 1);
     }
     tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
@@ -26936,6 +26954,99 @@ static bool assignSpawns(const Assign* a) {
     return r;
 }
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+    // `@a[1, (lazy 3, 4, 5)] = "a" ... *` — a NESTED/LAZY slice assigns (or
+    // binds) leaf by leaf, taking only as many values as it has leaves, and
+    // answers them in the subscript's own shape
+    if ((a->op == "=" || a->op == ":=") && a->target && a->target->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(a->target.get());
+        auto lazyCall = [](const Expr* it) -> const Call* {
+            if (it && it->kind == NK::Call) {
+                auto* c = static_cast<const Call*>(it);
+                if (c->name == "lazy" && !c->callee) return c;
+            }
+            return nullptr;
+        };
+        const std::vector<ExprPtr>* top = nullptr; bool topLazy = false;
+        if (ix->index && ix->index->kind == NK::ListExpr) top = &static_cast<ListExpr*>(ix->index.get())->items;
+        else if (const Call* lc = lazyCall(ix->index.get())) { top = &lc->args; topLazy = true; }
+        bool special = false;
+        if (top && !ix->isHash && ix->adverb.empty() && !ix->multiDim && ix->base && ix->base->kind == NK::VarExpr)
+            for (auto& it : *top)
+                if (lazyCall(it.get()) || (it->kind == NK::ListExpr && static_cast<ListExpr*>(it.get())->parenned))
+                    special = true;
+        if (special) {
+            Value* bp = lvalue(ix->base.get());
+            if (bp && bp->t == VT::Array && bp->arr() && !bp->isList) {
+                const long long size0 = (long long)bp->arr()->size();
+                const bool bind = a->op == ":=";
+                Value rhs = eval(a->value.get());
+                ValueList vals;
+                std::shared_ptr<LazySeqState> st;
+                if (rhs.t == VT::Array && rhs.ext()) {
+                    st = std::static_pointer_cast<LazySeqState>(rhs.ext());
+                    if (rhs.arr()) vals = *rhs.arr();
+                }
+                else if (rhs.t == VT::Array || rhs.t == VT::Range) vals = rhs.flatten();
+                else vals.push_back(rhs);
+                size_t vi = 0;
+                auto nextVal = [&]() -> Value {
+                    while (vi >= vals.size() && st && st->appendNext && st->appendNext(vals)) {}
+                    return vi < vals.size() ? vals[vi++] : (vi++, Value::any());
+                };
+                // an assignment fixes the lazy bound up front and answers the
+                // CONTAINERS (their final values); a binding re-reads the size as
+                // it grows and answers what it bound
+                // walk fills `out` (what it answers) and `ix` (the slot of each leaf)
+                std::function<void(const std::vector<ExprPtr>&, bool, Value&, Value&)> walk =
+                    [&](const std::vector<ExprPtr>& items, bool lazy, Value& out, Value& idxs) {
+                    for (auto& it : items) {
+                        if (const Call* lc = lazyCall(it.get())) {
+                            Value o = Value::array(); o.isList = true; Value x = Value::array(); x.isList = true;
+                            walk(lc->args, true, o, x);
+                            out.arr()->push_back(o); idxs.arr()->push_back(x); continue;
+                        }
+                        if (it->kind == NK::ListExpr && static_cast<const ListExpr*>(it.get())->parenned) {
+                            Value o = Value::array(); o.isList = true; Value x = Value::array(); x.isList = true;
+                            walk(static_cast<const ListExpr*>(it.get())->items, false, o, x);
+                            out.arr()->push_back(o); idxs.arr()->push_back(x); continue;
+                        }
+                        Value k = eval(it.get());
+                        ValueList ks = (k.t == VT::Array || k.t == VT::Range) ? k.flatten() : ValueList{k};
+                        bool stop = false;
+                        for (auto& e : ks) {
+                            long long i = e.toInt();
+                            long long lim = bind ? (long long)bp->arr()->size() : size0;
+                            if (lazy && i >= lim) { stop = true; break; }
+                            Value v = nextVal();
+                            if (i >= 0) {
+                                if ((size_t)i >= bp->arr()->size()) bp->arr()->resize((size_t)i + 1, Value::any());
+                                (*bp->arr())[(size_t)i] = v;
+                            }
+                            out.arr()->push_back(v);
+                            idxs.arr()->push_back(Value::integer(i));
+                        }
+                        if (stop) break;
+                    }
+                };
+                Value res = Value::array(); res.isList = true;
+                Value idxTree = Value::array(); idxTree.isList = true;
+                walk(*top, topLazy, res, idxTree);
+                if (!bind) {
+                    std::function<Value(const Value&)> reread = [&](const Value& x) -> Value {
+                        if (x.t == VT::Array && x.arr()) {
+                            Value o = Value::array(); o.isList = true;
+                            for (auto& e : *x.arr()) o.arr()->push_back(reread(e));
+                            return o;
+                        }
+                        long long i = x.toInt();
+                        return i >= 0 && (size_t)i < bp->arr()->size() ? (*bp->arr())[(size_t)i] : Value::any();
+                    };
+                    res = reread(idxTree);
+                }
+                return sink ? Value::any() : res;
+            }
+        }
+    }
     // `my @w = (^4).map: { start { … } }` — the workers the initializer spawns
     // walk this scope while it runs, so the declaration must not INSERT into
     // it afterwards (a rehash under their lookups). Declare it first.
@@ -38896,6 +39007,17 @@ Value Interpreter::evalUnary(Unary* u) {
             ValueList got = evalArgs(one.v);
             for (auto& g : got) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
         }
+        // a named part given twice keeps the LAST one: `\(:a(41), :a(42))` is \(:a(42))
+        {
+            auto& va = *v.arr();
+            std::set<std::string> seenN;
+            std::vector<bool> keep(va.size(), true);
+            for (size_t i = va.size(); i-- > 0;)
+                if (va[i].t == VT::Pair && va[i].namedArg && !seenN.insert(va[i].s.str()).second) keep[i] = false;
+            ValueList kept;
+            for (size_t i = 0; i < va.size(); i++) if (keep[i]) kept.push_back(std::move(va[i]));
+            va = std::move(kept);
+        }
         v.hashKind = "Capture"; v.itemized = true; v.isList = false;
         return v;
     }
@@ -41563,11 +41685,50 @@ Value Interpreter::evalIndex(Index* idx) {
     // `@a[0..1, 2]` is ((3, 7), 9) — each iterable part of a comma subscript
     // answers a list of its own. Decided syntactically, so nothing is
     // evaluated twice: a parenthesised list, a finite range or an @-variable.
-    if (idx->index && idx->index->kind == NK::ListExpr && idx->adverb.empty() && !idx->multiDim &&
-        idx->base && idx->base->kind == NK::VarExpr && !idx->zen) {
-        auto* le = static_cast<ListExpr*>(idx->index.get());
-        auto nests = [](const Expr* it) {
+    // `@a[**]` — the HyperWhatever slice: every leaf, however deep
+    if (!idx->isHash && idx->index && idx->index->kind == NK::Whatever &&
+        static_cast<WhateverExpr*>(idx->index.get())->hyper && idx->adverb.empty() && idx->base &&
+        idx->base->kind == NK::VarExpr) {
+        Value base = eval(idx->base.get());
+        if (base.t == VT::Array && base.arr()) {
+            Value out = Value::array(); out.isList = true;
+            std::function<void(const Value&)> walk = [&](const Value& v) {
+                if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) walk(e); }
+                else out.arr()->push_back(v);
+            };
+            for (auto& e : *base.arr()) walk(e);
+            return out;
+        }
+    }
+    // `@a[{ $^n - 1 }]` — a BLOCK subscript is called with the element count
+    if (!idx->isHash && idx->index && idx->index->kind == NK::BlockExpr && idx->adverb.empty() &&
+        idx->base && (idx->base->kind == NK::VarExpr || idx->base->kind == NK::ListExpr ||
+                      idx->base->kind == NK::Range || idx->base->kind == NK::Unary)) {
+        Value base = eval(idx->base.get());
+        if ((base.t == VT::Array && base.arr()) || base.t == VT::Range) {
+            Value code = eval(idx->index.get());
+            if (code.t == VT::Code && code.code() && !code.code()->isWhateverCode) {
+                Value n = methodCall(base, "elems", ValueList{});
+                Value k = callCallable(code, ValueList{n});
+                if (k.t == VT::Int)
+                    return methodCall(base, "AT-POS", ValueList{k});
+            }
+        }
+    }
+    // …and a LAZY part (`@a[1, (lazy 3, 4, 5)]`, `@a[lazy 1, 2, (4, 5)]`)
+    // stops at the end of the array, where an eager one reads Any.
+    if (idx->index && idx->adverb.empty() && !idx->multiDim && idx->base &&
+        idx->base->kind == NK::VarExpr && !idx->zen) {
+        auto lazyCall = [](const Expr* it) -> const Call* {
+            if (it && it->kind == NK::Call) {
+                auto* c = static_cast<const Call*>(it);
+                if (c->name == "lazy" && !c->callee) return c;
+            }
+            return nullptr;
+        };
+        auto nests = [&](const Expr* it) {
             if (!it) return false;
+            if (lazyCall(it)) return true;
             if (it->kind == NK::ListExpr) return static_cast<const ListExpr*>(it)->parenned;
             if (it->kind == NK::Range) {
                 auto* r = static_cast<const RangeExpr*>(it);
@@ -41580,36 +41741,57 @@ Value Interpreter::evalIndex(Index* idx) {
             }
             return false;
         };
+        const std::vector<ExprPtr>* top = nullptr;
+        bool topLazy = false;
+        if (idx->index->kind == NK::ListExpr) top = &static_cast<ListExpr*>(idx->index.get())->items;
+        else if (const Call* lc = lazyCall(idx->index.get())) { top = &lc->args; topLazy = true; }
         bool any = false, bad = false;
-        if (le->items.size() > 1)
-            for (auto& it : le->items) {
+        if (top && (top->size() > 1 || topLazy))
+            for (auto& it : *top) {
                 if (nests(it.get())) any = true;
-                if (it && (it->kind == NK::Whatever || it->kind == NK::Call)) bad = true;
+                if (it && (it->kind == NK::Whatever || (it->kind == NK::Call && !lazyCall(it.get())))) bad = true;
             }
+        if (topLazy) { bool nested = false; for (auto& it : *top) if (it && ((it->kind == NK::ListExpr && static_cast<const ListExpr*>(it.get())->parenned) || lazyCall(it.get()))) nested = true; any = nested; }
         if (any && !bad) {
             Value base = eval(idx->base.get());
             const char* meth = idx->isHash ? "AT-KEY" : "AT-POS";
             const bool okBase = idx->isHash ? (base.t == VT::Hash && base.hashKind.empty())
                                             : (base.t == VT::Array && base.arr());
             if (okBase) {
+                const long long size = idx->isHash ? 0 : (long long)base.arr()->size();
                 auto one = [&](const Value& k) -> Value {
                     if (!idx->isHash && k.isNumeric() && k.toInt() < 0) return negIndexFailure(k.toInt());
                     return methodCall(base, meth, ValueList{idx->isHash ? Value::str(hashSubKey(k)) : Value::integer(k.toInt())});
                 };
-                Value out = Value::array(); out.isList = true;
-                for (auto& it : le->items) {
-                    Value k = eval(it.get());
-                    if (nests(it.get()) && (k.t == VT::Array || k.t == VT::Range)) {
-                        Value inner = Value::array(); inner.isList = true;
-                        for (auto& e : k.flatten()) inner.arr()->push_back(one(e));
-                        out.arr()->push_back(inner);
+                auto past = [&](const Value& k) { return !idx->isHash && k.isNumeric() && k.toInt() >= size; };
+                std::function<Value(const std::vector<ExprPtr>&, bool)> level =
+                    [&](const std::vector<ExprPtr>& items, bool lazy) -> Value {
+                    Value out = Value::array(); out.isList = true;
+                    for (auto& it : items) {
+                        if (const Call* lc = lazyCall(it.get())) { out.arr()->push_back(level(lc->args, true)); continue; }
+                        if (it->kind == NK::ListExpr && static_cast<const ListExpr*>(it.get())->parenned) {
+                            out.arr()->push_back(level(static_cast<const ListExpr*>(it.get())->items, false));
+                            continue;
+                        }
+                        Value k = eval(it.get());
+                        if (nests(it.get()) && (k.t == VT::Array || k.t == VT::Range)) {
+                            Value inner = Value::array(); inner.isList = true;
+                            for (auto& e : k.flatten()) inner.arr()->push_back(one(e));
+                            out.arr()->push_back(inner);
+                        }
+                        else if (k.t == VT::Array || k.t == VT::Range) {
+                            bool stop = false;
+                            for (auto& e : k.flatten()) { if (lazy && past(e)) { stop = true; break; } out.arr()->push_back(one(e)); }
+                            if (stop) break;
+                        }
+                        else {
+                            if (lazy && past(k)) break;
+                            out.arr()->push_back(one(k));
+                        }
                     }
-                    else if (k.t == VT::Array || k.t == VT::Range) {
-                        for (auto& e : k.flatten()) out.arr()->push_back(one(e));
-                    }
-                    else out.arr()->push_back(one(k));
-                }
-                return out;
+                    return out;
+                };
+                return level(*top, topLazy);
             }
         }
     }

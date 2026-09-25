@@ -1380,10 +1380,13 @@ Token Lexer::lexNumber() {
 }
 
 void Lexer::runawayQuote(const char* construct, const char* finalDelim, int startLine) const {
-    throw ParseError("Unable to parse expression in " + std::string(construct) +
-                         "; couldn't find final " + finalDelim +
-                         " (corresponding starter was at line " + std::to_string(startLine) + ")",
-                     line_, true);
+    ParseError e("Unable to parse expression in " + std::string(construct) +
+                     "; couldn't find final " + finalDelim +
+                     " (corresponding starter was at line " + std::to_string(startLine) + ")",
+                 line_, "X::Comp::FailGoal",
+                 {{"dba", construct}, {"goal", finalDelim}});
+    e.atEof = true;
+    throw e;
 }
 
 void Lexer::runawayTerm(const std::string& close, const std::string& open, int startLine) const {

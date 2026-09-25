@@ -3195,6 +3195,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // user-defined class: type-object methods (.new and custom constructors)
     // DateTime / Date constructors
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date")) {
+        // `Date.new(Int, 1, 1)` — a type object is no year
+        if (m == "new")
+            for (auto& a : args)
+                if (!(a.t == VT::Pair && a.namedArg) && (a.t == VT::Type || a.t == VT::Any || a.t == VT::Nil))
+                    throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller new(" + inv.s.str() + ", " + a.typeName() + ", …); none of these signatures matches"};
         // a `:formatter(&code)` is stored and applied by .Str (Rakudo's stringifier hook)
         Value formatter; bool haveFmt = false;
         // A formatter need not be a bare Code: `does Callable` + `method CALL-ME`

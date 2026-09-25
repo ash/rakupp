@@ -1658,8 +1658,15 @@ Regex::NodePtr Regex::parseAtom() {
             while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
             return q < pat_.size() && pat_[q] == '[';
         };
-        if (peek() == '[' || signThenBracket() ||
-            (peek() == '+' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':')) ||
+        // `<+ xdigit - lower >` — blanks after the sign are insignificant too
+        auto plusThenName = [&]() -> bool {
+            if (peek() != '+') return false;
+            size_t q = pos_ + 1;
+            while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
+            return q < pat_.size() && (ascii::isalpha((unsigned char)pat_[q]) || pat_[q] == '_' ||
+                                       pat_[q] == '.' || pat_[q] == ':');
+        };
+        if (peek() == '[' || signThenBracket() || plusThenName() ||
             negFlagComposes()) {
             node->negate = false;
             bool first = true;
@@ -1697,6 +1704,7 @@ Regex::NodePtr Regex::parseAtom() {
                     else parseClassBodyMember(node.get());
                 }
                 else { // +rule / -rule member (builtin, unicode property, or USER token)
+                    while (peek() == ' ' || peek() == '\t') pos_++;
                     if (peek() == '.') pos_++;
                     // a '-' directly between ident chars is part of a KEBAB-CASE name
                     // (`+uri-alpha`); a standalone '-' (spaced, or before '[') is the
@@ -1766,6 +1774,12 @@ Regex::NodePtr Regex::parseAtom() {
             for (auto& mp : minusProps) seq->kids.push_back(mkNegLook(mkProp(mp)));
             if (negBracket) seq->kids.push_back(mkNegLook(std::move(negBracket)));
             bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
+            // a subtracted built-in (`- lower`) with no base class to carry it
+            if (!haveBase && !node->negClassFlags.empty()) {
+                auto nc = std::make_unique<Node>();
+                nc->k = K::Class; nc->icase = curIcase_; nc->classFlags = node->negClassFlags;
+                seq->kids.push_back(mkNegLook(std::move(nc)));
+            }
             if (plusSubs.empty() && plusProps.empty() && !posExtra) seq->kids.push_back(std::move(node));
             else {
                 auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true; altN->classCombo = true;
@@ -2056,6 +2070,21 @@ Regex::NodePtr Regex::parseAtom() {
                     // `my regex R`). It resolves by the bare name, and only the alias
                     // captures: `&R` is not a name `$<…>` could ever be asked for.
                     else if (!nm.empty() && nm[0] == '&') { nm = nm.substr(1); sr->aliasDotted = true; }
+                }
+                // the colon spelling <name: 2, 3> — the rest is the argument list
+                {
+                    size_t cp = nm.find(':');
+                    while (cp != std::string::npos && cp + 1 < nm.size() && nm[cp + 1] == ':')
+                        cp = nm.find(':', cp + 2);
+                    if (cp != std::string::npos && cp > 0 && cp + 1 < nm.size() &&
+                        std::isspace((unsigned char)nm[cp + 1]) && nm.find('(') > cp) {
+                        std::string a = nm.substr(cp + 1);
+                        size_t b = a.find_first_not_of(" \t\n");
+                        sr->ruleArgs = b == std::string::npos ? std::string() : a.substr(b);
+                        nm = nm.substr(0, cp);
+                        sr->ruleName = nm; sr->icase = curIcase_;
+                        return sr;
+                    }
                 }
                 // parameterised call <name($x, '')> — peel off the argument list
                 auto lp = nm.find('(');
@@ -2682,6 +2711,9 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     std::string flags = ruleFlag(nm);
     if (flags.empty() || nm == "word" || nm == "ws") return -2;
     if (pos >= len) return -1;
+    // the middle of a character is not the start of one: a UTF-8 continuation
+    // byte (Å is C3 85) must not read as U+0085
+    if (((unsigned char)s[pos] & 0xC0) == 0x80) return -1;
     long end = pos;
     uint32_t cp = cpAt(pos, &end);
     for (char f : flags) if (charClassMatch(f, cp)) return end; // `alnum` is alpha ∪ digit

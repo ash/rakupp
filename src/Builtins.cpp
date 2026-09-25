@@ -5191,6 +5191,48 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // Built-in methods called with arguments no candidate takes: Rakudo's
+    // dispatcher answers X::Multi::NoMatch (roast APPENDICES multi-no-match.t)
+    {
+        auto noMatch = [&](const std::string& what) -> Value {
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                "Cannot resolve caller " + m + "(" + what + "); none of these signatures matches"};
+        };
+        size_t npos = 0, nnamed = 0;
+        for (auto& x : args) { if (x.t == VT::Pair && x.namedArg) nnamed++; else npos++; }
+        auto intish = [](const Value& v) {
+            return v.t == VT::Int || v.t == VT::Whatever || v.t == VT::Code || v.t == VT::Bool ||
+                   (v.t == VT::Type && (v.s == "Int" || v.s == "Whatever"));
+        };
+        if (m == "splice" && inv.t == VT::Array && !inv.isList && npos >= 1) {
+            ValueList pa; for (auto& x : args) if (!(x.t == VT::Pair && x.namedArg)) pa.push_back(x);
+            if (!intish(pa[0]) || (pa.size() >= 2 && !intish(pa[1]))) noMatch(inv.typeName() + ", …");
+        }
+        else if (m == "protect" && inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async"))
+            noMatch(inv.s.str() + ", …");
+        else if (m == "new" && inv.t == VT::Type) {
+            const std::string tn = inv.s.str();
+            if (tn == "Proc::Async" && npos == 0 && !classes_.count(tn)) noMatch("Proc::Async");
+            else if (tn == "Junction" && !classes_.count(tn)) {
+                // Junction.new(@values, :type) or Junction.new("any", @values)
+                ValueList pa; bool hasType = false;
+                for (auto& x : args) { if (x.t == VT::Pair && x.namedArg) { if (x.s == "type") hasType = true; } else pa.push_back(x); }
+                bool ok = (pa.size() == 1 && (pa[0].t == VT::Array || pa[0].t == VT::Range) && hasType) ||
+                          (pa.size() == 2 && pa[0].t == VT::Str);
+                if (!ok) noMatch("Junction");
+            }
+            else if (tn == "Pair" && !classes_.count(tn) && (npos > 2 || (npos == 0 && nnamed > 0 &&
+                      !(nnamed == 2)))) noMatch("Pair");
+            else if (tn == "Int" && !classes_.count(tn) && npos > 1) noMatch("Int");
+        }
+        else if ((m == "subst" || m == "match") && inv.t == VT::Str && inv.hashKind.empty()) {
+            if (npos == 0 || (m == "match" && (args[0].t == VT::Nil || args[0].t == VT::Any))) noMatch("Str, …");
+        }
+        else if ((m == "words" || m == "lines") && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) && npos > 1)
+            noMatch(inv.typeName() + ", …");
+        else if (m == "printf" && inv.t == VT::Hash && inv.hash() && inv.hash()->count("std") && npos == 0)
+            noMatch("IO::Handle");
+    }
     // an ENUM type's `.^language-revision` — the revision it was declared under
     if (inv.t == VT::Array && !inv.enumType.empty() && m == "language-revision" && args.empty()) {
         auto it = enumLangRev_.find(inv.enumType);
@@ -14607,7 +14649,14 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["slurp"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.empty()) { std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); } // slurp() = $*IN.slurp
+        // slurp() = $*ARGFILES.slurp: the files named in @*ARGS, else stdin
+        bool onlyNamed = true;
+        for (auto& x : a) if (!(x.t == VT::Pair && x.namedArg)) { onlyNamed = false; break; }
+        if (onlyNamed) {
+            VarExpr af("$*ARGFILES");
+            Value h = I.eval(&af);
+            return I.methodCall(h, "slurp", a);
+        }
         // Delegate to the METHOD form: one reader, one rule set. The old copy
         // here opened in text mode with no :bin arm at all — its own comment
         // claimed ":bin routes to the method" while `slurp $p, :bin` returned
@@ -15818,6 +15867,44 @@ void Interpreter::registerBuiltins() {
     };
     // `OUTER::MY::<$x>` — the same lookup as `MY::<$x>`, started that many scopes
     // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.
+    // CLIENT:: — the frames of the running routine's own compilation unit are
+    // skipped; the first caller from elsewhere (or the mainline) is the client
+    B["__assign-immutable"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value v = a.empty() ? Value::any() : a[0];
+        throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable " + v.typeName() + " (" + v.gist() + ")"};
+    };
+    B["__client-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
+        const std::string sym = a.empty() ? std::string() : a[0].toStr();
+        auto& fr = Interpreter::tctx_.callFrames;
+        int rev = I.mainLangRev_;
+        std::string pkg = "GLOBAL";
+        if (!fr.empty() && fr.back().code && fr.back().code->t == VT::Code && fr.back().code->code()) {
+            const std::string curFile = fr.back().code->code()->declFile;
+            for (size_t i = fr.size() - 1; i-- > 0;) {
+                const Value* cv = fr[i].code;
+                if (!cv || cv->t != VT::Code || !cv->code()) continue;
+                if (cv->code()->declFile == curFile) continue;
+                rev = cv->code()->langRev;
+                const std::string cf = cv->code()->declFile;
+                pkg.clear();
+                for (size_t j = i + 1; j-- > 0;) {
+                    const Value* dv = fr[j].code;
+                    if (!dv || dv->t != VT::Code || !dv->code() || dv->code()->declFile != cf) continue;
+                    if (!dv->code()->pkg.empty()) { pkg = dv->code()->pkg; break; }
+                }
+                if (pkg.empty() || pkg == "GLOBAL") {
+                    auto uit = I.unitPkgByFile_.find(cf);
+                    pkg = uit != I.unitPkgByFile_.end() ? uit->second : std::string("GLOBAL");
+                }
+                break;
+            }
+        }
+        if (sym == "CORE-SETTING-REV") return Value::str(rev <= 0 ? "c" : rev == 1 ? "d" : "e");
+        if (sym == "$?PACKAGE") return Value::typeObj(pkg);
+        VarExpr v(sym);
+        return I.eval(&v);
+    };
     B["__sym-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::nil();
         const std::string n = a[0].toStr();

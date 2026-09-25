@@ -1511,6 +1511,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // sent HTTP::Tiny off to slurp a form field. `slurp $path` (the SUB) is
     // unaffected; so is every `$io.slurp`.
     if (m == "slurp" && inv.hashKind == "IO") {
+        {   // a DIRECTORY has no content to slurp
+            struct stat dst;
+            if (::stat(ioFsPath(inv).c_str(), &dst) == 0 && S_ISDIR(dst.st_mode))
+                throw RakuError{Value::typeObj("X::IO::Directory"),
+                                "Failed to open file " + inv.toStr() + ": is a directory"};
+        }
         std::ifstream in(ioFsPath(inv), std::ios::binary);
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream ss; ss << in.rdbuf();
@@ -2909,6 +2915,53 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "slurp") {
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
             if (cap != inv.hash()->end() && cap->second.truthy()) return (*inv.hash())["buffer"];
+            bool sBin = false, sClose = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.namedArg) {
+                    bool on = !a.pairVal() || a.pairVal()->truthy();
+                    if (a.s == "bin") sBin = on; else if (a.s == "close") sClose = on;
+                }
+            // what has been READ already stays read: `.get` / `.getc` first,
+            // then `.slurp` answers the rest (and `:close` closes after)
+            if (inv.hash()->find("std") == inv.hash()->end()) {
+                std::string rest; bool partial = false;
+                auto lit = inv.hash()->find("lines");
+                auto cit = inv.hash()->find("cps");
+                if (lit != inv.hash()->end() && lit->second.arr() && inv.hash()->count("pos")) {
+                    auto& ls = *lit->second.arr();
+                    auto eit = inv.hash()->find("line-eols");
+                    long long lp = (*inv.hash())["pos"].toInt();
+                    for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
+                        rest += ls[i].toStr();
+                        if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
+                            rest += (*eit->second.arr())[i].toStr();
+                        else if (i + 1 < ls.size()) rest += "\n";
+                    }
+                    (*inv.hash())["pos"] = Value::integer((long long)ls.size());
+                    partial = true;
+                }
+                else if (cit != inv.hash()->end() && cit->second.arr() && inv.hash()->count("cpos")) {
+                    auto& cps = *cit->second.arr();
+                    long long cp0 = (*inv.hash())["cpos"].toInt();
+                    for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cps.size(); i++) rest += cps[i].toStr();
+                    (*inv.hash())["cpos"] = Value::integer((long long)cps.size());
+                    partial = true;
+                }
+                if (partial) {
+                    if (sClose) methodCall(inv, "close", ValueList{});
+                    if (sBin) return binBuf(rest);
+                    return Value::str(rest);
+                }
+                if (sBin || sClose) {
+                    std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
+                    if (sClose) methodCall(inv, "close", ValueList{});
+                    if (sBin) {
+                        Value io = Value::str((*inv.hash())["path"].toStr()); io.hashKind = "IO";
+                        return methodCall(io, "slurp", ValueList{[]{ Value p = Value::pair("bin", Value::boolean(true)); p.namedArg = true; return p; }()});
+                    }
+                    return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
+                }
+            }
             if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
                 return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));

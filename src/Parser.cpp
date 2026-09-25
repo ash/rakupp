@@ -284,6 +284,11 @@ static InfixInfo classifyInfix(const Token& t) {
     if (t.kind == Tok::Op) {
         const std::string& o = t.text;
         in.op = o;
+        // `1 R?? 2 !! 3` — the conditional operator takes no meta
+        if (o.size() == 3 && o.compare(1, 2, "??") == 0 && std::strchr("RXZS", o[0]))
+            throw ParseError(std::string("Cannot ") + o[0] + " ?? !! because conditional operators are too fiddly",
+                             t.line, "X::Syntax::CannotMeta",
+                             {{"meta", std::string(1, o[0])}, {"operator", "?? !!"}});
         if (kAssignOps.count(o)) { in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; }
         // Bare `R=` — the reverse metaop on plain assignment, so `1 R= my $x`
         // is `my $x = 1`. The general form below needs a base operator between
@@ -1628,6 +1633,12 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(list);
             continue;
         }
+        // `1 R?? 2 !! 3` / `1 S?? …` — the conditional operator takes no meta
+        if (cur().kind == Tok::Ident && (cur().text == "R" || cur().text == "S") &&
+            peek().kind == Tok::Op && !peek().spaceBefore && peek().text == "??")
+            throw ParseError("Cannot " + cur().text + " ?? !! because conditional operators are too fiddly",
+                             cur().line, "X::Syntax::CannotMeta",
+                             {{"meta", cur().text}, {"operator", "?? !!"}});
             // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
         if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
             InfixInfo base = classifyInfix(peek());
@@ -1937,6 +1948,15 @@ ExprPtr Parser::parseExpr(int minbp) {
                                      "X::Syntax::CannotMeta", {});
             }
         }
+        // `1 Z?? 2 !! 3` — the conditional operator takes no meta
+        if ((cur().kind == Tok::Ident && (cur().text == "R" || cur().text == "X" || cur().text == "Z" ||
+                                          cur().text == "S") &&
+             peek().kind == Tok::Op && !peek().spaceBefore && peek().text == "??") ||
+            (cur().kind == Tok::Op && cur().text.size() == 3 && cur().text.compare(1, 2, "??") == 0 &&
+             std::strchr("RXZS", cur().text[0])))
+            throw ParseError("Cannot " + cur().text.substr(0, 1) + " ?? !! because conditional operators are too fiddly",
+                             cur().line, "X::Syntax::CannotMeta",
+                             {{"meta", cur().text.substr(0, 1)}, {"operator", "?? !!"}});
         // `3 X. foo` / `3 R. "foo"` / `5 R:= $x`: metaops that cannot apply
         if (cur().kind == Tok::Ident && (cur().text == "R" || cur().text == "X" || cur().text == "Z") &&
             peek().kind == Tok::Op && !peek().spaceBefore && (peek().text == "." || peek().text == ":=")) {
@@ -2082,8 +2102,42 @@ ExprPtr Parser::parseExpr(int minbp) {
 
         if (in.isTernary) {
             advance(); // ??
-            ExprPtr then = parseExpr(0);
-            if (!matchOp("!!")) error("expected '!!' in ternary");
+            const size_t thenAt = pos_;
+            ExprPtr then = parseExpr(BP_ASSIGN);
+            if (!isOp("!!")) {
+                // what stands where `!!` belongs says what went wrong
+                if (isKind(Tok::Comma) || isOp("=>"))
+                    throw ParseError("Precedence of , is too loose to use inside ?? !!; please parenthesize",
+                                     cur().line, "X::Syntax::ConditionalOperator::PrecedenceTooLoose",
+                                     {{"operator", isKind(Tok::Comma) ? "," : "=>"}});
+                if (isOp("::"))
+                    throw ParseError("Please use !! rather than ::", cur().line,
+                                     "X::Syntax::ConditionalOperator::SecondPartInvalid", {{"second-part", "::"}});
+                if (isOp(":") && peek().kind == Tok::Ident && !peek().spaceBefore)
+                    throw ParseError("Precedence of :" + peek().text + " is too loose to use inside ?? !!; please parenthesize",
+                                     cur().line, "X::Syntax::ConditionalOperator::PrecedenceTooLoose",
+                                     {{"operator", ":" + peek().text}});
+                if (isOp(":"))
+                    throw ParseError("Please use !! rather than :", cur().line,
+                                     "X::Syntax::ConditionalOperator::SecondPartInvalid", {{"second-part", ":"}});
+                // `1 ?? f !! 3` — the listop `f` ate the `!!` as a prefix op
+                if (thenAt + 1 < toks_.size() && toks_[thenAt].kind == Tok::Ident &&
+                    toks_[thenAt + 1].kind == Tok::Op && toks_[thenAt + 1].text == "!!")
+                    throw ParseError("Your !! was gobbled by the expression in the middle; please parenthesize",
+                                     cur().line, "X::Syntax::ConditionalOperator::SecondPartGobbled", {});
+                throw ParseError("Confused: expected '!!' in ternary", cur().line, "X::Syntax::Confused",
+                                 {{"reason", "Found ?? but no !!"}});
+            }
+            // `1 ?? f !! 3` where `f` is a listop: Rakudo lets it take `!! 3` as
+            // its argument, so the conditional has no second part
+            if (then && thenAt + 1 < toks_.size() && toks_[thenAt].kind == Tok::Ident && pos_ == thenAt + 1 &&
+                ((then->kind == NK::Call && !static_cast<Call*>(then.get())->callee &&
+                  declaredSubNames_.count(static_cast<Call*>(then.get())->name)) ||
+                 (then->kind == NK::NameTerm && declaredSubNames_.count(static_cast<NameTerm*>(then.get())->name) &&
+                  !sigilless_.count(static_cast<NameTerm*>(then.get())->name))))
+                throw ParseError("Your !! was gobbled by the expression in the middle; please parenthesize",
+                                 cur().line, "X::Syntax::ConditionalOperator::SecondPartGobbled", {});
+            advance(); // !!
             ExprPtr els = parseExpr(BP_ASSIGN);
             auto tn = std::make_unique<Ternary>();
             tn->cond = std::move(lhs); tn->then = std::move(then); tn->els = std::move(els);
@@ -2328,6 +2382,17 @@ ExprPtr Parser::parseExpr(int minbp) {
         // `,=` is in here because it reaches as far right as the `=` it is built
         // on would: `%h ,= 5 => 4, 6 => 7` is `%h = %h, (5 => 4, 6 => 7)`, not
         // `(%h ,= 5 => 4), 6 => 7`.
+        // `x = 2` where `my \x = 1` bound a VALUE: nothing to assign into
+        if (in.isAssign && in.op == "=" && lhs && lhs->kind == NK::NameTerm &&
+            sigillessRO_.count(static_cast<NameTerm*>(lhs.get())->name)) {
+            auto c = std::make_unique<Call>();
+            c->name = "__assign-immutable";
+            c->line = cur().line;
+            c->args.push_back(std::move(lhs));
+            (void)parseExpr(in.rightAssoc ? in.lbp : in.lbp + 1);
+            lhs = std::move(c);
+            continue;
+        }
         if (in.isAssign && (in.op == "=" || in.op == ":=" || in.op == ",=")) {
             // `$/ = "x"` (a bare string-literal rhs) is the P5 input-record-separator
             // idiom — a compile error in Raku. `$/ = ('x')` and non-string rhs are fine.
@@ -2784,6 +2849,11 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
 // unreachable by the twigil test above it, and unreachable by a bare `%` term,
 // which in Rakudo is a FRESH hash and not the anonymous variable next to it.
 static const char* kAnonSlot = "\x01" "anon";
+// each anonymous DECLARATION is its own variable: `my @ = 1, 2; my @` is empty
+static std::string freshAnonSlot() {
+    static std::atomic<unsigned> n{0};
+    return std::string(kAnonSlot) + std::to_string(n++);
+}
 
 // `4.7kΩ` with `postfix:<k>` and `postfix:<Ω>` declared: the lexer read `kΩ`
 // as ONE name, since both are letters. When the name is wholly a run of
@@ -4017,6 +4087,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
         nm = sigillessTermName(nm);
         if (!nm.empty()) sigilless_.insert(nm);
+        if (!nm.empty() && isOp("=")) sigillessRO_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->declScope = scope;
         // …traits included: `my constant \COLORS is export(:colors) = %( … )`
@@ -4216,6 +4287,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (matchOp("\\")) { // sigilless item:  my (\x, $y) = …
                 std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
                 if (!nm.empty()) sigilless_.insert(nm);
+                if (!nm.empty()) sigillessRO_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
                 ve->declare = true; ve->declScope = scope;
                 if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not enforced
@@ -4351,6 +4423,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (!matchKind(Tok::Comma)) break;
         }
         expectKind(Tok::RParen, ")");
+        // `my (\a)` — a sigilless name has no container to leave empty
+        if (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace))
+            for (auto& it : list->items)
+                if (it && it->kind == NK::VarExpr) {
+                    const std::string& vn = static_cast<VarExpr*>(it.get())->name;
+                    if (!vn.empty() && !std::strchr("$@%&", vn[0]))
+                        throw ParseError("Term definition requires an initializer", cur().line,
+                                         "X::Syntax::Term::MissingInitializer", {});
+                }
         // `my ($a, $b) is default(42)` / `is dynamic` — a trait after the list
         // applies to EVERY variable in it. Each one needs its own default
         // expression, so the traits are re-parsed once per variable.
@@ -4439,7 +4520,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // fresh empty Array every time. Same kAnonSlot sentinel as the
         // bare-sigil branch below, and the shape/key-type/trait machinery of
         // this branch keeps working — name[0] is still the sigil.
-        if (vname.size() == 1 && std::strchr("$@%&", vname[0])) vname += kAnonSlot;
+        if (vname.size() == 1 && std::strchr("$@%&", vname[0])) vname += freshAnonSlot();
         auto ve = std::make_unique<VarExpr>(vname);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         ve->declTypeExpr = std::move(typeExpr);
@@ -4485,7 +4566,16 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             advance(); // }
         }
         // `of Type` postfix trait sets the value/element type
-        if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
+        if (isIdent("of") && peek().kind == Tok::Ident) {
+            advance();
+            std::string ot = advance().text;
+            // `my Int $a of Str` — two different types for one variable
+            if (!ve->declType.empty() && ve->declType != ot)
+                throw ParseError("Variable " + ve->name + " has conflicting types " + ve->declType + " and " + ot,
+                                 cur().line, "X::Syntax::Variable::ConflictingTypes",
+                                 {{"outer", ve->declType}, {"inner", ot}});
+            ve->declType = ot;
+        }
         // Hash[valueType,keyType] — an object hash with no explicit value type is
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
         // An object hash with no declared VALUE type takes Mu from 6.e and Any
@@ -4559,7 +4649,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if ((isKind(Tok::Op) && cur().text.size() == 1 && strchr("$@%&", cur().text[0])) ||
         (isKind(Tok::Var) && cur().text.size() == 1)) {
         std::string sig = advance().text;
-        auto ve = std::make_unique<VarExpr>(sig + kAnonSlot);
+        auto ve = std::make_unique<VarExpr>(sig + freshAnonSlot());
         ve->declare = true; ve->declScope = scope; ve->declType = type;
         // anonymous object hash `my %{Str:D} is default(…)` — the braced key type
         if (sig == "%" && isKind(Tok::LBrace) && peek().kind == Tok::Ident) {
@@ -7345,6 +7435,15 @@ ExprPtr Parser::parsePrimary() {
                         c->args.push_back(std::make_unique<IntLit>(outerHops));
                         return c;
                     }
+                    // `CLIENT::LEXICAL::<$?PACKAGE>` / `CLIENT::CORE::<CORE-SETTING-REV>` —
+                    // asked of the nearest caller from ANOTHER compilation unit
+                    if (name.rfind("CLIENT::", 0) == 0 && !keyExpr) {
+                        auto c = std::make_unique<Call>();
+                        c->name = "__client-lookup";
+                        c->line = cur().line;
+                        c->args.push_back(std::make_unique<StrLit>(sym));
+                        return c;
+                    }
                     // `CALLER::<$y>` names the CALLER's `$y`, not ours: keep the head
                     // on a symbolic ref, which the evaluator resolves through the
                     // dynamic chain (the plain-name approximation read our own $y)
@@ -9073,6 +9172,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                                          cur().line, "X::InvalidTypeSmiley", {{"name", sm}});
                     if (sm != "_" && sigRetType_.find('(') == std::string::npos) sigRetType_ += "\x01" + sm;
                 }
+                // `--> Bool, Int $x` — parameters after the return constraint
+                {
+                    size_t q = pos_ + 1;
+                    if (q < toks_.size() && toks_[q].kind == Tok::Op && toks_[q].text == ":" &&
+                        q + 1 < toks_.size() && toks_[q + 1].kind == Tok::Ident) q += 2;   // a smiley
+                    if (q + 1 < toks_.size() && (toks_[q].kind == Tok::Comma || toks_[q].kind == Tok::Semicolon) &&
+                        toks_[q + 1].kind != Tok::RParen)
+                        throw ParseError("Malformed return value (return constraints only allowed "
+                                         "at the end of the signature)", cur().line,
+                                         "X::Syntax::Malformed", {{"what", "return value"}});
+                }
                 // `--> Int Str` — a second type after the return constraint
                 if (peek().kind == Tok::Ident && knownTypeName(peek().text))
                     throw ParseError("Malformed return value (return constraints only allowed "
@@ -9873,6 +9983,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     }
     else if (isKind(Tok::Ident)) {
         s->name = advance().text;
+        if (!asMethod) declaredSubNames_.insert(s->name);
         // `sub div` / `sub min` in THIS file: the name is now a routine, so at
         // term position it is a call and not the operator (startsListopArg).
         if (!asMethod && isWordInfixName(s->name)) wordInfixSubs_.insert(s->name);
@@ -10255,6 +10366,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                     while (!isKind(Tok::RParen) && !isKind(Tok::End)) ref += advance().text;
                     if (isKind(Tok::RParen)) advance();
                 }
+                else if (isOp("<") && !cur().spaceBefore) {   // `is tighter<*>`
+                    advance();
+                    auto w = readAngleWords(">");
+                    if (!w.empty()) ref = "<" + w[0] + ">";
+                }
+                else if (isKind(Tok::QwList) && !cur().spaceBefore) ref = "<" + advance().text + ">";
                 // ref looks like `&infix:<+>` — pull the operator out of the <…>/«…»
                 auto lt = ref.find('<'), gt = ref.rfind('>');
                 if (lt == std::string::npos) { lt = ref.find("\xC2\xAB"); gt = ref.rfind("\xC2\xBB"); }
@@ -13515,7 +13632,7 @@ StmtPtr Parser::parseStatementImpl() {
         if ((kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
              kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "NEXT" ||
              kw == "LAST" || kw == "KEEP" || kw == "UNDO" || kw == "PRE" ||
-             kw == "POST" || kw == "DOC" || kw == "QUIT" || kw == "CLOSE") &&
+             kw == "POST" || kw == "DOC" || kw == "QUIT" || kw == "CLOSE" || kw == "TEMP") &&
             // a TIGHT paren is CALL syntax, not a phaser body:
             // `POST($uri, content => %form)` inside HTTP::Request::Common is a
             // recursive call to the user's `sub POST` — it parsed as the POST
