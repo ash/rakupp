@@ -45,7 +45,10 @@ static std::string renderPod(const std::string& content) {
 //           `skip('<reason>', numtests);` in front (numtests = test calls inside), so
 //           the plan stays satisfied without running the guarded construct — some of
 //           which even Rakudo can't compile (the fudger comments them out for it too)
-//   emit  — replace the directive line with its argument code, verbatim
+//   emit  — paste the argument code in front of the NEXT line, with no line break:
+//           fudge prints it without a newline, so `#?rakudo emit #` comments out
+//           the line after it (S02-names/pseudo-6*.t rely on that); the directive
+//           line itself is left empty
 //   eval/try — treated as skip (they guard constructs that need EVAL protection)
 //   #?DOES n — the next statement (or `sub NAME`) counts as n tests
 // Line numbers are preserved throughout: one line in, one line out.
@@ -176,6 +179,7 @@ static std::string applyRakudoFudge(const std::string& src) {
         return nt;
     };
 
+    std::map<size_t, std::string> emitted; // line index -> `emit` text glued in front
     int pending = 0;          // fudged statements still to process
     std::string verb, reason; // active directive
     int does = 0;             // pending `#?DOES n` for the next statement / sub
@@ -277,7 +281,10 @@ static std::string applyRakudoFudge(const std::string& src) {
                 fudged = true;
             }
             else if (v == "emit") {
-                line = line.substr(0, p) + arg; // paste the emitted code, same line
+                // Glued onto the next line once the pass is done, so it lands in
+                // front of whatever skip/todo makes of that line, as in fudge.
+                if (li + 1 < lines.size()) { emitted[li + 1] += arg; line.clear(); }
+                else line = line.substr(0, p) + arg;
                 fudged = true;
             }
             continue;
@@ -321,6 +328,7 @@ static std::string applyRakudoFudge(const std::string& src) {
     }
 
     if (!fudged) return src;
+    for (auto& [k, text] : emitted) lines[k] = text + lines[k];
     std::string out; out.reserve(src.size() + 256);
     for (size_t k = 0; k < lines.size(); k++) { if (k) out += '\n'; out += lines[k]; }
     return out;
