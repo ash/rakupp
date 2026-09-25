@@ -1060,21 +1060,18 @@ say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d
             $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown,
             ($lost ?? sprintf(" — and +%d from %d LOST file%s, which %s not measured at all", $lost-declared, $lost, $lost == 1 ?? '' !! 's', $lost == 1 ?? 'was' !! 'were') !! ''));
 # What the pass count is SHIELDED by. Both categories are legitimately counted as
-# passes above; this line says how many, so the headline can be read net.
+# passes above; this line says how many.
 my $shielded = $tot-skip + $tot-todofail;
-my $net      = $tot-pass - $shielded;
 say sprintf("  of which shielded:  %d skipped + %d todo-failed = %d (%.2f%% of the pass count)",
             $tot-skip, $tot-todofail, $shielded, $tot-pass ?? 100 * $shielded / $tot-pass !! 0);
-say sprintf("Assertions passed NET of skip/todo: %d / %d  (%.1f%%)  of ALL declared tests",
-            $net, $declared, $declared ?? 100 * $net / $declared !! 0);
-# The same with every skipped or todo-marked test taken out of BOTH sides, the
-# ones that pass under a todo included: of the tests the suite (and its fudge
-# directives) expects to pass, how many do.
+# Only the tests with no skip or todo on them, on both sides: every skipped or
+# todo-marked test (a todo that passes too) leaves the passed count AND the
+# declared total. Of the tests expected to pass, how many do.
 my $fudged    = $shielded + $tot-todopass;
 my $must-pass = $declared - $fudged;
 my $do-pass   = $tot-pass - $fudged;
-say sprintf("Assertions passed, skip/todo excluded: %d / %d  (%.1f%%)  of ALL declared tests less %d skipped or todo (%d of them todo-passed)",
-            $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0, $fudged, $tot-todopass);
+say sprintf("Assertions passed without skip/todo: %d / %d  (%.1f%%)  of declared tests not under a skip or todo (%d left out)",
+            $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0, $fudged);
 
 # ---- Files with #?rakudo fudge directives: how many, which verbs, how they did.
 # The skip/todo figures above cover the suite's own skip()/todo() calls too;
