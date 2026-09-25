@@ -9,6 +9,9 @@
 #include "BigInt.h"
 #include "Unicode.h"
 #include <map>
+#include <set>
+#include <functional>
+#include <algorithm>
 
 namespace rakupp {
 
@@ -450,60 +453,262 @@ static bool splitLeveled(const std::string& kw, const std::string& base, int& le
     return true;
 }
 
-// A Pod table's rows, as Rakudo yields them. `headers` is the row above the
-// first divider — a line of nothing but `= - + |` and spaces — and is empty
-// when the table has none; `contents` is one list of cells per remaining
-// non-blank line; `caption` comes from the block's config and is "" otherwise.
-// All three are always present, because a parsed table is compared against a
-// constructed one (Pod::Utils' `pod-table`) and a missing key is a difference.
+// A Pod table's rows, as Rakudo yields them: `headers` (empty when the table
+// has none), `contents` (one list of cells per row, every row padded to the
+// widest) and `caption` (from the config, "" otherwise). All three are always
+// present, because a parsed table is compared against a constructed one
+// (Pod::Utils' `pod-table`) and a missing key is a difference.
 //
-// Cells split on `|` when the row has one and on runs of two-or-more spaces
-// when it does not, which is what makes a whitespace-aligned table work.
-static ValueList podTableCells(const std::string& line) {
-    ValueList out;
-    std::string t = strip(line);
-    auto push = [&](std::string c) { out.push_back(Value::str(strip(c))); };
-    if (t.find('|') != std::string::npos) {
-        size_t p = 0;
-        for (;;) {
-            size_t bar = t.find('|', p);
-            push(t.substr(p, bar == std::string::npos ? std::string::npos : bar - p));
-            if (bar == std::string::npos) break;
-            p = bar + 1;
-        }
-        return out;
+// The shape of the rules (S26-documentation/07*-tables.t spell them out):
+//   * a SEPARATOR line holds only `- = + | :` and blanks, with a `-` or `=`;
+//   * the header is what stands above the one `=` separator when `-` ones
+//     also appear, or above the only separator there is;
+//   * with row separators, the lines between two of them MERGE into one row,
+//     cell by cell; without, every line is a row;
+//   * cells split on `|` or `+` (`\|`, `\+` are data) when any row has a
+//     visible `|`, and otherwise by COLUMN POSITION: a column starts wherever
+//     text follows two or more blanks (or the line's start), in any row;
+//   * a `+---+` grid drops its outer border bars;
+//   * `Z<…>` comments vanish before any of this.
+static std::string podCellNorm(const std::string& c) {
+    // edge padding may be NO-BREAK SPACEs too (docs.raku.org's operator
+    // tables use them to keep a lone `+` from reading as a divider)
+    std::string t = strip(c), out;
+    for (bool again = true; again; ) {
+        again = false;
+        if (t.compare(0, 2, "\xC2\xA0") == 0) { t = strip(t.substr(2)); again = true; }
+        if (t.size() >= 2 && t.compare(t.size() - 2, 2, "\xC2\xA0") == 0) { t = strip(t.substr(0, t.size() - 2)); again = true; }
     }
-    size_t p = 0;
-    while (p < t.size()) {
-        size_t gap = t.find("  ", p);
-        push(t.substr(p, gap == std::string::npos ? std::string::npos : gap - p));
-        if (gap == std::string::npos) break;
-        p = t.find_first_not_of(' ', gap);
-        if (p == std::string::npos) break;
+    bool sp = false;
+    for (char ch : t) {
+        if (ch == ' ' || ch == '\t') { sp = true; continue; }
+        if (sp && !out.empty()) out += ' ';
+        sp = false;
+        out += ch;
     }
     return out;
 }
-
 static bool podTableDivider(const std::string& s) {
     std::string t = strip(s);
     if (t.empty()) return false;
-    for (char c : t) if (c != '=' && c != '-' && c != '+' && c != '|' && c != ' ') return false;
-    return true;
+    bool rule = false;
+    for (char c : t) {
+        if (c == '-' || c == '=') rule = true;
+        else if (c != '+' && c != '|' && c != ':' && c != ' ' && c != '\t') return false;
+    }
+    return rule;
+}
+static std::vector<std::string> podSplitBars(const std::string& line) {
+    std::vector<std::string> cells;
+    std::string cur;
+    for (size_t k = 0; k < line.size(); k++) {
+        char ch = line[k];
+        if (ch == '\\' && k + 1 < line.size() && (line[k + 1] == '|' || line[k + 1] == '+')) { cur += line[++k]; continue; }
+        if (ch == '|' || ch == '+') { cells.push_back(podCellNorm(cur)); cur.clear(); continue; }
+        cur += ch;
+    }
+    cells.push_back(podCellNorm(cur));
+    return cells;
+}
+static std::vector<std::string> podMergeRows(const std::vector<std::vector<std::string>>& g) {
+    if (g.size() == 1) return g[0];
+    size_t w = 0;
+    for (auto& r : g) w = std::max(w, r.size());
+    std::vector<std::string> m(w);
+    for (auto& r : g)
+        for (size_t j = 0; j < r.size(); j++) {
+            if (!m[j].empty() && !r[j].empty()) m[j] += ' ';
+            m[j] += r[j];
+        }
+    return m;
+}
+static std::string podStripZ(const std::string& l) {
+    std::string out;
+    for (size_t k = 0; k < l.size(); k++) {
+        if (l[k] == 'Z' && k + 1 < l.size() && l[k + 1] == '<') {
+            int d = 0;
+            for (k++; k < l.size(); k++) {
+                if (l[k] == '<') d++;
+                else if (l[k] == '>' && --d == 0) break;
+            }
+            continue;
+        }
+        out += l[k];
+    }
+    return out;
+}
+static bool g_podStrictFwd();
+static void podTableParse(const std::vector<std::string>& raw,
+                          std::vector<std::vector<std::string>>& headers,
+                          std::vector<std::vector<std::string>>& rows) {
+    std::vector<std::string> lines;
+    for (auto& l : raw) lines.push_back(podStripZ(l));
+    while (!lines.empty() && strip(lines.front()).empty()) lines.erase(lines.begin());
+    while (!lines.empty() && strip(lines.back()).empty()) lines.pop_back();
+    // the three tables Rakudo refuses outright
+    auto bad = [&](const std::string& why) {
+        if (!g_podStrictFwd()) return;
+        throw RakuError{Value::typeObj("X::AdHoc"), "Pod table error: " + why};
+    };
+    if (lines.empty()) { bad("the table has no rows"); return; }
+    auto pad = [&]() {
+        size_t w = 0;
+        for (auto& r : headers) w = std::max(w, r.size());
+        for (auto& r : rows) w = std::max(w, r.size());
+        for (auto& r : headers) r.resize(w);
+        for (auto& r : rows) r.resize(w);
+    };
+    auto isGrid = [](const std::string& l) {
+        std::string t = strip(l);
+        if (t.size() < 2 || t.front() != '+' || t.back() != '+') return false;
+        for (char c : t) if (c != '+' && c != '-' && c != '=' && c != ' ') return false;
+        return true;
+    };
+    if (isGrid(lines[0])) {
+        bool sawEq = false;
+        std::vector<std::vector<std::string>> hdr, body;
+        for (auto& l : lines) {
+            std::string t = strip(l);
+            if (t.empty()) continue;
+            if (isGrid(t)) { if (t.find('=') != std::string::npos) sawEq = true; continue; }
+            if (t.size() >= 2 && t.front() == '|' && t.back() == '|') t = t.substr(1, t.size() - 2);
+            std::vector<std::string> cells;
+            size_t p = 0;
+            for (;;) {
+                size_t b = t.find('|', p);
+                cells.push_back(podCellNorm(t.substr(p, b == std::string::npos ? std::string::npos : b - p)));
+                if (b == std::string::npos) break;
+                p = b + 1;
+            }
+            (sawEq ? body : hdr).push_back(cells);
+        }
+        if (!sawEq && !hdr.empty()) { body = hdr; hdr.clear(); hdr.push_back(body.front()); body.erase(body.begin()); }
+        headers = hdr; rows = body;
+        pad();
+        return;
+    }
+    bool bars = false;
+    for (auto& l : lines) {
+        if (strip(l).empty() || podTableDivider(l)) continue;
+        for (size_t k = 0; k < l.size(); k++) {
+            if (l[k] == '\\') { k++; continue; }
+            if (l[k] == '|') { bars = true; break; }
+        }
+        if (bars) break;
+    }
+    {
+        bool prevSep = false;
+        for (auto& l : lines) {
+            if (strip(l).empty()) continue;
+            bool sep = podTableDivider(l);
+            if (sep && prevSep) bad("consecutive row separators");
+            prevSep = sep;
+            if (bars && !sep) {
+                bool vis = false;
+                for (size_t k = 0; k < l.size() && !vis; k++) {
+                    if (l[k] == '\\') { k++; continue; }
+                    vis = l[k] == '|' || l[k] == '+';
+                }
+                if (!vis) bad("a row mixes whitespace and visible column separators");
+            }
+        }
+    }
+    std::vector<size_t> seps, eqSeps, dashSeps;
+    for (size_t k = 0; k < lines.size(); k++) {
+        if (!podTableDivider(lines[k])) continue;
+        seps.push_back(k);
+        std::string t = strip(lines[k]);
+        (t.find('-') == std::string::npos ? eqSeps : dashSeps).push_back(k);
+    }
+    long hdrSep = -1;
+    if (eqSeps.size() == 1 && !dashSeps.empty()) hdrSep = (long)eqSeps[0];
+    else if (seps.size() == 1 && seps[0] > 0) hdrSep = (long)seps[0];
+    const size_t rowSeps = seps.size() - (hdrSep >= 0 ? 1 : 0);
+    // group the data lines: separators (and, for a column-aligned table,
+    // blank lines) end a group; everything above the header separator is
+    // the header's
+    std::vector<std::string> hdrLines;
+    std::vector<std::vector<std::string>> groups;
+    std::vector<std::string> cur;
+    bool pastHdr = hdrSep < 0, sawBlank = false;
+    auto flush = [&]() {
+        if (cur.empty()) return;
+        if (pastHdr) groups.push_back(cur);
+        else hdrLines.insert(hdrLines.end(), cur.begin(), cur.end());
+        cur.clear();
+    };
+    for (size_t k = 0; k < lines.size(); k++) {
+        if (strip(lines[k]).empty()) {
+            if (!bars) { sawBlank = true; flush(); }
+            continue;
+        }
+        if (podTableDivider(lines[k])) {
+            flush();
+            if ((long)k == hdrSep) pastHdr = true;
+            continue;
+        }
+        cur.push_back(lines[k]);
+    }
+    flush();
+    std::function<std::vector<std::vector<std::string>>(const std::vector<std::string>&)> cellsOf;
+    if (bars) {
+        cellsOf = [](const std::vector<std::string>& ls) {
+            std::vector<std::vector<std::string>> r;
+            for (auto& l : ls) r.push_back(podSplitBars(strip(l)));
+            return r;
+        };
+    }
+    else {
+        // column starts, over every data line at the common indent
+        std::vector<std::string> all = hdrLines;
+        for (auto& g : groups) all.insert(all.end(), g.begin(), g.end());
+        size_t indent = std::string::npos;
+        for (auto& l : all) indent = std::min(indent, l.find_first_not_of(" \t"));
+        if (indent == std::string::npos) indent = 0;
+        std::set<size_t> starts;
+        for (auto& l : all) {
+            std::string a = l.size() > indent ? l.substr(indent) : std::string();
+            size_t blanks = 0; bool inBlank = true;
+            for (size_t k = 0; k < a.size(); k++) {
+                if (a[k] == ' ' || a[k] == '\t') { blanks++; inBlank = true; continue; }
+                if (inBlank && (k == 0 || blanks >= 2)) starts.insert(k);
+                inBlank = false; blanks = 0;
+            }
+        }
+        std::vector<size_t> cols(starts.begin(), starts.end());
+        cellsOf = [cols, indent](const std::vector<std::string>& ls) {
+            std::vector<std::vector<std::string>> r;
+            for (auto& l : ls) {
+                std::string a = l.size() > indent ? l.substr(indent) : std::string();
+                std::vector<std::string> cells;
+                for (size_t c = 0; c < cols.size(); c++) {
+                    size_t e = c + 1 < cols.size() ? cols[c + 1] : a.size();
+                    cells.push_back(cols[c] < a.size() ? podCellNorm(a.substr(cols[c], std::min(e, a.size()) - cols[c])) : std::string());
+                }
+                r.push_back(cells);
+            }
+            return r;
+        };
+    }
+    if (!hdrLines.empty() && hdrSep >= 0) headers.push_back(podMergeRows(cellsOf(hdrLines)));
+    const bool merge = bars ? rowSeps > 0 : ((rowSeps > 0 || sawBlank) && groups.size() > 1);
+    for (auto& g : groups) {
+        auto cs = cellsOf(g);
+        if (merge) rows.push_back(podMergeRows(cs));
+        else rows.insert(rows.end(), cs.begin(), cs.end());
+    }
+    pad();
 }
 
-static void fillPodTable(Value& block, const std::vector<std::string>& rows) {
+static void fillPodTable(Value& block, const std::vector<std::string>& lines) {
     Value headers = Value::array(), body = Value::array();
-    size_t div = rows.size();
-    for (size_t k = 0; k < rows.size(); k++) if (podTableDivider(rows[k])) { div = k; break; }
-    if (div < rows.size()) {
-        // the last non-blank line above the divider is the header row
-        for (size_t k = div; k-- > 0;)
-            if (!strip(rows[k]).empty()) { *headers.arr() = podTableCells(rows[k]); break; }
-    }
-    for (size_t k = div == rows.size() ? 0 : div + 1; k < rows.size(); k++) {
-        if (strip(rows[k]).empty() || podTableDivider(rows[k])) continue;
-        Value r = Value::array(); *r.arr() = podTableCells(rows[k]);
-        body.arr()->push_back(std::move(r));
+    std::vector<std::vector<std::string>> hs, rs;
+    podTableParse(lines, hs, rs);
+    if (hs.size() == 1) for (auto& c : hs[0]) headers.arr()->push_back(Value::str(c));
+    for (auto& r : rs) {
+        Value row = Value::array();
+        for (auto& c : r) row.arr()->push_back(Value::str(c));
+        body.arr()->push_back(std::move(row));
     }
     (*block.hash())["headers"] = headers;
     (*block.hash())["contents"] = body;
@@ -861,7 +1066,10 @@ std::string pod2text(const Value& v) {
     return podKids(v, true);
 }
 
-ValueList parsePod(const std::string& src) {
+static thread_local bool g_podStrict = false;
+static bool g_podStrictFwd() { return g_podStrict; }
+ValueList parsePod(const std::string& src, bool strict) {
+    struct StrictScope { bool saved; StrictScope(bool on) : saved(g_podStrict) { g_podStrict = on; } ~StrictScope() { g_podStrict = saved; } } strictScope(strict);
     std::vector<std::string> lines;
     { std::stringstream ss(src); std::string ln; while (std::getline(ss, ln)) lines.push_back(ln); }
     ValueList top; size_t i = 0;

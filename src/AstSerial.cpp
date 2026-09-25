@@ -256,7 +256,7 @@ template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr);
 template <class IO> void visit(IO& io, ArrayLit& n) { ioExprVec(io, n.items); F(io, n.isList); F(io, n.fromCommaList); }
 template <class IO> void visit(IO& io, HashLit& n)  { ioExprVec(io, n.items); }
 template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); F(io, n.containerSigil); }
-template <class IO> void visit(IO& io, Binary& n)   { F(io, n.op); ioExpr(io, n.lhs); ioExpr(io, n.rhs); }
+template <class IO> void visit(IO& io, Binary& n)   { F(io, n.op); ioExpr(io, n.lhs); ioExpr(io, n.rhs); F(io, n.parenned); }
 template <class IO> void visit(IO& io, Unary& n)    { F(io, n.op); F(io, n.postfix); ioExpr(io, n.operand); }
 template <class IO> void visit(IO& io, Call& n)     { F(io, n.name); ioExpr(io, n.callee); ioExprVec(io, n.args);
                                                       F(io, n.parenned); }  // P1 surface fact
@@ -275,6 +275,7 @@ template <class IO> void visit(IO& io, PairExpr& n) { F(io, n.key); F(io, n.colo
                                                       ioExpr(io, n.keyExpr); ioExpr(io, n.value); }
 template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); ioStmtVec(io, n.body);
                                                       F(io, n.isSub); F(io, n.isMethodTerm); F(io, n.isPointy);
+                                                      F(io, n.phaser);
                                                       F(io, n.retType);
                                                       // `is rw` on an ANONYMOUS routine term, consumed by the
                                                       // parser into this flag and recorded nowhere else — the
@@ -406,7 +407,8 @@ template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.b
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
                                                       ioBlock(io, n.elseBody); F(io, n.elseVar);
-                                                      ioParams(io, n.params); ioParams(io, n.elseParams); }
+                                                      ioParams(io, n.params); ioParams(io, n.elseParams);
+                                                      F(io, n.elseOuterTopic); }
 template <class IO> void visit(IO& io, WhenStmt& n) { ioExpr(io, n.cond); F(io, n.isDefault); ioBlock(io, n.body); }
 template <class IO> void visit(IO& io, LoopStmt& n) { ioExpr(io, n.init); ioExpr(io, n.cond); ioExpr(io, n.incr);
                                                       ioBlock(io, n.body); F(io, n.asExpr); }

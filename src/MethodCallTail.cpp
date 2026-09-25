@@ -43,6 +43,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
 // `size => gap` starts the next window size+gap later (negative overlaps);
 // batch implies :partial, rotor drops a short final window unless :partial.
 struct RotorSpec { long long n, step; };
+static const long long kAll = 4000000000000000000LL; // a `*` / Inf rotor size: everything that is left
 // `.map` needs a Callable. Anything else is X::Cannot::Map, which carries what
 // was being mapped, how it was spelled, and the mistake it usually is — a
 // Whatever swallowed by a list, a missing block, a `.classify` written as a
@@ -88,6 +89,13 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
     // the sizes inside it.
     ValueList flatArgs;
     for (auto& a : args) {
+        // an ENDLESS range of sizes (`.rotor(1..*)`) is read as far as any list
+        // could need: every size takes at least one element
+        if (a.t == VT::Range && isEndlessRange(a)) {
+            for (long long k = a.rFrom() + (a.rExFrom() ? 1 : 0), c = 0; c < 100000; k++, c++)
+                flatArgs.push_back(Value::integer(k));
+            continue;
+        }
         if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized)
             for (auto& x : a.flatten()) flatArgs.push_back(x);
         else flatArgs.push_back(a);
@@ -107,6 +115,8 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
             if (n < 1) n = 1;
             specs.push_back({n, n + a.pairVal()->toInt()});
         }
+        else if (a.t == VT::Whatever || (a.t == VT::Num && std::isinf(a.toNum()) && a.toNum() > 0))
+            specs.push_back({kAll, kAll});
         else if (a.isNumeric()) { long long n = a.toInt(); if (n < 1) n = 1; specs.push_back({n, n}); }
     }
     if (specs.empty()) specs.push_back({1, 1});
@@ -205,11 +215,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 s = std::move(t);
             }
         }
+        // the Failure carries a real exception object, so a handler reads
+        // `.radix`, or `.source`/`.pos`/`.reason`, off it
+        auto typedFailure = [&](const char* type, std::vector<std::pair<std::string, Value>> attrs,
+                                const std::string& msg) {
+            Value f = armedFailure(type, msg);
+            (*f.hash())["exception"] = makeTypedEx(type, std::move(attrs), msg);
+            return f;
+        };
         if (base < 2 || base > 36)
-            return armedFailure("X::Syntax::Number::RadixOutOfRange",
+            return typedFailure("X::Syntax::Number::RadixOutOfRange", {{"radix", Value::integer(base)}},
                                 "Radix " + std::to_string(base) + " out of range (allowed: 2..36)");
+        const std::string source = inv.toStr();
         size_t i2 = 0; bool neg = false;
         if (i2 < s.size() && (s[i2] == '-' || s[i2] == '+')) { neg = s[i2] == '-'; i2++; }
+        const size_t digitsFrom = i2;
         auto digval = [&](char c) -> int {
             if (c >= '0' && c <= '9') return c - '0';
             if (c >= 'a' && c <= 'z') return c - 'a' + 10;
@@ -217,9 +237,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return -1;
         };
         auto badDigits = [&]() -> Value {
-            return armedFailure("X::Str::Numeric",
-                                "Cannot convert string to number: '" + s +
-                                "' is not a valid base-" + std::to_string(base) + " number");
+            // i2 is where the parse stopped; the folded text keeps one byte per
+            // character, so it is also the character position in the source
+            const std::string b = std::to_string(base);
+            std::string reason = i2 <= digitsFrom
+                ? "base-" + b + " number must begin with valid digits or '.'"
+                : "malformed base-" + b + " number";
+            std::string shown = source;
+            return typedFailure("X::Str::Numeric",
+                {{"source", Value::str(source)}, {"pos", Value::integer((long long)i2)},
+                 {"reason", Value::str(reason)}},
+                "Cannot convert string to number: " + reason + " in '" + shown.substr(0, std::min(i2, shown.size())) +
+                "\xE2\x8F\x8F" + shown.substr(std::min(i2, shown.size())) + "' (indicated by \xE2\x8F\x8F)");
         };
         BigInt whole(0); bool any = false;
         for (; i2 < s.size() && s[i2] != '.'; i2++) {
@@ -525,7 +554,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // `1 => "a"`, an Int key, not the string "1" (sheet HM-17). Same
             // rule the list forms below already follow.
             Value val = inv.pairVal() ? *inv.pairVal() : Value::any();
-            Value p = Value::pair(val.toStr(), Value::str(inv.s));
+            // …and the KEY becomes the value as itself too: `(0 => 1).antipair`
+            // is `1 => 0`, an Int value
+            Value p = Value::pair(val.toStr(), inv.pairKey() ? *inv.pairKey() : Value::str(inv.s));
             if (val.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(val);
             return p;
         }
@@ -560,15 +591,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (m == "invert" && val.t == VT::Hash && val.hash()) {
                 Value o2 = Value::array(); o2.isList = true;
                 for (auto& kv : *val.hash()) {
-                    Value p = Value::pair("", Value::str(inv.s));
+                    Value p = Value::pair("", inv.pairKey() ? *inv.pairKey() : Value::str(inv.s));
                     p.pairKeyM() = std::make_shared<Value>(Value::pair(kv.first, kv.second));
                     o2.arr()->push_back(std::move(p));
                 }
                 return o2;
             }
             ValueList vs = (m == "invert" && val.t == VT::Array && val.arr()) ? *val.arr() : ValueList{val};
+            // the old KEY is the new value as itself (`(42 => 70).invert` is 70 => 42)
+            Value oldKey = inv.pairKey() ? *inv.pairKey() : Value::str(inv.s);
             for (auto& v : vs) {
-                Value p = Value::pair(v.toStr(), Value::str(inv.s));
+                Value p = Value::pair(v.toStr(), oldKey);
                 // a Str key needs no separate key VALUE — carrying one makes the
                 // pair render as `"bar" => "foo"` instead of `:bar("foo")`
                 if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v);
@@ -953,7 +986,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (infinite && (m == "rotor" || m == "batch")) {
             std::vector<RotorSpec> specs;
             bool partial;
-            parseRotorSpecs(args, m == "batch", specs, partial);
+            // a LAZY list of sizes (`.rotor(1...*)`) is read as far as any list
+            // could need — every size takes at least one element
+            ValueList rargs;
+            for (auto& ra : args) {
+                if (ra.t == VT::Array && ra.ext() && !ra.itemized) {
+                    materializeLazy(ra, 100000);
+                    Value l = Value::array(*ra.arr()); l.isList = true;
+                    rargs.push_back(l);
+                }
+                else rargs.push_back(ra);
+            }
+            parseRotorSpecs(rargs, m == "batch", specs, partial);
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
@@ -1344,6 +1388,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     if (inv.t == VT::Range && isEndlessRange(inv)) {
         if (m == "sum") return endlessRangeSum(inv);
+        // …and `(1..*).rotor(…)` chunks it LAZILY, through the lazy-list arm
+        if ((m == "rotor" || m == "batch") && isEndlessRange(inv)) {
+            Value lz = methodCall(inv, "Seq", ValueList{});
+            if (lz.t == VT::Array && lz.ext()) return methodCall(lz, m, args, rwArgs);
+        }
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) {
             std::string n = args[0].code() ? args[0].code()->name : std::string(), op;
             if (n.rfind("infix:<", 0) == 0 && n.back() == '>') op = n.substr(7, n.size() - 8);
@@ -1552,6 +1601,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     if ((m == "hyper" || m == "race" || m == "serial") &&
         (inv.t == VT::Array || inv.t == VT::Range || (inv.t == VT::Hash && inv.hash()))) {
+        // a batch or degree below 1 is refused before anything runs
+        if (m != "serial")
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal() && (a.s == "batch" || a.s == "degree") &&
+                    a.pairVal()->isNumeric() && a.pairVal()->toInt() <= 0)
+                    throwTypedV("X::Invalid::Value",
+                                {{"method", Value::str(std::string(m))}, {"name", Value::str(a.s.str())},
+                                 {"value", *a.pairVal()}},
+                                "Invalid value '" + a.pairVal()->toStr() + "' for :" + a.s.str() +
+                                    " on method " + std::string(m));
         if (inv.t == VT::Range) { Value r = inv; return methodCall(r, "list", {}, nullptr); }
         if (inv.t == VT::Hash) {
             Value o = Value::array(); o.isList = true;
@@ -1761,6 +1820,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // another Seq (sheet LA-10).
         if (m == "eager" && inv.t == VT::Array && !inv.ext() && inv.s != "Seq")
             return inv;
+        // an ARRAY is its own .list (`[2, 3].list` is still [2 3])
+        if (m == "list" && inv.t == VT::Array && !inv.isList && inv.s.empty() && !inv.ext() && !inv.b && args.empty()) {
+            Value out = inv; out.itemized = false; return out;
+        }
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
             Value out = Value::list(items);
             if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
@@ -2251,21 +2314,45 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // lazy endless-source arm (parseRotorSpecs above)
             std::vector<RotorSpec> specs;
             bool partial;
-            parseRotorSpecs(args, m == "batch", specs, partial);
+            // a LAZY list of sizes (`.rotor(1...*)`) is read as far as any list
+            // could need — every size takes at least one element
+            ValueList rargs;
+            for (auto& ra : args) {
+                if (ra.t == VT::Array && ra.ext() && !ra.itemized) {
+                    materializeLazy(ra, 100000);
+                    Value l = Value::array(*ra.arr()); l.isList = true;
+                    rargs.push_back(l);
+                }
+                else rargs.push_back(ra);
+            }
+            parseRotorSpecs(rargs, m == "batch", specs, partial);
             Value out = Value::array(); out.isList = true;
-            for (size_t i = 0, k = 0; i < items.size(); k++) {
+            // a gap may move BACK, as long as the whole cycle moves on: `2 => -2, 1`
+            // re-reads each window's start. A cycle that never advances is clamped.
+            long long cycleStep = 0;
+            for (auto& sp : specs) cycleStep += sp.step;
+            for (long long i = 0, k = 0; i < (long long)items.size(); k++) {
                 const RotorSpec& sp = specs[k % specs.size()];
-                const bool short_ = i + (size_t)sp.n > items.size();
+                const bool short_ = sp.n < kAll && i + sp.n > (long long)items.size();
                 if (short_ && !partial) break;
                 Value chunk = Value::array(); chunk.isList = true;
-                for (size_t j = i; j < i + (size_t)sp.n && j < items.size(); j++) chunk.arr()->push_back(items[j]);
+                for (long long j = i; j < i + sp.n && j < (long long)items.size(); j++) chunk.arr()->push_back(items[(size_t)j]);
                 out.arr()->push_back(chunk);
                 // `:partial` emits THE final partial batch — one, and then the
                 // walk is over. With a negative gap the windows overlap, so
                 // carrying on produced a tail of ever-shorter leftovers
                 // ((1..5).rotor(3 => -2, :partial) ended …(4,5),(5,)).
-                if (short_) break;
-                i += (size_t)(sp.step < 1 ? 1 : sp.step); // step is clamped, so this terminates
+                if (short_ || sp.n >= kAll) break;
+                long long step = cycleStep > 0 ? sp.step : (sp.step < 1 ? 1 : sp.step);
+                if (i + step < 0) {
+                    const std::string msg = "Rotorizing gap is out of range. Is: " + std::to_string(sp.step - sp.n) +
+                                            ", should be in " + std::to_string(-sp.n) + "..^Inf; Ensure a negative gap is not larger than the length of the sublist";
+                    throw RakuError{g_makeTypedEx
+                        ? g_makeTypedEx("X::OutOfRange", {{"got", Value::integer(sp.step - sp.n)},
+                                                          {"what", Value::str("Rotorizing gap is")}}, msg)
+                        : Value::typeObj("X::OutOfRange"), msg};
+                }
+                i += step;
             }
             return out;
         }
@@ -3241,7 +3328,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // `-> $a, $b?` takes the short one happily (Nil-Any sheet
                 // NA-20; roast S32-list/map.t asserts the death).
                 size_t required = ar;
-                if (args[0].code() && args[0].code()->params) {
+                if (args[0].code() && args[0].code()->params && !args[0].code()->params->empty()) {
                     size_t req = 0;
                     for (auto& pp : *args[0].code()->params)
                         if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
@@ -4068,6 +4155,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         // an unset typed attr delegates to its type object
                         if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
                             target = Value::typeObj(a.type);
+                        // …and only for what the delegate CAN do: the rest is
+                        // the class's own FALLBACK's (delegation beats FALLBACK,
+                        // FALLBACK catches what delegation does not)
+                        ClassInfo* tcls = target.t == VT::Object && target.obj() ? target.obj()->cls.get()
+                                        : target.t == VT::Type && classes_.count(target.s) ? classes_[target.s].get()
+                                        : nullptr;
+                        if (inv.obj()->cls->findMethod("FALLBACK") && tcls && !tcls->findMethod(m)) {
+                            Value* fb = inv.obj()->cls->findMethod("FALLBACK");
+                            ValueList fa; fa.push_back(Value::str(m));
+                            for (auto& x : args) fa.push_back(x);
+                            return invokeMethod(*fb, inv, fa);
+                        }
                         return methodCall(target, m, std::move(args), rwArgs);
                     }
         }

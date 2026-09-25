@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rakupp {
@@ -129,6 +130,7 @@ inline const Value& emptySlipSingleton() {
 }
 // The bare Failure TYPE OBJECT is never the right return for a refusal — it
 // slid through arithmetic as 0 where Rakudo's Failure detonates.
+bool isPlatformHash(const Value& v); // $*DISTRO / $*KERNEL / $*VM
 inline Value armedFailure(const char* type, const std::string& msg) {
     Value f = Value::makeHash(); f.hashKind = "Failure";
     (*f.hash())["exception"] = Value::typeObj(type);
@@ -455,10 +457,13 @@ struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+    bool staticSeeded = false; // a scope whose first run took its lexicals from a BEGIN-time static env
+    uint64_t routineFrameId = 0; // …and its frame number, what a lexical `return` targets
     // A `strict` pragma ran HERE: 1 = `no strict` (undeclared variables
     // auto-vivify in this scope and the ones inside it), -1 = `use strict`
     // (they do not, whatever the scopes outside say), 0 = neither, ask outwards.
     signed char strictPragma = 0;
+    bool unitFrame = false;    // a loaded module's FILE scope: what `UNIT::` names inside it
     bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
                                // auto-vivification inside it belongs to (see laxVarRef)
     bool loopFrame = false;    // a loop-statement `state` frame: plain `my` declares
@@ -623,7 +628,10 @@ Value divZeroResult(const Value& lhs, const std::string& op);      // whichever 
 // are the same string and were computing this two different ways.
 void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out);
 
-struct ReturnEx { Value v; };
+// `target` is the routine frame the `return` LEXICALLY belongs to (0 = the
+// nearest one): a block passed down into other subs returns from the routine
+// that wrote it, not from whichever sub happens to call it.
+struct ReturnEx { Value v; uint64_t target = 0; };
 struct ExitEx { int code = 0; };
 // From 6.e, `next $v` / `last $v` supply a value for the iteration they end:
 // `(1,2,3).map({ $_ == 2 ?? next(42) !! $_ })` is (1 42 3). hasVal separates
@@ -1720,6 +1728,18 @@ public:
     std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
+    // Nested BEGIN/CHECK/INIT phasers run before the code around them, in a
+    // STATIC environment of the scopes that enclose them (the lexicals exist,
+    // unset, as they do at Rakudo's compile time). The first run of each such
+    // scope takes its lexicals from there; each phaser's value is kept.
+    std::unordered_map<const void*, std::shared_ptr<Env>> staticEnvs_;
+    std::unordered_set<const void*> staticSeeded_;
+    std::unordered_map<const void*, Value> staticPhaserVal_;
+    void runStaticPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& unitEnv, bool unitIsLive);
+    void seedStaticScope(const void* key, Env* env);
+    std::string subsetTypeOfVar(const std::string& nm); // the SUBSET a `my Even $x` was declared with, or ""
+    void subsetMutationCheck(const Expr* target, const Value& nv); // `$x++` / `$x += 1` on a subset-typed $x
     void coerceParam(const struct Param& p, Value& v);   // bind a `T(F) $x` parameter
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
@@ -1758,7 +1778,15 @@ public:
     // one — so an ordinary bind pays nothing for it.
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
                        bool whereVerified = false, Env* sigEnv = nullptr);
-    std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
+    // PSEUDO-PACKAGES as live stashes (S02): `MY::`, `OUTER::OUTER::`,
+    // `CALLER::UNIT::`, … — an object whose AT-KEY/BIND-KEY/EXISTS-KEY look
+    // the name up in the scope the chain designates, at the time of asking.
+    bool rxRestricted(); // `no MONKEY-SEE-NO-EVAL` in scope: interpolated regex strings may not hold code
+    Value makePseudoStash(const std::string& chain);
+    Value pseudoStashCall(const std::string& m, const Value& self, ValueList& args);
+    bool pseudoStashGet(const Value& self, const std::string& key, Value& out);
+    static bool isPseudoChain(const std::string& chain);
+    std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr, std::string* rawOut = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
     void checkDeclTypeSane(const VarExpr* ve);
     [[noreturn]] void throwUndeclaredVar(const std::string& name);
     void checkNativeArrayParam(const std::string& t);
@@ -1789,6 +1817,7 @@ public:
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe = false);
     bool assignMultiDimSlice(Expr* target, const Value& rhs); // `\x` bound to `@a[*;0]`, assigned
     Value withDimslipAsMultiDim(Index* ix, const std::function<Value()>& f); // `@a[|| @dims]` as `@a[d0;d1;…]`
+    std::shared_ptr<ClassInfo> pickRoleVariantArgs(const std::shared_ptr<ClassInfo>& group, const std::vector<ExprPtr>& exprs);
     std::shared_ptr<ClassInfo> pickRoleVariant(const std::shared_ptr<ClassInfo>& group, size_t n); // `does R[a,b]` → its arity's candidate
     // `is DEPRECATED` bookkeeping, read (and cleared) by `Deprecation.report`
     struct DeprecationRec { std::string kind, name, from, with; std::vector<int> lines; };
@@ -1824,6 +1853,7 @@ public:
     // into a soft "give me more" answer instead of a thrown syntax error.
     // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
     // CHECK — and stop short of the mainline.
+    std::pair<long, long> dynQuantLimits(const Value& v, bool unboundedHint); // `** { … }` bounds
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
                      bool checkOnly = false);
     // ---- REPL support (src/Repl.cpp) ----------------------------------------
@@ -2108,6 +2138,7 @@ public:
     // language object does not follow it (see rakuIntrospection).
     int mainLangRev_ = 1;
     bool mainLangRevSet_ = false;
+    int beginDepth_ = 0;   // >0 while a BEGIN phaser runs: `BEGIN $*RAKU.version` is the compiling unit's
     std::atomic<bool> symbolsFrozen_{false};
     std::thread::id mainThread_;
     void noteSymbolMutation(const char* what);
@@ -2315,6 +2346,7 @@ public:
         }), workers_.end());
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
+    std::atomic<bool> everSpawned_{false}; // a `start` has run: declarations pre-bind (see evalAssignInner)
     // Backpressure for worker creation, PARALLEL MODE ONLY. A tap-and-close
     // loop over interval supplies (syntax.t's CLOSE-phaser stress: 4 spawners
     // x 1000 activations, each a real thread with a 256 MiB virtual stack)
@@ -2594,6 +2626,7 @@ public:
     // not in scope — a role's `::EnumBits` type capture reaches the type object
     // from the role body, where the consumer's `my enum MyBits` never was.
     std::unordered_map<std::string, Value> enumPairs_;
+    std::unordered_map<std::string, int> enumLangRev_;   // enum name → the revision it was declared under
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     // …and the same source, reachable from the ROUTINE a named regex also
     // defines (`&NAME`). An EXPORTED token reaches its importer only as that
@@ -2736,6 +2769,7 @@ private:
     std::string todoReason_; // reason for the pending TODO block
     int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
     int todoSubtestDepth_ = 0; // inside a TODO-marked subtest: failures neither die nor count
+    std::string todoSubtestReason_; // …and the reason its inner assertions are marked TODO with
     // `&builtin` must answer the SAME Callable every time, so `&dir.wrap({…})`
     // mutates the object the call path consults (File::Find's suite mocks `dir`
     // exactly this way). Populated lazily; empty for programs that never take a

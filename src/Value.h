@@ -460,6 +460,7 @@ struct Callable {
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     unsigned char implicitArgs = 0;                   // …which of them: 1 = @_, 2 = %_ (for .signature)
+    bool isDefaultCand = false;                       // `multi … is default` — wins a dispatch tie
     bool hiddenFromUsage = false;                     // `is hidden-from-USAGE` — a MAIN candidate $*USAGE leaves out
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
@@ -949,8 +950,13 @@ inline ValueMap& Value::hashRef() {
 // The type NAMED by a declared return type: `Map()` (a coercion) and `Map` (a
 // check) both name Map. Coercing-ness is retTypeCoerces() below.
 inline std::string retTypeName(const std::string& rt) {
+    // a `\x01D`/`\x01U` suffix records a `--> T:D`/`--> T:U` smiley
+    if (rt.size() > 2 && rt[rt.size() - 2] == '\x01') return rt.substr(0, rt.size() - 2);
     return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0
          ? rt.substr(0, rt.size() - 2) : rt;
+}
+inline char retTypeSmiley(const std::string& rt) {
+    return rt.size() > 2 && rt[rt.size() - 2] == '\x01' ? rt.back() : 0;
 }
 inline bool retTypeCoerces(const std::string& rt) {
     return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0;
@@ -1156,6 +1162,7 @@ struct ClassAttr {
                                         // when the delegation RENAMES (`handles(:terminal<t>)`);
                                         // "" (or a missing entry) = the same name
     int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
+    bool coerce = false;   // `has Int() $.x` — construction coerces rather than type-checks
     bool objKeyed = false; // `has %!h{Mu:U}` — object-keyed hash (type-object keys stay distinct)
     bool inlined = false;  // `HAS` — a CStruct member laid out IN PLACE, not by pointer
     // …and the struct it inlines, resolved once when the class is declared. The
@@ -1202,6 +1209,7 @@ struct ClassInfo {
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
     ValueMap methods; // Code values (closures)
+    std::set<std::string> exportedMethods; // `method m is export` — `import Class` gives a sub form
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
     std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
@@ -1216,6 +1224,7 @@ struct ClassInfo {
     std::set<std::string> ruleLitOnly; // names whose candidates are ALL literal (no generic body to fall back on)
     bool isGrammar = false;
     bool isRole = false;
+    signed char langRev = -1; // the language revision it was declared under (`.^language-revision`)
     bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
     // A `POPULATE` method — Rakudo's name for the routine that runs an object's
     // build plan, and the one a metaclass wraps or supplies to get at every
@@ -1242,6 +1251,7 @@ struct ClassInfo {
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides
     // them from 6.e on. A name the class declares ITSELF is erased again.
     std::set<std::string> roleSubmethods; // names of roles this class/role composes (for ~~ / .does)
+    std::set<std::string> roleSubmethodsHidden; // …of those, the ones a 6.e role or class leaves out of .^submethod_table
     Value howObj; // persistent .HOW metaobject — `T.HOW does SomeRole` mixins must stick (Method::Also)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
     ClassDecl* decl = nullptr; // the AST declaration (program-lifetime) — carries roleParams for parameterized roles

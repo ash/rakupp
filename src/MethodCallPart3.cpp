@@ -6,7 +6,11 @@
 #include "MethodCallSegment.h"
 #include "RakuAstClasses.h"
 #include "BuiltinsShared.h"
-#include "Parser.h"   // rakuppFindModuleSource: is `L10N::<lang>` installed at all?
+#include "Parser.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>   // rakuppFindModuleSource: is `L10N::<lang>` installed at all?
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -66,7 +70,13 @@ std::string Interpreter::encAdverb(const ValueList& args) {
     return "";
 }
 std::string Interpreter::decodeTextEnc(const std::string& bytes, const std::string& enc) {
-    if (encIsUtf8(enc)) return bytes;
+    if (encIsUtf8(enc)) {
+        // a UTF-8 BOM at the start of a file is not text (Rakudo strips it)
+        if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB &&
+            (unsigned char)bytes[2] == 0xBF)
+            return bytes.substr(3);
+        return bytes;
+    }
     Value b = Value::str(bytes); b.hashKind = "Blob";
     return methodCall(b, "decode", ValueList{Value::str(enc)}).toStr();
 }
@@ -804,7 +814,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "Cannot resolve caller atan2(" + inv.typeName() + ": " +
                                 a0().typeName() + ":U); the second argument must be defined"};
-            return Value::number(std::atan2(x, args.empty() ? 1.0 : strict(a0())));
+            return Value::number(std::atan2(x, args.empty() ? 1.0
+                : a0().t == VT::Object ? numValueOf(*this, a0()) : strict(a0())));
         }
         if (m == "sinh") return Value::number(std::sinh(x));
         if (m == "cosh") return Value::number(std::cosh(x));
@@ -1485,6 +1496,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "Must specify a non-empty string as a path"};
         rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO";
         p.ofTypeM() = cwdName(); // :CWD captured at creation — the base `.absolute` resolves against
+        // a `$*SPEC` of another flavor makes a path of THAT flavor
+        // (`my $*SPEC = IO::Spec::Win32; 'C:\x'.IO` is an IO::Path::Win32)
+        if (Value* sp = findDynamicLenient("$*SPEC"))
+            if (sp->t == VT::Type && sp->s.str().rfind("IO::Spec::", 0) == 0) {
+                std::string fl = sp->s.str().substr(10);
+                if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") p.enumName = fl;
+            }
         return p;
     }
     // `.slurp` belongs to IO::Path (IO::Handle has its own, below) — a Str is NOT
@@ -1555,7 +1573,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if ((m == "e" || m == "f" || m == "d" || m == "r" || m == "w" || m == "x" ||
          m == "rw" || m == "rx" || m == "wx" || m == "rwx") && inv.hashKind == "IO") {
         struct stat st;
-        if (stat(ioFsPath(inv).c_str(), &st) != 0) return Value::boolean(false);
+        // `.e` asks whether it exists; every other test on a MISSING path is a
+        // Failure (X::IO::DoesNotExist) — falsy, and loud only if sunk
+        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
+            if (m == "e") return Value::boolean(false);
+            Value fail; statOrFailure(ioFsPath(inv), inv.toStr(), st, fail);
+            return fail;
+        }
         if (m == "d") return Value::boolean(S_ISDIR(st.st_mode));
         if (m == "f") return Value::boolean(S_ISREG(st.st_mode));
         if (m == "e") return Value::boolean(true);
@@ -1571,7 +1595,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::boolean(false); // Windows: no POSIX symlink test here
 #else
         struct stat st;
-        return Value::boolean(::lstat(ioFsPath(inv).c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+        if (::lstat(ioFsPath(inv).c_str(), &st) != 0) {   // nothing there, not even a dangling link
+            Value fail; statOrFailure(ioFsPath(inv), inv.toStr(), st, fail);
+            return fail;
+        }
+        return Value::boolean(S_ISLNK(st.st_mode));
 #endif
     }
     if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both FAIL (softly) if absent
@@ -1809,7 +1837,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(inv.toStr());
     }
-    if (m == "relative") {
+    if (m == "relative" && !(inv.hashKind == "IO" && !inv.enumName.empty())) {   // a flavored path: below
         // IO::Path.relative($base = $*CWD) — the path expressed relative to $base.
         // PURELY LEXICAL, as Rakudo's abs2rel is: walk out of $base with `..` for
         // every component the two do not share, then down into the path. Returning
@@ -1900,8 +1928,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             std::string t = s; while (t.size() > 1 && t.back() == '/') t.pop_back();
             auto p = t.find_last_of('/');
             if (p == std::string::npos) return ".";
-            return p == 0 ? "/" : t.substr(0, p);
+            std::string d = p == 0 ? "/" : t.substr(0, p);
+            while (d.size() > 1 && d.back() == '/') d.pop_back();   // `foo//bar` → `foo`
+            return d;
         };
+
         // a flavored path (IO::Path::Win32 etc., flavor in enumName) answers
         // through ITS IO::Spec instead of the platform default
         if (!inv.enumName.empty()) {
@@ -1936,6 +1967,59 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return Value::str("IO::Path::" + inv.enumName + ".new(\"" + esc + "\")");
             }
             if (m == "SPEC") return Value::typeObj(spec);
+            auto flav = [&](const std::string& str) {
+                Value p = Value::str(str); p.hashKind = "IO"; p.enumName = inv.enumName;
+                if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
+                return p;
+            };
+            auto specCall = [&](const char* sm, ValueList sa) -> Value {
+                Value r;
+                if (!ioSpecMethod(*this, spec, sm, sa, r)) return Value::any();
+                return r;
+            };
+            // absolute / relative: the flavor's rel2abs / abs2rel against $*CWD
+            // (or the base given)
+            if (m == "absolute") {
+                std::string base = args.empty() || args[0].t == VT::Pair ? dynVar("$*CWD").toStr() : args[0].toStr();
+                if (specCall("is-absolute", {Value::str(inv.s)}).truthy())
+                    return Value::str(inv.s);
+                return Value::str(specCall("rel2abs", {Value::str(inv.s), Value::str(base)}).toStr());
+            }
+            if (m == "relative") {
+                std::string base = args.empty() || args[0].t == VT::Pair ? dynVar("$*CWD").toStr() : args[0].toStr();
+                std::string abs = specCall("is-absolute", {Value::str(inv.s)}).truthy()
+                    ? inv.s.str() : specCall("rel2abs", {Value::str(inv.s)}).toStr();
+                return Value::str(specCall("abs2rel", {Value::str(abs), Value::str(base)}).toStr());
+            }
+            // .add / .child: the flavor's own separator, exactly one of it
+            if ((m == "add" || m == "child") && inv.enumName == "Win32" && args.size() == 1 && args[0].t != VT::Pair) {
+                std::string b = inv.s, part = args[0].toStr();
+                std::string r;
+                if (!b.empty() && (b.back() == '\\' || b.back() == '/')) r = b + part;
+                else r = b + "\\" + part;
+                return flav(r);
+            }
+            // parent, as Rakudo's IO::Path.parent spells it: an absolute path
+            // drops its last part; `.`/`..`-only paths climb by adding `..`
+            if (m == "parent" && (args.empty() || a0().toInt() == 1)) {
+                Value sp = specCall("split", {Value::str(inv.s)});
+                if (sp.t == VT::Hash && sp.hash()) {
+                    auto get = [&](const char* k) { auto it = sp.hash()->find(k); return it != sp.hash()->end() ? it->second.toStr() : std::string(); };
+                    std::string vol = get("volume"), dir = get("dirname"), base = get("basename");
+                    auto join = [&](const std::string& d, const std::string& f) {
+                        std::string r = specCall("join", {Value::str(vol), Value::str(d), Value::str(f)}).toStr();
+                        return r.empty() ? std::string(".") : r;
+                    };
+                    if (specCall("is-absolute", {Value::str(inv.s)}).truthy()) return flav(join(dir, ""));
+                    if (dir == "." && base == ".") return flav(join(".", ".."));
+                    bool allUp = true;
+                    for (auto& seg : toList(specCall("splitdir", {Value::str(inv.s)})))
+                        if (seg.toStr() != ".." && !seg.toStr().empty()) { allUp = false; break; }
+                    if ((dir == "." && base == "..") || allUp)
+                        return flav(join(inv.s, ".."));
+                    return flav(join(dir, ""));
+                }
+            }
         }
         // On this platform a path has no volume; the accessor still has to
         // exist, because `my ($v, $d, $b) = $p.volume, …` is how portable code
@@ -2315,9 +2399,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "modified" || m == "created" || m == "accessed" || m == "changed") {
         struct stat st;
-        if (stat(ioFsPath(inv).c_str(), &st) != 0)
-            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
-                "Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory"};
+        if (stat(ioFsPath(inv).c_str(), &st) != 0) {
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::DoesNotExist");
+            (*f.hash())["message"] = Value::str("Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory");
+            return f;
+        }
         // an Instant. Sub-second field names differ by platform; Windows stat only
         // carries second precision.
         double secs;
@@ -2429,20 +2516,56 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // on a read-only descriptor, and a program that locks before writing
             // reads that refusal as "somebody else holds it". A shared lock is
             // what a read-only handle may take, and does.
-            if (m == "lock") {
-                bool shared = false;
-                for (auto& a : args)
-                    if (a.t == VT::Pair && a.s == "shared" && (!a.pairVal() || a.pairVal()->truthy()))
-                        shared = true;
-                auto md = inv.hash()->find("mode");
-                if (!shared && md != inv.hash()->end() && md->second.toStr() == "r" &&
-                    !inv.hash()->count("std")) {
-                    Value f = rakuppNewFailure();
-                    (*f.hash())["exception"] = Value::typeObj("X::IO::Lock");
-                    (*f.hash())["message"] = Value::str("Could not obtain lock: Bad file descriptor");
-                    return f;
-                }
+            auto lockFail = [&](const std::string& why) {
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = makeTypedEx("X::IO::Lock", {{"os-error", Value::str(why)}},
+                                                       "Could not obtain lock: " + why);
+                (*f.hash())["message"] = Value::str("Could not obtain lock: " + why);
+                return f;
+            };
+            // the lock itself is a POSIX record lock on a descriptor of our own
+            // (the handle is buffered and holds none): it keeps other PROCESSES
+            // out the way Rakudo's does, and goes away on .unlock / .close
+            auto lfd = inv.hash()->find("lockfd");
+            if (lfd != inv.hash()->end() && lfd->second.toInt() >= 0) {
+                ::close((int)lfd->second.toInt());
+                (*inv.hash())["lockfd"] = Value::integer(-1);
             }
+            if (m == "unlock") return Value::boolean(true);
+            bool shared = false, nonBlocking = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair) {
+                    bool on = !a.pairVal() || a.pairVal()->truthy();
+                    if (a.s == "shared") shared = on;
+                    else if (a.s == "non-blocking") nonBlocking = on;
+                }
+            auto md = inv.hash()->find("mode");
+            const std::string mode = md != inv.hash()->end() ? md->second.toStr() : "";
+            if (inv.hash()->count("std")) return Value::boolean(true);
+            // an exclusive lock needs a writable descriptor, a shared one a readable one
+            if (!shared && mode == "r") return lockFail("Bad file descriptor");
+            if (shared && (mode == "w" || mode == "a")) return lockFail("Bad file descriptor");
+            auto pt = inv.hash()->find("path");
+            if (pt == inv.hash()->end()) return Value::boolean(true);
+            const std::string path = pt->second.toStr();
+            int fd = ::open(path.c_str(), shared ? O_RDONLY : O_WRONLY);
+            if (fd < 0) return Value::boolean(true);   // nothing on disk to lock yet
+            struct flock fl{};
+            fl.l_type = shared ? F_RDLCK : F_WRLCK;
+            fl.l_whence = SEEK_SET; fl.l_start = 0; fl.l_len = 0;
+            int rc;
+            if (nonBlocking) rc = ::fcntl(fd, F_SETLK, &fl);
+            else {
+                bool parked = gilPark();
+                do { rc = ::fcntl(fd, F_SETLKW, &fl); } while (rc != 0 && errno == EINTR);
+                gilUnpark(parked);
+            }
+            if (rc != 0) {
+                std::string why = std::strerror(errno);
+                ::close(fd);
+                return lockFail(why);
+            }
+            (*inv.hash())["lockfd"] = Value::integer(fd);
             return Value::boolean(true);
         }
         // `.tell` — the handle's current offset. A STD handle asks the real fd
@@ -2701,6 +2824,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::integer(fhOutBuffer(inv));
         }
         if (m == "close") {
+            {   // a lock taken through the handle goes with it
+                auto lfd = inv.hash()->find("lockfd");
+                if (lfd != inv.hash()->end() && lfd->second.toInt() >= 0) {
+                    ::close((int)lfd->second.toInt());
+                    (*inv.hash())["lockfd"] = Value::integer(-1);
+                }
+            }
             std::string mode = (*inv.hash())["mode"].toStr();
             const std::string& buf = (*inv.hash())["buffer"].s;
             bool wrote = (*inv.hash())["wrote"].truthy();   // a .flush already put some on disk
@@ -3072,10 +3202,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string all;
                 for (long long i = p; i < (long long)ln.size(); i++) { if (!all.empty()) all += "\n"; all += ln[i].toStr(); }
                 (*inv.hash())["pos"] = Value::integer((long long)ln.size());
-                Value out = Value::array(); out.isList = true;
-                std::istringstream ws(all); std::string w;
-                while (ws >> w) out.arr()->push_back(Value::str(w));
-                return out;
+                // Str.words splits on Unicode White_Space (NBSP, ideographic
+                // space, …), not the C locale's ASCII set
+                ValueList wa;
+                for (auto& a : args) if (!(a.t == VT::Pair && a.s == "close")) wa.push_back(a);
+                return methodCall(Value::str(all), "words", wa);
             }
             if (m == "slurp-rest") {
                 auto& ln = *(*inv.hash())["lines"].arr();
@@ -3214,6 +3345,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                      (args[1].t == VT::Whatever ||
                       (args[1].t == VT::Num && std::isinf(args[1].n)))) len = n - from; // (5,*) / (5,Inf): to the end
             else len = args.size() > 1 ? args[1].toInt() : n - from;
+        }
+        // `.subbuf` refuses a start outside 0..elems and a negative length,
+        // as X::OutOfRange (the -rw form stays lenient: it is also a writer)
+        if (m == "subbuf") {
+            const bool whateverFrom = !args.empty() && args[0].t == VT::Code;
+            if (from < 0 || from > n)
+                throwTypedV("X::OutOfRange",
+                    {{"what", Value::str("From argument to subbuf")},
+                     {"got", whateverFrom ? Value::integer(from) : a0v}, {"range", Value::str("0.." + std::to_string(n))}},
+                    "From argument to subbuf out of range. Is: " + std::to_string(from) +
+                    ", should be in 0.." + std::to_string(n));
+            if (len < 0 && args.size() > 1 && a0v.t != VT::Range)
+                throwTypedV("X::OutOfRange",
+                    {{"what", Value::str("Len element to subbuf")},
+                     {"got", Value::integer(len)}, {"range", Value::str("0.." + std::to_string(n - from))}},
+                    "Len element to subbuf out of range. Is: " + std::to_string(len) +
+                    ", should be in 0.." + std::to_string(n - from));
         }
         if (from < 0) from += n;
         if (from < 0) from = 0; if (from > n) from = n;
@@ -3466,6 +3614,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 i += len;
             }
         }
+        // a leading UTF-8 BOM is not text: Rakudo strips it on decode
+        if (inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF && (unsigned char)inv.s[1] == 0xBB &&
+            (unsigned char)inv.s[2] == 0xBF)
+            return Value::str(inv.s.str().substr(3));
         return Value::str(inv.s);
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
@@ -4240,6 +4392,38 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (p == std::string::npos) return Value::nil();
         return Value::matchVal(needle, (long)p, (long)(p + needle.size()));
     }
+    if (m == "split" && inv.t == VT::Str) {
+        // Str.split has no default delimiter, and :k/:v/:kv/:p exclude each other
+        ValueList sel; bool anyPos = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg) {
+                if ((a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p") && (!a.pairVal() || a.pairVal()->truthy()))
+                    sel.push_back(Value::str(a.s.str()));
+            }
+            else anyPos = true;
+        }
+        if (!anyPos)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller split(Str:D); none of these signatures matches"};
+        // the limit is an Int (or Whatever/Inf): `split 'o', 'o', NaN` fails to bind
+        {
+            int npos = 0;
+            for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg) && ++npos == 2 &&
+                                     a.t == VT::Num && std::isnan(a.n))
+                throwTypedV("X::TypeCheck::Binding::Parameter",
+                    {{"got", a}, {"expected", Value::typeObj("Int")}, {"symbol", Value::str("$limit")}},
+                    "Type check failed in binding to parameter '$limit'; expected Int but got Num (NaN)");
+        }
+        if (sel.size() > 1) {
+            std::string names;
+            for (size_t i = 0; i < sel.size(); i++) names += (i ? ", '" : "'") + sel[i].toStr() + "'";
+            Value nogo = Value::array(sel); nogo.isList = true;
+            Value none = Value::array(); none.isList = true;
+            throwTypedV("X::Adverb", {{"what", Value::str("split")}, {"source", Value::str("Str")},
+                                      {"nogo", nogo}, {"unexpected", none}},
+                        "Unsupported combination of adverbs (" + names + ") passed to split on 'Str'.");
+        }
+    }
     if ((m == "match" || m == "subst" || m == "comb" || m == "split" || m == "contains" || m == "subst-mutate")
         && rxIdx >= 0) {
         std::string subj = rxSubject(inv);   // an object matches on its Str form
@@ -4351,7 +4535,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     else if (la.s == "v" || la.s == "k" || la.s == "p") want = la.s[0];
                     else if (la.s == "kv") want = 'm';
                 }
-            auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
+            // the limit counts PIECES — empty ones too, before :skip-empty
+            // drops them, and never the :v/:k separators between them
+            long long pieces = 0;
+            auto emit = [&](const std::string& piece) { pieces++; if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
             // optional limit (second positional): <=0 → empty, 1 → the whole string,
             // n → at most n pieces
             long long limit = -12345;
@@ -4372,11 +4559,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // — turned "YearBBS" into "Year BS".
             long scan = pos;
             while (re.ok() && scan <= (long)subj.size() && re.search(subj, scan, mm)) {
-                if (haveLimit && (long long)out.arr()->size() >= limit - 1) break;
+                if (haveLimit && pieces >= limit - 1) break;
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
                     Value sepv = Value::matchVal(subj.substr(mm.from, mm.to - mm.from),
                                                  (long)mm.from, (long)mm.to);
+                    for (auto& c : mm.caps) // the separator's own captures: @a[1][0]
+                        sepv.arrRef().push_back(c.first < 0 ? Value::nil()
+                            : Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
                     Value idx = Value::integer(0);
                     if (want == 'k' || want == 'm') out.arr()->push_back(idx);
                     if (want == 'v' || want == 'm') out.arr()->push_back(sepv);
@@ -4475,8 +4665,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         auto expandTrans = [](const std::string& str) -> std::vector<std::string> {
             std::vector<std::string> out;
             auto cps = utf8cp(str);
+            bool afterRange = false; // `A..H..Z` chains: the second range starts after H
             for (size_t i = 0; i < cps.size(); ) {
+                if (afterRange && i + 2 < cps.size() && cps[i] == (uint32_t)'.' && cps[i + 1] == (uint32_t)'.' &&
+                    cps[i - 1] < cps[i + 2]) {
+                    for (uint32_t c = cps[i - 1] + 1; c <= cps[i + 2]; c++) out.push_back(cpToUtf8(c));
+                    i += 3;
+                    continue;
+                }
+                afterRange = false;
                 if (i + 3 < cps.size() && cps[i + 1] == (uint32_t)'.' && cps[i + 2] == (uint32_t)'.') {
+                    afterRange = true;
                     uint32_t lo = cps[i], hi = cps[i + 3];
                     if (lo <= hi) for (uint32_t c = lo; c <= hi; c++) out.push_back(cpToUtf8(c));
                     else for (uint32_t c = lo; ; c--) { out.push_back(cpToUtf8(c)); if (c == hi) break; }
@@ -4492,8 +4691,6 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // replacement to one. An adverb is a Pair with a Bool value — a mapping pair
         // always has a Str/Range/Array one, so `'squash' => 'x'` still translates.
         bool squash = false, complement = false, del = false;
-        std::string compTo; // what :complement replaces an unnamed character with
-        std::vector<std::pair<std::string, std::string>> maps;
         // Collect the mapping pairs — from the arguments directly and from any
         // argument ARRAY's elements (`.trans: ["\n" => "\r\n"]` is how
         // LWP::Simple's test servers build their responses, and the array was
@@ -4508,136 +4705,166 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         //     LONG value side spills into the next pair's pins, which is
         //     faithful to Rakudo even where it surprises.
         // A REGEX key is not a character set: `.trans(/\s+/ => ' ')` replaces every
-        // MATCH of the pattern, so it is applied as a global substitution before the
-        // char-by-char machinery below ever sees the pairs. Rakudo takes the regex
-        // pairs in order, each over the result of the last.
-        {
-            auto rxKey = [](const Value& v) -> const Value* {
-                if (v.t != VT::Pair || !v.pairKey()) return nullptr;
-                return v.pairKey()->t == VT::Regex ? v.pairKey().get() : nullptr;
-            };
-            std::vector<std::pair<const Value*, std::string>> rxMaps;
-            std::function<void(const Value&)> collectRx = [&](const Value& a) {
-                if (const Value* k = rxKey(a)) {
-                    rxMaps.push_back({k, a.pairVal() ? a.pairVal()->toStr() : std::string()});
-                    return;
-                }
-                if (a.t == VT::Array && a.arr()) for (auto& el : *a.arr()) collectRx(el);
-            };
-            for (auto& a : args) collectRx(a);
-            for (auto& rm : rxMaps) {
-                std::string out; size_t at = 0;
-                for (int guard = 0; guard < 1000000; guard++) {
-                    Value mv = regexMatch(s.substr(at), rm.first->s.str());
-                    if (!mv.truthy()) break;
-                    long long f = methodCall(mv, "from", {}).toInt();
-                    long long t = methodCall(mv, "to", {}).toInt();
-                    if (t <= f) { // a zero-width match cannot drive the scan forward
-                        if ((size_t)(at + f) >= s.size()) break;
-                        out += s.substr(at, (size_t)f + 1); at += (size_t)f + 1; continue;
-                    }
-                    out += s.substr(at, (size_t)f) + rm.second;
-                    at += (size_t)t;
-                    if (at >= s.size()) break;
-                }
-                out += s.substr(std::min(at, s.size()));
-                s = out;
-            }
-            if (!rxMaps.empty()) {
-                bool onlyRx = true;
-                std::function<void(const Value&)> anyCharPair = [&](const Value& a) {
-                    if (a.t == VT::Pair && !rxKey(a) &&
-                        !(a.pairVal() && a.pairVal()->t == VT::Bool)) onlyRx = false;
-                    if (a.t == VT::Array && a.arr()) for (auto& el : *a.arr()) anyCharPair(el);
-                };
-                for (auto& a : args) anyCharPair(a);
-                if (onlyRx) return Value::str(s);
-            }
-        }
+        // MATCH of the pattern. Rakudo runs ONE scan over the original string:
+        // at each position the longest of all the string needles and regex
+        // matches wins, so a later regex never rewrites an earlier one's output.
+        // A pin may be a CLOSURE, called once per replacement ($_ and $/ are the
+        // Match for a regex key, the matched text for a string one).
         std::vector<const Value*> mpairs;
         bool anyArray = false;
-        for (auto& a : args) {
+        std::function<void(const Value&)> collect = [&](const Value& a) {
             if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->t == VT::Bool)) {
                 bool on = !a.pairVal() || a.pairVal()->truthy();
-                if (a.s == "s" || a.s == "squash")          { squash = on; continue; }
-                if (a.s == "c" || a.s == "complement")      { complement = on; continue; }
-                if (a.s == "d" || a.s == "delete")          { del = on; continue; }
+                if (a.s == "s" || a.s == "squash")          { squash = on; return; }
+                if (a.s == "c" || a.s == "complement")      { complement = on; return; }
+                if (a.s == "d" || a.s == "delete")          { del = on; return; }
             }
-            if (a.t == VT::Pair) { mpairs.push_back(&a); continue; }
+            if (a.t == VT::Pair) { mpairs.push_back(&a); return; }
             if (a.t == VT::Array && a.arr()) {
                 anyArray = true;
                 for (auto& el : *a.arr())
                     if (el.t == VT::Pair) mpairs.push_back(&el);
             }
-        }
+        };
+        for (auto& a : args) collect(a);
+        auto isRxPair = [](const Value* pa) { return pa->pairKey() && pa->pairKey()->t == VT::Regex; };
         auto sideList = [&](const Value* side, const std::string& strForm,
-                            std::vector<std::string>& out) -> bool {
+                            std::vector<Value>& out) -> bool {
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
-            // descends into them, and a bare Range side flattens to its chars
+            // descends into them, and a bare Range side flattens to its chars.
+            // A Code element stays a Code: it is called per replacement
             if (side && (side->t == VT::Array || side->t == VT::Range)) {
-                for (auto& x : side->flatten()) out.push_back(x.toStr());
+                for (auto& x : side->flatten()) out.push_back(x.t == VT::Code || x.t == VT::Regex ? x : Value::str(x.toStr()));
                 return true;
             }
-            out = expandTrans(strForm); // string: char-by-char, `..` ranges, CRLF one unit
+            if (side && side->t == VT::Code) { out.push_back(*side); return true; }
+            for (auto& ch : expandTrans(strForm)) out.push_back(Value::str(ch)); // char-by-char, `..` ranges, CRLF one unit
             return false;
         };
-        bool lone = !anyArray && mpairs.size() == 1;
+        struct TrEnt { std::string needle; Value rx; Value pin; bool drop; bool isRx() const { return rx.t == VT::Regex; } };
+        std::vector<TrEnt> ents;
+        Value compTo; bool haveComp = false; // what :complement replaces an unnamed character with
+        std::vector<const Value*> charPairs;
+        for (const Value* pa : mpairs) {
+            if (isRxPair(pa)) {
+                Value pin = pa->pairVal() ? *pa->pairVal() : Value::str("");
+                ents.push_back({std::string(), *pa->pairKey(), pin, false});
+                if (!haveComp) { compTo = pin; haveComp = true; }
+            }
+            else charPairs.push_back(pa);
+        }
+        if (charPairs.empty() && ents.empty() && !complement) return Value::str(s);
+        bool lone = !anyArray && charPairs.size() == 1;
         if (lone) {
-            std::vector<std::string> froms, tos;
-            bool listK = sideList(mpairs[0]->pairKey().get(), mpairs[0]->s.str(), froms);
-            bool listV = sideList(mpairs[0]->pairVal(),
-                                  mpairs[0]->pairVal() ? mpairs[0]->pairVal()->toStr() : "", tos);
-            (void)listK; (void)listV;
-            // the direct-pair shape: replacement CYCLES
-            for (size_t i = 0; i < froms.size(); i++)
-                maps.push_back({froms[i], tos.empty() ? std::string() : tos[i % tos.size()]});
-            if (!tos.empty()) compTo = tos.back();
+            std::vector<Value> froms, tos;
+            sideList(charPairs[0]->pairKey().get(), charPairs[0]->s.str(), froms);
+            sideList(charPairs[0]->pairVal(),
+                     charPairs[0]->pairVal() ? charPairs[0]->pairVal()->toStr() : "", tos);
+            // the direct-pair shape: replacement CYCLES — except under :delete,
+            // where a needle without a pin of its own is dropped
+            for (size_t i = 0; i < froms.size(); i++) {
+                bool drop = tos.empty() || (del && i >= tos.size());
+                ents.push_back({froms[i].t == VT::Regex ? std::string() : froms[i].toStr(), froms[i].t == VT::Regex ? froms[i] : Value(),
+                                drop ? Value::str("") : tos[i % tos.size()], drop});
+            }
+            if (!tos.empty()) { compTo = tos.front(); haveComp = true; }
         }
         else {
-            std::vector<std::string> needles, pins;
-            for (const Value* pa : mpairs) {
-                std::vector<std::string> froms, tos;
+            std::vector<Value> needles; std::vector<Value> pins; std::vector<bool> drops;
+            for (const Value* pa : charPairs) {
+                std::vector<Value> froms, tos;
                 sideList(pa->pairKey().get(), pa->s.str(), froms);
                 sideList(pa->pairVal(), pa->pairVal() ? pa->pairVal()->toStr() : "", tos);
+                if (!tos.empty() && !haveComp) { compTo = tos.front(); haveComp = true; }
                 // pad a SHORT value side with its last element (or nothing at
                 // all under :delete / for an empty side); a long one spills
+                size_t given = tos.size();
                 if (tos.size() < froms.size()) {
-                    std::string pad = (del || tos.empty()) ? std::string() : tos.back();
+                    Value pad = (del || tos.empty()) ? Value::str("") : tos.back();
                     while (tos.size() < froms.size()) tos.push_back(pad);
                 }
-                needles.insert(needles.end(), froms.begin(), froms.end());
-                pins.insert(pins.end(), tos.begin(), tos.end());
-                if (!tos.empty()) compTo = tos.back();
+                for (auto& f : froms) needles.push_back(f);
+                for (size_t i = 0; i < tos.size(); i++) { pins.push_back(tos[i]); drops.push_back(i >= given && (del || given == 0)); }
             }
             for (size_t i = 0; i < needles.size(); i++)
-                maps.push_back({needles[i], i < pins.size() ? pins[i] : std::string()});
+                ents.push_back({needles[i].t == VT::Regex ? std::string() : needles[i].toStr(),
+                                needles[i].t == VT::Regex ? needles[i] : Value(), i < pins.size() ? pins[i] : Value::str(""),
+                                i < pins.size() ? (bool)drops[i] : true});
         }
+        // one replacement's text: a Code pin is called with $_ (and $/, $0…)
+        auto pinText = [&](const Value& pin, const Value& topicV) -> std::string {
+            if (pin.t != VT::Code) return pin.toStr();
+            bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
+            Value saved = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
+            if (topicV.t == VT::Match) {
+                setMatchVar(topicV);
+                if (topicV.arr()) for (size_t k = 0; k < topicV.arr()->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*topicV.arr())[k]);
+            }
+            tctx_.cur->define("$_", topicV);
+            auto restoreTopic = [&] {
+                if (hadLocalTopic) tctx_.cur->vars["$_"] = saved;
+                else tctx_.cur->vars.erase("$_");
+            };
+            std::string r;
+            try { r = callCallable(pin, ValueList{}).toStr(); }
+            catch (...) { restoreTopic(); throw; }
+            restoreTopic();
+            return r;
+        };
+        // each regex key's next match at or after the scan position (byte offsets)
+        struct RxNext { long from = -1, to = -1; Value m; bool none = false; };
+        std::vector<RxNext> rxNext(ents.size());
+        auto rxAt = [&](size_t ei, size_t pos) -> long { // match length at pos, or -1
+            RxNext& rn = rxNext[ei];
+            if (rn.none) return -1;
+            if (rn.from < (long)pos) {
+                // search the WHOLE string from pos, so `^` and lookbehind see
+                // the real context
+                long long cpos = (long long)utf8cp(s.substr(0, pos)).size();
+                Value cv = Value::pair("c", Value::integer(cpos)); cv.namedArg = true;
+                Value mv = methodCall(Value::str(s), "match", ValueList{ents[ei].rx, cv});
+                if (!mv.truthy()) { rn.none = true; return -1; }
+                long f = (long)charToByte(s, methodCall(mv, "from", {}).toInt());
+                long t = (long)charToByte(s, methodCall(mv, "to", {}).toInt());
+                rn.from = f; rn.to = t; rn.m = mv;
+                if (t <= f) { rn.from = -1; return -1; } // zero-width: look again one character on
+            }
+            return rn.from == (long)pos ? rn.to - rn.from : -1;
+        };
         std::string out;
-        const std::string* lastTo = nullptr; // for :squash — what the previous position emitted
+        bool haveLast = false; std::string lastOut; // for :squash — what the previous position emitted
+        auto emit = [&](const std::string& r) {
+            if (squash && haveLast && lastOut == r) return;
+            out += r; haveLast = true; lastOut = r;
+        };
         for (size_t pos = 0; pos < s.size(); ) {
-            size_t bestLen = 0; const std::string* bestTo = nullptr;
-            for (auto& kv : maps) {
-                if (!kv.first.empty() && kv.first.size() > bestLen &&
-                    s.compare(pos, kv.first.size(), kv.first) == 0) { bestLen = kv.first.size(); bestTo = &kv.second; }
+            long bestLen = 0; long bestEnt = -1;
+            for (size_t ei = 0; ei < ents.size(); ei++) {
+                long len;
+                if (ents[ei].isRx()) len = rxAt(ei, pos);
+                else {
+                    const std::string& nd = ents[ei].needle;
+                    len = !nd.empty() && s.compare(pos, nd.size(), nd) == 0 ? (long)nd.size() : -1;
+                }
+                if (len > bestLen) { bestLen = len; bestEnt = (long)ei; }
             }
             if (complement) {
                 // the left side names what to KEEP; everything else is replaced
                 size_t clen = 1; // one CHARACTER, not one byte
                 while (pos + clen < s.size() && ((unsigned char)s[pos + clen] & 0xC0) == 0x80) clen++;
-                if (bestLen) { out.append(s, pos, bestLen); pos += bestLen; lastTo = nullptr; continue; }
-                if (!del || !compTo.empty()) {
-                    if (!(squash && lastTo == &compTo)) out += compTo;
-                    lastTo = &compTo;
-                }
+                if (bestEnt >= 0) { out.append(s, pos, (size_t)bestLen); pos += (size_t)bestLen; haveLast = false; continue; }
+                if (haveComp) emit(pinText(compTo, Value::str(s.substr(pos, clen))));
+                else if (!del) { out.append(s, pos, clen); haveLast = false; }
                 pos += clen;
                 continue;
             }
-            if (bestTo) {
-                if (!(squash && lastTo == bestTo)) out += *bestTo;
-                lastTo = bestTo;
-                pos += bestLen;
+            if (bestEnt >= 0) {
+                TrEnt& e = ents[(size_t)bestEnt];
+                if (e.drop) { haveLast = false; }
+                else emit(pinText(e.pin, e.isRx() ? rxNext[(size_t)bestEnt].m : Value::str(s.substr(pos, (size_t)bestLen))));
+                pos += (size_t)bestLen;
             } else {
-                out += s[pos]; pos++; lastTo = nullptr;
+                out += s[pos]; pos++; haveLast = false;
             }
         }
         return Value::str(out);
@@ -4798,7 +5025,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array();
         out.isList = true; out.s = "Seq";
         if (haveLimit && limit <= 0) return out;
-        auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
+        long long pieces = 0; // the limit counts pieces before :skip-empty drops any
+        auto emit = [&](const std::string& piece) { pieces++; if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
         // empty single delimiter => split into characters, with the empty-string
         // edges Rakudo yields ('abc'.split('') is ("", "a", "b", "c", ""));
         // a limit keeps the first limit-1 pieces and the rest as the final piece
@@ -4809,15 +5037,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             emit("");
             size_t taken = 0;
             for (size_t ci = 0; ci < cps.size(); ci++) {
-                if (haveLimit && (long long)out.arr()->size() == limit - 1) {
+                if (haveLimit && pieces == limit - 1) {
                     std::string rest; for (size_t cj = ci; cj < cps.size(); cj++) rest += cpToUtf8(cps[cj]);
                     emit(rest); return out;
                 }
-                out.arr()->push_back(Value::str(cpToUtf8(cps[ci])));
+                emit(cpToUtf8(cps[ci]));
                 taken = ci;
             }
             (void)taken;
-            if (!haveLimit || (long long)out.arr()->size() < limit) emit("");
+            if (!haveLimit || pieces < limit) emit("");
             return out;
         }
         // collect every separator match, then apply the limit by VALUE count
@@ -5016,9 +5244,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         { // one entry per GRAPHEME (UAX #29 cluster), not per codepoint —
           // "e\x[301]" combs to one "é", emoji ZWJ sequences stay whole.
+            // (`.comb("", 2)` — an empty needle still honours the limit)
+            long long limit = -1; bool none = false;
+            if (args.size() > 1 && args[1].t != VT::Pair)
+                limit = combLimit(*this, args[1], false, none);
+            if (none) return out;
             auto cps = utf8cp(inv.toStr());
             auto starts = uniGraphemeStarts(cps);
             for (size_t gi = 0; gi < starts.size(); gi++) {
+                if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 size_t from = starts[gi], to = gi + 1 < starts.size() ? starts[gi + 1] : cps.size();
                 std::string g;
                 for (size_t k = from; k < to; k++) g += cpToUtf8(cps[k]);

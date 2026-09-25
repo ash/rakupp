@@ -1,6 +1,8 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Parser.h"
+// set by checkNullRegex when it sees `/%h/` (see RegexLit::reservedHash)
+static thread_local bool g_rxReservedHash = false;
 #include <sys/stat.h>
 #include "IntOps.h"
 #include <cstdint>
@@ -208,7 +210,8 @@ void Parser::expectKind(Tok k, const char* what) {
             }
             return false;
         };
-        if (k == Tok::LBrace && (cur().kind == Tok::End || cur().kind == Tok::RBrace) &&
+        if (k == Tok::LBrace && (cur().kind == Tok::End || cur().kind == Tok::RBrace ||
+                                 (cur().kind == Tok::Semicolon && pos_ > 0 && toks_[pos_ - 1].kind == Tok::RBrace)) &&
             !(cur().kind == Tok::End && cur().flag) && !modifierAfterBlock()) {
             // `for 1,2,3, { say 3 }`: the block WAS there, and the expression
             // before it swallowed it — a group whose sorrow says so
@@ -981,6 +984,13 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     }
 }
 
+// The LIST infixes (Z/X and their metaops, the sequence operator) chain only
+// with themselves: `a Z b Z c` is one zip, `a Z b X c` needs parentheses.
+static bool isListInfixOp(const std::string& o) {
+    if (o == "..." || o == "...^" || o == "^..." || o == "^...^") return true;
+    return !o.empty() && (o[0] == 'Z' || o[0] == 'X');
+}
+
 // A loop used in value context (`(for … {…})`, `do while … {…}`) collects each
 // iteration's value into a List — flag the parsed loop statement so exec knows.
 static void markLoopAsExpr(Stmt* s) {
@@ -1508,6 +1518,13 @@ bool Parser::attachSpacedAdverb(ExprPtr& lhs) {
 ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
     for (;;) {
+        // the dotty infix `EXPR . method` (see parsePostfix): between `*` and `**`
+        if (isOp(".") && cur().spaceBefore && peek().spaceBefore && peek().kind == Tok::Ident &&
+            cur().line == peek().line && minbp < BP_MUL + 5) {
+            infixDotAt_ = pos_;                    // from here on it is the ordinary method-call dot
+            lhs = parsePostfix(std::move(lhs));
+            continue;
+        }
         if (minbp <= BP_ASSIGN && attachSpacedAdverb(lhs)) continue;
         // 6.c's `≼`/`≽` and `(<+)`/`(>+)` ARE the subset/superset tests there;
         // later revisions keep the spelling only to say it was removed
@@ -1920,6 +1937,28 @@ ExprPtr Parser::parseExpr(int minbp) {
                                      "X::Syntax::CannotMeta", {});
             }
         }
+        // `3 X. foo` / `3 R. "foo"` / `5 R:= $x`: metaops that cannot apply
+        if (cur().kind == Tok::Ident && (cur().text == "R" || cur().text == "X" || cur().text == "Z") &&
+            peek().kind == Tok::Op && !peek().spaceBefore && (peek().text == "." || peek().text == ":=")) {
+            const std::string meta = cur().text;
+            const std::string verb = meta == "R" ? "reverse the args of" : meta == "X" ? "cross with" : "zip with";
+            if (peek().text == ":=")
+                throw ParseError("Cannot " + verb + " := because list assignment operators are too fiddly",
+                                 cur().line, "X::Syntax::CannotMeta", {{"meta", verb}, {"operator", ":="}});
+            if (peek(2).kind == Tok::StrLit || peek(2).kind == Tok::StrInterp)
+                throw ParseError("Unsupported use of . to concatenate strings. In Raku please use: ~",
+                                 cur().line, "X::Obsolete", {{"old", "."}, {"replacement", "~"}});
+            throw ParseError("Cannot " + verb + " . because dotty operators are too fiddly",
+                             cur().line, "X::Syntax::CannotMeta", {{"meta", verb}, {"operator", "."}});
+        }
+        // `6 >== 2` / `6 ~~= 2`: a chaining operator has no assignment form
+        if (cur().kind == Tok::Op && peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
+            static const std::set<std::string> kChain = {">=", "<=", "~~", "!~~", "!=", "eqv", "==="};
+            if (kChain.count(cur().text))
+                throw ParseError("Cannot make assignment out of " + cur().text +
+                                 " because chaining operators are too diffy", cur().line,
+                                 "X::Syntax::CannotMeta", {});
+        }
         // Flip-flops with `^` edge markers — `^ff`, `ff^`, `^ff^` (likewise fff).
         // The lexer hands the `^` over as its own token, so stitch the operator
         // back together here, ahead of classifyInfix (which would otherwise read
@@ -2110,6 +2149,10 @@ ExprPtr Parser::parseExpr(int minbp) {
             // — which is also the wrong answer `,=` gave before it had a token of
             // its own, and is what makes the spaced spelling worth refusing rather
             // than quietly accepting. Issue #85.
+            // `f(1, , 3)` — a second comma where a term belongs
+            if (!modNext && isKind(Tok::Comma))
+                throw ParseError("Preceding context expects a term, but found infix , instead",
+                                 cur().line, "X::Syntax::InfixInTermPosition", {{"infix", ","}});
             if (!modNext && !startsTermToken(cur())) {
                 InfixInfo nx = classifyInfix(cur());
                 if (nx.valid && nx.isAssign)
@@ -2130,7 +2173,10 @@ ExprPtr Parser::parseExpr(int minbp) {
                                  cur().line, "X::Syntax::InfixInTermPosition", {{"infix", "=>"}});
             advance();
             auto p = std::make_unique<PairExpr>();
-            if (lhs->kind == NK::NameTerm && !static_cast<NameTerm*>(lhs.get())->noAutoQuote) p->key = static_cast<NameTerm*>(lhs.get())->name;
+            // (a PARENTHESIZED name is a term, not an autoquoted key: `(Int) => 3`
+            // has the type object for its key)
+            if (lhs->kind == NK::NameTerm && !static_cast<NameTerm*>(lhs.get())->noAutoQuote &&
+                !parenned_.count(lhs.get())) p->key = static_cast<NameTerm*>(lhs.get())->name;
             else if (lhs->kind == NK::StrLit) { p->key = static_cast<StrLit*>(lhs.get())->v; p->quotedKey = true; } // 'a' => 1 stays a POSITIONAL arg
             else p->keyExpr = std::move(lhs); // $var / "interp" / (expr) keys evaluated at runtime
             p->value = parseExpr(BP_ASSIGN);
@@ -2185,6 +2231,15 @@ ExprPtr Parser::parseExpr(int minbp) {
                 meta = "R" + peek(3).text;
                 metaToks = 5; // Z/X + [ + R + op + ]
             }
+            // `1, 2 Z 3, 4 X 5, 6` — two DIFFERENT list infixes do not chain
+            if (in.lbp >= minbp && lhs && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
+                const std::string full = (!meta.empty() && !peek().spaceBefore) ? in.op + meta : in.op;
+                const std::string& lo = static_cast<Binary*>(lhs.get())->op;
+                if (isListInfixOp(lo) && lo != full && full.back() != '=')
+                    throw ParseError("Only identical operators may be list associative; since '" + lo +
+                                     "' and '" + full + "' differ, they are non-associative and you need to clarify with parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative", {{"left", lo}, {"right", full}});
+            }
             // `@a X*= 10` / `@a Z+= @b` — the metaop fused with ASSIGNMENT, which
             // means `@a = @a X* 10`. Read as a plain metaop the `*=` became the
             // zip's INNER operator, and applyArith was asked to perform an
@@ -2196,8 +2251,12 @@ ExprPtr Parser::parseExpr(int minbp) {
                 for (int k = 0; k < metaToks; k++) advance();
                 auto as = std::make_unique<Assign>();
                 as->op = in.op + meta;            // "X*=" — evalAssign folds off the `=`
+                // an ARRAY target takes the whole comma list (`@a Z+= 3, 2, 1`)
+                bool listTgt = lhs->kind == NK::ListExpr ||
+                    (lhs->kind == NK::VarExpr && !static_cast<VarExpr*>(lhs.get())->name.empty() &&
+                     (static_cast<VarExpr*>(lhs.get())->name[0] == '@' || static_cast<VarExpr*>(lhs.get())->name[0] == '%'));
                 as->target = std::move(lhs);
-                as->value = parseExpr(BP_ASSIGN);
+                as->value = parseExpr(listTgt ? BP_ZIP : BP_ASSIGN);
                 lhs = std::move(as);
                 continue;
             }
@@ -2286,9 +2345,14 @@ ExprPtr Parser::parseExpr(int minbp) {
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
                 if (!nm.empty() && (nm[0] == '@' || nm[0] == '%')) listAssign = true;
+                // `($x) = 5, 6, 7` / `(my $a) = 1, 2, 3`: the parens make it a
+                // list assignment, and the lone scalar takes the whole List
+                if (parenned_.count(lhs.get())) listAssign = true;
                 // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
                 auto* dv = static_cast<VarExpr*>(lhs.get());
                 if (dv->declare && dv->declScope == "constant") listAssign = true;
+                // …and so does a SIGILLESS declaration: `my \x = 1, 2, 3` binds the List
+                if (dv->declare && !nm.empty() && !std::strchr("$@%&", nm[0])) listAssign = true;
             }
             else if (lhs->kind == NK::SymbolicRef) {
                 // `@::($n) = 1,2,3` / `%::($n) = …` — a sigilled symbolic deref
@@ -2309,6 +2373,9 @@ ExprPtr Parser::parseExpr(int minbp) {
                 // those item assignments that kept the 7 and sank the rest.
                 if (ix->index) listAssign = true;
             }
+            // only a `$` VARIABLE takes item assignment: `$o.h = a => 1, b => 2`
+            // (an rw accessor) assigns the whole list, as in Rakudo
+            else if (lhs->kind == NK::MethodCall && in.op == "=") listAssign = true;
         }
 
         int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
@@ -2374,6 +2441,15 @@ ExprPtr Parser::parseExpr(int minbp) {
                                      "' are non-associative and require parentheses",
                                      cur().line, "X::Syntax::NonAssociative",
                                      {{"left", in.op}, {"right", nx.op}});
+            }
+            // …and a sequence after a different list infix: `4 X+> 1...2`
+            if ((in.op == "..." || in.op == "...^" || in.op == "^..." || in.op == "^...^") &&
+                lhs && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
+                const std::string& lo = static_cast<Binary*>(lhs.get())->op;
+                if (isListInfixOp(lo) && lo != in.op)
+                    throw ParseError("Only identical operators may be list associative; since '" + lo +
+                                     "' and '" + in.op + "' differ, they are non-associative and you need to clarify with parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative", {{"left", lo}, {"right", in.op}});
             }
             // …and the junction constructors `|` and `^` do not mix: `1 | 2 ^ 3`
             // is ambiguous and Rakudo refuses it.
@@ -2797,6 +2873,12 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         // when parsing the operand of a prefix op, a space-preceded `.method` binds
         // to the whole prefix expression, not the operand — stop here so the caller grabs it.
         if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
+        // `EXPR . method` — a dot with whitespace on BOTH sides is the dotty
+        // INFIX: it applies to the expression so far, looser than `**` and the
+        // prefixes but tighter than `*` (`-2**2 . abs` is 4); parseExpr takes it
+        if (isOp(".") && cur().spaceBefore && peek().spaceBefore && peek().kind == Tok::Ident &&
+            cur().line == peek().line && pos_ != infixDotAt_)
+            break;
         // user postcircumfix operator: `$x¦key¦` == postcircumfix:<¦ ¦>($x, key)
         if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && !cur().spaceBefore &&
             userPostcircumfix_.count(cur().text) && cur().text != pcfxClose_) {
@@ -3779,8 +3861,24 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             // sigil whose trait names the QuantHash family or a class it knows,
             // so an ordinary uppercase trait (is DEPRECATED) still does nothing.
             bool wasContainer = wasIs && containers.count(cur().text);
+            // …and the lower-case native blob types, and a sigilless term that
+            // names a type (`for Blob, buf8 -> \buf { EVAL 'my @a is buf = …' }`)
+            static const std::set<std::string> lowerTypes = {
+                "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
+            static const std::set<std::string> traitWords = {
+                "rw", "copy", "readonly", "raw", "dynamic", "export", "default", "required",
+                "built", "pure", "cached", "nodal", "hidden-from-backtrace", "test-assertion",
+                "implementation-detail", "item", "tighter", "looser", "equiv", "assoc", "native",
+                "symbol", "nativeconv", "encoded", "rakudo", "repr", "box_target", "leading_docs",
+                "trailing_docs", "hidden-from-USAGE", "specialized", "context", "parsed", "reparsed",
+                "revision-gated", "controlled", "cloned"};
             bool wasTypeName = wasIs && !cur().text.empty() &&
-                               ascii::isupper((unsigned char)cur().text[0]);
+                               (ascii::isupper((unsigned char)cur().text[0]) || lowerTypes.count(cur().text) ||
+                                (isKind(Tok::Ident) && sigilless_.count(cur().text)) ||
+                                // a sigilless type term from an enclosing scope (an EVAL's
+                                // caller): a plain lower-case word ending the declaration
+                                (isKind(Tok::Ident) && !traitWords.count(cur().text) &&
+                                 (peek().kind == Tok::Semicolon || (peek().kind == Tok::Op && peek().text == "="))));
             if (wasContainer || wasTypeName) lastContainerIs_ = cur().text;
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
             if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
@@ -4887,7 +4985,12 @@ ExprPtr Parser::parseColonPair() {
 // A single angle word that is a numeric literal is an allomorph in Raku
 // (<42> is IntStr, <1/3> RatStr, <1e5> NumStr); we produce the numeric part.
 // Returns nullptr when the word isn't (recognizably) numeric — stays a word.
-static ExprPtr angleWordNumeric(const std::string& w) {
+static ExprPtr angleWordNumeric(const std::string& wIn) {
+    // `<0+Inf\i>` — the `\i` spelling an infinite imaginary part needs
+    std::string wFix = wIn;
+    if (wFix.size() > 2 && wFix.compare(wFix.size() - 2, 2, "\\i") == 0)
+        wFix.erase(wFix.size() - 2, 1);
+    const std::string& w = wFix;
     // Complex allomorph <1+3i> / <3i> / <-2.5-1e3i> (the .raku form round-trips via EVAL)
     if (!w.empty() && w.back() == 'i') {
         const char* s = w.c_str();
@@ -4907,6 +5010,17 @@ static ExprPtr angleWordNumeric(const std::string& w) {
         } else if (end == s + w.size() - 1 && end != s) { // pure imaginary <3i>
             auto ni = std::make_unique<NumLit>(re); ni->imaginary = true;
             return ni;
+        }
+    }
+    // a rational written with RADIX parts: `<0x01/0x03>` is a Rat
+    if (size_t sl = w.find('/'); sl != std::string::npos && sl > 0 && sl + 1 < w.size() &&
+        (w.find("0x") != std::string::npos || w.find("0b") != std::string::npos ||
+         w.find("0o") != std::string::npos || w.find("0d") != std::string::npos)) {
+        ExprPtr n = angleWordNumeric(w.substr(0, sl)), d = angleWordNumeric(w.substr(sl + 1));
+        if (n && d && n->kind == NK::IntLit && d->kind == NK::IntLit) {
+            auto b = std::make_unique<Binary>(); b->op = "/";
+            b->lhs = std::move(n); b->rhs = std::move(d);
+            return b;
         }
     }
     // radix literal <0o777> / <0x1F> / <0b1010> / <0d42> — IntStr in Rakudo
@@ -5044,6 +5158,13 @@ ExprPtr Parser::parsePrimary() {
         advance(); advance(); // :: ?
         std::string which = advance().text; // CLASS / ROLE / PACKAGE
         std::string nm = typeStack_.empty() ? "" : typeStack_.back();
+        if ((which == "PACKAGE" || which == "MODULE") && !pkgStack_.empty()) {
+            std::string pn;
+            for (auto it = pkgStack_.rbegin(); it != pkgStack_.rend(); ++it)
+                if (which == "PACKAGE" || it->second) { pn = it->first; break; }
+            if (!pn.empty()) return std::make_unique<NameTerm>(pn);
+        }
+        if (which == "PACKAGE" && pkgStack_.empty() && typeStack_.empty()) return std::make_unique<NameTerm>("GLOBAL");
         // ::?CLASS inside a ROLE is GENERIC — it means the CONSUMING class, known
         // only per invocant. Emit a runtime marker the interpreter resolves from
         // `self` (DBDish::Connection's `method new` does `::?CLASS.bless`, and
@@ -5059,11 +5180,26 @@ ExprPtr Parser::parsePrimary() {
                                                          : "::?CLASS\x01" + nm);
         return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
     }
+    // `::.<MY>`, `::.keys` — the ROOT stash: every lexical in view, and the
+    // pseudo-packages by name
+    if (isOp("::") && peek().kind == Tok::Op && peek().text == "." && !peek().spaceBefore) {
+        advance(); // ::
+        auto c = std::make_unique<Call>();
+        c->name = "__pseudo-stash";
+        c->args.push_back(std::make_unique<StrLit>("LEXICAL"));
+        return c;
+    }
     // root symbol access: `::<$x>` — the symbol looked up through the scope chain
     if (isOp("::") && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
         advance(); advance(); // :: <
         std::vector<std::string> words = readAngleWords(">");
         std::string symName = words.empty() ? "$_" : words[0];
+        if (isPseudoPkg(symName) && !(isOp(":") && !cur().spaceBefore)) {   // `::<MY>` is MY's stash
+            auto c = std::make_unique<Call>();
+            c->name = "__pseudo-stash";
+            c->args.push_back(std::make_unique<StrLit>(symName));
+            return c;
+        }
         // `::<EXPORT>:exists` / `::<$x>:!exists` — a namespace EXISTENCE probe,
         // not a lookup (Test::Async guards its EXPORT re-export machinery with
         // exactly this; unparsed, the ':' died as "expected ) (got ':')")
@@ -5093,7 +5229,20 @@ ExprPtr Parser::parsePrimary() {
             }
             else if (peek().kind == Tok::Ident) {
                 advance();
-                sr->segs.push_back(std::make_unique<StrLit>(advance().text));
+                std::string seg = advance().text;
+                // `::is::($x)` — the identifier swallowed the next `::`; the
+                // parenthesized part after it is one more (computed) segment
+                if (seg.size() > 2 && seg.compare(seg.size() - 2, 2, "::") == 0) {
+                    seg.resize(seg.size() - 2);
+                    sr->segs.push_back(std::make_unique<StrLit>(seg));
+                    if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                        advance(); // (
+                        sr->segs.push_back(parseExpression());
+                        expectKind(Tok::RParen, "expected ')' in ::() path segment");
+                    }
+                    continue;
+                }
+                sr->segs.push_back(std::make_unique<StrLit>(seg));
             }
             else break;
         }
@@ -5308,6 +5457,51 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::StrLit: {
             bool fmt = cur().flag; bool qx = cur().text2 == "qx";
+            // `q[$foo \qq[$bar]]` — a `\qq[…]` (or `\q:s{…}`, `\q/…/`) inside a
+            // single-quoted string is a nested quote of its own kind
+            if (!fmt && !qx && cur().text.find("\\q") != std::string::npos) {
+                const std::string txt = cur().text;
+                auto closerOf = [](char o) -> char {
+                    return o == '[' ? ']' : o == '{' ? '}' : o == '(' ? ')' : o == '<' ? '>' : o;
+                };
+                std::vector<ExprPtr> parts; std::string lit; bool any = false;
+                for (size_t i = 0; i < txt.size(); i++) {
+                    if (txt.compare(i, 2, "\\q") == 0) {
+                        size_t j = i + 2; bool qq = false; bool sOnly = false;
+                        if (j < txt.size() && txt[j] == 'q') { qq = true; j++; }
+                        if (!qq && txt.compare(j, 2, ":s") == 0) { sOnly = true; j += 2; }
+                        if (j < txt.size() && std::strchr("[{(</|!", txt[j])) {
+                            char o = txt[j], c = closerOf(o);
+                            int d = 1; size_t k = j + 1;
+                            for (; k < txt.size(); k++) {
+                                if (o != c && txt[k] == o) d++;
+                                else if (txt[k] == c && --d == 0) break;
+                            }
+                            if (k < txt.size()) {
+                                std::string inner = txt.substr(j + 1, k - j - 1);
+                                if (!lit.empty()) { parts.push_back(std::make_unique<StrLit>(lit)); lit.clear(); }
+                                if (qq || sOnly) parts.push_back(parseInterpString(inner));
+                                else parts.push_back(std::make_unique<StrLit>(inner));
+                                any = true; i = k; continue;
+                            }
+                        }
+                    }
+                    lit += txt[i];
+                }
+                if (any) {
+                    advance();
+                    if (!lit.empty()) parts.push_back(std::make_unique<StrLit>(lit));
+                    ExprPtr acc = std::move(parts[0]);
+                    for (size_t k = 1; k < parts.size(); k++) {
+                        auto b = std::make_unique<Binary>(); b->op = "~";
+                        b->lhs = std::move(acc); b->rhs = std::move(parts[k]); acc = std::move(b);
+                    }
+                    if (acc->kind == NK::StrLit) return acc;
+                    auto b = std::make_unique<Binary>(); b->op = "~";   // always a Str
+                    b->lhs = std::make_unique<StrLit>(""); b->rhs = std::move(acc);
+                    return b;
+                }
+            }
             auto e = std::make_unique<StrLit>(advance().text);
             if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
             if (fmt) {
@@ -5361,9 +5555,12 @@ ExprPtr Parser::parsePrimary() {
                 i = j;
                 while (i < full.size() && full[i] == ' ') i++;
             }
+            g_rxReservedHash = false;
             checkNullRegex(full.substr(i), tk.line, !p5);
             checkRegexBoundaries(tk.text, tk.line);
             auto e = std::make_unique<RegexLit>(tk.text);
+            e->reservedHash = g_rxReservedHash;
+            g_rxReservedHash = false;
             e->isRx = tk.flag;
             e->isM = (tk.ival == 1);
             return e;
@@ -5482,6 +5679,9 @@ ExprPtr Parser::parsePrimary() {
             return arr;
         }
         case Tok::Var: {
+            // `&infix:[$op]`, `&infix:<<$op>>`, `&infix:«$op»` — an operator
+            // named at run time: `&::("infix:<" ~ $op ~ ">")`
+            if (ExprPtr cn = computedOpName(cur().text)) { advance(); return cn; }
             if (cur().text.rfind("&?ROUTINE", 0) == 0 && routineDepth_ == 0)
                 throw ParseError("Undeclared name:\n    &?ROUTINE used at line " +
                                  std::to_string(cur().line), cur().line,
@@ -5493,6 +5693,14 @@ ExprPtr Parser::parsePrimary() {
             // variable and answered Any — which is what a class-level registry
             // keyed on `$?CLASS.^name` gets instead of its own name, and why
             // `Log.get` / `Logger.get` were dead here while working on Rakudo.
+            // `$?PACKAGE` / `$?MODULE` — the innermost package (module) being declared
+            if ((cur().text == "$?PACKAGE" || cur().text == "$?MODULE") && !pkgStack_.empty()) {
+                const bool mod = cur().text == "$?MODULE";
+                std::string nm;
+                for (auto it = pkgStack_.rbegin(); it != pkgStack_.rend(); ++it)
+                    if (!mod || it->second) { nm = it->first; break; }
+                if (!nm.empty()) { advance(); return std::make_unique<NameTerm>(nm); }
+            }
             if ((cur().text == "$?CLASS" || cur().text == "$?ROLE" ||
                  cur().text == "$?PACKAGE") && !typeStack_.empty()) {
                 bool klass = cur().text == "$?CLASS";
@@ -5640,6 +5848,42 @@ ExprPtr Parser::parsePrimary() {
                     }
                 if (paren) expectKind(Tok::RParen, ")");
                 return mc;
+            }
+            // `$MY::x`, `$UNIT::x`, `$OUTERS::x`, and every CHAIN
+            // (`$CALLER::CALLER::x`, `$CALLER::OUTER::x`, `$CALLER::UNIT::x`):
+            // the key of a live pseudo-stash (Interpreter::makePseudoStash)
+            if (raw.size() > 1 && std::strchr("$@%&", raw[0]) && raw[1] != '*') {
+                static const std::set<std::string> live = {
+                    "MY", "OUTER", "OUTERS", "CALLER", "CALLERS", "UNIT", "LEXICAL"};
+                std::vector<std::string> comps;
+                size_t p = 1;
+                for (;;) {
+                    size_t sep = raw.find("::", p);
+                    if (sep == std::string::npos) break;
+                    std::string c = raw.substr(p, sep - p);
+                    if (!isPseudoPkg(c)) break;
+                    comps.push_back(c);
+                    p = sep + 2;
+                }
+                bool allLive = !comps.empty();
+                for (auto& c : comps) if (!live.count(c)) allLive = false;
+                const bool pureOuter = !comps.empty() &&
+                    std::all_of(comps.begin(), comps.end(), [](const std::string& c) { return c == "OUTER"; });
+                if (allLive && p < raw.size() && raw.find("::", p) == std::string::npos && !pureOuter &&
+                    (comps.size() > 1 || comps[0] == "MY" || comps[0] == "UNIT" || comps[0] == "OUTERS")) {
+                    std::string chain;
+                    for (auto& c : comps) chain += (chain.empty() ? "" : "::") + c;
+                    auto c = std::make_unique<Call>();
+                    c->name = "__pseudo-stash";
+                    c->line = ln;
+                    c->args.push_back(std::make_unique<StrLit>(chain));
+                    auto ix = std::make_unique<Index>();
+                    ix->base = std::move(c);
+                    ix->index = std::make_unique<StrLit>(raw.substr(0, 1) + raw.substr(p));
+                    ix->isHash = true;
+                    ix->line = ln;
+                    return ix;
+                }
             }
             if (raw.size() > 1 && std::strchr("$@%&", raw[0]) &&
                 (raw.find("CALLER::") == 1 || raw.find("CALLER::") == 2)) { // `$CALLER::y` / `$*CALLER::y`: the caller's, see the angle form
@@ -5836,18 +6080,21 @@ ExprPtr Parser::parsePrimary() {
                 // own type — and `($_ for ^1) eqv (0,)` was False where Rakudo
                 // says True. Nothing was lost by being a Seq here, because this
                 // desugaring is eager either way; it was only ever the name.
+                // (A ForStmt in value context, like the block spelling: an
+                // ITEMIZED list is one item — `($_ for $[1,2,3]).elems` is 1.)
                 advance();
                 ExprPtr list = parseExpression();
-                auto blk = std::make_unique<BlockExpr>();
+                auto fs = std::make_unique<ForStmt>();
+                fs->line = e ? e->line : cur().line;
+                fs->list = std::move(list);
+                fs->asExpr = true;
+                fs->body = std::make_unique<Block>();
                 auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
-                blk->body.push_back(std::move(es));
-                auto call = std::make_unique<Call>(); call->name = "map";
-                call->args.push_back(std::move(blk));
-                call->args.push_back(std::move(list));
-                auto toList = std::make_unique<MethodCall>();
-                toList->inv = std::move(call);
-                toList->method = "List";
-                e = std::move(toList);
+                fs->body->stmts.push_back(std::move(es));
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(fs));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                e = std::move(u);
                 continue;
             }
             // (EXPR while COND) / (EXPR until COND) — collect the value per iteration
@@ -5909,6 +6156,7 @@ ExprPtr Parser::parsePrimary() {
             // precedence worry — and both have to tell `(|4) .. 5` from `|4 .. 5`
             // when the parser hands back the inner node unwrapped.
             if (e) parenned_.insert(e.get());
+            if (e && e->kind == NK::Binary) static_cast<Binary*>(e.get())->parenned = true;
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
             // A pair in parens is a positional Pair VALUE, not a named argument:
             // `f((:$x))` passes one, `f(:$x)` names one. DBDish::Pg's connect
@@ -6265,12 +6513,14 @@ ExprPtr Parser::parsePrimary() {
                 // (<42> IntStr, <1/3> RatStr, <1e5> NumStr), in a multi-word list too
                 advance();
                 auto words = readAngleWords(">");
-                auto mkWord = [](const std::string& w) -> ExprPtr {
+                auto mkWord = [](const std::string& w, bool single) -> ExprPtr {
                     if (ExprPtr num = angleWordNumeric(w)) {
                         // only a single numeric TOKEN is an allomorph (42, 1.5, 1e5,
                         // 3i, -2). `<1/3>` is a plain Rat and `<1+2i>` a plain Complex
                         // (they carry an infix), so their .raku round-trips exactly.
-                        if (w.find('/') != std::string::npos || num->kind == NK::Binary)
+                        // In a LIST of words every numeric one is an allomorph:
+                        // `<1 2/3 8+9i>` holds a RatStr and a ComplexStr
+                        if (single && (w.find('/') != std::string::npos || num->kind == NK::Binary))
                             return num;
                         auto al = std::make_unique<AllomorphLit>();
                         al->num = std::move(num); al->str = w;
@@ -6278,9 +6528,9 @@ ExprPtr Parser::parsePrimary() {
                     }
                     return std::make_unique<StrLit>(w);
                 };
-                if (words.size() == 1) return mkWord(words[0]); // <42> is the value itself, not a list
+                if (words.size() == 1) return mkWord(words[0], true); // <42> is the value itself, not a list
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : words) arr->items.push_back(mkWord(w));
+                for (auto& w : words) arr->items.push_back(mkWord(w, false));
                 arr->isList = true;
                 return arr;
             }
@@ -6313,6 +6563,10 @@ ExprPtr Parser::parsePrimary() {
                 be->isPointy = true;   // even `-> {…}` has a written (empty) signature
                 sigRetType_.clear();
                 be->params = parsePointyParams();
+                for (auto& ip : be->params)
+                    if (ip.invocant)
+                        throw ParseError("Cannot use an invocant in a pointy block", cur().line,
+                                         "X::Syntax::Signature::InvocantNotAllowed", {});
                 if (doubly) for (auto& p : be->params) p.isRw = true;
                 be->retType = sigRetType_;   // `-> $x --> Int { … }`
                 auto blk = parseBlock();
@@ -6625,6 +6879,9 @@ ExprPtr Parser::parsePrimary() {
                 auto blk = parseBlock();
                 auto be = std::make_unique<BlockExpr>();
                 be->body = std::move(blk->stmts);
+                // BEGIN/CHECK/INIT run ONCE, before the code around them; their
+                // value is what the expression yields every time after
+                if (name == "BEGIN" || name == "CHECK" || name == "INIT") be->phaser = name;
                 u->operand = std::move(be);
                 return u;
             }
@@ -6813,6 +7070,15 @@ ExprPtr Parser::parsePrimary() {
                     es->e = parseExpr(BP_PREFIX);
                     be->body.push_back(std::move(es));
                 }
+                // a `start` gets a FRESH `$/` and `$!` of its own: the thread
+                // must not share (and race on) the ones it was started beside
+                for (const char* fresh : {"$/", "$!"}) {
+                    auto ve = std::make_unique<VarExpr>(fresh);
+                    ve->declare = true; ve->declScope = "my";
+                    auto es = std::make_unique<ExprStmt>();
+                    es->e = std::move(ve);
+                    be->body.insert(be->body.begin(), std::move(es));
+                }
                 call->args.push_back(std::move(be));
                 return call;
             }
@@ -6855,6 +7121,8 @@ ExprPtr Parser::parsePrimary() {
                             listTarget = !nm.empty() && (nm[0] == '@' || nm[0] == '%');
                             // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
                             if (static_cast<VarExpr*>(decl.get())->declScope == "constant") listTarget = true;
+                            // …and so does a SIGILLESS one: `my \s = 1, 2, 4 ... 16` binds the Seq
+                            if (!nm.empty() && !std::strchr("$@%&", nm[0])) listTarget = true;
                         }
                         auto as = std::make_unique<Assign>();
                         as->op = advance().text;
@@ -6863,7 +7131,45 @@ ExprPtr Parser::parsePrimary() {
                         // zip/cross infixes exactly as an `@`/`%` declaration does
                         if (as->op == ":=" || as->op == "::=") listTarget = true;
                         as->target = std::move(decl);
+                        const size_t initFrom = pos_;
+                        // `my $x = ` with nothing after it
+                        if (isKind(Tok::End) || isKind(Tok::Semicolon))
+                            throw ParseError("Malformed initializer", cur().line, "X::Syntax::Malformed",
+                                             {{"what", "initializer"}});
                         as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
+                        // `my $z = $z`: the variable is not there yet to read
+                        if (as->target->kind == NK::VarExpr) {
+                            auto* dv = static_cast<VarExpr*>(as->target.get());
+                            const std::string& nm = dv->name;
+                            if (nm.size() > 1 && std::strchr("$@%", nm[0]) && (std::isalpha((unsigned char)nm[1]) || (nm[1] == '_' && nm.size() > 2)) &&
+                                dv->declScope != "constant" &&
+                                dv->declScope != "state")
+                            {
+                                // only a DIRECT read counts: a block, closure or routine
+                                // in the initializer is its own scope (and may declare
+                                // or capture the name), and `<@x>` is a word
+                                int depth = 0;
+                                static const std::set<std::string> kScopeWords = {
+                                    "sub", "method", "submethod", "multi", "proto", "regex", "token", "rule"};
+                                for (size_t k = initFrom; k < pos_ && k < toks_.size(); k++) {
+                                    const Token& tk = toks_[k];
+                                    if (tk.kind == Tok::LBrace) { depth++; continue; }
+                                    if (tk.kind == Tok::RBrace) { if (depth) depth--; continue; }
+                                    if (depth) continue;
+                                    if ((tk.kind == Tok::Ident && kScopeWords.count(tk.text)) ||
+                                        (tk.kind == Tok::Op && (tk.text == "->" || tk.text == "<->"))) break;
+                                    if (tk.kind != Tok::Var || tk.text != nm) continue;
+                                    if (k > 0) {
+                                        const Token& pv = toks_[k - 1];
+                                        if (pv.kind == Tok::Op && (pv.text == "." || pv.text == "<" || pv.text == "\\")) continue;
+                                        if (pv.kind == Tok::Ident && (pv.text == "my" || pv.text == "our" || pv.text == "state" ||
+                                                                      pv.text == "constant" || pv.text == "has")) continue;
+                                    }
+                                    throw ParseError("Cannot use variable " + nm + " in declaration to initialize itself",
+                                                     tk.line, "X::Syntax::Variable::Initializer", {{"name", nm}});
+                                }
+                            }
+                        }
                         if (as->op == "=")
                             checkLiteralDeclType(as->target.get(), as->value.get(), cur().line);
                         return as;
@@ -7095,18 +7401,15 @@ ExprPtr Parser::parsePrimary() {
             // exported and every call landed on a built-in of the same name
             // (`after` answered the infix's True). The call answers a Hash of the
             // scope's symbols; the `:exists`/`:p` subscripts above keep their own path.
+            // Every pseudo-package, and every chain of them, is a live stash:
+            // `CALLER::.<$x>`, `CORE::.<&not>`, `OUTER::OUTER::.keys`.
             if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
                 isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
-                (pseudoPkg == "UNIT" || pseudoPkg == "MY" || pseudoPkg == "LEXICAL" ||
-                 pseudoPkg == "OUTER") &&
+                pseudoPkg != "PARENT" && pseudoPkg != "COMPILING" &&
                 !isOp("<") && !isKind(Tok::LBrace) && !isKind(Tok::LParen)) {
                 auto c = std::make_unique<Call>();
-                c->name = "__sym-stash";
-                long long hops = 0;
-                for (size_t k = 0; k + 7 <= name.size(); k++)
-                    if (name.compare(k, 7, "OUTER::") == 0) hops++;
-                c->args.push_back(std::make_unique<IntLit>(hops));
-                c->args.push_back(std::make_unique<StrLit>(pseudoPkg));
+                c->name = "__pseudo-stash";
+                c->args.push_back(std::make_unique<StrLit>(name.substr(0, name.size() - 2)));
                 return c;
             }
             // `Foo::{EXPR}` — the same package-stash slot with a RUNTIME key.
@@ -7308,6 +7611,16 @@ ExprPtr Parser::parsePrimary() {
                 auto nt = std::make_unique<NameTerm>(full); nt->noAutoQuote = t.flag; return nt;
             }
             if (sigilless_.count(name)) { auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = t.flag; return nt; }
+            // `int 3.14` — a native TYPE name is no listop: two terms in a row
+            {
+                static const std::set<std::string> kNative = {
+                    "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+                    "num", "num32", "num64", "str", "byte"};
+                if (kNative.count(name) && cur().spaceBefore &&
+                    (cur().kind == Tok::IntLit || cur().kind == Tok::NumLit || cur().kind == Tok::StrLit))
+                    throw ParseError("Two terms in a row", cur().line, "X::Syntax::Confused",
+                                     {{"reason", "Two terms in a row"}});
+            }
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur(), name);
@@ -7434,8 +7747,10 @@ ExprPtr Parser::parsePrimary() {
                 // `f (a, b)` (space then a parenthesised comma-list) passes ONE List
                 // argument — unlike the tight call form `f(a, b)` (Rakudo semantics).
                 // An empty `f ()` still means no arguments.
+                // (…except for `say ()` / `note ()`, which gist that empty List: "()")
                 if (c->args.size() == 1 && c->args[0]->kind == NK::ListExpr &&
-                    static_cast<ListExpr*>(c->args[0].get())->items.empty())
+                    static_cast<ListExpr*>(c->args[0].get())->items.empty() &&
+                    c->name != "say" && c->name != "note")
                     c->args.clear();
                 return c;
             }
@@ -7444,7 +7759,8 @@ ExprPtr Parser::parsePrimary() {
             // (Rakudo: at the very end of the source it is a group whose panic is
             // "seems to be malformed"; `put` has a message of its own)
             if ((name == "put" || name == "say" || name == "print") &&
-                (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace))) {
+                (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace) ||
+                 (isKind(Tok::Ident) && cur().text == "for"))) {
                 const std::string obs = "Unsupported use of bare \"" + name + "\". In Raku please use: ." + name +
                     " if you meant to call it as a method on $_, or use an explicit invocant or argument, "
                     "or use &" + name + " to refer to the function as a noun.";
@@ -7454,7 +7770,8 @@ ExprPtr Parser::parsePrimary() {
                 if (name == "put")
                     throw ParseError("Function \"put\" may not be called without arguments (please use () or whitespace "
                                      "to denote arguments, or &put to refer to the function as a noun, or use .put if "
-                                     "you meant to call it as a method on $_)", cur().line, "X::Comp::AdHoc", {});
+                                     "you meant to call it as a method on $_)", cur().line,
+                                     isKind(Tok::End) ? "X::Comp::Group" : "X::Comp::AdHoc", {});
                 throw ParseError(obs, cur().line, "X::Obsolete",
                                  {{"old", "bare \"" + name + "\""},
                                   {"replacement", "." + name + " if you meant to call it as a method on $_, or use an "
@@ -7529,6 +7846,9 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
         { pe->value = parseEmbeddedExpr(w.substr(j + 1, w.size() - j - 2)); return pe; }
     if (w[j] == '<' && w.back() == '>' && j + 1 < w.size())
         { pe->value = std::make_unique<StrLit>(w.substr(j + 1, w.size() - j - 2)); return pe; }
+    // `:Letter[0,0,612,793]` — an Array value
+    if (w[j] == '[' && w.back() == ']' && j + 1 < w.size())
+        { pe->value = parseEmbeddedExpr(w.substr(j, w.size() - j)); return pe; }
     return nullptr;
 }
 
@@ -7936,6 +8256,11 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 if (j < n && raw[j] == '[') {
                     j++; std::string body;
                     while (j < n && raw[j] != ']') body += raw[j++];
+                    if (j >= n)   // `"\x[6211"` — the bracket never closes
+                        throw ParseError(std::string("Unable to parse expression in ") +
+                                         (e == 'x' ? "hex" : e == 'o' ? "octal" : "decimal") +
+                                         " character; couldn't find final ']'", cur().line,
+                                         "X::Comp::AdHoc", {});
                     if (j < n) j++; // ]
                     // comma-separated list of codepoints:  \x[0042,0323]
                     size_t p = 0;
@@ -7972,6 +8297,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             if (e == 'c' && i + 2 < n && raw[i + 2] == '[') {
                 size_t j = i + 3; std::string body;
                 while (j < n && raw[j] != ']') body += raw[j++];
+                if (j >= n)   // `"\c[6211"` — the bracket never closes
+                    throw ParseError("Unable to parse expression in character name; couldn't find final ']'",
+                                     cur().line, "X::Comp::AdHoc", {});
                 if (j < n) j++; // ]
                 auto emitCp = [&](long cp) {
                     if (cp < 0x80) lit += (char)cp;
@@ -8046,6 +8374,14 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                                          std::string(1, e) + "'", cur().line,
                                          "X::Backslash::UnrecognizedSequence",
                                          {{"sequence", std::string(1, e)}});
+                    // Perl's octal `"\123"` / `"\10"` (a lone `\0` is still NUL)
+                    if ((e >= '1' && e <= '9') ||
+                        (e == '0' && i + 2 < n && ascii::isdigit((unsigned char)raw[i + 2]))) {
+                        size_t q = i + 1; std::string ds;
+                        while (q < n && ascii::isdigit((unsigned char)raw[q])) ds += raw[q++];
+                        throw ParseError("Unrecognized backslash sequence: '\\" + ds + "'", cur().line,
+                                         "X::Backslash::UnrecognizedSequence", {{"sequence", ds}});
+                    }
                     lit += e;
                     break;
             }
@@ -8370,11 +8706,16 @@ void Parser::noteScalarDecls(const Expr* e) {
 
 // ---------------- statements ----------------
 std::unique_ptr<Block> Parser::parseBlock() {
+    // `if 1; 2` — a statement where its block belongs
+    if (!isKind(Tok::LBrace) && !isKind(Tok::End) && isKind(Tok::Semicolon) &&
+        pos_ > 0 && toks_[pos_ - 1].kind != Tok::RBrace)
+        throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
     expectKind(Tok::LBrace, "{");
     size_t opMark = opUndo_.size(); // user operators are lexically scoped
     monkeyScopes_.push_back(0);
     scalarDeclTypes_.emplace_back();
     const char savedVarsPragma = varsPragma_;   // `use variables` is block-scoped
+    const char savedAttrsPragma = attrsPragma_; // …and so is `use attributes`
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -8387,6 +8728,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     monkeyScopes_.pop_back();
     scalarDeclTypes_.pop_back();
     varsPragma_ = savedVarsPragma;
+    attrsPragma_ = savedAttrsPragma;
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -8721,6 +9063,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
             else if (isKind(Tok::Ident)) {
                 sigRetType_ = cur().text + nativeRetParam(pos_) + retCoercionMark(peek()); // remember the return type
+                // `--> Int:D` / `--> Int:U` — the definedness rides along as a
+                // `\x01D`/`\x01U` suffix (retTypeName strips it); `:foo` is refused
+                if (peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
+                    peek(2).kind == Tok::Ident && !peek(2).spaceBefore) {
+                    const std::string sm = peek(2).text;
+                    if (sm != "D" && sm != "U" && sm != "_")
+                        throw ParseError("Invalid type smiley ':" + sm + "' used, only ':D', ':U' and ':_' are allowed",
+                                         cur().line, "X::InvalidTypeSmiley", {{"name", sm}});
+                    if (sm != "_" && sigRetType_.find('(') == std::string::npos) sigRetType_ += "\x01" + sm;
+                }
                 // `--> Int Str` — a second type after the return constraint
                 if (peek().kind == Tok::Ident && knownTypeName(peek().text))
                     throw ParseError("Malformed return value (return constraints only allowed "
@@ -8748,7 +9100,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
             continue;
         }
-        if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::IntLit) || isKind(Tok::NumLit)) {
+        if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
+            // `multi foo(Inf)` / `multi foo(NaN)`: the numeric terms are literals too
+            (isKind(Tok::Ident) && (cur().text == "Inf" || cur().text == "NaN" || cur().text == "\xE2\x88\x9E") &&
+             (peek().kind == Tok::RParen || peek().kind == Tok::Comma))) {
             p.litVal = parsePrimary();
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;   // `(0;; uint32)`
@@ -9030,6 +9385,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 if (sm == "D") p.defConstraint = 1;
                 else if (sm == "U") p.defConstraint = 2;
             }
+            // `Int:foo $a` — a glued colon word that is no smiley
+            else if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore &&
+                     peek(2).kind == Tok::Var)
+                throw ParseError("Invalid type smiley ':" + peek().text + "' used, only ':D', ':U' and ':_' are allowed",
+                                 cur().line, "X::InvalidTypeSmiley", {{"name", peek().text}});
             if (isKind(Tok::LBracket) && !cur().spaceBefore) {
                 // A NativeCall type keeps its parameter: `CArray[uint8]` names an
                 // element width the marshalling needs — the callback signature
@@ -9053,6 +9413,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     throw ParseError("An exception occurred while parameterizing array: Can only parameterize array "
                                      "with a native type, not " + inner.substr(1, inner.size() - 2),
                                      cur().line, "X::Comp::BeginTime", {{"use-case", "parameterizing array"}});
+            }
+            // `Int *@a` / `Int *%h`: a type on a slurpy array or hash is refused
+            if (isKind(Tok::Op) && (cur().text == "*" || cur().text == "**") &&
+                peek().kind == Tok::Var && !peek().text.empty() &&
+                (peek().text[0] == '@' || peek().text[0] == '%')) {
+                const bool posK = peek().text[0] == '@';
+                throw ParseError(std::string("Slurpy ") + (posK ? "positional" : "named") +
+                                 " parameters with type constraints are not supported",
+                                 cur().line, "X::Parameter::TypedSlurpy",
+                                 {{"kind", posK ? "positional" : "named"}});
             }
             // `R1 of Int $x` — the OF form of a parameterised type: the outer
             // type is what the parameter is checked against here
@@ -9340,7 +9710,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // `is rw` cannot combine with a default value (X::Trait::Invalid):
         // an rw param must bind a writable container, a default is a fresh value
         if (p.isRw && p.defaultVal)
-            error("Cannot use trait 'is rw' on a parameter with a default value");
+            throw ParseError("Cannot use 'is rw' on optional parameter '" + p.name + "'.", cur().line,
+                             "X::Trait::Invalid", {{"type", "is"}, {"subtype", "rw"}, {"declaring", "parameter"}, {"name", p.name}});
         { // trailing `#= description` on this param's line — DEFERRED. Whether
           // the doc belongs to the param or to the ROUTINE depends on where the
           // signature closes: a comment runs to end of line, so a `#=` sharing
@@ -9418,6 +9789,44 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                                  "X::Parameter::WrongOrder",
                                  {{"misplaced", "optional positional"}, {"after", seen}});
             if (opt && seen.empty()) seen = "optional";
+        }
+    }
+    // `$x? is rw` / `$x is rw = 42`: an rw parameter binds the caller's
+    // container, so it cannot be optional; and a LITERAL default that can never
+    // satisfy the declared type is refused at compile time
+    for (const auto& p : params) {
+        if (p.isRw && !p.named && (p.optional || p.defaultVal))
+            throw ParseError("Cannot use 'is rw' on optional parameter '" + p.name + "'.", cur().line,
+                             "X::Trait::Invalid", {{"type", "is"}, {"subtype", "rw"}, {"declaring", "parameter"}, {"name", p.name}});
+        if (!p.defaultVal || p.type.empty() || p.coerce || p.typeCapture) continue;
+        static const std::set<std::string> kNumT = {"Int", "UInt", "Num", "Rat", "Real", "Numeric", "Bool", "Complex", "FatRat"};
+        const NK dk = p.defaultVal->kind;
+        const bool strLit = dk == NK::StrLit || dk == NK::InterpStr;
+        const bool numLit = dk == NK::IntLit || dk == NK::NumLit;
+        const bool codeLit = dk == NK::BlockExpr || dk == NK::SubDecl;
+        const bool userClass = declClassDecls_.count(p.type) && declClassDecls_.at(p.type) &&
+                               !declClassDecls_.at(p.type)->isRole;
+        bool never = (strLit && (kNumT.count(p.type) || userClass)) ||
+                     (numLit && (p.type == "Str" || userClass)) ||
+                     (codeLit && (kNumT.count(p.type) || p.type == "Str" || userClass));
+        if (never)
+            throw ParseError("Default value '" + std::string(strLit ? "\"…\"" : "…") + "' will never bind to a parameter of type " + p.type,
+                             cur().line, "X::Parameter::Default::TypeCheck", {{"expected", p.type}});
+    }
+    { // `sub f($a, $a)` / `(::T, ::T)` redeclare; `(:$a, :@a)` clash on the name
+        std::set<std::string> vars, keys;
+        for (const auto& p : params) {
+            std::string v = p.name;
+            if (v.empty() && p.typeCapture && !p.type.empty()) v = "::" + p.type;
+            if (!v.empty() && !(v.size() == 1 && std::strchr("$@%&", v[0])) && !vars.insert(v).second)
+                throw ParseError("Redeclaration of symbol '" + v + "'", cur().line,
+                                 "X::Redeclaration", {{"symbol", v}});
+            if (p.named && p.name.size() > 1) {
+                std::string k = p.namedKey.empty() ? p.name.substr(1) : p.namedKey;
+                if (!keys.insert(k).second)
+                    throw ParseError("Name " + k + " used for more than one named parameter",
+                                     cur().line, "X::Signature::NameClash", {{"name", k}});
+            }
         }
     }
     { // resolve the deferred `#=` claims: a doc line strictly INSIDE the
@@ -9516,6 +9925,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         bool dbl = cur().text == "<<";
         advance();                       // < or <<
         std::vector<std::string> w = readAngleWords(dbl ? ">>" : ">");
+        if (w.size() > 1)
+            throw ParseError("Too many symbols provided for categorical of type term; needs only 1",
+                             cur().line, "X::Syntax::AddCategorical::TooManyParts",
+                             {{"category", "term"}, {"needs", "1"}});
         if (!w.empty() && !w[0].empty()) {
             s->name = w[0];
             sigilless_.insert(w[0]);     // so it parses as a TERM, not a listop
@@ -9593,6 +10006,34 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                 advance();
             }
             if (isKind(Tok::RBracket) && !nm.empty()) { advance(); w.push_back(nm); }
+        }
+        // `infix:[/./]` — a bracketed name must be a literal the parse can see
+        if (w.empty() && isKind(Tok::LBracket) && !cur().spaceBefore) {
+            size_t q = pos_ + 1;
+            std::string shown;
+            for (; q < toks_.size() && toks_[q].kind != Tok::RBracket; q++) shown += toks_[q].text;
+            if (q < toks_.size() && toks_[q].kind == Tok::RegexLit) shown = "/" + toks_[q].text + "/";
+            if (pos_ + 1 < toks_.size() && toks_[pos_ + 1].kind == Tok::RegexLit)
+                shown = "/" + toks_[pos_ + 1].text + "/";
+            throw ParseError("Colon pair value '" + shown + "' too complex to use in name", cur().line,
+                             "X::Syntax::Extension::TooComplex", {{"name", shown}});
+        }
+        // how many whitespace-separated symbols the category takes: a
+        // circumfix two (opener and closer), everything else one
+        bool interpolated = false;   // `circumfix:<<$x>>` — the parts are in a constant
+        for (auto& ww : w) if (!ww.empty() && (ww[0] == '$' || ww[0] == '@' || ww[0] == '{')) interpolated = true;
+        if (!interpolated) {
+            const size_t want = (cat == "circumfix" || cat == "postcircumfix") ? 2 : 1;
+            if (!w.empty() && w.size() > want)
+                throw ParseError("Too many symbols provided for categorical of type " + cat +
+                                 "; needs only " + std::to_string(want), cur().line,
+                                 "X::Syntax::AddCategorical::TooManyParts",
+                                 {{"category", cat}, {"needs", std::to_string(want)}});
+            if (w.size() == 1 && want == 2)
+                throw ParseError("Not enough symbols provided for categorical of type " + cat +
+                                 "; needs 2", cur().line,
+                                 "X::Syntax::AddCategorical::TooFewParts",
+                                 {{"category", cat}, {"needs", "2"}});
         }
         std::string opname = w.empty() ? "" : w[0];
         // the SPECIAL FORMS the compiler handles itself cannot be overridden
@@ -9851,6 +10292,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             }
             continue;
         }
+        // `multi f(…) is default` — kept so dispatch can break a tie with it
+        if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "default" &&
+            peek(2).kind != Tok::LParen) {
+            advance(); advance();
+            SubTraitSpec st; st.name = "default";
+            s->traits.push_back(std::move(st));
+            continue;
+        }
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {
@@ -9957,6 +10406,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // file is the body (a common PWC idiom Rakudo accepts). An explicit `{}`
     // (however empty) is a real body — no capture.
     if (!hadBlock && s->body.empty() && s->name == "MAIN" && isKind(Tok::Semicolon)) {
+        if (s->isMulti || monkeyScopes_.size() > 1 || classDepth_ > 0 || routineDepth_ > 0)
+            throw ParseError("A unit-scoped sub definition is not allowed in this context",
+                             cur().line, "X::UnitScope::Invalid", {{"what", "sub"}});
+        if (sawPkgDecl_)
+            throw ParseError("Too late for unit-scoped sub definition;\nPlease use the block form.",
+                             cur().line, "X::UnitScope::TooLate", {{"what", "sub"}});
         advance();
         routineDepth_++;   // it IS the routine's body: `&?ROUTINE` is MAIN there
         while (!isKind(Tok::End)) {
@@ -10154,6 +10609,45 @@ void Parser::skipToStatementEnd() {
     }
 }
 
+// `&infix:[EXPR]` / `&infix:<<$x>>` / `&infix:<$x>` (from `«$x»`): the name is
+// computed, so the term is a symbolic lookup of the finished name. Null when
+// the spelling is an ordinary literal operator name.
+ExprPtr Parser::computedOpName(const std::string& t) {
+    if (t.size() < 4 || t[0] != '&') return nullptr;
+    size_t c = t.find(':');
+    if (c == std::string::npos || c + 1 >= t.size()) return nullptr;
+    const std::string cat = t.substr(1, c - 1);
+    if (cat != "infix" && cat != "prefix" && cat != "postfix" && cat != "circumfix" &&
+        cat != "postcircumfix" && cat != "term")
+        return nullptr;
+    std::string inner; bool isExpr = false;
+    if (t.compare(c, 2, ":[") == 0 && t.back() == ']') { inner = t.substr(c + 2, t.size() - c - 3); isExpr = true; }
+    else if (t.compare(c, 3, ":<<") == 0 && t.size() >= c + 5 && t.compare(t.size() - 2, 2, ">>") == 0)
+        inner = t.substr(c + 3, t.size() - c - 5);
+    else if (t.compare(c, 2, ":<") == 0 && t.back() == '>') inner = t.substr(c + 2, t.size() - c - 3);
+    else return nullptr;
+    size_t b = inner.find_first_not_of(" \t"), e = inner.find_last_not_of(" \t");
+    if (b == std::string::npos) return nullptr;
+    inner = inner.substr(b, e - b + 1);
+    // only a VARIABLE (or, in brackets, any expression) is computed; `&infix:<+>` is a name
+    if (!isExpr && !(inner.size() > 1 && inner[0] == '$' && (ascii::isalpha((unsigned char)inner[1]) || inner[1] == '_')))
+        return nullptr;
+    ExprPtr val = isExpr ? parseEmbeddedExpr(inner) : parseEmbeddedExpr(inner);
+    if (!val) return nullptr;
+    auto cat1 = std::make_unique<Binary>();
+    cat1->op = "~";
+    cat1->lhs = std::make_unique<StrLit>(cat + ":<");
+    cat1->rhs = std::move(val);
+    auto cat2 = std::make_unique<Binary>();
+    cat2->op = "~";
+    cat2->lhs = std::move(cat1);
+    cat2->rhs = std::make_unique<StrLit>(">");
+    auto sr = std::make_unique<SymbolicRef>();
+    sr->sigil = "&";
+    sr->nameExpr = std::move(cat2);
+    return sr;
+}
+
 void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     // an empty regex (or an empty alternation branch / group) is X::Syntax::
     // Regex::NullRegex — `/ /`, `/ a | /`, `/ [] /`, `/ () /`, `s//x/`.
@@ -10175,12 +10669,276 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     // `/\ X/` — an unspace; `/m ** 1 ..2/` — a spaced bare range. Both are
     // compile-time refusals; quotes and character classes are left alone.
     char q = 0; int cls = 0;
+    // What the previous significant atom was: nothing yet in this group (a
+    // quantifier there quantifies nothing — `/* a/`, `[a| ?]`), or a branch
+    // operator (another one right after it is an empty branch — `/b | | d/`,
+    // `/a &| b/`). A LEADING `|` or `&` in a group is allowed.
+    bool atomStart = true, groupStart = true, afterBranch = false;
+    int branchPrec = -1;
+    // what the last thing was, for the quantifier checks: an atom, a quantifier
+    // (`a+ +` quantifies nothing), or something that matches nothing to repeat
+    // (an anchor, a code block, a code assertion — X::Syntax::Regex::NonQuantifiable)
+    enum { LkAtom, LkQuant, LkNonQuant } lastKind = LkAtom;
+    int grpDepth = 0;   // ( ) / [ ] balance — a `#` comment can swallow a closer
+    auto nonQuantifiable = [&]() {
+        throw ParseError("Can only quantify a construct that produces a match", line,
+                         "X::Syntax::Regex::NonQuantifiable", {});
+    };
+    // `/$!a/`, `/<$!a>/`, `/{ $!a }/` — a regex is a method on its cursor,
+    // not on the class that wrote it, so an attribute is not reachable
+    auto attrInRegex = [&](size_t at) {
+        size_t e = at + 2;
+        while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
+        std::string sym = pat.substr(at, e - at);
+        throw ParseError("Attribute " + sym + " not available inside of a regex, since regexes are "
+                         "methods on Cursor.\nConsider storing the attribute in a lexical, and using that in the regex.",
+                         line, "X::Attribute::Regex", {{"symbol", sym}});
+    };
     for (size_t i = 0; i < pat.size(); i++) {
         char c = pat[i];
         if (q) { if (c == '\\') i++; else if (c == q) q = 0; continue; }
-        if (cls) { if (c == '\\') i++; else if (c == ']') cls--; continue; }
+        if (cls) {
+            if (c == '\\') {
+                // `\c[NAME, NAME]` / `\x[41]` / `\o[101]`: the bracket belongs to
+                // the escape, and a `-` inside a character NAME is not a range
+                if (i + 2 < pat.size() && std::strchr("cCxXoO", pat[i + 1]) && pat[i + 2] == '[') {
+                    size_t e = pat.find(']', i + 3);
+                    if (e != std::string::npos) { i = e; continue; }
+                }
+                i++; continue;
+            }
+            if (c == ']') {
+                cls--;
+                // `<[abc] [def]>` — two members need a `+` or `-` between them
+                size_t j = i + 1;
+                while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t' || pat[j] == '\n')) j++;
+                if (j < pat.size() && pat[j] == '[')
+                    throw ParseError("Missing + or - between character class members in regex", line,
+                                     "X::Syntax::Regex::Unterminated", {});
+                // `<+[\S] -[#]>` — the class goes on after a `+`/`-` member
+                if (cls == 0 && j + 1 < pat.size() && (pat[j] == '+' || pat[j] == '-')) {
+                    size_t k = j + 1;
+                    while (k < pat.size() && (pat[k] == ' ' || pat[k] == '\t' || pat[k] == '\n')) k++;
+                    if (k < pat.size() && pat[k] == '[') { cls = 1; i = k; }
+                }
+                continue;
+            }
+            // `<[a-z]>` — Perl's range spelling
+            if (c == '-' && i > 0 && i + 1 < pat.size() && ascii::isalnum((unsigned char)pat[i - 1]) &&
+                !(i > 1 && pat[i - 2] == '\\') && ascii::isalnum((unsigned char)pat[i + 1]))
+                throw ParseError("Unsupported use of - as character range. In Raku please use: .. for range, "
+                                 "for explicit - in character class, escape it or place it as last thing.",
+                                 line, "X::Obsolete",
+                                 {{"old", "- as character range"},
+                                  {"replacement", ".. for range, for explicit - in character class, escape it or place it as last thing"}});
+            // `<[d..b]>` — a reversed range is a compile-time error
+            if ((unsigned char)c < 0x80 && c != ' ' && c != '\t' && c != '\n') {
+                size_t j = i + 1;
+                while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
+                if (pat.compare(j, 2, "..") == 0) {
+                    j += 2;
+                    while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
+                    if (j < pat.size() && (unsigned char)pat[j] < 0x80 && pat[j] != '\\' &&
+                        pat[j] != ']' && (unsigned char)pat[j] < (unsigned char)c)
+                        throw ParseError("Illegal reversed character range in regex: " +
+                                         std::string(1, c) + ".." + std::string(1, pat[j]), line,
+                                         "X::Syntax::Regex::ReversedRange", {});
+                }
+            }
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+        // `o{1,3}` — Perl's general quantifier
+        if (c == '{' && i > 0 && !atomStart && lastKind == LkAtom &&
+            !std::strchr(" \t\n", pat[i - 1])) {
+            size_t j = i + 1, d0 = j;
+            while (j < pat.size() && ascii::isdigit((unsigned char)pat[j])) j++;
+            if (j > d0 && j < pat.size() && (pat[j] == '}' || pat[j] == ',')) {
+                size_t k = j;
+                if (pat[k] == ',') { k++; while (k < pat.size() && ascii::isdigit((unsigned char)pat[k])) k++; }
+                if (k < pat.size() && pat[k] == '}')
+                    throw ParseError("Unsupported use of {N,M} as general quantifier. In Raku please use: ** N..M "
+                                     "(or ** N..* if there is no maximum).", line, "X::Obsolete",
+                                     {{"old", "{N,M} as general quantifier"}, {"replacement", "** N..M (or ** N..* if there is no maximum)"}});
+            }
+        }
+        if (c == '{') {
+            int d = 0;
+            for (; i < pat.size(); i++) {
+                if (pat[i] == '{') d++;
+                else if (pat[i] == '}' && --d == 0) break;
+                else if (pat[i] == '$' && i + 2 < pat.size() && pat[i + 1] == '!' &&
+                         ascii::isalpha((unsigned char)pat[i + 2]))
+                    attrInRegex(i);
+            }
+            atomStart = groupStart = afterBranch = false;
+            lastKind = LkNonQuant;
+            continue;
+        }
+        if (c == '|' || c == '&') {
+            bool dbl = i + 1 < pat.size() && pat[i + 1] == c;
+            // `||` binds loosest, then `&&`, `|`, `&`: a TIGHTER operator right
+            // after a looser one leads its branch (`/a |& b/`), anything else
+            // leaves an empty branch between them (`/a &| b/`)
+            int prec = c == '|' ? (dbl ? 0 : 2) : (dbl ? 1 : 3);
+            if (afterBranch && prec <= branchPrec)
+                throw ParseError("Null regex not allowed", line, "X::Syntax::Regex::NullRegex", {});
+            if (dbl) i++;
+            afterBranch = !groupStart || afterBranch;
+            if (afterBranch) branchPrec = prec;
+            groupStart = false;
+            atomStart = true;
+            continue;
+        }
+        // `<&foo('a')>` / `<at(0)>` / `<foo: 'x)'>` — call arguments are code,
+        // not regex: skip them whole
+        if (c == '<' && i + 1 < pat.size()) {
+            size_t j = i + 1;
+            if (std::strchr("&.?!:", pat[j])) j++;
+            if (j < pat.size() && (pat[j] == '.' || pat[j] == '!' || pat[j] == '+' || pat[j] == '-')) j++;
+            size_t n0 = j;
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-' ||
+                                      (pat[j] == ':' && j + 1 < pat.size() && pat[j + 1] == ':')))
+                j += pat[j] == ':' ? 2 : 1;
+            const bool symbolic = pat.compare(i + 1, 3, "::(") == 0; // `<::($name)>`
+            if (symbolic) j = i + 3;
+            if ((j > n0 || symbolic) && j < pat.size() && !(j > 0 && pat[j - 1] == ':' && !symbolic) && (pat[j] == '(' || (pat[j] == ':' && j + 1 < pat.size() && std::strchr(" \t\n", pat[j + 1])))) {
+                const char closer = pat[j] == '(' ? ')' : '>';
+                int d = 0; char qq = 0;
+                for (; j < pat.size(); j++) {
+                    char cj = pat[j];
+                    if (qq) { if (cj == '\\') j++; else if (cj == qq) qq = 0; continue; }
+                    if (cj == '\'' || cj == '"') { qq = cj; continue; }
+                    if (cj == '\\') { j++; continue; }
+                    if (closer == ')') {
+                        if (cj == '(') d++;
+                        else if (cj == ')' && --d == 0) break;
+                    }
+                    else if (cj == '>') break;
+                }
+                if (j < pat.size()) {
+                    i = closer == ')' ? j : j - 1;
+                    atomStart = groupStart = afterBranch = false;
+                    lastKind = LkAtom;
+                    continue;
+                }
+            }
+        }
+        // `<(` / `)>` are capture markers, not groups — either may stand alone
+        if (c == '<' && i + 1 < pat.size() && pat[i + 1] == '(') { i++; continue; }
+        if (c == ')' && i + 1 < pat.size() && pat[i + 1] == '>') { i++; continue; }
+        if (c == '[' || c == '(') { atomStart = groupStart = true; afterBranch = false; grpDepth++; continue; }
+        if (c == ']' || c == ')') grpDepth--;
+        // a bare `;` means nothing in a regex (only a `:my …;` declaration ends with one)
+        if (c == ';')
+            throw ParseError("Unrecognized regex metacharacter ; (must be quoted to match literally)", line,
+                             "X::Syntax::Regex::UnrecognizedMetachar", {{"metachar", ";"}});
+        if (c == ':' && i + 1 < pat.size() && ascii::isalpha((unsigned char)pat[i + 1])) {
+            // `:my $x = …;` and kin: code up to its `;`
+            static const char* kDecl[] = {"my ", "our ", "constant ", "state ", "temp ", "let "};
+            for (const char* d : kDecl)
+                if (pat.compare(i + 1, std::strlen(d), d) == 0) {
+                    int bd = 0; size_t j = i + 1; char qq = 0;
+                    for (; j < pat.size(); j++) {
+                        char cj = pat[j];
+                        if (qq) { if (cj == '\\') j++; else if (cj == qq) qq = 0; continue; }
+                        if (cj == '\'' || cj == '"') { qq = cj; continue; }
+                        if (cj == '{') bd++;
+                        else if (cj == '}') {
+                            // `:my token t { … }` ends at a `}` that closes its line
+                            if (--bd == 0) {
+                                size_t k = j + 1;
+                                while (k < pat.size() && (pat[k] == ' ' || pat[k] == '\t')) k++;
+                                if (k >= pat.size() || pat[k] == '\n') break;
+                            }
+                        }
+                        else if (cj == ';' && bd == 0) break;
+                    }
+                    i = j;
+                    break;
+                }
+            if (i >= pat.size()) break;
+            if (pat[i] == ';' || pat[i] == '}') continue;
+        }
+        if ((c == ']' || c == ')') && afterBranch)
+            throw ParseError("Null regex not allowed", line, "X::Syntax::Regex::NullRegex", {});
+        if ((c == '*' || c == '+' || c == '?') && atomStart)
+            throw ParseError("Quantifier quantifies nothing", line,
+                             "X::Syntax::Regex::SolitaryQuantifier", {});
+        if (c == '*' || c == '+' || c == '?') {
+            if (lastKind == LkNonQuant) nonQuantifiable();
+            // `a+ +`: a second quantifier, across a blank, quantifies nothing
+            // (`a+?` is the frugal modifier and stays legal)
+            if (lastKind == LkQuant && i > 0 && std::strchr(" \t\n", pat[i - 1]))
+                throw ParseError("Quantifier quantifies nothing", line,
+                                 "X::Syntax::Regex::SolitaryQuantifier", {});
+            atomStart = groupStart = afterBranch = false;
+            lastKind = LkQuant;
+            if (c == '*' && i + 1 < pat.size() && pat[i + 1] == '*') { /* `**` — handled below */ }
+            else continue;
+        }
+        // a lone `:` with nothing before it controls no backtracking
+        if (c == ':' && atomStart && (i + 1 >= pat.size() || !(ascii::isalpha((unsigned char)pat[i + 1]) ||
+                                                               ascii::isdigit((unsigned char)pat[i + 1]) ||
+                                                               pat[i + 1] == '!' || pat[i + 1] == ':')))
+            throw ParseError("Backtrack control ':' does not seem to have a preceding atom to control", line,
+                             "X::Syntax::Regex::SolitaryBacktrackControl", {});
+        // anchors match a position, not something to repeat
+        if (c == '^' || (c == '$' && (i + 1 >= pat.size() || pat[i + 1] == '$' ||
+                                      std::strchr(" \t\n)]|&/", pat[i + 1])))) {
+            if (i + 1 < pat.size() && pat[i + 1] == c) i++;   // `^^` / `$$`
+            atomStart = groupStart = afterBranch = false;
+            lastKind = LkNonQuant;
+            continue;
+        }
+        if (c == '<' && i + 2 < pat.size() && (pat[i + 1] == '?' || pat[i + 1] == '!') && pat[i + 2] == '{') {
+            // `<?{ … }>` / `<!{ … }>` — a code assertion: zero-width
+            int d = 0; size_t j = i + 2;
+            for (; j < pat.size(); j++) { if (pat[j] == '{') d++; else if (pat[j] == '}' && --d == 0) break; }
+            if (j + 1 < pat.size() && pat[j + 1] == '>') {
+                i = j + 1;
+                atomStart = groupStart = afterBranch = false;
+                lastKind = LkNonQuant;
+                continue;
+            }
+        }
+        if (!(c == '*' && i + 1 < pat.size() && pat[i + 1] == '*')) lastKind = LkAtom;
+        atomStart = groupStart = afterBranch = false;
+        if (c == '$' && i + 2 < pat.size() && pat[i + 1] == '!' && ascii::isalpha((unsigned char)pat[i + 2]))
+            attrInRegex(i);
+        // `/%h/` — a hash variable in a pattern is reserved. Not the alias
+        // `%h=( … )`, and not a `%` separator after a quantifier.
+        if (c == '%' && i + 1 < pat.size() && ascii::isalpha((unsigned char)pat[i + 1])) {
+            size_t j = i + 1;
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
+            while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
+            size_t b = i;
+            while (b > 0 && (pat[b - 1] == ' ' || pat[b - 1] == '\t' || pat[b - 1] == '\n')) b--;
+            char prev = b > 0 ? pat[b - 1] : 0;
+            bool sepCtx = prev == '*' || prev == '+' || prev == '?' || prev == '}' || prev == '%' ||
+                          prev == '<' ||   // `<%h>` — the keys as subrules, not reserved
+                          ascii::isdigit((unsigned char)prev);
+            // Rakudo refuses this while compiling; here the literal refuses
+            // when it is EVALUATED, so a file of old-spec hash-interpolation
+            // tests loses the tests that use it rather than all of them
+            if (!(j < pat.size() && pat[j] == '=') && !sepCtx) g_rxReservedHash = true;
+        }
+        if (c == '<') {   // `<IO::File=bar>` — an alias must be a short name
+            size_t j = i + 1;
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                                      pat[j] == '-' || pat[j] == ':')) {
+                j++;
+                if (j < pat.size() && pat[j] == '(' && pat[j - 1] == ':') {
+                    int d = 0;
+                    for (; j < pat.size(); j++) { if (pat[j] == '(') d++; else if (pat[j] == ')' && --d == 0) { j++; break; } }
+                }
+            }
+            if (j < pat.size() && pat[j] == '=' && pat.substr(i + 1, j - i - 1).find("::") != std::string::npos)
+                throw ParseError("Can only alias to a short name (without '::')", line,
+                                 "X::Syntax::Regex::Alias::LongName", {});
+        }
         if (c == '\'' || c == '"') { q = c; continue; }
-        if (c == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || ((pat[i + 1] == '-' || pat[i + 1] == '+') && i + 2 < pat.size() && pat[i + 2] == '['))) { cls = 1; continue; }
+        if (c == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || ((pat[i + 1] == '-' || pat[i + 1] == '+' || pat[i + 1] == '!' || pat[i + 1] == '?') && i + 2 < pat.size() && pat[i + 2] == '['))) { cls = 1; continue; }
         if (c == '#') { size_t nl = pat.find('\n', i); if (nl == std::string::npos) break; i = nl; continue; }
         if (c == '\\' && i + 1 < pat.size()) {
             if (pat[i + 1] == ' ')
@@ -10188,11 +10946,18 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                                  "please enclose in single quotes (' ') or use a backslashed form like \\x20",
                                  line, "X::Syntax::Regex::Unspace",
                                  {{"char", " "}, {"pre", "/" + pat.substr(0, i + 2)}, {"post", pat.substr(i + 2) + "/"}});
+            if (pat[i + 1] == 'b' || pat[i + 1] == 'B') {
+                const std::string old = std::string("\\") + pat[i + 1];
+                const std::string repl = pat[i + 1] == 'b' ? "«, », or <|w>" : "<!|w>";
+                throw ParseError("Unsupported use of " + old + "; in Raku please use " + repl, line,
+                                 "X::Obsolete", {{"old", old}, {"replacement", repl}});
+            }
             i++;
             continue;
         }
         if (c == '*' && i + 1 < pat.size() && pat[i + 1] == '*') {
             size_t j = i + 2;
+            if (j < pat.size() && (pat[j] == '?' || pat[j] == '!' || pat[j] == ':')) j++; // frugal/greedy/ratchet
             while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
             size_t d0 = j;
             while (j < pat.size() && ascii::isdigit((unsigned char)pat[j])) j++;
@@ -10220,9 +10985,25 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                 throw ParseError("Malformed Range. If attempting to use variables for end points, "
                                  "wrap the entire range in curly braces.", line, "X::Syntax::Regex::MalformedRange",
                                  {{"pre", "/" + pat.substr(0, j + 2)}, {"post", pat.substr(j + 2) + "/"}});
+            // `x ** 2..1` — an empty literal range
+            if (k == sp2s && k < pat.size() && ascii::isdigit((unsigned char)pat[k])) {
+                size_t e = k;
+                while (e < pat.size() && ascii::isdigit((unsigned char)pat[e])) e++;
+                if (sp - d0 < 18 && e - k < 18) {
+                    long long lo = std::stoll(pat.substr(d0, sp - d0)), hi = std::stoll(pat.substr(k, e - k));
+                    if (pat[j + 2] == '^') hi--;
+                    if (lo > hi)
+                        throw ParseError("Range of quantifier cannot be empty", line,
+                                         "X::Syntax::Regex::QuantifierValue",
+                                         {{"empty-range", "True"}});
+                }
+            }
             i++;
         }
     }
+    if (grpDepth > 0)
+        throw ParseError("Unable to parse regex; couldn't find final ')'", line, "X::Comp::Group",
+                         {{"panic", "X::Comp::AdHoc"}, {"panic-msg", "Unable to parse regex; couldn't find final ')'"}});
 }
 
 void Parser::checkVirtualCallInDefault(size_t defStart) {
@@ -10425,8 +11206,29 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         // namespace (qualified symbols). The file-scoped `unit module Foo;` form
         // declares the package but its body is the rest of the file, which runs in
         // the enclosing (global) scope so `is export` symbols stay bare-visible.
-        while (isIdent("is") || isIdent("does")) { advance(); if (isKind(Tok::Ident)||isKind(Tok::Var)) advance(); }
+        while (isIdent("is") || isIdent("does")) {
+            const bool isIs = cur().text == "is";
+            advance();
+            if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+                // `module M is NoSuchType {}` names a parent the interpreter
+                // then refuses (X::Inheritance::UnknownParent / ::Unsupported)
+                if (isIs && isKind(Tok::Ident) && cd->parent.empty() &&
+                    cur().text != "export" && cur().text != "rw" && cur().text != "DEPRECATED")
+                    cd->parent = cur().text;
+                advance();
+            }
+        }
+        // `package Foo;` without `unit` is not Raku (see the class path)
+        if (!isKind(Tok::LBrace) && !isUnit && !unitDecl_ && isKind(Tok::Semicolon) && !kindKw.empty()) {
+            if (classDepth_ > 1)
+                throw ParseError("Too late for semicolon form of " + kindKw + " definition", cur().line,
+                                 "X::UnitScope::TooLate", {{"what", kindKw}});
+            throw ParseError("Semicolon form of '" + kindKw + "' without 'unit' is illegal. "
+                             "You probably want to use 'unit " + kindKw + "'", cur().line,
+                             "X::UnitScope::Invalid", {{"what", kindKw}});
+        }
         if (!isKind(Tok::LBrace)) {           // `module Foo;` file-scoped (unit) form
+            if (!cd->name.empty() && (isUnit || unitDecl_)) pkgStack_.push_back({cd->name, cd->isModuleDecl});
             while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance();
             matchKind(Tok::Semicolon);
             return cd; // empty body => interpreter just registers the name
@@ -10435,6 +11237,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         cd->bracedBody = true;   // …even when nothing is between the braces
         exportPkgStack_.push_back(cd->name);   // whose EXPORT an `is export` inside lands in
         struct PopPkg { std::vector<std::string>& s; ~PopPkg() { s.pop_back(); } } popPkg{exportPkgStack_};
+        sawPkgDecl_ = true;
+        pkgStack_.push_back({(pkgStack_.empty() || cd->name.empty() ? std::string() : pkgStack_.back().first + "::") + cd->name,
+                             cd->isModuleDecl});
+        struct PopPkg2 { std::vector<std::pair<std::string, bool>>& s; ~PopPkg2() { s.pop_back(); } } popPkg2{pkgStack_};
         while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
             if (isIdent("has") &&
@@ -10568,6 +11374,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
     }
     bool braced = isKind(Tok::LBrace);
+    // `package Foo;` without `unit` is not Raku: inside another package it is
+    // too late for the semicolon form, and at the top it is a Perl-5 habit
+    if (!braced && !isUnit && !unitDecl_ && isKind(Tok::Semicolon) && !kindKw.empty()) {
+        if (classDepth_ > 1)
+            throw ParseError("Too late for semicolon form of " + kindKw + " definition", cur().line,
+                             "X::UnitScope::TooLate", {{"what", kindKw}});
+        throw ParseError("Semicolon form of '" + kindKw + "' without 'unit' is illegal. "
+                         "You probably want to use 'unit " + kindKw + "'", cur().line,
+                         "X::UnitScope::Invalid", {{"what", kindKw}});
+    }
     if (!braced && !isUnit) { // forward declaration `class Foo;`
         while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance();
         return cd;
@@ -10577,8 +11393,30 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     else matchKind(Tok::Semicolon); // unit form
     typeStack_.push_back(cd->name); // enclosing type for ::?CLASS in the body
     typeIsRole_.push_back(cd->isRole);
+    pkgStack_.push_back({cd->name, false});
+    if (braced) sawPkgDecl_ = true;
+    struct PopPkg3 { std::vector<std::pair<std::string, bool>>& s; bool braced; ~PopPkg3() { if (braced) s.pop_back(); } } popPkg3{pkgStack_, braced};
     while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
+        // a ROLE body is a generic scope: nothing in it can be `our`-scoped,
+        // and a package-like declaration defaults to `our`
+        if (cd->isRole && isKind(Tok::Ident)) {
+            static const std::set<std::string> kOurByDefault = {
+                "class", "role", "grammar", "subset", "enum", "constant", "module", "package"};
+            std::string what;
+            if (kOurByDefault.count(cur().text) &&
+                (peek().kind == Tok::Ident || peek().kind == Tok::LBrace || peek().kind == Tok::Var))
+                what = cur().text;
+            else if (cur().text == "our") {
+                if (peek().kind == Tok::Var) what = "variable";
+                else if (peek().kind == Tok::Ident) what = peek().text == "multi" || peek().text == "proto" ? "sub" : peek().text;
+            }
+            if (!what.empty())
+                throw ParseError("Cannot declare our-scoped " + what + " inside of a role\n"
+                                 "(the scope inside of a role is generic, so there is no unambiguous\n"
+                                 "package to install the symbol in)", cur().line,
+                                 "X::Declaration::OurScopeInRole", {{"declaration", what}});
+        }
         // `also is Parent` / `also does Role` inside the body — same effect as the
         // header trait, added after the opening brace.
         if (isIdent("also") && (peek().text == "is" || peek().text == "does")) {
@@ -10618,6 +11456,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
             std::string attrType;
             int attrSmiley = 0; // :D=1, :U=2 (:_ / none = 0)
+            bool attrSmileyExplicit = false;
             // `has ::?CLASS $.attr` — the enclosing class as the attribute's type
             if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" && peek(2).kind == Tok::Ident) {
                 advance(); advance(); advance(); // :: ? CLASS
@@ -10632,6 +11471,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 if (isOp(":") && (peek().kind == Tok::Ident)) { // :D / :U / :_ smiley
                     advance(); std::string sm = advance().text;
                     if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;
+                    attrSmileyExplicit = true;
                 }
                 if (isKind(Tok::LBracket)) {
                     // the [T] group is part of the TYPE, exactly as in `my`
@@ -10649,6 +11489,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     } while (d > 0 && !isKind(Tok::End));
                     attrType += ptxt;
                 }
+            }
+            // `use attributes :D` supplies the smiley a typed attribute did not write
+            bool attrSmileyByPragma = false;
+            if (!attrSmileyExplicit && attrSmiley == 0 && attrsPragma_ && !attrType.empty() &&
+                attrsPragma_ != '_') {
+                attrSmiley = attrsPragma_ == 'D' ? 1 : 2;
+                attrSmileyByPragma = true;
             }
             // coercion-type attribute: `has IO::Path() $.filename` / `has Int(Cool) $.n`.
             // The declared type is the coercion TARGET; an assigned value is coerced
@@ -10960,6 +11807,17 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                        cur().text == "role" || cur().text == "grammar" ||
                        cur().text == "token" || cur().text == "rule" || cur().text == "regex")))
                     skipToStatementEnd();
+                // `has Int:D $.a` with nothing to hold: Rakudo refuses it at compile time
+                if (a.defConstraint == 1 && a.sigil == '$' && !a.def && !a.defaultTrait && !a.required &&
+                    !a.type.empty()) {
+                    const std::string ty = a.type + ":D";
+                    std::vector<std::pair<std::string, std::string>> at = {{"type", ty}};
+                    if (attrSmileyByPragma) at.push_back({"implicit", ":D by pragma"});
+                    throw ParseError("Variable definition of type " + ty +
+                                     (attrSmileyByPragma ? " (implicit :D by pragma)" : "") +
+                                     " requires an initializer", cur().line,
+                                     "X::Syntax::Variable::MissingInitializer", at);
+                }
                 attrPod(a);
                 cd->attrs.push_back(std::move(a));
             } else {
@@ -11285,7 +12143,8 @@ StmtPtr Parser::parseWhile(bool isUntil) {
 // already fixed here once, one trait at a time; this asks the question once.
 static bool pointyParamNeedsBinding(const Param& p) {
     return p.subSig || p.isCopy || p.coerce || !p.type.empty() ||
-           p.defConstraint != 0 || p.whereExpr || p.hadWhere;
+           p.defConstraint != 0 || p.whereExpr || p.hadWhere ||
+           p.defaultVal || p.optional;   // a short last chunk binds these
 }
 
 StmtPtr Parser::parseFor() {
@@ -11310,6 +12169,14 @@ StmtPtr Parser::parseFor() {
     }
     auto s = std::make_unique<ForStmt>();
     { bool sv = stmtCond_; stmtCond_ = true; s->list = parseExpression(); stmtCond_ = sv; }
+    // `for (1..3)->$n`: an arrow glued to the term is Perl's method arrow
+    if (isOp("->") && !cur().spaceBefore && pos_ > 0 && termEndsHere(toks_[pos_ - 1]))
+        throw ParseError("Unsupported use of -> as postfix. In Raku please use: "
+                         "either . to call a method, or whitespace to delimit a pointy block.",
+                         cur().line, "X::Obsolete",
+                         {{"old", "-> as postfix"},
+                          {"replacement", "either . to call a method, or whitespace "
+                                          "to delimit a pointy block"}});
     bool doubly = isOp("<->");
     if (matchOp("->") || matchOp("<->")) {
         if (doubly) s->rwVars = true; // `<->`: params alias the source elements
@@ -12091,11 +12958,12 @@ StmtPtr Parser::parseStatementImpl() {
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
             // `use variables :D` / `:U` / `:_` — the default type smiley for
             // typed declarations in the rest of the enclosing block
-            if (u->module == "variables") {
+            if (u->module == "variables" || u->module == "attributes") {
+                const std::string prag = u->module;
                 const int ln = cur().line;
                 if (u->isNo)
-                    throw ParseError("Cannot use 'no' with pragma 'variables'", ln,
-                                     "X::Pragma::CannotWhat", {{"what", "no"}, {"name", "variables"}});
+                    throw ParseError("Cannot use 'no' with pragma '" + prag + "'", ln,
+                                     "X::Pragma::CannotWhat", {{"what", "no"}, {"name", prag}});
                 std::vector<std::string> smileys;
                 while (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace)) {
                     if (isOp(":") && peek().kind == Tok::Ident) {
@@ -12107,17 +12975,18 @@ StmtPtr Parser::parseStatementImpl() {
                         smileys.push_back(sm);
                     }
                     else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident))
-                        throw ParseError("Don't know how to handle '" + cur().text + "' with pragma 'variables'", ln,
-                                         "X::Pragma::UnknownArg", {{"name", "variables"}, {"arg", cur().text}});
+                        throw ParseError("Don't know how to handle '" + cur().text + "' with pragma '" + prag + "'", ln,
+                                         "X::Pragma::UnknownArg", {{"name", prag}, {"arg", cur().text}});
                     else advance();
                 }
                 if (smileys.empty())
-                    throw ParseError("'variables' pragma expects one parameter out of :D, :U, :_", ln,
-                                     "X::Pragma::MustOneOf", {{"name", "variables"}});
+                    throw ParseError("'" + prag + "' pragma expects one parameter out of :D, :U, :_", ln,
+                                     "X::Pragma::MustOneOf", {{"name", prag}});
                 if (smileys.size() > 1)
-                    throw ParseError("The 'variables' pragma takes only one argument", ln,
-                                     "X::Pragma::OnlyOne", {{"name", "variables"}});
-                varsPragma_ = smileys[0][0];
+                    throw ParseError("The '" + prag + "' pragma takes only one argument", ln,
+                                     "X::Pragma::OnlyOne", {{"name", prag}});
+                if (prag == "attributes") attrsPragma_ = smileys[0][0];
+                else varsPragma_ = smileys[0][0];
                 matchKind(Tok::Semicolon);
                 return u;
             }
@@ -12310,6 +13179,11 @@ StmtPtr Parser::parseStatementImpl() {
                 throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             advance();
             StmtPtr d = parseSub(false);
+            if (d && d->kind == NK::SubDecl && !static_cast<SubDecl*>(d.get())->isMethod)
+                for (auto& ip : static_cast<SubDecl*>(d.get())->params)
+                    if (ip.invocant)
+                        throw ParseError("Cannot use an invocant in a sub", cur().line,
+                                         "X::Syntax::Signature::InvocantNotAllowed", {});
             // A routine declaration is a TERM in Raku, so a comma strings several
             // into one statement — PDF::Content::PageTree declares the FETCH and
             // STORE of a Proxy as `sub FETCH($) {…}, sub STORE($, $_) {…}`. The
@@ -12318,6 +13192,14 @@ StmtPtr Parser::parseStatementImpl() {
             while (isKind(Tok::Comma) && peek().kind == Tok::Ident && peek().text == "sub") {
                 advance(); advance(); // the comma and `sub`
                 pendingStmts_.push_back(parseSub(false));
+            }
+            // `sub a() { } given 3` — a statement modifier on a declaration
+            // governs nothing: the routine is declared either way
+            if ((isIdent("given") || isIdent("if") || isIdent("unless") || isIdent("with") ||
+                 isIdent("without")) && pos_ > 0 && toks_[pos_ - 1].line == cur().line &&
+                toks_[pos_ - 1].kind == Tok::RBrace) {
+                advance();
+                (void)parseExpression();
             }
             return d;
         }
@@ -12376,6 +13258,26 @@ StmtPtr Parser::parseStatementImpl() {
             throw ParseError("Unsupported use of 'foreach'; in Raku please use 'for'",
                              t.line, "X::Obsolete",
                              {{"old", "'foreach'"}, {"replacement", "'for'"}});
+        // `for(0..5) { }` too: the glued paren group is a call, and the block
+        // after it is then a term in infix position
+        auto gluedParenThenBlock = [&]() {
+            if (!(peek().kind == Tok::LParen && !peek().spaceBefore)) return false;
+            int d = 0;
+            for (size_t j = pos_ + 1; j < toks_.size(); j++) {
+                if (toks_[j].kind == Tok::LParen) d++;
+                else if (toks_[j].kind == Tok::RParen && --d == 0)
+                    return j + 1 < toks_.size() && toks_[j + 1].kind == Tok::LBrace;
+                else if (toks_[j].kind == Tok::End) return false;
+            }
+            return false;
+        };
+        if ((kw == "if" || kw == "unless" || kw == "with" || kw == "without" ||
+             kw == "while" || kw == "until" || kw == "for") && gluedParenThenBlock())
+            throw ParseError("Word '" + kw + "' interpreted as '" + kw +
+                             "()' function call; please use whitespace instead of parens\n"
+                             "Unexpected block in infix position (two terms in a row)",
+                             t.line, "X::Comp::Group",
+                             {{"sorrow", "X::Syntax::KeywordAsFunction"}});
         if ((kw == "if" || kw == "unless" || kw == "with" || kw == "without" ||
              kw == "while" || kw == "until") &&
             peek().kind == Tok::LParen && !peek().spaceBefore &&
@@ -12445,6 +13347,11 @@ StmtPtr Parser::parseStatementImpl() {
                 else if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
             g->body = parseBlock();
+            // `without` stands alone: an else-branch after it is refused
+            if (kw == "without" && (isIdent("else") || isIdent("elsif") || isIdent("orwith") ||
+                                    isIdent("orwithout")))
+                throw ParseError("\"without\" does not take \"" + cur().text + "\", please rewrite using \"with\"",
+                                 cur().line, "X::Syntax::WithoutElse", {{"what", cur().text}, {"keyword", cur().text}});
             // orwith/orwithout chain:  with A {} orwith B {}  ==  with A {} else { with B {} }
             if (g->defGuard && (isIdent("orwith") || isIdent("orwithout"))) {
                 auto blk = std::make_unique<Block>();
@@ -12461,6 +13368,7 @@ StmtPtr Parser::parseStatementImpl() {
                 auto blk = std::make_unique<Block>();
                 blk->stmts.push_back(parseIf(false));
                 g->hasElse = true; g->elseBody = std::move(blk);
+                g->elseOuterTopic = true;   // the if-chain's branches see the outer $_
                 return g;
             }
             g->hasElse = (g->defGuard && isIdent("else"));
@@ -12506,6 +13414,9 @@ StmtPtr Parser::parseStatementImpl() {
                     r->isUntil = (cur().text == "until"); advance();
                     r->cond = parseExpression();
                 }
+                else
+                    throw ParseError("Missing \"while\" or \"until\"", cur().line, "X::Syntax::Missing",
+                                     {{"what", "\"while\" or \"until\""}});
             }
             return r;
         }
@@ -12696,6 +13607,11 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
         }
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
+            // two protos for one name in one scope
+            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 4))
+                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
+                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if (sd->isProto && !sd->name.empty() && !sd->isMethod) subs[sd->name] |= 4;
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;
             // `sub f {...}` (bare yada body) is a redeclarable forward stub
             if (sd->body.size() == 1 && sd->body[0]->kind == NK::ExprStmt) {
@@ -12712,7 +13628,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                 throw ParseError("Redeclaration of routine '" + sd->name +
                                  "'. Did you mean to declare a multi-sub?", sd->line,
                                  "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
-            if ((f && bit == 1) || ((f & 1) && bit == 2))
+            if (((f & 3) && bit == 1) || ((f & 1) && bit == 2))
                 throw ParseError("Redeclaration of routine '" + sd->name + "' (multi/only mix)", sd->line,
                                  "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
             f |= bit;
@@ -12866,6 +13782,12 @@ void Parser::enforceStmtSep() {
                              "X::Syntax::Missing", {{"what", "infix inside []"}});
         throw ParseError("Two terms in a row (missing semicolon?)", cur().line);
     }
+    // …and across lines: only a closing `}` may end a statement at a newline
+    // (`42 if 23\nis 50` is two terms in a row)
+    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line != pv.line &&
+        startsTermToken(cur()))
+        throw ParseError("Two terms in a row across lines (missing semicolon or comma?)", cur().line,
+                         "X::Syntax::Confused", {{"reason", "Two terms in a row across lines (missing semicolon or comma?)"}});
 }
 
 

@@ -18,10 +18,13 @@ sub throws(&code) { my $t = False; { code(); CATCH { default { $t = True } } }; 
 # :U wants undefined — a defined default must throw
 @fail.push('U-bad-default') unless throws { (class { has Int:U $.a = 42 }).new };
 
-# a bad construction ARG is caught too
-@fail.push('D-bad-arg') unless throws { (class { has Int:D $.a }).new(a => Int) };
+# a bad construction ARG is caught too (a defaultless :D attribute has to be
+# `is required` — without an initializer it is a compile-time error, as in Rakudo)
+@fail.push('D-bad-arg') unless throws { (class { has Int:D $.a is required }).new(a => Int) };
 # a good arg satisfies a defaultless :D
-@fail.push('D-good-arg') unless (class { has Int:D $.a }).new(a => 7).a == 7;
+@fail.push('D-good-arg') unless (class { has Int:D $.a is required }).new(a => 7).a == 7;
+# …and the defaultless, non-required :D is refused when the class is compiled
+@fail.push('D-no-init') unless throws { EVAL 'class { has Int:D $.a }' };
 
 # no smiley = no constraint (unchanged behaviour)
 @fail.push('plain') unless (class { has Int $.a = 5 }).new.a == 5;

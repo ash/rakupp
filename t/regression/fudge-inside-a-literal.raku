@@ -62,7 +62,9 @@ sub tap(@body) {
     my $out = $p.out.slurp(:close);
     $p.err.slurp(:close);
     $f.unlink;
-    $out.lines.List
+    # (TAP comments — a TODO failure's "# Failed test" diagnostics, which go
+    # to stdout as Rakudo's Test sends them — are not what is compared here)
+    $out.lines.grep({ !.starts-with('#') }).List
 }
 
 ck tap(['use Test;', 'plan 3;', 'ok 1, "first";',

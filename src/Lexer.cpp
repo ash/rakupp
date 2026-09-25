@@ -1768,6 +1768,15 @@ bool Lexer::tryQuoteForm(Token& out) {
         shortAdv = ":to ";
         w = w.substr(0, w.size() - 2);
     }
+    // y/// is Perl's; Raku refuses it at compile time with X::Obsolete
+    if (w == "y" && p < src_.size() && src_[p] == '/' &&
+        !(pos_ > 0 && (ascii::isalnum((unsigned char)src_[pos_ - 1]) || std::strchr(".$@%&-_'", src_[pos_ - 1])))) {
+        size_t a = src_.find('/', p + 1), b = a == std::string::npos ? a : src_.find('/', a + 1);
+        size_t nl = src_.find('\n', p);
+        if (b != std::string::npos && (nl == std::string::npos || b < nl))
+            throw ParseError("Unsupported use of y///. In Raku please use: tr///.",
+                             line_, "X::Obsolete", {{"old", "y///"}, {"replacement", "tr///"}});
+    }
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
     // A sigilless TERM of this name is declared above — `my \m`, a `\m`
     // parameter, `constant m`. The NAME wins over the quote construct, which is
@@ -2063,6 +2072,23 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         return true;
     }
+    // A BARE lower-case `m`/`rx`/`s` takes any of the other documented
+    // delimiters too — `m^b^`, `s$a$b$`, `m;b;` (S05-metasyntax/delimiters.t)
+    // — when it sits tight against the keyword and its closer (twice more for
+    // `s`) is on the same line. The adverbed forms above take them already;
+    // `S`/`TR` stay conservative, where `S%pat%` and `S % $x` are one lexer
+    // decision apart. A `=` that starts `=>` is a pair, never a delimiter.
+    auto bareRxDelim = [&](char dc) -> bool {
+        if (!((isRegex && w != "mm") || w == "s" || w == "ss")) return false;
+        if (!std::strchr("^$%@&=?*+;.,\"`", dc) || dc == '\0') return false;
+        if (dc == '=' && p + 1 < src_.size() && (src_[p + 1] == '>' || src_[p + 1] == '=')) return false;
+        size_t need = isSubst ? 2 : 1, q = p + 1;
+        for (; q < src_.size() && src_[q] != '\n' && need; q++) {
+            if (src_[q] == '\\') { q++; continue; }
+            if (src_[q] == dc) need--;
+        }
+        return need == 0;
+    };
     char d = src_[p];
     char close;
     bool bracket = true;
@@ -2079,18 +2105,18 @@ bool Lexer::tryQuoteForm(Token& out) {
         // quote (quoteWordShadowedAt), which is where `$a ~ $b` lives.
         case '/': case '|': case '!': case '~': close = d; bracket = false; break;
         // qx`pwd` — the backtick is the shell form's natural delimiter
-        case '`': if (!isExec) return false; close = d; bracket = false; break;
+        case '`': if (!isExec && !bareRxDelim(d)) return false; close = d; bracket = false; break;
         case ',': // comma delimiter: bare `m,pat,` is documented Raku; bare
             // `s,`/`S,` stays a term/call — Rakudo disambiguates those via
             // declared-symbol lookup (`foo(S,S)` passes type args, roast
             // subsignature.t), which a one-pass lexer cannot do. With
             // adverbs (`s:s,foo,bar,`) the form is unambiguous.
-            if (!(isRegex || ((isSubst || isTrans) && !adverbs.empty()))) return false;
+            if (!(isRegex || ((isSubst || isTrans) && !adverbs.empty()) || bareRxDelim(d))) return false;
             close = d; bracket = false; break;
         // A NUL byte is a legal delimiter too: roast EVALs `(q\0foo bar\0)`.
         case '\0': if (isRegex || isSubst || isTrans) return false; close = d; bracket = false; break;
         case '\'': case '"': // q'…' / q:to'END' — quote or heredoc terminator in quotes
-            if (isSubst || isTrans) return false; // s'…' isn't a substitution delimiter here
+            if ((isSubst || isTrans) && !(d == '"' && bareRxDelim(d))) return false; // s'…' isn't a substitution delimiter here
             close = d; bracket = false; break;
         default:
             // ADVERBED regex/subst forms take ANY documented-legal delimiter:
@@ -2111,6 +2137,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 // subscript, and `ms>` inside it read as `m:s` delimited by `>`,
                 // swallowing Intl::LanguageTag's next 20 lines into a regex
                 d != '>' && d != ')' && d != ']' && d != '}') { close = d; bracket = false; break; }
+            if (bareRxDelim(d)) { close = d; bracket = false; break; }
             return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
@@ -2202,7 +2229,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // group's closer and the second quote opened a string to end of file.
             // (The other two scanners — the bare `/…/` one and tryRuleDecl —
             // already had this rule.)
-            if (quoteAware && !inClass && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
+            if (quoteAware && !inClass && (ch == '\'' || ch == '"') && ch != close) { q = ch; raw += advance(); continue; }
             if (quoteAware && !inClass && (unsigned char)ch >= 0x80 && skipUniQuote(raw)) continue;
             // a `#` comment runs to the end of the line: a delimiter inside it
             // is commentary, not the end of the pattern
@@ -2608,6 +2635,18 @@ Token Lexer::lexIdentOrVar() {
             if (!eof()) { advance(); advance(); } // »
             name += ":<" + op + ">";
         }
+        // `&infix:[EXPR]` — the operator named by an expression; the parser
+        // builds the lookup (see computedOpName)
+        else if (peek() == ':' && peek(1) == '[' && name.size() > 1 && name[0] == '&') {
+            name += advance(); // :
+            int d = 0;
+            while (!eof()) {
+                char c = peek();
+                if (c == '[') d++;
+                else if (c == ']' && --d == 0) { name += advance(); break; }
+                name += advance();
+            }
+        }
         // `&term:<•>` is the code variable a bare `•` calls: its name is `&•`
         if (name.compare(0, 7, "&term:<") == 0 && name.size() > 8 && name.back() == '>')
             name = "&" + name.substr(7, name.size() - 8);
@@ -2615,7 +2654,21 @@ Token Lexer::lexIdentOrVar() {
     }
     // version literal: v0.48  v6  v1.2.3+  v6.*  — parts are digits or '*'
     // separated by '.', optional trailing '+'; `.WHAT` etc. stays a method call
+    // …unless it is a sigilless NAME: `my \v1 = 42` declares one, and after
+    // that `v1` is the term (rakudo#3919)
+    bool sigillessV = false;
     if (peek() == 'v' && ascii::isdigit((unsigned char)peek(1))) {
+        size_t q = pos_ + 1;
+        while (q < src_.size() && (ascii::isalnum((unsigned char)src_[q]) || src_[q] == '_')) q++;
+        const std::string word = src_.substr(pos_, q - pos_);
+        size_t b = pos_;
+        while (b > 0 && (src_[b - 1] == ' ' || src_[b - 1] == '\t')) b--;
+        bool allDigits = true;
+        for (size_t k = 1; k < word.size(); k++) if (!ascii::isdigit((unsigned char)word[k])) allDigits = false;
+        sigillessV = allDigits && (q >= src_.size() || src_[q] != '.') &&
+                     ((b > 0 && src_[b - 1] == '\\') || isTermName(word));
+    }
+    if (peek() == 'v' && ascii::isdigit((unsigned char)peek(1)) && !sigillessV) {
         std::string ver;
         advance(); // v (not stored)
         for (;;) {
@@ -2677,6 +2730,29 @@ Token Lexer::lexIdentOrVar() {
     if ((name == "ff" || name == "fff") && peek() == '^') {
         name += advance();
         return make(Tok::Ident, name);
+    }
+    // `infix:['+']` — an operator name computed from an expression; it lexes
+    // as the code variable `&infix:[…]`, which the parser turns into the lookup
+    if ((name == "infix" || name == "prefix" || name == "postfix" || name == "circumfix" ||
+         name == "postcircumfix") && peek() == ':' && peek(1) == '[' &&
+        [&] {   // …but a DECLARATION names the operator: `multi sub infix:["plus"]`
+            size_t b = pos_ - name.size();
+            while (b > 0 && (src_[b - 1] == ' ' || src_[b - 1] == '\t')) b--;
+            size_t e = b;
+            while (b > 0 && ascii::isalpha((unsigned char)src_[b - 1])) b--;
+            const std::string w = src_.substr(b, e - b);
+            return w != "sub" && w != "multi" && w != "proto" && w != "only" &&
+                   w != "method" && w != "submethod" && w != "my" && w != "our";
+        }()) {
+        name = "&" + name + advance();   // :
+        int d = 0;
+        while (!eof()) {
+            char c = peek();
+            if (c == '[') d++;
+            else if (c == ']' && --d == 0) { name += advance(); break; }
+            name += advance();
+        }
+        return make(Tok::Var, name);
     }
     // word-operator compound assignment: `div= mod= gcd= lcm=` (one Op token, tight `=`)
     if ((name == "div" || name == "mod" || name == "gcd" || name == "lcm") &&

@@ -170,6 +170,7 @@ struct RegexLit : Expr {
     bool isRx = false; /* rx// : a Regex object, never an implicit match */
     bool isM = false;  /* m// : ALWAYS an immediate match against $_, even in value context (a bare /…/ there is the Regex object) */
     std::string declKind; /* "regex"/"token"/"rule" for an anonymous `regex {…}` term: a first-class Regex closing over its scope */
+    bool reservedHash = false; /* `/%h/` — X::Syntax::Reserved when the literal is evaluated */
     // interpreter cache of a CLOSED literal's final pattern (nothing to splice
     // or close over, obsolete-check passed): `if /\d/` in a hot loop otherwise
     // re-copies, re-scans for $/@ and re-probes a mutex-guarded memo map on
@@ -316,6 +317,7 @@ struct Assign : Expr {
 struct Binary : Expr {
     std::string op;
     ExprPtr lhs, rhs;
+    bool parenned = false; // written `( … )`: a junction chain does not continue through it
     // eval-dispatch cache: -1 unknown, 0 needs a special-cased handler, 1 is a
     // plain operator that goes straight to eval-both-operands + applyArith.
     // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
@@ -660,6 +662,7 @@ struct BlockExpr : Expr {
     std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)
     std::string podTrail;      // …its `#=` part alone
     int podLine = 0;
+    std::string phaser;        // `my $x = BEGIN { … }` — an expression-position BEGIN/CHECK/INIT
     BlockExpr(): Expr(NK::BlockExpr) {}
 };
 
@@ -1019,6 +1022,7 @@ struct GivenStmt : Stmt {
     bool hasElse = false;
     std::unique_ptr<Block> elseBody; // for `with X {} else {}`
     std::string elseVar; // `else -> $pos { }` binds the (undefined) topic
+    bool elseOuterTopic = false; // the else is an `elsif` chain: it sees the OUTER $_
     GivenStmt(): Stmt(NK::GivenStmt) {}
 };
 

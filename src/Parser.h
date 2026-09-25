@@ -207,6 +207,7 @@ private:
     } // `my @a does R` — roles mixed in at the declaration
     ExprPtr lastWillBlock_;
     std::vector<StmtPtr> pendingStmts_;
+    char attrsPragma_ = 0;        // `use attributes :D` / `:U` / `:_` in force (block-scoped)
     char varsPragma_ = 0;         // `use variables :D` / `:U` / `:_` in force (block-scoped)
     std::string lastOfType_;      // `of Type` met among a variable's traits
     bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
@@ -293,6 +294,8 @@ private:
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     bool unitDecl_ = false;     // true while dispatching a `unit …` declaration (allows a bodyless `unit sub foo;`)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
+    bool sawPkgDecl_ = false; // a braced package was declared: too late for `sub MAIN;`
+    std::vector<std::pair<std::string, bool>> pkgStack_; // enclosing packages (qualified name, is-module) for $?PACKAGE / $?MODULE
     std::set<std::string> completedPkgs_; // package names given a body ANYWHERE in this unit (a nested block counts): a file-scope stub is satisfied by one
     std::vector<bool> typeIsRole_;       // parallel: is that enclosing type a ROLE?
                                          // (::?CLASS in a role is GENERIC — resolved
@@ -411,6 +414,8 @@ private:
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
+    size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
+    ExprPtr computedOpName(const std::string& t); // `&infix:[EXPR]` / `&infix:<<$x>>` — a run-time operator name
     ExprPtr parseEmbeddedExpr(const std::string& src, bool ownScope = false); // parse a `{…}`/`$()` interpolation, inheriting user operators
     ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
     void qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val); // one «…»/qqww word

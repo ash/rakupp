@@ -492,6 +492,22 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
     for (auto& arg : args)
         if (arg.t == VT::Pair) {
             const ClassAttr* pat = ci->findAttr(arg.s);
+            // a class with its OWN BUILD initialises its attributes itself: the
+            // default constructor does not bind them from named args (Rakudo's
+            // BUILDPLAN), though their defaults still apply
+            if (pat) {
+                for (size_t ci2 = 0; ci2 < nChain; ci2++) {
+                    ClassInfo* oc = chainAt(ci2);
+                    bool owns = false;
+                    for (auto& a2 : oc->attrs) if (&a2 == pat) { owns = true; break; }
+                    if (!owns) continue;
+                    auto bm = oc->methods.find("BUILD");
+                    if (bm != oc->methods.end() && bm->second.t == VT::Code && bm->second.code() &&
+                        bm->second.code()->isSubmethod && !oc->roleSubmethods.count("BUILD"))
+                        pat = nullptr;
+                    break;
+                }
+            }
             if (pat && (pat->pub || pat->built)) {
                 const std::string& k = arg.s;
                 bool seen = false;
@@ -2040,9 +2056,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto rit = h.find(ATTR_ROLES_KEY);
             // newest first: a LATER mixin wins over an earlier one, as it
             // does in Rakudo (`$a does R[&x]` after `$a but R[&y]` answers &x)
-            if (rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
-                for (auto ri = rit->second.arr()->rbegin(); ri != rit->second.arr()->rend(); ++ri) {
-                    const Value& rn = *ri;
+            // …and a role another listed role COMPOSED is asked after that
+            // one: `$a does R2` where `role R2 does R1` lists both, and R2's
+            // own `u` overrides the one it got from R1 (JSON::Unmarshal's
+            // CustomUnmarshallerCode over the stub in CustomUnmarshaller)
+            std::vector<const Value*> order;
+            if (rit != h.end() && rit->second.t == VT::Array && rit->second.arr()) {
+                auto& lst = *rit->second.arr();
+                auto composedByOther = [&](const std::string& nm) {
+                    for (auto& other : lst) {
+                        if (other.s == nm) continue;
+                        auto oc = classes_.find(other.s);
+                        if (oc != classes_.end() && oc->second && oc->second->doneRoles.count(nm)) return true;
+                    }
+                    return false;
+                };
+                for (auto ri = lst.rbegin(); ri != lst.rend(); ++ri) if (!composedByOther(ri->s)) order.push_back(&*ri);
+                for (auto ri = lst.rbegin(); ri != lst.rend(); ++ri) if (composedByOther(ri->s)) order.push_back(&*ri);
+            }
+            if (!order.empty())
+                for (const Value* rnp : order) {
+                    const Value& rn = *rnp;
                     auto cit = classes_.find(rn.s);
                     if (cit == classes_.end() || !cit->second) continue;
                     // A public ATTRIBUTE of the role is served by the slot the
@@ -2068,6 +2102,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
         }
         if (m == "name") return h.count("name") ? h["name"] : Value::str("");
+        // `Int $!x` — the gist is the type and the name, the Str just the name
+        if (m == "gist" && args.empty()) {
+            std::string nm = h.count("name") ? h["name"].toStr() : std::string();
+            Value t = h.count("type") ? h["type"] : Value::typeObj("Mu");
+            return Value::str((t.t == VT::Type ? t.s.str() : t.typeName()) + " " + nm);
+        }
+        if (m == "Str" && args.empty()) return Value::str(h.count("name") ? h["name"].toStr() : std::string());
         if (m == "type" || m == "of" || m == "returns") return h.count("type") ? h["type"] : Value::typeObj("Mu");
         if (m == "package") return h.count("package") ? h["package"] : Value::any();
         // the JSON::Name / JSON::Unmarshal / JSON::Marshal attribute-role
@@ -2508,7 +2549,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value v = Value::str(ver); v.hashKind = "Version"; return v;
         }
         if (m == "signature") { // a Blob (S02-magicals/VM.t, DISTRO.t assert the type), empty: nothing signs this binary
-            Value b = Value::str(""); b.hashKind = "Blob"; return b;
+            return Value::typeObj("Blob");   // Rakudo: the Blob type object
         }
         // The PATH separator, which is ';' on Windows — Rakudo picks it the
         // same way, off the name.
@@ -2678,7 +2719,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Settling takes the promise's vow; once vowed (explicitly via .vow or
         // implicitly by a prior keep/break), only the Vow object may settle it.
         auto takeVow = [&]() {
-            if (inv.hashKind == "Vow") return;
+            if (inv.hashKind == "Vow") {
+                // a vow settles its promise ONCE
+                std::string st = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "";
+                if (st == "Kept" || st == "Broken") {
+                    Value pr = inv; pr.hashKind = "Promise";
+                    throwTypedV("X::Promise::Resolved", {{"promise", pr}},
+                                "Cannot keep/break a Promise more than once (status: " + st + ")");
+                }
+                return;
+            }
             bool vowed = inv.hash()->count("vowed");
             std::string st = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "";
             if (vowed || st == "Kept" || st == "Broken")
@@ -2705,6 +2755,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (xit != classes_.end()) {
                     Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
                     ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(c.toStr());
+                    ex.obj()->attrs["payload"] = c;   // `.payload` is the value itself
                     c = ex;
                 }
             }
@@ -2757,7 +2808,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `$p.status ~~ Broken` was then false against the bareword.
         if (m == "status") { Value sv; if (coreEnumValue(st, sv)) return sv; return Value::enumVal(st, 0); }
         if (m == "Bool" || m == "so") return Value::boolean(st != "Planned");
-        if (m == "cause") { if (ps && ps->broken) return ps->cause; auto it = inv.hash()->find("cause"); return it != inv.hash()->end() ? it->second : Value::nil(); }
+        if (m == "cause") {
+            if (ps && ps->broken) return ps->cause;
+            auto it = inv.hash()->find("cause");
+            if (it != inv.hash()->end()) return it->second;
+            // only a BROKEN promise has a cause (a combinator is asked below)
+            if (kind.empty()) {
+                std::string st = inv.hash()->count("status") ? (*inv.hash())["status"].toStr() : "Planned";
+                if (st != "Broken" && !(ps && ps->broken) && (!ps || ps->done || st == "Planned"))
+                    throwTypedV("X::Promise::CauseOnlyValidOnBroken",
+                                {{"promise", inv}, {"status", Value::str(ps && ps->done && !ps->broken ? "Kept" : st)}},
+                                "Can only call cause on a broken promise (status: " +
+                                (ps && ps->done && !ps->broken ? std::string("Kept") : st) + ")");
+            }
+            return Value::nil();
+        }
         if (m == "result") {
             if (kind == "anyof" || kind == "allof") return Value::boolean(true);
             if (ps) { awaitPromise(ps); if (ps->broken) throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg }; return ps->result; }
@@ -3828,6 +3893,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
+        if (m == "my") {
+            auto it = inv.hash()->find("my");
+            if (it != inv.hash()->end()) return it->second;
+        }
         if (m == "code" || m == "callframe" || m == "my" || m == "annotations") {
             auto it = inv.hash()->find("code");
             if (m == "code") {
@@ -3838,8 +3907,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return Value::makeHash();
         }
-        if (m == "gist" || m == "Str") {
+        if (m == "raku") {
             auto fl = inv.hash()->find("file"); auto ln = inv.hash()->find("line");
+            return Value::str("CallFrame.new(file => " + std::string(fl != inv.hash()->end() ? fl->second.toStr() : "") +
+                              ", line => " + (ln != inv.hash()->end() ? ln->second.toStr() : "0") + ")");
+        }
+        if (m == "gist" || m == "Str") {
+            auto fl = inv.hash()->find("prog");
+            if (fl == inv.hash()->end()) fl = inv.hash()->find("file");
+            auto ln = inv.hash()->find("line");
             return Value::str((fl != inv.hash()->end() ? fl->second.toStr() : "") + " at line " +
                               (ln != inv.hash()->end() ? ln->second.toStr() : "0"));
         }
@@ -4453,6 +4529,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "compose" || m == "publish_method_cache" || m == "invalidate_method_caches")
                 return inv;
         }
+        // `.^language-revision` — the revision the type was declared under
+        if (m == "language-revision" && args.empty()) {
+            auto cit = classes_.find(inv.s);
+            int r = cit != classes_.end() && cit->second && cit->second->langRev >= 0 ? cit->second->langRev : langRev_;
+            return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
+        }
         // `.^ver` / `.^auth` / `.^api` on a PACKAGE (`module Zef:ver(…):auth(…)`) —
         // a package has no ClassInfo, so its adverbs come from pkgMeta_. Everything
         // else answers Rakudo's defaults for a type that declares none: "" for auth,
@@ -4953,6 +5035,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& kv : ci->methods)
                     if (kv.first.size() > 1 && kv.first[0] == '!')
                         (*out.hash())[kv.first.substr(1)] = kv.second;
+                return out;
+            }
+            // `.^submethod_table` — name => Submethod for the type's own submethods
+            // (and those its roles composed in, which 6.e no longer does)
+            if (m == "submethod_table" && ci) {
+                Value out = Value::makeHash();
+                for (auto& kv : ci->methods)
+                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isSubmethod &&
+                        !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
+                        (*out.hash())[kv.first] = kv.second;
                 return out;
             }
             if (m == "methods" || m == "method_names" || m == "method_table") {
@@ -5599,7 +5691,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 bool anyPositional = false;
                 for (auto& arg : args)
                     if (arg.t != VT::Pair) { anyPositional = true; break; }
-                if (anyPositional && !nativeBased && !ci->findMethod("new") && !ci->findMethod("BUILD"))
+                // (a BUILD does not change that: Mu.new passes it NAMED arguments only)
+                if (anyPositional && !nativeBased && !ci->findMethod("new"))
                     for (auto& arg : args)
                         if (arg.t != VT::Pair)
                             throwTypedV("X::Constructor::Positional",
@@ -5668,6 +5761,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             throwTypedV("X::TypeCheck::Assignment", {{"got", wit->second}},
                                 "Type check failed on attribute '$!" + at.name +
                                 "'; the value does not satisfy its where constraint");
+                    }
+                // …and the attribute's declared TYPE holds for what `new` was
+                // handed: `has Small $.small` refuses `small => 20` as Rakudo
+                // does, naming the attribute and the subset
+                for (size_t ci2 = nChain; ci2-- > 0;)
+                    for (auto& at : chainAt(ci2)->attrs) {
+                        if (at.type.empty() || at.sigil != '$') continue;
+                        static const std::set<std::string> kCore = {
+                            "Int", "UInt", "Num", "Rat", "Str", "Bool", "Complex"};
+                        if (!kCore.count(at.type) && !subsets_.count(at.type)) continue;
+                        bool gotArg = false;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (!gotArg) continue;
+                        auto vit = od->attrs.find(at.name);
+                        if (vit == od->attrs.end() || !defined(vit->second)) continue;
+                        if (at.coerce) { // `has Int() $.x`: convert what `new` got
+                            if (!typeOrSubsetMatches(vit->second, at.type))
+                                vit->second = coerceToType(vit->second, at.type);
+                            continue;
+                        }
+                        const Value& v = vit->second;
+                        if (v.t == VT::Hash && v.hashKind == "Proxy") continue;
+                        if (typeOrSubsetMatches(v, at.type)) continue;
+                        throwTypedV("X::TypeCheck::Assignment",
+                                    {{"got", v}, {"expected", Value::typeObj(at.type)},
+                                     {"symbol", Value::str("$!" + at.name)}},
+                                    "Type check failed in assignment to $!" + at.name + "; expected " +
+                                    at.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
                     }
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
@@ -7157,6 +7279,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return methodCall(ep->second, m, args, rwArgs);
         }
     }
+    // `.new` on an enum — its type or a member, Bool included — makes nothing
+    if (m == "new" && ((!inv.enumType.empty() && (inv.t == VT::Array || inv.t == VT::Type || defined(inv))) ||
+                       (inv.t == VT::Type && inv.s == "Bool") || inv.t == VT::Bool)) {
+        std::string en = inv.t == VT::Bool || (inv.t == VT::Type && inv.s == "Bool") ? std::string("Bool")
+                                                                                     : std::string(inv.enumType.str());
+        throwTypedV("X::Constructor::BadType", {{"type", Value::typeObj(en)}},
+                    "Enum '" + en + "' is insufficiently type-like to be instantiated. Did you mean 'class'?");
+    }
+    // An enum TYPE is Associative over its members: `E.pairs` is (a => 5, b => 7)
+    // and `E.keys` the names — not the index-keyed view of the pair-list it is
+    // stored as
+    if (inv.t == VT::Array && !inv.enumType.empty() && inv.arr() &&
+        (m == "pairs" || m == "keys" || m == "values" || m == "kv" || m == "antipairs" || m == "invert")) {
+        Value o = Value::array(); o.isList = true; o.s = "Seq";
+        for (auto& e : *inv.arr()) {
+            if (e.t != VT::Pair) continue;
+            Value k = Value::str(e.s), v = e.pairVal() ? *e.pairVal() : Value::any();
+            if (m == "pairs") o.arr()->push_back(Value::pair(e.s, v));
+            else if (m == "keys") o.arr()->push_back(k);
+            else if (m == "values") o.arr()->push_back(v);
+            else if (m == "kv") { o.arr()->push_back(k); o.arr()->push_back(v); }
+            else {
+                Value p = Value::pair(v.toStr(), k);
+                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v);
+                o.arr()->push_back(p);
+            }
+        }
+        return o;
+    }
     if (inv.t == VT::Match && (m == "made" || m == "ast")) return inv.pairVal() ? *inv.pairVal() : Value::nil();
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);
     // The engine records BYTE offsets into the subject, but Raku reports GRAPHEME
@@ -7680,6 +7831,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return h;
             }
         }
+        // a SUBSET (UInt among them) is made by SubsetHOW
+        if (inv.t == VT::Type && !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt"))
+            return Value::typeObj("Metamodel::SubsetHOW");
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();
@@ -7705,6 +7859,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
         std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
+        // `MY.WHO`, `LEXICAL.WHO`, `CALLER.WHO`: the pseudo-package's stash
+        if (inv.t == VT::Type && pkg != "OUR" && pkg != "GLOBAL" && isPseudoChain(pkg))
+            return makePseudoStash(pkg);
         auto& stash = pkgStashes_[pkg];
         if (!stash) stash = makePayload<ValueMap>();
         if (global_) { // `our`-scoped symbols live as qualified globals; show them
@@ -7806,6 +7963,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return methodCall(args[0], "does", ValueList{args[1]}, rwArgs);
         std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
+        // a SUBSET answers by its constraint: `1.does(PosReal)` is True
+        if (args[0].t == VT::Type && subsets_.count(rn))
+            return Value::boolean(typeOrSubsetMatches(inv, rn));
         // an Attribute meta-object answering the JSON/META attribute-role
         // checks (`$attr.does(META6::MetaAttribute)`) — same trait-key mapping
         // `~~` uses (typeMatchesArg owns it, reached via typeOrSubsetMatches)
@@ -7845,6 +8005,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a BUILT-IN value does the roles its ancestry lists (`Date.does(Dateish)`)
         if (!res && !ci)
             for (auto& a : typeAncestry(typeOfVal(inv))) if (a == rn) { res = true; break; }
+        // …and the core ROLES as the smartmatch knows them: `Range.does(Positional)`,
+        // `%h.does(Associative)`, `Pair.does(Associative)`
+        if (!res && !ci) {
+            static const std::set<std::string> kCoreRoles = {
+                "Positional", "Associative", "Iterable", "Numeric", "Real", "Stringy",
+                "Setty", "Baggy", "Mixy", "QuantHash", "Dateish"};
+            if (kCoreRoles.count(rn)) res = typeOrSubsetMatches(inv, rn);
+        }
         // a Code value does the Callable/Code/Routine/Block roles
         if (!res && inv.t == VT::Code &&
             (rn == "Callable" || rn == "Code" || rn == "Routine" || rn == "Block" || rn == "Sub"))

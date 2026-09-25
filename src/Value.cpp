@@ -183,6 +183,25 @@ double dateNumeric(const Value& v) {
     return fld("posix") + (sec - std::floor(sec)); // DateTime: the instant it names
 }
 
+// StrDistance's number: the Levenshtein distance between .before and
+// .after, by codepoint — what Rakudo computes on demand (tr/// used to
+// store a substitution count, which made is-deeply against
+// StrDistance.new(:before, :after) see an extra key)
+long long strDistance(const std::string& before, const std::string& after) {
+    auto a = utf8cp(before), b = utf8cp(after);
+    std::vector<long long> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); j++) row[j] = (long long)j;
+    for (size_t i = 1; i <= a.size(); i++) {
+        long long diag = row[0]; row[0] = (long long)i;
+        for (size_t j = 1; j <= b.size(); j++) {
+            long long up = row[j];
+            row[j] = std::min({row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] == b[j - 1] ? 0 : 1)});
+            diag = up;
+        }
+    }
+    return row[b.size()];
+}
+
 long long Value::toInt() const {
     switch (t) {
         case VT::Bool: return b ? 1 : 0;
@@ -241,8 +260,9 @@ long long Value::toInt() const {
         case VT::Hash:
             // A tr/// StrDistance numifies to the substitution count.
             if (hash() && hashKind == "StrDistance") {
-                auto it = hash()->find("distance");
-                if (it != hash()->end()) return it->second.toInt();
+                auto b = hash()->find("before"), a = hash()->find("after");
+                return strDistance(b != hash()->end() ? b->second.toStr() : std::string(),
+                                   a != hash()->end() ? a->second.toStr() : std::string());
             }
             // A Proc / Proc::Async numifies to its exit status (+$proc), like Rakudo.
             if (hash() && (hashKind == "Proc" || hashKind == "Proc::Async")) {
@@ -438,6 +458,11 @@ std::string Value::toStr() const {
         return enumName;
     }
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
+    // $*KERNEL / $*DISTRO / $*VM stringify as their NAME (`$*KERNEL eq 'darwin'`)
+    if (t == VT::Hash && hash() && (hashKind == "Kernel" || hashKind == "Distro" || hashKind == "VM")) {
+        auto it = hash()->find("name");
+        if (it != hash()->end()) return it->second.toStr();
+    }
     // a Pod block is the text of its contents (`~$=pod[0]`, `~$thing.WHY`)
     if (t == VT::Hash && hashKind == "Pod" && hash() && hash()->count("contents")) {
         std::string o;
@@ -455,7 +480,9 @@ std::string Value::toStr() const {
         case VT::Complex: {
             std::string r = numToStr(n);
             std::string i2 = numToStr(im());
-            return r + (im() < 0 || i2[0] == '-' ? "" : "+") + i2 + "i";
+            // an Inf/NaN imaginary part is written `Inf\i`: `Infi` would read back
+            // as a name, not a number
+            return r + (im() < 0 || i2[0] == '-' ? "" : "+") + i2 + (std::isfinite(im()) ? "i" : "\\i");
         }
         case VT::Rat:
             if (ratN() && ratD() && ratD()->isZero()) // Rakudo dies on Str-coercing a zero-denominator Rat
@@ -706,7 +733,9 @@ std::string Value::gist() const {
                 if (short_.empty()) short_ = s;
                 auto sep = short_.rfind("::", short_.find('['));
                 if (sep != std::string::npos) short_ = short_.substr(sep + 2);
-                return "(" + (ofType().empty() ? short_ : short_ + "[" + ofType() + "]") + ")";
+                // …and a definiteness-constrained one keeps its smiley: `(Int:U)`
+                const char* sm = i == 1 ? ":D" : i == 2 ? ":U" : "";
+                return "(" + (ofType().empty() ? short_ : short_ + "[" + ofType() + "]") + sm + ")";
             }
         // a Regex gists as the literal that makes it, `rx/a/` — not as its bare
         // pattern text (which is what .Str answers, and what the engine consumes)
@@ -747,7 +776,7 @@ std::string Value::gist() const {
             // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
             // arrows do not run together (`(red => 2) => apples`). Only the KEY —
             // Rakudo leaves a Pair VALUE bare.
-            std::string k = pairKey() ? pairKey()->gist() : s;
+            std::string k = pairKey() ? (pairKey()->t == VT::Nil ? std::string("Nil") : pairKey()->gist()) : s;
             if (pairKey() && pairKey()->t == VT::Pair) k = "(" + k + ")";
             return k + " => " + (pairVal() ? pairVal()->gist() : "");
         }

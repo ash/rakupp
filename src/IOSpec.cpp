@@ -272,11 +272,17 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
         std::string rest = v.rest;
         while (rest.size() > 1 && wsep(rest.back())) rest.pop_back();
         std::string dir, base;
-        if (rest.empty() || (rest.size() == 1 && wsep(rest[0]))) { dir = "\\"; base = "\\"; }
+        if (rest.empty()) { dir = "\\"; base = "\\"; }
+        else if (rest.size() == 1 && wsep(rest[0])) { dir = rest; base = rest; }   // the root, as written
         else {
             size_t s = rest.find_last_of("/\\");
             if (s == std::string::npos) { dir = "."; base = rest; }
-            else { base = rest.substr(s + 1); dir = rest.substr(0, s); if (dir.empty()) dir = "\\"; }
+            else {
+                base = rest.substr(s + 1); dir = rest.substr(0, s);
+                // a run of separators before the basename is ONE separator
+                while (dir.size() > 1 && wsep(dir.back())) dir.pop_back();
+                if (dir.empty() || (dir.size() == 1 && wsep(dir[0]))) dir = std::string(1, rest[0] == '/' || rest[0] == '\\' ? rest[0] : '\\');
+            }
         }
         Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
         (*h.hash())["volume"] = Value::str(v.vol);
@@ -395,7 +401,9 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
             else {
                 size_t s = rest.rfind('/');
                 if (s == std::string::npos) { dir = "."; base = rest; }
-                else { base = rest.substr(s + 1); std::string d = rest.substr(0, s); dir = d.empty() ? "/" : d; }
+                else { base = rest.substr(s + 1); std::string d = rest.substr(0, s);
+                       while (d.size() > 1 && d.back() == '/') d.pop_back();   // `foo//bar` → `foo`
+                       dir = d.empty() ? "/" : d; }
             }
             Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
             (*h.hash())["volume"] = Value::str(vol);
@@ -498,7 +506,9 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         else {
             size_t s = p.rfind('/');
             if (s == std::string::npos) { dir = "."; base = p; }
-            else { base = p.substr(s + 1); std::string d = p.substr(0, s); dir = d.empty() ? "/" : d; }
+            else { base = p.substr(s + 1); std::string d = p.substr(0, s);
+                   while (d.size() > 1 && d.back() == '/') d.pop_back();   // `foo//bar` → `foo`
+                   dir = d.empty() ? "/" : d; }
         }
         Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
         (*h.hash())["volume"] = Value::str("");

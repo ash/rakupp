@@ -313,6 +313,7 @@ private:
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
         bool possessive = false;         // `a*:` — grab greedily and never give any back
+        bool forceBack = false;          // `a*!` — backtracks even under :ratchet
         // Rep: does the atom (or its separator) capture? -1 = not asked yet. A
         // possessive repetition KEEPS its grabs' captures (it never backtracks
         // into them), so when the continuation then fails it has to put the

@@ -68,7 +68,8 @@ is-it((^5).gist,       '^5',  '(^5).gist keeps the short form');
 if $*RAKU.compiler.name eq 'Raku++' {
     is-it(([+] 1..Inf),  Inf, '[+] 1..Inf');
     is-it(([+] 1..*),    Inf, '[+] 1..*');
-    is-it(([+] 1..Inf, 5), Inf, '[+] with an endless operand among others');
+    # several operands are several operands: the Range is one of them, shifted
+    is-it(([+] 1..Inf, 5).gist, '6..Inf', '[+] with an endless operand among others');
     is-it((1..Inf).reduce(&[+]), Inf, '(1..Inf).reduce(&[+])');
     is-it(([min] 1..Inf), 1,   '[min] 1..Inf');
     is-it(([max] 1..Inf), Inf, '[max] 1..Inf');

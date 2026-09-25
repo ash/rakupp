@@ -147,6 +147,7 @@ ValueList toList(const Value& v);
 Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
                     const std::string& subject);
 std::vector<uint32_t> utf8cp(const std::string& s);
+long long strDistance(const std::string& before, const std::string& after);
 // Leading ASCII bytes of `s`, capped at `limit`; over such a run a codepoint
 // index and a byte index are the same thing, so utf8cp() can be skipped.
 size_t asciiRun(const std::string& s, size_t limit);

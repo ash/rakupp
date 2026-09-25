@@ -8,7 +8,11 @@ namespace rakupp {
 // values (VT::Hash, hashKind "Pod") with a "podclass"/"name"/"level"/"config"/
 // "contents" shape. Delimited (=begin/=end), paragraph (=for), and abbreviated
 // (=head1 …) forms; nested blocks; whitespace-collapsed paragraphs.
-ValueList parsePod(const std::string& src);
+// strict: a malformed table (empty, consecutive separators, mixed column
+// separators) is an error, as it is in Rakudo. EVAL parses strictly; the
+// main program's pod scan is textual and cannot tell a heredoc from pod, so
+// it stays lenient.
+ValueList parsePod(const std::string& src, bool strict = false);
 
 // Pod::To::Text's `pod2text`, in the shape Rakudo's core module produces:
 // paragraphs flat, headings indented two spaces per level below the first,

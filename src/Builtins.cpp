@@ -74,6 +74,33 @@
 #include <mutex>
 
 namespace rakupp {
+bool rakuppFindModuleSource(const std::string& name, const std::vector<std::string>& searchPath,
+                            std::string& pathOut, std::string& srcOut, bool sixE);
+}
+// `no precompilation;` keeps a unit out of the precomp cache, and so does
+// loading one that says it (`need`/`use` of a unit found on the same paths)
+static bool unitPrecompilable(const std::string& name, const std::vector<std::string>& paths) {
+    bool precomp = true;
+    std::set<std::string> seen;
+    std::function<void(const std::string&)> scan = [&](const std::string& mod) {
+        if (!precomp || !seen.insert(mod).second || seen.size() > 64) return;
+        std::string path, src;
+        if (!rakupp::rakuppFindModuleSource(mod, paths, path, src, false)) return;
+        if (src.find("no precompilation") != std::string::npos) { precomp = false; return; }
+        for (const char* kw : {"need ", "use "}) {
+            for (size_t k = src.find(kw); k != std::string::npos; k = src.find(kw, k + 1)) {
+                if (k > 0 && src[k - 1] != '\n' && src[k - 1] != ' ' && src[k - 1] != ';') continue;
+                size_t b = k + std::strlen(kw), e = b;
+                while (e < src.size() && (isalnum((unsigned char)src[e]) || src[e] == ':' || src[e] == '_' || src[e] == '-')) e++;
+                if (e > b && isupper((unsigned char)src[b])) scan(src.substr(b, e - b));
+            }
+        }
+    };
+    scan(name);
+    return precomp;
+}
+
+namespace rakupp {
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
 
@@ -115,7 +142,8 @@ bool Interpreter::runSubtestFrame(const std::string& desc,
     std::cout << std::string(4 * I.subtestDepth_, ' ')
               << "# Subtest" << (desc.empty() ? "" : ": " + desc) << "\n";
     I.subtestDepth_++;
-    if (todod) I.todoSubtestDepth_++;
+    std::string savedTodoSubReason = I.todoSubtestReason_;
+    if (todod) { I.todoSubtestDepth_++; I.todoSubtestReason_ = todoReason; }
     I.subtestFailed_ = false;
     I.planned_ = -1; I.testNum_ = 0;
     // A pending `todo` counts tests in the CONTEXT it was written in, and a
@@ -149,6 +177,7 @@ bool Interpreter::runSubtestFrame(const std::string& desc,
     if (I.planned_ < 0)
         std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n";
     if (todod) I.todoSubtestDepth_--;
+    I.todoSubtestReason_ = savedTodoSubReason;
     I.subtestDepth_--;
     I.subtestFailed_ = savedFailed;
     I.planned_ = savedPlanned; I.testNum_ = savedTestNum; I.failCount_ = savedFailCount;
@@ -1952,7 +1981,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // back: `Infi` is a word, `Inf\i` is the number (Str sheet ST-06).
             std::string g = v.gist();
             const double im = v.im();
-            if ((std::isinf(im) || std::isnan(im)) && !g.empty() && g.back() == 'i')
+            if ((std::isinf(im) || std::isnan(im)) && g.size() > 1 && g.back() == 'i' &&
+                g[g.size() - 2] != '\\')
                 g.insert(g.size() - 1, "\\");
             return "<" + g + ">";
         }
@@ -1993,6 +2023,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             if (v.pairKey()) { // non-string key (Int, nested Pair, …)
                 std::string krepr = rakuRepr(*v.pairKey(), depth + 1, seen);
                 if (v.pairKey()->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
+                // …and a type-object key, or it would read back as an autoquoted Str
+                else if (v.pairKey()->t == VT::Type || v.pairKey()->t == VT::Any || v.pairKey()->t == VT::Nil) krepr = "(" + krepr + ")";
                 return krepr + " => " + rakuRepr(val, depth + 1, seen);
             }
             if (!rakuIdentKey(v.s))
@@ -2183,7 +2215,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                              : rakuRepr(rk, depth + 1, seen) + " => " + rv;
                 }
                 if (v.hash()) seen.erase(v.hash());
-                return o + ")";
+                return v.itemized && !g_reprInArrayElem ? "$" + o + ")" : o + ")";
             }
             // A VALUE-TYPED hash names its type the same way — `(my Int % = :a(1))`
             // — because `{:a(1)}` would read back untyped (sheet HM-05/HM-06).
@@ -2203,7 +2235,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                                              : rakuStrLit(k) + " => " + rv;
                     }
                     if (v.hash()) seen.erase(v.hash());
-                    return o + ")";
+                    return v.itemized && !g_reprInArrayElem ? "$" + o + ")" : o + ")";
                 }
             }
             std::string o = "{"; bool first = true;
@@ -3691,10 +3723,18 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
         if (v.t == VT::Pair) {
             Value w = v.pairVal() ? *v.pairVal() : Value::integer(0);
             if (!isSet) { // a Bag/Mix weight must coerce to a real number
-                if ((w.t == VT::Complex && w.im() != 0.0) ||
-                    (w.t == VT::Num && !std::isfinite(w.n)))
+                // (a non-real Complex is X::Numeric::Real, a weight that is not
+                // finite X::OutOfRange — Rakudo's two refusals)
+                if (w.t == VT::Complex && w.im() != 0.0)
+                    throw RakuError{Value::typeObj("X::Numeric::Real"),
+                        "Can not convert " + w.gist() + " to Real: imaginary part not zero"};
+                if (w.t == VT::Num && !std::isfinite(w.n)) {
+                    if (isMix)
+                        throw RakuError{Value::typeObj("X::OutOfRange"),
+                            "Value out of range. Is: " + w.gist() + ", should be in -Inf^..^Inf"};
                     throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
-                        "Cannot convert " + w.gist() + " to " + (isMix ? "Real" : "Int")};
+                        "Cannot convert " + w.gist() + " to Int"};
+                }
                 if (w.t == VT::Str && !w.isAllomorph()) {
                     const char* p = w.s.c_str();
                     while (*p == ' ' || *p == '\t' || *p == '\n') p++;
@@ -3844,6 +3884,94 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     return q;
 }
 
+// Signature ~~ Signature, Rakudo's algorithm (Signature.ACCEPTS(Signature)):
+// does every call the TOPIC's signature binds also bind to this one?
+// Parameter ~~ Parameter asks the same of one parameter: its type narrows,
+// its names are a subset, and a sub-signature narrows in turn.
+static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std::string& sRet,
+                          const std::vector<Param>& T, const std::string& tRet);
+static std::string sigParamType(const Param& p) {
+    if (!p.type.empty()) return p.type;
+    return "Any";
+}
+static std::set<std::string> sigParamNames(const Param& p) {
+    std::set<std::string> n;
+    if (!p.namedKey.empty()) n.insert(p.namedKey);
+    else if (p.name.size() > 1) n.insert(p.name.substr(1));
+    for (auto& k : p.aliasKeys) n.insert(k);
+    if (p.aliasBoth && p.name.size() > 1) n.insert(p.name.substr(1));
+    return n;
+}
+static bool sigParamOptional(const Param& p) {
+    if (p.named) return !p.required;
+    return p.optional || p.defaultVal || !p.defaultRaku.empty();
+}
+static bool sigParamAccepts(Interpreter& I, const Param& s, const Param& t) {
+    if (s.named != t.named) return false;
+    const std::string st = sigParamType(s), tt = sigParamType(t);
+    if (st != "Mu" && st != tt && !(tt != "Mu" && st == "Any") &&
+        !I.typeOrSubsetMatches(Value::typeObj(tt), st))
+        return false;
+    if (st == "Any" && tt == "Mu") return false;
+    if (s.named) {
+        auto sn = sigParamNames(s), tn = sigParamNames(t);
+        for (auto& k : tn) if (!sn.count(k)) return false;
+    }
+    if (s.subSig) {
+        if (!t.subSig) return false;
+        if (!sigAcceptsSig(I, *s.subSig, "", *t.subSig, "")) return false;
+    }
+    return true;
+}
+static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std::string& sRet,
+                          const std::vector<Param>& T, const std::string& tRet) {
+    std::vector<const Param*> spos, tpos, sn, tn;
+    for (auto& p : S) if (!p.invocant) (p.named || (p.slurpy && p.sigil == '%') ? sn : spos).push_back(&p);
+    for (auto& p : T) if (!p.invocant) (p.named || (p.slurpy && p.sigil == '%') ? tn : tpos).push_back(&p);
+    auto capt = [](const Param* p) { return p->sigil == '|'; };
+    size_t si = 0, ti = 0;
+    while (si < spos.size()) {
+        if (ti >= tpos.size()) break;
+        const Param* t = tpos[ti++];
+        const Param* s = spos[si++];
+        if (s->slurpy || capt(s)) { si = spos.size(); ti = tpos.size(); break; }
+        if (t->slurpy || capt(t)) {
+            bool any = false;
+            for (size_t k = si; k < spos.size(); k++) if (spos[k]->slurpy || capt(spos[k])) any = true;
+            if (!any) return false;
+            si = spos.size(); ti = tpos.size(); break;
+        }
+        if (!sigParamOptional(*s) && sigParamOptional(*t)) return false;
+        if (!sigParamAccepts(I, *s, *t)) return false;
+    }
+    if (ti < tpos.size()) return false;
+    if (si < spos.size()) {
+        const Param* f = spos[si];
+        if (!(sigParamOptional(*f) || f->slurpy || capt(f))) return false;
+    }
+    for (auto* s : sn) {
+        if (sigParamOptional(*s) || s->slurpy || !s->named) continue;
+        int n = 0;
+        for (auto* t : tn) if (t->named && !sigParamOptional(*t) && sigParamAccepts(I, *s, *t)) n++;
+        if (n != 1) return false;
+    }
+    std::vector<const Param*> here(sn.begin(), sn.end());
+    bool hasSlurpy = false;
+    for (auto* s : sn) if (s->slurpy) hasSlurpy = true;
+    for (auto* s : spos) if (capt(s)) hasSlurpy = true;   // `|c` takes the nameds too
+    for (auto* t : tn) {
+        if (t->slurpy) {
+            for (auto* h : here) if (!h->slurpy && sigParamType(*h) != "Mu") return false;
+            return hasSlurpy;
+        }
+        bool found = false;
+        for (size_t k = 0; k < here.size(); k++)
+            if (!here[k]->slurpy && sigParamAccepts(I, *here[k], *t)) { here.erase(here.begin() + k); found = true; break; }
+        if (!found && !hasSlurpy) return false;
+    }
+    return sRet == tRet;
+}
+
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
     // answers `(Mu $path)`, not the empty signature a synthesized dispatcher
@@ -3939,7 +4067,11 @@ Value makeSignature(const Callable* c) {
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
     // (Rakudo separates with a space either way, so an empty parameter list
     // renders as `( --> Str)`)
-    if (c && !c->retType.empty()) { sig += " --> " + c->retType; rsig += " --> " + c->retType; }
+    if (c && !c->retType.empty()) {
+        std::string rt = c->retType;
+        if (char sm = retTypeSmiley(rt)) rt = retTypeName(rt) + ":" + std::string(1, sm);
+        sig += " --> " + rt; rsig += " --> " + rt;
+    }
     sig += ")"; rsig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash())["str"] = Value::str(sig);
@@ -3948,6 +4080,12 @@ Value makeSignature(const Callable* c) {
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
     if (c && !c->retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->retType));
+    // the declared parameters themselves (AST-owned, program lifetime), for
+    // Signature ~~ Signature
+    if (c && !c->hasPrimed && c->params && synth.empty()) {
+        (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->params);
+        (*s.hash())["\x01ret"] = Value::str(c->retType);
+    }
     (*s.hash())["arity"] = Value::integer(arity);
     (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     Value params = Value::array(); params.isList = true;
@@ -5053,6 +5191,12 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // an ENUM type's `.^language-revision` — the revision it was declared under
+    if (inv.t == VT::Array && !inv.enumType.empty() && m == "language-revision" && args.empty()) {
+        auto it = enumLangRev_.find(inv.enumType);
+        int r = it != enumLangRev_.end() ? it->second : langRev_;
+        return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
+    }
     // `X::NYI.die` — throwing wants an exception INSTANCE, not its type object
     if (inv.t == VT::Type && (m == "fail" || m == "die" || m == "throw" || m == "rethrow" || m == "resume") &&
         (inv.s == "Exception" || inv.s.rfind("X::", 0) == 0))
@@ -5193,6 +5337,32 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // five std::strings and eleven shared_ptrs, and this runs on EVERY method call.
     // The optional's empty state is a flag — the Value is only built on the rare
     // path below that actually needs one.
+    // A PseudoStash answers its key protocol live (its class methods) and
+    // every other Hash method from the snapshot it carries
+    if (invIn.t == VT::Object && invIn.obj() && invIn.obj()->cls &&
+        invIn.obj()->cls->name == "PseudoStash" && !invIn.obj()->cls->methods.count(mName) &&
+        !mName.empty() && mName[0] != '^' && mName != "WHAT" && mName != "HOW" &&
+        mName != "raku" && mName != "gist" && mName != "Str") {
+        auto it = invIn.obj()->attrs.find("snap");
+        if (it != invIn.obj()->attrs.end()) return methodCall(it->second, mName, std::move(args));
+    }
+    // .succ / .pred step the BASENAME only (`foo/()`.succ is still `foo/()`)
+    if ((mName == "succ" || mName == "pred") && invIn.t == VT::Str && invIn.hashKind == "IO") {
+        std::string full = invIn.toStr();
+        auto sl = full.find_last_of(invIn.enumName == "Win32" ? "/\\" : "/");
+        std::string head = sl == std::string::npos ? "" : full.substr(0, sl + 1);
+        std::string base = sl == std::string::npos ? full : full.substr(sl + 1);
+        ValueList none;
+        Value nb = methodCall(Value::str(base), mName, none);
+        Value p = Value::str(head + nb.toStr()); p.hashKind = "IO"; p.enumName = invIn.enumName;
+        if (!invIn.ofType().empty()) p.ofTypeM() = invIn.ofType();
+        return p;
+    }
+    // a package's stash (`Foo::Bar.WHO`) gists and stringifies as the package's
+    // long name
+    if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && !invIn.s.empty() &&
+        (mName == "gist" || mName == "Str"))
+        return Value::str(invIn.s.str());
     std::optional<Value> invCopy;
     const Value* invp = &invIn;
     // package-relative short name: a bare `Frog` type invocant answers as its
@@ -5478,8 +5648,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // NOT part of it: a bare dist root with no META6 resolves nothing
             // there, and this answers the same.
             bool found = false;
+            std::string foundPath;
             for (const char* ext : {".rakumod", ".pm6", ".pm"})
-                if (exists(prefix + "/" + rel + ext)) { found = true; break; }
+                if (exists(prefix + "/" + rel + ext)) { found = true; foundPath = prefix + "/" + rel + ext; break; }
             if (!found && exists(prefix + "/META6.json")) {
                 std::ifstream mf(prefix + "/META6.json");
                 std::string meta((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
@@ -5500,6 +5671,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
             (*cu.hash())["short-name"] = Value::str(want);
             (*cu.hash())["repo"] = inv;
+            // `no precompilation;` in the module keeps it out of the cache
+            (*cu.hash())["precompiled"] = Value::boolean(unitPrecompilable(want, {prefix}));
             return cu;
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
@@ -5509,6 +5682,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::string name = at.count("name") ? at["name"].toStr() : "";
             if (m == "prefix") { Value p = Value::str(prefix); p.hashKind = "IO"; return p; }
             if (m == "name") return Value::str(name);
+            if (m == "loaded") {
+                auto it = at.find("\x01loaded");
+                if (it != at.end() && it->second.t == VT::Array) return it->second;
+                Value e = Value::array(); e.isList = true; return e;
+            }
             if (m == "id" || m == "short-id") return Value::str(name.empty() ? std::string("inst") : name);
             if (m == "Str" || m == "gist" || m == "raku") return Value::str("inst#" + prefix);
             if (m == "path-spec") return Value::str("inst#" + prefix);
@@ -5610,6 +5788,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
                 (*cu.hash())["short-name"] = Value::str(want);
                 (*cu.hash())["repo"] = inv;
+                (*cu.hash())["precompiled"] = Value::boolean(unitPrecompilable(want, libPaths_));
+                // `.loaded` lists what this repository has handed out
+                if (m == "need" && inv.t == VT::Object && inv.obj()) {
+                    auto& lst = inv.obj()->attrs["\x01loaded"];
+                    if (lst.t != VT::Array) { lst = Value::array(); lst.isList = true; }
+                    lst.arrRef().push_back(cu);
+                }
                 return cu;
             }
             if (m == "install") {
@@ -6127,6 +6312,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             throw RakuError{Value::typeObj("X::Method::NotFound"),
                 "Cannot resolve caller " + m + "(Any:U); the invocant is a type object, not an instance"};
     }
+    // CompUnit — what `$*REPO.need(…)` answers. A module loaded from source is
+    // held in the precomp cache (a serialized tree) once compiled, so it
+    // reports itself precompiled.
+    if (inv.t == VT::Hash && inv.hashKind == "CompUnit" && inv.hash()) {
+        auto& h = *inv.hash();
+        if (m == "precompiled") {
+            auto it = h.find("precompiled");
+            return it != h.end() ? it->second : Value::boolean(true);
+        }
+        if (m == "from") return Value::str("Raku");
+        // the unit's handle: its GLOBALish package is the one every loaded
+        // unit merges into here
+        if (m == "handle") { Value hd = Value::makeHash(); hd.hashKind = "CompUnit::Handle"; return hd; }
+        if (m == "short-name" || m == "repo") {
+            auto it = h.find(m);
+            return it != h.end() ? it->second : Value::any();
+        }
+        if (m == "Str" || m == "gist") {
+            auto it = h.find("short-name");
+            return it != h.end() ? it->second : Value::str("");
+        }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "CompUnit::Handle" &&
+        (m == "globalish-package" || m == "unit" || m == "export-package"))
+        return evalString(m == "globalish-package" ? "GLOBAL" : m == "unit" ? "UNIT::" : "EXPORT");
     // IterationBuffer — a low-level mutable element buffer (the iterator protocol's
     // scratch space), a growable list under the hood. Handled up front so its
     // `.elems`/`.List`/… win over the generic Hash methods (it is a hashKind Hash).
@@ -6721,6 +6931,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // the right's. Arity/count windows answer most of it; a slurpy NAMED
             // does not widen the positional window, so `:(*%) ~~ :()` needs its own
             // test (both are [0,0] positionally, but only one takes nameds).
+            if (args[0].t == VT::Hash && args[0].hashKind == "Signature" && args[0].hash() &&
+                args[0].hash()->count("\x01sigptr") && inv.hash()->count("\x01sigptr")) {
+                auto* T = (const std::vector<Param>*)(intptr_t)(*args[0].hash())["\x01sigptr"].toInt();
+                auto* S = (const std::vector<Param>*)(intptr_t)(*inv.hash())["\x01sigptr"].toInt();
+                return Value::boolean(sigAcceptsSig(*this, *S, (*inv.hash())["\x01ret"].toStr(),
+                                                    *T, (*args[0].hash())["\x01ret"].toStr()));
+            }
             if (args[0].t == VT::Hash && args[0].hashKind == "Signature" && args[0].hash()) {
                 const Value& lhs = args[0];
                 auto num = [](const Value& sg, const char* k) {
@@ -8325,9 +8542,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
         if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
             // a tr/// result carries the substitution count; .new-built ones numify to .after.chars
-            auto di = inv.hash()->find("distance");
-            long long c = di != inv.hash()->end() ? di->second.toInt()
-                        : methodCall(fld("after"), "chars", ValueList{}).toInt();
+            long long c = strDistance(fld("before").toStr(), fld("after").toStr());
             if (m == "Num") return Value::number((double)c);
             if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
             Value v = Value::rat(BigInt(c), BigInt(1));
@@ -8794,7 +9009,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // …from the MAIN unit's revision, not this one's: `$*RAKU` is one object
         // for the process and Rakudo answers the same version inside a module
         // whatever that module's own `use v6.…` says (see rakuIntrospection).
-        const int langRevForRaku = mainLangRevSet_ ? mainLangRev_ : langRev_;
+        const int langRevForRaku = mainLangRevSet_ && beginDepth_ == 0 ? mainLangRev_ : langRev_;
         std::string langVer = langRevForRaku == 0 ? "6.c" : (langRevForRaku == 1 ? "6.d" : "6.e");
         if (m == "compiler") return rakuIntrospection(true);
         // rakupp's engine is a C++ tree-walking interpreter, not MoarVM. Rakudo
@@ -8845,7 +9060,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "auth" || m == "authority")
             return Value::str(isComp ? "Andrew Shitov" : "The Raku Community");
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
-        if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
+        if (m == "signature") return Value::typeObj("Blob");   // Rakudo: the Blob type object
         if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
         // .build / .build-date identify THIS binary, which .id and .release
         // cannot: every build between two releases reports the same version, so
@@ -8982,13 +9197,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
         if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
+        // a Channel has no element count: it is a stream (Rakudo refuses)
+        if (m == "elems" && args.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot determine number of elements on a Channel"};
         if (m == "fail") {
             std::lock_guard<std::recursive_mutex> lk(chm);
             (*inv.hash())["closed"] = Value::boolean(true);
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
                 auto xit = classes_.find("X::AdHoc");
-                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(cause.toStr()); cause = ex; }
+                if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(cause.toStr()); ex.obj()->attrs["payload"] = cause; cause = ex; }
             }
             (*inv.hash())["failCause"] = cause;
             // once drained, the .closed Promise breaks with the failure cause
@@ -9681,10 +9899,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             auto st = std::make_shared<PromiseState>();
             Value v = args.empty() ? Value::boolean(true) : args[0];
             st->done = true;
-            if (m == "broken") { st->broken = true; st->cause = v; st->causeMsg = v.toStr(); }
+            if (m == "broken") {
+                // the cause is an EXCEPTION: a plain value rides in an X::AdHoc
+                // as its payload, and no value at all is "Died"
+                if (args.empty()) v = Value::str("Died");
+                if (v.t != VT::Object) {
+                    auto xit = classes_.find("X::AdHoc");
+                    if (xit != classes_.end()) {
+                        Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
+                        ex.obj()->cls = xit->second;
+                        ex.obj()->attrs["message"] = Value::str(v.toStr());
+                        ex.obj()->attrs["payload"] = v;
+                        v = ex;
+                    }
+                }
+                st->broken = true; st->cause = v; st->causeMsg = v.toStr();
+                (*p.hash())["cause"] = v;
+            }
             else st->result = v;
             p.extM() = st;
-            (*p.hash())["result"] = v;
+            if (m != "broken") (*p.hash())["result"] = v;
             (*p.hash())["status"] = Value::str(m == "broken" ? "Broken" : "Kept");
             return p;
         }
@@ -14754,12 +14988,14 @@ void Interpreter::registerBuiltins() {
             const long long kMax = std::string(nm) == "permutations" ? 9 : 16;
             if ((std::string(nm) == "permutations" || std::string(nm) == "combinations") &&
                 !items.empty() &&
-                (items[0].t == VT::Int || items[0].t == VT::Num || items[0].t == VT::Rat) &&
-                items[0].toInt() <= kMax) {
-                long long n = std::max(0LL, items[0].toInt());
+                (items[0].t == VT::Int || items[0].t == VT::Num || items[0].t == VT::Rat ||
+                 items[0].t == VT::Complex) &&
+                (items[0].t == VT::Complex ? (long long)items[0].n : items[0].toInt()) <= kMax) {
+                long long n = std::max(0LL, items[0].t == VT::Complex ? (long long)items[0].n : items[0].toInt());
                 Value src = Value::array(); src.isList = true;
                 for (long long k = 0; k < n; k++) src.arr()->push_back(Value::integer(k));
                 ValueList rest(items.begin() + 1, items.end());
+                for (auto& r : rest) if (r.t == VT::Complex) r = Value::number(r.n);
                 for (auto& o : opts) rest.push_back(o);
                 return I.methodCall(src, nm, rest);
             }
@@ -14768,7 +15004,8 @@ void Interpreter::registerBuiltins() {
             // four (`unique(1, 1, 2)`, `squish(…)`, …) take `+values`, so their
             // several arguments ARE the list.
             if (std::string(nm) == "combinations" && items.size() > 1 &&
-                (items[0].t == VT::Array || items[0].t == VT::Range))
+                (items[0].t == VT::Array || items[0].t == VT::Range ||
+                 (items[0].t == VT::Hash && (items[0].hashKind.empty() || items[0].hashKind == "Map"))))
                 return I.methodCall(items[0], nm, ValueList(items.begin() + 1, items.end()));
             Value v = items.size() == 1 ? items[0] : Value::array(items);
             return I.methodCall(v, nm, opts);
@@ -14939,7 +15176,13 @@ void Interpreter::registerBuiltins() {
             if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "acotan", none); }
             return Value::number(std::atan(1.0 / (a.empty()?1:a[0].toNum())));
         };
-        B["atan2"]  = [](Interpreter&, ValueList& a){ double y=a.empty()?0:a[0].toNum(), x=a.size()>1?a[1].toNum():1.0; return Value::number(std::atan2(y,x)); };
+        // atan2(y, x) is y.atan2(x): a user Real bridges through the method
+        B["atan2"]  = [](Interpreter& I, ValueList& a){
+            if (!a.empty() && (a[0].t == VT::Object || (a.size() > 1 && a[1].t == VT::Object))) {
+                ValueList rest(a.begin() + 1, a.end());
+                return I.methodCall(a[0], "atan2", rest);
+            }
+            double y=a.empty()?0:a[0].toNum(), x=a.size()>1?a[1].toNum():1.0; return Value::number(std::atan2(y,x)); };
         B["sech"] = [](Interpreter& I, ValueList& a) -> Value {
             if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "sech", none); }
             return Value::number(1.0 / std::cosh(a.empty()?0:a[0].toNum()));
@@ -15475,8 +15718,12 @@ void Interpreter::registerBuiltins() {
         long long lvl = a.empty() ? 0 : a[0].toInt();
         if (lvl < 0) lvl = 0;
         auto& fr = I.tctx_.callFrames;
+        // past the outermost frame there is no frame at all: Nil, so a walk
+        // `callframe($_) or last` ends (MoarVM#562)
+        if (lvl > (long long)fr.size() + 1) return Value::nil();
         Value f = Value::makeHash(); f.hashKind = "CallFrame";
         (*f.hash())["file"] = Value::str(I.srcFileAbs_.empty() ? I.srcFile_ : I.srcFileAbs_);
+        (*f.hash())["prog"] = Value::str(I.srcFile_);   // as the program was named (`.gist`)
         // level 0 is where we are now (the current statement's line); each further
         // level steps out one activation, taking that call's own line with it
         size_t idx = fr.size();                 // frames_[idx-1] is the innermost
@@ -15490,6 +15737,15 @@ void Interpreter::registerBuiltins() {
         if (idx > 0) code = fr[idx - 1].code;
         (*f.hash())["line"] = Value::integer(line);
         if (code) (*f.hash())["code"] = *code;
+        // `.my` — that frame's lexicals, as a live stash (only an `is dynamic`
+        // one may be written through it)
+        {
+            std::string chain = "LEXICAL";
+            if (lvl > 0) { chain.clear(); for (long long k = 0; k < lvl; k++) chain += (k ? "::" : "") + std::string("CALLER"); }
+            Value st = I.makePseudoStash(chain);
+            if (st.t == VT::Object && st.obj()) st.obj()->attrs["dynonly"] = Value::boolean(true);
+            (*f.hash())["my"] = st;
+        }
         return f;
     };
     // `MY::<&foo>:exists` — is that symbol declared in the current scope chain?
@@ -15555,6 +15811,10 @@ void Interpreter::registerBuiltins() {
         }
         else if (e) for (auto& kv : e->vars) (*h.hash())[kv.first] = kv.second;
         return h;
+    };
+    // `MY::`, `CALLER::OUTER::`, … as a term: the live stash (makePseudoStash)
+    B["__pseudo-stash"] = [](Interpreter& I, ValueList& a) -> Value {
+        return I.makePseudoStash(a.empty() ? std::string("MY") : a[0].toStr());
     };
     // `OUTER::MY::<$x>` — the same lookup as `MY::<$x>`, started that many scopes
     // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.
@@ -15671,6 +15931,27 @@ void Interpreter::registerBuiltins() {
     // in the list flatten (`:256[|@^a]`)
     B["__radix-list"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::integer(0);
+        // `:100[3, '.', 14, 16]` — a '.' element is the radix point: the digits
+        // after it are the fraction, and the answer is a Rat (3.1416)
+        {
+            ValueList ds; bool point = false;
+            for (size_t k = 1; k < a.size(); k++) {
+                if (a[k].t == VT::Array && a[k].arr()) for (auto& e : *a[k].arr()) ds.push_back(e);
+                else ds.push_back(a[k]);
+            }
+            for (auto& d : ds) if (d.t == VT::Str && d.s == ".") { point = true; break; }
+            if (point) {
+                Value base = a[0].t == VT::Str ? Value::bigint(BigInt::fromString(a[0].toStr())) : a[0];
+                Value acc = Value::integer(0), den = Value::integer(1);
+                bool frac = false;
+                for (auto& d : ds) {
+                    if (d.t == VT::Str && d.s == ".") { frac = true; continue; }
+                    acc = applyArith("+", applyArith("*", acc, base), Value::integer(d.toInt()));
+                    if (frac) den = applyArith("*", den, base);
+                }
+                return applyArith("/", acc, den);
+            }
+        }
         if (a[0].t == VT::Str) {   // a base past 64 bits, as its digits
             BigInt b = BigInt::fromString(a[0].toStr()), acc(0LL);
             auto addB = [&](const Value& d) {
@@ -15703,9 +15984,21 @@ void Interpreter::registerBuiltins() {
         }
         return big ? Value::bigint(bval) : Value::integer(val);
     };
-    B["__radix"] = [](Interpreter&, ValueList& a) -> Value {
+    B["__radix"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::integer(0);
         int base = (int)a[0].toInt();
+        // `:10(42)` — the call form converts STRINGS; a number handed to it is
+        // a confusion Rakudo names (X::Numeric::Confused), not a no-op
+        if (!a[1].isAllomorph() && a[1].hashKind.empty() &&
+            (a[1].t == VT::Int || a[1].t == VT::Rat || a[1].t == VT::Num || a[1].t == VT::Array)) {
+            std::string tn = a[1].t == VT::Array ? std::string("Array") : a[1].typeName();
+            std::string sv = a[1].toStr();
+            I.throwTypedV("X::Numeric::Confused", {{"num", a[1]}, {"base", Value::integer(base)}},
+                "This call only converts base-" + std::to_string(base) + " strings to numbers; value " +
+                sv + " is of type " + tn + ", so cannot be converted!\n(If you really wanted to convert " +
+                sv + " to a base-" + std::to_string(base) + " string, use " + sv + ".base(" +
+                std::to_string(base) + ") instead.)");
+        }
         std::string s = a[1].toStr();
         // The STRING may name its own base, which then wins over the literal's:
         // `:10('0b1110')` is 14, and so is `:10(':2<1110>')`.
@@ -16827,6 +17120,21 @@ void Interpreter::registerBuiltins() {
                 for (auto& x : *r.arr()) out.arr()->push_back(x);
             else out.arr()->push_back(r);
         };
+        // a block taking SEVERAL elements at a time (`map -> $a, $b { … }, @list`)
+        // is the method's business: it knows how to chunk by arity
+        if (a.size() >= 2 && a[0].t == VT::Code && a[0].code() && a[0].code()->params) {
+            size_t npos = 0;
+            for (auto& p : *a[0].code()->params) if (!p.named && !p.slurpy) npos++;
+            if (npos > 1 || !a[0].code()->placeholders.empty()) {
+                Value lst = Value::array(); lst.isList = true;
+                if (a.size() == 2) *lst.arr() = toList(a[1]);
+                else for (size_t i = 1; i < a.size(); i++) {
+                    if (a[i].t == VT::Array && a[i].isList && a[i].s == "Slip") for (auto& v : *a[i].arr()) lst.arr()->push_back(v);
+                    else lst.arr()->push_back(a[i]);
+                }
+                return I.methodCall(lst, "map", ValueList{a[0]});
+            }
+        }
         if (a.size() >= 2 && a[0].t == VT::Code) {
             // the single-arg rule: ONE list argument is iterated; with SEVERAL,
             // each argument is one element (a parenthesized group stays whole —
@@ -16970,6 +17278,10 @@ void Interpreter::registerBuiltins() {
     // `cache(…)` the SUB always answers an Array — unlike `.cache` the method,
     // which keeps the invocant's own type (List-Array sheet LA-04).
     B["cache"] = [](Interpreter&, ValueList& a) -> Value {
+        // …except a Seq, whose cache is a List of what it produced
+        if (a.size() == 1 && a[0].t == VT::Array && a[0].s == "Seq" && !a[0].itemized && a[0].arr()) {
+            Value l = Value::array(*a[0].arr()); l.isList = true; return l;
+        }
         if (a.size() == 1) {
             if (a[0].t == VT::Range) return Value::array(a[0].flatten());
             if (a[0].t == VT::Array && a[0].arr() && !a[0].itemized) return Value::array(*a[0].arr());
@@ -16983,7 +17295,14 @@ void Interpreter::registerBuiltins() {
         // `slip()` with nothing to slip IS Empty, the singleton (sheet LA-06)
         if (a.empty()) return emptySlipSingleton();
         Value out = Value::array(); out.isList = true; out.s = "Slip";
-        for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr()->push_back(x); }
+        // the single-argument rule: ONE iterable argument is its elements;
+        // several are each one element (`slip (2,3), 4` is ((2 3), 4))
+        if (a.size() == 1) {
+            if (a[0].t == VT::Array && a[0].arr() && !a[0].itemized) for (auto& x : *a[0].arr()) out.arr()->push_back(x);
+            else if (a[0].t == VT::Range) for (auto& x : a[0].flatten()) out.arr()->push_back(x);
+            else out.arr()->push_back(a[0]);
+        }
+        else for (auto& v : a) out.arr()->push_back(v);
         if (out.arr()->empty()) return emptySlipSingleton();
         return out;
     };
@@ -17402,6 +17721,9 @@ void Interpreter::registerBuiltins() {
                           "explicitly-manage", "guess_library_name", "check_routine_sanity"})
         B[std::string("NativeCall::") + n] = B[n];
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a bare `await` has nothing to wait for
+        if (a.empty())
+            throw RakuError{Value::typeObj("X::AdHoc"), "Must specify at least one Awaitable to await"};
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
             // A user class that `does Awaitable` (TAP::Parser is one) supplies the
@@ -17602,6 +17924,8 @@ void Interpreter::registerBuiltins() {
     // `list((1,2),(3,4))` has two elements. The one-arg rule still applies: a
     // lone Positional spreads, unless it is ITEMIZED (`$(1,2)` stays one thing).
     B["list"] = [](Interpreter&, ValueList& a) -> Value {
+        // `list` of ONE Seq is that Seq, untouched (no caching, no copy)
+        if (a.size() == 1 && a[0].t == VT::Array && a[0].s == "Seq" && !a[0].itemized) return a[0];
         Value out = Value::array(); out.isList = true;
         if (a.size() == 1 && (a[0].t == VT::Array || a[0].t == VT::Range) && !a[0].itemized) {
             for (auto& x : toList(a[0])) out.arr()->push_back(x);
