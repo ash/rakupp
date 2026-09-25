@@ -338,6 +338,20 @@ changing it unilaterally would make our figure incomparable rather than more
 honest. The net figure is here so that anyone can do the subtraction, and so
 that a future sitting cannot quietly grow the shield without it showing.
 
+The NET line keeps the shielded tests in its denominator. A third line, added
+2026-09-25, takes every skipped or todo-marked test out of **both** sides,
+including the ones that pass under a todo (`ok N # todo`). What remains is the
+share of the tests that the suite and its fudge directives expect to pass that
+actually do:
+
+```
+Assertions passed NET of skip/todo: 216678 / 220521  (98.3%)  of ALL declared tests
+Assertions passed, skip/todo excluded: 216472 / 218837  (98.9%)  of ALL declared tests less 1684 skipped or todo (206 of them todo-passed)
+```
+
+The same caveat applies: the 206 todo-passes include the suite's own `todo()`
+calls, so the figure is higher than the "Passed" column of the fudge-directive table.
+
 ## Zero-regression discipline
 
 A change ships only if the sorted list of fully-passing files (`[PASS]` lines) has

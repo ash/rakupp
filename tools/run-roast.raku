@@ -264,6 +264,7 @@ sub parse-tap($out) {
     my $failed = 0;
     my $skipped = 0;
     my $todo-failed = 0;
+    my $todo-passed = 0;
     for $out.lines -> $ln {
         # `ok`/`not ok` is the overwhelmingly common line, so test it first — and
         # pay for `.lc` and the directive scan only on a line that carries a `#`.
@@ -281,6 +282,7 @@ sub parse-tap($out) {
                 my $is-todo = $lc.contains('# todo');
                 $skipped++     if $is-skip;
                 $todo-failed++ if $is-todo && !$isok;
+                $todo-passed++ if $is-todo && $isok && !$is-skip;
                 if $isok || $is-skip || $is-todo {
                     $passed++;
                 }
@@ -299,7 +301,7 @@ sub parse-tap($out) {
             $planned = $ln.substr(3).words[0].Int;   # first plan wins
         }
     }
-    return ($planned, $ran, $passed, $failed, $skipped, $todo-failed);
+    return ($planned, $ran, $passed, $failed, $skipped, $todo-failed, $todo-passed);
 }
 
 # Statically read a file's declared test count from its `plan N;` line, WITHOUT
@@ -528,6 +530,7 @@ my $noplan = 0;
 my $timeout = 0;
 my $tot-skip = 0;        # `ok … # skip` lines counted as passes
 my $tot-todofail = 0;    # `not ok … # todo` lines counted as passes
+my $tot-todopass = 0;    # `ok … # todo` lines: real passes, but of tests marked as expected to fail
 my $tot-ran = 0;
 my $tot-pass = 0;
 my $tot-plan = 0;
@@ -714,13 +717,13 @@ my sub run-one($f) {
     my $cap = %SLOW-FILES{$rel} ?? %SLOW-FILES{$rel} * $TIME-SCALE !! $TIMEOUT;
     my ($out, $timedout, $err) = run-with-timeout($BIN, $f, $cap);
     my $cpu = $lock.protect({ %cpu-sample{$f} });   # the last look the sampler took while it ran
-    my ($planned, $ran, $passed, $failed, $skipped, $todofail) = parse-tap($out);
+    my ($planned, $ran, $passed, $failed, $skipped, $todofail, $todopass) = parse-tap($out);
     # New fields go on the END: the unpack below is positional. [9] is the
     # worker's error slot, set only when this sub throws.
     [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP'),
      $skipped, $todofail, $cpu, Nil,
      ($FAILED && !$FAILEDFILE && ($failed || $timedout) ?? failed-lines($err, $f) !! ()), # an Array stays one item
-     fudge-directives($f, $out)];
+     fudge-directives($f, $out), $todopass];
 }
 
 # Record a file the harness could not measure: no result at all, or a run that
@@ -755,7 +758,7 @@ my sub tally($k) {
     my $sec = seckey($rel);
     my $r = @result[$k];
     my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
-    my ($skipped, $todofail) = $r[6] // 0, $r[7] // 0;
+    my ($skipped, $todofail, $todopass) = $r[6] // 0, $r[7] // 0, $r[12] // 0;
     fudge-tally($r[11] // {});
     if ($r[9] // Nil).defined {   # run-one threw; the worker caught it and said so here
         lose($k, ~$r[9]);
@@ -780,6 +783,7 @@ my sub tally($k) {
         $tot-pass += $passed;
         $tot-skip += $skipped;
         $tot-todofail += $todofail;
+        $tot-todopass += $todopass;
         %sec-pass{$sec} += $passed;
         %sec-tot{$sec}  += $ran;
         if $planned >= 0 {
@@ -801,6 +805,7 @@ my sub tally($k) {
     $tot-pass += $passed;
     $tot-skip += $skipped;
     $tot-todofail += $todofail;
+    $tot-todopass += $todopass;
     %sec-pass{$sec} += $passed;
     %sec-tot{$sec}  += $ran;
     # "planned" denominator: how many tests the file *intended* to run. Where a plan
@@ -1062,6 +1067,14 @@ say sprintf("  of which shielded:  %d skipped + %d todo-failed = %d (%.2f%% of t
             $tot-skip, $tot-todofail, $shielded, $tot-pass ?? 100 * $shielded / $tot-pass !! 0);
 say sprintf("Assertions passed NET of skip/todo: %d / %d  (%.1f%%)  of ALL declared tests",
             $net, $declared, $declared ?? 100 * $net / $declared !! 0);
+# The same with every skipped or todo-marked test taken out of BOTH sides, the
+# ones that pass under a todo included: of the tests the suite (and its fudge
+# directives) expects to pass, how many do.
+my $fudged    = $shielded + $tot-todopass;
+my $must-pass = $declared - $fudged;
+my $do-pass   = $tot-pass - $fudged;
+say sprintf("Assertions passed, skip/todo excluded: %d / %d  (%.1f%%)  of ALL declared tests less %d skipped or todo (%d of them todo-passed)",
+            $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0, $fudged, $tot-todopass);
 
 # ---- Files with #?rakudo fudge directives: how many, which verbs, how they did.
 # The skip/todo figures above cover the suite's own skip()/todo() calls too;
