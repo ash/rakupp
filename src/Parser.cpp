@@ -1198,6 +1198,9 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    t.text == "\xE2\x9A\x9B" ||               // prefix ⚛ (atomic read): `say ⚛$x`
                    // `test *..1, …` — a Whatever RANGE endpoint can only be an arg
                    // (infix `*` would need a term after it, and `..` isn't one)
+                   // `isa-ok *[0], …` — a TIGHT subscript on `*` curries too
+                   (t.text == "*" && &t == &cur() && !peek().spaceBefore &&
+                    (peek().kind == Tok::LBracket || peek().kind == Tok::LBrace)) ||
                    (t.text == "*" && &t == &cur() &&
                     ((peek().kind == Tok::Op &&
                       (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
@@ -1205,7 +1208,11 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                        // `say *.abs` / `map *.abs, @a` — a tight `.method` on `*`
                        // is a WhateverCode argument, never infix multiplication
                        (peek().text == "." && !peek().spaceBefore &&
-                        peek(2).kind == Tok::Ident))) ||
+                        (peek(2).kind == Tok::Ident ||
+                         // …or a `.&sub` / `.^meta` / `.?maybe` / `.!private` call
+                         (peek(2).kind == Tok::Var && !peek(2).text.empty() && peek(2).text[0] == '&') ||
+                         (peek(2).kind == Tok::Op && !peek(2).spaceBefore &&
+                          (peek(2).text == "^" || peek(2).text == "?" || peek(2).text == "&")))))) ||
                      (peek().kind == Tok::Ident &&
                       (userInfix_.count(peek().text) ||
                        peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
@@ -2404,6 +2411,21 @@ ExprPtr Parser::parsePrefix(bool tight) {
         markAnonDecl(inner.get());
         return inner;
     }
+    // `anon Str sub {…}` — the type between the declarator and the routine is
+    // its return type, as `my Str sub f` gives one to a named routine
+    if (isKind(Tok::Ident) && cur().text == "anon" && peek().kind == Tok::Ident &&
+        peek(2).kind == Tok::Ident && (peek(2).text == "sub" || peek(2).text == "method") &&
+        !peek().text.empty() && ascii::isupper((unsigned char)peek().text[0])) {
+        advance();
+        std::string prefixType = advance().text;
+        ExprPtr inner = parsePrefix(tight);
+        if (inner && inner->kind == NK::BlockExpr) {
+            auto* be = static_cast<BlockExpr*>(inner.get());
+            if (be->retType.empty()) be->retType = prefixType;
+        }
+        markAnonDecl(inner.get());
+        return inner;
+    }
     if (cur().kind == Tok::Op) {
         const std::string& o = cur().text;
         // hyper prefix: -«(1,2) / -<<@a / --<<%h — apply the prefix op to every
@@ -2901,7 +2923,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 auto bin = std::make_unique<Binary>();
                 bin->op = "**";
                 bin->lhs = std::make_unique<VarExpr>("$_");
-                bin->rhs = parsePrefix(true);
+                // a literal exponent is ONLY that literal: in `@a»².sum` the
+                // `.sum` belongs to the hyper's result, not to the 2
+                if (isKind(Tok::IntLit) || isKind(Tok::NumLit)) bin->rhs = parsePrimary();
+                else bin->rhs = parsePrefix(true);
                 es->e = std::move(bin);
             }
             blk->body.push_back(std::move(es));
@@ -3722,6 +3747,14 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             }
             continue;
         }
+        // `my @a does R` — the role is mixed into the new container
+        if (onVarDecl && isIdent("does") && peek().kind == Tok::Ident) {
+            advance();
+            std::string rn = advance().text;
+            while (isOp("::") && peek().kind == Tok::Ident) { advance(); rn += "::" + advance().text; }
+            lastDoesRoles_.push_back(rn);
+            continue;
+        }
         advance();
         // `is readonly` is a PARAMETER trait; on a variable declaration it's a
         // compile error (X::Comp::Trait::Unknown) — roast S03-binding/ro.t.
@@ -3865,6 +3898,22 @@ std::string Parser::sigillessTermName(const std::string& nm) {
 }
 
 ExprPtr Parser::parseDeclarator(const std::string& scope) {
+    // `my Int:D constant \a .= new: 42` — a TYPED constant in expression
+    // position: the type (and its smiley) belong to the constant
+    if (scope != "constant" && isKind(Tok::Ident) && !cur().text.empty() &&
+        ascii::isupper((unsigned char)cur().text[0])) {
+        size_t k = 1;
+        if (peek(1).kind == Tok::Op && peek(1).text == ":" && peek(2).kind == Tok::Ident &&
+            (peek(2).text == "D" || peek(2).text == "U" || peek(2).text == "_")) k = 3;
+        if (peek((int)k).kind == Tok::Ident && peek((int)k).text == "constant") {
+            std::string t = cur().text;
+            for (size_t j = 0; j <= k; j++) advance();   // type [: smiley] constant
+            ExprPtr d = parseDeclarator("constant");
+            if (d && d->kind == NK::VarExpr && static_cast<VarExpr*>(d.get())->declType.empty())
+                static_cast<VarExpr*>(d.get())->declType = t;
+            return d;
+        }
+    }
     if (matchOp("\\")) {
         // sigilless: my \x = ...
         std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
@@ -4346,8 +4395,21 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (!keyType.empty())
             ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
-        lastWillPhaser_.clear(); lastWillBlock_.reset(); lastOfType_.clear();
+        lastWillPhaser_.clear(); lastWillBlock_.reset(); lastOfType_.clear(); lastDoesRoles_.clear();
         skipTraits(scope != "has", &ve->declDefault);
+        // …emitted as `VAR does R` right after this statement
+        // (a `$` variable's role goes on its Scalar CONTAINER, which rakupp
+        // does not have — left alone rather than mixed into the Any it holds)
+        if (!ve->name.empty() && ve->name[0] != '@' && ve->name[0] != '%') lastDoesRoles_.clear();
+        for (auto& rn : lastDoesRoles_) {
+            auto bin = std::make_unique<Binary>();
+            bin->op = "does";
+            bin->lhs = std::make_unique<VarExpr>(ve->name);
+            bin->rhs = std::make_unique<NameTerm>(rn);
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(bin);
+            pendingStmts_.push_back(std::move(es));
+        }
+        lastDoesRoles_.clear();
         if (!lastOfType_.empty()) {
             if (ve->declType.empty() || ve->declType.find(',') == std::string::npos) ve->declType = lastOfType_;
             lastOfType_.clear();
@@ -6103,9 +6165,17 @@ ExprPtr Parser::parsePrimary() {
                 return h;
             }
             // anonymous block / closure
+            const std::string openTrail = trailingPodFor(t.line);
             auto blk = parseBlock();
             auto be = std::make_unique<BlockExpr>();
             be->body = std::move(blk->stmts);
+            be->pod = leadingPodFor(t.line); be->podLine = t.line;
+            attachTrailingPod(*be);
+            // …or the `#=` just inside its opening brace (`{;` / `#= doc` / `}`)
+            if (be->podTrail.empty() && !openTrail.empty()) {
+                be->podTrail = openTrail;
+                be->pod = be->pod.empty() ? openTrail : be->pod + "\n" + openTrail;
+            }
             return be;
         }
         case Tok::Op: {
@@ -6417,7 +6487,7 @@ ExprPtr Parser::parsePrimary() {
             // control-flow in expression position: `... or return X`, `... or last`
             // — but `next => 42` / `last => 1` is a fat-arrow Pair, the key autoquotes
             if ((name == "return" || name == "return-rw" || name == "last" || name == "next" || name == "redo") &&
-                peek().kind != Tok::FatArrow) {
+                peek().kind != Tok::FatArrow && !kwShadowed(name)) {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = name;
@@ -6499,6 +6569,7 @@ ExprPtr Parser::parsePrimary() {
             if (name == "sub" || name == "method") {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
+                be->pod = leadingPodFor(cur().line); be->podLine = cur().line;
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
                 be->isMethodTerm = name == "method"; // …and a method binds `self`
                 if (isKind(Tok::Ident)) advance(); // optional name (anon use)
@@ -6525,6 +6596,7 @@ ExprPtr Parser::parsePrimary() {
                     routineDepth_--;
                     be->body = std::move(blk->stmts);
                 }
+                attachTrailingPod(*be);
                 return be;
             }
             // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`,
@@ -6843,6 +6915,22 @@ ExprPtr Parser::parsePrimary() {
                 toks_[pos_].text = cur().text.substr(1);
                 auto w = readAngleWords(">");
                 name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
+            // `circumfix:<[ ]>(…)` / `postcircumfix:<{ }>(…)` — the two bracket
+            // words, as a declaration names them
+            else if ((name == "circumfix" || name == "postcircumfix") && isOp(":") && !cur().spaceBefore &&
+                     ((peek().kind == Tok::QwList && !peek().spaceBefore) ||
+                      (peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore))) {
+                advance(); // :
+                std::vector<std::string> w;
+                if (isKind(Tok::QwList)) {
+                    std::istringstream ws(advance().text);
+                    for (std::string x; ws >> x; ) w.push_back(x);
+                }
+                else { advance(); w = readAngleWords(">"); }
+                std::string joined;
+                for (auto& x : w) joined += (joined.empty() ? "" : " ") + x;
+                name += ":<" + joined + ">";
             }
             // pseudo-package access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
             // (the lexer folds the trailing `::` into the identifier) — the symbol is
@@ -7223,6 +7311,8 @@ ExprPtr Parser::parsePrimary() {
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur(), name);
+            // `now` and `time` are TERMS, never listops: `now +300` is now + 300
+            if (listopOk && (name == "now" || name == "time") && cur().kind != Tok::LParen) listopOk = false;
             // Higher-order list builtins accept a pointy-block first arg without parens:
             // `map -> $v {…}, @list` (a bare `{…}` already works via startsListopArg). Gated
             // to these names so a general `bareword ->` isn't misread as a listop call.
@@ -7562,7 +7652,7 @@ ExprPtr Parser::qqwwList(const std::vector<std::string>& words) {
 }
 
 // ---------------- string interpolation ----------------
-ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
+ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     Lexer lx(src);
     Parser p(lx.tokenize());
     // Inherit user-defined operators so `"{ 4! }"` sees this program's `postfix:<!>`
@@ -7577,8 +7667,9 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     p.wordInfixSubs_ = wordInfixSubs_;   // `"{ div 3 }"` sees this unit's `sub div`
     p.kwNamedSubs_ = kwNamedSubs_;       // …and its `sub if`, so `"{ if() }"` calls it
     Program prog = p.parseProgram();
-    // a single bare expression interpolates directly
-    if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt)
+    // a single bare expression interpolates directly — unless it is a `{…}`
+    // block that declares something: `"{my $n = 2}"` must not leak `$n` out
+    if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt && !ownScope)
         return std::move(static_cast<ExprStmt*>(prog.stmts[0].get())->e);
     // statements (with modifiers, e.g. `{ 'x' if $y }`) run as a do-block
     auto be = std::make_unique<BlockExpr>();
@@ -7713,7 +7804,8 @@ static void rethrowIfObsolete() {
 // quoted spans: a brace inside '…' or "…" is text, not nesting — `{sym('{')}`
 // must not swallow the rest of the string. Returns the inner text and leaves
 // `j` on the closing brace (or n).
-static std::string scanInterpBlock(const std::string& raw, size_t& j) {
+static std::string scanInterpBlock(const std::string& raw, size_t& j,
+                                   char open = '{', char close = '}') {
     size_t n = raw.size();
     int depth = 1; std::string inner;
     char q = 0;                    // active quote char inside the block, if any
@@ -7724,8 +7816,8 @@ static std::string scanInterpBlock(const std::string& raw, size_t& j) {
             if (c == q) q = 0;
         }
         else if (c == '\'' || c == '"') q = c;
-        else if (c == '{') depth++;
-        else if (c == '}') { depth--; if (depth == 0) break; }
+        else if (c == open) depth++;
+        else if (c == close) { depth--; if (depth == 0) break; }
         inner += c; j++;
     }
     return inner;
@@ -7965,7 +8057,21 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             size_t j = i + 1;
             std::string inner = scanInterpBlock(raw, j);
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(inner)); } catch (...) { rethrowIfObsolete(); }
+            // a declarator WORD (`my`, `our`, `state`, `constant`) followed by space
+            auto declares = [&]() {
+                for (const char* kw : {"my", "our", "state", "constant"}) {
+                    size_t L = strlen(kw);
+                    for (size_t at = inner.find(kw); at != std::string::npos; at = inner.find(kw, at + 1)) {
+                        bool startOk = at == 0 || !(ascii::isalnum((unsigned char)inner[at - 1]) ||
+                                                    strchr("_$@%&-", inner[at - 1]));
+                        bool endOk = at + L < inner.size() && ascii::isspace((unsigned char)inner[at + L]);
+                        if (startOk && endOk) return true;
+                    }
+                }
+                return false;
+            };
+            try { result->parts.push_back(parseEmbeddedExpr(inner, declares())); }
+            catch (...) { rethrowIfObsolete(); }
             i = j + 1;
             continue;
         }
@@ -8026,6 +8132,16 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             } else if (j < n && raw[j] == '{') {
                 int d = 1; var += raw[j++];
                 while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
+                commit();
+            } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '\'' || raw[j+1] == '"') &&
+                       raw.find(raw[j+1], j + 2) != std::string::npos &&
+                       raw.find(raw[j+1], j + 2) + 1 < n && raw[raw.find(raw[j+1], j + 2) + 1] == '(') {
+                // indirect method name: `"$x.'f'()"` / `"$x."f"()"` — parens required
+                size_t qe = raw.find(raw[j+1], j + 2);
+                var += raw.substr(j, qe + 1 - j);
+                j = qe + 1;
+                int d = 1; var += raw[j++];
+                while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
                 commit();
             } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
                 var += raw[j++]; // .
@@ -8131,6 +8247,20 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 continue;
             }
             // bare &name without parens: stays literal text
+        }
+        // `"$( expr )"` — the item contextualizer interpolates its expression
+        // (and a `my` inside it declares into the enclosing scope). Only `$`:
+        // Rakudo leaves `@(…)`, `%(…)` and `&(…)` as literal text.
+        if (c == '$' && fS && i + 1 < n && raw[i + 1] == '(') {
+            size_t j = i + 2;
+            std::string inner = scanInterpBlock(raw, j, '(', ')');
+            if (j < n) {
+                flush();
+                try { result->parts.push_back(parseEmbeddedExpr("$(" + inner + ")")); }
+                catch (...) { rethrowIfObsolete(); lit += raw.substr(i, j + 1 - i); }
+                i = j + 1;
+                continue;
+            }
         }
         // `$:name` is the implicit NAMED placeholder parameter; it interpolates like
         // any other twigilled variable. (A bare `$:` is a compile error in Rakudo,
@@ -8527,6 +8657,19 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
     std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
+    // the `#=` that documents the parameter just parsed: on the line the parse
+    // has reached, on its last token's line, or alone on a line in between
+    // (`Str $param` / `#= documented` / `)`)
+    auto claimPod = [&](size_t idx) {
+        auto di = declPod_.find(cur().line);
+        if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
+        if (di == declPod_.end() && pos_ > 0)
+            for (int L = toks_[pos_ - 1].line + 1; L < cur().line; L++) {
+                auto d2 = declPod_.find(L);
+                if (d2 != declPod_.end() && !declPod_.count(-L)) { di = d2; break; }
+            }
+        if (di != declPod_.end()) podClaims.push_back({idx, di->first});
+    };
     // The trait ladder after a parameter — `where … is rw is copy is raw is required
     // is encoded('utf8') returns … of …`. One copy: the named-alias path
     // (`:name($n) is required`) used to carry its own, without `is required`.
@@ -8683,7 +8826,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // sigilless capture parameter: \a  -> bound under bare name
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
-            if (!p.name.empty()) sigilless_.insert(p.name);
+            if (!p.name.empty()) { sigilless_.insert(p.name); noteKwShadow(p.name); }
             // paren sub-signature, same as on a sigilled param below:
             parseSigillessTail(p);
             // `method finalize(\SELF:)` — the bare colon marks a SIGILLESS
@@ -8934,13 +9077,19 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // coercion type Str(Cool)  OR  destructuring sub-signature  Pair ( :key($k), … )
             // Coercion is the tight single-ident form; anything else is a sub-signature.
             if (isKind(Tok::LParen)) {
+                // (the from-type may carry a smiley: `Str(Cool:D)`)
+                const bool fromSmiley = peek().kind == Tok::Ident && peek(2).kind == Tok::Op &&
+                                        peek(2).text == ":" && peek(3).kind == Tok::Ident &&
+                                        (peek(3).text == "D" || peek(3).text == "U" || peek(3).text == "_") &&
+                                        peek(4).kind == Tok::RParen;
                 bool coercion = !cur().spaceBefore &&
-                                ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) ||
+                                ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) || fromSmiley ||
                                  peek().kind == Tok::RParen); // `Foo()` — coerce from Any
                 if (coercion) {
                     p.coerce = true;
                     advance(); // (
                     if (isKind(Tok::Ident)) p.coerceFrom = advance().text; // the from-type; "" for `Foo()`
+                    if (fromSmiley) { advance(); p.coerceFrom += ":" + advance().text; }
                     advance(); // )
                 }
                 else {
@@ -9029,7 +9178,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         } else if (matchOp("\\")) { // typed sigilless capture:  Iterator:D \iter
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
-            if (!p.name.empty()) sigilless_.insert(p.name);
+            if (!p.name.empty()) { sigilless_.insert(p.name); noteKwShadow(p.name); }
             // paren sub-signature, same as on a sigilled param below:
             parseSigillessTail(p);
         } else if (isKind(Tok::Var)) {
@@ -9153,7 +9302,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!params.empty())
                 throw ParseError("Can only use : as invocant marker in a signature after the first parameter",
                                  cur().line, "X::Syntax::Signature::InvocantMarker", {});
-            advance(); p.invocant = true; params.push_back(std::move(p)); continue;
+            advance(); p.invocant = true;
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
+            claimPod(params.size());                          // …and its `#=`
+            params.push_back(std::move(p)); continue;
         }
         parseParamTraits(p); // where / is / returns / of trait clauses
         // …and a destructuring sub-signature may sit after them too:
@@ -9169,7 +9321,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // `(::?CLASS:U $_ is rw: **@values)` — BinaryHeap's writable
         // class-invocant form. The check above runs before the trait loop, so
         // this spelling used to die "expected ) (got ':')".
-        if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
+        if (isOp(":")) {
+            advance(); p.invocant = true;
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
+            claimPod(params.size());                          // …and its `#=`
+            params.push_back(std::move(p)); continue;
+        }
         if (matchOp("=")) {
             p.defaultVal = parseExpr(BP_ASSIGN);
             // a trait or constraint AFTER the default is out of place
@@ -9191,9 +9348,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
           // gives that one to the routine (`sub MAIN(Int $x) {}  #= doc` shows
           // `-- doc` on the usage line and NO option entry). Recorded here,
           // resolved below once the closing line is known (issue #17).
-            auto di = declPod_.find(cur().line);
-            if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
-            if (di != declPod_.end()) podClaims.push_back({params.size(), di->first});
+            claimPod(params.size());
             // A `#|` above the param — but not the ROUTINE's own, which on a
             // one-line signature is "above" the parameters too. (A resolved
             // `#=` claim overrides this below — the old precedence.)
@@ -9272,7 +9427,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         int closeLine = isKind(Tok::End) ? 0x7fffffff : cur().line;
         for (auto& cl : podClaims)
             if (cl.second < closeLine) {
+                params[cl.first].podLead = params[cl.first].pod; // a `#|` it may also have
                 params[cl.first].pod = declPod_.at(cl.second);
+                params[cl.first].podTrail = params[cl.first].pod;
                 claimedPodLines_.insert(cl.second);
             }
     }
@@ -9287,6 +9444,10 @@ std::vector<Param> Parser::parsePointyParams() {
 
 StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // 'sub' already consumed by caller
+    // a keyword-named sigilless parameter (`\return`) shadows the keyword in
+    // THIS routine only
+    struct KwShadowMark { std::vector<std::string>& v; size_t n; ~KwShadowMark() { v.resize(n); } }
+        kwShadowMark{kwShadow_, kwShadow_.size()};
     auto s = std::make_unique<SubDecl>();
     int subDeclLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
     s->pod = leadingPodFor(subDeclLine); // `#|` above the decl
@@ -9834,6 +9995,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
 StmtPtr Parser::parseSubset() {
     // 'subset' already consumed:  subset NAME [of TYPE] [where EXPR] ;
     auto sd = std::make_unique<SubsetDecl>();
+    const int subsetLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
     if (isKind(Tok::Ident)) sd->name = advance().text;
     if (!sd->name.empty()) declTypeNames_.insert(sd->name);
     // `of` and traits come in EITHER order — Cro writes `of Str is export`,
@@ -9890,12 +10052,17 @@ StmtPtr Parser::parseSubset() {
         break;
     }
     if (isIdent("where")) { advance(); sd->where = parseExpr(BP_ASSIGN); }
+    sd->pod = leadingPodFor(subsetLine);
+    sd->podTrail = trailingPodFor(subsetLine);
+    if (!sd->podTrail.empty()) sd->pod = sd->pod.empty() ? sd->podTrail : sd->pod + "\n" + sd->podTrail;
     return sd;
 }
 
 StmtPtr Parser::parseEnum() {
     // 'enum' already consumed:  enum [NAME] [of TYPE] ( <words> | (pairs) | «words» )
     auto ed = std::make_unique<EnumDecl>();
+    const int enumLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+    ed->pod = leadingPodFor(enumLine);
     if (isKind(Tok::Ident)) ed->name = advance().text;
     else if (isOp("::")) advance();   // `enum :: <un>` — anonymous, spelled out
     if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) advance(); }
@@ -9969,6 +10136,8 @@ StmtPtr Parser::parseEnum() {
     }
     else if (ed->values)
         declTypesOpaque_ = true;
+    ed->podTrail = trailingPodFor(enumLine);
+    if (!ed->podTrail.empty()) ed->pod = ed->pod.empty() ? ed->podTrail : ed->pod + "\n" + ed->podTrail;
     return ed;
 }
 
@@ -10169,6 +10338,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         ~DepthGuard() { d--; }
     } classDepthGuard(classDepth_);
     auto cd = std::make_unique<ClassDecl>();
+    // the class whose body is being parsed, for a `has` nested in one of its subs
+    classDeclStack_.push_back(cd.get());
+    struct ClassStackPop { std::vector<ClassDecl*>& v; ~ClassStackPop() { v.pop_back(); } } classStackPop{classDeclStack_};
     {   // `#|` above the decl and `#=` below it are BOTH the declaration's doc,
         // and a declaration carrying the two answers them joined by a newline.
         int dl = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
@@ -10426,6 +10598,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             continue;
         }
         if (isIdent("has") || isIdent("HAS")) {
+            const int hasLine = cur().line;
+            auto attrPod = [&](AttrDecl& a) {
+                a.declLine = hasLine;
+                a.pod = leadingPodFor(hasLine);
+                a.podTrail = trailingPodFor(hasLine);
+                if (!a.podTrail.empty()) a.pod = a.pod.empty() ? a.podTrail : a.pod + "\n" + a.podTrail;
+            };
             if (isPackage)
                 throw ParseError("A " + kindKw + " cannot have attributes",
                                  cur().line, "X::Attribute::Package",
@@ -10439,7 +10618,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
             std::string attrType;
             int attrSmiley = 0; // :D=1, :U=2 (:_ / none = 0)
-            if (isKind(Tok::Ident)) {
+            // `has ::?CLASS $.attr` — the enclosing class as the attribute's type
+            if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" && peek(2).kind == Tok::Ident) {
+                advance(); advance(); advance(); // :: ? CLASS
+                attrType = typeStack_.empty() ? std::string() : typeStack_.back();
+                if (isOp(":") && peek().kind == Tok::Ident) {
+                    advance(); std::string sm = advance().text;
+                    if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;
+                }
+            }
+            else if (isKind(Tok::Ident)) {
                 attrType = advance().text; // type name
                 if (isOp(":") && (peek().kind == Tok::Ident)) { // :D / :U / :_ smiley
                     advance(); std::string sm = advance().text;
@@ -10500,6 +10688,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             a.def = parseExpr(BP_ASSIGN);
                             checkVirtualCallInDefault(defStart);
                         }
+                        attrPod(a);
                         cd->attrs.push_back(std::move(a));
                     } else advance();
                     matchKind(Tok::Comma);
@@ -10624,6 +10813,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                                 std::string n = advance().text; add(n, n); return true;
                             }
                             if (isOp("*")) { advance(); add("*", "*"); return true; } // any unknown method
+                            // `handles /^hi|oo/` — every method whose NAME the regex matches
+                            if (isKind(Tok::RegexLit)) { std::string rx = advance().text; add("\x01rx:" + rx, ""); return true; }
                             return false;
                         };
                         if (isKind(Tok::LParen)) {
@@ -10769,6 +10960,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                        cur().text == "role" || cur().text == "grammar" ||
                        cur().text == "token" || cur().text == "rule" || cur().text == "regex")))
                     skipToStatementEnd();
+                attrPod(a);
                 cd->attrs.push_back(std::move(a));
             } else {
                 skipToStatementEnd();
@@ -10839,6 +11031,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                  (wasProtoMulti && (peek(la).text == "token" || peek(la).text == "rule" || peek(la).text == "regex")))) {
                 if (wasProtoMulti) advance(); // proto/multi
                 if (isIdent("token") || isIdent("rule") || isIdent("regex")) {
+                    const int ruleLine = cur().line;
                     std::string kind = advance().text;
                     std::string nm = isKind(Tok::Ident) ? advance().text : "";
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
@@ -10928,7 +11121,14 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             params.push_back(v);
                         }
                     }
-                    if (!nm.empty()) cd->rules.push_back({nm, pat, kind, params, lits});
+                    if (!nm.empty()) {
+                        cd->rules.push_back({nm, pat, kind, params, lits});
+                        auto& rd = cd->rules.back();
+                        rd.declLine = ruleLine;
+                        rd.pod = leadingPodFor(ruleLine);
+                        rd.podTrail = trailingPodFor(ruleLine);
+                        if (!rd.podTrail.empty()) rd.pod = rd.pod.empty() ? rd.podTrail : rd.pod + "\n" + rd.podTrail;
+                    }
                     continue;
                 }
             }
@@ -11542,6 +11742,20 @@ StmtPtr Parser::parseStatementImpl() {
                                  "maybe you'd like a class or a role?",
                                  t.line, "X::Attribute::NoPackage", {});
         }
+        // …and nested in a class-body SUB, the attribute still belongs to the
+        // class: `class C { sub f { has $.x } }` gives C its `.x`
+        if (kw == "has" && !classDeclStack_.empty() && peek().kind == Tok::Var) {
+            advance(); // has
+            std::string vn = advance().text;
+            AttrDecl a;
+            a.sigil = vn[0];
+            size_t idx = 1;
+            if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = vn[1] == '.'; idx = 2; }
+            a.name = vn.substr(idx);
+            skipToStatementEnd();
+            classDeclStack_.back()->attrs.push_back(std::move(a));
+            return std::make_unique<EmptyStmt>();
+        }
         if (kw == "my" || kw == "our" || kw == "state" || kw == "has" ||
             kw == "anon" || kw == "unit" || kw == "augment") {
             if (peek().kind == Tok::Ident && declKw.count(peek().text)) {
@@ -11602,14 +11816,21 @@ StmtPtr Parser::parseStatementImpl() {
                 if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declScope == "constant")
                     static_cast<VarExpr*>(e)->declMyConstant = true;
             };
-            if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) {
+            // (the type may carry a smiley: `my Int:D constant \a .= new: 42`)
+            const bool smileyDecl = peek().kind == Tok::Ident && peek(2).kind == Tok::Op && peek(2).text == ":" &&
+                                    !peek(2).spaceBefore && peek(3).kind == Tok::Ident &&
+                                    (peek(3).text == "D" || peek(3).text == "U" || peek(3).text == "_") &&
+                                    peek(4).kind == Tok::Ident && declKw.count(peek(4).text);
+            if ((peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) || smileyDecl) {
                 advance(); // scope
                 std::string prefixType = advance().text;
+                if (smileyDecl) { advance(); advance(); }   // the :D / :U / :_ smiley
                 StmtPtr st = parseStatement();
                 // `my Bool sub f` — the prefix type IS the return type, checked
                 // like `--> Bool`; it used to be stripped and forgotten
                 if (st && st->kind == NK::SubDecl) {
                     auto* sd = static_cast<SubDecl*>(st.get());
+                    if (kw == "our") sd->isOur = true;   // `our Str sub f` is package-scoped too
                     if (sd->retType.empty()) sd->retType = prefixType;
                     // `my Int sub f(--> Str)` — a second, different return type
                     else if (sd->retType != prefixType)
@@ -12277,7 +12498,7 @@ StmtPtr Parser::parseStatementImpl() {
             if (isIdent("while") || isIdent("until")) {
                 r->isUntil = (cur().text == "until"); advance();
                 r->cond = parseExpression();
-                if (matchOp("->")) { if (isKind(Tok::Var)) advance(); } // pointy var (ignored)
+                if (matchOp("->")) { if (isKind(Tok::Var)) r->var = advance().text; } // pointy var
                 r->body = parseBlock();
             } else {
                 r->body = parseBlock();
@@ -12288,7 +12509,9 @@ StmtPtr Parser::parseStatementImpl() {
             }
             return r;
         }
-        if (kw == "return" || kw == "return-rw") {
+        // (a sigilless TERM of that name — `sub f(\return) { return === Nil }` —
+        // is the variable, not the statement)
+        if ((kw == "return" || kw == "return-rw") && !kwShadowed(kw)) {
             advance();
             auto r = std::make_unique<ReturnStmt>();
             r->isRw = (kw == "return-rw");
@@ -12504,6 +12727,8 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             stubbed.erase(std::remove(stubbed.begin(), stubbed.end(), cd->name),
                           stubbed.end());
             completedPkgs_.insert(cd->name);  // …wherever the body stands (see the unit check)
+            // the body is a scope of its own: `package P { sub p {…}; sub p {…} }` redeclares
+            checkRedeclarations(cd->body);
             // A bare `package`/`module` is a WEAK namespace declaration: it only
             // opens the name to hold `our`-scoped symbols and may coexist with a
             // later `class`/`role`/`grammar` of the same name that refines it

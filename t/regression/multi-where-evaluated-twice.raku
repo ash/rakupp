@@ -77,7 +77,8 @@ check((try @c[0](-1)) // $!.^name, 'X::TypeCheck::Binding::Parameter',
 # --- the no-match error names what was passed -------------------------------
 multi only(Int $n where * > 0) { 'ok' }
 my $msg = (try only(-1)) // $!.message;
-check($msg.contains('only(Int)'), True,
+# (in Rakudo's own spelling, definedness included: `only(Int:D)`)
+check($msg.contains('only(Int:D)'), True,
     'the no-match error names the arguments instead of empty parens');
 
 if @fail { note "FAIL:\n" ~ @fail.join("\n"); exit 1 }

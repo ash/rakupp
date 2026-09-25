@@ -109,6 +109,13 @@ Value numifyStrFailure(const std::string& in);
 // An ARMED Failure: payload type + diagnostic, throwing the moment it is used.
 // A negative subscript is out of range (see the definitions in Interpreter.cpp).
 Value negIndexFailure(long long i);            // reads: the armed X::OutOfRange Failure
+// a native element type (`int`, `uint8`, `num32`, `str`, …) — a natively typed array has no containers
+inline bool isNativeElemType(const std::string& ot) {
+    for (const char* p : {"int", "uint", "num", "str", "byte", "atomicint"})
+        if (ot.compare(0, strlen(p), p) == 0) return true;
+    return false;
+}
+long long writeIndexInt(const Value& k); // a WRITE index: Inf/NaN throw instead of growing to LLONG_MAX
 [[noreturn]] void negIndexThrow(long long i);   // writes: throw it
 // `Empty` is a SINGLETON empty Slip: `Empty === Empty` and `slip() === Empty`
 // are both True, and `===` on a list compares storage, so every mention must
@@ -1624,6 +1631,8 @@ public:
     // ordinary eval+boolify), else 0/1.
     int tryCondBool(Expr* e);
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
+    void preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts); // `{ our sub f {…} }` → &OUR::f at compile time
+    void callRoutineTrait(const Value& tm, const Value& code, const struct SubTraitSpec& st);
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
@@ -1711,6 +1720,7 @@ public:
     std::mutex beginCacheMu_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    void coerceParam(const struct Param& p, Value& v);   // bind a `T(F) $x` parameter
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -2902,6 +2912,7 @@ public:
     // Z=> / Z, emit rules). Public: the free applyArith ladder reaches it
     // through g_cbInterp, the member ladders call it directly.
     Value zxOp(const std::string& op, Value l, Value r);
+    Value zxOpPublic(const std::string& op, Value l, Value r) { return zxOp(op, std::move(l), std::move(r)); }
     // The `.can`/`.^lookup` existence probe — call the method with no args and
     // watch for X::Method::NotFound. One unsafe-names list, one probe dance
     // (it lived as two verbatim copies that had already drifted on guards).

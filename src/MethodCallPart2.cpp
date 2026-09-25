@@ -265,6 +265,11 @@ Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
     (*at.hash())["built"] = Value::boolean(a.pub || a.built);
     (*at.hash())["package"] = Value::typeObj(ownerName);
     for (auto& ut : a.userTraits) (*at.hash())["trait:" + ut.first] = ut.second;
+    if (!a.pod.empty()) { // declarator pod, answered by .WHY
+        (*at.hash())["why"] = Value::str(a.pod);
+        (*at.hash())["whyTrail"] = Value::str(a.podTrail);
+        (*at.hash())["whyLine"] = Value::integer(a.declLine);
+    }
     a.metaObj = at;
     return at;
 }
@@ -426,6 +431,14 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy())
         (*rec.hash())["bin"] = Value::boolean(true);
     (*proc.hash())[key].arr()->push_back(rec);
+    // the MERGED `.Supply` hears stderr as well (its end is announced once)
+    if (inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply") {
+        Value rec2 = Value::makeHash();
+        *rec2.hash() = *rec.hash();
+        (*rec2.hash())["done"] = Value::any();
+        if (!proc.hash()->count("taps-err")) (*proc.hash())["taps-err"] = Value::array();
+        (*proc.hash())["taps-err"].arr()->push_back(rec2);
+    }
 }
 
 void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
@@ -1992,6 +2005,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "done" || m == "close" || m == "quit") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
+        // a listening socket's tap knows where it listens (Promises, as in Rakudo)
+        if ((m == "socket-host" || m == "socket-port") && inv.hash() && inv.hash()->count(m))
+            return (*inv.hash())[m];
         // .close removes the tap from its source: mark it closed so emit skips it;
         // a wired tap (on-demand supply / async socket) also tears down its
         // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
@@ -2154,6 +2170,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             return thunk;
         }
+        if (m == "set_rw") { h["readonly"] = Value::boolean(false); return inv; }         // trait_mod helpers
+        if (m == "set_readonly") { h["readonly"] = Value::boolean(true); return inv; }
         if (m == "has_build") return Value::boolean(h.count("build") && h["build"].t == VT::Code);
         if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
         if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
@@ -2297,6 +2315,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // divider) and the caption from its config.
         if (m == "headers")  return h.count("headers") ? h["headers"] : Value::array();
         if (m == "caption")  return h.count("caption") ? h["caption"] : Value::str("");
+        if (m == "term")     return h.count("term") ? h["term"] : Value::str("");       // Pod::Defn
         // a declarator block's own three: what it documents, and its parts
         if (m == "WHEREFORE") return h.count("WHEREFORE") ? h["WHEREFORE"] : Value::any();
         if (m == "leading")   return h.count("leading") ? h["leading"] : Value::any();
@@ -2559,7 +2578,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto sg = inv.hash()->find("signal");
             return Value::boolean((*inv.hash())["exitcode"].toInt() == 0 && (sg == inv.hash()->end() || sg->second.toInt() == 0));
         }
-        if (m == "command") { auto it = inv.hash()->find("argv"); return it != inv.hash()->end() ? it->second : Value::array(); }
+        if (m == "command") { // a List, as Proc::Async's is
+            auto it = inv.hash()->find("argv");
+            Value out = Value::array(); out.isList = true;
+            if (it != inv.hash()->end() && it->second.arr()) *out.arr() = *it->second.arrS();
+            return out;
+        }
         if (m == "in") { Value h = inv; h.hashKind = "ProcIn"; return h; } // writable stdin handle (shares hash)
         // `$proc.out` / `$proc.err` — a read handle over what the child wrote. It
         // keeps the Proc it came from: Rakudo's IO::Pipe.close answers that Proc,
@@ -2984,6 +3008,61 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return h;
         }
     }
+    // Lock::Async is a queue of Promises, not a mutex: `.lock` answers a Promise
+    // kept once the lock is this caller's, `.unlock` hands it to the next one
+    // waiting (or frees it). Nothing blocks — an await is where the waiting is.
+    if (inv.t == VT::Hash && inv.hashKind == "Lock::Async" && inv.hash() &&
+        (m == "lock" || m == "unlock" || m == "protect")) {
+        static std::mutex laM;
+        auto kept = [&]() {
+            Value p = methodCall(Value::typeObj("Promise"), "new", ValueList{});
+            methodCall(p, "keep", ValueList{Value::boolean(true)});
+            return p;
+        };
+        if (m == "lock") {
+            // the waiter's Promise is made FIRST, so that seeing the lock held
+            // and joining its queue are one step: split, an unlock in between
+            // found the queue empty, freed the lock, and this Promise was then
+            // queued behind nobody — kept by no one, ever
+            Value p = methodCall(Value::typeObj("Promise"), "new", ValueList{});
+            {
+                std::lock_guard<std::mutex> lk(laM);
+                auto& h = *inv.hash();
+                if (h.count("__held") && h["__held"].truthy()) {
+                    if (!h.count("__queue")) h["__queue"] = Value::array();
+                    h["__queue"].arr()->push_back(p);
+                    return p;
+                }
+                h["__held"] = Value::boolean(true);
+            }
+            methodCall(p, "keep", ValueList{Value::boolean(true)});
+            return p;
+        }
+        if (m == "unlock") {
+            Value next;
+            {
+                std::lock_guard<std::mutex> lk(laM);
+                auto& h = *inv.hash();
+                if (!h.count("__held") || !h["__held"].truthy())
+                    throwTyped("X::Lock::Async::NotLocked", {},
+                               "Cannot unlock a Lock::Async that is not currently locked");
+                auto q = h.find("__queue");
+                if (q != h.end() && q->second.arr() && !q->second.arr()->empty()) {
+                    next = q->second.arr()->front();
+                    q->second.arr()->erase(q->second.arr()->begin());
+                }
+                else h["__held"] = Value::boolean(false);
+            }
+            if (next.t == VT::Hash) methodCall(next, "keep", ValueList{Value::boolean(true)});
+            return Value::nil();
+        }
+        // protect: await the lock, run the block, release it however the block ends
+        Value p = methodCall(inv, "lock", ValueList{});
+        callBuiltin("await", ValueList{p});
+        struct Rel { Interpreter& I; Value l; ~Rel() { try { I.methodCall(l, "unlock", ValueList{}); } catch (...) {} } } rel{*this, inv};
+        if (args.empty() || args[0].t != VT::Code) return Value::nil();
+        return callCallable(args[0], {});
+    }
     if (inv.t == VT::Hash && (inv.hashKind == "Lock" || inv.hashKind == "Lock::Async")) {
         auto st = inv.ext() ? std::static_pointer_cast<LockState>(inv.ext()) : nullptr;
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
@@ -3000,7 +3079,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } return Value::boolean(true); }
         if (m == "unlock" || m == "release") { if (st) st->m.unlock(); return Value::boolean(true); }
-        if (m == "condition") { Value v = Value::makeHash(); v.hashKind = "Lock"; return v; }
+        if (m == "condition") {
+            Value v = Value::makeHash(); v.hashKind = "LockCondition";
+            if (st) { auto cs = std::make_shared<LockCondState>(); cs->lock = st; v.extM() = cs; }
+            return v;
+        }
+    }
+    // A Lock's condition variable: `.wait` releases the lock while it waits
+    // (and holds it again after), `.wait(&cond)` until the condition is true,
+    // `.signal` / `.signal_all` wake one / every waiter.
+    if (inv.t == VT::Hash && inv.hashKind == "LockCondition") {
+        auto cs = inv.ext() ? std::static_pointer_cast<LockCondState>(inv.ext()) : nullptr;
+        if (m == "signal")     { if (cs) cs->cv.notify_one(); return Value::nil(); }
+        if (m == "signal_all") { if (cs) cs->cv.notify_all(); return Value::nil(); }
+        if (m == "wait") {
+            if (!cs) return Value::nil();
+            Value pred = !args.empty() && args[0].t == VT::Code ? args[0] : Value::any();
+            auto ready = [&]() { return pred.t == VT::Code && boolify(callCallable(pred, {})); };
+            while (!ready()) {
+                // the lock is HELD (the caller is inside protect): wait releases
+                // it, so the signalling thread can take it, and re-takes it
+                std::unique_lock<std::recursive_mutex> lk(cs->lock->m, std::adopt_lock);
+                bool parked = gilPark();
+                cs->cv.wait(lk);
+                gilUnpark(parked);
+                lk.release();   // still held — protect releases it
+                if (pred.t != VT::Code) break;
+            }
+            return Value::nil();
+        }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Semaphore") {
         auto st = inv.ext() ? std::static_pointer_cast<SemaphoreState>(inv.ext()) : nullptr;
@@ -4423,6 +4530,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::string input = a.empty() ? "" : a[0].toStr();
                     Value r = grammarParse(ci.get(), input, sub, startRule, actions,
                                            ruleArgs.empty() ? nullptr : &ruleArgs);
+                    if (r.t == VT::Match && r.md() && actions.t != VT::Any && actions.t != VT::Nil)
+                        r.mdW().actions = std::make_shared<Value>(actions);   // `$match.actions`
                     // From 6.e a FAILED .parse is a Failure carrying
                     // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
                     // base class whose parse reports where it stopped. .subparse
@@ -4480,6 +4589,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const bool roleWantsOriginal = ci->isRole && isContainerMethodName(mn);
                 Value* um = roleWantsOriginal ? nullptr : ci->findMethod(mn);
                 if (um) return *um;
+                // a grammar's token/rule/regex is a method too: a Regex that
+                // matches its rule against what it is given, and knows its doc
+                for (ClassInfo* c = &*ci; c; c = c->parent.get()) {
+                    auto rit = c->rules.find(mn);
+                    if (rit == c->rules.end()) continue;
+                    std::string pat = rit->second;
+                    std::string kind = c->ruleKind.count(mn) ? c->ruleKind[mn] : "regex";
+                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    code.code()->name = mn;
+                    code.code()->isMethod = true;
+                    code.code()->isRegexRoutine = true;
+                    auto pit = c->rulePod.find(mn);
+                    if (pit != c->rulePod.end()) {
+                        code.code()->pod = std::get<0>(pit->second);
+                        code.code()->podTrail = std::get<1>(pit->second);
+                        code.code()->declLine = std::get<2>(pit->second);
+                    }
+                    code.code()->builtin = [pat, kind](Interpreter& I, ValueList& a) -> Value {
+                        return a.empty() ? Value::nil()
+                                         : I.regexMatch(I.rxSubject(a[0]), pat, nullptr, kind);
+                    };
+                    return code;
+                }
                 // An ATTRIBUTE ACCESSOR is a method too: `has $.type` publishes
                 // `.type`, and `.^find_method('type')` must find it. The
                 // accessors are generated at dispatch rather than stored in
@@ -5765,10 +5897,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // delegation of one would never be reached if the built-in answered first.
         // That is what left zef's config wrapper — `class :: { has %.hash handles
         // <… iterator list …> }` — iterating as a single opaque object.
+        // A TYPE in the handles list (`has $.backend handles Backend2`) delegates
+        // every method that type has.
+        auto handlesType = [&](const std::string& h) {
+            // …and a regex in it delegates every method whose name it matches
+            if (h.size() > 4 && h.compare(0, 4, "\x01rx:") == 0)
+            {   // the caller's `$/` is left as it was
+                Value* sl = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+                Value saved = sl ? *sl : Value::nil(); bool had = sl != nullptr;
+                bool hit = regexMatch(m, h.substr(4)).t == VT::Match;
+                if (had) if (Value* sl2 = tctx_.cur->find("$/")) *sl2 = saved;
+                return hit;
+            }
+            if (h.empty() || !ascii::isupper((unsigned char)h[0])) return false;
+            auto cit = classes_.find(h);
+            return cit != classes_.end() && cit->second && cit->second->findMethod(m) != nullptr;
+        };
         for (ClassInfo* c = ci.get(); c; c = c->parent.get())
             for (auto& a : c->attrs)
                 for (size_t hi = 0; hi < a.handles.size(); hi++)
-                    if (a.handles[hi] == m) {
+                    if (a.handles[hi] == m || handlesType(a.handles[hi])) {
                         auto ait = inv.obj()->attrs.find(a.name);
                         Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
                         if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
@@ -6131,7 +6279,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& c : inv.code()->candidates)
                     // the group's own `proto … {*}` is the dispatcher, not a
                     // candidate: Rakudo lists the multis only
-                    if (!(c.code() && c.code()->isProto && !c.code()->isProtoBody))
+                    // (with or without a body of its own)
+                    if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody)))
                         out.arr()->push_back(c);
             }
             else out.arr()->push_back(inv);
@@ -6645,6 +6794,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                        (inv.obj()->cls->name == "Metamodel::ClassHOW" ||
                         inv.obj()->cls->name == "Metamodel::ParametricRoleGroupHOW"));
         if (howInv) {
+            // the meta-object protocol's two-argument forms: `T.HOW.isa(T, U)` is `T.isa(U)`
+            if ((m == "isa" || m == "does" || m == "can") && args.size() == 2)
+                return methodCall(args[0], m, ValueList{args[1]});
             // `R.HOW.candidates(R)` — the declarations of R's role group
             if (m == "candidates" && !args.empty() && args[0].t == VT::Type) {
                 auto ci = classes_.find(args[0].s);
@@ -7055,7 +7207,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Match && m == "caps") {
         std::vector<std::pair<Value, Value>> entries;
         auto addEntry = [&](const Value& key, const Value& v) {
-            if (v.isList && v.arr()) { for (auto& e : *v.arr()) entries.push_back({key, e}); }
+            if ((v.isList || v.t == VT::Array) && v.arr()) { for (auto& e : *v.arr()) entries.push_back({key, e}); }
             else entries.push_back({key, v});
         };
         if (inv.arr()) for (size_t i = 0; i < inv.arr()->size(); i++)
@@ -7074,6 +7226,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (e.first.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(e.first);
             o.arr()->push_back(std::move(p));
         }
+        return o;
+    }
+    if (inv.t == VT::Match && m == "actions")
+        return inv.md() && inv.md()->actions ? *inv.md()->actions : Value::any();
+    // .chunks: the .caps pairs with the text BETWEEN them as `~ => Str` pairs,
+    // covering the whole match
+    if (inv.t == VT::Match && m == "chunks") {
+        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
+        Value caps = methodCall(inv, "caps", ValueList{});
+        Value o = Value::array(); o.isList = true;
+        long long pos = inv.rFrom();
+        auto gap = [&](long long to) {
+            if (to > pos && (size_t)to <= orig.size())
+                o.arr()->push_back(Value::pair("~", Value::str(orig.substr((size_t)pos, (size_t)(to - pos)))));
+        };
+        if (caps.arr())
+            for (auto& p : *caps.arr()) {
+                const Value* v = p.pairVal();
+                if (v && v->t == VT::Match) {
+                    gap(v->rFrom());
+                    pos = std::max(pos, (long long)v->rTo());
+                }
+                o.arr()->push_back(p);
+            }
+        gap(inv.rTo());
         return o;
     }
     if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list"

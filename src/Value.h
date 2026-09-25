@@ -459,6 +459,8 @@ struct Callable {
     ~Callable();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
+    unsigned char implicitArgs = 0;                   // …which of them: 1 = @_, 2 = %_ (for .signature)
+    bool hiddenFromUsage = false;                     // `is hidden-from-USAGE` — a MAIN candidate $*USAGE leaves out
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
     std::string podTrail;                             // …its `#=` part alone
@@ -543,6 +545,7 @@ struct MatchData {
     // A grammar CURSOR: the `self` a `<.method>` subrule call hands its method
     // (Interpreter.h's GrammarCursor). Null on every ordinary Match.
     std::shared_ptr<void> cursor;
+    std::shared_ptr<Value> actions;  // the :actions a grammar parse ran with (`.actions`)
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.
@@ -1128,6 +1131,8 @@ inline void setRangeEnds(Value& r, const Value& from, const Value& to) {
 
 struct ClassAttr {
     std::string name;
+    std::string pod, podTrail; // declarator pod (.WHY), as AttrDecl carries it
+    int declLine = 0;
     char sigil = '$';
     bool pub = true;
     bool rw = false;  // `is rw` — the public accessor is a writable lvalue
@@ -1200,6 +1205,7 @@ struct ClassInfo {
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
     std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
+    std::map<std::string, std::tuple<std::string, std::string, int>> rulePod; // name -> (pod, trailing part, line)
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     // `multi rule expr(0)` / `multi token pred(3)`: candidates constrained to
     // LITERAL argument values. They share a name, so each is stored in `rules`

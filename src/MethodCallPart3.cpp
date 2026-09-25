@@ -192,9 +192,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `$z.exp($base)` is `$base ** $z`, the same rule as the Real method
         // below — the base used to be dropped, so `(i*pi).exp(2)` answered
         // e**(i*pi) = -1 instead of 2**(i*pi) (S32-num/exp.t).
+        // (a Cool object argument counts as its .Numeric)
+        if ((m == "exp" || m == "log") && !args.empty() && args[0].t == VT::Object)
+            args[0] = methodCall(args[0], "Numeric", ValueList{});
         if (m == "exp" && !args.empty() && args[0].t != VT::Pair)
             return applyArith("**", args[0], inv);
         if (m == "exp") { auto r = std::exp(z); return Value::complex(r.real(), r.imag()); }
+        if (m == "cis") { // e ** (i * z)
+            auto r = std::exp(std::complex<double>(0.0, 1.0) * z);
+            return Value::complex(r.real(), r.imag());
+        }
         if (m == "log") { // optional base argument: log(z) / log(base)
             auto r = std::log(z);
             if (!args.empty()) {
@@ -753,7 +760,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // …the check names what CANNOT be a Real rather than what can: a user
         // class doing Real through .Bridge (Roast's Fixed2) is one, and demanding
         // a built-in numeric rejected it.
-        if (m == "unpolar" && !args.empty() &&
+        // (a STRING invocant is Cool.unpolar, which numifies both sides:
+        // `"17".unpolar("42")`)
+        if (m == "unpolar" && !args.empty() && !(inv.t == VT::Str && args[0].t == VT::Str) &&
             (args[0].t == VT::Str || args[0].t == VT::Match || args[0].t == VT::Type ||
              args[0].t == VT::Any || args[0].t == VT::Nil || args[0].t == VT::Code ||
              args[0].t == VT::Complex || args[0].t == VT::Pair))
@@ -817,6 +826,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "acotanh" || m == "acoth") return Value::number(std::atanh(1.0 / x));
     }
     if (m == "floor" || m == "ceiling" || m == "round" || m == "truncate") {
+        // Int's own candidates answer `self`, and a Bool IS an Int: `truncate(True)`
+        // is True
+        if (inv.t == VT::Bool && args.empty()) return inv;
+        // a Cool object rounds its .Numeric; a Range its element count
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && inv.obj()->cls->findMethod("Numeric")) {
+            Value nv = methodCall(inv, "Numeric", ValueList{});
+            if (nv.t != VT::Object) return methodCall(nv, m, args);
+        }
+        if (inv.t == VT::Range) return methodCall(methodCall(inv, "elems", ValueList{}), m, args);
         // Inf/NaN round to themselves (they stay Num) — only .Int coercion throws.
         if (inv.t == VT::Num && !std::isfinite(inv.n)) return inv;
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
@@ -900,6 +918,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "exp") return Value::number(std::exp(inv.toNum()));
     if (m == "log") {
+        if (!args.empty() && args[0].t == VT::Object)   // a Cool object base: its .Numeric
+            args[0] = methodCall(args[0], "Numeric", ValueList{});
         if (!args.empty() && args[0].t == VT::Complex) { // real.log(complex base)
             std::complex<double> r = std::log(std::complex<double>(inv.toNum(), 0.0)) /
                                      std::log(std::complex<double>(args[0].n, args[0].im()));
@@ -923,7 +943,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (inv.t == VT::Array && inv.arr() &&
-        (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS")) {
+        (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS" ||
+         // single-index BIND-POS stays with methodCallTail's arm; the
+         // multi-dimensional and shaped forms are answered here
+         (m == "BIND-POS" && (args.size() > 2 || (inv.shape() && inv.shape()->size() >= 2))))) {
         // A NAMED argument is not an index. Counting it as one sent
         // `@a.AT-POS(0, :check)` — the spelling an overriding accessor's
         // `callsame` forwards — down the multi-dimensional path, which descended
@@ -932,39 +955,83 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         ValueList posArgs;
         for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) posArgs.push_back(a);
         const ValueList& args = posArgs;    // indices only, from here down
-        // multi-dim access on a shaped array (`@a.AT-POS(i, j)`): walk each index
-        // level. ASSIGN-POS takes a trailing value, so its last arg is the value.
-        size_t nidx = (m == "ASSIGN-POS") ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
+        // multi-dim access (`@a.AT-POS(i, j)`): walk each index level.
+        // ASSIGN-POS and BIND-POS take a trailing value, so their last arg is it.
+        const bool writes = (m == "ASSIGN-POS" || m == "BIND-POS");
+        size_t nidx = writes ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
+        const auto& shp = inv.shape();
+        const size_t ndim = (shp && shp->size() >= 2) ? shp->size() : 0;
+        // a natively typed array has no containers to delete or rebind
+        if (m == "DELETE-POS" || m == "BIND-POS") {
+            if (isNativeElemType(inv.ofType())) {
+                if (m == "DELETE-POS")
+                    throw RakuError{Value::typeObj("X::Delete"), "Cannot delete from a natively typed array"};
+                throw RakuError{Value::typeObj("X::Bind"), "Cannot bind to a natively typed array"};
+            }
+        }
+        // a shaped array only takes a write or a delete at a LEAF
+        if (ndim && nidx < ndim && (writes || m == "DELETE-POS")) {
+            std::string op = m == "ASSIGN-POS" ? "assign to" : m == "BIND-POS" ? "bind to" : "delete from";
+            throwTypedV("X::NotEnoughDimensions",
+                {{"operation", Value::str(op)}, {"got-dimensions", Value::integer((long long)nidx)},
+                 {"needed-dimensions", Value::integer((long long)ndim)}},
+                "Cannot " + op + " a " + std::to_string(ndim) + " dimension array with only " +
+                std::to_string(nidx) + " dimension" + (nidx == 1 ? "" : "s"));
+        }
         if (nidx > 1) {
+            // every index is checked first: negative is out of range everywhere,
+            // and a shaped array's dimensions bound each level
+            for (size_t d = 0; d < nidx; d++) {
+                long long ix = writes ? writeIndexInt(args[d]) : args[d].toInt();
+                long long hi = (ndim && d < ndim) ? (*shp)[d] : -1;
+                if (ix < 0 || (hi >= 0 && ix >= hi)) {
+                    if (m == "EXISTS-POS") return Value::boolean(false);
+                    std::string msg = "Index out of range. Is: " + std::to_string(ix) + ", should be in 0.." +
+                                      (hi >= 0 ? std::to_string(hi - 1) : std::string("^Inf"));
+                    if (m == "AT-POS") return armedFailure("X::OutOfRange", msg);
+                    throw RakuError{Value::typeObj("X::OutOfRange"), msg};
+                }
+            }
             // The descent needs a mutable cursor. Copying the invocant is safe and
             // does not lose the write: the loop always steps at least once (nidx > 1),
             // so `cur` ends up inside inv.arr — which is a shared_ptr, the same array
             // object the caller holds. The copy shares it rather than duplicating it.
             Value invLocal = inv;
             Value* cur = &invLocal;
-            bool oob = false;
-            for (size_t d = 0; d + 1 < nidx; d++) { // descend to the innermost array
+            for (size_t d = 0; d < nidx; d++) {
                 long long ix = args[d].toInt();
-                if (!cur->arr() || ix < 0 || ix >= (long long)cur->arr()->size()) { oob = true; break; }
-                cur = &(*cur->arr())[ix];
+                const bool leaf = d + 1 == nidx;
+                bool have = cur->t == VT::Array && cur->arr() && ix < (long long)cur->arr()->size();
+                if (!have) {
+                    if (!writes) {
+                        if (m == "EXISTS-POS") return Value::boolean(false);
+                        return Value::any();
+                    }
+                    // an unshaped structure autovivifies on a write, like `@a[1][2] = 9`
+                    if (!(cur->t == VT::Array && cur->arr())) *cur = Value::array({});
+                    while ((long long)cur->arr()->size() <= ix) cur->arr()->push_back(Value::any());
+                }
+                if (leaf) {
+                    Value& slot = (*cur->arr())[(size_t)ix];
+                    if (m == "EXISTS-POS") return Value::boolean(defined(slot));
+                    if (m == "AT-POS") return slot;
+                    if (writes) {
+                        // a slot BOUND to a plain value has no container to assign into
+                        if (m == "ASSIGN-POS" && slot.readonly)
+                            throwTyped("X::Assignment::RO", {{"typename", slot.typeName()}},
+                                       "Cannot modify an immutable " + slot.typeName() + " (" + slot.toStr() + ")");
+                        slot = args.back();
+                        slot.readonly = (m == "BIND-POS");
+                        return args.back();
+                    }
+                    Value old = slot;
+                    slot = Value::any();
+                    return old;
+                }
+                cur = &(*cur->arr())[(size_t)ix];
             }
-            long long last = args[nidx - 1].toInt();
-            bool in = !oob && cur->t == VT::Array && cur->arr() && last >= 0 && last < (long long)cur->arr()->size();
-            if (m == "EXISTS-POS") return Value::boolean(in && defined((*cur->arr())[last]));
-            if (m == "AT-POS") {
-                if (!in) throw RakuError{Value::typeObj("X::OutOfRange"), "Index out of range"};
-                return (*cur->arr())[last];
-            }
-            if (m == "ASSIGN-POS") {
-                Value v = args.back();
-                if (in) (*cur->arr())[last] = v;
-                return v;
-            }
-            Value old = in ? (*cur->arr())[last] : Value::any();
-            if (in) (*cur->arr())[last] = Value::any();
-            return old;
         }
-        long long i = args.empty() ? 0 : args[0].toInt();
+        long long i = args.empty() ? 0 : (m == "ASSIGN-POS" ? writeIndexInt(args[0]) : args[0].toInt());
         // A negative index is OUT OF RANGE, not "from the end" — that is what
         // `*-1` is for. The subscript path settled this long ago (see the
         // X::OutOfRange Failure in Interpreter.cpp's Index arm); this method

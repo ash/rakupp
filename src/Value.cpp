@@ -762,8 +762,10 @@ std::string Value::gist() const {
                 // one group per ELEMENT, big-endian — a blob32 shows 00000001,
                 // not the four little-endian bytes it is stored as
                 int w = blobElemSize(); if (w < 1) w = 1;
+                // …and at most the first 100 of them, then `...`
                 for (size_t k = 0; k + (size_t)w <= s.size(); k += (size_t)w) {
                     if (k) h += ' ';
+                    if (k / (size_t)w >= 100) { h += "..."; break; }
                     for (int b = w - 1; b >= 0; b--) {
                         unsigned char c = (unsigned char)s[k + (size_t)b];
                         h += hx[c >> 4]; h += hx[c & 15];
@@ -1438,7 +1440,12 @@ bool objectStructEqv(const Value& a, const Value& b,
     return ok;
 }
 
+Value applyArith(const std::string& op, const Value& l, const Value& r);
 int valueCmp(const Value& a, const Value& b) {
+    // Versions order by their PARTS (`v1.2.1_01` before `v1.2.1`), which the
+    // Version-aware `cmp` knows and a string compare does not
+    if (a.t == VT::Str && b.t == VT::Str && a.hashKind == "Version" && b.hashKind == "Version")
+        return (int)applyArith(std::string("cmp"), a, b).toInt();
     // A RANGE orders by its endpoints, in the order Rakudo reads them: min, then
     // whether the min is excluded, then max, then whether the max is — and that
     // last one BACKWARDS, since excluding the top makes the range smaller.

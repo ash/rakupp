@@ -206,6 +206,8 @@ std::string lubType(const std::string& a, const std::string& b);
 // real lock held across a GIL-yield could deadlock the cooperative scheduler.
 struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0; };
 struct LockState { std::recursive_mutex m; };            // Raku Lock (used reentrantly by protect)
+// `$lock.condition`: a condition variable over the Lock's own mutex
+struct LockCondState { std::shared_ptr<LockState> lock; std::condition_variable_any cv; };
 Value coerceToSigil(Value v, char sigil);
 // Set by the Interpreter (it takes calling a user method to answer): the values
 // an OBJECT contributes when it lands in a `%` container — its own `.list` or

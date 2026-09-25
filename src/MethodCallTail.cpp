@@ -2,6 +2,7 @@
 #include "MethodCallSegment.h"
 
 namespace rakupp {
+Value arrayMissingDefaultPublic(const Value& base);
 
 // One element of a .flat: append x (or its spread) to out. Shared by the eager
 // arm and the lazy view over an endless source (issue #30 follow-up) — the
@@ -500,10 +501,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // value context fetches through it, and binding to `@a[$i]` picks the same
     // container up. BinaryHeap's `!sift-down` is built entirely on this.
     if (inv.t == VT::Array && inv.arr() && m == "BIND-POS" && args.size() >= 2) {
+        if (isNativeElemType(inv.ofType()))
+            throw RakuError{Value::typeObj("X::Bind"), "Cannot bind to a natively typed array"};
         if (inv.isList && inv.s.empty() && inv.enumName.empty())
             throwTyped("X::Immutable", {{"method", m}, {"typename", "List"}},
                 "Cannot call 'BIND-POS' on an immutable 'List'");
-        long long i = args[0].toInt();
+        long long i = writeIndexInt(args[0]);
         if (i < 0) i += (long long)inv.arr()->size();
         if (i < 0) i = 0;
         while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
@@ -708,6 +711,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return armedFailure("X::Cannot::Lazy", "Cannot " + m + " a lazy list");
             if (kLazyThrow.count(m))
                 throwTyped("X::Cannot::Lazy", {{"action", m.s}}, "Cannot " + m + " a lazy list");
+            if (m == "fmt")
+                throwTyped("X::Cannot::Lazy", {{"action", ".fmt"}}, "Cannot .fmt a lazy list");
             // `join` and `Str` answer the REIFIED PREFIX with `...` for the
             // rest — `my @a = 1..*; @a[2]; @a.join(",")` is `1,2,3,...`, and a
             // list nothing has pulled from yet is just `...` (sheet LA-14).
@@ -1762,9 +1767,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // `.eager` answers a LIST — `(1..*).list.head(3).eager` is `(1, 2, 3)`,
             // not a Seq (sheet LA-10). `.cache` keeps the invocant's own type.
             if (m == "lazy") out.b = true; // `.lazy` MARKS it: `.is-lazy` says True after
+            // …and the mark survives the list views: `@a.lazy.List.is-lazy` is True
+            else if (inv.t == VT::Array && inv.b && m != "eager") out.b = true;
             return out;
         }
-        if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
+        if (m == "reverse") {
+            std::reverse(items.begin(), items.end());
+            // a HOLE in a typed (or defaulted) array reads as what reading it gives
+            if (inv.t == VT::Array && (inv.elemDefault() || !inv.ofType().empty()))
+                for (auto& e : items)
+                    if (e.t == VT::Any || e.t == VT::Nil) e = arrayMissingDefaultPublic(inv);
+            return Value::list(items);
+        }
         if (m == "rotate") {
             // the rotation count binds an Int; an undefined one is a binding
             // failure, not a rotation of zero
@@ -1845,6 +1859,46 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                                        : strInStrContext(items[k]);
             }
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
+        }
+        if (m == "fmt" && inv.t == VT::Array && inv.b)   // a `.lazy`-marked list
+            throwTyped("X::Cannot::Lazy", {{"action", ".fmt"}}, "Cannot .fmt a lazy list");
+        if (m == "fmt" && !args.empty() && args[0].t == VT::Hash && args[0].hashKind == "Format") {
+            // A Format consumes as many values per application as it has
+            // directives: from an associative invocant its key (and value),
+            // from a list the next `arity` elements
+            const std::string fmt = (*args[0].hash())["fmt"].toStr();
+            const long long ar = (*args[0].hash())["arity"].toInt();
+            const bool assoc = inv.t == VT::Hash && inv.hash();
+            std::string sep = args.size() > 1 ? args[1].toStr() : (assoc ? "\n" : " ");
+            std::string out;
+            bool first = true;
+            auto emit = [&](const ValueList& vs) {
+                if (!first) out += sep;
+                first = false;
+                out += doSprintf(fmt, vs);
+            };
+            if (assoc) {
+                for (auto& kv : *inv.hash()) {
+                    Value key = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                    if (ar >= 2) emit({key, kv.second}); else emit({key});
+                }
+                return Value::str(out);
+            }
+            if (ar == 0) {
+                if (!items.empty())
+                    throwTypedV("X::Str::Sprintf::Directives::Count",
+                        {{"args-have", Value::integer(0)}, {"args-used", Value::integer(1)},
+                         {"format", Value::str(fmt)}},
+                        "Your printf-style directives specify 0 arguments, but 1 argument was supplied to format '" +
+                        fmt + "'");
+                return Value::str("");
+            }
+            for (size_t k = 0; k < items.size(); k += (size_t)ar) {
+                ValueList vs;
+                for (size_t j = k; j < k + (size_t)ar && j < items.size(); j++) vs.push_back(items[j]);
+                emit(vs);
+            }
+            return Value::str(out);
         }
         if (m == "fmt") {
             // An ASSOCIATIVE invocant formats its (key, value) PAIRS: the
@@ -3631,8 +3685,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     "push", "append", "pop", "unshift", "prepend", "shift",
                     "splice", "reverse", "rotate"};
                 if (fixedIllegal.count(m))
-                    throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
-                        "Cannot " + m + " a fixed-dimension array"};
+                    throwTypedV("X::IllegalOnFixedDimensionArray", {{"operation", Value::str(m)}},
+                                "Cannot " + m + " a fixed-dimension array");
             }
             // a BOXED typed array (`my Int @a`, `has Str @.d`) checks the same
             // way — that is the half natCheck left out, and it is why

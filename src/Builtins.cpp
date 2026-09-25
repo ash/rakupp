@@ -74,6 +74,8 @@
 #include <mutex>
 
 namespace rakupp {
+const std::map<std::string, int>& signalNameMapFwd();
+Value makeSignalEnumValueFwd(int sig);
 
 // One mutex PER SUPPLIER, not a slot from the shared 64-stripe pool. The
 // serialization contract (emissions are serialized per supplier, and done/quit
@@ -282,6 +284,9 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
         {"Match",   {"Match","Capture","Cool","Any","Mu"}},
         {"Capture", {"Capture","Any","Mu"}},
+        // a built-in encoding IS an Encoding::Builtin, which does the Encoding role
+        {"Encoding", {"Encoding","Encoding::Builtin","Any","Mu"}},
+        {"Encoding::Builtin", {"Encoding::Builtin","Encoding","Any","Mu"}},
         // the root of the X:: tree, which is not itself an X:: name
         {"Exception", {"Exception","Any","Mu"}},
         // IO::Socket is the ROLE a synchronous socket does — every wrapper
@@ -1462,6 +1467,13 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
             // Rakudo emits — a Blob chunk made every `whenever` block that
             // string-matched its lines see Blob.new(...) instead of text.
             if (bin) chunk.hashKind = "Blob";
+            // character mode decodes with newline translation: "\r\n" is "\n"
+            else if (data.find("\r\n") != std::string::npos) {
+                std::string t; t.reserve(data.size());
+                for (size_t i = 0; i < data.size(); i++)
+                    if (!(data[i] == '\r' && i + 1 < data.size() && data[i + 1] == '\n')) t += data[i];
+                chunk = Value::str(t);
+            }
             ValueList ca{chunk};
             callCallable(cb, ca);
         });
@@ -3849,6 +3861,24 @@ Value makeSignature(const Callable* c) {
         if (c->hasPrimed) { for (auto& sp : c->primedParams) ps.push_back(sp.get()); }
         else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
     }
+    // A routine with NO written signature has the one its body implies: its
+    // placeholders (`sub c { $^a }` is `($a)`) and, for `@_` / `%_`, the implicit
+    // slurpies (`(*@_, *%_)`)
+    std::vector<Param> synth;
+    if (ps.empty() && c && !c->hasPrimed && !c->hadSig &&
+        (!c->placeholders.empty() || c->implicitArgs)) {
+        synth.reserve(c->placeholders.size() + 2);
+        for (auto& ph : c->placeholders) {
+            if (ph.size() < 3) continue;
+            Param p; p.sigil = ph[0];
+            p.name = std::string(1, ph[0]) + ph.substr(2);
+            p.named = ph[1] == ':';
+            synth.push_back(std::move(p));
+        }
+        if (c->implicitArgs & 1) { Param p; p.sigil = '@'; p.name = "@_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
+        if (c->implicitArgs & 2) { Param p; p.sigil = '%'; p.name = "%_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
+        for (auto& p : synth) ps.push_back(&p);
+    }
     // A bare `{ … }` block with no written signature carries an IMPLICIT `$_`:
     // `{;}.signature` is `(;; $_? is raw = OUTER::<$_>)`, arity 0 but count 1.
     // `-> {…}` and `sub {…}` do NOT (both are `()`), and a placeholder block has
@@ -3954,7 +3984,11 @@ Value makeSignature(const Callable* c) {
         }
         // the parameter's declarator doc (`#= …` / a leading `#|`) — .WHY
         // reads it; it already drives $*USAGE's option list
-        if (!p.pod.empty()) (*pv.hash())["why"] = Value::str(p.pod);
+        if (!p.pod.empty()) {
+            (*pv.hash())["why"] = Value::str(p.podLead.empty() || p.podTrail.empty() ? p.pod
+                                                                               : p.podLead + "\n" + p.podTrail);
+            if (!p.podTrail.empty()) (*pv.hash())["whyTrail"] = Value::str(p.podTrail);
+        }
         (*pv.hash())["type"] = Value::str(p.type);
         // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
         // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
@@ -5283,8 +5317,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // 300k for one `Graph.diameter`, which put `std::string == const char*` at the
     // top of that profile. The arm itself still lives in methodCallTail (with the
     // immutable-List check and the rest); this is only the shortcut to it.
-    if (inv.t == VT::Array && inv.arr() && args.size() >= 2 && m == "BIND-POS" && !inv.isList) {
-        long long i = args[0].toInt();
+    if (inv.t == VT::Array && inv.arr() && args.size() == 2 && m == "BIND-POS" && !inv.isList && !inv.shape() &&
+        !isNativeElemType(inv.ofType())) {
+        long long i = writeIndexInt(args[0]);
         if (i < 0) i += (long long)inv.arr()->size();
         if (i >= 0) {
             while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
@@ -5781,10 +5816,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         };
         if (inv.t == VT::Code && inv.code() && !inv.code()->pod.empty())
             return declarator(inv.code()->pod, inv.code()->podTrail, inv.code()->declLine);
+        // a dispatch group is documented by its PROTO (a bare multi group has none)
+        if (inv.t == VT::Code && inv.code() && inv.code()->isMultiDispatcher)
+            for (auto& c : inv.code()->candidates)
+                if (c.code() && (c.code()->isProto || c.code()->isProtoBody) && !c.code()->pod.empty())
+                    return declarator(c.code()->pod, c.code()->podTrail, c.code()->declLine);
+        // an Attribute's doc, carried on its meta-object
+        if (inv.t == VT::Hash && inv.hashKind == "Attribute" && inv.hash() && inv.hash()->count("why")) {
+            auto& h = *inv.hash();
+            return declarator(h["why"].toStr(), h.count("whyTrail") ? h["whyTrail"].toStr() : std::string(),
+                              h.count("whyLine") ? (int)h["whyLine"].toInt() : 0);
+        }
         // a Parameter's own doc, plumbed from Param.pod at reflection time
         if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash() && inv.hash()->count("why")) {
             const Value& w = (*inv.hash())["why"];
-            if (w.t == VT::Str && !w.s.empty()) return declarator(w.s.str(), "", 0);
+            if (w.t == VT::Str && !w.s.empty())
+                return declarator(w.s.str(), inv.hash()->count("whyTrail") ? (*inv.hash())["whyTrail"].toStr()
+                                                                           : std::string(), 0);
             return w;
         }
         if (inv.t == VT::Type) {
@@ -5800,6 +5848,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->pod.empty())
             return Value::str(inv.obj()->cls->pod);
+        // an enum's type object is carried as its value list, tagged by enumType
+        if (inv.t == VT::Array && !inv.enumType.str().empty()) {
+            auto pi = pkgPod_.find(inv.enumType.str());
+            if (pi != pkgPod_.end()) {
+                auto pt = pkgPodTrail_.find(inv.enumType.str());
+                return declarator(pi->second, pt != pkgPodTrail_.end() ? pt->second : std::string(), 0);
+            }
+        }
         return Value::nil();
     }
     // Any.hash is an empty Hash (Rakudo: `my $x; $x.hash` → {}) — zef reads
@@ -5817,6 +5873,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (auto& e : *inv.arr()) if (e.t == VT::Object) { anyObj = true; break; }
         if (anyObj) return Value::str(strOf(inv));
     }
+    // A Blob's numeric value is its element count; it has no characters
+    // (unless it is an encoded string's blob, handled by .Str below)
+    if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+        if (m == "Numeric" || m == "Int") return Value::integer(inv.blobElems());
+        if (m == "chars" && inv.enumName.empty())
+            throwTyped("X::Buf::AsStr", {{"method", "chars"}},
+                       "Cannot use a Buf as a string, but you called the chars method on it");
+        if (m == "reverse") {   // a Blob of the same type, back to front
+            std::string r(inv.s.str().rbegin(), inv.s.str().rend());
+            if (inv.blobElems() == (long long)inv.s.size()) {
+                Value o = inv; o.s = IStr(r); o.s.promote(); return o;
+            }
+        }
+    }
     // a binary buffer has no string semantics: .Str is an error (use .decode)
     // — except an ENCODING-typed blob, which knows how to read itself: Rakudo's
     // `utf8.Str` is `.decode`, and PSGI stringifies a `Str.encode` body exactly
@@ -5832,8 +5902,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // reverse/rotate are illegal only on a MULTI-dimensional fixed array; a 1-dim
     // shaped array reverses/rotates fine (returns a reordered list, no resize).
     if (inv.t == VT::Array && inv.shape() && inv.shape()->size() >= 2 && (m == "reverse" || m == "rotate"))
-        throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
-                        "Cannot " + m + " a fixed-dimension array"};
+        throwTypedV("X::IllegalOnFixedDimensionArray", {{"operation", Value::str(m)}},
+                    "Cannot " + m + " a fixed-dimension array");
+    // …and nothing changes the SIZE of a fixed array, whatever its dimensions
+    if (inv.t == VT::Array && inv.shape() && !inv.shape()->empty() &&
+        (m == "push" || m == "append" || m == "pop" || m == "unshift" || m == "prepend" ||
+         m == "shift" || m == "splice"))
+        throwTypedV("X::IllegalOnFixedDimensionArray", {{"operation", Value::str(m)}},
+                    "Cannot " + m + " a fixed-dimension array");
     // Multi-dim shaped array (`my @a[2;2]`) — keys/values/kv/pairs/antipairs/flat/
     // iterator walk the LEAVES, keyed by index tuples. (A 1-dim shaped array uses
     // the ordinary Array handlers: keys are plain indices, .flat is a Seq, etc.)
@@ -6978,9 +7054,113 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         (*f.hash())["code"] = code;
         return f;
     }
+    // `.WALK(name, :roles)` (6.e) — every method of that name along the MRO,
+    // each class followed (with :roles) by the roles it composes, breadth
+    // first; the answer is a routine that calls them all and lists the results
+    if (m == "WALK" && inv.t == VT::Object && inv.obj() && inv.obj()->cls && !args.empty()) {
+        std::string name; bool withRoles = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair) { if (a.s == "roles") withRoles = !a.pairVal() || a.pairVal()->truthy(); }
+            else if (name.empty()) name = a.toStr();
+        }
+        std::vector<ClassInfo*> order; std::set<ClassInfo*> seen;
+        auto add = [&](ClassInfo* c) { if (c && seen.insert(c).second) order.push_back(c); };
+        for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get()) {
+            add(c);
+            if (!withRoles) continue;
+            // a declaration's DIRECT roles, in the order it names them
+            auto direct = [](ClassInfo* ci) {
+                std::vector<std::string> rs;
+                if (ci->decl) {
+                    if (ci->decl->parentIsDoes && !ci->decl->parent.empty()) rs.push_back(ci->decl->parent);
+                    for (auto& r : ci->decl->roles) rs.push_back(r);
+                }
+                else rs.assign(ci->doneRoles.begin(), ci->doneRoles.end());
+                return rs;
+            };
+            auto d0 = direct(c);
+            std::deque<std::string> q(d0.begin(), d0.end());
+            while (!q.empty()) {
+                auto it = classes_.find(q.front()); q.pop_front();
+                if (it == classes_.end() || !it->second) continue;
+                if (seen.count(it->second.get())) continue;
+                add(it->second.get());
+                for (auto& rn : direct(it->second.get())) q.push_back(rn);
+            }
+        }
+        ValueList meths;
+        for (ClassInfo* c : order) {
+            auto mit = c->methods.find(name);
+            if (mit != c->methods.end()) meths.push_back(mit->second);
+        }
+        Value self = inv;
+        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        code.code()->name = "WALK";
+        code.code()->builtin = [meths, self](Interpreter& I, ValueList& a) -> Value {
+            Value out = Value::array(); out.isList = true;
+            for (auto& mm : meths) out.arr()->push_back(I.invokeMethod(mm, self, a));
+            return out;
+        };
+        return code;
+    }
+    // `Pair.Pair` — a Pair type object coerces to itself
+    if (inv.t == VT::Type && inv.s == "Pair" && m == "Pair") return inv;
+    // `Bool.enums` — the built-in enum's Map
+    if (inv.t == VT::Type && inv.s == "Bool" && m == "enums") {
+        Value mp = Value::makeHash(); mp.hashKind = "Map";
+        (*mp.hash())["False"] = Value::integer(0);
+        (*mp.hash())["True"] = Value::integer(1);
+        return mp;
+    }
+    // `Signal.enums` — this platform's signals by name — and `Signal(2)`,
+    // the coercion from a number to the enum value
+    if (inv.t == VT::Type && inv.s == "Signal" && m == "enums") {
+        Value mp = Value::makeHash(); mp.hashKind = "Map";
+        for (auto& kv : signalNameMapFwd()) (*mp.hash())[kv.first] = Value::integer(kv.second);
+        return mp;
+    }
+    if (m == "Signal" && (inv.t == VT::Int || (inv.t == VT::Str && inv.isAllomorph())))
+        return makeSignalEnumValueFwd((int)inv.toInt());
+    // `Blob.encoding` — a plain Blob/Buf type object carries none
+    if (inv.t == VT::Type && (inv.s == "Blob" || inv.s == "Buf") && m == "encoding") return Value::any();
+    // A QuantHash holds no containers to bind to, and the immutable three
+    // hold no slot to delete from or assign to either
+    if (inv.t == VT::Hash && (m == "BIND-KEY" || m == "DELETE-KEY" || m == "ASSIGN-KEY")) {
+        const std::string hk = inv.hashKind;
+        const bool quant = hk == "Set" || hk == "Bag" || hk == "Mix" ||
+                           hk == "SetHash" || hk == "BagHash" || hk == "MixHash";
+        if (quant && m == "BIND-KEY")
+            throwTypedV("X::Bind", {{"target", Value::str(hk)}}, "Cannot bind to a " + hk);
+        if ((hk == "Set" || hk == "Bag" || hk == "Mix") && m != "BIND-KEY")
+            throwTypedV("X::Assignment::RO", {{"typename", Value::str(hk)}, {"value", inv}},
+                        "Cannot modify an immutable " + hk);
+    }
+    // `%h.new` — a fresh, EMPTY hash of the invocant's own type: an object
+    // hash (`my %h{Any}`) makes another object hash, a typed one keeps its type
+    if (inv.t == VT::Hash && inv.hash() && m == "new" && args.empty() &&
+        (inv.hashKind.empty() || inv.hashKind == "Hash")) {
+        Value h = methodCall(inv, "clone", ValueList{});
+        if (h.t == VT::Hash && h.hash()) { h.hashRef().clear(); return h; }
+    }
+    // Formatter's compile steps, as far as a program can see them: the format
+    // grammar parses the whole string, CODE is the formatting routine, AST
+    // the RakuAST it would be built from (here: the format as a literal)
+    if (inv.t == VT::Type && inv.s == "Formatter::Syntax" && m == "parse" && !args.empty())
+        return regexMatch(args[0].toStr(), "^ .* $", nullptr, "regex");
+    if (inv.t == VT::Type && inv.s == "Formatter" && (m == "CODE" || m == "AST") && !args.empty()) {
+        if (m == "CODE") {
+            ValueList a1{args[0]};
+            Value f = methodCall(Value::typeObj("Format"), "new", a1);
+            return (*f.hash())["code"];
+        }
+        ValueList a1{Value::str(args[0].toStr())};
+        return methodCall(Value::typeObj("RakuAST::StrLiteral"), "new", a1);
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Format") {
         if (m == "Str" || m == "gist" || m == "raku") return (*inv.hash())["fmt"];
         if (m == "arity" || m == "count") return (*inv.hash())["arity"];
+        if (m == "Callable") return (*inv.hash())["code"];   // the formatter as a routine
+        if (m == "signature") return methodCall((*inv.hash())["code"], "signature", args, rwArgs);
         // `.directives` names the conversion letter of each `%…` in order:
         // "%05d%3x:%s" is (d x s). Flags, width and precision are skipped —
         // the directive is the first ALPHABETIC character after the percent.
@@ -7113,7 +7293,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (a.s == "localhost") localhost = pv.toStr();
             else if (a.s == "localport") localport = pv.toInt();
             else if (a.s == "listen") listen = pv.truthy();
-            else if (a.s == "family") family = pv.toInt();
+            // the ProtocolFamily enum carries Rakudo's ordinals (PF_INET is 1,
+            // PF_INET6 2), not the OS numbers the socket calls want
+            else if (a.s == "family")
+                family = pv.enumType == "ProtocolFamily"
+                    ? (pv.enumName == "PF_INET" ? PF_INET : pv.enumName == "PF_INET6" ? PF_INET6
+                       : pv.enumName == "PF_UNSPEC" ? 0 : (long)pv.toInt())
+                    : pv.toInt();
         }
         // `:host<name:port>` — the port may ride along in the host string, and an
         // explicit `:port` wins over it. That is how HTTP::UserAgent connects:
@@ -7646,7 +7832,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto uit = userEncodings.find(key);
         if (uit != userEncodings.end()) return uit->second;
         static const std::set<std::string> known = {
-            "utf8", "utf-8", "ascii", "iso-8859-1", "latin-1", "latin1",
+            "utf8", "utf-8", "utf8-c8", "utf-8-c8", "ascii", "iso-8859-1", "latin-1", "latin1",
             "utf16", "utf-16", "utf16le", "utf-16le", "utf16-le", "utf-16-le",
             "utf16be", "utf-16be", "utf16-be", "utf-16-be",
             "windows932", "windows-932", "windows1251", "windows-1251",
@@ -7657,6 +7843,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // the CANONICAL name, and the others it answers to (Rakudo's table)
         static const std::vector<std::pair<std::string, std::vector<std::string>>> canon = {
             {"utf8", {"utf-8"}},
+            {"utf8-c8", {"utf-8-c8"}},
             {"ascii", {}},
             {"iso-8859-1", {"latin-1", "latin1"}},
             {"utf16", {"utf-16"}},
@@ -7779,6 +7966,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (m == "is-empty") return Value::boolean(buf.s.empty());
     }
+    // (defined with makeAsyncSocket below)
+    extern bool asyncSockAddrFwd(const std::string&, int, sockaddr_storage&, socklen_t&);
     // IO::Socket::Async — the async TCP surface Cro drives. listen() returns a
     // Supply that binds/accepts when tapped (see tapSupply); connect() returns a
     // kept Promise of a connected socket.
@@ -7793,22 +7982,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "connect") {
             std::string host = args.size() > 0 ? args[0].toStr() : "localhost";
             int port = args.size() > 1 ? (int)args[1].toInt() : 0;
-            int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_storage addr{}; socklen_t addrLen = 0;
+            bool okAddr = asyncSockAddrFwd(host, port, addr, addrLen);
+            int fd = okAddr ? ::socket(addr.ss_family, SOCK_STREAM, 0) : -1;
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             if (fd < 0) {
                 ps->done = true; ps->broken = true; ps->causeMsg = "Cannot create socket";
+                ps->cause = Value::typeObj("X::IO");
                 (*p.hash())["status"] = Value::str("Broken");
                 return p;
             }
-            sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
-            std::string rh = (host == "localhost") ? "127.0.0.1" : host;
-            addr.sin_addr.s_addr = inet_addr(rh.c_str());
-            if (addr.sin_addr.s_addr == INADDR_NONE) {
-                if (hostent* he = gethostbyname(rh.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
-            }
             bool parked = gilPark();
-            int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr));
+            int rc = ::connect(fd, (sockaddr*)&addr, addrLen);
             gilUnpark(parked);
             if (rc < 0) {
                 ::close(fd);
@@ -7829,6 +8015,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket") {
         int fd = inv.hash()->count("fd") ? (int)(*inv.hash())["fd"].toInt() : -1;
         if (m == "Supply") {
+            // a closed socket has nothing left to read: its Supply is done at once
+            if (inv.hash()->count("closed"))
+                return methodCall(Value::typeObj("Supply"), "from-list", ValueList{});
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["kind"] = Value::str("async-read");
             (*s.hash())["socket"] = inv;
@@ -7856,7 +8045,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else { ps->broken = true; ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Socket write failed"; (*p.hash())["status"] = Value::str("Broken"); }
             return p;
         }
-        if (m == "close") { if (fd >= 0) { ::shutdown(fd, SHUT_WR); } return Value::boolean(true); }
+        if (m == "close") {
+            if (fd >= 0) { ::shutdown(fd, SHUT_WR); }
+            (*inv.hash())["closed"] = Value::boolean(true);
+            return Value::boolean(true);
+        }
         if (m == "native-descriptor") return Value::integer(fd);
         if (m == "socket-host" || m == "socket-port" || m == "peer-host" || m == "peer-port") {
             auto it = inv.hash()->find(m);
@@ -8023,7 +8216,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             long long n2 = args.empty() ? 0 : args[0].toInt();
             if (n2 < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
                 "Unable to allocate an array of " + std::to_string((unsigned long long)n2) + " elements"};
-            bytes.assign((size_t)(n2 * w), '\0');
+            if (args.size() > 1 && args[1].t != VT::Pair) {
+                // `.allocate(10, pattern)` — filled with the pattern (a list, a
+                // Blob, or one value), repeated as far as it goes
+                const Value& pat = args[1];
+                if ((pat.t == VT::Str && pat.hashKind.empty() && !pat.isAllomorph()) || pat.t == VT::Object)
+                    throwTypedV("X::TypeCheck", {{"got", pat}, {"operation", Value::str("allocate")}},
+                                "Type check failed in allocate; expected Int but got " + pat.typeName());
+                std::string one;
+                std::swap(one, bytes);
+                add(pat);                        // the pattern's bytes, as .new would lay them out
+                std::swap(one, bytes);
+                bytes.clear();
+                if (!one.empty())
+                    while ((long long)bytes.size() < n2 * w) bytes += one;
+                bytes.resize((size_t)(n2 * w), '\0');
+            }
+            else bytes.assign((size_t)(n2 * w), '\0');
         }
         else for (auto& a : args) add(a);
         Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
@@ -8142,6 +8351,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // WhateverCode, which shifted v"*" down to an EMPTY version and
                 // let Test::META's asterisk check pass vacuously
                 else if (c == '*') { out.arr()->push_back(Value::str("*")); i++; }
+                // an underscore is a PART, not a separator: `1.2.1_01` is (1 2 1 _ 1)
+                else if (c == '_') { out.arr()->push_back(Value::str("_")); i++; }
+                // …and a non-ASCII letter (α, β) is a word part like an ASCII one
+                else if (c >= 0x80) { size_t j = i; while (j < s.size() && (unsigned char)s[j] >= 0x80) j++;
+                    out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
                 else i++;
             }
             return out;
@@ -8403,6 +8617,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         o.arr()->push_back(Value::boolean(false));
         return o;
     }
+    if (m == "Instant" && (inv.hashKind == "Instant" || (inv.t == VT::Type && inv.s == "Instant")))
+        return inv;                                        // an Instant is its own Instant
+    if (m == "Date" && inv.hashKind == "Instant" && inv.isNumeric())   // via its UTC DateTime
+        return methodCall(methodCall(inv, "DateTime", ValueList{Value::pair("timezone", Value::integer(0))}),
+                          "Date", ValueList{});
+    // Instants are made from something (`now`, `.from-posix`, `DateTime.Instant`)
+    if (inv.t == VT::Type && inv.s == "Instant" && m == "new")
+        throwTypedV("X::Cannot::New", {{"class", Value::typeObj("Instant")}},
+                    "Cannot make a Instant object using .new");
     if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric()) {
         ValueList mk{Value::number(inv.toNum() - 10.0)};  // Instant is POSIX + 10
         if (sixE()) { // 6.e: `.DateTime(:timezone = $*TZ)`, as on Date
@@ -8462,6 +8685,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (args.size() > 1) {
                 if (args[1].t == VT::Array || args[1].t == VT::Range)
                     for (auto& e : args[1].flatten()) fill += (char)(unsigned char)(e.toInt() & 0xFF);
+                else if (args[1].t == VT::Str && (args[1].hashKind == "Blob" || args[1].hashKind == "Buf"))
+                    fill = args[1].s.str();   // another Blob: its bytes are the pattern
                 else fill += (char)(unsigned char)(args[1].toInt() & 0xFF);
             }
             if (fill.empty()) fill.push_back('\0');
@@ -8515,7 +8740,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 
     // Lock / Semaphore. No-ops under the GIL (it already serialises); backed by real
     // primitives in parallel mode so mutual exclusion actually holds.
-    if (inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async" || inv.s == "Semaphore")) {
+    if (inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async" || inv.s == "Semaphore" ||
+                              inv.s == "Lock::Soft")) {   // Lock::Soft: a Lock by another scheduler, same API
         if (m == "new") {
             Value v = Value::makeHash();
             if (inv.s == "Semaphore") {
@@ -9506,6 +9732,32 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (const char* h : {"stdout", "stderr"})
                 if ((m == "Supply" || m == h) && inv.hash()->count(std::string("bound-") + h))
                     bindOrUse(h, m == "Supply" ? "get the merged stream" : std::string("get the ") + h + " Supply");
+            // the stream has to be asked for BEFORE the spawn (a Supply taken
+            // earlier may still be tapped after it — its output is captured)
+            if (m != "Supply" && (inv.hash()->count("pid") || inv.hash()->count("spawn-token")))
+                throwTyped("X::Proc::Async::TapBeforeSpawn", {{"handle", std::string(m)}},
+                           "To avoid data races, you must tap " + std::string(m) + " before running the process");
+            // the merged `.Supply` and the separate streams exclude each other
+            if (m == "Supply" ? (inv.hash()->count("asked-stdout") || inv.hash()->count("asked-stderr"))
+                              : inv.hash()->count("asked-Supply") != 0)
+                throwTyped("X::Proc::Async::SupplyOrStd", {},
+                           "Using .Supply on a Proc::Async implies merging stdout and stderr; .stdout "
+                           "and .stderr cannot therefore be used in combination with it");
+            (*inv.hash())["asked-" + std::string(m)] = Value::boolean(true);
+            // one stream is EITHER characters or bytes: `.stdout` then `.stdout(:bin)`
+            // (or the other way round) is X::Proc::Async::CharsOrBytes
+            bool wantBin = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "bin" && (!a.pairVal() || a.pairVal()->truthy())) wantBin = true;
+            for (const char* h : {"stdout", "stderr"})
+                if (m == h || m == "Supply") {
+                    std::string mk = std::string("mode-") + h;
+                    auto it = inv.hash()->find(mk);
+                    if (it != inv.hash()->end() && it->second.truthy() != wantBin)
+                        throwTyped("X::Proc::Async::CharsOrBytes", {{"handle", h}},
+                                   std::string("Can only get ") + h + " as characters or bytes, not both");
+                    (*inv.hash())[mk] = Value::boolean(wantBin);
+                }
             if (m != "stderr") (*inv.hash())["used-stdout"] = Value::boolean(true);
             if (m != "stdout") (*inv.hash())["used-stderr"] = Value::boolean(true);
             Value s = Value::makeHash(); s.hashKind = "Supply";
@@ -9517,12 +9769,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     (*s.hash())["bin"] = Value::boolean(true);
             return s;
         }
+        if (m == "w") return Value::boolean(inv.hash()->count("w") != 0);   // opened for writing
+        // `.pid` — a Promise kept with the process id once it has started
+        if (m == "pid") {
+            auto pit = inv.hash()->find("pid");
+            if (pit != inv.hash()->end()) {
+                auto ps = std::make_shared<PromiseState>();
+                Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+                ps->done = true; ps->result = pit->second;
+                (*p.hash())["status"] = Value::str("Kept");
+                (*p.hash())["result"] = ps->result;
+                return p;
+            }
+            ValueList none; return methodCall(inv, "ready", none);
+        }
+        // `.started` — has `.start` been called (the same marks the second-start check reads)
+        if (m == "started")
+            return Value::boolean(inv.hash()->count("pid") || inv.hash()->count("spawn-token") ||
+                                  inv.hash()->count("started"));
         if (m == "start") {
             // Rakudo throws on a second .start; ours must too, or the realize
             // fallback would spawn the command a second time.
             if (inv.hash()->count("pid") || inv.hash()->count("spawn-token"))
                 throw RakuError{Value::typeObj("X::Proc::Async::AlreadyStarted"),
                     "Process has already been started"};
+            (*inv.hash())["started"] = Value::boolean(true);   // even when the spawn fails
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
             (*pr.hash())["kind"] = Value::str("proc"); (*pr.hash())["proc"] = inv;
             (*pr.hash())["status"] = Value::str("Planned");
@@ -9574,8 +9845,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // a tapped stream is captured and fed to the taps at realize; an
                 // untapped, unbound one is INHERITED, like Rakudo (the old
                 // capture-and-discard was a relic of the lazy model)
-                io.captureOut = !outBound && tapped("taps");
-                io.captureErr = !errBound && tapped("taps-err");
+                // …or merely ASKED FOR: a Supply taken before the start may be
+                // tapped after it, and must not have lost the output meanwhile
+                io.captureOut = !outBound && (tapped("taps") || inv.hash()->count("used-stdout"));
+                io.captureErr = !errBound && (tapped("taps-err") || inv.hash()->count("used-stderr"));
                 SpawnedChild sc = spawnChildStart(argvv, cwd, nullptr, io);
 #if !defined(_WIN32)
                 // the child holds its dup2'd copies of the bind ends; ours must
@@ -9620,6 +9893,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // what Rakudo before 2018.04 did, and what Sparrow6's
         // `whenever $proc.ready` (an empty body) expects either way.
         if (m == "ready") {
+            // started already: kept with the PID
+            auto pit = inv.hash()->find("pid");
+            if (pit != inv.hash()->end()) {
+                auto ps = std::make_shared<PromiseState>();
+                Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+                ps->done = true; ps->result = pit->second;
+                (*p.hash())["status"] = Value::str("Kept");
+                (*p.hash())["result"] = ps->result;
+                return p;
+            }
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
             (*pr.hash())["kind"] = Value::str("proc-ready");
             (*pr.hash())["proc"] = inv;
@@ -9691,6 +9974,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // has existed since .start. Realizing the promise still drains and reaps,
         // so an `await` after the kill returns. Skipped once the exitcode is in:
         // that pid is dead and may have been recycled.
+        if ((m == "kill" || m == "close-stdin") && !inv.hash()->count("pid") && !inv.hash()->count("spawn-token") &&
+            !inv.hash()->count("started"))
+            throwTyped("X::Proc::Async::MustBeStarted", {{"method", m}},
+                       "Process must be started first before calling '" + std::string(m) + "'");
         if (m == "kill") {
             auto pidIt = inv.hash()->find("pid");
             if (pidIt != inv.hash()->end() && !inv.hash()->count("exitcode")) {
@@ -9727,12 +10014,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::boolean(true);
 #else
             if (!inv.hash()->count("w"))
-                throw RakuError{Value::typeObj("X::Proc::Async::OpenForWriting"),
-                    "Process must be started with :w to write to its standard input"};
+                throwTyped("X::Proc::Async::OpenForWriting", {{"method", m}},
+                    "Process must be opened for writing with :w to call '" + std::string(m) + "'");
             auto wf = inv.hash()->find("stdin-wfd");
             if (wf == inv.hash()->end()) {
-                if (!inv.hash()->count("pid"))
-                    throw RakuError{Value::typeObj("X::Proc::Async::MustBeStarted"), "Process must be started before " + m};
+                if (!inv.hash()->count("pid") && !inv.hash()->count("started"))
+                    throwTyped("X::Proc::Async::MustBeStarted", {{"method", m}},
+                               "Process must be started first before calling '" + std::string(m) + "'");
                 throw RakuError{Value::typeObj("X::Proc::Async::OpenForWriting"), "The process's standard input is already closed"};
             }
             int wfd = (int)wf->second.toInt();
@@ -9901,6 +10189,28 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Code a module is most likely to hand around as a value — died on the
     // one-element interface. Testo caches the regex it was given before
     // matching with it, and stopped on its first assertion.
+    // A user class that `is Cool` gets Cool's numeric methods, which work on
+    // `self.Numeric`: `class NotComplex is Cool { method Numeric { $magic } }`
+    // answers `.conj`, `.exp`, `.log`, `.sqrt`, `.roots`… as $magic does.
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+        static const std::set<std::string> kCoolNumeric = {
+            "abs", "conj", "exp", "log", "log10", "log2", "sqrt", "roots", "sign",
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sec", "cosec", "cotan",
+            "asec", "acosec", "acotan", "sinh", "cosh", "tanh", "sech", "cosech", "cotanh",
+            "asinh", "acosh", "atanh", "asech", "acosech", "acotanh", "floor", "ceiling",
+            "round", "truncate", "cis", "unpolar", "polar", "is-prime", "expmod", "rand",
+            "Int", "Num", "Rat", "FatRat", "Real", "Bridge", "Complex", "UInt", "narrow",
+            "base", "sqrt", "succ", "pred"};
+        if (kCoolNumeric.count(m)) {
+            bool isCool = false;
+            for (ClassInfo* c = inv.obj()->cls.get(); c && !isCool; c = c->parent.get())
+                if (c->name == "Cool" || c->nativeParent == "Cool") isCool = true;
+            if (isCool && inv.obj()->cls->findMethod("Numeric")) {
+                Value num = methodCall(inv, "Numeric", {});
+                if (!(num.t == VT::Object)) return methodCall(num, m, args);
+            }
+        }
+    }
     if (inv.t == VT::Object || inv.t == VT::Code || inv.t == VT::Regex) {
         static const std::set<std::string> kOneElem = {
             "elems", "end", "list", "List", "Array", "flat", "cache", "eager",
@@ -10172,19 +10482,56 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     return out;
 }
 
+// An address for an async socket: IPv4 or IPv6 (`::1`), numeric or by name.
+// "0.0.0.0" / "" binds every IPv4 interface, as it always has.
+static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage& ss, socklen_t& len) {
+    std::memset(&ss, 0, sizeof(ss));
+    std::string host = hostIn == "localhost" ? "127.0.0.1" : hostIn;
+    if (host.empty() || host == "0.0.0.0") {
+        auto* a4 = (sockaddr_in*)&ss; a4->sin_family = AF_INET; a4->sin_port = htons((uint16_t)port);
+        a4->sin_addr.s_addr = INADDR_ANY; len = sizeof(sockaddr_in); return true;
+    }
+    addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = AF_UNSPEC;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
+    std::memcpy(&ss, res->ai_addr, res->ai_addrlen); len = (socklen_t)res->ai_addrlen;
+    freeaddrinfo(res);
+    if (ss.ss_family == AF_INET) ((sockaddr_in*)&ss)->sin_port = htons((uint16_t)port);
+    else if (ss.ss_family == AF_INET6) ((sockaddr_in6*)&ss)->sin6_port = htons((uint16_t)port);
+    return true;
+}
+bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen_t& len) {
+    return asyncSockAddr(h, p, ss, len);
+}
+// The host and port of a socket address, IPv4 or IPv6.
+static void asyncSockName(const sockaddr_storage& ss, std::string& host, long long& port) {
+    char buf[INET6_ADDRSTRLEN] = {0};
+    if (ss.ss_family == AF_INET6) {
+        auto* a6 = (const sockaddr_in6*)&ss;
+        inet_ntop(AF_INET6, &a6->sin6_addr, buf, sizeof(buf)); port = ntohs(a6->sin6_port);
+    } else {
+        auto* a4 = (const sockaddr_in*)&ss;
+        inet_ntop(AF_INET, &a4->sin_addr, buf, sizeof(buf)); port = ntohs(a4->sin_port);
+    }
+    host = buf;
+}
+
 // Build an IO::Socket::Async connection value around a connected fd.
 static Value makeAsyncSocket(int fd) {
     Value s = Value::makeHash(); s.hashKind = "AsyncSocket";
     (*s.hash())["fd"] = Value::integer(fd);
-    sockaddr_in a{}; socklen_t alen = sizeof(a);
+    sockaddr_storage a{}; socklen_t alen = sizeof(a);
+    std::string h; long long p = 0;
     if (::getsockname(fd, (sockaddr*)&a, &alen) == 0) {
-        (*s.hash())["socket-host"] = Value::str(inet_ntoa(a.sin_addr));
-        (*s.hash())["socket-port"] = Value::integer(ntohs(a.sin_port));
+        asyncSockName(a, h, p);
+        (*s.hash())["socket-host"] = Value::str(h);
+        (*s.hash())["socket-port"] = Value::integer(p);
     }
     alen = sizeof(a);
     if (::getpeername(fd, (sockaddr*)&a, &alen) == 0) {
-        (*s.hash())["peer-host"] = Value::str(inet_ntoa(a.sin_addr));
-        (*s.hash())["peer-port"] = Value::integer(ntohs(a.sin_port));
+        asyncSockName(a, h, p);
+        (*s.hash())["peer-host"] = Value::str(h);
+        (*s.hash())["peer-port"] = Value::integer(p);
     }
     return s;
 }
@@ -10221,6 +10568,8 @@ void Interpreter::wakeSignalWorker() {
 
 // Signal number → its enum name ("SIGINT"), or "" if unknown.
 static std::string signalNameOfNumber(int sig);
+static const std::map<std::string, int>& signalNameMap();
+const std::map<std::string, int>& signalNameMapFwd() { return signalNameMap(); }
 // Build the Signal enum value passed to a whenever block ($_ / $sig).
 static Value makeSignalEnumValue(int sig) {
     std::string name = signalNameOfNumber(sig);
@@ -10228,6 +10577,7 @@ static Value makeSignalEnumValue(int sig) {
     v.enumType = "Signal";
     return v;
 }
+Value makeSignalEnumValueFwd(int sig) { return makeSignalEnumValue(sig); }
 // The Signal-enum names available on THIS platform. Each is `#ifdef`-guarded:
 // Windows' <signal.h> defines only a handful (SIGINT/SIGILL/SIGFPE/SIGSEGV/
 // SIGTERM/SIGABRT/SIGBREAK), so the rest are simply absent there.
@@ -11735,22 +12085,26 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
     if (h.count("kind") && h.at("kind").toStr() == "async-listen") {
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
         int port = h.count("port") ? (int)h.at("port").toInt() : 0;
-        int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
-        int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
-        if (host.empty() || host == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
-        else {
-            std::string rh = (host == "localhost") ? "127.0.0.1" : host;
-            addr.sin_addr.s_addr = inet_addr(rh.c_str());
-            if (addr.sin_addr.s_addr == INADDR_NONE) {
-                if (hostent* he = gethostbyname(rh.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+        sockaddr_storage addr{}; socklen_t addrLen = 0;
+        bool badHost = !asyncSockAddr(host, port, addr, addrLen);
+        int lfd = badHost ? -1 : ::socket(addr.ss_family, SOCK_STREAM, 0);
+        if (!badHost && lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
+        if (lfd >= 0) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
+        if (badHost || ::bind(lfd, (sockaddr*)&addr, addrLen) < 0 || ::listen(lfd, 128) < 0) {
+            if (lfd >= 0) ::close(lfd);
+            // a tap with a :quit hears the failure as the supply's quit
+            if (quitCb.t == VT::Code) {
+                Value ex = makeTypedEx("X::AdHoc", {}, "Cannot listen on " + host + ":" + std::to_string(port));
+                ValueList one{ex};
+                callCallable(quitCb, one);
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
-        }
-        if (::bind(lfd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(lfd, 128) < 0) {
-            ::close(lfd);
             throw RakuError{Value::typeObj("X::IO"), "Cannot listen on " + host + ":" + std::to_string(port)};
         }
+        // the address actually bound — `.socket-port` answers the port a `0` asked the OS for
+        std::string boundHost = host; long long boundPort = port;
+        { sockaddr_storage ba{}; socklen_t bl = sizeof(ba);
+          if (::getsockname(lfd, (sockaddr*)&ba, &bl) == 0) asyncSockName(ba, boundHost, boundPort); }
         engageGil();
         auto handle = std::make_shared<TapHandle>();
         handle->closers.push_back([lfd] { ::shutdown(lfd, SHUT_RDWR); ::close(lfd); });
@@ -11782,6 +12136,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash())["wired"] = Value::boolean(true);
+        auto keptP = [](Value v) {
+            auto ps = std::make_shared<PromiseState>();
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+            ps->done = true; ps->result = v;
+            (*p.hash())["status"] = Value::str("Kept"); (*p.hash())["result"] = v;
+            return p;
+        };
+        (*t.hash())["socket-host"] = keptP(Value::str(boundHost));
+        (*t.hash())["socket-port"] = keptP(Value::integer(boundPort));
         return t;
     }
     // 4) async read: a worker recv()s and emits Blob chunks; EOF fires done.
@@ -11811,9 +12174,10 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // from inside its own handler.
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
-        addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin, rctx0]() mutable {
+        addWorker(BigStackThread([self, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
+            bool malformed = false;   // bytes that are no UTF-8 at all: the supply QUITs
             // A CHARACTER supply must not split a character. The bytes arrive
             // on whatever boundary the network chose, and handing each chunk
             // over as a Str made a multi-byte character straddling two reads
@@ -11855,6 +12219,24 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 else {
                     carry.append(buf.data(), (size_t)n);
                     size_t take = utf8TextPrefixLen(carry);
+                    // what is held back must be the START of a character; a byte
+                    // that can begin none (0x80-0xBF, 0xF8-0xFF) is malformed input
+                    // (whole characters may be held back too — a grapheme waiting
+                    // for its marks — so only an ill-formed sequence counts, and
+                    // only the very end may be an incomplete one)
+                    {
+                        bool bad = false;
+                        for (size_t k = take; k < carry.size() && !bad; ) {
+                            unsigned char b0 = (unsigned char)carry[k];
+                            if (b0 < 0x80) { k++; continue; }
+                            size_t need = b0 >= 0xF8 ? 0 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : b0 >= 0xC0 ? 2 : 0;
+                            if (!need) { bad = true; break; }
+                            for (size_t j = k + 1; j < k + need && j < carry.size(); j++)
+                                if (((unsigned char)carry[j] & 0xC0) != 0x80) { bad = true; break; }
+                            k += need;
+                        }
+                        if (bad) { malformed = true; self->gilYieldNotify(); break; }
+                    }
                     if (!take) { self->gilYieldNotify(); continue; }   // nothing whole yet
                     chunk = Value::str(carry.substr(0, take));
                     carry.erase(0, take);
@@ -11886,6 +12268,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // Whatever was held back still belongs to the reader: at EOF there is
             // no next chunk to complete it, so it goes out as it stands — the
             // same thing `consume-all-chars` does when a decoder is drained.
+            if (malformed) {
+                if (quitCb.t == VT::Code) {
+                    Value ex = self->makeTypedEx("X::AdHoc", {}, "Malformed UTF-8");
+                    ValueList one{ex};
+                    try { self->callCallable(quitCb, one); } catch (...) {}
+                }
+                tapClosed = true;   // no done after a quit; the socket stays the reader's to close
+                carry.clear();
+            }
             if (!tapClosed && !carry.empty() && emitCb.t == VT::Code) {
                 ValueList one{ Value::str(carry) };
                 try { self->callCallable(emitCb, one); } catch (...) {}
@@ -12447,20 +12838,36 @@ void Interpreter::registerBuiltins() {
         // die with no argument reuses the current $! ("Died" only if $! is undefined)
         if (a.empty()) { Value* be = I.tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be; }
         std::string msg = payload.toStr();
+        // `die($p, 42)` — several values: the message is their concatenation
+        // and the X::AdHoc's payload the whole list
+        if (a.size() > 1) {
+            msg.clear();
+            for (auto& x : a) msg += x.t == VT::Object ? I.methodCall(x, "Str", ValueList{}).toStr() : x.toStr();
+            Value lst = Value::array(); lst.isList = true; *lst.arr() = a;
+            payload = lst;
+        }
+        // an object that is not an Exception is thrown as an X::AdHoc CARRYING it
+        bool isException = false;
+        if (payload.t == VT::Object && payload.obj())
+            for (ClassInfo* c = payload.obj()->cls.get(); c && !isException; c = c->parent.get())
+                if (c->name == "Exception" || c->nativeParent == "Exception" ||
+                    c->name.rfind("X::", 0) == 0 || c->name.rfind("CX::", 0) == 0) isException = true;
         // exception objects: prefer a readable .message / .Str accessor
-        if (payload.t == VT::Object && payload.obj()) {
+        if (payload.t == VT::Object && payload.obj() && isException) {
             for (const char* acc : {"message", "Str"}) {
                 try { ValueList none; Value m = I.methodCall(payload, acc, none);
                       if (m.t == VT::Str && !m.s.empty()) { msg = m.s; break; } } catch (...) {}
             }
         } else {
+            if (payload.t == VT::Object && payload.obj() && a.size() == 1)   // its .Str is the message
+                try { msg = I.methodCall(payload, "Str", ValueList{}).toStr(); } catch (...) {}
             // wrap a plain string/number into an X::AdHoc exception (so .message/.^name work in CATCH)
             auto it = I.classes_.find("X::AdHoc");
             if (it != I.classes_.end()) {
                 Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
                 ex.obj()->cls = it->second;
                 ex.obj()->attrs["message"] = Value::str(msg);
-                ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a[0]; // .payload is what was thrown
+                ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a.size() > 1 ? payload : a[0]; // .payload is what was thrown
                 payload = ex;
             }
         }
@@ -12643,11 +13050,38 @@ void Interpreter::registerBuiltins() {
     // the primitive and falls back to `stty` gives the same source one meaning
     // everywhere, so the adverb belongs to the module and the capability to
     // the engine.
-    B["prompt"] = [](Interpreter&, ValueList& a) -> Value {
+    B["prompt"] = [](Interpreter& I, ValueList& a) -> Value {
         for (const Value& v : a)
             if (v.t == VT::Pair && v.namedArg)
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "prompt takes no named arguments (got :" + v.s + ")"};
+        // a `$*IN`/`$*OUT` that is not the process's own (a `temp $*IN =
+        // $file.open`) is where prompt talks: it prints to $*OUT and reads
+        // one line from $*IN with THAT handle's chomp and nl-in
+        auto dyn = [&](const char* n) -> Value {
+            Value* p = I.tctx_.cur ? I.tctx_.cur->find(n) : nullptr;
+            return p ? *p : Value::any();
+        };
+        auto isStd = [](const Value& h, const char* which) {
+            return h.t == VT::Hash && h.hash() && h.hash()->count("std") &&
+                   (*h.hash()).at("std").toStr() == which;
+        };
+        Value in = dyn("$*IN"), out = dyn("$*OUT");
+        bool customIn = in.t != VT::Any && !isStd(in, "in");
+        bool customOut = out.t != VT::Any && !isStd(out, "out");
+        if (customIn || customOut) {
+            if (!a.empty()) {
+                std::string msg = I.strOf(a[0]);
+                if (customOut) { I.methodCall(out, "print", ValueList{Value::str(msg)}); try { I.methodCall(out, "flush", ValueList{}); } catch (...) {} }
+                else { std::cout << msg << std::flush; }
+            }
+            if (customIn) {
+                Value line = I.methodCall(in, "get", ValueList{});
+                if (line.t == VT::Str) return I.callBuiltin("val", ValueList{line});
+                return line;
+            }
+            ValueList none; return promptImpl(none, false);
+        }
         return promptImpl(a, false);
     };
     // The capability, as a primitive rather than an adverb — this is what a
@@ -13403,6 +13837,25 @@ void Interpreter::registerBuiltins() {
     // A user sub of any of those names, visible where RUN-MAIN is called,
     // REPLACES the built-in step, and is also what &*ARGS-TO-CAPTURE /
     // &*GENERATE-USAGE answer inside it. MAIN_HELPER is never called.
+    // the built-in composers by their operator names: `circumfix:<[ ]>(1, 2)`
+    // is `[1, 2]` (single-argument rule), `circumfix:<{ }>(…)` a Hash
+    B["circumfix:<[ ]>"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value out = Value::array();
+        if (a.size() == 1 && (a[0].t == VT::Array || a[0].t == VT::Range) && !a[0].itemized)
+            *out.arr() = a[0].flatten();
+        else for (auto& x : a) out.arr()->push_back(x);
+        (void)I; return out;
+    };
+    B["circumfix:<{ }>"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value h = Value::makeHash();
+        ValueList flat;
+        for (auto& x : a) { if (x.t == VT::Array && x.arr()) for (auto& e : *x.arr()) flat.push_back(e); else flat.push_back(x); }
+        for (size_t k = 0; k < flat.size(); k++) {
+            if (flat[k].t == VT::Pair) (*h.hash())[flat[k].s] = flat[k].pairVal() ? *flat[k].pairVal() : Value::any();
+            else if (k + 1 < flat.size()) { (*h.hash())[flat[k].toStr()] = flat[k + 1]; k++; }
+        }
+        (void)I; return h;
+    };
     B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty() || a[0].t != VT::Code) return Value::any();
         Value mainSub = a[0];
@@ -13412,6 +13865,18 @@ void Interpreter::registerBuiltins() {
                 if (*it) if (Value* p = (*it)->find(n)) return p;
             return nullptr;
         };
+        // A 6.c unit may carry its own pre-2018.06 MAIN_HELPER: RUN-MAIN hands
+        // the whole job to it — `MAIN_HELPER($retval)`, or from 2018.06 on
+        // `MAIN_HELPER($in-as-argsfiles, $retval)` — and MAIN is not called.
+        if (Value* mh = I.tctx_.cur ? I.tctx_.cur->find("&MAIN_HELPER") : nullptr)
+            if (mh->t == VT::Code && mh->code() &&
+                I.methodCall(*mh, "count", ValueList{}).toInt() >= 1) {   // a helper TAKES the retval
+                Value helper = *mh;
+                long long n = I.methodCall(helper, "count", ValueList{}).toInt();
+                Value retval = a.size() > 1 ? a[1] : Value::nil();
+                return n >= 2 ? I.callCallable(helper, ValueList{Value::boolean(false), retval})
+                              : I.callCallable(helper, ValueList{retval});
+            }
         // the raw @*ARGS as an Array, for the ARGS-TO-CAPTURE hook
         Value argsArr = Value::array();
         if (Value* av = lookup("@*ARGS"))
@@ -16430,8 +16895,9 @@ void Interpreter::registerBuiltins() {
     };
     B["push"] = [](Interpreter& I, ValueList& a) -> Value {
         arrayOpArgs("push", a, false);
-        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
-        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "push", rest); }
+        // a List refuses resizing — the METHOD arm owns the X::Immutable throw —
+        // and a TYPED array type-checks what it is given: the method does both
+        if (!a.empty() && a[0].t == VT::Array && (a[0].isList || !a[0].ofType().empty())) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "push", rest); }
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr()->push_back(a[i]); return a[0]; }
         return Value::any();
     };
@@ -16529,7 +16995,8 @@ void Interpreter::registerBuiltins() {
         bool slip = false; // `:slip` flattens the rounds into one list
         for (auto& v : a) {
             if (v.t == VT::Pair && v.namedArg) { if (v.s == "slip") slip = !v.pairVal() || v.pairVal()->truthy(); continue; }
-            ValueList l = (v.t == VT::Array || v.t == VT::Range) ? v.flatten() : ValueList{v};
+            // an ITEMIZED list is one element, not a list to take turns from
+            ValueList l = ((v.t == VT::Array || v.t == VT::Range) && !v.itemized) ? v.flatten() : ValueList{v};
             lists.push_back(l);
         }
         size_t maxLen = 0; for (auto& l : lists) maxLen = std::max(maxLen, l.size());
@@ -16639,6 +17106,13 @@ void Interpreter::registerBuiltins() {
             Value out = Value::seq();
             for (auto& t : *z.arr()) {
                 ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
+                // an OPERATOR folds with its own associativity, as `[**]` and
+                // `[eqv]` would: `zip(…):with(&infix:<**>)` is right-associative
+                const std::string& wn = with.code() ? with.code()->name : std::string();
+                if (wn.size() > 8 && wn.compare(0, 7, "infix:<") == 0 && wn.back() == '>' && parts.size() > 1) {
+                    out.arr()->push_back(I.applyReducePublic(wn.substr(7, wn.size() - 8), parts));
+                    continue;
+                }
                 Value acc = parts.empty() ? Value::any() : parts[0];
                 for (size_t k = 1; k < parts.size(); k++) acc = I.callCallable(with, {acc, parts[k]});
                 out.arr()->push_back(acc);

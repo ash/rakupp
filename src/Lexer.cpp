@@ -993,6 +993,11 @@ void Lexer::skipWhitespaceAndComments() {
                 (peek(2) == '{' || peek(2) == '(' || peek(2) == '[' || peek(2) == '<')) {
                 const bool lead = peek(1) == '|';
                 const int startLine = line_;
+                if (!lead) { // code before a `#=` on its line: see the plain `#=` branch below
+                    size_t b = pos_; bool code = false;
+                    while (b > 0 && src_[b - 1] != '\n') { b--; if (src_[b] != ' ' && src_[b] != '\t') { code = true; break; } }
+                    if (code) declPod_[-startLine] = std::string();
+                }
                 advance(); advance();                 // # | or # =
                 char open = peek(), close = open == '{' ? '}' : open == '(' ? ')' : open == '[' ? ']' : '>';
                 advance();
@@ -1059,6 +1064,13 @@ void Lexer::skipWhitespaceAndComments() {
                 continue;
             }
             if (peek(1) == '=') { // trailing declarator pod `#= text` — record by line
+                // …and whether CODE precedes it on the line: such a `#=` documents
+                // that line's own declaration and never continues the one above
+                // (`has $.a; #= x` / `has $.b; #= y` are two docs, not one). Kept
+                // under the NEGATED line number, which no real line can be.
+                { size_t b = pos_; bool code = false;
+                  while (b > 0 && src_[b - 1] != '\n') { b--; if (src_[b] != ' ' && src_[b] != '\t') { code = true; break; } }
+                  if (code) declPod_[-line_] = std::string(); }
                 advance(); advance(); // # =
                 while (peek() == ' ' || peek() == '\t') advance();
                 std::string txt;
@@ -1445,6 +1457,16 @@ static size_t interpChainEnd(const std::string& src, size_t p) {
             q = e;
             continue;
         }
+        // `.'name'()` / `."name"()` — an indirect method name, parens required
+        if (q + 2 < n && src[q] == '.' && (src[q + 1] == '\'' || src[q + 1] == '"')) {
+            size_t qe = src.find(src[q + 1], q + 2);
+            if (qe != std::string::npos && qe + 1 < n && src[qe + 1] == '(') {
+                size_t e = balancedGroupEnd(src, qe + 1);
+                if (e == std::string::npos) break;
+                q = e;
+                continue;
+            }
+        }
         // `.name`, optionally with a meta-sigil (`.^name`, `.?meth`, `.&f`) and
         // optionally called. A bare `.name` copies through byte for byte — only
         // the parser decides whether it interpolates — but consuming it here lets
@@ -1539,6 +1561,11 @@ Token Lexer::lexQuoted(char quote) {
             // does the actual parsing later. With no chain to protect this is just
             // the sigil, exactly as the literal branch would have appended it.
             raw += c;
+            // `"$( expr )"`: the contextualizer's parens hold code, quotes and all
+            if (c == '$' && peek() == '(') {
+                size_t e = balancedGroupEnd(src_, pos_);
+                if (e != std::string::npos) while (pos_ < e) raw += advance();
+            }
             for (size_t end = interpChainEnd(src_, pos_); pos_ < end; ) raw += advance();
         } else if (c == '{' && quote != '\'') {
             // Interpolation code block: capture the balanced { … } as a unit so a
@@ -1608,6 +1635,7 @@ bool Lexer::isQuoteKeyword(const std::string& w) {
     static const std::set<std::string> kQuoteWords = {
         "q", "qq", "Q", "rx", "m", "ms", "mm", "s", "S", "ss", "SS", "tr", "TR",
         "qw", "Qw", "qqw", "qww", "qqww", "qx", "qqx", "qto", "qqto", "Qto",
+        "qs", "qa", "qh", "qc", "qb", "qf", "Qww", "Qx",
     };
     return kQuoteWords.count(w) > 0;
 }
@@ -1726,13 +1754,14 @@ bool Lexer::tryQuoteForm(Token& out) {
     // non-mutating form: it ANSWERS the transliterated string and leaves the
     // target alone, exactly as `S///` does for substitution.
     bool isTrans = (w == "tr" || w == "TR");
-    bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww" || w == "qqww"); // word-list quotes
-    bool isExec = (w == "qx" || w == "qqx"); // shell-execute quotes: qx/env/
+    bool isWords = (w == "qw" || w == "Qw" || w == "Qww" || w == "qqw" || w == "qww" || w == "qqww"); // word-list quotes
+    bool isExec = (w == "qx" || w == "qqx" || w == "Qx"); // shell-execute quotes: qx/env/
     // Q-shorthands: Qs/Qa/Qh/Qc/Qb/Qq — `Q` with one feature adverb glued on
+    const std::string word0 = w;   // as written: `qb`, before the shorthand is unfolded
     std::string shortAdv;
-    if (w.size() == 2 && w[0] == 'Q' && std::strchr("sahcbqf", w[1])) {
+    if (w.size() == 2 && (w[0] == 'Q' || w[0] == 'q') && std::strchr(w[0] == 'Q' ? "sahcbqf" : "sahcbf", w[1])) {
         shortAdv = std::string(":") + w[1] + " ";
-        w = "Q";
+        w = w.substr(0, 1);
     }
     // …and the heredoc ones: `qqto/END/` is `qq:to/END/`, likewise qto / Qto
     else if (w == "qto" || w == "qqto" || w == "Qto") {
@@ -1747,7 +1776,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     // takes CMYK components as `\c, \m, \y, \k` and then writes
     // `[ c, m, y, k ]`, where the `m` opened a match with `,` for a delimiter
     // and swallowed the rest of the expression.
-    if (isTermName(w)) return false;
+    if (isTermName(word0)) return false;
     // A routine of this name is declared in the unit (or imported): the call wins
     // over the quote construct, which is the reading Rakudo gives once the routine
     // is in scope. `sub tr(&body)` then makes `tr { td 'a' }` a table row rather
@@ -1756,7 +1785,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     // An ADVERB is where Rakudo draws the line, and so does this: `s:g/l/L/` and
     // `q:to/END/` stay quotes even with `&s` and `&q` imported, while `s/l/L/`
     // and `q{…}` become calls. Measured against Rakudo, both directions.
-    if (!notQuoteWords_.empty() && quoteWordShadowedAt(w, pos_)) {
+    if (!notQuoteWords_.empty() && quoteWordShadowedAt(word0, pos_)) {
         bool adverbFollows = p < src_.size() && src_[p] == ':' &&
                              p + 1 < src_.size() && src_[p + 1] != ':' &&
                              (ascii::isalpha((unsigned char)src_[p + 1]) || src_[p + 1] == '!');
@@ -1831,21 +1860,39 @@ bool Lexer::tryQuoteForm(Token& out) {
     // undeclared `qw` and `q:to«END»` never opened a heredoc. Answers false when
     // the form asks for none of the three — the caller then builds the string.
     auto quoteFormTail = [&](const std::string& raw) -> bool {
-        if (isExec) { // qx = literal command, qqx = interpolated command
-            out = make(w == "qqx" ? Tok::StrInterp : Tok::StrLit, raw);
+        // `q:x/…/` and `qq:x/…/` are the adverb spellings of qx and qqx
+        if (isExec || adverbs.find(":x ") != std::string::npos ||
+            adverbs.find(":exec ") != std::string::npos) { // qx = literal command, qqx = interpolated command
+            // single-quote semantics for qx / q:x (`\\` is one backslash);
+            // Qx keeps every backslash, qqx unescapes when it interpolates
+            std::string cmd = raw;
+            if (w == "qx" || w == "q") {
+                cmd.clear();
+                for (size_t k = 0; k < raw.size(); k++) {
+                    if (raw[k] == '\\' && k + 1 < raw.size() && raw[k + 1] == '\\') k++;
+                    cmd += raw[k];
+                }
+            }
+            out = make((w == "qqx" || w == "qq") ? Tok::StrInterp : Tok::StrLit, cmd);
             out.text2 = "qx";
             return true;
         }
+        const bool heredocAdv = adverbs.find(":to ") != std::string::npos ||
+                                adverbs.find(":heredoc ") != std::string::npos;
         // the :w / :words adverb makes any q-form a word list: `q:w /a b/`
-        if (isWords || adverbs.find(":w ") != std::string::npos ||
-            adverbs.find(":words ") != std::string::npos) {
+        // (with :to/:heredoc too, but then the BODY is the word list: see below)
+        if (!heredocAdv && (isWords || adverbs.find(":w ") != std::string::npos ||
+            adverbs.find(":words ") != std::string::npos ||
+            adverbs.find(":ww ") != std::string::npos ||
+            adverbs.find(":quotewords ") != std::string::npos)) {
             out = make(Tok::QwList, raw);
             // the FORM decides quote protection (ww) and interpolation (qq):
             // the parser splits the words differently for each — qqww{ "\n" || }
             // is two words, the first a real newline (Text::Utils' suite)
             bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
-            bool protectF = (w == "qww" || w == "qqww" ||
-                             adverbs.find(":ww ") != std::string::npos);
+            bool protectF = (w == "qww" || w == "qqww" || w == "Qww" ||
+                             adverbs.find(":ww ") != std::string::npos ||
+                             adverbs.find(":quotewords ") != std::string::npos);
             out.text2 = protectF ? (interpF ? "qqww" : "qww")
                                  : (interpF ? "qqw"  : "qw");
             // An EXPLICIT `:v`/`:val` asks for allomorphs, which the q-family
@@ -1907,6 +1954,15 @@ bool Lexer::tryQuoteForm(Token& out) {
                 }
             }
             out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
+            // `q :heredoc :w "EOF"` — the body, once read, splits into words
+            if (adverbs.find(":w ") != std::string::npos || adverbs.find(":words ") != std::string::npos ||
+                adverbs.find(":ww ") != std::string::npos || adverbs.find(":quotewords ") != std::string::npos) {
+                heredocFeats_.clear();
+                out = make(Tok::QwList, "");
+                out.text2 = (adverbs.find(":ww ") != std::string::npos ||
+                             adverbs.find(":quotewords ") != std::string::npos)
+                                ? (w == "qq" ? "qqww" : "qww") : (w == "qq" ? "qqw" : "qw");
+            }
             return true;
         }
         return false;
@@ -2031,6 +2087,8 @@ bool Lexer::tryQuoteForm(Token& out) {
             // adverbs (`s:s,foo,bar,`) the form is unambiguous.
             if (!(isRegex || ((isSubst || isTrans) && !adverbs.empty()))) return false;
             close = d; bracket = false; break;
+        // A NUL byte is a legal delimiter too: roast EVALs `(q\0foo bar\0)`.
+        case '\0': if (isRegex || isSubst || isTrans) return false; close = d; bracket = false; break;
         case '\'': case '"': // q'…' / q:to'END' — quote or heredoc terminator in quotes
             if (isSubst || isTrans) return false; // s'…' isn't a substitution delimiter here
             close = d; bracket = false; break;

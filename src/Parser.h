@@ -107,10 +107,23 @@ public:
             for (int k = l; ; k++) {
                 auto it = declPod_.find(k);
                 if (it == declPod_.end() || claimedPodLines_.count(k)) break;
+                // a continuation line must be comment-only (the lexer marks a
+                // `#=` with code before it under -line); so must a doc on the
+                // line BELOW the declaration
+                if ((k > line) && declPod_.count(-k)) break;
                 out = out.empty() ? it->second : out + " " + it->second;
             }
         }
         return out;
+    }
+    // a block / anonymous routine term's `#=`, on the line its closing brace
+    // is on or alone on the next (a `#|` above it was taken when it opened)
+    void attachTrailingPod(BlockExpr& be) {
+        if (pos_ == 0) return;
+        std::string trail = trailingPodFor(toks_[pos_ - 1].line);
+        if (trail.empty()) return;
+        be.podTrail = trail;
+        be.pod = be.pod.empty() ? trail : be.pod + "\n" + trail;
     }
     // join the run of #| lines ENDING just above `line` (blank-free), "" if none
     std::string leadingPodFor(int line) const {
@@ -180,6 +193,18 @@ private:
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
+    std::vector<std::string> lastDoesRoles_;
+    std::vector<struct ClassDecl*> classDeclStack_; // classes whose bodies are being parsed
+    // keyword-named sigilless params in scope (`sub f(\return)`), innermost routine
+    std::vector<std::string> kwShadow_;
+    void noteKwShadow(const std::string& n) {
+        if (n == "return" || n == "return-rw" || n == "last" || n == "next" || n == "redo")
+            kwShadow_.push_back(n);
+    }
+    bool kwShadowed(const std::string& n) const {
+        for (auto& k : kwShadow_) if (k == n) return true;
+        return false;
+    } // `my @a does R` — roles mixed in at the declaration
     ExprPtr lastWillBlock_;
     std::vector<StmtPtr> pendingStmts_;
     char varsPragma_ = 0;         // `use variables :D` / `:U` / `:_` in force (block-scoped)
@@ -386,7 +411,7 @@ private:
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
-    ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
+    ExprPtr parseEmbeddedExpr(const std::string& src, bool ownScope = false); // parse a `{…}`/`$()` interpolation, inheriting user operators
     ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
     void qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val); // one «…»/qqww word
     ExprPtr qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& flags, bool val);

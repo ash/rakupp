@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cerrno>
 #include "BigInt.h"
+#include "Unicode.h"
+#include <map>
 
 namespace rakupp {
 
@@ -70,6 +72,53 @@ static Value mkFmt(char type, const std::string& inner) {
     }
     Value c = Value::array();
     if (type == 'C' || type == 'V') { if (!body.empty()) c.arr()->push_back(Value::str(body)); }
+    else if (type == 'E') {
+        // E<…> is an ENTITY: `;`-separated codepoints (decimal, 0x/0o/0b),
+        // Unicode character names, or HTML5 entity names — each the character
+        // it names, the way it was written kept in .meta
+        static const std::map<std::string, const char*> kHtml5 = {
+            {"amp", "&"}, {"lt", "<"}, {"gt", ">"}, {"quot", "\""}, {"apos", "'"},
+            {"nbsp", "\xC2\xA0"}, {"copy", "\xC2\xA9"}, {"reg", "\xC2\xAE"},
+            {"deg", "\xC2\xB0"}, {"plusmn", "\xC2\xB1"}, {"sup1", "\xC2\xB9"},
+            {"sup2", "\xC2\xB2"}, {"sup3", "\xC2\xB3"}, {"micro", "\xC2\xB5"},
+            {"para", "\xC2\xB6"}, {"middot", "\xC2\xB7"}, {"laquo", "\xC2\xAB"},
+            {"raquo", "\xC2\xBB"}, {"frac14", "\xC2\xBC"}, {"frac12", "\xC2\xBD"},
+            {"frac34", "\xC2\xBE"}, {"times", "\xC3\x97"}, {"divide", "\xC3\xB7"},
+            {"sect", "\xC2\xA7"}, {"euro", "\xE2\x82\xAC"}, {"hellip", "\xE2\x80\xA6"},
+            {"mdash", "\xE2\x80\x94"}, {"ndash", "\xE2\x80\x93"}, {"Assign", "\xE2\x89\x94"},
+            {"larr", "\xE2\x86\x90"}, {"rarr", "\xE2\x86\x92"}, {"uarr", "\xE2\x86\x91"},
+            {"darr", "\xE2\x86\x93"}, {"ne", "\xE2\x89\xA0"}, {"le", "\xE2\x89\xA4"},
+            {"ge", "\xE2\x89\xA5"}, {"infin", "\xE2\x88\x9E"}, {"trade", "\xE2\x84\xA2"}};
+        auto utf8 = [](uint32_t cp) {
+            std::string o;
+            if (cp < 0x80) o += (char)cp;
+            else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+            else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+            else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+            return o;
+        };
+        std::string out;
+        std::stringstream ss(body);
+        for (std::string ent; std::getline(ss, ent, ';'); ) {
+            size_t a = ent.find_first_not_of(" \t"), b = ent.find_last_not_of(" \t");
+            if (a == std::string::npos) continue;
+            ent = ent.substr(a, b - a + 1);
+            int base = 10; size_t off = 0;
+            if (ent.size() > 2 && ent[0] == '0' && (ent[1] == 'x' || ent[1] == 'o' || ent[1] == 'b')) {
+                base = ent[1] == 'x' ? 16 : ent[1] == 'o' ? 8 : 2; off = 2;
+            }
+            char* endp = nullptr;
+            long v = std::strtol(ent.c_str() + off, &endp, base);
+            if (endp && *endp == '\0' && endp != ent.c_str() + off) { out += utf8((uint32_t)v); continue; }
+            auto h = kHtml5.find(ent);
+            if (h != kHtml5.end()) { out += h->second; continue; }
+            int32_t cp = uniCharByName(ent);
+            if (cp >= 0) { out += utf8((uint32_t)cp); continue; }
+            out += ent;   // unknown: as written
+        }
+        c.arr()->push_back(Value::str(out));
+        meta.arr()->push_back(Value::str(body));
+    }
     else parseFormatting(body, *c.arr());
     (*f.hash())["contents"] = c;
     (*f.hash())["meta"] = meta;
@@ -353,6 +402,43 @@ static std::string collectPara(const std::vector<std::string>& lines, size_t& i)
     return para;
 }
 
+// A Pod::Defn from its lines: the first is the TERM, the rest its definition,
+// one Para per blank-separated paragraph. Neither is parsed for formatting
+// codes (Rakudo keeps `B<term>` as written in both).
+static Value mkDefn(std::vector<std::string> lines, Value config) {
+    Value d = mkPod("Pod::Defn");
+    while (!lines.empty() && strip(lines.front()).empty()) lines.erase(lines.begin());
+    std::string term = lines.empty() ? std::string() : strip(lines.front());
+    if (!lines.empty()) lines.erase(lines.begin());
+    // `=defn # term` — the hash is the :numbered alias
+    if (term.size() > 1 && term[0] == '#' && (term[1] == ' ' || term[1] == '\t')) {
+        term = strip(term.substr(1));
+        if (config.t != VT::Hash) config = Value::makeHash();
+        (*config.hash())["numbered"] = Value::boolean(true);
+    }
+    (*d.hash())["term"] = Value::str(term);
+    Value cc = Value::array();
+    std::string para;
+    auto flush = [&]() {
+        if (para.empty()) return;
+        Value p = mkPod("Pod::Block::Para");
+        Value pc = Value::array(); pc.arr()->push_back(Value::str(para));
+        (*p.hash())["contents"] = pc;
+        cc.arr()->push_back(p);
+        para.clear();
+    };
+    for (auto& l : lines) {
+        std::string t = strip(l);
+        if (t.empty()) { flush(); continue; }
+        if (!para.empty()) para += " ";
+        para += t;
+    }
+    flush();
+    (*d.hash())["contents"] = cc;
+    (*d.hash())["config"] = config.t == VT::Hash ? config : Value::makeHash();
+    return d;
+}
+
 // head1/head2/… or item/item1/… → (base, level). base is "head"/"item"; level
 // defaults to 1 when no trailing digits.
 static bool splitLeveled(const std::string& kw, const std::string& base, int& level) {
@@ -472,6 +558,14 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (lv) (*block.hash())["level"] = Value::integer(lv);
                 if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
                 ValueList inner;
+                if (name == "defn") {
+                    std::vector<std::string> body; std::string k2, r2;
+                    while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
+                        { body.push_back(lines[i]); i++; }
+                    if (i < lines.size()) i++;
+                    out.push_back(mkDefn(body, cfg.find(':') != std::string::npos ? podParseConfig(cfg) : Value()));
+                    continue;
+                }
                 if (cls == "Pod::Block::Table") { // rows, not pod
                     std::vector<std::string> rows; std::string k2, r2;
                     while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
@@ -510,6 +604,13 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (cls == "Pod::Block::Named") (*block.hash())["name"] = Value::str(name);
                 if (lv) (*block.hash())["level"] = Value::integer(lv);
                 if (cfg.find(':') != std::string::npos) (*block.hash())["config"] = podParseConfig(cfg);
+                if (name == "defn") { // `=for defn` — the paragraph below: term, then definition
+                    std::vector<std::string> body; std::string k3, r3;
+                    while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k3, r3))
+                        { body.push_back(lines[i]); i++; }
+                    out.push_back(mkDefn(body, cfg.find(':') != std::string::npos ? podParseConfig(cfg) : Value()));
+                    continue;
+                }
                 if (cls == "Pod::Block::Table") { // `=for table` — the paragraph below is the rows
                     std::vector<std::string> rows; std::string k3, r3;
                     while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k3, r3))
@@ -586,15 +687,14 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 out.push_back(block);
                 continue;
             }
-            if (kw == "pod") { // =pod … =end pod delimiter-less start OR abbreviated; treat like a named block
-                std::string name = "pod"; i++;
-                Value block = mkPod("Pod::Block::Named");
-                (*block.hash())["name"] = Value::str(name);
-                ValueList inner; parseSeq(lines, i, name, true, inner, blockMargin(lines, i - 1));
-                Value ic = Value::array(); *ic.arr() = std::move(inner);
-                (*block.hash())["contents"] = ic;
-                if (i < lines.size()) i++;
-                out.push_back(block);
+            // (`=pod` is no exception: abbreviated, it holds the ONE paragraph
+            // below it — Rakudo calls a later `=end pod` a Pod syntax error)
+            if (kw == "defn") { // abbreviated: the term on the `=defn` line, its paragraph below
+                std::vector<std::string> body{rest}; i++;
+                std::string k3, r3;
+                while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k3, r3))
+                    { body.push_back(lines[i]); i++; }
+                out.push_back(mkDefn(body, Value()));
                 continue;
             }
             // abbreviated `=name text` → a named block holding one paragraph
@@ -777,8 +877,59 @@ ValueList parsePod(const std::string& src) {
         size_t b = t.find_last_not_of(" \t\r"); return t.substr(a, b - a + 1);
     };
     std::string leading;
+    std::vector<std::string> heredocs; // terminators of heredocs opened on the current line
     for (size_t k = 0; k < lines.size(); k++) {
         std::string t = trim(lines[k]);
+        // a heredoc body is string content, not code: its `#|` documents nothing
+        if (!heredocs.empty()) {
+            if (t == heredocs.front()) heredocs.erase(heredocs.begin());
+            continue;
+        }
+        for (size_t at = 0; (at = lines[k].find("to", at)) != std::string::npos; at += 2) {
+            const std::string& L = lines[k];
+            // q:to/…/ (other adverbs may sit between: qq:!c:to/…/) — the quote
+            // keyword must be there, or `:to<b>` is just a Pair
+            bool adverb = false;
+            if (at > 0 && L[at - 1] == ':') {
+                size_t b = at - 1;
+                while (b > 0) {
+                    size_t w = b;
+                    while (w > 0 && (std::isalnum((unsigned char)L[w - 1]) || L[w - 1] == '!')) w--;
+                    std::string word = L.substr(w, b - w);
+                    if (w > 0 && L[w - 1] == ':' && !word.empty()) { b = w - 1; continue; }  // another adverb
+                    adverb = (word == "q" || word == "qq" || word == "Q") &&
+                             (w == 0 || !(std::isalnum((unsigned char)L[w - 1]) || L[w - 1] == '_' || L[w - 1] == '-'));
+                    break;
+                }
+            }
+            bool fused = at > 0 && (L[at - 1] == 'q' || L[at - 1] == 'Q') &&  // qto / qqto / Qto
+                         (at < 2 || !(std::isalnum((unsigned char)L[at - 2]) && L[at - 2] != 'q'));
+            if (!adverb && !fused) continue;
+            size_t d = at + 2;
+            if (d >= L.size()) continue;
+            char o = L[d], c = o == '<' ? '>' : o == '[' ? ']' : o == '{' ? '}' : o == '(' ? ')' : o;
+            if (!(o == '/' || o == '<' || o == '[' || o == '{' || o == '(' || o == '\'' || o == '"')) continue;
+            size_t e = L.find(c, d + 1);
+            if (e == std::string::npos || e == d + 1) continue;
+            heredocs.push_back(trim(L.substr(d + 1, e - d - 1)));
+        }
+        // an embedded comment `#`( … )` spanning lines is not code: a `#|`
+        // inside one (roast comments out whole NYI tests that way) documents nothing
+        if (t.size() > 2 && t[0] == '#' && t[1] == '`' &&
+            (t[2] == '(' || t[2] == '[' || t[2] == '{' || t[2] == '<')) {
+            char open = t[2], close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : '>';
+            int d = 0; size_t j = k; size_t pos = 2;
+            std::string cur = t;
+            while (true) {
+                for (; pos < cur.size(); pos++) {
+                    if (cur[pos] == open) d++;
+                    else if (cur[pos] == close && --d == 0) break;
+                }
+                if (d == 0 || j + 1 >= lines.size()) break;
+                cur = lines[++j]; pos = 0;
+            }
+            if (j > k) { leading.clear(); k = j; continue; }
+        }
         // `#|{ … }` / `#={ … }` — a BRACKETED declarator block, possibly over
         // several lines: its trimmed inside is one block
         if (t.size() > 2 && t[0] == '#' && (t[1] == '|' || t[1] == '=') &&
@@ -821,6 +972,18 @@ ValueList parsePod(const std::string& src) {
             top.push_back(d);
             leading.clear();
         }
+        // `#={yellow}` after code on the same line: the brackets delimit the
+        // block, they are not its text
+        auto unbracket = [&](std::string x) {
+            x = trim(x);
+            if (x.size() >= 2) {
+                char o = x[0], c = x.back();
+                if ((o == '{' && c == '}') || (o == '(' && c == ')') ||
+                    (o == '[' && c == ']') || (o == '<' && c == '>'))
+                    x = trim(x.substr(1, x.size() - 2));
+            }
+            return x;
+        };
         size_t h = t.find("#=");
         if (h != std::string::npos && (h == 0 || t[h - 1] == ' ' || t[h - 1] == '\t')) {
             // not inside a string literal: no quote opened before it on the line
@@ -844,13 +1007,13 @@ ValueList parsePod(const std::string& src) {
                 ((*top.back().hash())["declLine"].toInt() == (long long)k + 1 ||
                  (h == 0 && (*top.back().hash())["declLine"].toInt() == (long long)k))) {
                 auto& c = *(*top.back().hash())["contents"].arr();
-                if (!c.empty()) c.back() = Value::str(c.back().toStr() + "\n" + trim(t.substr(h + 2)));
+                if (!c.empty()) c.back() = Value::str(c.back().toStr() + "\n" + unbracket(t.substr(h + 2)));
                 (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
                 continue;
             }
             if (!quoted) {
                 Value d = mkPod("Pod::Block::Declarator");
-                Value pc = Value::array(); pc.arr()->push_back(Value::str(trim(t.substr(h + 2))));
+                Value pc = Value::array(); pc.arr()->push_back(Value::str(unbracket(t.substr(h + 2))));
                 (*d.hash())["contents"] = pc;
                 // a trailing one documents this line's declaration, or the one
                 // just above when it stands on a line of its own

@@ -580,6 +580,7 @@ struct Param {
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
     std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers
     std::string pod;      // `#= description` trailing declarator pod (drives $*USAGE)
+    std::string podTrail, podLead; // for .WHY: the `#=` part, and a `#|` it displaced from `pod`
     char slurpyKind = 0;  // 'f'=*@ (flatten), 'n'=**@ (no-flatten), '1'=+@ (single-arg rule)
     bool named = false;
     bool slurpy = false;
@@ -656,6 +657,9 @@ struct BlockExpr : Expr {
     bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
+    std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)
+    std::string podTrail;      // …its `#=` part alone
+    int podLine = 0;
     BlockExpr(): Expr(NK::BlockExpr) {}
 };
 
@@ -738,6 +742,8 @@ struct SubDecl : Stmt {
 
 struct AttrDecl {
     std::string name;   // bare name, no sigil/twigil
+    std::string pod, podTrail; // `#|` / `#=` declarator pod (.WHY); pod holds both
+    int declLine = 0;
     char sigil = '$';
     std::string containerIs; // `has %.a is Set` — container type trait
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
@@ -775,7 +781,8 @@ struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::strin
                          // `multi rule expr(0)` / `multi token pred(3)`: the LITERAL value at
                          // each positional slot (empty where the slot is a variable). Empty
                          // overall for an ordinary rule, which is nearly all of them.
-                         std::vector<std::string> lits; };
+                         std::vector<std::string> lits;
+                         std::string pod, podTrail; int declLine = 0; }; // declarator pod (.WHY)
 struct ClassDecl : Stmt {
     std::string name;
     std::string parent; // first `is Parent` / `does Role`
@@ -890,6 +897,7 @@ struct EnumDecl : Stmt {
     std::string name;   // may be empty (anonymous enum)
     ExprPtr values;     // expression evaluating to words / pairs
     bool isExport = false; // `is export` — importers of a braced module see the value names
+    std::string pod, podTrail; // declarator pod (.WHY)
     EnumDecl(): Stmt(NK::EnumDecl) {}
 };
 
@@ -993,6 +1001,7 @@ struct SubsetDecl : Stmt {
     bool coerceBase = false; // `subset CC of Str() where …`: the base is a COERCION —
                              // a value is coerced to it before the where clause runs
     ExprPtr where;         // may be null (pure alias)
+    std::string pod, podTrail; // declarator pod (.WHY)
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 
@@ -1033,6 +1042,7 @@ struct RepeatStmt : Stmt { // repeat { } while/until cond
     ExprPtr cond;
     bool isUntil = false;
     std::unique_ptr<Block> body;
+    std::string var; // `repeat until COND -> $x { }` — the previous condition's value (Any at first)
     RepeatStmt(): Stmt(NK::RepeatStmt) {}
 };
 
