@@ -17,15 +17,20 @@ my @fail;
 sub check($got, $want, $what) {
     @fail.push("$what: got {$got.raku} want {$want.raku}") unless $got eqv $want
 }
-sub decl($code) { (try EVAL $code) // $!.^name }
+# Rakudo reports the refusal as a GROUP: the undeclared type is the sorrow (with
+# its "Did you mean" suggestions) and the declaration it broke, "Malformed my",
+# the panic — S32-exceptions/misc2.t asks for exactly that shape of `my cool $a`.
+sub decl($code) {
+    (try EVAL $code) // ($! ~~ X::Comp::Group ?? "X::Comp::Group({$!.sorrows[0].^name})" !! $!.^name)
+}
 use MONKEY-SEE-NO-EVAL;
 
 # --- refused: a name nothing declares ---------------------------------------
-check decl('my Foo $x'),       'X::Undeclared', 'an unknown type is refused';
-check decl('my int1 $v = 1'),  'X::Undeclared', 'and an unknown NATIVE name';
-check decl('my int2 $v = 1'),  'X::Undeclared', 'int2';
-check decl('my int4 $v = 1'),  'X::Undeclared', 'int4';
-check decl('my Flaot $x'),     'X::Undeclared', 'a typo is what this catches';
+check decl('my Foo $x'),       'X::Comp::Group(X::Undeclared)', 'an unknown type is refused';
+check decl('my int1 $v = 1'),  'X::Comp::Group(X::Undeclared)', 'and an unknown NATIVE name';
+check decl('my int2 $v = 1'),  'X::Comp::Group(X::Undeclared)', 'int2';
+check decl('my int4 $v = 1'),  'X::Comp::Group(X::Undeclared)', 'int4';
+check decl('my Flaot $x'),     'X::Comp::Group(X::Undeclared)', 'a typo is what this catches';
 
 # --- not refused: every shape the check does not model ----------------------
 check decl('my Int $x = 1; $x'),          1, 'a built-in type';

@@ -11,6 +11,7 @@ struct Program;
 struct UndeclaredVar {
     std::string name;   // spelled with its sigil, as written
     int line = 0;
+    std::vector<std::string> inScope;  // the names visible where it was used ("Did you mean")
 };
 
 // Whole-unit "is every variable declared?" check, run before the program does.

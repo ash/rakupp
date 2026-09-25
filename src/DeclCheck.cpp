@@ -92,7 +92,10 @@ struct Checker {
         // C++ local for every variable and this one has no declaration to emit.
         if (noStrict) { lax.insert(v->name); return; }
         if (!reported.insert(v->name).second) return;
-        out.push_back({v->name, lineOf(v)});
+        UndeclaredVar u{v->name, lineOf(v), {}};
+        for (auto it = scopes.rbegin(); it != scopes.rend() && u.inScope.size() < 256; ++it)
+            for (auto& n : *it) u.inScope.push_back(n);
+        out.push_back(std::move(u));
     }
 
     // ---- declaration collection -----------------------------------------
@@ -503,7 +506,11 @@ struct Checker {
                     // class. The AST does not record which spelling was written,
                     // so the bare name is registered for every attribute — the
                     // safe direction, since the twigil forms are exempt anyway.
-                    declare(std::string(1, a.sigil) + a.name);
+                    // (…unless the twigil WAS written: `has $.name` names no `$name`)
+                    if (!a.twigilWritten) declare(std::string(1, a.sigil) + a.name);
+                    // the `$!x` form too — never itself checked (twigils are exempt),
+                    // but in scope for a "Did you mean '$!x'?" on a bare `$x`
+                    declare(std::string(1, a.sigil) + "!" + a.name);
                     // `has $.x` is reached as `$!x`/`$.x` — twigil forms the
                     // runtime exempts and checks by its own route.
                     walkExpr(a.def.get());

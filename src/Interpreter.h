@@ -60,6 +60,9 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE = false); // s
 // value into that value.
 bool coreEnumValue(const std::string& n, Value& out);
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
+const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
+std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
+std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
 // A custom Real (a `does Real` class with `.Bridge`) numifies through the object
 // itself — `toNum()` answers 0 for one. Defined in Builtins.cpp.
 double numValueOf(Interpreter& I, const Value& v);
@@ -1788,7 +1791,10 @@ public:
     static bool isPseudoChain(const std::string& chain);
     std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr, std::string* rawOut = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
     void checkDeclTypeSane(const VarExpr* ve);
-    [[noreturn]] void throwUndeclaredVar(const std::string& name);
+    [[noreturn]] void throwUndeclaredVar(const std::string& name,
+                                         const std::vector<std::string>* extraCands = nullptr);
+    std::vector<std::string> typeSuggestions(const std::string& name);    // "Did you mean" for a type
+    std::vector<std::string> routineSuggestions(const std::string& name); // …for a routine
     void checkNativeArrayParam(const std::string& t);
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,

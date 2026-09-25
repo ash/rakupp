@@ -85,6 +85,12 @@ public:
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
         else if (kind == "prefix") userPrefix_.insert(name);
         else if (kind == "postfix") userPostfix_.insert(name);
+        // a bracketing pair is spelled "OPEN CLOSE" (`&circumfix:<⌊ ⌋>`)
+        else if (kind == "circumfix" || kind == "postcircumfix") {
+            size_t sp = name.find(' ');
+            if (sp == std::string::npos || sp == 0 || sp + 1 >= name.size()) return;
+            (kind == "circumfix" ? userCircumfix_ : userPostcircumfix_)[name.substr(0, sp)] = name.substr(sp + 1);
+        }
     }
 
 private:

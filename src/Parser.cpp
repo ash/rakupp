@@ -6384,6 +6384,9 @@ ExprPtr Parser::parsePrimary() {
             // bounded by the parens (a comma AFTER the `)` belongs to the enclosing
             // list); otherwise it is a list-prefix, looser than Z/X and comma.
             auto reduceOperand = [&]() -> ExprPtr {
+                // nothing to reduce: `([>>+<<], 42)` is the empty reduction (0), then 42
+                if (isKind(Tok::Comma) || isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End))
+                    return std::make_unique<ListExpr>();
                 if (isKind(Tok::LParen) && !cur().spaceBefore) {
                     advance();
                     if (isKind(Tok::RParen)) { advance(); return std::make_unique<ListExpr>(); }
@@ -6711,6 +6714,13 @@ ExprPtr Parser::parsePrimary() {
             // A slang's sigilless variable (Slang::Emoji's 👍, flagged by the lexer's
             // seam): a TERM — never a call, and never auto-quoted before `=>`.
             if (t.flag) { advance(); auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = true; return nt; }
+            // `new Foo` / `new Foo(...)`: indirect-object construction, which Raku
+            // spells `Foo.new` — unless the program declared a `sub new` of its own
+            if (name == "new" && peek().kind == Tok::Ident && peek().spaceBefore &&
+                ascii::isupper((unsigned char)peek().text[0]) && !declaredSubNames_.count("new"))
+                throw ParseError("Unsupported use of C++ constructor syntax. In Raku please use: method call syntax.",
+                                 t.line, "X::Obsolete",
+                                 {{"old", "C++ constructor syntax"}, {"replacement", "method call syntax"}});
             // A fat arrow AUTO-QUOTES the identifier on its left, so EVERY identifier
             // is a valid key — keywords and term-words included. This has to come
             // before all of them: without it the parser committed to `method`, `sub`,
@@ -11645,7 +11655,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         a.inlined = attrInlined;
                         a.sigil = vn[0];
                         size_t idx = 1;
-                        if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
+                        if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                         a.name = vn.substr(idx);
                         if (matchOp("=")) {
                             size_t defStart = pos_;
@@ -11694,7 +11704,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 a.inlined = attrInlined;
                 a.sigil = vn[0];
                 size_t idx = 1;
-                if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
+                if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                 a.name = vn.substr(idx);
                 // an OBJECT-HASH key-type shape rides right on the name:
                 // `has Callable %!Conversions{Mu:U} handles <AT-KEY EXISTS-KEY>`
@@ -12734,7 +12744,7 @@ StmtPtr Parser::parseStatementImpl() {
             AttrDecl a;
             a.sigil = vn[0];
             size_t idx = 1;
-            if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = vn[1] == '.'; idx = 2; }
+            if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = vn[1] == '.'; a.twigilWritten = true; idx = 2; }
             a.name = vn.substr(idx);
             skipToStatementEnd();
             classDeclStack_.back()->attrs.push_back(std::move(a));
@@ -13700,6 +13710,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
     std::map<std::string, int> subs;  // 1=non-multi seen, 2=multi seen, 3=both
     std::map<std::string, int> types;
     std::vector<std::string> stubbed; // `class Foo {...}` stubs not yet completed
+    std::set<std::string> stubRoles;  // …those of them that are roles
     int catchBlocks = 0;
     for (auto& s : stmts) {
         if (!s) continue;
@@ -13755,7 +13766,25 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             if (cd->name.empty() || cd->isAugment || cd->parameterized) continue;
             if (cd->isStubDecl) {
                 stubbed.push_back(cd->name);
+                // …a stub naming a `use`d module stands for the imported role
+                bool imported = false;
+                for (auto& u : stmts)
+                    if (u && u->kind == NK::UseStmt && static_cast<const UseStmt*>(u.get())->module == cd->name)
+                        imported = true;
+                if (cd->isRole && !imported) stubRoles.insert(cd->name);
                 continue;
+            }
+            // composing a role that is still only a stub: the class is composed
+            // here, before the unit's end could report the stub, and there is no
+            // role variant to compose
+            if (!stubRoles.empty()) {
+                std::vector<std::string> comp = cd->roles;
+                if (cd->parentIsDoes && !cd->parent.empty()) comp.push_back(cd->parent);
+                for (auto& rn : comp)
+                    if (stubRoles.count(rn) && rn != cd->name &&
+                        std::find(stubbed.begin(), stubbed.end(), rn) != stubbed.end())
+                        throw ParseError("No appropriate parametric role variant available for '" + rn + "'",
+                                         cd->line, "X::Role::Parametric::NoSuchCandidate", {{"role", rn}});
             }
             stubbed.erase(std::remove(stubbed.begin(), stubbed.end(), cd->name),
                           stubbed.end());

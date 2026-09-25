@@ -3346,8 +3346,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         y = get("year", y); mo = get("month", mo); d = get("day", d);
                         haveNamedField = true;
                     }
-                } else if (a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
-                           !a.s.empty() && posN == 1) {
+                } else if ((a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
+                            !a.s.empty() && posN == 1) ||
+                           // …and one carrying a synthetic or any other non-ASCII
+                           // character: `20\x[308]16-07-05` is no ISO timestamp
+                           (a.t == VT::Str && posN == 1 &&
+                            std::any_of(a.s.str().begin(), a.s.str().end(),
+                                        [](char ch) { return (unsigned char)ch >= 0x80; }))) {
                     // the SINGLE string positional that is NOT ISO-shaped (no
                     // dashes): "2012/04" etc. — invalid temporal format
                     // (multiple positionals are the y,m,d form, digits legal)
@@ -3422,8 +3427,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
                                 if (om >= 60)
-                                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                                        "Minute out of range. Is: " + std::to_string(om) + ", should be in 0..59"};
+                                    throwTyped("X::OutOfRange",
+                                        {{"what", "minute"}, {"got", std::to_string(om)}, {"range", "0..59"}},
+                                        "Minute out of range. Is: " + std::to_string(om) + ", should be in 0..59");
                                 tz = (is[zp] == '-' ? -1 : 1) * (oh * 3600 + om * 60);
                             }
                         }
@@ -3470,22 +3476,40 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 pos[0] = posix;
             }
             if (!isoStr && pos.size() == 1 && pos[0].isNumeric() && (inv.s == "DateTime" || fromInstant)) {
-                // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
-                // shifts the displayed civil time (posix itself stays the same instant).
-                // An INSTANT argument (`DateTime.new(now)`) is on the Instant clock,
-                // which carries the epoch offset `.to-posix` takes back off — the civil
-                // time it names is the POSIX one.
-                double pep = pos[0].toNum();
-                if (fromInstant || pos[0].hashKind == "Instant") pep -= kInstantEpochOffset;
-                long long ip = (long long)std::floor(pep);
-                double frac = pep - (double)ip;
-                long long lt = ip + (inv.s == "DateTime" ? tz : 0); // a Date has no zone: the UTC day
-                long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
-                long long rem = lt - days * 86400;
+                // DateTime.new($posix) — seconds since the epoch, EXACT: a Rat keeps
+                // its fraction and an Int of any size its day (`DateTime.new(1273…129)`
+                // is the year +4034522497029953, far past what a double counts in
+                // whole seconds). A :timezone shifts the civil reading only.
+                // An INSTANT is TAI: Instant.to-posix takes the leap seconds back
+                // off, and one that falls INSIDE a leap second reads as :60 —
+                // Rakudo's `self.new(floor($p - $leap)); .second + $p % 1 + $leap`,
+                // then `.in-timezone`.
+                Value P = pos[0]; P.hashKind = "";
+                long long leap = 0;
+                bool instant = fromInstant || pos[0].hashKind == "Instant";
+                if (instant) {
+                    bool inLeap = false;
+                    long long off = posixOffsetForTai(floorSecsLL(P.toNum()), inLeap);
+                    P = applyArith("-", P, Value::integer(off));
+                    leap = inLeap ? 1 : 0;
+                }
+                Value ipV = P.t == VT::Int ? P : methodCall(P, "floor", ValueList{});
+                Value fracV = applyArith("-", P, ipV);
+                bool hasFrac = fracV.toNum() != 0.0;
+                if (leap) ipV = applyArith("-", ipV, Value::integer(1));
+                long long tzUse = inv.s == "DateTime" ? tz : 0;   // a Date has no zone: the UTC day
+                bool laterZone = instant && tzUse != 0;         // shift after, so a :60 survives
+                Value ltV = applyArith("+", ipV, Value::integer(laterZone ? 0 : tzUse));
+                long long days = applyArith("div", ltV, Value::integer(86400)).toInt();
+                long long rem = applyArith("mod", ltV, Value::integer(86400)).toInt();
                 daysToCivil(days, y, mo, d);
                 h = rem / 3600; mi = (rem % 3600) / 60;
-                long long si = rem % 60;
-                secV = frac != 0.0 ? Value::number(si + frac) : Value::integer(si);
+                long long si = rem % 60 + leap;
+                secV = hasFrac ? applyArith("+", Value::integer(si), fracV) : Value::integer(si);
+                long long ip = ipV.toInt() + leap;
+                if (laterZone)
+                    return methodCall(mk(y, mo, d, h, mi, secV, ip, 0), "in-timezone",
+                                      ValueList{Value::integer(tzUse)});
                 return mk(y, mo, d, h, mi, secV, ip, tz);
             }
             if (!isoStr) {
@@ -3562,16 +3586,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return methodCall(Value::typeObj("DateTime"), "new", mk);
         }
-        if (m == "Instant") { // posix seconds tagged Instant (rakupp `now` is raw posix)
+        if (m == "Instant") {
+            // TAI, exactly: POSIX (the leap second 23:59:60 reads as the midnight
+            // after it, as Rakudo's `.posix` does) plus TAI − UTC at that moment,
+            // plus the fraction of the second. An inexact double made
+            // `$b.Instant - $a.Instant` 8704.900000095367 instead of 8704.9.
             auto sit = inv.hash()->find("second");
-            double sec = sit != inv.hash()->end() ? sit->second.toNum() : 0.0;
+            Value sec = sit != inv.hash()->end() ? sit->second : Value::integer(0);
+            sec.hashKind = "";
+            long long whole = (long long)std::floor(sec.toNum());
             long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
-                           fld("hour") * 3600 + fld("minute") * 60 - fld("timezone");
-            // +10: an Instant is POSIX plus the pre-1972 leap seconds `to-posix`
-            // subtracts again. Handing back raw POSIX made every `.Instant.to-posix`
-            // ten seconds early — BSON::Simple encodes its datetimes through exactly
-            // that pair.
-            Value v = Value::number((double)ep + sec + 10.0); v.hashKind = "Instant"; return identify(v);
+                           fld("hour") * 3600 + fld("minute") * 60 + whole - fld("timezone");
+            Value frac = applyArith("-", sec, Value::integer(whole));
+            Value v = applyArith("+", Value::integer(ep + taiOffsetForPosix(ep, whole >= 60)), frac);
+            v.hashKind = "Instant"; return identify(v);
         }
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
         if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
@@ -3579,8 +3607,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             : (args.empty() ? 0 : args[0].toInt());
             auto sit = inv.hash()->find("second");
             Value secV = sit != inv.hash()->end() ? sit->second : Value::integer(0);
-            long long sInt = secV.toInt();
-            double frac = secV.toNum() - (double)sInt; // fractional seconds survive the shift
+            long long sInt = (long long)std::floor(secV.toNum());
+            // fractional seconds survive the shift, EXACTLY: a Rat second stays one
+            Value fracV = secV; fracV.hashKind = "";
+            fracV = applyArith("-", fracV, Value::integer(sInt));
+            double frac = fracV.toNum();
             long long leap = sInt >= 60 ? 1 : 0;
             long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
                            fld("hour") * 3600 + fld("minute") * 60 +
@@ -3596,7 +3627,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (inv.hash()->count("formatter")) (*v.hash())["formatter"] = (*inv.hash())["formatter"];
             (*v.hash())["year"] = Value::integer(y); (*v.hash())["month"] = Value::integer(mo); (*v.hash())["day"] = Value::integer(d);
             (*v.hash())["hour"] = Value::integer(rem / 3600); (*v.hash())["minute"] = Value::integer((rem % 3600) / 60);
-            (*v.hash())["second"] = frac != 0.0 ? Value::number(outSec + frac) : Value::integer(outSec);
+            (*v.hash())["second"] = frac != 0.0 ? applyArith("+", Value::integer(outSec), fracV) : Value::integer(outSec);
             (*v.hash())["posix"] = Value::integer(ep); (*v.hash())["timezone"] = Value::integer(newTz);
             return v;
         }
@@ -3676,6 +3707,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long secs = 0, days = 0, months = 0, years = 0;
             ValueList units; // `.later((:2hours, :30minutes))` passes the units in a list
             for (auto& a : args) { if (a.t == VT::Array && a.arr()) for (auto& x : *a.arr()) units.push_back(x); else units.push_back(a); }
+            // Seconds alone move the INSTANT, as Rakudo's move-by-unit does: TAI
+            // counts the leap seconds, so 23:59:59 + 1s on a leap day is 23:59:60
+            // and 00:00:00 − 1s after one lands on it. A fractional amount stays exact.
+            {
+                bool onlySecs = !units.empty();
+                Value amt = Value::integer(0);
+                for (auto& a : units) {
+                    if (!(a.t == VT::Pair && a.pairVal() && (a.s == "second" || a.s == "seconds"))) { onlySecs = false; break; }
+                    amt = applyArith("+", amt, *a.pairVal());
+                }
+                if (onlySecs) {
+                    Value inst = methodCall(inv, "Instant", ValueList{});
+                    Value moved = applyArith(sign > 0 ? "+" : "-", inst, amt);
+                    moved.hashKind = "Instant";
+                    Value out = methodCall(Value::typeObj("DateTime"), "new",
+                        ValueList{moved, Value::pair("timezone", Value::integer(fld("timezone")))});
+                    if (inv.hash()->count("formatter") && out.t == VT::Hash && out.hash())
+                        (*out.hash())["formatter"] = (*inv.hash())["formatter"];
+                    return out;
+                }
+            }
             for (auto& a : units) if (a.t == VT::Pair && a.pairVal()) {
                 long long v = a.pairVal()->toInt();
                 if      (a.s == "second" || a.s == "seconds") secs   += v;
@@ -3701,8 +3753,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (d > lim) d = lim;
             }
             // A LEAP second (:60) only exists on the day it was inserted — moving
-            // off that day clamps it to :59 rather than rolling into midnight.
-            if (sInt == 60 && (days || months || years || secs)) sInt = 59;
+            // off that day clamps it to :59 rather than rolling into midnight,
+            // unless the move lands on another leap second (checked below).
+            bool wasLeap = sInt == 60 && (days || months || years || secs);
+            if (wasLeap) sInt = 59;
             // fixed duration: fold days + time into an absolute count, then re-split
             long long dayNum = civilToDays(y, mo, d) + sign * days;
             long long totSec = h * 3600 + mi * 60 + sInt + sign * secs;
@@ -3710,6 +3764,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             dayNum += carry; totSec -= carry * 86400;
             daysToCivil(dayNum, y, mo, d);
             long long nh = totSec / 3600, nmi = (totSec % 3600) / 60, nsec = totSec % 60;
+            if (wasLeap && nsec == 59) {   // 1972-12-31T23:59:60 + 1 year is 1973-12-31T23:59:60
+                long long ut = dayNum * 86400 + totSec - tz;
+                long long ud = ut >= 0 ? ut / 86400 : -((-ut + 86399) / 86400);
+                long long us = ut - ud * 86400;
+                long long uy, um, udd; daysToCivil(ud, uy, um, udd);
+                if (us == 86399 && isLeapSecondDate(uy, um, udd)) nsec = 60;
+            }
             Value v = Value::makeHash(); v.hashKind = "DateTime";
             // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
             // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
@@ -5025,6 +5086,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value* um = ci->findMethod(mn);
                 Value out = Value::array(); out.isList = true;
                 if (um) out.arr()->push_back(*um);
+                // a public attribute's generated accessor is a method too, as on
+                // the instance `.can` arm: `class Q { has $.x }; Q.^can('x')`
+                if (out.arr()->empty())
+                    for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get()) {
+                        const ClassAttr* at = c2->findAttr(mn);
+                        if (at && at->pub) {
+                            Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                            stub.code()->name = mn; stub.code()->isMethod = true;
+                            std::string mnc = mn;
+                            stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                                if (a.empty()) return Value::any();
+                                ValueList rest(a.begin() + 1, a.end());
+                                return I.methodCall(a[0], mnc, std::move(rest));
+                            };
+                            out.arr()->push_back(stub);
+                            break;
+                        }
+                    }
                 // BUILT-IN methods answer .can too: every class news/blesses/gists,
                 // and a grammar parses (IETF::RFC_Grammar gates on `.can('parse')`)
                 if (out.arr()->empty()) {

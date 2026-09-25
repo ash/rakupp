@@ -54,19 +54,26 @@ refuses '$zz = 5; no strict; say $zz', '$zz',
 refuses 'no strict; { use strict; $ff = 2; say $ff }', '$ff',
         'use strict turns the check back on inside a lax file';
 
-# --- the runtime backstop scopes it too -------------------------------------
-# Inside EVAL the pre-run checker never sees the code, so the interpreter's own
-# undeclared-variable check is what answers — and it must scope the pragma the
-# same way. `leaked` printing here is the run-wide flag coming back.
+# --- inside EVAL too ---------------------------------------------------------
+# EVAL'd code goes through the same compile-time check now (it only used to be
+# the interpreter's runtime backstop that answered), so a strict name there is
+# refused before the snippet runs at all — the `try` never gets its chance, and
+# nothing the pragma allowed elsewhere in the snippet prints either. `leaked`
+# printing here would be the pragma escaping its block.
 {
     my $got = run-it(q[use MONKEY-SEE-NO-EVAL;
         EVAL q<{ no strict; $zz = 5; say $zz }; try { $ww = 7; say "leaked" }; say "done">]);
-    @fail.push("runtime check: got {$got.raku}, want \"5\\ndone\"") unless $got eq "5\ndone";
+    @fail.push("EVAL check: got {$got.raku}, want a '\$ww is not declared' error")
+        unless $got.contains(q[Variable '$ww' is not declared]) && !$got.lines.grep('leaked');
     # …and both directions of it: lax outside, strict back on inside.
     my $both = run-it(q[use MONKEY-SEE-NO-EVAL;
         EVAL q<no strict; { use strict; try { $ff = 1; say "leaked" }; say "inner" }; $gg = 2; say "outer $gg">]);
-    @fail.push("runtime use strict: got {$both.raku}, want \"inner\\nouter 2\"")
-        unless $both eq "inner\nouter 2";
+    @fail.push("EVAL use strict: got {$both.raku}, want a '\$ff is not declared' error")
+        unless $both.contains(q[Variable '$ff' is not declared]) && !$both.lines.grep('leaked');
+    # the runtime backstop still scopes it where no static check can see the name
+    my $rt = run-it(q[use MONKEY-SEE-NO-EVAL;
+        { no strict; EVAL q<$zz = 5; say $zz> }; try { EVAL q<$ww = 7; say "leaked"> }; say "done"]);
+    @fail.push("runtime check: got {$rt.raku}, want \"5\\ndone\"") unless $rt eq "5\ndone";
 }
 
 if @fail {
