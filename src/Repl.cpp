@@ -11,6 +11,7 @@
 // output does not carry any of it.
 
 #include "AsciiCtype.h"
+#include "BuildInfo.h"
 #include "Platform.h"   // platHomeDir(): the history file has no home on Windows without it
 #include "Repl.h"
 #include "Interpreter.h"
@@ -695,8 +696,15 @@ int replMain(ReplCtx& ctx) {
         std::streambuf* raw;
         ~BufRestore() { std::cout.flush(); std::cout.rdbuf(raw); }
     } bufRestore{rawOut};
-    if (!ctx.quiet)
-        std::cout << "Raku++ " << RAKUPP_VERSION << " — \\h for help, " << kEofKey << " to exit\n";
+    // The version as --version folds it: "4.0.1" on a release, "4.0.1-184-
+    // g55788fb5" between releases. A bug report is often just a pasted REPL
+    // session, and this line is the only identity in it — the bare release
+    // number cannot tell a build of the tag from any of the commits after it.
+    if (!ctx.quiet) {
+        std::string ver;
+        rakupp::describedVersion(ver);
+        std::cout << "Raku++ " << ver << " — \\h for help, " << kEofKey << " to exit\n";
+    }
 
     auto fresh = [&]() {
         auto interp = std::make_unique<Interpreter>();

@@ -89,6 +89,10 @@ compatibility.
   the tag and the built-in version ever disagree, both appear and the odd one
   is labelled `build`.
 
+  The REPL banner opens with the same version, so a pasted session names its
+  build too: `Raku++ 4.0.1 — \h for help, ^D to exit` from a release,
+  `Raku++ 4.0.1-184-g55788fb5 — …` from a commit after it.
+
   At a terminal that line is followed by a dim pointer to `--info`, because a
   bug report that arrives without the compiler, the FFI backend and the path of
   the binary that answered costs a round trip to get them. Piped, redirected or

@@ -2983,12 +2983,9 @@ int main(int argc, char** argv) {
     // platform. One line, so it quotes into an issue, a CI log or a table
     // without reformatting, and so `head -1` is not needed to get it.
     //
-    // The release version and `git describe` say the same thing on a release
-    // build — "3.28.0" and "v3.28.0" — so it is said once. What describe adds
-    // when the build is NOT a release (the commits since the tag, and the
-    // -modified marker RELEASING.md forbids shipping and perf-guard refuses to
-    // record a baseline from) folds onto the version as the suffix it already
-    // is: "3.28.0-6-gcb851ea-modified".
+    // The release version with `git describe` folded onto it
+    // (rakupp::describedVersion): "3.28.0" on a release, "3.28.0-6-gcb851ea-
+    // modified" off one. The REPL banner prints the same string.
     //
     // The two come from different places, though — cmake's project(VERSION)
     // and the git tag — and a tag HAS been cut against an unbumped tree
@@ -2997,14 +2994,10 @@ int main(int argc, char** argv) {
     // is exactly what this line exists to expose, and folding it away would
     // hide it.
     if (mode == Mode::Version) {
-        const std::string ver = RAKUPP_VERSION, build = rakupp::buildId();
-        const std::string tag = "v" + ver;
-        std::string tail, note;
-        if (build.rfind(tag, 0) == 0 && (build.size() == tag.size() || build[tag.size()] == '-'))
-            tail = build.substr(tag.size());
-        else
-            note = "build " + build + ", ";
-        std::cout << "Raku++ " << ver << tail << " (" << note << rakupp::buildDate()
+        std::string ver, note;
+        if (!rakupp::describedVersion(ver))
+            note = std::string("build ") + rakupp::buildId() + ", ";
+        std::cout << "Raku++ " << ver << " (" << note << rakupp::buildDate()
                   << ") " << rakupp::platform() << "\n";
         // `--info` is the flag nobody finds. This line answers the question
         // people came with, so they never look for a fuller one — and then a

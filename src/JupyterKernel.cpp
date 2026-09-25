@@ -39,6 +39,7 @@
 //     the frontend shows as a restart. Same choice as the MCP watchdog: a
 //     wedged client is worse than a lost session.
 #include "JupyterKernel.h"
+#include "BuildInfo.h"
 #include "Digest.h"
 #include "JsonLite.h"
 #include "Platform.h"
@@ -825,7 +826,12 @@ private:
         c.set("implementation", Json::str("rakupp"));
         c.set("implementation_version", Json::str(rk_version()));
         c.set("language_info", std::move(li));
-        c.set("banner", Json::str(std::string("Raku++ ") + rk_version() +
+        // The banner is what a pasted console session carries, so it names
+        // the build the way the REPL's does; implementation_version above
+        // stays the bare release number for anything that parses it.
+        std::string ver;
+        rakupp::describedVersion(ver);
+        c.set("banner", Json::str("Raku++ " + ver +
                                   " — a Raku interpreter in C++ (rakupp --jupyter)"));
         c.set("help_links", std::move(links));
         return c;

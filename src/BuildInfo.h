@@ -5,10 +5,18 @@
 // it — that separation is the whole point (see cmake/BuildInfo.cmake).
 #pragma once
 
+#include <string>
+
 namespace rakupp {
 // `git describe` at build time: "v3.14.0-74-g9ff47ae", or with uncommitted
 // changes "…-modified", or "unknown" outside a git checkout.
 const char* buildId();
+// The release version with what buildId() adds past its tag folded on:
+// "4.0.1" on the tagged commit, "4.0.1-184-g55788fb5" after it, and
+// "…-modified" with uncommitted changes. False, with the bare release
+// version, when the build id is not about that tag (no git checkout) —
+// --version then prints the id beside it rather than hide the gap.
+bool describedVersion(std::string& out);
 // The build date, UTC, as "YYYY-MM-DD"; "unknown" if it was not stamped.
 const char* buildDate();
 // What this binary was built FOR and BY — "arm64-darwin", "clang 17.0.0".

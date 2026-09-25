@@ -81,4 +81,19 @@ const char* buildId()    { return RAKUPP_BUILD; }
 const char* buildDate()  { return RAKUPP_BUILD_DATE; }
 const char* platform()   { return RAKUPP_ARCH "-" RAKUPP_OS; }
 const char* compilerId() { return RAKUPP_CC; }
+
+// The release version and `git describe` say the same thing on a release
+// build — "4.0.1" and "v4.0.1" — so it is said once. What describe adds when
+// the build is NOT a release (the commits since the tag, and the -modified
+// marker RELEASING.md forbids shipping and perf-guard refuses to record a
+// baseline from) folds onto the version as the suffix it already is.
+bool describedVersion(std::string& out) {
+    const std::string ver = RAKUPP_VERSION, build = RAKUPP_BUILD;
+    const std::string tag = "v" + ver;
+    out = ver;
+    if (build.rfind(tag, 0) != 0 || (build.size() != tag.size() && build[tag.size()] != '-'))
+        return false;
+    out += build.substr(tag.size());
+    return true;
+}
 } // namespace rakupp
