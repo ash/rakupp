@@ -54,10 +54,13 @@ my @docs = <
     docs/guide/OVERVIEW.md
 >.map({ $ROOT.add($_) }).grep(*.e);
 
-# The file denominator the standing figures are stated against. A prose figure
-# is a HEADLINE figure only when it is written against this one; `584 / 1,462`
-# in a history paragraph is a different denominator and not this tool's business.
-constant $FILES = 1464;
+# The file denominators the standing figures are stated against: 1,434 is the
+# files Roast's spectest.data lists, the harness's default set, and 1,464 every
+# .t in the checkout (`--all`). A prose figure is a HEADLINE figure only when it
+# is written against one of these; `584 / 1,462` in a history paragraph is a
+# different denominator and not this tool's business.
+constant @FILES = 1434, 1464;
+sub is-file-den($den) { @FILES.first(* == $den).defined }
 
 my @sightings;      # [relative-path, line-number, value, how-it-is-written]
 my @versions;       # the release version as the docs state it
@@ -148,7 +151,7 @@ sub paragraphs($doc) {
 my regex pair { (\d+ [',' \d+]*) \s* '/' \s* '~'? \s* (\d+ [',' \d+]*) }
 sub plain($s) { $s.subst(',', '', :g).Int }
 # Which of the two standing claims a pair states, from its denominator alone.
-sub kind-of-pair($den) { $den == $FILES ?? 'file' !! $den > 50_000 ?? 'test' !! '' }
+sub kind-of-pair($den) { is-file-den($den) ?? 'file' !! $den > 50_000 ?? 'test' !! '' }
 # …and which one a percentage is talking about, from the words around it.
 sub kind-of-pct($ctx) {
     my $c = $ctx.lc;
@@ -172,7 +175,7 @@ for @docs -> $doc {
         if $prose.lc.contains('fully pass') {
             for $prose.match(&pair, :g) -> $m {
                 @sightings.push([$rel, $at, plain(~$m[0]), 'prose figure'])
-                    if plain(~$m[1]) == $FILES;
+                    if is-file-den(plain(~$m[1]));
             }
         }
 

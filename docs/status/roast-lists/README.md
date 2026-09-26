@@ -69,7 +69,7 @@ regressions. Filter the diff through the list to see only the ones that are:
 
 ```bash
 comm -23 vPREV-union.list vNEXT-union.list \
-  | grep -x -F -f <(sed -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//' "$ROAST/spectest.data" | grep -v '^$')
+  | grep -x -F -f <(sed -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//' "${ROAST:-$HOME/roast}/spectest.data" | grep -v '^$')
 ```
 
 (Verified against `v4.0.1-union.list`: dropping an unlisted file prints

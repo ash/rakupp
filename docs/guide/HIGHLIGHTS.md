@@ -92,7 +92,7 @@ no server, with an embeddable in-page playground.
 ## Tooling
 
 - A **self-hosted Roast harness** — written in Raku, run by Raku++ itself
-  (full 1,464-file suite in ~3½ minutes, [DOGFOODING.md](../status/DOGFOODING.md)).
+  (the whole suite in under 30 seconds, [DOGFOODING.md](../status/DOGFOODING.md)).
 - A parse-aware **syntax highlighter** (`--highlight`, HTML + ANSI).
 - `--doc` (POD rendering), `-c` (parse-only check), `--cpp` (show generated C++).
 

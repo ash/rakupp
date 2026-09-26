@@ -235,13 +235,13 @@ lists — Rakudo's run list, kept at the Roast checkout root since 2019, whose
 header calls it "a list of all spec tests that are expected to pass": 1,434
 files at revision `b2cbe8a42`, every one of them, whatever build marker a line
 carries (`stress`, `moar`, `slow`, `Perl`). The checkout holds 30 more `.t`
-files the list does not name — Roast's own tooling tests under `t/`, and files
-the 6.c cut left on master but outside the specification, such as
-`S06-advanced/return_function.t`, whose Synopsis rule was removed in 2014 —
-and `--all` runs those too. `--skip-marker=stress` leaves out the 60
-stress-marked files, which is the set Rakudo's `make spectest` runs;
-`--skip-marker=stress,Perl` also drops the 13 Inline::Perl5 integration files a
-Rakudo without that module skips. The provenance line, and so every `--list`
+files the list does not name — Roast's own tooling tests under `t/`, files the
+6.c cut left on master but outside the specification, such as
+`S06-advanced/return_function.t`, which binds a named argument to a positional
+parameter, a rule S06 dropped in 2014, and seven tests added since 2020 that
+the list has not taken up — and `--all` runs those too. `--skip-marker=stress`
+leaves out the 60 stress-marked files, which is exactly the set Rakudo's `make
+spectest` runs. The provenance line, and so every `--list`
 sidecar, records which set a run measured, and so does the file count in any
 figure: 1,464 is the `--all` set, which the whole-suite figures on this page
 are on; 1,434 is the list.
