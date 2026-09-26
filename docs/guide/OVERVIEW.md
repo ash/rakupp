@@ -166,8 +166,9 @@ All three are explained in [ROAST.md](../status/ROAST.md), which also has the pe
 breakdown. The self-hosted harness prints all of them:
 
 ```sh
-build/rakupp tools/run-roast.raku          # whole suite
+build/rakupp tools/run-roast.raku          # the suite as Rakudo's spectest.data lists it
 build/rakupp tools/run-roast.raku S05      # filter by path
+build/rakupp tools/run-roast.raku --all    # every .t file in the checkout
 ```
 
 ## Where to go next

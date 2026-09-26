@@ -2,11 +2,18 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [--fudge=IMPL|none] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [--fudge=IMPL|none] [--all] [--skip-marker=WORD[,WORD]] [PATTERN ...]
 #
-# With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
-# substring against the path. The files run from one work queue, longest
-# first, on --workers=N `start` threads (default: two per core), admitted
+# With no PATTERN, runs every file Roast's own spectest.data lists — Rakudo's
+# run list, kept at the checkout root since 2019 — all of them, whatever
+# markers a line carries. --skip-marker=WORD keeps out the files marked WORD
+# (`--skip-marker=stress` is what Rakudo's `make spectest` runs; add `Perl` for
+# a Rakudo without Inline::Perl5), and --all ignores the list and runs every
+# .t file under $ROOT. A PATTERN is matched as a substring against the path,
+# within whichever set was chosen; a match the list keeps out is reported, not
+# run. The note above the file selection has the measurements. The files run
+# from one work queue, longest first, on --workers=N `start` threads (default:
+# two per core), admitted
 # against a CPU budget of --cpu=N cores (default: every core the machine has):
 # a file that only waits — a spec sleep, a timeout that hangs at zero
 # CPU — starts at once, a file that computes starts when a core's worth of
@@ -428,6 +435,8 @@ my $FAILEDFILE;                                   # --failed=FILE: write their p
 my $FAILED-SHOW = 10;                             # failing source lines shown per file by --failed
 my $FUDGE-IMPL  = 'rakudo.moar';                  # --fudge=IMPL: whom Roast's fudge rewrites for; 'none' runs raw
 my $FUDGE-GIVEN = False;
+my $ALL         = False;                          # --all: every .t under $ROOT, spectest.data ignored
+my %SKIP-MARKER;                                  # --skip-marker=WORD: keep out the files spectest.data marks WORD
 my @patterns;
 for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
@@ -438,7 +447,12 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
     elsif $a eq '--failed'            { $FAILED = True }
     elsif $a ~~ /^ '--failed=' (.+) $/ { $FAILED = True; $FAILEDFILE = ~$0 }
+    elsif $a eq '--all'               { $ALL = True }
+    elsif $a ~~ /^ '--skip-marker=' (.+) $/ { %SKIP-MARKER{$_} = True for (~$0).split(',').map(*.trim).grep(* ne '') }
     else { @patterns.push($a) }
+}
+if $ALL && %SKIP-MARKER {
+    note "run-roast: --skip-marker does nothing with --all — every file runs, the marked ones included.";
 }
 # roast.times describes rakupp. Under another engine its wall times and CPU
 # samples are not just stale, they are actively harmful: they report the S15
@@ -477,14 +491,104 @@ sub roast-revision(--> Str) {
 # (binary-version lives in tools/lib/Gate.rakumod — the harness tests whatever
 # ran it, so there is no CHOICE to make here, only a version to report.)
 
-my @files;
-for find-t($ROOT) -> $f {
-    if @patterns.elems == 0 {
-        @files.push($f);
+# ---------------------------------------------------------------------------
+# WHICH files. The Roast checkout is more than the language's test suite: it
+# also holds Roast's own tooling tests (t/fudge.t, t/fudgeandrun.t,
+# t/test-util/), files the 6.c cut left on master but out of the specification
+# (S06-advanced/return_function.t is the worked example — the Synopsis rule it
+# tests was removed in 2014, the Christmas branch deleted the file, and Rakudo
+# never ran it), and files whose markers say when they are to run. Rakudo's run
+# list is spectest.data at the checkout root — moved there from Rakudo's own t/
+# in 2019 — and its header calls it "a list of all spec tests that are expected
+# to pass". Measured 2026-09-26 against the seed roast.times: the checkout has
+# 1,464 .t files and the list names 1,434; the 30 outside it cost 1.7 s of
+# summed wall and the 60 `stress` files 21.4 s, of 282.6 s. So running them
+# costs nothing worth saving; what they change is the denominator — a figure
+# over the whole checkout counts tests the reference implementation does not.
+#
+# So the default is the list — ALL of it. A line is a path and, after a `#`,
+# marker words, and every listed file runs whatever its markers say; the
+# markers are Rakudo's build knobs, not the language's (`stress` for `make
+# stresstest`, `moar` for the backend, `Perl` for Inline::Perl5, `slow` a
+# scheduling hint), and the bar here is the whole list. --skip-marker=WORD
+# keeps out the files marked WORD, for a run on Rakudo's own terms: its
+# t/harness6 runs a file only if every marker is met, and a default `make
+# spectest` on this box meets everything but `stress` and `Perl` (there is no
+# Inline::Perl5 here, and harness6's trait table has no `Perl` key anyway) —
+# so --skip-marker=stress,Perl is that run's set, 60 + 13 files fewer. --all
+# runs every .t under the checkout, the list ignored. A checkout without
+# spectest.data (a partial one) falls back to that and says so.
+#
+# The set is recorded in the provenance line and so in every --list sidecar,
+# which is what lets a list measured on one set be told apart from one measured
+# on the other (docs/status/roast-lists/README.md).
+my %LISTED;            # rel path -> True: a spectest.data entry that is to run
+my %KEPT-OUT;          # rel path -> the marker --skip-marker kept it out for
+my %UNMET;             # marker word -> entries --skip-marker kept out for it
+my $LISTED-N  = 0;     # entries in spectest.data, kept out or not
+my $MISSING-N = 0;     # entries to run but absent from the checkout
+my $USE-LIST  = !$ALL;
+if $USE-LIST {
+    my $data = $ROOT.IO.add('spectest.data');
+    if $data.e {
+        for $data.lines -> $line {
+            my $l = $line.trim;
+            next if $l eq '' || $l.starts-with('#');
+            my $hash    = $l.index('#');
+            my $path    = ($hash.defined ?? $l.substr(0, $hash) !! $l).trim;
+            my @markers = $hash.defined ?? $l.substr($hash + 1).words !! ();
+            next if $path eq '';
+            $LISTED-N += 1;
+            my @unmet = @markers.grep(-> $m { %SKIP-MARKER{$m} });
+            if @unmet { %UNMET{@unmet[0]} += 1; %KEPT-OUT{$path} = @unmet[0]; next }
+            %LISTED{$path} = True;
+        }
     }
     else {
-        for @patterns -> $p { if $f.contains($p) { @files.push($f); last } }
+        note "run-roast: no spectest.data in $ROOT — running every .t file under it, as --all does.";
+        $USE-LIST = False;
     }
+}
+my @files;
+my $UNLISTED = 0;      # candidates not in spectest.data at all, of those the patterns matched
+my $SKIPPED  = 0;      # candidates --skip-marker kept out, of those the patterns matched
+{
+    my %present;
+    for find-t($ROOT) -> $f {
+        # spectest.data writes its paths with `/`; so does every report here
+        my $rel = $f.substr($ROOT.chars + 1).subst('\\', '/', :g);
+        %present{$rel} = True;
+        next unless @patterns.elems == 0 || @patterns.first(-> $p { $f.contains($p) }).defined;
+        if $USE-LIST && !%LISTED{$rel} {
+            if %KEPT-OUT{$rel} { $SKIPPED += 1 } else { $UNLISTED += 1 }
+            next;
+        }
+        @files.push($f);
+    }
+    $MISSING-N = %LISTED.keys.grep(-> $rel { !%present{$rel} }).elems if $USE-LIST;
+}
+my $SELECTION;
+if $USE-LIST {
+    my @kept = %UNMET.sort(*.key).map(-> $p { "{$p.value} {$p.key}" });
+    $SELECTION = "spectest.data: $LISTED-N listed"
+               ~ (@kept ?? ", kept out by --skip-marker: " ~ @kept.join(' + ') !! '')
+               ~ ($MISSING-N ?? ", $MISSING-N missing from the checkout" !! '')
+               ~ ($UNLISTED && !@patterns ?? ", $UNLISTED unlisted files not run" !! '');
+    if @patterns && ($UNLISTED || $SKIPPED) {
+        my @why;
+        @why.push("$UNLISTED {$UNLISTED == 1 ?? 'is' !! 'are'} outside spectest.data") if $UNLISTED;
+        @why.push("$SKIPPED {$SKIPPED == 1 ?? 'is' !! 'are'} kept out by --skip-marker") if $SKIPPED;
+        my $n = $UNLISTED + $SKIPPED;
+        note "run-roast: $n file{$n == 1 ?? '' !! 's'} matching the pattern{@patterns.elems == 1 ?? '' !! 's'} "
+           ~ "did not run: {@why.join(', ')} — pass --all to run everything that matches.";
+    }
+    if $MISSING-N {
+        note "run-roast: $MISSING-N spectest.data entr{$MISSING-N == 1 ?? 'y names a file' !! 'ies name files'} "
+           ~ "the checkout does not have — a partial checkout, or a list newer than it.";
+    }
+}
+else {
+    $SELECTION = "--all: every .t under the checkout";
 }
 
 # What the Roast checkout looks like BEFORE the run. Some tests write beside
@@ -587,7 +691,7 @@ my $PROVENANCE = "{$ENGINE} {$ENGINE-VER} ($BIN) | roast {roast-revision()} ($RO
                 ~ ($PREFUDGED ?? ", $PREFUDGED files fudged by hand" !! '')
                 ~ ($FOREIGN && $MUTSU && $MUTSU-FUDGE ?? ", MUTSU_FUDGE=1" !! '')
                 ~ ($FOREIGN && $FUDGE-IMPL eq 'none' && !($MUTSU && $MUTSU-FUDGE) ?? ", --fudge=none (raw files)" !! '')
-                ~ " | {@files.elems} files | workers $WORKERS";
+                ~ " | {@files.elems} files, $SELECTION | workers $WORKERS";
 say "run-roast: $PROVENANCE";
 say "";
 
@@ -1105,12 +1209,28 @@ if $TIMES-GIVEN && $TIMESFILE {
         note "run-roast: --times not written: a filtered run cannot time the whole suite.";
     }
     else {
-        my @rows = (^@files.elems).map(-> $k {
+        # A row for every file this run visited — and, because the default set
+        # is spectest.data's and not the checkout's, the previous file's row for
+        # each file it did not visit, so a later --all run (or one without this
+        # run's --skip-marker) still finds their estimates. A row is keyed by
+        # path, and the path leads it, so sorting the rows sorts by path.
+        my %rows;
+        for %prior.kv -> $rel, $p {
+            %rows{$rel} = sprintf("%s\t%.3f\t%s\t%s", $rel, $p<wall>, $p<timeout> ?? 'timeout' !! '',
+                                  $p<cpu>.defined ?? sprintf('%.2f', $p<cpu>) !! '');
+        }
+        my $carried = %rows.elems;
+        for ^@files.elems -> $k {
             my $cpu = @result[$k][8];
-            sprintf("%s\t%.3f\t%s\t%s", @files[$k].substr($ROOT.chars + 1), @wall[$k] // 0,
-                    @result[$k][0] ?? 'timeout' !! '', $cpu.defined ?? sprintf('%.2f', $cpu) !! '') });
-        $TIMESFILE.IO.spurt("# path\twall-seconds\tnote\tcpu-seconds | $PROVENANCE\n" ~ @rows.sort.join("\n") ~ "\n");
-        say "Per-file wall times ({@rows.elems} rows) -> $TIMESFILE";
+            my $rel = @files[$k].substr($ROOT.chars + 1);
+            $carried -= 1 if %rows{$rel}.defined;
+            %rows{$rel} = sprintf("%s\t%.3f\t%s\t%s", $rel, @wall[$k] // 0,
+                                  @result[$k][0] ?? 'timeout' !! '', $cpu.defined ?? sprintf('%.2f', $cpu) !! '');
+        }
+        $TIMESFILE.IO.spurt("# path\twall-seconds\tnote\tcpu-seconds | $PROVENANCE\n" ~ %rows.values.sort.join("\n") ~ "\n");
+        say "Per-file wall times ({%rows.elems} rows"
+          ~ ($carried ?? ", $carried carried over from the previous file for files outside this run's set" !! '')
+          ~ ") -> $TIMESFILE";
     }
 }
 

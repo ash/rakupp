@@ -77,8 +77,17 @@ feeds to `gen-roast-map.raku`, and re-running the suite just to get them back
 costs an hour.
 
 `--list=` also writes `vX.Y.Z.list.meta` beside it: the rakupp version and path,
-the Roast revision and path, the file count and the worker count. **Commit that
-too.** It is the only record of what produced the list, and gate 0 says why.
+the Roast revision and path, the file count and which files were run, and the
+worker count. **Commit that too.** It is the only record of what produced the
+list, and gate 0 says why.
+
+**Which files.** The harness runs the files Roast's own `spectest.data` lists
+(1,434 at `b2cbe8a42`); `--all` runs every `.t` in the checkout (1,464). The
+lists through `v4.0.1` are `--all` measurements, so a diff against one of them
+names the nine files v4.0.1 passed outside spectest.data, and those are not
+regressions;
+[roast-lists/README.md](../status/roast-lists/README.md) has the one-line
+filter that leaves only the files spectest.data does list.
 
 Read the **denominators**, not just the pass count. A file that dies removes its
 tests from *both* sides of "tests that ran", so a real regression can leave the

@@ -58,6 +58,23 @@ comm -23 vPREV-union.list vNEXT-union.list   # regressed — must be empty
 comm -13 vPREV-union.list vNEXT-union.list   # gained
 ```
 
+**Which files a list covers is in its `.meta`.** The harness runs the files
+Roast's own `spectest.data` lists by default (1,434 at `b2cbe8a42`) and every
+`.t` in the checkout with `--all` (1,464); the provenance line in the sidecar
+says `spectest.data: 1434 listed` or `--all: every .t under the checkout`. The
+lists through `v4.0.1` are `--all` measurements, so a diff of a list against
+one of them names the files that release passed *outside* spectest.data — nine
+at v4.0.1, `t/test-util/01-is-eqv.t` among them — and those are not
+regressions. Filter the diff through the list to see only the ones that are:
+
+```bash
+comm -23 vPREV-union.list vNEXT-union.list \
+  | grep -x -F -f <(sed -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//' "$ROAST/spectest.data" | grep -v '^$')
+```
+
+(Verified against `v4.0.1-union.list`: dropping an unlisted file prints
+nothing, dropping a listed one prints it.)
+
 Both files are written sorted, so `comm` needs no `sort`. Where the previous
 release has no union file, diff its single list against the next union — that is
 the same criterion v3.21.0's CHANGELOG used in prose ("every file passing in the

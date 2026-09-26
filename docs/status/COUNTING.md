@@ -225,7 +225,7 @@ what ours becomes under their rules.
 | | Raku++ | mutsu |
 |---|---|---|
 | fudge | unconditional, no off switch | `MUTSU_FUDGE=1`, exported by the runner |
-| files attempted | all **1,464** | a **1,435-file whitelist** (`roast-whitelist.txt`) |
+| files attempted | the **1,434** Roast's own `spectest.data` lists; all **1,464** with `--all`, the set the figures here are on | a **1,435-file whitelist** (`roast-whitelist.txt`) |
 | denominator published | 1,464 | 1,464 — the 29 unrun files count against them |
 | per-file timeout | **10 s** | **30 s** default, escalated per file to 60 / 90 / 120 / **180 s** |
 | flaky files | none; one run each | 24 files in `flaky-tests.txt` are **re-rolled** on failure |
@@ -431,9 +431,23 @@ iterating.
 ## Reproducing
 
 ```sh
-build/rakupp tools/run-roast.raku          # whole suite; prints all four ratios
+build/rakupp tools/run-roast.raku          # the files spectest.data lists; prints all four ratios
 build/rakupp tools/run-roast.raku S05      # filter by path substring
+build/rakupp tools/run-roast.raku --all    # every .t in the checkout
 ```
+
+**Which files.** The harness runs the files Roast's own `spectest.data` lists —
+Rakudo's run list, kept at the checkout root, "a list of all spec tests that
+are expected to pass" in its own words: 1,434 at `b2cbe8a42`, every entry,
+whatever build marker a line carries (`stress`, `moar`, `slow`, `Perl`).
+`--all` runs every `.t` in the checkout, 1,464 — the 30 more are Roast's own
+tooling tests under `t/` and files the 6.c cut left on master outside the
+specification — and that is the set the whole-suite figures in this document
+are on. `--skip-marker=stress` leaves out the 60 stress-marked files, the set
+Rakudo's `make spectest` runs; `--skip-marker=stress,Perl` also drops the 13
+Inline::Perl5 integration files a Rakudo without that module skips. The
+provenance line, and every `--list` sidecar, names the set, so the file count
+in any figure says which it is on: 1,464 is `--all`, 1,434 is the list.
 
 The tail of the output is the summary block:
 

@@ -382,14 +382,18 @@ environment variable (it defaults to `$HOME/roast` if unset):
 
 ```sh
 export ROAST=/path/to/roast
-build/rakupp tools/run-roast.raku             # run the whole suite, print a summary
+build/rakupp tools/run-roast.raku             # run the suite, print a summary
 build/rakupp tools/run-roast.raku S03-operators   # only paths matching a substring
 build/rakupp tools/run-roast.raku S04             # filter by path substring
+build/rakupp tools/run-roast.raku --all       # every .t in the checkout, not just Rakudo's list
 ```
 
-The harness runs every file, parses its TAP output, and classifies it as
+The harness runs every file Roast's own `spectest.data` lists — Rakudo's run
+list, kept in the Roast checkout — parses its TAP output, and classifies it as
 fully-pass / partial / no-TAP / timeout, reporting aggregate assertion counts.
-It streams a per-file line as each test finishes.
+It streams a per-file line as each test finishes. `--all` runs every `.t` file
+in the checkout instead, and `--skip-marker=stress` leaves out the files the
+list marks `stress`, as Rakudo's own `make spectest` does.
 
 ## Architecture
 
