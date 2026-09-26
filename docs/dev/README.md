@@ -45,11 +45,11 @@ Next up:
   - the ecosystem queue's clusters
   - compiled backends that disagree
   - the Roast cluster map for the parallel campaign
-- **[plans/V6-PLAN.md](plans/V6-PLAN.md)** — **v6.0.0, Raku that is fast**
+- **[plans/V6-PLAN.md](plans/V6-PLAN.md)** — **v6.0.0, Raku that is even faster**
   (planned 2026-09-26). Covers the steady-state kernels where Rakudo leads
   (`objects` 2.93×, `multiwhere` 4.8×), a multi-dispatch cache for issue #47,
   the bytes-per-element table, compile and load time, and `--exe` coverage
-  (65% of fully passing Roast files). It also lists what was measured and not
+  (65% of fully passing `spectest.data` files). It also lists what was measured and not
   pursued.
 - **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
   were chosen from (collecting, 2026-09-17). What it still holds is

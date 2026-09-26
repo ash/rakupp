@@ -147,7 +147,6 @@ S02-types/resolved-in-setting.t	0	0	6
 S02-types/set-iterator.t	0	0	7	
 S02-types/sethash.t	5	0	13	note: the parameterized type 'SetHash[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
 S02-types/sigils-and-types.t	5	0	7	note: assignment to '&a' — not natively compilable; --exe would fall back to AOT (--aot)
-S02-types/signed-unsigned-native.t	0	0	8	
 S02-types/stash.t	0	0	7	
 S02-types/subscripts_and_context.t	0	0	6	
 S02-types/subset-6e.t	5	0	10	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
@@ -283,7 +282,6 @@ S04-phasers/ascending-order.t	0	0	6
 S04-phasers/check.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
 S04-phasers/descending-order.t	0	0	6	
 S04-phasers/end.t	5	0	7	note: a nested END phaser — not natively compilable; --exe would fall back to AOT (--aot)
-S04-phasers/exit-in-check.t	0	0	6	
 S04-phasers/first.t	0	0	6	
 S04-phasers/in-eval.t	5	0	6	note: a nested END phaser — not natively compilable; --exe would fall back to AOT (--aot)
 S04-phasers/init.t	5	0	6	note: a nested INIT phaser — not natively compilable; --exe would fall back to AOT (--aot)
@@ -503,7 +501,6 @@ S11-modules/module-file.t	5	0	7	note: a role/package — not natively compilable
 S11-modules/module.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
 S11-modules/need.t	0	0	7	
 S11-modules/nested.t	0	0	9	
-S11-modules/re-export.t	0	0	7	
 S11-modules/runtime.t	0	0	7	
 S11-modules/versioning.t	0	0	8	
 S12-attributes/augment-and-initialization.t	0	0	8	
@@ -582,9 +579,7 @@ S12-methods/what.t	5	0	7	note: assignment to this target — not natively compil
 S12-subset/multi-dispatch.t	5	0	6	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
 S12-subset/subtypes.t	5	0	11	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
 S12-traits/precomp.t	0	0	6	
-S13-overloading/fallbacks-deep.t	0	0	6	
 S13-overloading/metaoperators.t	0	0	6	
-S13-overloading/multiple-signatures.t	0	0	6	
 S13-overloading/operators.t	0	0	7	
 S13-overloading/typecasting-long.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
 S13-syntax/aliasing.t	0	0	6	
@@ -737,7 +732,6 @@ S17-procasync/many-processes-no-close-stdin.t	0	0	8
 S17-procasync/no-runaway-file-limit.t	0	0	8	
 S17-procasync/nonexistent.t	0	0	6	
 S17-procasync/print.t	0	0	6	
-S17-procasync/windows-arg-quoting.t	5	0	7	note: an `s///` pattern that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
 S17-promise/anyof.t	0	0	6	
 S17-promise/at.t	0	0	7	
 S17-promise/in.t	0	0	7	
@@ -763,7 +757,6 @@ S17-supply/categorize.t	0	0	7
 S17-supply/classify.t	0	0	7	
 S17-supply/collate.t	0	0	7	
 S17-supply/comb.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
-S17-supply/construction-recursion.t	0	0	6	
 S17-supply/decode.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
 S17-supply/delayed.t	0	0	7	
 S17-supply/do.t	0	0	6	
@@ -794,7 +787,6 @@ S17-supply/rotate.t	0	0	7
 S17-supply/rotor.t	0	0	10	
 S17-supply/schedule-on.t	0	0	9	
 S17-supply/skip.t	0	0	7	
-S17-supply/snip.t	0	0	8	
 S17-supply/sort.t	0	0	8	
 S17-supply/split.t	0	0	8	
 S17-supply/squish.t	0	0	7	
@@ -825,7 +817,6 @@ S24-testing/14-like-unlike.t	0	0	8
 S24-testing/15-done-testing.t	0	0	8	
 S24-testing/2-force_todo.t	0	0	8	
 S24-testing/3-output.t	0	0	8	
-S24-testing/6-done_testing.t	0	0	7	
 S24-testing/7-bail_out.t	0	0	7	
 S24-testing/8-die_on_fail.t	0	0	8	
 S24-testing/9-is_deeply.t	0	0	8	
@@ -984,12 +975,10 @@ S32-list/permutations.t	0	0	7
 S32-list/produce.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
 S32-list/repeated.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
 S32-list/roll.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
-S32-list/snip.t	0	0	7	
 S32-list/sort.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
 S32-list/toggle.t	0	0	6	
 S32-num/abs.t	0	0	6	
 S32-num/base.t	0	0	8	
-S32-num/complex-logarithms.t	0	0	6	
 S32-num/complex.t	0	0	9	
 S32-num/cool-num.t	0	0	7	
 S32-num/exp.t	0	0	6	
@@ -1199,4 +1188,3 @@ integration/sequence.t	0	0	6
 integration/substr-after-match-in-gather-in-for.t	0	0	6	
 integration/topic_in_double_loop.t	0	0	6	
 integration/variables-in-do.t	5	0	6	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
-t/test-util/01-is-eqv.t	0	0	7	

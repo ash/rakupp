@@ -15,7 +15,7 @@ Where each theme went:
 | 1. correctness at depth | **V5-PLAN** — the regressions, crashes, silent wrong answers, the ecosystem queue's clusters (metamodel fidelity among them) and regex code blocks under backtracking. The survey found that the Cro cluster is not a lever: Rakudo fails 20 of 21 Cro distributions here. |
 | 2. concurrency | the `evalCall` race and the Rat literal cache race → **V5-PLAN B2**; the worker tax → **V6-PLAN P6**; what remains is below |
 | 3. speed | **V6-PLAN** in full — issue #47, the representation endgame, inline caches, native math phases 2–3, exceptions (a P0 measurement), the regex residue, reference cycles |
-| 4. the compiler stops falling back | **V6-PLAN P5/P6** — the `--exe` fallback table (re-measured: 784 of 1,201), `--cnp`, `--target=js`; its disagreements → **V5-PLAN B5** |
+| 4. the compiler stops falling back | **V6-PLAN P5/P6** — the `--exe` fallback table (re-measured: 773 of 1,189 on `spectest.data`), `--cnp`, `--target=js`; its disagreements → **V5-PLAN B5** |
 | 5. language surface | the parallel Roast campaign that v5 is tagged on; what Roast does not test stays below |
 | 6–10 | unchanged, below |
 
@@ -46,7 +46,7 @@ below stay here only as far as Roast does not reach them.*
 
 On 2026-09-17 Roast stood at 676 of 1,464 files and 200,843 of 219,610
 assertions, measured before the harness applied Roast's own fudge. At HEAD on
-2026-09-26 it was 1,201 of 1,464 files. Rakudo's own ceiling on the raw files is
+2026-09-26 it was 1,201 of the 1,434 files of `spectest.data`. Rakudo's own ceiling on the raw files is
 ~96.9% ([100.md](100.md)). The cheap wins are
 spent — moving the file count now takes whole features. By synopsis, the weakest:
 
@@ -146,7 +146,7 @@ behind every cell.
 ## 10. Measurement
 
 The whole-ecosystem sweep is V5-PLAN B6. The `--exe` no-fallback count was
-re-measured on 2026-09-26 (784 of 1,201), and issue #90 is a wrong answer, so it
+re-measured on 2026-09-26 (773 of 1,189 on `spectest.data`), and issue #90 is a wrong answer, so it
 went to V5-PLAN B3. Left here:
 
 - raku-eye's weekly run has open decisions (REA yanked dists; the Rakudo policy)

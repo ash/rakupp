@@ -389,7 +389,8 @@ top of it.
 
 **The numbers:**
 
-- Roast: *N of N* files of the default set fully passing.
+- Roast: 1,434 of 1,434 files of `spectest.data` fully passing. It is 1,201
+  at `f78e5ee7`. Rakudo passes 1,425, and rakupp already passes the 9 it fails.
 - 0 battery module files that compiled under the last release and fail at the
   tag. There were 25 at HEAD against v3.27.0.
 - 0 crashes:
@@ -400,7 +401,7 @@ top of it.
 - Distributions passing, of the 1,791 Rakudo passes, with none that passed at
   v4.0.0 failing.
 
-## v6.0.0 — Raku that is fast (planned 2026-09-26)
+## v6.0.0 — Raku that is even faster (planned 2026-09-26)
 
 Chosen with v5, and starting after it is tagged. **v6 is about speed** in four
 senses:
@@ -420,8 +421,8 @@ The plan is [V6-PLAN.md](V6-PLAN.md).
 - Issue #47 at parity. The Math::NumberTheory driver reads 2.35×.
 - Every row of the bytes-per-element table at or below Rakudo's. Seven rows are
   above it today, the worst by 26×.
-- `--exe` compiling ≥ 90% of the fully passing Roast files natively. It is 65%
-  today.
+- `--exe` compiling ≥ 90% of the fully passing `spectest.data` files
+  natively. It is 65% today.
 - An `--exe` hello's compile time halved, and a warm module load's time halved.
 
 ---

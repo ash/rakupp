@@ -1,4 +1,4 @@
-# Plan: v6.0.0 — Raku that is fast
+# Plan: v6.0.0 — Raku that is even faster
 
 *Written 2026-09-26, before any code, alongside [V5-PLAN.md](V5-PLAN.md): v5 is
 about errors, v6 is about speed. "Speed" here has four parts: time on the
@@ -25,9 +25,10 @@ machine before any batch is judged against them.*
    3000) reads **2.35×** Rakudo's time, and Graph is still to be measured.
 3. **Memory per element at or below Rakudo's,** on every row of the table
    below. Seven rows are above it today, one of them by 26×.
-4. **`--exe` compiles ≥ 90% of the fully passing Roast files natively.** On
-   2026-09-26 it compiled **784 of 1,201 (65%)**
-   ([exe-fallback-roast.tsv](../findings/survey-2026-09-26/exe-fallback-roast.tsv)).
+4. **`--exe` compiles ≥ 90% of the fully passing Roast files natively,** on
+   Roast's `spectest.data` list, as in V5-PLAN. On 2026-09-26 it compiled
+   **773 of the 1,189 listed files** that fully passed in the last full run
+   (65%) ([exe-fallback-roast.tsv](../findings/survey-2026-09-26/exe-fallback-roast.tsv)).
    The last such count was 389 of 416, at v1.0.
 5. **Compile and load time, halved:**
    - an `--exe` hello's translation unit: 0.93 s
@@ -106,12 +107,12 @@ P3 land.
 
 ### What `--exe` falls back on (first blocker per program)
 
-| construct | Roast | `t/` | total |
+| construct | Roast (`spectest.data`) | `t/` | total |
 |---|---:|---:|---:|
 | multi dispatch: nested multi, parent-class candidate, `:D`/`:U`, `where` | 61 | 28 | 89 |
 | role / package | 28 | 51 | 79 |
 | allomorph literal `<42>`, `<1 2 3>` (reported as "NK 24") | 52 | 18 | 70 |
-| regex / `s///` with a code block or a variable | 38 | 22 | 60 |
+| regex / `s///` with a code block or a variable | 37 | 22 | 59 |
 | phasers, CATCH | 14 | 44 | 58 |
 | assignment to an unsupported target | 40 | 18 | 58 |
 | a declaration as a sub-expression (`if (my $x = …)`) | 32 | 10 | 42 |

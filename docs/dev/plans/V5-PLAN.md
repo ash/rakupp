@@ -17,15 +17,25 @@ that campaign has finished and the batches below have landed on top of it.*
 
 ## The numbers a stranger can re-measure
 
-1. **Roast: every file of the default set fully passes.** At HEAD `f8975833`
-   the harness reported 1,201 of 1,464 files fully passing, and 219,993 of
-   220,462 assertions that ran. The default set became Roast's own
-   `spectest.data` (1,434 files) the same day, in `5a08968d`. Rakudo 2026.08
-   passes 1,433 of the 1,464 through this harness, and rakupp passes 7 of the
-   31 it does not ([ROAST-CEILING-2026-09-17.md](../findings/ROAST-CEILING-2026-09-17.md)).
-   This number belongs to the parallel campaign. v5 is tagged on it, and it is
-   published as *N of N* on the default set. Any file still failing is listed
-   by name, with the reason it cannot pass.
+1. **Roast: all 1,434 files of `spectest.data` fully pass.**
+   - Roast's own `spectest.data` is the list Rakudo's spectest runs, and the
+     harness's default set since `5a08968d`. Every Roast figure in this plan is
+     on that list. The 30 other `.t` files in the checkout (the `--all` set)
+     are not part of the number.
+   - The last full run was taken on 2026-09-26, just before `f78e5ee7`. Of the
+     1,434 listed files it had **1,189** fully passing, 240 partial, 4 without
+     TAP and 1 timing out, with 219,676 of 220,114 assertions that ran passing.
+   - `f78e5ee7` took 12 more listed files to passing, which makes **1,201 of
+     1,434**. The thirteenth file it names, `S14-roles/generic-subtyping.t`, is
+     not on the list.
+   - Rakudo 2026.08 passes 1,425 of the 1,434 through this harness
+     ([rakudo-2026.08.list](../../status/roast-lists/rakudo-2026.08.list)).
+     rakupp already passes all 9 that Rakudo fails:
+     `S02-literals/format.t`, `version.t`, `S17-supply/batch.t`,
+     `S24-testing/11-plan-skip-all.t`, `S29-os/system.t`, the gb18030, gb2312
+     and shiftjis encode-decode files, and `S32-str/sprintf-b.t`. So every file
+     on the list is reachable, and **100% means 1,434 of 1,434**.
+   - This number belongs to the parallel campaign, and v5 is tagged on it.
 2. **No module file that compiled under the last release fails to compile.**
    `-c` over every `lib/` file in the module battery, run with the last release
    and then with the candidate. Measured 2026-09-26, HEAD against v3.27.0: 25
@@ -177,11 +187,15 @@ against the 1,791.
 
 ### Roast: the parallel campaign's map
 
-Of the 263 files that do not pass in the full run, 18 fail under Rakudo too.
-That leaves 245; 13 have since passed (`f78e5ee7`), leaving 232. Of those, 94
-are one failing assertion from passing and 86 are two
-([roast-clusters.tsv](../findings/survey-2026-09-26/roast-clusters.tsv)). A
-file counts under "flip" when fixing that cluster alone makes it pass:
+On the list, 245 files did not fully pass in the last full run. `f78e5ee7`
+passed 12 of them, which leaves **233**:
+
+- `S17-supply/supplier-preserving.t`, which emits no TAP and is not clustered
+- the 232 in [roast-clusters.tsv](../findings/survey-2026-09-26/roast-clusters.tsv),
+  every one on the list and every one passed by Rakudo
+
+Of the 232, 95 are one failing assertion from passing and 86 are two. A file
+counts under "flip" when fixing that cluster alone makes it pass:
 
 | cluster | flip (touched) | examples | mechanism |
 |---|---:|---|---|
@@ -193,7 +207,7 @@ file counts under "flip" when fixing that cluster alone makes it pass:
 | the CompUnit and Distribution API | 8 | `cur-candidates.t`, `curli-install.t`, `precompiled.t` | missing classes and methods |
 | phasers, multi dispatch, coercion | 7, 8, 6 | `will.t`, `proto.t`, `coercion-methods.t` | one issue per file |
 | pseudo-packages | 5 | pseudo-6c/6d (`OUR::` binding, `CALLER::UNIT`, `::("SETTING")` in EVAL) | |
-| native arrays with holes | 3 | `native-int.t`, `native-num.t`, `native-str.t` | see the wrong answers above |
+| holes in arrays | 5 (7) | `native-int.t`, `native-num.t`, `native-str.t`, `S32-array/delete.t`, `S32-list/reverse.t` | a hole copied into a native array reads as `Any` (see the wrong answers above); `.List`/`.Slip` do not fill holes with `Nil`; `reverse` returns no containers for holes |
 | `catch.t` times out | 1 | 500k `die`/CATCH iterations | a throw costs ~70 µs here and ~4.5 µs on Rakudo. It is a speed item (V6 P2), and moves here if the campaign needs it. |
 
 ---
