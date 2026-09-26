@@ -195,13 +195,22 @@ Two things make this easy to get wrong:
   the Rust implementation, does the same rewriting inside its own interpreter
   (`src/runtime/run_roast_preprocess.rs`) over the same verb set plus `#?v6 …
   skip`, but gates it behind **`MUTSU_FUDGE=1`, which is off by default** and set
-  by its own runner. Pointing our harness at a mutsu binary without that variable
-  measures it unfudged and understates it by a wide margin.
+  by its own runner. Measured through our harness before it fudged for foreign
+  engines, mutsu without that variable scored 1,227 files rather than 1,419.
 
 `tools/run-roast.raku` takes `$*EXECUTABLE` as the engine under test, so it can
-score any Raku that can run the harness itself. When you do that, set whatever
-the other engine's fudge switch is — and record it next to the number, because a
-figure without its bar attached is not evidence.
+score any Raku that can run the harness itself. For an engine other than rakupp
+it applies Roast's own `fudge` to every file that carries a directive line and
+runs the `.rakudo.moar` sidecar fudge writes beside the `.t` — the same call
+Rakudo's `t/harness6` makes — so a foreign run lands on the fudged bar with no
+hand-fudged worktree. `--fudge=none` runs the raw files instead, and with
+`MUTSU_FUDGE=1` set mutsu is left to apply the directives itself; the provenance
+line records which. Measured 2026-09-26 over the 280 files fudge rewrites:
+Rakudo 2026.08 fails 260 of them raw and passes 277 fudged, and mutsu's own
+preprocessor and Roast's fudge give the same verdict on 279 (the one difference
+is a `#?rakudo eval` block mutsu runs partway before dying, which fudge's EVAL
+wrapper then over-counts by one test). Record the bar next to the number all the
+same, because a figure without its bar attached is not evidence.
 
 ### Worked example: mutsu's 98%, and our number counted their way
 
@@ -462,18 +471,24 @@ foreign engine and handles the first two itself:
   the admission controller admitted all of them at once and manufactured the
   contention that pushed them past the ceiling. A foreign engine gets neither
   those estimates nor their ordering unless `--times` says so.
-- **Fudging, which you must still do yourself.** Rakudo does not apply
-  `#?rakudo` directives; its own spectest runs Roast's `fudge` first, and rakupp
-  applies them in its lexer. Pointed at a raw checkout, Rakudo is scored on a bar
-  neither engine uses. The harness samples 40 of the files it is about to run and
-  warns, but cannot fix it — run
-  `fudgeall --keep-exit-code --version=v6.d rakudo.moar` over a worktree and
-  point `$ROAST` at that. **mutsu is the exception**: it does the rewriting
-  itself, inside the interpreter, when `MUTSU_FUDGE=1` is set — so a raw checkout
-  is the right input for it and the whole question is one environment variable.
-  The harness recognises mutsu and says which of the two bars the run is on,
-  because measuring it unfudged is the easiest way to get a number that means
-  nothing.
+- **Fudging, which the harness does for a foreign engine.** Rakudo does not
+  apply `#?rakudo` directives; its own spectest runs Roast's `fudge` first, and
+  rakupp applies them in its lexer. Pointed at a raw checkout, Rakudo is scored
+  on a bar neither engine uses — 260 of the 280 files fudge rewrites fail. So on
+  the foreign path the harness runs Roast's `fudge` (`--keep-exit-code
+  --version=v6.d rakudo.moar`, the call `t/harness6` makes) over every file that
+  carries a directive line and hands the engine the sidecar it writes beside the
+  `.t`. Roast's `.gitignore` lists the pattern, so the checkout stays clean, a
+  sidecar in the same directory keeps the tests' `$*PROGRAM.parent(2)` package
+  lookups valid, and every report keeps the `.t` name. `--fudge=IMPL` changes
+  the implementation name, `--fudge=none` runs the raw files, and a `.t` that
+  already is fudge's output (a worktree fudged by hand) is recognised by its
+  `# FUDGED!` trailer and left alone. Under rakupp nothing is rewritten: a
+  fudged file fed to the lexer is fudged twice. **mutsu** does the rewriting
+  itself, inside the interpreter, when `MUTSU_FUDGE=1` is set — with the
+  variable set the harness leaves the raw files to it and says so; unset, it
+  fudges for mutsu like for any other engine, and the two agree on 279 of the
+  280 files.
 
 One more thing travels badly, in the other direction: **the harness itself has
 to run on the foreign engine.** It is Raku, and the foreign engine's bugs are

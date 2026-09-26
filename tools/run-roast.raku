@@ -2,7 +2,7 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [--fudge=IMPL|none] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
 # substring against the path. The files run from one work queue, longest
@@ -41,6 +41,13 @@
 # diagnostics on the child's stderr. --failed=FILE writes the bare paths to FILE
 # instead, one per line, sorted: the complement of --list, ready to feed back
 # in as PATTERNs (`build/rakupp tools/run-roast.raku $(cat FILE)`).
+#
+# --fudge=IMPL names the implementation Roast's own `fudge` rewrites the files
+# for when the engine under test is NOT rakupp — default rakudo.moar, the set of
+# directives rakupp's lexer applies — and --fudge=none runs the raw files. Under
+# rakupp the flag does nothing: the lexer applies the directives itself, and a
+# file fudge already rewrote would be fudged twice. The note above the fudge
+# pass, before the provenance line, has the measurements.
 
 my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  # set $ROAST to your Roast checkout
 use lib $?FILE.IO.parent.add('lib').Str;
@@ -76,6 +83,10 @@ my $FOREIGN = $ENGINE ne 'rakupp';
 # comes back with a number nobody expects, so name it in the run's own output.
 my $MUTSU       = $ENGINE-VER.lc.contains('mutsu');
 my $MUTSU-FUDGE = ((%*ENV<MUTSU_FUDGE> // '') ne '') && ((%*ENV<MUTSU_FUDGE> // '') ne '0');
+# raw .t path -> the file the engine is actually handed: the sidecar Roast's
+# `fudge` wrote for it (see the fudge pass, before the provenance line). Only
+# files fudge rewrote have an entry; everything reported keeps the .t path.
+my %RUN-AS;
 
 # The ceiling is a RAKUPP budget and it does not travel. Measured serially on an
 # idle 8-core box: the 81 S15 files take 10 s of wall under rakupp and 160 s
@@ -199,9 +210,12 @@ sub run-with-timeout($bin, $file, $timeout) {
 # line N` on the next `#` line (Rakudo), either one indented inside a subtest.
 # Only locations in $file itself count — not a module a test called into — and
 # each line is reported once, in order, so a failing subtest and its failing
-# inner test (which both point at the same line) print it once.
+# inner test (which both point at the same line) print it once. A foreign
+# engine ran fudge's sidecar, so Test names THAT file; fudge keeps one line in
+# for one line out, so its line numbers are the .t file's own.
 sub failed-lines($err, $file) {
     my $base = $file.IO.basename;
+    my $side = %RUN-AS{$file} ?? %RUN-AS{$file}.IO.basename !! '';
     my @n;
     my $armed = False;   # the previous line was a `Failed test` with no location
     for $err.lines -> $ln {
@@ -209,7 +223,8 @@ sub failed-lines($err, $file) {
         next unless $t.starts-with('#');
         my $failed = $t.contains('Failed test');
         if ($failed || $armed) && $t ~~ / 'at ' (\S+) ' line ' (\d+) / {
-            @n.push(+$1) if $0.IO.basename eq $base;
+            my $b = $0.IO.basename;
+            @n.push(+$1) if $b eq $base || $b eq $side;
             $armed = False;
         }
         else {
@@ -369,11 +384,17 @@ sub fudge-directives($file, $out --> Hash) {
     }
     my %v;
     my %used;   # directives sharing a reason share its tests; count them once
+    # eval is a skip under rakupp's lexer but a todo under Roast's fudge (it wraps
+    # the code in EVAL and todo()s the tests), so on a sidecar run its tests end
+    # in `# TODO reason`; try, which fudge makes a plain flunk, does not occur in
+    # the suite.
+    my $roast-fudged = %RUN-AS{$file}.defined;
     for @d -> [$verb, $why, $prefix] {
         my $row = %v{$verb} //= [0, 0, 0, 0, 0];
         $row[0]++;
         next if $verb eq 'emit';
-        my $key = ($verb eq 'todo' ?? 'todo' !! 'skip') ~ '|' ~ $why;
+        my $as-todo = $verb eq 'todo' || ($verb eq 'eval' && $roast-fudged);
+        my $key = ($as-todo ?? 'todo' !! 'skip') ~ '|' ~ $why;
         $key = %seen.keys.first(*.starts-with($key)) // $key if $prefix && !%seen{$key};
         my $c = %seen{$key};
         if !$c        { $row[4]++ }
@@ -391,10 +412,13 @@ my $TIMES-GIVEN = False;                          # --times=FILE names the file 
 my $FAILED      = False;                          # --failed: list the non-passing files at the end
 my $FAILEDFILE;                                   # --failed=FILE: write their paths there instead
 my $FAILED-SHOW = 10;                             # failing source lines shown per file by --failed
+my $FUDGE-IMPL  = 'rakudo.moar';                  # --fudge=IMPL: whom Roast's fudge rewrites for; 'none' runs raw
+my $FUDGE-GIVEN = False;
 my @patterns;
 for @*ARGS -> $a {
     if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
     elsif $a ~~ /^ '--list=' (.+) $/  { $LISTFILE = ~$0 }
+    elsif $a ~~ /^ '--fudge=' (.+) $/ { $FUDGE-IMPL = ~$0; $FUDGE-GIVEN = True }
     elsif $a ~~ /^ '--cpu=' (\d+) $/    { $CPU = (+$0) max 1 }
     elsif $a ~~ /^ '-j' '='? (\d+) $/ { $CPU = (+$0) max 1; $WORKERS = 2 * $CPU }
     elsif $a ~~ /^ '--times=' (.*) $/ { $TIMESFILE = ~$0; $TIMES-GIVEN = True }
@@ -464,49 +488,91 @@ sub roast-untracked(--> Set) {
 }
 my $BEFORE = roast-untracked();
 
-# Rakudo does not apply `#?rakudo` fudge directives itself — its own spectest runs
-# Roast's `fudge` first, and Raku++ applies the same directives in its lexer
-# (applyRakudoFudge in src/Lexer.cpp). A foreign engine pointed at a RAW checkout
-# is therefore scored on a bar neither engine actually uses: the directives sit
-# there as comments, and every test they exist to skip runs and fails. The gap is
-# not small — docs/dev/findings/ROAST-CEILING-2026-09-17.md measured Rakudo at
-# 1,433 of 1,464 files on a fudged checkout. Sample what we are about to run and
-# say so before the provenance line, beside the roast.times notice, so both
-# warnings about "this is not how you measure another engine" arrive together.
+# Rakudo does not apply `#?rakudo` fudge directives itself — its own spectest
+# runs Roast's `fudge` over the files first (t/harness6: `fudgeall
+# --keep-exit-code rakudo.moar`, in batches of 200) and runs whatever paths that
+# prints. Raku++ applies the same directives in its lexer (applyRakudoFudge in
+# src/Lexer.cpp), so it runs the raw .t files, and it MUST: fudge leaves the
+# directive comment in place above the rewritten test, so a fudged file fed to
+# the lexer is fudged twice, the second todo leaking onto the next test. A
+# foreign engine handed the raw files is scored on a bar neither engine uses.
+# Measured 2026-09-26 over the 280 files fudge rewrites: Rakudo 2026.08 fails
+# 260 of them raw and passes 277 fudged.
+#
+# So on the foreign path do what Rakudo's own harness does. Run Roast's `fudge`
+# on every file that carries a directive line and hand the engine the sidecar
+# it writes — `X.rakudo.moar` beside `X.t`, a pattern Roast's .gitignore lists,
+# and a file in the same directory keeps the tests' `$*PROGRAM.parent(2)`
+# package lookups valid. Everything reported — the per-file lines, --list,
+# --failed, the directive table — keeps the .t path. `rakudo.moar` is the
+# implementation for every engine because it is the bar the lexer applies (bare
+# `#?rakudo` and `#?rakudo.moar`, never .jvm/.js); --fudge=IMPL changes it and
+# --fudge=none runs the raw files, to measure the unfudged bar on purpose. A .t
+# that already IS fudge's output (a worktree fudged by hand and renamed) carries
+# fudge's `# FUDGED!` trailer and is left alone. mutsu applies the directives
+# itself, in the interpreter, when MUTSU_FUDGE=1 is set — then the raw files are
+# the right input and nothing is rewritten. Its preprocessor and Roast's fudge
+# agreed on 279 of the 280 files (the odd one out is a `#?rakudo eval` block
+# mutsu runs partway before dying, which fudge's EVAL wrapper then over-counts).
 # Foreign path only: a rakupp run reads nothing extra.
+my $FUDGED    = 0;   # files fudge rewrote for this run
+my $PREFUDGED = 0;   # files that already were fudge's output
+if !$FOREIGN && $FUDGE-GIVEN {
+    note "run-roast: --fudge is ignored under rakupp — the lexer applies the #?rakudo "
+       ~ "directives itself, and a file fudge rewrote would be fudged twice.";
+}
 if $FOREIGN && @files {
-    my $sample = 40 min @files.elems;
-    my $raw = 0;
-    for @files.pick($sample) -> $f {
-        $raw++ if $f.IO.lines.first({ .trim.starts-with('#?rakudo') });
+    my @carry = @files.grep(-> $f {
+        (try { $f.IO.lines } // ()).first({ .trim-leading.starts-with('#?') }).defined
+    });
+    my $fudge = $ROOT.IO.add('fudge');
+    if $MUTSU && $MUTSU-FUDGE {
+        note "run-roast: mutsu with MUTSU_FUDGE=1 — it applies the #?rakudo directives "
+           ~ "itself, so the raw files run and the fudged bar is the one being measured. "
+           ~ "Unset it to have this harness apply Roast's own fudge instead "
+           ~ "(docs/status/COUNTING.md).";
     }
-    if $raw && $MUTSU {
-        # mutsu does the rewriting itself, inside the interpreter, when the
-        # variable is set — so for mutsu a raw checkout is the RIGHT input and
-        # the fudgeall advice below is wrong. Which of the two bars this run is
-        # on comes down to one environment variable; say which.
-        note $MUTSU-FUDGE
-            ?? "run-roast: mutsu with MUTSU_FUDGE=1 — it applies the #?rakudo directives "
-             ~ "itself, so a raw checkout is the right input and the fudged bar is the "
-             ~ "one being measured (docs/status/COUNTING.md)."
-            !! "run-roast: mutsu WITHOUT MUTSU_FUDGE=1 — its fudge rewriting is off by "
-             ~ "default, so every test a #?rakudo directive exists to skip is running "
-             ~ "and failing here ($raw of $sample sampled files carry one). This run "
-             ~ "measures the UNFUDGED bar, which our own figures are not on. Re-run as "
-             ~ "`MUTSU_FUDGE=1 mutsu tools/run-roast.raku` (docs/status/COUNTING.md).";
+    elsif $FUDGE-IMPL eq 'none' {
+        note "run-roast: --fudge=none — {@carry.elems} of {@files.elems} files carry "
+           ~ "#?rakudo directives and $ENGINE runs them as they are. Unless \$ROAST is a "
+           ~ "checkout fudged by hand, this measures the UNFUDGED bar, which no published "
+           ~ "figure is on (docs/status/COUNTING.md)."
+            if @carry;
     }
-    elsif $raw {
-        note "run-roast: $ENGINE is measured against a RAW Roast checkout — $raw of "
-           ~ "$sample sampled files still carry #?rakudo fudge directives, which "
-           ~ "$ENGINE does not apply itself. Fudge a worktree first (`fudgeall "
-           ~ "--keep-exit-code --version=v6.d rakudo.moar`) and point \$ROAST at it, "
-           ~ "or the figures understate it badly. "
-           ~ "See docs/dev/findings/ROAST-CEILING-2026-09-17.md.";
+    elsif !$fudge.e {
+        note "run-roast: no `fudge` in $ROOT, so $ENGINE runs {@carry.elems} "
+           ~ "directive-carrying files raw and the figures will understate it badly "
+           ~ "(Rakudo fails 260 of the 280 such files raw). Point \$ROAST at a full "
+           ~ "Roast checkout."
+            if @carry;
+    }
+    else {
+        for @carry -> $f {
+            if $f.IO.slurp.contains("\nsay \"# FUDGED!\";") { $PREFUDGED += 1; next }
+            # Two-argument fudge: `fudge IMPL FILE.t` writes FILE.IMPL beside it when a
+            # directive applies and prints the path to run — the sidecar, or FILE.t
+            # itself when nothing applied. --version is the language version the
+            # `#?v6…` directives compare against; v6.d is what Rakudo targets and what
+            # docs/status/roast-lists/rakudo-2026.08.list was measured with.
+            my $p = run('perl', $fudge.Str, '--keep-exit-code', '--version=v6.d',
+                        $FUDGE-IMPL, $f, :out, :err);
+            my $picked = $p.out.slurp(:close).trim;
+            my $e      = $p.err.slurp(:close).trim;
+            if $picked && $picked ne $f && $picked.IO.e { %RUN-AS{$f} = $picked; $FUDGED += 1 }
+            elsif $e { note "run-roast: fudge failed on $f: $e" }
+        }
+        note "run-roast: applied Roast's own fudge (--version=v6.d $FUDGE-IMPL): $FUDGED of "
+           ~ "{@files.elems} files rewritten to a .$FUDGE-IMPL sidecar and run from there"
+           ~ ($PREFUDGED ?? "; $PREFUDGED already fudged by hand, left alone" !! '') ~ ".";
     }
 }
 
 my $PROVENANCE = "{$ENGINE} {$ENGINE-VER} ($BIN) | roast {roast-revision()} ($ROOT)"
                 ~ ($BEFORE ?? " + {$BEFORE.elems} untracked" !! '')
+                ~ ($FUDGED ?? ", fudged with roast's fudge --version=v6.d $FUDGE-IMPL ($FUDGED files rewritten)" !! '')
+                ~ ($PREFUDGED ?? ", $PREFUDGED files fudged by hand" !! '')
+                ~ ($FOREIGN && $MUTSU && $MUTSU-FUDGE ?? ", MUTSU_FUDGE=1" !! '')
+                ~ ($FOREIGN && $FUDGE-IMPL eq 'none' && !($MUTSU && $MUTSU-FUDGE) ?? ", --fudge=none (raw files)" !! '')
                 ~ " | {@files.elems} files | workers $WORKERS";
 say "run-roast: $PROVENANCE";
 say "";
@@ -729,7 +795,8 @@ my sub run-one($f) {
     # %SLOW-FILES values are rakupp seconds too: a spec-driven wall time still has
     # the engine's own work wrapped around it, so they scale with everything else.
     my $cap = %SLOW-FILES{$rel} ?? %SLOW-FILES{$rel} * $TIME-SCALE !! $TIMEOUT;
-    my ($out, $timedout, $err) = run-with-timeout($BIN, $f, $cap);
+    # a foreign engine gets fudge's sidecar where there is one; see the fudge pass
+    my ($out, $timedout, $err) = run-with-timeout($BIN, %RUN-AS{$f} // $f, $cap);
     my $cpu = $lock.protect({ %cpu-sample{$f} });   # the last look the sampler took while it ran
     my ($planned, $ran, $passed, $failed, $skipped, $todofail, $todopass) = parse-tap($out);
     # New fields go on the END: the unpack below is positional. [9] is the
@@ -1116,8 +1183,11 @@ say "";
     my @t = @sum[0] + $os, @sum[1] + $of, @sum[2] + $op;
     @fr.push(['Total', '—', ~@t[0], ~@t[1], ~@t[2], ~([+] @t), ~@sum[3]]);
     my @fw = (^@fh).map(-> $i { (@fh[$i], |@fr.map(*[$i])).map(*.chars).max });
-    my &row = -> @c { '| ' ~ (^@c).map({ $_ == 0 ?? @c[$_] ~ ' ' x (@fw[$_] - @c[$_].chars)
-                                               !! ' ' x (@fw[$_] - @c[$_].chars) ~ @c[$_] }).join(' | ') ~ ' |' };
+    # a named sub, not a pointy block in a `&row` variable: mutsu 0.23.0 binds the
+    # array argument of the latter empty and printed this table as `|  |` (the
+    # harness has to run on the engine it measures — see COUNTING.md)
+    sub row(@c) { '| ' ~ (^@c).map(-> $i { $i == 0 ?? @c[$i] ~ ' ' x (@fw[$i] - @c[$i].chars)
+                                                  !! ' ' x (@fw[$i] - @c[$i].chars) ~ @c[$i] }).join(' | ') ~ ' |' }
     say "Skipped and todo tests by source ({$fz-files} of {@files.elems} files carry #?rakudo directives"
         ~ (!%fz && $FOREIGN ?? '; a pre-fudged checkout?' !! '') ~ "):";
     say row(@fh);
