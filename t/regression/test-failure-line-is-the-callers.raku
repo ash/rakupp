@@ -47,13 +47,14 @@ my $err = $p.err.slurp(:close);
 # the assertion lines of t.raku, in order — the multi-line `is` names line 9,
 # where the statement starts, as Rakudo does
 my @want = 7, 8, 9, 12, 13, 14, 15;
-my @got = $err.lines.grep(*.starts-with('# Failed test')).map({ /'line' \s+ (\d+)/ ?? +$0 !! -1 });
+# (Rakudo's Test puts the position on the line AFTER "# Failed test '…'")
+my @got = $err.lines.grep(*.starts-with('# at ')).map({ /'line' \s+ (\d+)/ ?? +$0 !! -1 });
 @fail.push("expected 7 failures, got {@got.elems}:\n$err") unless @got.elems == @want.elems;
 for @want Z @got -> ($w, $g) {
     @fail.push("reported line $g, wanted $w") unless $g == $w;
 }
 @fail.push("every diagnostic names t.raku:\n$err")
-    unless $err.lines.grep(*.starts-with('# Failed test')).all.contains(' at ' ~ $prog.absolute ~ ' line ');
+    unless $err.lines.grep(*.starts-with('# at ')).all.contains(' at ' ~ $prog.absolute ~ ' line ');
 
 unlink($prog, $dir.add('lib/Far.rakumod'));
 rmdir($dir.add('lib')); rmdir($dir);

@@ -3036,7 +3036,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             long long pos = (*inv.hash())["bpos"].toInt();
             if (pos < 0) pos = 0;
             if (want < 0) want = 0;
-            if (pos > (long long)all.size()) pos = all.size();
+            if (pos >= (long long)all.size()) return binBuf(std::string());   // past the end: nothing, and the position stays
             long long take = std::min(want, (long long)all.size() - pos);
             (*inv.hash())["bpos"] = Value::integer(pos + take);
             return binBuf(all.substr((size_t)pos, (size_t)take));
@@ -3336,8 +3336,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
             if (whence == 1) want += pos;               // SeekFromCurrent
             else if (whence == 2) want += total;        // SeekFromEnd
-            if (want < 0) want = 0;
-            if (want > total) want = total;
+            // before the start is EINVAL, as lseek says; past the end is a
+            // position like any other (a read there finds nothing)
+            if (want < 0)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Failed to seek in filehandle: 22"};
             (*inv.hash())["bpos"] = Value::integer(want);
             return Value::boolean(true);
         }

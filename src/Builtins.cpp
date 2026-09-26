@@ -2012,7 +2012,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // a role pun renders as what it was written as, `Foo[Int]`, not as
             // the registry key that keeps two of them the same type
             std::string d = g_typeDispName ? g_typeDispName(v.s) : std::string();
-            return d.empty() ? v.s.str() : d;
+            if (!d.empty()) return d;
+            // …and a parameterized built-in names its parameter: array[str]
+            return v.ofType().empty() ? v.s.str() : v.s.str() + "[" + v.ofType() + "]";
         }
         case VT::Str:
             // a Buf/Blob is a Str only in REPRESENTATION — its .raku is the
@@ -4107,6 +4109,12 @@ static bool sigParamAccepts(Interpreter& I, const Param& s, const Param& t) {
         if (!t.subSig) return false;
         if (!sigAcceptsSig(I, *s.subSig, "", *t.subSig, "")) return false;
     }
+    // `&bar:(Str --> Bool)`: a Callable's signature constraint narrows the
+    // same way, its return type included
+    if (s.codeSig) {
+        if (!t.codeSig) return false;
+        if (!sigAcceptsSig(I, *s.codeSig, s.codeSigRet, *t.codeSig, t.codeSigRet)) return false;
+    }
     return true;
 }
 static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std::string& sRet,
@@ -4114,7 +4122,10 @@ static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std
     std::vector<const Param*> spos, tpos, sn, tn;
     for (auto& p : S) if (!p.invocant) (p.named || (p.slurpy && p.sigil == '%') ? sn : spos).push_back(&p);
     for (auto& p : T) if (!p.invocant) (p.named || (p.slurpy && p.sigil == '%') ? tn : tpos).push_back(&p);
-    auto capt = [](const Param* p) { return p->sigil == '|'; };
+    // (a capture parameter, as `.capture` answers it: `|`, and `|c`)
+    auto capt = [](const Param* p) {
+        return p->sigil == '|' || (p->slurpy && p->slurpyKind == 0 && p->sigil == '\\');
+    };
     size_t si = 0, ti = 0;
     while (si < spos.size()) {
         if (ti >= tpos.size()) break;
@@ -4271,6 +4282,7 @@ Value makeSignature(const Callable* c) {
     if (c && !c->hasPrimed && c->params && synth.empty()) {
         (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->params);
         (*s.hash())["\x01ret"] = Value::str(c->retType);
+        if (c->isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
     (*s.hash())["arity"] = Value::integer(arity);
     (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
@@ -6611,7 +6623,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
             "DEFINITE",             // a Junction IS a defined object — but `.defined` is not that
                                     // question: it autothreads and collapses (see below)
-            "say"};                 // .say gists the junction ("all(1, 2)"); .print autothreads
+            "say", "note"};         // .say/.note gist the junction ("all(1, 2)"); .print autothreads
         // `.defined` autothreads over the eigenstates and COLLAPSES to a plain Bool —
         // `(none 3, Str).defined` is False. It is not an alias for `.Bool`:
         // `(any 0, "").defined` is True while `.Bool` is False.
@@ -7440,11 +7452,51 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (!(num(lhs, "arity") >= num(inv, "arity") &&
                       num(lhs, "count") <= num(inv, "count"))) return Value::boolean(false);
                 bool lAny = str(lhs).find("*%") != std::string::npos;
-                bool rAny = str(inv).find("*%") != std::string::npos;
+                // (a `|` capture takes the nameds as well as the positionals)
+                bool rAny = str(inv).find("*%") != std::string::npos || str(inv).find('|') != std::string::npos;
                 if (lAny && !rAny) return Value::boolean(false);
                 return Value::boolean(true);
             }
-            // otherwise: would this CAPTURE bind? — arity window, literal
+            // otherwise: would the value BIND? A Capture binds as it is; any
+            // other value through its `.Capture` — a Hash's pairs, a List's
+            // Pairs and the rest, a Rat's numerator and denominator, a Set's
+            // keys — and a value with no Capture (`42 ~~ :(Int)`) binds
+            // nothing. With the declared parameters to hand, the binder's own
+            // trial (types, `where`s, nameds, sub-signatures) decides, as a
+            // multi's dispatch would.
+            if (inv.hash()->count("\x01sigptr")) {
+                auto* S = (std::vector<Param>*)(intptr_t)(*inv.hash())["\x01sigptr"].toInt();
+                Value cap = args[0];
+                if (!(cap.t == VT::Array && cap.hashKind == "Capture")) {
+                    try { cap = methodCall(cap, "Capture", ValueList{}); }
+                    catch (RakuError&) { return Value::boolean(false); }
+                }
+                ValueList callArgs;
+                // a METHOD's signature binds the invocant first: the capture's
+                // first positional is that, and the rest are the parameters
+                const bool isMeth = inv.hash()->count("\x01method") > 0;
+                bool invocantTaken = !isMeth;
+                if (cap.t == VT::Array && cap.arr())
+                    for (auto& e : *cap.arr()) {
+                        if (e.t == VT::Pair && !e.itemized) { Value n = e; n.namedArg = true; callArgs.push_back(n); }
+                        else if (!invocantTaken) invocantTaken = true;
+                        else callArgs.push_back(e);
+                    }
+                if (!invocantTaken) return Value::boolean(false);
+                else if (cap.t == VT::Hash && cap.hash())
+                    for (auto& kv : *cap.hash()) {
+                        Value n = Value::pair(kv.first, kv.second); n.namedArg = true; callArgs.push_back(n);
+                    }
+                auto tmp = std::make_shared<Callable>();
+                tmp->params = S;
+                tmp->isMethod = isMeth;   // (and its implicit *%_)
+                tmp->closure = tctx_.cur;
+                Value tv; tv.t = VT::Code; tv.setCode(tmp);
+                try { return Value::boolean(scoreCandidate(tv, callArgs) >= 0); }
+                catch (RakuError&) { return Value::boolean(false); }
+            }
+            // (no parameters to bind against: the approximation)
+            // would this CAPTURE bind? — arity window, literal
             // constraints, positional types, required nameds (Cro's router check)
             const Value& cap = args[0];
             ValueList pos; std::map<std::string, Value> named;
@@ -7778,54 +7830,164 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         (*f.hash())["code"] = code;
         return f;
     }
-    // `.WALK(name, :roles)` (6.e) — every method of that name along the MRO,
-    // each class followed (with :roles) by the roles it composes, breadth
-    // first; the answer is a routine that calls them all and lists the results
-    if (m == "WALK" && inv.t == VT::Object && inv.obj() && inv.obj()->cls && !args.empty()) {
-        std::string name; bool withRoles = false;
+    // `.WALK` — the methods of one name along the class hierarchy, as a
+    // WalkList: a List of the candidates that is itself callable, invoking each
+    // on the invocant in turn. `:name<m>` takes the 6.c order options
+    // (:canonical — the MRO, the default —, :super, :breadth, :descendant,
+    // :ascendant/:preorder) and the :include/:omit class filters; `WALK("m",
+    // :roles)` also visits, after each class, the roles it composes, breadth
+    // first, for their SUBMETHODS only (a role's methods are the class's).
+    if (m == "WALK" && (inv.t == VT::Object || inv.t == VT::Type) && !args.empty()) {
+        std::string name; bool withRoles = false, super_ = false, breadth = false, desc = false, asc = false;
+        Value include, omit;
         for (auto& a : args) {
-            if (a.t == VT::Pair) { if (a.s == "roles") withRoles = !a.pairVal() || a.pairVal()->truthy(); }
+            if (a.t == VT::Pair) {
+                bool on = !a.pairVal() || a.pairVal()->truthy();
+                if (a.s == "name") name = a.pairVal() ? a.pairVal()->toStr() : "";
+                else if (a.s == "roles") withRoles = on;
+                else if (a.s == "super") super_ = on;
+                else if (a.s == "breadth") breadth = on;
+                else if (a.s == "descendant") desc = on;
+                else if (a.s == "ascendant" || a.s == "preorder") asc = asc || on;
+                else if (a.s == "include" && a.pairVal()) include = *a.pairVal();
+                else if (a.s == "omit" && a.pairVal()) omit = *a.pairVal();
+            }
             else if (name.empty()) name = a.toStr();
         }
-        std::vector<ClassInfo*> order; std::set<ClassInfo*> seen;
-        auto add = [&](ClassInfo* c) { if (c && seen.insert(c).second) order.push_back(c); };
-        for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get()) {
-            add(c);
-            if (!withRoles) continue;
-            // a declaration's DIRECT roles, in the order it names them
-            auto direct = [](ClassInfo* ci) {
-                std::vector<std::string> rs;
-                if (ci->decl) {
-                    if (ci->decl->parentIsDoes && !ci->decl->parent.empty()) rs.push_back(ci->decl->parent);
-                    for (auto& r : ci->decl->roles) rs.push_back(r);
+        ClassInfo* ci0 = nullptr;
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) ci0 = inv.obj()->cls.get();
+        else if (inv.t == VT::Type) {
+            auto it = classes_.find(inv.s.str());
+            if (it != classes_.end() && it->second && !it->second->isRole) ci0 = it->second.get();
+        }
+        Value wl = Value::array(); wl.isList = true; wl.s = "WalkList";
+        wl.xw().pairKey = std::make_shared<Value>(inv);
+        if (!ci0) {   // a built-in type: the one method it answers to
+            Value fm = methodCall(inv, "^find_method", ValueList{Value::str(name)});
+            if (fm.t == VT::Code) wl.arr()->push_back(fm);
+            return wl;
+        }
+        auto localParents = [](ClassInfo* c) {
+            std::vector<ClassInfo*> r;
+            if (c->parent && !c->parent->isRole) r.push_back(c->parent.get());
+            for (auto& p : c->extraParents) if (p && !p->isRole) r.push_back(p.get());
+            return r;
+        };
+        std::vector<ClassInfo*> classes;
+        auto have = [&](ClassInfo* c) { return std::find(classes.begin(), classes.end(), c) != classes.end(); };
+        if (super_) classes = localParents(ci0);
+        else if (breadth) {
+            std::vector<ClassInfo*> level{ci0};
+            while (!level.empty()) {
+                std::vector<ClassInfo*> next;
+                for (ClassInfo* c : level) {
+                    if (!have(c)) classes.push_back(c);
+                    for (ClassInfo* p : localParents(c))
+                        if (std::find(next.begin(), next.end(), p) == next.end()) next.push_back(p);
                 }
-                else rs.assign(ci->doneRoles.begin(), ci->doneRoles.end());
-                return rs;
+                level = std::move(next);
+            }
+        }
+        else if (asc) {
+            std::function<void(ClassInfo*)> pre = [&](ClassInfo* c) {
+                if (have(c)) return;
+                classes.push_back(c);
+                for (ClassInfo* p : localParents(c)) pre(p);
             };
+            pre(ci0);
+        }
+        else if (desc) {
+            std::function<void(ClassInfo*)> post = [&](ClassInfo* c) {
+                if (have(c)) return;
+                for (ClassInfo* p : localParents(c)) post(p);
+                if (!have(c)) classes.push_back(c);
+            };
+            post(ci0);
+        }
+        else classes = c3ClassMro(ci0);
+        auto accepts = [&](const Value& filter, ClassInfo* c) {
+            return boolify(methodCall(filter, "ACCEPTS", ValueList{Value::typeObj(c->name)}));
+        };
+        // a declaration's DIRECT roles, in the order it names them
+        auto direct = [](ClassInfo* ci) {
+            std::vector<std::string> rs;
+            if (ci->decl) {
+                if (ci->decl->parentIsDoes && !ci->decl->parent.empty()) rs.push_back(ci->decl->parent);
+                for (auto& r : ci->decl->roles) rs.push_back(r);
+            }
+            else rs.assign(ci->doneRoles.begin(), ci->doneRoles.end());
+            return rs;
+        };
+        std::set<ClassInfo*> seenRole;
+        for (ClassInfo* c : classes) {
+            if (include.t != VT::Nil && include.t != VT::Any && !accepts(include, c)) continue;
+            if (omit.t != VT::Nil && omit.t != VT::Any && accepts(omit, c)) continue;
+            auto mit = c->methods.find(name);
+            if (mit != c->methods.end() && mit->second.t == VT::Code &&
+                !(withRoles && c->roleSubmethods.count(name)))
+                wl.arr()->push_back(mit->second);
+            if (!withRoles) continue;
             auto d0 = direct(c);
             std::deque<std::string> q(d0.begin(), d0.end());
             while (!q.empty()) {
                 auto it = classes_.find(q.front()); q.pop_front();
-                if (it == classes_.end() || !it->second) continue;
-                if (seen.count(it->second.get())) continue;
-                add(it->second.get());
-                for (auto& rn : direct(it->second.get())) q.push_back(rn);
+                if (it == classes_.end() || !it->second || !seenRole.insert(it->second.get()).second) continue;
+                ClassInfo* r = it->second.get();
+                auto rm = r->methods.find(name);
+                if (rm != r->methods.end() && rm->second.t == VT::Code && rm->second.code() &&
+                    rm->second.code()->isSubmethod)
+                    wl.arr()->push_back(rm->second);
+                for (auto& rn : direct(r)) q.push_back(rn);
             }
         }
-        ValueList meths;
-        for (ClassInfo* c : order) {
-            auto mit = c->methods.find(name);
-            if (mit != c->methods.end()) meths.push_back(mit->second);
-        }
-        Value self = inv;
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
-        code.code()->name = "WALK";
-        code.code()->builtin = [meths, self](Interpreter& I, ValueList& a) -> Value {
-            Value out = Value::array(); out.isList = true;
-            for (auto& mm : meths) out.arr()->push_back(I.invokeMethod(mm, self, a));
+        return wl;
+    }
+    // A WalkList (from `.WALK`): calling it — `.invoke(…)` or `(…)` — runs
+    // each method on the invocant as the result list is read, so a `for` over
+    // it calls one method per iteration. An exception propagates, unless
+    // `.quiet` made the list turn it into that candidate's Failure; a Slip a
+    // method returns stays one value, so each result keeps its own place.
+    if (inv.t == VT::Array && inv.s == "WalkList" && inv.arr()) {
+        if (m == "invoke" || m == "CALL-ME") {
+            auto meths = std::make_shared<ValueList>(*inv.arr());
+            Value self = inv.pairKey() ? *inv.pairKey() : Value::any();
+            bool quiet = inv.xr().rExFrom;
+            auto idx = std::make_shared<size_t>(0);
+            ValueList cargs = args;
+            Interpreter* ip = this;
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = st->finiteSource = true;   // a `for` pulls one call per turn
+            st->appendNext = [=](ValueList& cache) -> bool {
+                if (*idx >= meths->size()) return false;
+                Value mm = (*meths)[(*idx)++];
+                ValueList a = cargs;
+                Value r;
+                if (quiet) {
+                    try { r = ip->invokeMethod(mm, self, std::move(a)); }
+                    catch (RakuError& e) {
+                        r = Value::makeHash(); r.hashKind = "Failure";
+                        (*r.hash())["exception"] = ip->exceptionFor(e);
+                        (*r.hash())["message"] = Value::str(e.message);
+                    }
+                }
+                else r = ip->invokeMethod(mm, self, std::move(a));
+                if (r.t == VT::Array && r.s == "Slip") r.itemized = true;
+                cache.push_back(r);
+                return true;
+            };
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            out.extM() = st;
             return out;
-        };
-        return code;
+        }
+        if (m == "quiet" || m == "reverse") {
+            Value c = Value::array(); c.isList = true; c.s = "WalkList";
+            *c.arr() = *inv.arr();
+            if (m == "reverse") std::reverse(c.arr()->begin(), c.arr()->end());
+            c.xw().pairKey = inv.pairKey();
+            c.xw().rExFrom = m == "quiet" ? (args.empty() || boolify(args[0])) : inv.xr().rExFrom;
+            return c;
+        }
+        if (m == "invocant") return inv.pairKey() ? *inv.pairKey() : Value::any();
     }
     // `Pair.Pair` — a Pair type object coerces to itself
     if (inv.t == VT::Type && inv.s == "Pair" && m == "Pair") return inv;
@@ -11023,7 +11185,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value d = Value::array();               // nl-in: Rakudo's default pair
                 d.arr()->push_back(Value::str("\n"));
                 d.arr()->push_back(Value::str("\r\n"));
-                d.itemized = true;
+                d.isList = d.itemized = true;           // $("\n", "\r\n"), a List, as the base answers
                 return d;
             }
             if (m == "encoding") {
@@ -11049,6 +11211,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (m != "print") s += "\n";
                     Value blob = Value::str(s);
                     blob.hashKind = "Blob";
+                    return invokeMethod(*wm, inv, ValueList{blob}, nullptr);
+                }
+            }
+            // …and the rest of the writers funnel there too: `.printf` formats,
+            // `.print-nl` sends the handle's nl-out, `.write` hands its Blob on
+            // as is, and `.spurt` either (a Str is encoded, a Blob is not)
+            if (m == "printf" || m == "print-nl" || m == "write" || m == "spurt") {
+                if (Value* wm = inv.obj()->cls->findMethod("WRITE")) {
+                    ValueList pos;
+                    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+                    Value blob;
+                    if ((m == "write" || m == "spurt") && !pos.empty() && pos[0].t == VT::Str &&
+                        (pos[0].hashKind == "Blob" || pos[0].hashKind == "Buf"))
+                        blob = pos[0];
+                    else {
+                        std::string s;
+                        if (m == "printf" && !pos.empty()) {
+                            ValueList fa(pos.begin() + 1, pos.end());
+                            s = doSprintf(pos[0].toStr(), fa, langRev_);
+                        }
+                        else if (m == "print-nl") s = methodCall(inv, "nl-out", ValueList{}).toStr();
+                        else if (!pos.empty()) s = pos[0].toStr();
+                        blob = Value::str(s);
+                        blob.hashKind = "Blob";
+                    }
                     return invokeMethod(*wm, inv, ValueList{blob}, nullptr);
                 }
             }
@@ -13387,7 +13574,16 @@ std::string Interpreter::ioFsPath(const Value& v) {
     const std::string& p = v.s;
     if (p.empty() || p[0] == '/') return p;
     const std::string& base = v.ofType();
-    if (base.empty() || base == cwdName()) return p;
+    if (base.empty()) return p;
+    // …the current directory of the PROCESS, that is — the one the OS resolves
+    // a relative path against. `temp $*CWD = $dir` moves $*CWD and not the
+    // process, so a path captured under it ('foo'.IO.mkdir) must be joined,
+    // or it lands wherever the program was started.
+    if (!logicalCwd_.empty()) { if (base == logicalCwd_) return p; }
+    else {
+        char buf[4096];
+        if (getcwd(buf, sizeof buf) && base == buf) return p;
+    }
     return logicalJoin(base, p);
 }
 
@@ -16130,6 +16326,7 @@ void Interpreter::registerBuiltins() {
                 if (v.s == "d") d = on; else if (v.s == "r") r = on;
                 else if (v.s == "w") w = on; else if (v.s == "x") x = on;
             }
+        if (!d && !r && !w && !x) return "";   // `:!d` and nothing else: no checks at all (Rakudo)
         struct stat cst{};
         if (::stat(to.c_str(), &cst) != 0) return "does not exist";
         if (d && !S_ISDIR(cst.st_mode)) return "is not a directory";
@@ -16225,14 +16422,21 @@ void Interpreter::registerBuiltins() {
     B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
         // indir($path, :d, :r, :w, :x, &code) — the block is the positional
         // after the path, wherever the adverbs sit
+        // (`indir :!d, $path, {…}` — an adverb may come first, too)
+        ValueList pos;
+        for (auto& v : a) if (!(v.t == VT::Pair && v.namedArg)) pos.push_back(v);
         Value code;
-        for (size_t k = 1; k < a.size(); k++)
-            if (a[k].t == VT::Code) { code = a[k]; break; }
-        if (a.empty() || code.t != VT::Code) return Value::any();
-        std::string to = a[0].toStr();
+        for (size_t k = 1; k < pos.size(); k++)
+            if (pos[k].t == VT::Code) { code = pos[k]; break; }
+        if (pos.empty() || code.t != VT::Code) return Value::any();
+        std::string to = pos[0].toStr();
         // a relative IO::Path argument is relative to ITS OWN captured :CWD
-        if (a[0].hashKind == "IO" && !a[0].ofType().empty() && !to.empty() && to[0] != '/')
-            to = logicalJoin(a[0].ofType(), to);
+        if (pos[0].hashKind == "IO" && !pos[0].ofType().empty() && !to.empty() && to[0] != '/')
+            to = logicalJoin(pos[0].ofType(), to);
+        // The process has ONE working directory, and a `start indir …` runs on
+        // a worker while others do the same: there the block gets its `$*CWD`
+        // and nothing else, which is all Rakudo's indir does anywhere.
+        const bool worker = std::this_thread::get_id() != I.mainThreadId();
         char buf[4096];
         std::string from = getcwd(buf, sizeof buf) ? buf : ".";
         std::string base = I.cwdName(), oldLogical = I.logicalCwd_;
@@ -16244,15 +16448,31 @@ void Interpreter::registerBuiltins() {
             return I.ioFailure("X::IO::Chdir",
                                {{"path", Value::str(to)}, {"os-error", Value::str(why)}},
                                "Failed to change the working directory to '" + to + "': " + why);
-        (void)::chdir(abs.c_str());   // the process follows when it can (see chdir)
-        I.logicalCwd_ = logicalJoin(base, to); // $*CWD keeps the caller's spelling
+        const std::string logical = logicalJoin(base, to);  // $*CWD keeps the caller's spelling
+        if (!worker) {
+            (void)::chdir(abs.c_str());   // the process follows when it can (see chdir)
+            I.logicalCwd_ = logical;
+        }
         // …and the block runs under its OWN `$*CWD` — Rakudo's indir is
         // `my $*CWD = $path; code()` — so a caller's `temp $*CWD` neither
         // shadows it nor gets overwritten by the block
         // (A `$*CWD` the caller already has is set for the duration and put
         // back after, as `temp` would — the block's own lookups can reach that
         // one lexically; with none, a fresh frame carries it.)
-        Value cwdv = Value::str(I.logicalCwd_); cwdv.hashKind = "IO"; cwdv.ofTypeM() = base;
+        Value cwdv = Value::str(logical); cwdv.hashKind = "IO"; cwdv.ofTypeM() = base;
+        if (worker && code.code()) {
+            // a scope of the block's own around its closure holds the new
+            // `$*CWD`: the block reads and assigns THAT, and a caller's
+            // `$*CWD`, which other threads are reading, is never touched
+            auto own = std::make_shared<Env>();
+            own->parent = code.code()->closure;
+            own->define("$*CWD", cwdv);
+            auto cc = std::make_shared<Callable>(*code.code());
+            cc->closure = own;
+            Value blk; blk.t = VT::Code; blk.setCode(cc);
+            ValueList none;
+            return I.callCallable(blk, none);
+        }
         auto denv = std::make_shared<Env>();
         denv->parent = Interpreter::tctx_.cur;
         Value* slot = I.findDynamicLenient("$*CWD");
@@ -16263,7 +16483,7 @@ void Interpreter::registerBuiltins() {
         auto restore = [&] {
             Interpreter::tctx_.cur = savedCur;
             if (slot) *slot = slotWas;
-            ::chdir(from.c_str()); I.logicalCwd_ = oldLogical;
+            if (!worker) { ::chdir(from.c_str()); I.logicalCwd_ = oldLogical; }
         };
         Value r;
         try { ValueList none; r = I.callCallable(code, none); }

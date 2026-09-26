@@ -1037,6 +1037,11 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// A MULTI-character string range (`'aa'..'ad'`) is a Range whose endpoints are
+// carried Str values; its elements come from the interpreter's successor walk.
+using StrRangeElemsFn = ValueList (*)(const Value& range);
+extern StrRangeElemsFn g_strRangeElems;
+inline bool isStrEndsRange(const Value& v);
 // An OBJECT inside a container renders through its class's own `.gist` /
 // `.raku` when it declares one (`[Foo.new].gist`, `any(Foo.new).raku`); the
 // interpreter installs this. False: no such user method, render the default.
@@ -1134,6 +1139,11 @@ inline bool rangeNumericSpecial(const Value& r, double& out) {
     return false;                                               // finite: the ordinary count
 }
 
+inline bool isStrEndsRange(const Value& v) {
+    if (v.t != VT::Range || v.ofType() != "Str") return false;
+    const RangeEnds* re = rangeEnds(v);
+    return re && re->from.t == VT::Str && re->to.t == VT::Str;
+}
 inline void attachRangeEnds(Value& r, Value from, Value to) {
     r.extM() = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
 }
@@ -1272,6 +1282,9 @@ struct ClassInfo {
                                            // (a stub, or a role's default implementation)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles;
+    // the roles a class composed, in `does` order (a role's own roles are in
+    // its parent slots) — the 6.e BUILD/TWEAK walk runs their submethods
+    std::vector<std::shared_ptr<ClassInfo>> composedRoles;
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
     // so the construction protocol's explicit BUILD/TWEAK walks still find them
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides

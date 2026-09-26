@@ -69,7 +69,7 @@ sub tap(@body) {
 
 ck tap(['use Test;', 'plan 3;', 'ok 1, "first";',
         '#?rakudo skip "not run"', 'ok 0, "skipped";', 'ok 1, "last";']),
-   ('1..3', 'ok 1 - first', 'ok 2 -  # skip not run', 'ok 3 - last'),
+   ('1..3', 'ok 1 - first', 'ok 2 - # SKIP not run', 'ok 3 - last'),
    'a skip directive on real code still skips';
 
 ck tap(['use Test;', 'plan 2;', '#?rakudo todo "known"',
@@ -80,7 +80,7 @@ ck tap(['use Test;', 'plan 2;', '#?rakudo todo "known"',
 # ---- 5. a directive inside POD is inert, the one after it is not --------
 ck tap(['use Test;', 'plan 1;', '=begin pod', '#?rakudo skip "in pod"',
         'ok 0, "in pod";', '=end pod', '#?rakudo skip "real"', 'ok 0, "real";']),
-   ('1..1', 'ok 1 -  # skip real'),
+   ('1..1', 'ok 1 - # SKIP real'),
    'POD is data, the line after the block is code';
 
 say $fails ?? "FAIL ($fails)" !! "PASS";

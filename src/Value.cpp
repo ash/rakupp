@@ -549,6 +549,11 @@ std::string Value::toStr() const {
                 };
                 return side(false) + (rExFrom() ? "^" : "") + ".." + (rExTo() ? "^" : "") + side(true);
             }
+            if (ofType() == "Str" && isStrEndsRange(*this) && g_strRangeElems) {
+                std::string out2;
+                for (auto& e : g_strRangeElems(*this)) { if (!out2.empty()) out2 += " "; out2 += e.s.str(); }
+                return out2;
+            }
             if (ofType() == "Str") { // Str range: space-join the chars
                 long long lo = rFrom() + (rExFrom() ? 1 : 0), hi = rTo() - (rExTo() ? 1 : 0);
                 std::string out2;
@@ -855,7 +860,7 @@ std::string Value::gist() const {
                 std::ostringstream os; os << "^" << rTo();
                 return os.str();
             }
-            if (ofType() == "Str")
+            if (ofType() == "Str" && !rangeEnds(*this))
                 return "\"" + cpToU8((uint32_t)rFrom()) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo()) + "\"";
             // endpoints written as something other than plain Ints render as
             // themselves: `1/2 .. 1/3` is 0.5..<1/3>, not 0..0
@@ -1069,7 +1074,7 @@ std::string Value::typeName() const {
                     "num", "num32", "num64", "str"};
                 if (kNative.count(ofType())) return "array[" + ofType() + "]";
             }
-            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" :
+            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" : s == "WalkList" ? "WalkList" :
                    s == "HyperSeq" ? "HyperSeq" : s == "RaceSeq" ? "RaceSeq" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
                         // a connected async socket is an IO::Socket::Async (Rakudo's
@@ -1162,6 +1167,8 @@ ValueList Value::blobList() const {
     return out;
 }
 
+StrRangeElemsFn g_strRangeElems = nullptr;
+
 ValueList Value::flatten() const {
     ValueList out;
     if (t == VT::Array && arr()) {
@@ -1207,6 +1214,8 @@ ValueList Value::flatten() const {
                 out.push_back(Value::integer((long long)std::llround(x)));
         else for (double x = lo; rExTo() ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
             out.push_back(Value::number(x));
+    } else if (t == VT::Range && ofType() == "Str" && isStrEndsRange(*this) && g_strRangeElems) {
+        out = g_strRangeElems(*this);
     } else if (t == VT::Range && ofType() == "Str") {
         long long lo = rFrom() + (rExFrom() ? 1 : 0);
         long long hi = rTo() - (rExTo() ? 1 : 0);

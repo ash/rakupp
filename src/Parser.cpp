@@ -1,7 +1,6 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
 #include "Parser.h"
-thread_local int rakupp::Parser::allowRoutineMagic = 0;
 #include <iostream>
 // set by checkNullRegex when it sees `/%h/` (see RegexLit::reservedHash)
 static thread_local bool g_rxReservedHash = false;
@@ -2329,6 +2328,24 @@ ExprPtr Parser::parseExpr(int minbp) {
                                  " is too loose to use inside ?? !!; please parenthesize",
                                  cur().line, "X::Syntax::ConditionalOperator::PrecedenceTooLoose",
                                  {{"operator", static_cast<Assign*>(then.get())->op}});
+            // …and so is a SPACED adverb on the middle part (`@x[@y] :v`), which
+            // would otherwise have been read onto the subscript before it
+            if (isOp("!!")) {
+                int depth = 0;
+                for (size_t k = thenAt; k + 1 < pos_; k++) {
+                    const Token& tk = toks_[k];
+                    if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket || tk.kind == Tok::LBrace) depth++;
+                    else if (tk.kind == Tok::RParen || tk.kind == Tok::RBracket || tk.kind == Tok::RBrace) depth--;
+                    else if (depth == 0 && tk.kind == Tok::Op && tk.text == ":" && tk.spaceBefore &&
+                             toks_[k + 1].kind == Tok::Ident && !toks_[k + 1].spaceBefore && k > thenAt &&
+                             // (only on a SUBSCRIPT: after a name it is a listop's argument)
+                             (toks_[k - 1].kind == Tok::RBracket || toks_[k - 1].kind == Tok::RBrace))
+                        throw ParseError("Precedence of :" + toks_[k + 1].text +
+                                         " is too loose to use inside ?? !!; please parenthesize",
+                                         tk.line, "X::Syntax::ConditionalOperator::PrecedenceTooLoose",
+                                         {{"operator", ":" + toks_[k + 1].text}});
+                }
+            }
             if (!isOp("!!")) {
                 // what stands where `!!` belongs says what went wrong
                 if (isKind(Tok::Comma) || isOp("=>"))
@@ -2722,6 +2739,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
+            unmarkSigillessContainer(a.get());
             if (in.op.size() >= 2 && in.op.back() == '=' && userInfix_.count(in.op)) a->userOp = true;
             // `=@=` and friends ARE plain assignment; only the container semantics
             // differ, so record the sigil and let the op read as "=" from here on.
@@ -3555,7 +3573,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
-            idx->index = parseExpression();
+            if (cur().kind == Tok::Ident && (cur().text == "CATCH" || cur().text == "CONTROL") &&
+                peek().kind == Tok::LBrace) {
+                // `%a{ CATCH { } }`: a subscript is a statement list, and a
+                // phaser is a statement — its value (Nil) is the key
+                auto be = std::make_unique<BlockExpr>();
+                while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
+                    if (matchKind(Tok::Semicolon)) continue;
+                    if (auto st = parseStatement()) be->body.push_back(std::move(st));
+                }
+                auto u = std::make_unique<Unary>();
+                u->op = "do"; u->operand = std::move(be);
+                idx->index = std::move(u);
+            }
+            else idx->index = parseExpression();
             idx->isHash = true;
             if (isKind(Tok::Semicolon)) { // `%h{a;b;c}` — ONE multidim subscript, not a chain
                 auto dims = std::make_unique<ListExpr>();
@@ -4110,6 +4141,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
+            if (isKind(Tok::LParen) && !cur().spaceBefore && !mc->meta && !indirectName &&
+                (mc->method == "HOW" || mc->method == "WHAT" || mc->method == "WHO" || mc->method == "VAR") &&
+                peek().kind != Tok::RParen)   // `Any.HOW(Foo)`: a macro, not a method, takes no arguments
+                throw ParseError("Cannot give arguments to " + mc->method, cur().line,
+                                 "X::Syntax::Argument::MOPMacro", {{"macro", mc->method}});
             if (isKind(Tok::LParen) && (!cur().spaceBefore || (slang_ && slang_->spacedMethodop))) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace) — unless Slang::Tuxic's methodop is in force
             // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
             // after the colon) is the call's named argument. It must be decided
@@ -4411,6 +4447,21 @@ std::string Parser::readExtendedNameSuffix() {
 
 // `my \term:<ℵ₀> = Inf` / `constant \term:<ℵ₀>` — a sigilless name spelled as
 // a TERM: the name is what the angles hold, and it is written bare after.
+// `my \p = @a[1]` / `my \p = $x` binds a CONTAINER, which stays assignable
+// through the name; only a bound VALUE (`my \x = 1`) is immutable. The
+// declarator marks the name read-only before its initializer is parsed, so
+// the mark is lifted here once the initializer turns out to be a container.
+void Parser::unmarkSigillessContainer(Assign* a) {
+    if (!a || a->op != "=" || !a->target || a->target->kind != NK::VarExpr || !a->value) return;
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    if (!tv->declare || tv->name.empty() || std::strchr("$@%&", tv->name[0])) return;
+    const Expr* rv = a->value.get();
+    const bool container = rv->kind == NK::Index ||
+        (rv->kind == NK::VarExpr && !static_cast<const VarExpr*>(rv)->name.empty() &&
+         static_cast<const VarExpr*>(rv)->name[0] == '$' && !static_cast<const VarExpr*>(rv)->declare);
+    if (container) sigillessRO_.erase(tv->name);
+}
+
 std::string Parser::sigillessTermName(const std::string& nm) {
     if (nm != "term" || !isOp(":") || cur().spaceBefore) return nm;
     if (peek().kind == Tok::Op && (peek().text == "<" || peek().text == "\xC2\xAB") && !peek().spaceBefore) {
@@ -4924,6 +4975,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         }
         rejectPackagedDynamic(vname, cur().line);   // `my $*FOO::BAR` — see the helper
         vname += readExtendedNameSuffix();          // `my $today:foo<a b>` — one symbol
+        // `my &return := -> $v { … }` rebinds the keyword's routine for the rest
+        // of this routine: `return(21)` is then a call to it
+        if (vname == "&return" || vname == "&return-rw" || vname == "&next" || vname == "&last")
+            noteKwShadow(vname.substr(1));
         // `my &infix:<plus> = sub ($a, $b) {…}` — an OPERATOR declared by
         // assigning to a code variable. It is the spelling a module reaches for
         // when it builds its operators inside `sub EXPORT` (every one of the
@@ -8050,6 +8105,7 @@ ExprPtr Parser::parsePrimary() {
                             throw ParseError("Malformed initializer", cur().line, "X::Syntax::Malformed",
                                              {{"what", "initializer"}});
                         as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
+                        unmarkSigillessContainer(as.get());
                         // `my $z = $z`: the variable is not there yet to read
                         if (as->target->kind == NK::VarExpr) {
                             auto* dv = static_cast<VarExpr*>(as->target.get());
@@ -10247,6 +10303,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == "|" &&
             (peek(2).kind == Tok::Ident || peek(2).kind == Tok::Var))
             advance();
+        // `|@args` / `\%h` / `|$c`: a capture or sigilless parameter names a
+        // bare TERM — a sigil there is Perl's reference syntax, and Rakudo
+        // refuses it at compile time
+        if ((isOp("|") || isOp("\\")) && peek().kind == Tok::Var && !peek().spaceBefore &&
+            peek().text.size() > 1 && std::strchr("$@%", peek().text[0]))
+            throw ParseError("Obsolete use of | or \\ with sigil on param " + peek().text, cur().line,
+                             "X::Obsolete", {{"old", "| or \\ with sigil on param " + peek().text},
+                                             {"replacement", ""}});
         if (matchOp("|")) {
             // capture parameter `|c` — slurps remaining positional+named args. Don't
             // swallow a trailing trait keyword (`| where …`) as the capture name.
@@ -11498,6 +11562,11 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             auto lt = ref.find('<'), gt = ref.rfind('>');
             if (ref.rfind("&infix:", 0) == 0 && lt != std::string::npos && gt != std::string::npos && gt > lt) {
                 userPrefixBp_[declPrefix] = infixBpOf(ref.substr(lt + 1, gt - lt - 1));
+                continue;
+            }
+            // …and the short spelling of the same operator, `&[~]`
+            if (ref.size() > 3 && ref.rfind("&[", 0) == 0 && ref.back() == ']') {
+                userPrefixBp_[declPrefix] = infixBpOf(ref.substr(2, ref.size() - 3));
                 continue;
             }
             pos_ = save;
@@ -13598,7 +13667,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             if (!mop)
                 for (auto& c : calls)
                     if (!have.count(c.first) && !have.count("!" + c.first))
-                        throw ParseError("No such private method '" + c.first + "' for invocant of type '" +
+                        throw ParseError("No such private method '!" + c.first + "' for invocant of type '" +
                                          cd->name + "'", c.second, "X::Method::NotFound",
                                          {{"method", c.first}, {"typename", cd->name}, {"private", "True"}});
         }
@@ -14044,7 +14113,10 @@ StmtPtr Parser::parseStatement() {
         // writes for a self-referencing array) assigns after declaring
         const bool declStart = startTok < toks_.size() && toks_[startTok].kind == Tok::Ident &&
                                (toks_[startTok].text == "my" || toks_[startTok].text == "state");
+        // (a DYNAMIC variable is exempt: `my $*OUT = $*OUT but R` reads the
+        // caller's $*OUT, which the new one has not shadowed yet)
         if (dv && declStart && dv->declare && dv->name.size() > 1 && std::strchr("$@%", dv->name[0]) &&
+            dv->name[1] != '*' &&
             (dv->declScope == "my" || dv->declScope == "state")) {
             static const std::set<std::string> kMods = {
                 "if", "unless", "for", "while", "until", "with", "without", "given", "when"};

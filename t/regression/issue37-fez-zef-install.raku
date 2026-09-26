@@ -35,10 +35,10 @@ sub check($got, $want, $desc) {
 check((:replacement<->).raku, ':replacement("-")', 'the fused <-> is a colonpair angle value');
 check((:x<=>).value, '=', '…and <=> (the spaceship)');
 check((:x<+>).value, '+', '…and <+>');
-# (the exact replacement semantics of .decode('ascii', :replacement<…>) are a
-#  separate open gap — rakupp decodes permissively; what issue #37 needed was
-#  the CALL to parse and run, which is what this pins)
-check(("aéb".encode.decode('ascii', :replacement<->) ~~ Str), True, 'the fez call shape parses and runs');
+# (what issue #37 needed was the CALL to parse and run, which is what this
+#  pins — on bytes that ARE ascii: Rakudo refuses non-ASCII bytes under
+#  'ascii' even with a :replacement, and so does rakupp now)
+check(("ab".encode.decode('ascii', :replacement<->) ~~ Str), True, 'the fez call shape parses and runs');
 
 # -- version requirements ------------------------------------------------------
 # (the loader path is covered by the fez/zef installs in CI's ecosystem legs;

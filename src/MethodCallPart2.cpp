@@ -70,6 +70,72 @@ static void stepDownChain(ClassInfo* c, Interpreter::BuildStep step) {
     step.fn(step.ctx, c);
 }
 
+// A class's parent CLASSES, in the order it named them. A composed role is not
+// an ancestor, but a class a role inherits (`role R is Exception`) becomes the
+// composer's, so a role in a parent slot is looked through.
+static void classParentsInto(ClassInfo* c, std::vector<ClassInfo*>& r, int depth) {
+    auto add = [&](ClassInfo* p) {
+        if (!p) return;
+        if (p->isRole) { if (depth < 16) classParentsInto(p, r, depth + 1); return; }
+        if (std::find(r.begin(), r.end(), p) == r.end()) r.push_back(p);
+    };
+    add(c->parent.get());
+    for (auto& p : c->extraParents) add(p.get());
+}
+
+static bool c3Merge(ClassInfo* c, std::vector<ClassInfo*>& out, int depth) {
+    if (depth > 64) return false;
+    std::vector<ClassInfo*> ps;
+    classParentsInto(c, ps, 0);
+    std::vector<std::vector<ClassInfo*>> seqs;
+    for (ClassInfo* p : ps) {
+        std::vector<ClassInfo*> l;
+        if (!c3Merge(p, l, depth + 1)) return false;
+        seqs.push_back(std::move(l));
+    }
+    seqs.push_back(ps);
+    out.push_back(c);
+    for (;;) {
+        ClassInfo* pick = nullptr;
+        bool left = false;
+        for (auto& sq : seqs) {
+            if (sq.empty()) continue;
+            left = true;
+            ClassInfo* h = sq.front();
+            bool inTail = false;
+            for (auto& t : seqs)
+                if (t.size() > 1 && std::find(t.begin() + 1, t.end(), h) != t.end()) { inTail = true; break; }
+            if (!inTail) { pick = h; break; }
+        }
+        if (!left) return true;
+        if (!pick) return false;    // an inconsistent hierarchy
+        out.push_back(pick);
+        for (auto& sq : seqs) if (!sq.empty() && sq.front() == pick) sq.erase(sq.begin());
+    }
+}
+
+// The C3 linearisation Rakudo's `.^mro` reports — `E is C is D` with `C is A
+// is B` and `D is A` is E C D A B, where a depth-first walk keeping the last
+// occurrence said E C B D A. Only the user classes; the built-in tail is the
+// caller's. A hierarchy C3 cannot order falls back to that depth-first walk.
+std::vector<ClassInfo*> c3ClassMro(ClassInfo* c) {
+    std::vector<ClassInfo*> out;
+    if (!c) return out;
+    if (c3Merge(c, out, 0)) return out;
+    out.clear();
+    std::vector<ClassInfo*> lin;
+    std::function<void(ClassInfo*)> visit = [&](ClassInfo* k) {
+        lin.push_back(k);
+        std::vector<ClassInfo*> ps;
+        classParentsInto(k, ps, 0);
+        for (ClassInfo* p : ps) visit(p);
+    };
+    visit(c);
+    for (size_t i = 0; i < lin.size(); i++)
+        if (std::find(lin.begin() + i + 1, lin.end(), lin[i]) == lin.end()) out.push_back(lin[i]);
+    return out;
+}
+
 // Depth-first over the primary and the additional (multiple-inheritance)
 // parents, most-derived first, into a stack buffer that spills past eight.
 // A plain recursive function and not a recursive std::function: this runs on
@@ -183,12 +249,71 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
     size_t nLin = 0;
     auto at = [&](size_t i) -> ClassInfo* { return i < 8 ? linBuf[i] : linSpill[i - 8]; };
     collectMroChain(ci, linBuf, linSpill, nLin);
+    // multiple inheritance: the walk builds in the order `.^mro` reports (C3)
+    for (size_t i = 0; i < nLin; i++) {
+        bool mi = false;
+        for (auto& p : at(i)->extraParents) if (p && !p->isRole) { mi = true; break; }
+        if (!mi) continue;
+        std::vector<ClassInfo*> c3 = c3ClassMro(ci);
+        nLin = 0; linSpill.clear();
+        for (ClassInfo* k : c3) { if (nLin < 8) linBuf[nLin] = k; else linSpill.push_back(k); nLin++; }
+        break;
+    }
     // One activation of one hook, under a dispatcher frame that has no next
     // candidate — so a `nextsame` inside a BUILD is the benign no-op it is in
     // Rakudo (Fez::Types ends both of its BUILDs with one) instead of
     // "nextsame is not in the dynamic scope of a dispatcher", and so it cannot
     // re-run an ancestor this walk is already running exactly once.
+    auto invokeHook = [&](Value* hook) {
+        RedispatchCtx rc;
+        rc.sameArgs = args;
+        rc.next = [](ValueList) { return Value::nil(); };
+        redispatchStack_.push_back(std::move(rc));
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true)); }
+        catch (...) { redispatchStack_.pop_back(); throw; }
+        redispatchStack_.pop_back();
+    };
+    // 6.e: a role's BUILD/TWEAK SUBMETHOD is not composed; it runs on its own,
+    // before the composing class's — a role's own roles first, then the role,
+    // in the order they were composed (`class C1 does R1 does R2` with
+    // `R1 does R0`: R0 R1 R2 C1). Only the role's OWN declaration counts: a
+    // copy it flattened in from a role of its own belongs to that role.
+    auto roleParents = [](ClassInfo* r) {
+        std::vector<ClassInfo*> out;
+        if (r->parent && r->parent->isRole) out.push_back(r->parent.get());
+        for (auto& p : r->extraParents) if (p && p->isRole) out.push_back(p.get());
+        return out;
+    };
+    // a class's roles: a `does` that took the parent slot, then the rest
+    auto classRoles = [&](ClassInfo* c) {
+        std::vector<ClassInfo*> out = roleParents(c);
+        for (auto& r : c->composedRoles)
+            if (std::find(out.begin(), out.end(), r.get()) == out.end()) out.push_back(r.get());
+        return out;
+    };
+    std::function<void(ClassInfo*, const char*, int)> runRoleHooks = [&](ClassInfo* r, const char* which, int depth) {
+        if (!r || depth > 32) return;
+        auto parents = roleParents(r);
+        for (ClassInfo* p : parents) runRoleHooks(p, which, depth + 1);
+        auto it = r->methods.find(which);
+        if (it == r->methods.end() || it->second.t != VT::Code || !it->second.code() ||
+            !it->second.code()->isSubmethod) return;
+        for (ClassInfo* p : parents) {
+            auto pt = p->methods.find(which);
+            if (pt != p->methods.end() && pt->second.code() == it->second.code()) return;
+        }
+        invokeHook(&it->second);
+    };
     auto runHook = [&](ClassInfo* c, const char* which) {
+        std::vector<ClassInfo*> croles;
+        if (!c->isRole && c->langRev >= 2 && !(croles = classRoles(c)).empty()) {
+            for (ClassInfo* r : croles) runRoleHooks(r, which, 0);
+            // the class's own, unless what it holds is a role's (not composed)
+            if (c->roleSubmethods.count(which) && c->roleSubmethodsHidden.count(which)) return;
+            auto it = c->methods.find(which);
+            if (it != c->methods.end() && it->second.t == VT::Code) invokeHook(&it->second);
+            return;
+        }
         // A composed ROLE is not an ancestor, so it gets no hook of its own: it
         // is in this chain only for the per-class step, and `composedHook` picks
         // its declaration up on the composer's turn instead. Giving it a turn
@@ -4930,6 +5055,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return Value::str(sit->second.langRev == 0 ? "6.c"
                                     : sit->second.langRev == 1 ? "6.d" : "6.e");
             }
+            // …but a plain `package` has no identity metamethods at all:
+            // PackageHOW does not do the role that provides them
+            if (m != "api" && !classes_.count(inv.s)) {
+                auto pk = pkgKind_.find(inv.s);
+                if (pk != pkgKind_.end() && pk->second != 1)
+                    throwTyped("X::Method::NotFound",
+                               {{"method", m}, {"typename", "Perl6::Metamodel::PackageHOW"}},
+                               "No such method '" + m + "' for invocant of type 'Perl6::Metamodel::PackageHOW'");
+            }
             auto pit = pkgMeta_.find(inv.s);
             std::string v = pit == pkgMeta_.end() ? std::string()
                           : (m == "ver" ? pit->second.ver : m == "auth" ? pit->second.auth : pit->second.api);
@@ -5226,6 +5360,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         clone->subAsMethod = true;
                         Value m2; m2.t = VT::Code; m2.setCode(std::move(clone));
                         add = std::move(m2);
+                    }
+                    // not a routine at all (`A.^add_method('bar', A.^can('foo'))`
+                    // hands over the LIST .^can answers): installed, but calling
+                    // it dies, as in Rakudo
+                    if (add.t == VT::Array || add.t == VT::Hash || add.t == VT::Str || add.t == VT::Int) {
+                        const std::string what = add.typeName();
+                        Value bad; bad.t = VT::Code; bad.setCode(std::make_shared<Callable>());
+                        bad.code()->name = args[0].toStr();
+                        bad.code()->isMethod = true;
+                        bad.code()->builtin = [what](Interpreter&, ValueList&) -> Value {
+                            throw RakuError{Value::typeObj("X::AdHoc"),
+                                            "Cannot invoke object with invocation handler of type " + what};
+                        };
+                        add = std::move(bad);
                     }
                     const std::string addName = args[0].toStr();
                     ci->methods[addName] = add;
@@ -5688,16 +5836,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         Value out = sub(ci.get()); out.isList = true;
                         return out;
                     }
-                    std::vector<std::string> lin;
-                    std::function<void(ClassInfo*)> visit = [&](ClassInfo* c) {
-                        for (ClassInfo* p : immediate(c)) { lin.push_back(p->name); visit(p); }
-                    };
-                    visit(ci.get());
                     Value out = Value::array(); out.isList = true;
-                    for (size_t i = 0; i < lin.size(); i++) {   // C3 for the simple diamond: keep the LAST
-                        bool later = false;
-                        for (size_t j = i + 1; j < lin.size(); j++) if (lin[j] == lin[i]) { later = true; break; }
-                        if (!later) out.arr()->push_back(Value::typeObj(lin[i]));
+                    if (!ci->isRole) {   // the C3 order, less the class itself
+                        auto lin = c3ClassMro(ci.get());
+                        for (size_t i = 1; i < lin.size(); i++) out.arr()->push_back(Value::typeObj(lin[i]->name));
                     }
                     if (!ci->nativeParent.empty()) {
                         const auto& anc = typeAncestry(ci->nativeParent);
@@ -5735,23 +5877,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // Depth-first over the primary + additional (multiple-inheritance) parents,
                 // then dedup keeping the LAST occurrence — the C3 order for simple diamonds
                 // (D is B is C, B/C is A → D, B, C, A).
-                std::vector<std::string> lin;
                 // A composed ROLE is not an ancestor: Rakudo answers `A,Any,Mu`
                 // for `class A does R`, and a module walking the MRO to find
                 // ancestors must not meet R there. (`does` records the role in
                 // the parent slot here, which is why it showed up at all.)
-                std::function<void(ClassInfo*)> visit = [&](ClassInfo* c) {
-                    if (!c) return;
-                    if (!c->isRole) lin.push_back(c->name);
-                    if (c->parent) visit(c->parent.get());
-                    for (auto& p : c->extraParents) visit(p.get());
-                };
-                visit(ci.get());
-                for (size_t i = 0; i < lin.size(); i++) {
-                    bool later = false;
-                    for (size_t j = i + 1; j < lin.size(); j++) if (lin[j] == lin[i]) { later = true; break; }
-                    if (!later) out.arr()->push_back(Value::typeObj(lin[i]));
-                }
+                if (!ci->isRole)
+                    for (ClassInfo* c : c3ClassMro(ci.get())) out.arr()->push_back(Value::typeObj(c->name));
                 // a built-in parent anywhere up the primary chain contributes
                 // its class-only ancestry: G,Grammar,Match,Capture,Cool,Any,Mu
                 // for a grammar, F,DateTime,Any,Mu for `class F is DateTime`
@@ -7385,6 +7516,115 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             nb = c->nativeParent;
         isUserHandle = nb == "IO::Handle";
     }
+    // The handle READ protocol: a derived handle that supplies READ(bytes)
+    // (and EOF) gets every reader on top of it, as Rakudo's IO::Handle
+    // does over its decoder. What READ answers is buffered here, as
+    // bytes, and decoded as a reader needs it; `.eof` is the class's EOF
+    // with nothing left in that buffer.
+    static const std::set<std::string> kReaders = {
+        "eof", "slurp", "lines", "words", "split", "comb", "get", "getc", "readchars", "read"};
+    if (isUserHandle && kReaders.count(m))
+    if (Value* rm = inv.obj()->cls->findMethod("READ")) {
+        Value* em = inv.obj()->cls->findMethod("EOF");
+        auto& attrs = inv.obj()->attrs;
+        auto getBuf = [&]() {
+            auto it = attrs.find("__io-rbuf");
+            return it == attrs.end() || it->second.t != VT::Str ? std::string() : it->second.s.str();
+        };
+        auto setBuf = [&](std::string b) { attrs["__io-rbuf"] = Value::str(std::move(b)); };
+        auto classEof = [&]() { return em && invokeMethod(*em, inv, ValueList{}).truthy(); };
+        auto isBytes = [](const Value& x) {
+            return x.t == VT::Str && (x.hashKind == "Buf" || x.hashKind == "Blob" ||
+                                      x.hashKind == "buf8" || x.hashKind == "blob8");
+        };
+        // everything READ still has, onto the buffer
+        auto drain = [&]() {
+            std::string b = getBuf();
+            for (int guard = 0; guard < 1000000 && !classEof(); guard++) {
+                Value r = invokeMethod(*rm, inv, ValueList{Value::integer(65536)});
+                if (!isBytes(r) || r.s.str().empty()) break;
+                b += r.s.str();
+            }
+            setBuf(b);
+            return b;
+        };
+        auto decode = [&](const std::string& bytes) {
+            Value blob = Value::str(bytes); blob.hashKind = "Blob";
+            return methodCall(blob, "decode", ValueList{Value::str("utf8")}).toStr();
+        };
+        auto keepText = [&](const std::string& text) {   // the undecoded rest, as bytes again
+            setBuf(text);
+        };
+        if (m == "eof") return Value::boolean(getBuf().empty() && classEof());
+        if (m == "read") {
+            long long n = args.empty() ? 65536 : args[0].toInt();
+            std::string b = getBuf();
+            while ((long long)b.size() < n && !classEof()) {
+                Value r = invokeMethod(*rm, inv, ValueList{Value::integer(n - (long long)b.size())});
+                if (!isBytes(r) || r.s.str().empty()) break;
+                b += r.s.str();
+            }
+            size_t take = std::min<size_t>((size_t)std::max(0LL, n), b.size());
+            setBuf(b.substr(take));
+            Value out = Value::str(b.substr(0, take)); out.hashKind = "Buf"; out.ofTypeM() = "uint8";
+            return out;
+        }
+        std::string text = decode(drain());
+        if (m == "slurp" || m == "words" || m == "split" || m == "comb") {
+            keepText("");
+            if (m == "slurp") return Value::str(text);
+            return methodCall(Value::str(text), m, args);
+        }
+        // the line separators: the handle's nl-in, "\n" and "\r\n" by default
+        std::vector<std::string> seps;
+        {
+            auto it = attrs.find("nl-in");
+            if (it != attrs.end() && it->second.t != VT::Any) {
+                if (it->second.t == VT::Array && it->second.arr())
+                    for (auto& e : *it->second.arr()) seps.push_back(e.toStr());
+                else seps.push_back(it->second.toStr());
+            }
+            else seps = {"\r\n", "\n"};
+        }
+        // the next line out of `t` from `from`: its end and where the one after starts
+        auto nextSep = [&](const std::string& t, size_t from, size_t& sepAt, size_t& sepLen) {
+            sepAt = std::string::npos; sepLen = 0;
+            for (auto& sp : seps) {
+                if (sp.empty()) continue;
+                size_t k = t.find(sp, from);
+                if (k != std::string::npos && (k < sepAt || (k == sepAt && sp.size() > sepLen)))
+                    { sepAt = k; sepLen = sp.size(); }
+            }
+            return sepAt != std::string::npos;
+        };
+        if (m == "lines") {
+            keepText("");
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            size_t at = 0, sa, sl;
+            while (at < text.size()) {
+                if (!nextSep(text, at, sa, sl)) { out.arr()->push_back(Value::str(text.substr(at))); break; }
+                out.arr()->push_back(Value::str(text.substr(at, sa - at)));
+                at = sa + sl;
+            }
+            return out;
+        }
+        if (m == "get") {
+            if (text.empty()) { keepText(""); return Value::nil(); }
+            size_t sa, sl;
+            if (!nextSep(text, 0, sa, sl)) { keepText(""); return Value::str(text); }
+            keepText(text.substr(sa + sl));
+            return Value::str(text.substr(0, sa));
+        }
+        // getc / readchars: by CHARACTER, which the Str methods count
+        Value tv = Value::str(text);
+        long long n = m == "getc" ? 1 : (args.empty() ? 65536 : args[0].toInt());
+        long long have = methodCall(tv, "chars", ValueList{}).toInt();
+        if (have == 0) { keepText(""); return m == "getc" ? Value::nil() : Value::str(""); }
+        if (n > have) n = have;
+        Value head = methodCall(tv, "substr", ValueList{Value::integer(0), Value::integer(n)});
+        keepText(methodCall(tv, "substr", ValueList{Value::integer(n)}).toStr());
+        return head;
+    }
     // An IO::Handle-derived class inherits the line-ending accessors as real,
     // WRITABLE state: `$io.nl-out = "\t\t"` then `self.nl-out` is what its own
     // `.say` appends (IO::Blob, which 14 dists name, tests exactly that). The
@@ -7397,7 +7637,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value d = Value::array();                 // nl-in: Rakudo's default pair
         d.arr()->push_back(Value::str("\n"));
         d.arr()->push_back(Value::str("\r\n"));
-        d.itemized = true;
+        d.isList = d.itemized = true;             // $("\n", "\r\n"), a List, as the base answers
         return d;
     }
     // …and `.chomp` is handle state too, defaulting to True. Without this it
@@ -7459,12 +7699,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         double tol = toleranceDyn();
         // relative to the real part (see the twin in evalBinary's `<=>` arm); a
         // zero real part has nothing to scale by and uses the bare tolerance
-        if (std::fabs(inv.im()) > tol * (inv.n == 0.0 ? 1.0 : std::fabs(inv.n)))
-            throwTypedV("X::Numeric::Real",
-                        {{"target", Value::typeObj(m)}, {"source", inv},
-                         {"reason", Value::str("imaginary part not zero")}},
-                        "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
-                        cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero");
+        // …and the refusal is a Failure (Rakudo's coerce-to-real `fail`s), so
+        // `fails-like { $z.Real }` sees one and a sunk one still throws
+        if (std::fabs(inv.im()) > tol * (inv.n == 0.0 ? 1.0 : std::fabs(inv.n))) {
+            const std::string msg = "Cannot convert " + cnum::to_string(inv.n) + (inv.im() < 0 ? "" : "+") +
+                                    cnum::to_string(inv.im()) + "i to " + m + ": imaginary part not zero";
+            Value f = armedFailure("X::Numeric::Real", msg);
+            if (g_makeTypedEx)
+                (*f.hash())["exception"] = g_makeTypedEx("X::Numeric::Real",
+                    {{"target", Value::typeObj(m)}, {"source", inv},
+                     {"reason", Value::str("imaginary part not zero")}}, msg);
+            return f;
+        }
         Value re = Value::number(inv.n);
         if (m == "Int") return Value::integer((long long)inv.n);
         if (m == "Rat" || m == "FatRat") return methodCall(re, m, {});
@@ -7871,7 +8117,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Type && m == "raku") { // Int.raku -> "Int" (no parens)
         // …and a role pun by the name it was written with, `Foo[Int]`
         std::string d = g_typeDispName ? g_typeDispName(inv.s) : std::string();
-        return Value::str(d.empty() ? inv.s.str() : d);
+        if (!d.empty()) return Value::str(d);
+        return Value::str(rakuRepr(inv));   // (a parameterized one names its parameter: array[str])
     }
     // An OBJECT's gist is the interpreter's — Class.new(attr => …), a user .gist
     // method, an exception's message. Value::gist() has no access to any of that

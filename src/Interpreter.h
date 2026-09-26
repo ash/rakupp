@@ -158,6 +158,8 @@ inline Value refusedSubscript(const char* type, const std::string& msg) {
 // NumStr/ComplexStr — the number AND its source spelling); anything else passes
 // through unchanged. Shared by the `val` builtin, prompt(), and MAIN's argv.
 Value valAllomorph(const Value& v);
+// The C3 method resolution order over a class's user-class ancestry (MethodCallPart2.cpp)
+std::vector<ClassInfo*> c3ClassMro(ClassInfo* c);
 // $TMPDIR, then TEMP, then TMP — Rakudo's order, and the only one that answers
 // on Windows, which sets the latter two and never the first.
 std::string tmpDirPath();

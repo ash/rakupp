@@ -81,6 +81,8 @@ public:
     const std::string* src_ = nullptr;
     std::shared_ptr<SlangSeams> slang_;
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
+    void declareKnownSub(const std::string& n) { declaredSubNames_.insert(n); }
+    void unmarkSigillessContainer(Assign* a); // an outer routine an EVAL sees
     void declareUserOp(const std::string& kind, const std::string& name) {
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
         else if (kind == "infix-non") userInfixNon_.insert(name);
@@ -381,7 +383,7 @@ public:
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
 public:
-    static thread_local int allowRoutineMagic;   // >0: parsing a regex's code block, where &?ROUTINE is the regex
+    static inline thread_local int allowRoutineMagic = 0;   // >0: parsing a regex's code block, where &?ROUTINE is the regex
 private:
     bool sawReturnRw_ = false; // a `return-rw` was parsed in the routine body being read
 private:

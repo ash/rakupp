@@ -108,13 +108,13 @@ $prog.spurt: 'use experimental :rakuast; slurp(@*ARGS[0]).AST("ZZ").EVAL';
 check rakupp($prog.Str, $dir.add("src.zz").Str), "summe=6 n=3\nx=7\nende", 'the translated program runs';
 
 # ---- and the language argument is what does it ---------------------------
-# Without it the same source is NOT that program — our `.AST` is Lexer+Parser
-# only, so it does not throw the way Rakudo's undeclared-name check does; it
-# simply keeps the German. That is the recorded divergence, and this asserts it
-# rather than hiding it.
+# Without it the same source is NOT that program, and `.AST` refuses it as
+# Rakudo's does. Each names the first thing it cannot accept — Rakudo the
+# undeclared `@z`, rakupp the `$!x` outside any method (its undeclared-name
+# pass runs after the parse) — so what is pinned is the refusal.
 $prog.spurt: 'use experimental :rakuast; print slurp(@*ARGS[0]).AST.DEPARSE';
-check rakupp($prog.Str, $dir.add("src.zz").Str).contains('il-mio'), True,
-      'no language argument: the source is left in the fixture language';
+check rakupp($prog.Str, $dir.add("src.zz").Str), '',
+      'no language argument: the source is not that program, and .AST refuses it';
 # A MISSPELLED keyword is not translated either — the lookup is exact.
 $dir.add("bad.zz").spurt($src.subst('wenn', 'wenxn'));
 $prog.spurt: 'use experimental :rakuast; print slurp(@*ARGS[0]).AST("ZZ").DEPARSE';
@@ -151,7 +151,7 @@ check $zerr, '', '…and the dist EXPORT failing to find $*LANG is not news';
 $dir.add("noprag.raku").spurt($src);
 my ($nout, $nerr) = rakuppBoth($dir.add("noprag.raku").Str);
 check $nout, '', 'without the pragma the same source does not run';
-check $nerr.contains('il-mio') || $nerr.contains('Undefined'), True,
+check $nerr.contains('il-mio') || $nerr.contains('Undefined') || $nerr.contains('SORRY'), True,
       '…and says so';
 
 # …and it starts WHERE the pragma is. A localized keyword above the `use` line

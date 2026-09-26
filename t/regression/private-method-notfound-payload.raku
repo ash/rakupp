@@ -12,10 +12,10 @@
 # with `!`, so the key's prefix is unambiguous. The KEY is untouched — dispatch
 # still looks up `!name`.
 #
-# NOT fixed here, and not what this case is about: Rakudo raises this at COMPILE
-# time (`X::Method::NotFound+{X::Comp}`) when the invocant is `self`, so an inner
-# `try` does not catch it. rakupp raises it at run time, which is why
-# S12-methods/private.t still fails its 13th test.
+# Rakudo raises a miss on `self` at COMPILE time (`X::Method::NotFound+{X::Comp}`),
+# so an inner `try` does not catch it — and rakupp now does too (S12-methods/
+# private.t's 13th test). The payload is checked through EVAL for that reason,
+# and the run-time misses below name the method dynamically (`self!"$m"()`).
 #
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -25,13 +25,11 @@ sub check($got, $want, $desc) {
 
 class Priv {
     method !known() { 'here' }
-    method miss()   { self!nope() }
-    method caught() { try { self!nope() }; $! }
 }
 
 # the private miss: name as written, the kind named, and the flag set
-my $e = Priv.new.caught;
-check $e.^name,   'X::Method::NotFound', 'a missing private method throws X::Method::NotFound';
+my $e = (try { EVAL q[my class Priv { method caught() { self!nope() } }]; 'no-throw' }) // $!;
+check $e ~~ X::Method::NotFound, True,   'a missing private method throws X::Method::NotFound';
 check $e.method,  'nope',                'the exception reports the name as written, not the `!name` key';
 check $e.private, True,                  '.private is True for a private call';
 check $e.typename, 'Priv',               '.typename is the invocant type';
@@ -54,7 +52,7 @@ class Ok { method !known() { 'here' }; method go() { self!known() } }
 check Ok.new.go(), 'here', 'an existing private method still dispatches through the `!name` key';
 
 # the two attributes coexist on one exception class however it was first thrown
-class Order { method go() { try { self!a() }; my $x = $!; try { self.b() }; ($x, $!) } }
+class Order { method go() { my $n = 'a'; try { self!"$n"() }; my $x = $!; try { self.b() }; ($x, $!) } }
 my ($first, $second) = Order.new.go;
 check ($first.private, $second.private), (True, False),
       'both a private and a public miss answer .private on the same exception class';

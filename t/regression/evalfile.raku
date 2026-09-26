@@ -22,10 +22,15 @@ my $some_var = 'samovar';
 $f.spurt('$some_var' ~ "\n");
 @fail.push('sees lexicals') unless EVALFILE($f.absolute) eq 'samovar';
 
-# …and declares INTO that scope, as EVAL does
+# …but, as EVAL does, keeps its OWN declarations to itself: the file is
+# compiled in a scope of its own, so Rakudo reports `$from-file` undeclared
+# afterwards (checked against Rakudo 2025.x)
 $f.spurt("my \$from-file = 7;\n");
-EVALFILE($f.absolute);
-@fail.push('declares into the scope') unless $from-file == 7;
+@fail.push('the file runs') unless EVALFILE($f.absolute) == 7;
+my $probe = $dir.add('probe.raku');
+$probe.spurt('$from-file');
+@fail.push('keeps its declarations') if (try EVALFILE($probe)).defined;
+$probe.unlink;
 
 # it is a real routine value, not a parser special case
 my &e = &EVALFILE;

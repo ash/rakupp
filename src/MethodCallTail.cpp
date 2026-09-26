@@ -758,9 +758,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 throwTyped("X::Cannot::Lazy", {{"action", "roll"}}, "Cannot roll a lazy list");
             if (m == "List" && !inv.isList)
                 throwTyped("X::Cannot::Lazy", {{"action", "List"}}, "Cannot List a lazy list");
-            if (m == "Capture")
-                throwTyped("X::Cannot::Lazy", {{"action", "create a Capture from"}},
-                           "Cannot create a Capture from a lazy list");
+            if (m == "Capture") {   // a Failure, as Rakudo's List.Capture answers
+                const std::string msg = "Cannot create a Capture from a lazy list";
+                Value f = armedFailure("X::Cannot::Lazy", msg);
+                if (g_makeTypedEx)
+                    (*f.hash())["exception"] = g_makeTypedEx("X::Cannot::Lazy",
+                        {{"action", Value::str("create a Capture from")}}, msg);
+                return f;
+            }
             if (kLazyFailure.count(m))
                 return armedFailure("X::Cannot::Lazy", "Cannot " + m + " a lazy list");
             if (kLazyThrow.count(m))
@@ -2629,6 +2634,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Code || (a.t == VT::Pair && a.s == "by")) haveBlock = true;
             // Range.minmax → the (min max) List; List.minmax → a min..max Range
             // (with a block, a Range orders its ELEMENTS like any list)
+            if (inv.t == VT::Range && !haveBlock && inv.ofType() == "Str") {
+                Value out = Value::array(); out.isList = true;   // (a string range's ends are strings)
+                out.arr()->push_back(methodCall(inv, "min", ValueList{}));
+                out.arr()->push_back(methodCall(inv, "max", ValueList{}));
+                return out;
+            }
             if (inv.t == VT::Range && !haveBlock) {
                 Value out = Value::array(); out.isList = true;
                 out.arr()->push_back(Value::integer(inv.rFrom() + (inv.rExFrom() ? 1 : 0)));
@@ -2693,6 +2704,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             if (lo.t == VT::Int && hi.t == VT::Int)
                 return Value::range(lo.toInt(), hi.toInt(), false, false);
+            // two STRING ends make a string Range (`<one two three>.minmax` is
+            // "one".."two"), carried as its endpoints
+            if (lo.t == VT::Str && hi.t == VT::Str && lo.hashKind.empty() && hi.hashKind.empty()) {
+                Value rr = Value::range(u8FirstCp(lo.s), u8FirstCp(hi.s), false, false);
+                rr.ofTypeM() = "Str";
+                attachRangeEnds(rr, Value::str(lo.s.str()), Value::str(hi.s.str()));
+                return rr;
+            }
             Value out = Value::array(); out.isList = true; // non-Int endpoints (our Range is Int-only)
             out.arr()->push_back(lo); out.arr()->push_back(hi);
             return out;
@@ -4192,6 +4211,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return out;
             }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
+                // a NATIVE array stores what it is given there and then, so a
+                // lazy replacement list is refused, as its STORE refuses one
+                static const std::set<std::string> kNative = {
+                    "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
+                    "uint64", "num", "num32", "num64", "str", "byte"};
+                if (args.size() > 2 && kNative.count(inv.ofType()))
+                    for (size_t k = 2; k < args.size(); k++) {
+                        const Value& r = args[k];
+                        if (((r.t == VT::Range || r.t == VT::Array) && r.b) || isEndlessLazy(r) ||
+                            (r.t == VT::Range && isEndlessRange(r)))
+                            throwTypedV("X::Cannot::Lazy",
+                                        {{"action", Value::str("splice in")}},
+                                        "Cannot splice in a lazy list");
+                    }
                 // a lazy array only holds a prefix — materialize enough to cover the window
                 if (inv.ext()) {
                     long s0 = args.size() > 0 ? args[0].toInt() : 0;
