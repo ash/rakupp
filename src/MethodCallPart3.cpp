@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include <filesystem>
 #include <cstring>   // rakuppFindModuleSource: is `L10N::<lang>` installed at all?
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
@@ -309,6 +310,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (kNumifiesInv.has(m)) numifyStrOrThrow(inv.toStr());
     }
     // numeric
+    // `Int.abs` / `UInt.abs`: the method wants an INSTANCE (UInt's is Int's)
+    if (m == "abs" && inv.t == VT::Type &&
+        (inv.s == "Int" || inv.s == "UInt" || inv.s == "Num" || inv.s == "Rat" || inv.s == "Complex")) {
+        std::string want = inv.s == "UInt" ? std::string("Int") : inv.s.str();
+        throwTypedV("X::Parameter::InvalidConcreteness",
+            {{"expected", Value::str(want)}, {"got", Value::str(inv.s.str())},
+             {"routine", Value::str("abs")}, {"param", Value::str("")},
+             {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
+            "Invocant of method 'abs' must be an object instance of type '" + want +
+            "', not a type object of type '" + inv.s.str() + "'.  Did you forget a '.new'?");
+    }
     if (m == "abs") {
         // A Str numifies to its OWN type before the abs: "5000000000000000000"
         // is that Int, not 5e+18. Falling through to fabs() put every wide
@@ -820,8 +832,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "sinh") return Value::number(std::sinh(x));
         if (m == "cosh") return Value::number(std::cosh(x));
         if (m == "tanh") return Value::number(std::tanh(x));
-        if (m == "asinh") return Value::number(std::asinh(x));
-        if (m == "acosh") return Value::number(std::acosh(x));
+        if (m == "asinh") return Value::number(rakuAsinh(x));
+        if (m == "acosh") return Value::number(rakuAcosh(x));
         if (m == "atanh") return Value::number(std::atanh(x));
         if (m == "sec") return Value::number(1.0 / std::cos(x));
         if (m == "cosec" || m == "csc") return Value::number(1.0 / std::sin(x));
@@ -874,6 +886,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `round(1000, 23.01)` is exactly 989.43 rather than 989.4300000000001,
         // and a big Int rounded by an Int stays that Int.
         Value scaleV = args.empty() ? Value::integer(1) : a0();
+        // a Complex scale rounds by its REAL part, as a Num (`42.round(<42+0i>)` is 42e0)
+        if (scaleV.t == VT::Complex) scaleV = Value::number(scaleV.toNum());
         bool exact = inv.t != VT::Num && scaleV.t != VT::Num &&
                      inv.t != VT::Complex && scaleV.toNum() != 0;
         if (exact) {
@@ -1024,7 +1038,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 if (leaf) {
                     Value& slot = (*cur->arr())[(size_t)ix];
-                    if (m == "EXISTS-POS") return Value::boolean(defined(slot));
+                    if (m == "EXISTS-POS") return Value::boolean(rtSlotExists(slot));
                     if (m == "AT-POS") return slot;
                     if (writes) {
                         // a slot BOUND to a plain value has no container to assign into
@@ -1064,7 +1078,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             ", should be in 0..^Inf"};
         }
         bool in = i < (long long)inv.arr()->size();
-        if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr())[i]));
+        if (m == "EXISTS-POS") return Value::boolean(in && rtSlotExists((*inv.arr())[i]));
         if (m == "AT-POS") return in ? (*inv.arr())[i] : Value::any();
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
@@ -1151,6 +1165,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (rit != classes_.end() && rit->second->isRole) return Value::boolean(false);
         }
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
+        // a SUBSET isa its refinee chain: `subset S of Int; S.isa(Int)`, and a
+        // subset of a subset isa that subset
+        if (inv.t == VT::Type && subsets_.count(tn)) {
+            std::string t = tn;
+            for (int g = 0; g < 32 && subsets_.count(t); g++) {
+                if (t == want) return Value::boolean(true);
+                t = subsets_[t].base;
+            }
+            if (t == want) return Value::boolean(true);
+            ValueList a2{args[0]};
+            return methodCall(Value::typeObj(t), "isa", a2);
+        }
         // `CArray[int32]` IS a `CArray`: an unparameterized want matches the base
         // of a parameterized type. (The reverse does not hold — a bare CArray is
         // not a CArray[int32].)
@@ -1202,6 +1228,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return rest;
         };
         Value out = Value::array(); out.isList = true;
+        // a WhateverCode takes exactly as many positionals as it has stars
+        if (inv.code()->isWhateverCode && inv.code()->candidates.empty() &&
+            (!inv.code()->params || inv.code()->params->empty())) {
+            size_t npos = 0; bool named = false;
+            for (auto& x : call) { if (x.t == VT::Pair && x.namedArg) named = true; else npos++; }
+            long long ar = inv.code()->whateverArity > 0 ? inv.code()->whateverArity : 1;
+            if (!named && (long long)npos == ar) out.arr()->push_back(inv);
+            return out;
+        }
         // Candidates, whenever there are any — an explicit `proto g(|) {*}` is not
         // flagged as a dispatcher, and scoring ITS signature accepts anything.
         if (!inv.code()->candidates.empty()) {
@@ -1265,7 +1300,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "of" && inv.t == VT::Str &&
         (inv.hashKind == "Buf" || inv.hashKind == "Blob" || inv.hashKind == "utf8"))
         return Value::typeObj(inv.ofType().empty() ? std::string("uint8") : inv.ofType());
-    if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
+    if (m == "new" && inv.t == VT::Array) { // @a.new: fresh array of the same type
+        // …built from the arguments as `Array.new(…)` is (`@a .= new(3, 4)`)
+        if (!args.empty() && inv.enumName.empty()) {
+            Value ty = Value::typeObj(inv.isList ? "List" : "Array");
+            ty.ofTypeM() = inv.ofType();
+            return methodCall(ty, "new", args);
+        }
         Value out = Value::array();
         out.ofTypeM() = inv.ofType();
         return out;
@@ -1289,6 +1330,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (!kt.empty()) return Value::typeObj(kt);
         }
         return Value::typeObj("Str(Any)");
+    }
+    // a list-ish value numifies to its element count first (`(^42).Rat` is 42.0)
+    if ((m == "Rat" || m == "FatRat") && (inv.t == VT::Range || (inv.t == VT::Array && inv.enumName.empty()))) {
+        Value n = methodCall(inv, "Numeric", {});
+        return methodCall(n, m, args, rwArgs);
     }
     if (m == "Rat" || m == "FatRat") {
         bool fat = (m == "FatRat");
@@ -1340,6 +1386,22 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         r.fatRatM() = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
         return r;
+    }
+    // an ENUM value steps through its enum's members in DECLARATION order,
+    // saturating at either end (`C.pred` is B even when B and C share a value)
+    if ((m == "succ" || m == "pred") && args.empty() && inv.t != VT::Bool &&
+        !inv.enumType.empty() && !inv.enumName.empty()) {
+        auto ep = enumPairs_.find(inv.enumType.str());
+        if (ep != enumPairs_.end() && ep->second.arr() && !ep->second.arr()->empty()) {
+            const ValueList& ps = *ep->second.arr();
+            long long idx = -1;
+            for (size_t k = 0; k < ps.size(); k++) if (ps[k].s == inv.enumName.str()) { idx = (long long)k; break; }
+            if (idx >= 0) {
+                long long j = m == "succ" ? std::min<long long>(idx + 1, (long long)ps.size() - 1)
+                                          : std::max<long long>(idx - 1, 0);
+                if (Value* mv = tctx_.cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s.str())) return *mv;
+            }
+        }
     }
     if (m == "succ") {
         if (inv.t == VT::Bool) return Value::boolean(true);   // Bool saturates
@@ -1480,6 +1542,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         "' for invocant of type '" +
                         (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
     }
+    // a PIPE has no path: `.IO` is the IO::Path type object, and `.Str` is ""
+    if ((m == "IO" || m == "Str") && args.empty() && inv.t == VT::Hash &&
+        inv.hashKind == "FileHandle" && inv.hash() && inv.hash()->count("proc-owner"))
+        return m == "Str" ? Value::str("") : Value::typeObj("IO::Path");
+    // `IO::Path.IO` (any flavor) is the type object itself
+    if (m == "IO" && inv.t == VT::Type && inv.s.rfind("IO::Path", 0) == 0) return inv;
     if (m == "IO") {
         // Any has no .IO (Cool does): an undefined invocant dies rather than
         // silently becoming the "" path; Nil keeps its absorb-everything rule.
@@ -1567,6 +1635,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*f.hash())["message"] = Value::str("Failed to open file " + inv.toStr() + ": File exists");
             return f; } }
         content = encodeTextEnc(content, encAdverb(args)); // `:enc` — write the file's own encoding
+        {   // plain utf16 opens with a BOM (unless it appends to a file that has one)
+            std::string ce = canonEncodingName(encAdverb(args));
+            if (ce == "utf16" || ce == "utf-16") {
+                struct stat sst;
+                bool empty = ::stat(ioFsPath(inv).c_str(), &sst) != 0 || sst.st_size == 0;
+                if (!append || empty) content = std::string("\xFF\xFE") + content;
+            }
+        }
         // BINARY, as Rakudo writes: a text-mode stream would rewrite \n on
         // Windows, and in a wide encoding that byte is half of a character.
         std::ofstream out(ioFsPath(inv), std::ios::binary | (append ? std::ios::app : std::ios::trunc));
@@ -1720,9 +1796,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // otherwise. Guarded to real IO invocants: Str has no .link in Rakudo,
     // and a name that generic must not fall into filesystem writes.
     if ((m == "symlink" || m == "link") && inv.hashKind == "IO" && !args.empty()) {
-        std::string target = ioFsPath(inv), name = ioFsPath(args[0]);
+        bool absolute = true;
+        for (auto& x : args)
+            if (x.t == VT::Pair && x.s == "absolute") absolute = !x.pairVal() || x.pairVal()->truthy();
+        std::string target = (m == "symlink" && !absolute) ? inv.toStr() : ioFsPath(inv), name = ioFsPath(args[0]);
         bool symbolic = (m == "symlink");
-        if (symbolic && !target.empty() && target[0] != '/') {
+        if (symbolic && absolute && !target.empty() && target[0] != '/') {
             char cbuf[4096];
             if (getcwd(cbuf, sizeof cbuf)) target = std::string(cbuf) + "/" + target;
         }
@@ -1932,6 +2011,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         auto asIO = [&](std::string s) { // a derived path keeps its parent's :CWD
             Value v = Value::str(s); v.hashKind = "IO";
             if (!inv.ofType().empty()) v.ofTypeM() = inv.ofType();
+            v.enumName = inv.enumName;   // …and its class: IO::Path::Unix.add is one too
             return v;
         };
         auto dirOf = [](const std::string& s) -> std::string {
@@ -2262,13 +2342,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (completely && tail.find('/') != std::string::npos) return resolveFailure();
                     std::string out = rbuf;
                     if (!tail.empty()) { if (out != "/") out += "/"; out += tail; }
-                    return asIO(out);
+                    // a resolved path is absolute: its CWD is the root, the
+                    // flavor's dir-sep (Rakudo)
+                    Value rv = asIO(out);
+                    rv.enumName = inv.enumName;
+                    rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                    return rv;
                 }
                 if (take == 0) break;
                 tail = tail.empty() ? segs[take - 1] : segs[take - 1] + "/" + tail;
             }
             if (completely && s.find('/', 1) != std::string::npos) return resolveFailure();
-            return asIO(s);
+            {
+                Value rv = asIO(s);
+                rv.enumName = inv.enumName;
+                rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                return rv;
+            }
         }
         // …but only on an IO::Path. These three used to answer for ANY
         // invocant, so `7.absolute` returned "$*CWD/7" and `Int.^can("absolute")`
@@ -2467,12 +2557,47 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::boolean(true);   // the mode was set; the path was never news
     }
+    // `IO::Handle.Supply` needs a handle to read: a type object has none
+    if (m == "Supply" && inv.t == VT::Type && inv.s == "IO::Handle")
+        throwTypedV("X::Multi::NoMatch", {},
+                    "Cannot resolve caller Supply(IO::Handle: ...); none of these signatures matches:\n"
+                    "    (IO::Handle:D: :$size = 65536, *%_)");
     if (m == "open") { // returns a buffered file handle
         // Delegates to the open() builtin: one implementation, one rule set.
         // This arm used to be a stripped copy that skipped the read-mode
         // existence check (so "/nope".IO.open handed back a live handle where
         // open("/nope") threw), skipped rejectNulPath, and dropped :nl-in.
         ValueList ca;
+        // `IO::Handle.new(:path(…)).open(…)` opens THAT handle, in place:
+        // every holder of it sees the live handle (`.open: :w; .print-nl`)
+        if (inv.t == VT::Hash && inv.hashKind == "FileHandle" && inv.hash()) {
+            auto pit = inv.hash()->find("path");
+            ca.push_back(Value::str(pit != inv.hash()->end() ? pit->second.toStr() : std::string()));
+            for (auto& a : args) ca.push_back(a);
+            // the handle's own attributes are the defaults the open keeps
+            // (`IO::Handle.new(:nl-in<foo>, :bin).open(:rw)` is still :bin)
+            auto given = [&](const char* k) {
+                for (auto& a : args) if (a.t == VT::Pair && a.s == k) return true;
+                return false;
+            };
+            auto carry = [&](const char* key, const char* adv) {
+                auto it = inv.hash()->find(key);
+                if (it == inv.hash()->end() || given(adv)) return;
+                Value p = Value::pair(adv, it->second); p.namedArg = true;
+                ca.push_back(p);
+            };
+            carry("nl-in", "nl-in"); carry("nl-out", "nl-out"); carry("chomp", "chomp");
+            if (!given("enc") && !given("encoding") && !given("bin")) {
+                if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) carry("bin", "bin");
+                else carry("encoding", "enc");
+            }
+            Value nh = callBuiltin("open", ca);
+            if (nh.t == VT::Hash && nh.hashKind == "FileHandle" && nh.hash()) {
+                *const_cast<Value&>(inv).hash() = *nh.hash();
+                return inv;
+            }
+            return nh;
+        }
         ca.push_back(Value::str(ioFsPath(inv))); // the handle works wherever the process wanders
         for (auto& a : args) ca.push_back(a);
         return callBuiltin("open", ca);
@@ -2481,11 +2606,50 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash()->find("chomp");  return it != inv.hash()->end() ? it->second : Value::boolean(true); }
         if (m == "opened") return Value::boolean(!fhClosed(inv));
+        // `.DESTROY` closes the handle (what the GC would do to an open one)
+        if (m == "DESTROY") {
+            // …but never a standard handle: `$*OUT.DESTROY` leaves it open
+            if (inv.hash()->count("std")) return Value::nil();
+            if (!fhClosed(inv)) { ValueList none; methodCall(inv, "close", none); }
+            return Value::nil();
+        }
         // an IO::Pipe knows the child it reads from — `.close` answers that
         // Proc, and `.proc` is how a caller reaches it without closing
         if (m == "proc") {
             auto it = inv.hash()->find("proc-owner");
             if (it != inv.hash()->end()) return it->second;
+        }
+        // `$fh.Supply(:size(N))` — the rest of the handle as an on-demand
+        // Supply of N-char Strs (N-byte Bufs on a :bin handle)
+        if (m == "Supply" && !fhClosed(inv)) {
+            long long size = 65536;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "size" && a.pairVal()) size = a.pairVal()->toInt();
+            if (size < 1) size = 1;
+            const bool bin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy();
+            Value content = methodCall(inv, "slurp", ValueList{});
+            Value vals = Value::array();
+            if (bin && content.t == VT::Str && !content.hashKind.empty()) {
+                // a Buf: slice it by bytes
+                long long n = methodCall(content, "bytes", ValueList{}).toInt();
+                for (long long i = 0; i < n; i += size)
+                    vals.arr()->push_back(methodCall(content, "subbuf",
+                        ValueList{Value::integer(i), Value::integer(std::min(size, n - i))}));
+            }
+            else {
+                Value cs = methodCall(content, "comb", ValueList{Value::integer(size)});
+                for (auto& c : cs.flatten()) vals.arr()->push_back(c);
+            }
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash())["values"] = vals;
+            return s;
+        }
+        // …and a pipe has no path: `.IO` / `.path` are the IO::Path type
+        // object, and it stringifies to nothing
+        if (args.empty() && inv.hash()->count("proc-owner") &&
+            (m == "IO" || m == "path" || m == "Str")) {
+            if (m == "Str") return Value::str("");
+            return Value::typeObj("IO::Path");
         }
         // rakupp never holds the file open across statements, so there is
         // nothing for this to switch off; it answers the True that says the
@@ -2552,9 +2716,30 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto md = inv.hash()->find("mode");
             const std::string mode = md != inv.hash()->end() ? md->second.toStr() : "";
             if (inv.hash()->count("std")) return Value::boolean(true);
-            // an exclusive lock needs a writable descriptor, a shared one a readable one
-            if (!shared && mode == "r") return lockFail("Bad file descriptor");
-            if (shared && (mode == "w" || mode == "a")) return lockFail("Bad file descriptor");
+            // an exclusive lock needs a writable descriptor, a shared one a readable one.
+            // A BLOCKING request in the wrong mode still waits out a conflicting
+            // lock first, as the OS does (the kernel queues it before looking at
+            // the descriptor's mode) — only then does it fail.
+            bool badMode = (!shared && mode == "r") || (shared && (mode == "w" || mode == "a"));
+            if (badMode) {
+                auto pt0 = inv.hash()->find("path");
+                if (!nonBlocking && pt0 != inv.hash()->end()) {
+                    int pfd = ::open(pt0->second.toStr().c_str(), O_RDONLY);
+                    if (pfd >= 0) {
+                        bool parked = gilPark();
+                        for (;;) {
+                            struct flock q{};
+                            q.l_type = shared ? F_RDLCK : F_WRLCK;
+                            q.l_whence = SEEK_SET; q.l_start = 0; q.l_len = 0;
+                            if (::fcntl(pfd, F_GETLK, &q) != 0 || q.l_type == F_UNLCK) break;
+                            ::usleep(50000);
+                        }
+                        gilUnpark(parked);
+                        ::close(pfd);
+                    }
+                }
+                return lockFail("Bad file descriptor");
+            }
             auto pt = inv.hash()->find("path");
             if (pt == inv.hash()->end()) return Value::boolean(true);
             const std::string path = pt->second.toStr();
@@ -2631,6 +2816,26 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return Value::integer(off);
             }
             auto bufit = inv.hash()->find("buffer");
+            // a WRITE handle is where the next byte lands: a `.seek`ed
+            // position, else what has reached the file, plus what is pending
+            {
+                auto mo = inv.hash()->find("mode");
+                const std::string md = mo != inv.hash()->end() ? mo->second.toStr() : std::string();
+                auto pa = inv.hash()->find("path");
+                if ((md == "w" || md == "a" || md == "rw" || md == "update") && pa != inv.hash()->end() &&
+                    !pa->second.toStr().empty() && !inv.hash()->count("captured")) {
+                    long long pend = bufit != inv.hash()->end() ? (long long)bufit->second.s.size() : 0;
+                    auto wp = inv.hash()->find("wpos");
+                    if (wp != inv.hash()->end()) return Value::integer(wp->second.toInt() + pend);
+                    long long disk = 0;
+                    if ((*inv.hash())["wrote"].truthy()) {
+                        std::error_code ec;
+                        auto sz = std::filesystem::file_size(pa->second.toStr(), ec);
+                        if (!ec) disk = (long long)sz;
+                    }
+                    return Value::integer(disk + pend);
+                }
+            }
             if (bufit != inv.hash()->end()) return Value::integer((long long)bufit->second.toStr().size());
             return Value::integer(0);
         }
@@ -2662,13 +2867,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (!knownEnc)
                     throwTyped("X::Encoding::Unknown", {{"name", args[0].toStr()}},
                                "Unknown string encoding '" + args[0].toStr() + "'");
+                // every `$*IN` read is a fresh handle: the process stdin keeps the setting
+                const bool isStdIn = inv.hash()->count("std") && (*inv.hash())["std"].toStr() == "in";
                 if (canon.empty()) {
                     inv.hash()->erase("encoding");
                     (*inv.hash())["bin"] = Value::boolean(true);
+                    if (isStdIn) stdinEnc_ = "bin";
                     return Value::nil();
                 }
                 inv.hash()->erase("bin");
                 (*inv.hash())["encoding"] = Value::str(canon);
+                if (isStdIn) stdinEnc_ = canon;
             }
             // a binary handle has no encoding to name
             if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) return Value::nil();
@@ -2848,7 +3057,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // rw handle on an existing file must not wipe it with a trunc
             bool write = (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty()));
             if (wrote && buf.empty()) write = false;      // everything is already there
-            if (write) {
+            if (write && (mode == "rw" || mode == "update")) {
+                std::string pending = buf;                // in place, at the write position
+                (*inv.hash())["buffer"] = Value::str("");
+                fhAppendToFile(inv.hashS(), pending);
+            }
+            else if (write) {
                 std::ofstream out((*inv.hash())["path"].toStr(),
                                   std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
                 if (out) out << buf;
@@ -2888,7 +3102,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 bool write = (mode == "w" || mode == "a" ||
                               ((mode == "rw" || mode == "update") && !buf.empty()));
                 if (wrote && buf.empty()) write = false;
-                if (write) {
+                if (write && (mode == "rw" || mode == "update")) {
+                    std::string pending = buf;
+                    (*inv.hash())["buffer"] = Value::str("");
+                    fhAppendToFile(inv.hashS(), pending);
+                }
+                else if (write) {
                     std::ofstream out((*inv.hash())["path"].toStr(),
                                       std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
                     if (out) out << buf;
@@ -2919,7 +3138,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "slurp") {
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
             if (cap != inv.hash()->end() && cap->second.truthy()) return (*inv.hash())["buffer"];
-            bool sBin = false, sClose = false;
+            // a :bin handle slurps a Buf unless told otherwise
+            bool sBin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy(), sClose = false;
             for (auto& a : args)
                 if (a.t == VT::Pair && a.namedArg) {
                     bool on = !a.pairVal() || a.pairVal()->truthy();
@@ -2960,6 +3180,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
                     if (sClose) methodCall(inv, "close", ValueList{});
                     if (sBin) {
+                        // the byte cursor is at the end now: `.tell` says so
+                        (*inv.hash())["bytes"] = Value::str(ss.str());
+                        (*inv.hash())["bpos"] = Value::integer((long long)ss.str().size());
                         Value io = Value::str((*inv.hash())["path"].toStr()); io.hashKind = "IO";
                         return methodCall(io, "slurp", ValueList{[]{ Value p = Value::pair("bin", Value::boolean(true)); p.namedArg = true; return p; }()});
                     }
@@ -2968,6 +3191,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
+                if (sBin) return binBuf(ss.str());   // `$*IN.encoding("bin")` / `:bin`: the bytes
                 return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
             }
             std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
@@ -3060,6 +3284,28 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // terminator the file did not have. PDF reads every cross-reference
         // table by seeking to a byte offset recorded inside the document, so it
         // read the header back each time and reported the xref unparsable.
+        // …and a READ-WRITE handle's `seek` moves where the next write lands
+        // (`$fh.seek(0, SeekFromEnd); $fh.spurt: …` appends in place)
+        if (m == "seek" && !inv.hash()->count("std") && inv.hash()->count("mode") &&
+            ((*inv.hash())["mode"].toStr() == "rw" || (*inv.hash())["mode"].toStr() == "update" ||
+             (*inv.hash())["mode"].toStr() == "w" || (*inv.hash())["mode"].toStr() == "a") &&
+            !inv.hash()->count("captured") && !(*inv.hash())["path"].toStr().empty()) {
+            fhFlush(inv);   // what was written so far lands at the OLD position
+            long long want = args.empty() ? 0 : args[0].toInt();
+            long long whence = 0;
+            for (size_t i = 1; i < args.size(); i++)
+                if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
+            long long cur = inv.hash()->count("wpos") ? (*inv.hash())["wpos"].toInt() : 0;
+            if (whence == 1) want += cur;
+            else if (whence == 2) {
+                std::error_code ec;
+                auto sz = std::filesystem::file_size((*inv.hash())["path"].toStr(), ec);
+                want += ec ? 0 : (long long)sz;
+            }
+            if (want < 0) want = 0;
+            (*inv.hash())["wpos"] = Value::integer(want);
+            return Value::boolean(true);
+        }
         if ((m == "seek" || m == "tell" || m == "eof") &&
             ((*inv.hash()).count("bin") || (*inv.hash()).count("bytes")) &&
             !(inv.hash()->count("std"))) {
@@ -3261,9 +3507,42 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*inv.hash())["pos"] = Value::integer((long long)ln.size());
                 // Str.words splits on Unicode White_Space (NBSP, ideographic
                 // space, …), not the C locale's ASCII set
-                ValueList wa;
-                for (auto& a : args) if (!(a.t == VT::Pair && a.s == "close")) wa.push_back(a);
-                return methodCall(Value::str(all), "words", wa);
+                ValueList wa; bool wClose = false;
+                for (auto& a : args) {
+                    if (a.t == VT::Pair && a.s == "close") { wClose = !a.pairVal() || a.pairVal()->truthy(); continue; }
+                    wa.push_back(a);
+                }
+                Value ws = methodCall(Value::str(all), "words", wa);
+                // `:close` shuts the handle once its words are all READ — so the
+                // Seq closes it on exhaustion, and a slice that stops early
+                // (`words($fh, :close)[1,2]`) leaves it open
+                // …but with a LIMIT the words are all read the moment the
+                // limit is reached, so it closes now
+                bool wLimit = false;
+                for (auto& a : wa) if (!(a.t == VT::Pair && a.namedArg) && a.isNumeric()) wLimit = true;
+                if (wClose && wLimit) { methodCall(inv, "close", ValueList{}); return ws; }
+                if (wClose) {
+                    auto items = std::make_shared<ValueList>(toList(ws));
+                    auto idx = std::make_shared<size_t>(0);
+                    auto st = std::make_shared<LazySeqState>();
+                    st->streaming = true;
+                    st->finiteSource = true;
+                    Value hv = inv;
+                    Interpreter* self = this;
+                    st->appendNext = [items, idx, hv, self](ValueList& cache) -> bool {
+                        if (*idx >= items->size()) {
+                            Value h = hv;
+                            if (h.hash() && h.hash()->count("lines")) self->methodCall(h, "close", ValueList{});
+                            return false;
+                        }
+                        cache.push_back((*items)[(*idx)++]);
+                        return true;
+                    };
+                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    out.extM() = st;
+                    return out;
+                }
+                return ws;
             }
             if (m == "slurp-rest") {
                 auto& ln = *(*inv.hash())["lines"].arr();
@@ -3293,26 +3572,45 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // A limit (`.lines(2)`) still takes eagerly.
             if (m == "lines") {
                 long long limit = -1;
+                // any Numeric is a limit: 5, 5/1, 5e0, 5+0i and their allomorphs
                 for (auto& av : args)
-                    if (!(av.t == VT::Pair && av.namedArg) && (av.t == VT::Int || av.t == VT::Num))
-                        limit = av.toInt();
+                    if (!(av.t == VT::Pair && av.namedArg) &&
+                        (av.t == VT::Int || av.t == VT::Num || av.t == VT::Rat || av.t == VT::Complex ||
+                         av.isAllomorph()) && av.t != VT::Whatever) {
+                        if (av.t == VT::Num && std::isinf(av.toNum())) continue;
+                        limit = av.t == VT::Complex ? (long long)methodCall(av, "Real", ValueList{}).toNum()
+                                                    : (long long)av.toNum();
+                    }
                 Value out = Value::array(); out.isList = true; out.s = "Seq";
+                // `:close` closes the handle once the lines are read
+                bool closeArg = false;
+                for (auto& av : args)
+                    if (av.t == VT::Pair && av.namedArg && av.s == "close" && av.pairVal() && av.pairVal()->truthy())
+                        closeArg = true;
                 if (limit >= 0) {
                     for (long long i = pos; i < (long long)lines.size() && i < pos + limit; i++)
                         out.arr()->push_back(withEol(i));
                     (*inv.hash())["pos"] = Value::integer(std::min<long long>(pos + limit, (long long)lines.size()));
+                    if (closeArg) methodCall(const_cast<Value&>(inv), "close", ValueList{});
                     return out;
                 }
                 auto hs = inv.hashS();
                 auto st = std::make_shared<LazySeqState>();
                 st->streaming = true;
                 st->finiteSource = true;
-                st->appendNext = [hs](ValueList& cache) -> bool {
+                // (`:close` closes the handle when the lines run out — not
+                // before: a slice that stops early leaves it open)
+                Value hv = closeArg ? inv : Value::nil();
+                Interpreter* self = this;
+                st->appendNext = [hs, hv, closeArg, self](ValueList& cache) -> bool {
                     auto li = hs->find("lines"), pi = hs->find("pos");
                     if (li == hs->end() || pi == hs->end() || !li->second.arr()) return false;
                     auto& ls = *li->second.arr();
                     long long p = pi->second.toInt();
-                    if (p >= (long long)ls.size()) return false;
+                    if (p >= (long long)ls.size()) {
+                        if (closeArg) { Value h = hv; self->methodCall(h, "close", ValueList{}); }
+                        return false;
+                    }
                     pi->second = Value::integer(p + 1);
                     Value v = ls[(size_t)p];
                     auto ch = hs->find("chomp");
@@ -3358,7 +3656,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::ostringstream raw; raw << in.rdbuf();
         std::istringstream src(decodeTextEnc(raw.str(), encAdverb(args)));
         std::string line;
-        while (std::getline(src, line)) { // strip \r\n too (Windows/HTTP text)
+        // a numeric positional is the LIMIT: `$path.lines(2)` reads two
+        long long limit = -1;
+        for (auto& av : args)
+            if (!(av.t == VT::Pair && av.namedArg) &&
+                (av.t == VT::Int || av.t == VT::Num || av.t == VT::Rat || av.isAllomorph())) {
+                if (av.t == VT::Num && std::isinf(av.toNum())) continue;
+                limit = (long long)av.toNum();
+            }
+        while ((limit < 0 || (long long)out.arr()->size() < limit) && std::getline(src, line)) { // strip \r\n too (Windows/HTTP text)
             if (!line.empty() && line.back() == '\r') line.pop_back();
             out.arr()->push_back(Value::str(line));
         }
@@ -3528,11 +3834,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // unencodable character is an error in Rakudo — we keep the byte.
             bool haveRepl = false; std::string repl;
             for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "replacement" && (!a.pairVal() || a.pairVal()->truthy())) {
+                // an EMPTY replacement string is a replacement too: it drops the character
+                if (a.t == VT::Pair && a.s == "replacement" &&
+                    (!a.pairVal() || a.pairVal()->t == VT::Str || a.pairVal()->truthy())) {
                     haveRepl = true;
                     repl = (a.pairVal() && a.pairVal()->t == VT::Str) ? a.pairVal()->s.str() : std::string("?");
                 }
             bool ascii = norm == "ascii" || norm == "usascii";
+            // what cannot be encoded, with no replacement asked for, is an error
+            auto unencodable = [&](uint32_t cp) {
+                const std::string en = ascii ? "ASCII" : cp1252 ? "Windows-1252" : "Latin-1";
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Error encoding " + en + " string: could not encode codepoint " + std::to_string(cp)};
+            };
             Value b;
             if (latin1) { // one byte per codepoint (<= 0xFF; others become '?')
                 std::string bytes;
@@ -3546,26 +3860,44 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     }
                     else if (cp <= 0xFF) byte = (int)cp;
                     if (byte >= 0) bytes += (char)(unsigned char)byte;
-                    else bytes += haveRepl ? repl : "?";
+                    else if (haveRepl) bytes += repl;
+                    else unencodable(cp);
                 }
                 b = Value::str(bytes);
-            } else if (ascii && haveRepl) {
+            } else if (ascii) {
                 std::string bytes;
-                for (uint32_t cp : utf8cp(inv.s)) { if (cp < 0x80) bytes += (char)cp; else bytes += repl; }
+                for (uint32_t cp : utf8cp(inv.s)) {
+                    if (cp < 0x80) bytes += (char)cp;
+                    else if (haveRepl) bytes += repl;
+                    else unencodable(cp);
+                }
                 b = Value::str(bytes);
             } else if (norm.rfind("utf16", 0) == 0 || norm.rfind("utf32", 0) == 0) {
                 // utf-16: 16-bit code units with surrogate pairs; utf-32: raw codepoints.
                 // Little-endian words in the byte string, ofType carries the width so
                 // .values/.elems/[] see CODE UNITS, not bytes (JSON::Tiny \u-escaping).
                 bool u16 = norm.rfind("utf16", 0) == 0;
+                // `utf16le` / `utf16be` name a BYTE order: the answer is bytes
+                // (Blob[uint8]), in that order; plain utf16 is code units
+                const bool orderBE = norm.size() > 5 && norm.compare(norm.size() - 2, 2, "be") == 0;
+                const bool orderLE = norm.size() > 5 && norm.compare(norm.size() - 2, 2, "le") == 0;
                 std::string bytes;
-                auto word = [&](uint32_t u, int w) { for (int i = 0; i < w; i++) bytes += (char)((u >> (8 * i)) & 0xFF); };
+                auto word = [&](uint32_t u, int w) {
+                    if (orderBE) for (int i = w - 1; i >= 0; i--) bytes += (char)((u >> (8 * i)) & 0xFF);
+                    else for (int i = 0; i < w; i++) bytes += (char)((u >> (8 * i)) & 0xFF);
+                };
                 for (uint32_t cp : utf8cp(inv.s)) {
                     if (!u16) word(cp, 4);
                     else if (cp < 0x10000) word(cp, 2);
                     else { uint32_t v = cp - 0x10000; word(0xD800 | (v >> 10), 2); word(0xDC00 | (v & 0x3FF), 2); }
                 }
                 b = Value::str(bytes);
+                if (orderBE || orderLE) {
+                    b.ofTypeM() = "uint8";
+                    b.hashKind = "Blob";
+                    b.enumName = "Blob[uint8]";
+                    return b;
+                }
                 b.ofTypeM() = u16 ? "uint16" : "uint32";
                 b.hashKind = "Blob";
                 b.enumName = u16 ? "utf16" : "utf32";
@@ -3593,6 +3925,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (norm.empty()) {
             if (inv.enumName == "utf16" || inv.ofType() == "uint16" || inv.ofType() == "int16") norm = "utf16";
             else if (inv.enumName == "utf32" || inv.ofType() == "uint32" || inv.ofType() == "int32") norm = "utf32";
+        }
+        // ASCII has seven bits: a byte past them is not ASCII at all
+        if (norm == "ascii" || norm == "usascii") {
+            for (unsigned char ch : inv.s.str())
+                if (ch >= 0x80)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Will not decode invalid ASCII (code point (" + std::to_string((int)(signed char)ch) +
+                        ") < 0 found)"};
+            return Value::str(inv.s.str());
         }
         if (latin1) { // each byte is a codepoint
             std::string out;
@@ -3661,6 +4002,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (ok && len == 4 && c == 0xF0 && p[i + 1] < 0x90) ok = false;   // overlong
                 if (ok && len == 4 && c > 0xF4) ok = false;                       // > U+10FFFF
                 if (ok && len == 3 && c == 0xED && p[i + 1] >= 0xA0) ok = false;  // surrogate
+                // a sequence the BYTES RAN OUT on is Rakudo's "termination" error
+                if (!ok && len > 1 && i + len > n) {
+                    bool contOk = true;
+                    for (size_t k = i + 1; k < n; k++) if ((p[k] & 0xC0) != 0x80) contOk = false;
+                    if (contOk)
+                        throw RakuError{Value::typeObj("X::AdHoc"), "Malformed termination of UTF-8 string"};
+                }
                 if (!ok) {
                     char buf[8]; std::snprintf(buf, sizeof buf, "%02x", c);
                     throw RakuError{Value::typeObj("X::AdHoc"),
@@ -3960,12 +4308,32 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 " spaces, but the shortest indent is " + std::to_string(shortest) + " spaces";
             if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
         }
+        // Rakudo's walk: remove indent characters from the LEFT, a tab
+        // snapping to its next stop, until `want` columns are gone; a stop
+        // left mid-way swallows a tab that lies within reach (spaces before a
+        // hard tab coalesce into it); an overshoot comes back as spaces.
+        (void)renderCols;
         for (auto& pc : lines) {
             if (pc.indent.empty() && pc.rest.empty()) { out += pc.term; continue; }
-            long long w = widthOf(pc.indent);
-            long long keep = w - want; if (keep < 0) keep = 0;
-            out += renderCols(keep) + pc.rest + pc.term;
+            const size_t n = pc.ind.size();
+            long long pos = 0;
+            size_t idx = 0;
+            while (idx < n && pos < want) {
+                if (pc.ind[idx] == '\t') { pos -= pos % kTabStop; pos += kTabStop; }
+                else pos++;
+                idx++;
+            }
+            if (idx < n && pos % kTabStop != 0) {
+                size_t lookEnd = std::min(n, idx + (size_t)(kTabStop - pos % kTabStop));
+                for (size_t j = idx; j < lookEnd; j++)
+                    if (pc.ind[j] == '\t') { idx = j + 1; pos -= pos % kTabStop; pos += kTabStop; break; }
+            }
+            std::string r;
+            for (size_t j = idx; j < n; j++) r += cpToUtf8(pc.ind[j]);
+            if (pos > want) r.append((size_t)(pos - want), ' ');
+            out += r + pc.rest + pc.term;
         }
+        (void)widthOf;
         return Value::str(out);
     }
     if (m == "wordcase") { // titlecase each word (first letter up, rest down)
@@ -5038,7 +5406,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (cp < 0 || cp > 0x10FFFF)
             throw RakuError{Value::typeObj("X::AdHoc"),
                 "chr codepoint " + (inv.big() ? inv.big()->toString() : std::to_string(cp)) + " is out of bounds"};
-        return Value::str(cpToUtf8((uint32_t)cp));
+        return rtBChr(*this, inv);
     }
     if (m == "split") {
         std::string s = inv.toStr();

@@ -623,6 +623,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         one.arr()->push_back(inv.t == VT::Nil ? Value::any() : inv);
         return one;
     }
+    // `Map.Hash` / `Hash.Hash` — an associative TYPE object coerces to the Hash type object
+    if (m == "Hash" && inv.t == VT::Type && (inv.s == "Map" || inv.s == "Hash"))
+        return Value::typeObj("Hash");
     if ((m == "Hash" || m == "hash") && (inv.t == VT::Type || inv.t == VT::Any || inv.t == VT::Nil))
         return Value::makeHash();
     // scalar .Array / .List — a 1-element container: "LLL".Array is ["LLL"]
@@ -709,6 +712,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
         bool infinite = lst->infinite;
+        // `.cache` of a STREAMING Seq (one whose end is not known yet) keeps it
+        // lazy: it remembers what gets pulled, it does not pull everything now
+        if (m == "cache" && lst->streaming && !lst->finiteSource) {
+            Value out = inv; out.isList = true; out.s.clear();
+            return out;
+        }
+        // a HyperSeq/RaceSeq is never lazy: it is evaluated eagerly in batches
+        if (m == "is-lazy" && (inv.s == "HyperSeq" || inv.s == "RaceSeq")) return Value::boolean(false);
         if (m == "is-lazy") {
             // A gather has not been run yet, so whether it is lazy is not known
             // until it has been. This is the only question that asks without
@@ -1115,6 +1126,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
          inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
          inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        if (inv.objKeyed || (!inv.hashKind.empty() && inv.hashKind != "Map")) {
+            // object keys are stored under their WHICH; a named argument
+            // is keyed by the key's Str
+            for (auto& p : toList(methodCall(inv, "pairs", ValueList{}))) {
+                if (p.t != VT::Pair) continue;
+                std::string ks = p.pairKey() ? (p.pairKey()->t == VT::Str ? p.pairKey()->toStr()
+                                                : methodCall(*p.pairKey(), "Str", ValueList{}).toStr())
+                                             : p.s.str();
+                c.arr()->push_back(Value::pair(ks, p.pairVal() ? *p.pairVal() : Value::any()));
+            }
+            return c;
+        }
         if (inv.hash()) for (auto& kv : *inv.hash()) c.arr()->push_back(Value::pair(kv.first, kv.second));
         return c;
     }
@@ -1155,8 +1178,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value p = e;
                 if (e.pairKey()) {
                     const Value& k = *e.pairKey();
-                    std::string ks = k.t == VT::Type ? k.s.str()
-                                   : k.t == VT::Object ? methodCall(k, "Str", ValueList{}).toStr() : strOf(k);
+                    // a type object keys by its name — unless its class says
+                    // otherwise with a Str method of its own
+                    auto ci = k.t == VT::Type ? classes_.find(k.s.str()) : classes_.end();
+                    bool ownStr = ci != classes_.end() && ci->second && ci->second->findMethodForCall("Str");
+                    std::string ks = k.t == VT::Type && !ownStr ? k.s.str()
+                                   : k.t == VT::Object || ownStr ? methodCall(k, "Str", ValueList{}).toStr() : strOf(k);
                     p = Value::pair(ks, e.pairVal() ? *e.pairVal() : Value::any());
                 }
                 p.namedArg = true;
@@ -1170,6 +1197,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto named = [&](const char* k, Value v) { Value p = Value::pair(k, std::move(v)); p.namedArg = true; c.arr()->push_back(p); };
         named("excludes-max", Value::boolean(inv.rExTo()));
         named("excludes-min", Value::boolean(inv.rExFrom()));
+        named("is-int", methodCall(inv, "is-int", ValueList{}));
         named("max", methodCall(inv, "max", ValueList{}));
         named("min", methodCall(inv, "min", ValueList{}));
         return c;
@@ -1640,13 +1668,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                  {"value", *a.pairVal()}},
                                 "Invalid value '" + a.pairVal()->toStr() + "' for :" + a.s.str() +
                                     " on method " + std::string(m));
-        if (inv.t == VT::Range) { Value r = inv; return methodCall(r, "list", {}, nullptr); }
+        // what `.hyper`/`.race` answer IS a HyperSeq/RaceSeq (the work stays serial)
+        const char* seqKind = m == "hyper" ? "HyperSeq" : m == "race" ? "RaceSeq" : "";
+        if (inv.t == VT::Range) {
+            Value r = inv; Value l = methodCall(r, "list", {}, nullptr);
+            if (*seqKind && l.t == VT::Array) l.s = seqKind;
+            return l;
+        }
         if (inv.t == VT::Hash) {
             Value o = Value::array(); o.isList = true;
             for (auto& kv : *inv.hash()) o.arr()->push_back(Value::pair(kv.first, kv.second));
+            if (*seqKind) o.s = seqKind;
             return o;
         }
         Value o = inv; o.isList = true; o.itemized = false;
+        if (*seqKind) o.s = seqKind;
+        else if (o.s == "HyperSeq" || o.s == "RaceSeq") o.s = "Seq";   // `.serial`
         // `.hyper(:batch(42), :degree(16))` — the parallel stand-in is serial,
         // but what it was ASKED is what `.configuration` has to answer (hyperize
         // reads it straight back: `@a.&hyperize(42).configuration.batch`). The
@@ -1662,6 +1699,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 o = Value::array(); o.isList = true;
                 *o.arr() = *inv.arr();
                 hyperCfg_[(const void*)o.arr()] = {batch, degree};
+                if (*seqKind) o.s = seqKind;
             }
         }
         return o;
@@ -1748,7 +1786,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return j;
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = items; (*s.hash())["values"] = v; return s; }
-        if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); } // list of codepoints -> Str
+        if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(nfcNormalize(std::move(r))); } // list of codepoints -> Str (NFC)
         if (m == "of") return Value::typeObj("Mu"); // element type of an untyped Array/List
         // the positional protocol, spelled out — a Range answers these as the
         // list it stands for, and an Array/List does too
@@ -1839,6 +1877,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     hammer = !a.pairVal() || a.pairVal()->truthy();
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             bool topOfArray = inv.t == VT::Array && !inv.isList;
+            // `.flat(2, :hammer)` — hammer only that many levels deep
+            long long depth = -1;
+            for (auto& a : args)
+                if (a.t == VT::Int && !(a.t == VT::Pair)) depth = a.toInt();
+            if (hammer && depth >= 0) {
+                std::function<void(const Value&, long long)> hd = [&](const Value& x, long long d) {
+                    if (d > 0 && x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) hd(e, d - 1); return; }
+                    out.arr()->push_back(x);
+                };
+                for (auto& x : items) hd(x, depth);
+                return out;
+            }
             for (auto& x : items) flatOneInto(x, topOfArray, hammer, *out.arr());
             return out;
         }
@@ -2087,12 +2137,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // A RIGHT-associative operator folds from the right: `.reduce(&[**])` is
         // 2**(3**4), not (2**3)**4. `&[OP]` callables carry their name, which is
         // the only place the associativity is recorded.
-        auto rightAssoc = [](const Value& f) {
+        auto rightAssoc = [this](const Value& f) {
             if (f.t != VT::Code || !f.code()) return false;
+            if (f.code()->assocRight) return true;   // `sub f is assoc<right>`
             const std::string& n = f.code()->name;
             if (n.rfind("infix:<", 0) != 0 || n.size() < 9) return false;
             std::string op = n.substr(7, n.size() - 8);
-            return op == "**" || op == "=>";
+            return op == "**" || op == "=>" || rightAssocOps_.count(op) > 0;
         };
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) { // fold with a 2-arg op: (1,2,3).reduce(* + *)
             // over NOTHING an operator answers its identity — `().reduce(&[+])`
@@ -2128,6 +2179,62 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             " arguments but got 1"};
                 return callCallable(args[0], ValueList{items[0]});
             }
+            // the SHORT-CIRCUIT operators fold the Rakudo way: a Callable item is
+            // a thunk, run only when reached (`(True, &falseish).reduce(&infix:<&&>)`)
+            if (args[0].code()) {
+                const std::string& rn = args[0].code()->name;
+                const bool andOp = rn == "infix:<&&>" || rn == "infix:<and>";
+                const bool orOp = rn == "infix:<||>" || rn == "infix:<or>";
+                if (andOp || orOp) {
+                    auto val = [&](const Value& x) -> Value {
+                        return x.t == VT::Code ? callCallable(x, ValueList{}) : x;
+                    };
+                    Value acc = val(items[0]);
+                    for (size_t k = 1; k < items.size(); k++) {
+                        const bool t = acc.truthy();
+                        if (andOp ? !t : t) return acc;
+                        acc = val(items[k]);
+                    }
+                    return acc;
+                }
+            }
+            // an N-ARY reducer (`{ $^a + $^b * $^c }`) takes N-1 new items per step:
+            // ((1 + 2*3) + 4*5) + … — and from the right when it is assoc<right>
+            {
+                size_t arity = 0;
+                if (args[0].code()) {
+                    if (args[0].code()->params && !args[0].code()->params->empty()) {
+                        for (auto& pp : *args[0].code()->params)
+                            if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
+                    } else
+                        for (auto& ph : args[0].code()->placeholders)
+                            if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
+                }
+                if (arity > 2 && items.size() >= arity) {
+                    const size_t step = arity - 1;
+                    if (rightAssoc(args[0])) {
+                        size_t k = items.size() - arity;
+                        ValueList grp(items.begin() + (long)k, items.end());
+                        Value acc = callCallable(args[0], grp);
+                        while (k >= step) {
+                            k -= step;
+                            ValueList g2(items.begin() + (long)k, items.begin() + (long)(k + step));
+                            g2.push_back(acc);
+                            acc = callCallable(args[0], g2);
+                        }
+                        return acc;
+                    }
+                    Value acc = items[0];
+                    try {
+                        for (size_t k = 1; k + step <= items.size(); k += step) {
+                            ValueList grp{acc};
+                            for (size_t j = 0; j < step; j++) grp.push_back(items[k + j]);
+                            acc = callCallable(args[0], grp);
+                        }
+                    } catch (LastEx&) {}
+                    return acc;
+                }
+            }
             // `last` in the folding block ENDS THE FOLD and answers the
             // accumulator built so far — it is a loop from the block's point of
             // view, so the control exception must not escape as "last without
@@ -2148,6 +2255,41 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "produce" && !args.empty() && args[0].t == VT::Code) { // scan: running reductions
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // .produce is a Seq
             if (items.empty()) return out;
+            // an N-ARY producer takes N-1 new items per step, as `.reduce` does
+            {
+                size_t arity = 0;
+                if (args[0].code()) {
+                    if (args[0].code()->params && !args[0].code()->params->empty()) {
+                        for (auto& pp : *args[0].code()->params)
+                            if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
+                    } else
+                        for (auto& ph : args[0].code()->placeholders)
+                            if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
+                }
+                if (arity > 2) {
+                    const size_t step = arity - 1;
+                    if (rightAssoc(args[0])) {
+                        Value acc = items.back(); out.arr()->push_back(acc);
+                        size_t k = items.size() - 1;
+                        while (k >= step) {
+                            k -= step;
+                            ValueList g(items.begin() + (long)k, items.begin() + (long)(k + step));
+                            g.push_back(acc);
+                            acc = callCallable(args[0], g);
+                            out.arr()->push_back(acc);
+                        }
+                        return out;
+                    }
+                    Value acc = items[0]; out.arr()->push_back(acc);
+                    for (size_t k = 1; k + step <= items.size(); k += step) {
+                        ValueList g{acc};
+                        for (size_t j = 0; j < step; j++) g.push_back(items[k + j]);
+                        acc = callCallable(args[0], g);
+                        out.arr()->push_back(acc);
+                    }
+                    return out;
+                }
+            }
             if (rightAssoc(args[0])) {
                 // the running folds of the SUFFIXES, reported left to right
                 ValueList acc(items.size());
@@ -2514,11 +2656,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             else
                 // a RANGE element stands for its two ends — `.minmax` results
                 // combine that way — and the empty one (Inf..-Inf) for nothing
-                for (auto& v : items) {
-                    if (v.t != VT::Range) { each.push_back(v); continue; }
-                    Value mn = methodCall(v, "min", ValueList{}), mx = methodCall(v, "max", ValueList{});
-                    if (valueCmp(mn, mx) > 0) continue;
-                    each.push_back(mn); each.push_back(mx);
+                // …and a nested LIST for its elements: `(4, [5, 6]).minmax` is 4..6
+                {
+                    std::function<void(const Value&, int)> add = [&](const Value& v, int depth) {
+                        if (v.t == VT::Array && v.arr() && !v.ext() && v.hashKind.empty() &&
+                            v.enumName.empty() && depth < 64) {
+                            for (auto& e : *v.arr()) add(e, depth + 1);
+                            return;
+                        }
+                        if (v.t != VT::Range) { each.push_back(v); return; }
+                        Value mn = methodCall(v, "min", ValueList{}), mx = methodCall(v, "max", ValueList{});
+                        if (valueCmp(mn, mx) > 0) return;
+                        each.push_back(mn); each.push_back(mx);
+                    };
+                    for (auto& v : items) add(v, 0);
                 }
             for (auto& v : each) {
                 if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
@@ -2810,6 +2961,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
              inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
              inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+            // a NaN count is no count at all
+            if (!args.empty() && args[0].t == VT::Num && std::isnan(args[0].toNum()))
+                throwTyped("X::Numeric::CannotConvert",
+                           {{"target", "Int"}, {"source", "NaN"}}, "Cannot convert NaN to Int");
             // .grab = .pick that CONSUMES: each draw removes one unit of weight
             if (inv.hashKind == "Set" || inv.hashKind == "Bag" || inv.hashKind == "Mix")
                 throw RakuError{Value::typeObj("X::Immutable"),
@@ -2821,6 +2976,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
                                          (args[0].t == VT::Num && std::isinf(args[0].n)));
             long long want = one ? 1 : all ? -1 : args[0].toInt();
+            // `.grab(* / 2)` — a Callable is handed the total weight
+            if (!one && !all && args[0].t == VT::Code) {
+                ValueList none;
+                Value tot = methodCall(inv, "total", none);
+                want = callCallable(args[0], ValueList{tot}).toInt();
+            }
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (long long k = 0; want < 0 || k < want; k++) {
                 double total = 0;
@@ -3093,7 +3254,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto sortByNativeInt = [](const ValueList& xs, std::vector<size_t>& order) {
                 if (xs.size() > 0xFFFFFFFFull) return false;
                 for (const Value& v : xs)
-                    if (!((v.t == VT::Int && !v.big()) || v.t == VT::Bool)) return false;
+                    if (!((v.t == VT::Int && !v.big() && !v.isAllomorph()) || v.t == VT::Bool)) return false;
                 std::vector<std::pair<long long, uint32_t>> kv(xs.size());
                 for (size_t i = 0; i < xs.size(); i++)
                     kv[i] = { xs[i].t == VT::Bool ? (xs[i].b ? 1LL : 0LL) : xs[i].i, (uint32_t)i };
@@ -3463,6 +3624,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
                     catch (RedoEx&) { topicWriteback_ = nullptr; gi -= ar; continue; } // `redo` retries it
                     if (aliasable && ar == 1) v = (*inv.arr())[gi];
+                    // an N-at-a-time block keeps each matching GROUP whole:
+                    // `(1,1,2,3).grep({ ($^a + $^b) %% 2 })` is ((1 1),)
+                    if (match && ar > 1 && adv == "v") {
+                        Value grp = Value::array(); grp.isList = true;
+                        for (size_t k = 0; k < ar && gi + k < items.size(); k++) grp.arr()->push_back(items[gi + k]);
+                        out.arr()->push_back(grp);
+                        continue;
+                    }
                     if (match) { for (size_t k = 0; k < ar && gi + k < items.size(); k++) emit(gi + k, gi + k == gi ? v : items[gi + k]); continue; }
                     continue;
                 }
@@ -3562,7 +3731,33 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     }
                     key = a.toStr(); val = flat[++fi];
                 }
+                // a TYPED hash (`my Int %h`) checks what is pushed into it
+                std::string wantT = elemTypeOf(inv);
+                if (!wantT.empty())
+                    checkElemType(wantT, val, "%h");
+                // an OBJECT hash checks the KEY against its key type, and keys
+                // by identity (`my Int %h{Rat}; %h.push: 1 => 3` dies)
+                if (inv.objKeyed && a.t == VT::Pair) {
+                    Value kobj = a.pairKey() ? *a.pairKey() : Value::str(a.s);
+                    key = objHashIndex(kobj);                       // keyed by identity
+                    if (!inv.hash()->count(key)) inv.hash()->setObjKey(key, kobj);
+                    const std::string kt = objHashKeyType(inv);
+                    if (!kt.empty() && kt != "Any" && kt != "Mu" && kt.find('(') == std::string::npos &&
+                        !typeOrSubsetMatches(kobj, kt))
+                        throwTypedV("X::TypeCheck::Binding::Parameter",
+                            {{"got", kobj}, {"expected", Value::typeObj(kt)}},
+                            "Type check failed in binding to parameter 'key'; expected " + kt +
+                            " but got " + kobj.typeName());
+                }
                 auto it = inv.hash()->find(key);
+                // pushing onto an EXISTING key makes its value an Array — which
+                // a typed hash's element type refuses
+                if (it != inv.hash()->end() && !wantT.empty() && wantT != "Any" && wantT != "Mu" &&
+                    wantT != "Array" && wantT != "Positional" && wantT != "List" && wantT != "Iterable" &&
+                    wantT != "Cool")
+                    throwTypedV("X::TypeCheck::Assignment",
+                        {{"got", Value::array()}, {"expected", Value::typeObj(wantT)}},
+                        "Type check failed in assignment to %h; expected " + wantT + " but got Array");
                 if (it == inv.hash()->end()) {
                     // a NEW key stores the value as it is; only a LIST value spreads
                     // (append and push agree here — it is the existing-key branch that
@@ -3596,6 +3791,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v); // keep a numeric key numeric
                 out.arr()->push_back(std::move(p));
             };
+            // every element is bound to a Pair parameter: an Int dies
+            for (auto& e : items)
+                if (e.t != VT::Pair)
+                    throwTypedV("X::TypeCheck::Binding", {{"got", e}, {"expected", Value::typeObj("Pair")}},
+                                "Type check failed in binding; expected Pair but got " + e.typeName() +
+                                " (" + e.gist() + ")");
             for (auto& e : items) if (e.t == VT::Pair) {
                 Value val = e.pairVal() ? *e.pairVal() : Value::any();
                 Value key = e.pairKey() ? *e.pairKey() : Value::str(e.s);
@@ -3615,6 +3816,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value key = hashEntryKey(inv, kv.first, kv.second);
                 if (kv.second.t == VT::Array && kv.second.arr())
                     for (auto& v : *kv.second.arr()) push1(v, key);
+                // …and a Hash value spreads its PAIRS: each becomes a key
+                else if (kv.second.t == VT::Hash && kv.second.hash() && kv.second.hashKind.empty()) {
+                    for (auto& e : *kv.second.hash()) {
+                        Value pr = Value::pair(e.first, e.second);
+                        Value p = Value::pair(pr.gist(), key);
+                        p.pairKeyM() = std::make_shared<Value>(pr);
+                        out.arr()->push_back(std::move(p));
+                    }
+                }
                 else push1(kv.second, key);
             }
             return out;
@@ -3666,9 +3876,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     else if (runMode != mode)
                         throw RakuError{Value::typeObj("X::Invalid::ComputedValue"),
                             m + " mapper on " + inv.typeName() + " cannot produce mixed-level keys"};
-                    if (mode == 2 && baggy)
+                    if (mode == 2 && baggy) {
+                        const bool cat = m == "categorize-list";
                         throw RakuError{Value::typeObj("X::Invalid::ComputedValue"),
-                            m + " mapper on " + inv.typeName() + " cannot produce multi-level keys"};
+                            "mapper on " + m + " computed to " + (cat ? "a nested Iterable" : "an Iterable") +
+                            " item, which cannot be used because " + inv.typeName() +
+                            " cannot be nested and so does not support multi-level " +
+                            (cat ? "categorization" : "classification")};
+                    }
                     if (mode == 1) {
                         Value& slot = (*inv.hash())[c.toStr()];
                         if (baggy) {
@@ -4283,6 +4498,33 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& n : names) c.arr()->push_back(Value::pair(n, inv.obj()->attrs[n]));
             return c;
         }
+        // the builtin classes unpack like any object, into their public
+        // attributes — each read through its accessor (S02-types/capture.t)
+        static const std::map<std::string, std::vector<const char*>> kPublicAttrs = {
+            {"Rat", {"denominator", "numerator"}},
+            {"RatStr", {"denominator", "numerator"}},
+            {"FatRat", {"denominator", "numerator"}},
+            {"DateTime", {"day", "hour", "minute", "month", "second", "timezone", "year"}},
+            {"Date", {"day", "month", "year"}},
+            {"Duration", {"tai"}}, {"Instant", {"tai"}},
+            {"Promise", {"status"}},
+            {"IO::Path", {"CWD", "path"}},
+            {"Proc", {"command", "exitcode", "pid", "signal"}},
+            {"IO::Handle", {"chomp", "encoding", "nl-in", "nl-out", "path"}},
+        };
+        auto pa = kPublicAttrs.find(inv.typeName());
+        if (pa != kPublicAttrs.end()) {
+            for (const char* n : pa->second) {
+                Value v;
+                try { v = methodCall(inv, n, ValueList{}); } catch (RakuError&) { continue; }
+                Value p = Value::pair(n, v); p.namedArg = true;
+                c.arr()->push_back(p);
+            }
+            return c;
+        }
+        // a Channel or Supply is the list of what it delivers
+        if (inv.typeName() == "Channel" || inv.typeName() == "Supply")
+            return methodCall(methodCall(inv, "list", ValueList{}), "Capture", ValueList{});
         throw RakuError{Value::typeObj("X::Cannot::Capture"),
                         "Cannot unpack or Capture `" + inv.gist() + "`."};
     }

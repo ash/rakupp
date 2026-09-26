@@ -252,6 +252,7 @@ bool uniIsSpaceCp(uint32_t cp);
 // A Junction value: an Array tagged with its kind. Declared here because both the
 // interpreter and the method dispatcher have to ask.
 bool isJunction(const Value& v);
+bool isEnumTypeObject(const Value& v); // an enum's type object (its tagged pair list)
 std::string typeOfVal(const Value& v);
 // hashEntryKey: the real key of a hash entry — pairKey, object-hash key type,
 // or the plain Str. Defined in Builtins.cpp; see the comment there.

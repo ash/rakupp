@@ -99,6 +99,7 @@ void           bigStackClose(std::uintptr_t h);
 // everything else on its identity, so `42`, `"42"` and `<42>` are three elements.
 std::string whichOf(const Value& v);
 std::string baggyKeyStr(const Value& v);
+Value emptyQuantSingleton(const std::string& kind);   // the one empty Set/Bag/Mix
 Value makeBaggy(const ValueList& items, const std::string& kind,
                 bool pairsAsElements = false); // Set/Bag/Mix builder (Builtins.cpp)
 
@@ -164,6 +165,7 @@ std::string tmpDirPath();
 // structure, optionally filled from a flat list, tagged with its dimensions.
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill = nullptr);
+extern std::atomic<bool> g_anyShaped;   // has any shaped array been made? (gates the dimension checks)
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 
@@ -393,6 +395,7 @@ struct EnvExtras {
     std::map<std::string, std::string> varCoerce;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
     std::map<std::string, char> varSmiley; // `my Int:D $x` — 'D' / 'U': what assignments must satisfy
+    std::map<std::string, const struct Expr*> varWhere; // `my $x where Int|Num` — checked on every assignment
     std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
 };
 
@@ -466,6 +469,9 @@ struct Env {
     // auto-vivify in this scope and the ones inside it), -1 = `use strict`
     // (they do not, whatever the scopes outside say), 0 = neither, ask outwards.
     signed char strictPragma = 0;
+    // `use fatal` ran here (1), or `no fatal` (-1): a Failure a call in this
+    // scope returns is thrown on the spot (see Interpreter::fatalHere)
+    signed char fatalPragma = 0;
     bool unitFrame = false;    // a loaded module's FILE scope: what `UNIT::` names inside it
     bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
                                // auto-vivification inside it belongs to (see laxVarRef)
@@ -551,7 +557,9 @@ struct Env {
         // two characters, so every other define pays two loads.
         if (name.size() > 9 && name[0] == '&' && name[1] == 'i' &&
             name.compare(0, 8, "&infix:<") == 0 && name.back() == '>' &&
-            !(v.t == VT::Code && v.code() && !v.code()->name.empty()))
+            // (a plain, non-multi `sub infix:<×>` shadows the built-in too)
+            !(v.t == VT::Code && v.code() && !v.code()->name.empty() &&
+              (v.code()->isMultiDispatcher || v.code()->isMultiCandidate || v.code()->isProto)))
             g_lexShadowMask.fetch_or(1ull << lexShadowSlot(name.data() + 8, name.size() - 9),
                                      std::memory_order_relaxed);
         if (layout) {
@@ -592,6 +600,9 @@ struct Env {
 // codegen used to inline `t==VT::Nil||t==VT::Any||t==VT::Type` with a comment
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
+// Does an ARRAY SLOT exist? A hole is the bare undefined scalar; a type object
+// put there on purpose (`my @a = 42, Any, 23`) is an element like any other.
+inline bool rtSlotExists(const Value& v) { return v.t == VT::Type || rtIsDefined(v); }
 
 // Native extension modules (include/rakupp/rakupp_ext.h): dlopen `path`, check
 // its ABI against RAKUPP_EXT_ABI, and hand back the subs it declares. On
@@ -724,6 +735,7 @@ struct FeatureNotBuilt : RakuError {};
 // result is no longer wanted (the mainline has finished). NOT a Raku-visible
 // exception — user CATCH handles RakuError, never this.
 struct WorkerAbortEx {};
+extern thread_local bool t_holdsGil;     // this thread holds gil_ (parallel-mode event workers serialize on it)
 extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
 extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
 extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
@@ -953,6 +965,7 @@ struct ExecContext {
     // depth fills lvalueOut with lvalue(operand) — its target lives in the
     // object's shared containers, so the pointer survives the frame.
     const Value* leaveResult = nullptr; // the routine's return value while its LEAVE-time phasers run (POST's $_)
+    const RakuError* leaveError = nullptr; // the exception a block is being left by, while its LEAVEs run ($!)
     const std::string* arityCallName = nullptr; // the name a checked call was WRITTEN with (see the arity check)
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
     // A `:=` whose right side is a BLOCK (`my $v := do with … { … } else { … }`)
@@ -977,6 +990,7 @@ struct ExecContext {
     // swallowed by `return-rw`'s not-an-lvalue fallback.
     std::string lvalueImmutable;      // "" mutable; else the type name to report
     std::string lvalueImmutableGist;  // the value's gist, for the message's "(…)" tail
+    Value lvalueImmutableVal;         // …and the value itself, the exception's `.value`
     // lvalueOut points into the frame that is ABOUT TO DIE — a `return-rw` of a
     // routine-local with nothing linking it to the caller. The caller must copy
     // the value out rather than hand the pointer on.
@@ -1122,6 +1136,15 @@ public:
     // candidate invoked directly (`&f.candidates[0](-1)`) never went through
     // scoring, so it keeps the bind-time check that is its only guard.
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false, bool whereVerified = false);
+    bool fatalHere() const; // is the current scope under `use fatal`?
+    Value* pkgRelativeRoutine(const std::string& name); // `Q::f` from inside package P: P::Q::f
+    void checkUndeclaredCalls(const std::vector<StmtPtr>& stmts); // `nope()` refused before running
+    // `R.^candidates`: one type object per declaration of R's role group, each
+    // carrying its declaration (RoleCandidateRef in ext) so `.WHY` can tell them apart
+    Value roleCandidates(ClassInfo* ci);
+    // what a program BOUND into the setting: `$CORE::_ := 50` (the `&` names
+    // go to builtinRefs_, where `&none` finds them)
+    std::unordered_map<std::string, Value> coreVars_;
     // loadModule hook: wrap JSON::Fast's &to-json/&from-json with the native
     // codec (fallback to the module's own subs for uncovered calls)
     void wrapJsonFastExports(Env& moduleEnv);
@@ -1342,7 +1365,11 @@ public:
     // (call its .print), else write to the real stream.
     Value ioEmit(const std::string& s, const char* dynVar, bool toErr);
     Value getArgs(); // @*ARGS as a List value (used by codegen)
+    Value liveArgs(); // …the current @*ARGS variable (a program may assign it)
     void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it
+    // $*ARGFILES, made once per @*ARGS (see its resolver)
+    Value argFilesCache_; std::string argFilesKey_; std::mutex argFilesMu_;
+    bool catHandleLoading_ = false; // IO::CatHandle's Raku source is being compiled (first use)
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
@@ -1377,6 +1404,7 @@ public:
     std::string logicalCwd_; // chdir/indir's logical cwd; empty = getcwd rules
     bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
     bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
+    Value mainOption(const std::string& key);
     // Resolve one command-line word against the PROGRAM's scope: true (with the
     // value in `out`) when the name is an enum value there, which is what makes
     // `prog Red` arrive as `Color::Red`. rtMainArgs calls it per argument.
@@ -1403,6 +1431,9 @@ public:
                // tags (`use experimental :rakuast`) is otherwise indistinguishable
                // from the bare pragma once codegen has emitted the call
                const std::vector<std::string>& importArgs = {}); // `use`/`no MODULE` (used by codegen)
+    bool bodyUsesAtUnderscore(const Callable* c);   // does a block's body read @_ (its implicit `*@_`)?
+    Value coerceVarValue(const Value& rhs, const std::string& target, const std::string& from,
+                         const std::string& nm);   // `my Str(Int(Cool)) $x = …`
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
@@ -1493,7 +1524,10 @@ public:
     // scoreCandidate sees only argument VALUES; the argument EXPRESSIONS are
     // known at the dispatch site, so the test belongs there.
     bool rwCandidateRejects(const Value& cand, size_t nargs,
-                            const std::vector<ExprPtr>* rwArgs);
+                            const std::vector<ExprPtr>* rwArgs, const ValueList* vals = nullptr);
+    // Does this candidate bind a CONTAINER argument to an `is rw` parameter?
+    // Between two otherwise tied candidates that one is the narrower.
+    bool rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>* rwArgs);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
     // name returns `is rw`/`is raw`, or the engine itself answers a container
@@ -1611,6 +1645,7 @@ public:
     // The shared container walk of the hyper-unary forms; the callers supply
     // only the leaf operation.
     Value hyperWalk(Value& v, const std::function<Value(Value&)>& leaf);
+    Value hyperQuantWeights(const Value& inv, const std::function<Value(const Value&)>& f);
     Value hyperUnary(const std::string& op, Value v);       // -«(…), --«%h — deep prefix
     Value hyperPostfixApply(const std::string& op, Value v); // @a»++, %h»!, (2,3)»i — deep postfix
     void rwWriteThrough(Expr* target);
@@ -1729,6 +1764,11 @@ public:
     std::map<std::pair<const void*, const void*>, FlipFlop> ffState_;
     std::unordered_map<const void*, Value> beginCache_;   // expression BEGIN: once per node
     std::mutex beginCacheMu_;
+    void checkBareSubsetDecl(const VarExpr* ve, char sigil);
+    void checkPrivatePermission(const std::string& qualified);
+    const std::string& attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf);
+    bool multiTie(const Value& a, const Value& b);
+    void throwIfAmbiguous(const Callable& c, const Value* best, const Value* const* matched, int n, const ValueList& as);
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
@@ -1743,7 +1783,7 @@ public:
     void seedStaticScope(const void* key, Env* env);
     std::string subsetTypeOfVar(const std::string& nm); // the SUBSET a `my Even $x` was declared with, or ""
     void subsetMutationCheck(const Expr* target, const Value& nv); // `$x++` / `$x += 1` on a subset-typed $x
-    void coerceParam(const struct Param& p, Value& v);   // bind a `T(F) $x` parameter
+    void coerceParam(const struct Param& p, Value& v, const std::string* typeOverride = nullptr);   // bind a `T(F) $x` parameter
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -1794,6 +1834,10 @@ public:
     [[noreturn]] void throwUndeclaredVar(const std::string& name,
                                          const std::vector<std::string>* extraCands = nullptr);
     std::vector<std::string> typeSuggestions(const std::string& name);    // "Did you mean" for a type
+    [[noreturn]] void throwInvalidParamType(const std::string& type);
+    bool paramTypeUndeclared(const std::string& t);
+    std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    bool codeSigAccepts(const struct Param& p, const Value& code, Env* sigEnv = nullptr);
     std::vector<std::string> routineSuggestions(const std::string& name); // …for a routine
     void checkNativeArrayParam(const std::string& t);
     [[noreturn]] void throwTyped(const std::string& type,
@@ -2429,6 +2473,7 @@ public:
     std::condition_variable gilReleased_;
     std::mutex gilRelMutex_;
     long gilReleaseCount_ = 0;
+    void gilLock() { gil_.lock(); t_holdsGil = true; }  // a worker (re)taking the GIL
     void gilYieldNotify();                 // gil_.unlock() + bump the release counter + notify
     void yieldToWorker();                  // drop the GIL until some worker makes progress, then reacquire
     bool yieldToWorkerFor(double secs);    // …bounded: false if the wait expired with no progress
@@ -2552,6 +2597,9 @@ public:
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.
     std::map<std::string, std::string> rolePunCache_;
+    std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv);
+    bool userTypeRefuses(const Value& rhs, const std::string& want);
+    void varWhereCheck(const std::string& nm, const Value& rhs);
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
     // True when the code being executed was written for 6.e or later. Every
     // 6.e-only routine, method and behaviour is gated on this, so a 6.d program
@@ -2603,7 +2651,12 @@ public:
                            ValueList sameArgs; bool lastcall = false; bool fromChain = false;
                            // set while a no-match deferral is walking UP this frame, so the
                            // ancestor's dispatcher cannot pick the same frame and bounce back
-                           bool chainDeferred = false; };
+                           bool chainDeferred = false;
+                           // a WRAPPER's candidate list is an iterator with one
+                           // entry: once callsame/callwith took it, another
+                           // finds it exhausted and answers Nil (nextcallee
+                           // hands out the callable itself and is not counted)
+                           bool wrapperFrame = false; bool spent = false; };
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
@@ -2743,6 +2796,7 @@ public:
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     Value bufSplice(Value& buf, ValueList& args); // Buf.splice — mutates in place, answers the removed bytes
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
+    std::string stdinEnc_;            // `$*IN.encoding(…)` outlives the fresh handle each `$*IN` read makes ("bin" = binary)
     int quietDepth_ = 0;              // inside a `quietly {…}`, warn() is suppressed (codegen bumps it too)
 private:
 
@@ -2772,6 +2826,7 @@ private:
                        ? t_stmtLine : g_stmtLine.load(std::memory_order_relaxed);
         }
     } curLine_;
+    int testAssertLine_ = 0; // the outermost `is test-assertion` routine's CALL line: where its failures are reported
     int todoRemaining_ = 0;  // number of upcoming tests marked TODO by a bare `todo` statement
     std::string todoReason_; // reason for the pending TODO block
     int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
@@ -2929,7 +2984,7 @@ public:
 private:
     // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
     // into a value, producing an object that also does R.
-    Value mixinValue(Value base, const Value& rhs, bool copy);
+    Value mixinValue(Value base, const Value& rhs, bool copy, bool rhsIsLiteralList = true);
     Value evalUnary(Unary* u);
     Value postfixI(Value v); // postfix:<i> — multiply by the imaginary unit
 public:
@@ -3201,16 +3256,28 @@ inline Value numToIntExact(double x) {
 // they are — `floor(NaN)` is NaN, not 0, and `floor(Inf)` is Inf, not the int64
 // maximum. The method forms already did this; the sub forms went straight to
 // numToIntExact and saturated (S32-num/rounders.t, Int-Num-Rat sheet N-13).
+// asinh/acosh the way Rakudo computes them — ln(x + sqrt(x² ± 1)) — which
+// overflows to Inf once x² does (`asinh(1e200)` is Inf there); below that the
+// libm answer is the same number, only more accurate.
+inline double rakuAsinh(double x) { return !std::isinf(x) && std::isinf(x * x) ? std::log(x + std::sqrt(x * x + 1)) : std::asinh(x); }
+inline double rakuAcosh(double x) { return !std::isinf(x) && std::isinf(x * x) ? std::log(x + std::sqrt(x * x - 1)) : std::acosh(x); }
 inline bool rtNonFiniteReal(const Value& v) {
     return v.t == VT::Num && !std::isfinite(v.n);
 }
+// a NATIVE num stays a num: `ceiling(my num $ = 4.7e0)` is 5e0 (Rakudo's
+// `(num --> num)` candidates), where a Num goes to Int
+inline Value rtNativeNumOp(const Value& v, double r) {
+    Value out = Value::number(r); out.natFloat = true; out.natBits = v.natBits; return out;
+}
 inline Value rtBFloor(Interpreter& I, const Value& v) {
+    if (v.t == VT::Num && v.natFloat) return rtNativeNumOp(v, std::floor(v.n));
     if (v.t == VT::Int) return v;
     if (rtNonFiniteReal(v)) return v;
     if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "floor", none); }
     return numToIntExact(std::floor(v.toNum()));
 }
 inline Value rtBCeiling(Interpreter& I, const Value& v) {
+    if (v.t == VT::Num && v.natFloat) return rtNativeNumOp(v, std::ceil(v.n));
     if (v.t == VT::Int) return v;
     if (rtNonFiniteReal(v)) return v;
     if (v.t == VT::Rat) { ValueList none; return I.methodCall(v, "ceiling", none); }

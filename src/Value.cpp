@@ -48,6 +48,7 @@ static PtrCensusDump g_ptrCensusDump;
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
+ObjMethodStrFn g_objMethodStr = nullptr; // installed by Interpreter.cpp (see Value.h)
 TypeDispNameFn g_typeDispName = nullptr; // installed by Interpreter.cpp (see Value.h)
 ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
@@ -464,6 +465,23 @@ std::string Value::toStr() const {
         return enumName;
     }
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
+    // a BacktraceFrame stringifies as its backtrace line (newline included),
+    // so joining frames gives the backtrace text again
+    if (t == VT::Hash && hash() && hashKind == "BacktraceFrame") {
+        auto get = [&](const char* k) -> const Value* {
+            auto it = hash()->find(k); return it == hash()->end() ? nullptr : &it->second;
+        };
+        const Value* c = get("code");
+        std::string kind = "block", name = "<unit>";
+        if (c && c->t == VT::Code && c->code()) {
+            name = c->code()->name;
+            kind = c->code()->isMethod ? "method" : c->code()->isBlock || name.empty() ? "block" : "sub";
+        }
+        const Value* f = get("file");
+        const Value* l = get("line");
+        return "  in " + kind + (name.empty() ? std::string() : " " + name) + " at " +
+               (f ? f->toStr() : std::string()) + " line " + (l ? l->toStr() : std::string("0")) + "\n";
+    }
     // $*KERNEL / $*DISTRO / $*VM stringify as their NAME (`$*KERNEL eq 'darwin'`)
     if (t == VT::Hash && hash() && (hashKind == "Kernel" || hashKind == "Distro" || hashKind == "VM")) {
         auto it = hash()->find("name");
@@ -596,6 +614,8 @@ std::string Value::toStr() const {
                 const std::string w = hash()->at("std").toStr();
                 return w == "err" ? "<STDERR>" : w == "in" ? "<STDIN>" : "<STDOUT>";
             }
+            // …and a PIPE has no path at all: it Strs as nothing
+            if (hashKind == "FileHandle" && hash() && hash()->count("proc-owner")) return "";
             if (hashKind == "StrDistance" && hash() && hash()->count("after"))
                 return hash()->at("after").toStr(); // "$dist" is the resulting string
             if ((hashKind == "Date" || hashKind == "DateTime") && hash()) {
@@ -673,6 +693,13 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
+    // an object of a class with its OWN `.gist` renders by it, nested too
+    if ((t == VT::Object || t == VT::Type) && g_objMethodStr) { std::string o; if (g_objMethodStr(*this, "gist", o)) return o; }
+    // …and the DEFAULT gist of an object is its `.raku` (Mu.gist): `[Bar.new(:1x)]`
+    // shows `[Bar.new(x => 1)]`, not an address
+    if (t == VT::Object && obj() && obj()->cls && !obj()->hasBoxed && g_rakuRepr &&
+        obj()->cls->name.rfind("X::", 0) != 0 && !obj()->attrs.count("__native_ptr"))
+        return g_rakuRepr(*this);
     // A CONTAINER gists as what it HOLDS — `.raku` already does (rakuRepr), and
     // without the same here a bound slot rendered as its own FETCH/STORE pair:
     // `say ('k' => my $v)` printed the closures instead of `k => (Any)`.
@@ -692,6 +719,12 @@ std::string Value::gist() const {
         return isList ? "(...)" : "[...]";
     }
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
+    // a HANDLED Failure gists as its message, marked (an unhandled one
+    // detonates before anything asks it for a gist)
+    if (t == VT::Hash && hashKind == "Failure" && hash()) {
+        auto m = hash()->find("message");
+        return "(HANDLED) " + (m != hash()->end() ? m->second.toStr() : std::string("Failed"));
+    }
     // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
     // (.Str stays the bare path)
     if (t == VT::Str && hashKind == "IO") {
@@ -1036,7 +1069,8 @@ std::string Value::typeName() const {
                     "num", "num32", "num64", "str"};
                 if (kNative.count(ofType())) return "array[" + ofType() + "]";
             }
-            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" : "List";
+            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" :
+                   s == "HyperSeq" ? "HyperSeq" : s == "RaceSeq" ? "RaceSeq" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.
@@ -1479,7 +1513,18 @@ bool objectStructEqv(const Value& a, const Value& b,
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
+static int valueCmpImpl(const Value& a, const Value& b);
 int valueCmp(const Value& a, const Value& b) {
+    int c = valueCmpImpl(a, b);
+    // two ALLOMORPHS of equal value order by their STRINGS: IntStr 123 "00123"
+    // sorts before IntStr 123 "123" (Rakudo's Allomorph cmp)
+    if (c == 0 && a.isAllomorph() && b.isAllomorph()) {
+        const std::string sa = a.s.str(), sb = b.s.str();
+        return sa < sb ? -1 : sa > sb ? 1 : 0;
+    }
+    return c;
+}
+static int valueCmpImpl(const Value& a, const Value& b) {
     // Versions order by their PARTS (`v1.2.1_01` before `v1.2.1`), which the
     // Version-aware `cmp` knows and a string compare does not
     if (a.t == VT::Str && b.t == VT::Str && a.hashKind == "Version" && b.hashKind == "Version")

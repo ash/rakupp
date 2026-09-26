@@ -121,19 +121,6 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         anyGap_ = true;
         return accept(st);
     };
-    auto wsLoop = [&](int st, int ld) { // <ws> modeled as \s* — ranking-grade;
-        int join = addState();          // the commit engine enforces the real <!ww>
-        states_[join].litDepth = ld;
-        int s1 = addState();
-        states_[s1].litDepth = ld;
-        Pred p; p.kind = 'S';
-        int pi = addPred(p);
-        states_[st].edges.push_back({pi, s1});
-        states_[s1].edges.push_back({pi, s1});
-        states_[st].eps.push_back({join, 0});
-        states_[s1].eps.push_back({join, 0});
-        return join;
-    };
     // Budget spent: the prefix ENDS here — an `accept`, not a gap. Two things
     // were wrong when this was a gap. The budget was CUMULATIVE over the whole
     // alternation, so a bushy early branch spent it all and every later branch
@@ -217,7 +204,14 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             // modeling it as kid 0 under-matched the prefix and wrongly pruned
             // the branch — longest-alternative.t test 41, the URI grammar's
             // `<[\-+.] +uri_alpha +digit>*`.)
-            if (n->firstMatch && !n->classCombo) return accept(from);
+            // …but its FIRST branch does take part (S05-metasyntax/longest-
+            // alternative.t: `'foo' | ('food' || 'doof')` over "food" is "food").
+            // The prefix may end right here as well, so a branch whose first
+            // alternative cannot match is ranked short, never pruned.
+            if (n->firstMatch && !n->classCombo) {
+                accept(from);
+                return n->kids.empty() ? -1 : buildNode(n->kids[0].get(), from, branch, litDepth, depth + 1);
+            }
             int join = -1;
             for (auto& kid : n->kids) {
                 int e = buildNode(kid.get(), from, branch, litDepth, depth + 1);
@@ -368,7 +362,7 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                         expandStack_.pop_back();
                         return e; // callee Regex is owned by the matcher, which outlives us
                     }
-                    case 2: return wsLoop(from, litDepth); // <ws> as \s* — ranking-grade
+                    case 2: return accept(from); // the built-in <ws> (see below)
                     case 3: { // single built-in class: one predicate edge
                         int nxt = addState();
                         states_[nxt].litDepth = litDepth;
@@ -381,7 +375,10 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             }
             // the match path hardcodes <ws> for lexical regexes (no shadowing),
             // so the \s* model applies whenever the grammar route didn't claim it
-            if (n->ruleName == "ws") return wsLoop(from, litDepth);
+            // …and it ENDS the prefix: Rakudo's `ws` opens with `<!ww>`, a
+            // lookaround, so a `rule`'s implicit <.ws> stops LTM right there
+            // (`rule { \w+ '-'+ }` ranks at the word, below `token { \w+ '-' }`)
+            if (n->ruleName == "ws") return accept(from);
             if (!buildCtx_->hooks || !buildCtx_->hooks->namedRule)
                 return acceptGap(from);
             std::string text, flags;

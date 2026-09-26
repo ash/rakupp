@@ -436,6 +436,10 @@ struct Callable {
     // out the plain type name for everyone who only wants that.
     std::string retType;
     bool retRw = false;                              // `is rw`/`is raw` on the routine: its result IS a container
+    const struct Expr* retLiteral = nullptr;         // `--> 6`: a bare `return` still answers 6
+    bool assocRight = false;                         // `is assoc<right>` — reductions fold from the right
+    bool assocNon = false;                           // `is assoc<non>` — an EVAL'd chain of it is refused
+    bool assocChain = false;                         // `is assoc<chain>` — a reduction tests each adjacent pair
     ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
@@ -458,6 +462,7 @@ struct Callable {
     CifSlot nativeCifCache;
     ~Callable();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
+    bool testAssertion = false; // `is test-assertion` (see Interpreter::testAssertLine_)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     unsigned char implicitArgs = 0;                   // …which of them: 1 = @_, 2 = %_ (for .signature)
     bool isDefaultCand = false;                       // `multi … is default` — wins a dispatch tie
@@ -478,6 +483,9 @@ struct ClassInfo;
 struct ObjectData;
 struct Env; // defined in Interpreter.h; ClassInfo keeps its declaration scope for defaults
 struct ClassDecl; // defined in Ast.h; ClassInfo keeps a program-lifetime view for roleParams
+struct ClassInfo;
+// the ext() of a role-group CANDIDATE's type object (see Interpreter::roleCandidates)
+struct RoleCandidateRef { std::shared_ptr<ClassInfo> ci; };
 
 // The COLD BLOCK — REPRESENTATION-PLAN phase 1, batch 2 (revised). The pointer
 // census (tools/ptr-census.md) says these fields are absent on the overwhelming
@@ -904,6 +912,7 @@ struct Value {
         if (bt == "int16" || bt == "uint16") return 16;
         if (bt == "int32" || bt == "uint32") return 32;
         if (bt == "int64" || bt == "uint64") return 64;
+        if (bt == "uint") return 64;   // the machine-width UNSIGNED native wraps too
         return 0;
     }
 };
@@ -949,17 +958,25 @@ inline ValueMap& Value::hashRef() {
 // Blob stays out: it is immutable and compares by value in Rakudo too.
 // The type NAMED by a declared return type: `Map()` (a coercion) and `Map` (a
 // check) both name Map. Coercing-ness is retTypeCoerces() below.
+// A COERCION keeps its source in the parens: `Str(Numeric:D)`, `Foo\x01D()`.
+inline bool retTypeCoerces(const std::string& rt) {
+    return rt.size() > 2 && rt.back() == ')' && rt.find('(') != std::string::npos;
+}
 inline std::string retTypeName(const std::string& rt) {
+    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
     // a `\x01D`/`\x01U` suffix records a `--> T:D`/`--> T:U` smiley
-    if (rt.size() > 2 && rt[rt.size() - 2] == '\x01') return rt.substr(0, rt.size() - 2);
-    return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0
-         ? rt.substr(0, rt.size() - 2) : rt;
+    if (t.size() > 2 && t[t.size() - 2] == '\x01') t.resize(t.size() - 2);
+    return t;
 }
 inline char retTypeSmiley(const std::string& rt) {
-    return rt.size() > 2 && rt[rt.size() - 2] == '\x01' ? rt.back() : 0;
+    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
+    return t.size() > 2 && t[t.size() - 2] == '\x01' ? t.back() : 0;
 }
-inline bool retTypeCoerces(const std::string& rt) {
-    return rt.size() > 2 && rt.compare(rt.size() - 2, 2, "()") == 0;
+// the SOURCE type of a coercion (`Numeric:D` of `Str(Numeric:D)`), "" for `()`
+inline std::string retTypeCoerceFrom(const std::string& rt) {
+    if (!retTypeCoerces(rt)) return "";
+    size_t o = rt.find('(');
+    return rt.substr(o + 1, rt.size() - o - 2);
 }
 
 inline bool identityScalar(const Value& v) {
@@ -1020,6 +1037,11 @@ inline const RangeEnds* rangeEnds(const Value& v) {
 // dynamic init, so installing it from another TU is order-safe.
 using RakuReprFn = std::string (*)(const Value&);
 extern RakuReprFn g_rakuRepr;
+// An OBJECT inside a container renders through its class's own `.gist` /
+// `.raku` when it declares one (`[Foo.new].gist`, `any(Foo.new).raku`); the
+// interpreter installs this. False: no such user method, render the default.
+using ObjMethodStrFn = bool (*)(const Value&, const char* method, std::string& out);
+extern ObjMethodStrFn g_objMethodStr;
 // A ROLE PUN's class name is an internal key (`Foo\x01pun3`), because two
 // `Foo[Int]` written apart have to be one type and a key is what the registry
 // indexes. What a user should SEE is `Foo[Int]`, and only the class registry —
@@ -1145,10 +1167,12 @@ struct ClassAttr {
     bool rw = false;  // `is rw` — the public accessor is a writable lvalue
     bool required = false; // `is required` — construction without a value throws
     bool built = false;    // `is built` — settable at construction even when private
+    bool notBuilt = false; // `is built(False)` — never settable at construction
     std::string requiredWhy;  // `is required("it is a good idea")` — the reason, for the message
     std::string type; // declared type name (`has Int $.x`), "" = Mu
     std::string containerIs; // `has %.a is Set` — container type trait
     const Expr* def = nullptr; // borrowed from AST
+    const Expr* shape = nullptr; // `has @.a[3;3]` dimensions, borrowed from AST
     const Expr* defaultTrait = nullptr; // `is default(V)`, borrowed from AST
     const Expr* where = nullptr; // `where {…}` constraint, borrowed from AST
     Value defVal;              // native codegen: precomputed default value
@@ -1206,6 +1230,7 @@ struct ClassInfo {
     // Empty everywhere else, which is the signal to use `name`.
     std::string dispName;
     std::shared_ptr<ClassInfo> parent;
+    std::set<std::string> trusts; // `trusts Foo` — packages allowed to call its private methods
     std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
@@ -1259,6 +1284,15 @@ struct ClassInfo {
     // the OTHER declarations of a parametric role group (`role R {}`, `role R[$x] {}`,
     // …), earliest first; this ClassInfo is the latest. `does R[a, b]` picks by arity.
     std::vector<std::shared_ptr<ClassInfo>> roleVariants;
+    // the group's DEFAULT candidate: the one declared without a parameter
+    // list, else the earliest — whose doc and methods the group answers with
+    ClassInfo* roleGroupDefault() {
+        if (roleVariants.empty()) return this;
+        for (auto& v : roleVariants)
+            if (v && v->decl && v->decl->roleParams.empty() && !v->decl->parameterized) return v.get();
+        if (decl && decl->roleParams.empty() && !decl->parameterized) return this;
+        return roleVariants.front() ? roleVariants.front().get() : this;
+    }
     // `role R[$x, %h, Bool :$opt]` composed as `does R[42, %(...), :opt]` — the
     // role's value/type parameters bound to the composition's arguments (name incl.
     // sigil → value). Injected into the scope of the class's methods/submethods so
@@ -1270,6 +1304,9 @@ struct ClassInfo {
     // accessor BEFORE its `nextsame`, and must not see the multis it queued).
     bool awaitingCompose = false;
     bool classRw = false;      // `class C is rw` — what `.^rw` answers
+    bool hidden = false;       // `is hidden`: redispatch (nextsame) steps over this class
+    mutable signed char shadowsAttrs = -1; // -1 unknown; 1: two classes in the chain declare one attribute name
+    std::vector<std::string> hides; // `hides Parent`: …and over that parent, for this class's invocants
     std::vector<std::pair<std::string, Value>> pendingMultis;
     // `state` inside a COMPOSED ROLE method belongs to the composition, not to the
     // role: two classes doing the same role each get their own slot. The Callable
@@ -1320,7 +1357,16 @@ struct ClassInfo {
         auto inherited = [&](ClassInfo* c) -> Value* {
             if (!c) return nullptr;
             Value* r = c->findMethodForCall(m, roleSubs, owner);
-            if (r && r->code() && r->code()->isSubmethod && (!c->isRole || !roleSubs)) return nullptr;
+            if (r && r->code() && (!c->isRole || !roleSubs)) {
+                if (r->code()->isSubmethod) return nullptr;
+                // …and a `multi submethod` group is no more inheritable
+                if (r->code()->isMultiDispatcher && !r->code()->candidates.empty()) {
+                    bool allSub = true;
+                    for (auto& cd : r->code()->candidates)
+                        if (!cd.code() || !cd.code()->isSubmethod) { allSub = false; break; }
+                    if (allSub) return nullptr;
+                }
+            }
             return r;
         };
         if (Value* r = inherited(parent.get())) return r;

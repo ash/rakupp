@@ -376,7 +376,11 @@ static bool matchDirective(const std::string& line, std::string& kw, std::string
     std::string t = ltrim(line);
     if (t.empty() || t[0] != '=') return false;
     size_t i = 1; std::string w;
-    while (i < t.size() && (ascii::isalnum((unsigned char)t[i]) || t[i] == '_')) w += t[i++];
+    // a block name is an identifier: `-` / `'` join two word parts (`=SEE-ALSO`)
+    while (i < t.size() && (ascii::isalnum((unsigned char)t[i]) || t[i] == '_' ||
+                            ((t[i] == '-' || t[i] == '\'') && !w.empty() && i + 1 < t.size() &&
+                             ascii::isalpha((unsigned char)t[i + 1]))))
+        w += t[i++];
     if (w.empty()) return false;
     kw = w;
     while (i < t.size() && (t[i] == ' ' || t[i] == '\t')) i++;

@@ -202,11 +202,16 @@ struct VarExpr : Expr {
     std::string declScope;       // my / our / state / constant
     std::string declType;        // optional type constraint (ignored at runtime for now)
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
+    std::string declCoerceFrom;  // …and its SOURCE spec (`Str`, or a nested `Int(Cool)`)
+    bool stateInParens = false;  // `(state @foo) = …` — assigned EVERY time, unlike `state @foo = …`
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
     bool declExport = false;     // `our %x is export` — importers see the BARE name
     char declSmiley = 0;         // `my Int:D $x` / `:U` / `:_` (explicit or `use variables`); 0 = none
     bool declSmileyImplicit = false;
+    const struct Expr* declWhereExpr = nullptr; // …the constraint itself (owned by declWhereOwn)
+    std::shared_ptr<struct Expr> declWhereOwn;
+    bool declBare = false;       // the statement is ONLY this declaration (no initializer)
     bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
     bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
@@ -274,6 +279,7 @@ struct ListExpr : Expr {
     std::vector<ExprPtr> items;
     bool parenned = false; // came from `( … )` → a distinct nested list, not a comma-chain to merge into
     bool semicolon = false; // `( a; b )` semicolon-list: each item is one segment's value (multidim)
+    bool userComma = false; // the program declares its own `infix:<,>` — eval asks it first
     ListExpr(): Expr(NK::ListExpr) {}
 };
 
@@ -311,6 +317,10 @@ struct Assign : Expr {
     // operator rather than by the target's sigil. The parser rewrites `op` to "="
     // and records the sigil here, so every `op == "="` test downstream still holds.
     char containerSigil = 0;
+    // the program declares its OWN `infix:<op>` for this compound operator
+    // (`multi sub infix:<+=>(… is rw, …)`): evalAssign calls it (parse-time
+    // flag, so the common `$x += 1` pays nothing)
+    bool userOp = false;
     Assign(): Expr(NK::Assign) {}
 };
 
@@ -318,6 +328,7 @@ struct Binary : Expr {
     std::string op;
     ExprPtr lhs, rhs;
     bool parenned = false; // written `( … )`: a junction chain does not continue through it
+    bool curryClosed = false; // written `(( … ))`: a WhateverCode it builds is finished
     // eval-dispatch cache: -1 unknown, 0 needs a special-cased handler, 1 is a
     // plain operator that goes straight to eval-both-operands + applyArith.
     // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
@@ -363,6 +374,8 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     // read at eval. It is the one of P1's four surface facts that does not fit
     // in existing padding, and it is paid once per Call at PARSE time.
     bool parenned = false;
+    bool dotAmp = false;   // `inv.&code` — a method-shaped call, so a WhateverCode curry runs on through it
+    bool fatalExempt = false; // in a boolean/definedness context: `use fatal` leaves its Failure alone
     // The LEXICAL LOOKUP KEY for `name` — "&" + name. evalCall resolves every
     // named call through `find("&" + c->name)`, so the concatenation ran on
     // each of fib's 1.6M calls only to produce the same four bytes again.
@@ -390,6 +403,7 @@ inline const std::string& callAmpName(const Call* c) {
 inline bool nameEvalsCode(const std::string& n) { return n == "EVAL" || n == "EVALFILE"; }
 
 struct MethodCall : Expr {
+    bool fatalExempt = false; // see Call::fatalExempt
     ExprPtr inv;
     std::string method;
     std::string methodQual; // `$obj.Class::method` — dispatch to Class's method, past any override
@@ -401,6 +415,7 @@ struct MethodCall : Expr {
     bool mutate = false; // .= mutating call
     bool hyper = false;  // >>.method  (apply to each element)
     bool meta = false;   // .^method  (metamodel call, e.g. .^name)
+    bool curryClosed = false; // written in DOUBLE parens: a method call on it does not extend a WhateverCode
     MethodCall(): Expr(NK::MethodCall) {}
 };
 
@@ -612,6 +627,10 @@ struct Param {
     // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
     // params the argument is unpacked into (null when not a destructuring param).
     std::shared_ptr<std::vector<Param>> subSig;
+    // `&code:(Int --> Bool)` — the signature a Callable argument must have
+    // (Rakudo's Signature.ACCEPTS(Signature)); codeSigRet is its `-->` type
+    std::shared_ptr<std::vector<Param>> codeSig;
+    std::string codeSigRet;
     // Whether the WHOLE signature this param belongs to qualifies for
     // bindParams' positional fast path. A static property of the signature, so
     // it is decided on first call and read from the first param thereafter
@@ -657,6 +676,8 @@ struct BlockExpr : Expr {
     bool isSub = false;        // anonymous `sub {…}` / `method {…}` term — a Sub, not a Block
     bool isMethodTerm = false; // …and `method {…}` in particular takes an invocant
     bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
+    bool sigParens = false;    // `sub () {…}` — an anonymous routine that WROTE its (maybe empty) signature
+    std::string termName;      // `method m1(…) {…}` as a TERM still names (and, in a class, adds) the method
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
     std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)
@@ -704,6 +725,8 @@ struct SubDecl : Stmt {
     bool retLiteralPresent = false; // stays true after retLiteral is moved into the body
     bool retViaReturns = false; // the type came from a `returns` trait (checked at declaration)
     bool assocRight = false; // `is assoc<right>` on an operator: `[op]` reduces from the right
+    bool assocNon = false;   // `is assoc<non>`: the operator does not chain
+    bool assocChain = false; // `is assoc<chain>`: `[op] a, b, c` is `a op b && b op c`
     bool isMulti = false;
     bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
     bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal
@@ -711,6 +734,7 @@ struct SubDecl : Stmt {
     bool isSubmethod = false;
     bool isPrivate = false; // `method !name` — private method, called only via self!name
     bool deprecated = false;   // `is DEPRECATED` / `is DEPRECATED("use X")`
+    bool testAssertion = false; // `is test-assertion`: a failing test inside reports the CALLER's line
     ExprPtr deprecatedWith;    // …its argument: what to use instead
     // How the return type was SPELLED: 'o' for `of Int`, 'r' for `returns Int`,
     // 'a' for `--> Int`, 0 for none. The three mean the same thing at run time
@@ -753,8 +777,10 @@ struct AttrDecl {
     bool twigilWritten = false; // spelled `$.x`/`$!x`, not a bare `has $x` (which also
                                 // names `$x` in the class); false is the lenient default
     bool rw = false;    // `is rw` — public accessor is writable
+    bool readonly = false; // `is readonly` — stays read-only even in an `is rw` class
     bool required = false; // `is required` — .new must be given a value for it
     bool built = false;    // `is built` — a PRIVATE attr .new may still set by name
+    bool notBuilt = false; // `is built(False)` — a PUBLIC attr .new may NOT set
     std::string requiredWhy; // `is required("reason")` — carried into the exception message
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
     bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
@@ -780,6 +806,7 @@ struct AttrDecl {
     ExprPtr whereExpr;  // `has Numeric $.lat where {…}` — checked on construction and assignment
     ExprPtr def;        // optional default
     ExprPtr defaultTrait; // `is default(V)` — what `$!a.VAR.default` answers (and the value when there is no `= …`)
+    ExprPtr shape;      // `has @.a[3;3]` — a SHAPED array attribute's dimensions
 };
 
 struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::string> params;
@@ -794,6 +821,7 @@ struct ClassDecl : Stmt {
     std::vector<std::string> extraParents; // additional `is Parent` (multiple inheritance)
     std::vector<std::string> roles; // additional `does Role` (methods composed in)
     std::vector<std::string> hidesNames; // `hides Parent` — an unknown one is X::InvalidType
+    bool isHidden = false;       // `is hidden`
     std::vector<std::string> trustsNames; // `trusts Foo` — an unknown one is X::Undeclared
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;
@@ -903,6 +931,7 @@ struct EnumDecl : Stmt {
     ExprPtr values;     // expression evaluating to words / pairs
     bool isExport = false; // `is export` — importers of a braced module see the value names
     std::string pod, podTrail; // declarator pod (.WHY)
+    std::string ofType;  // `my Str enum …` / `enum E of Str …` — every value must be one
     EnumDecl(): Stmt(NK::EnumDecl) {}
 };
 
@@ -956,6 +985,7 @@ struct ForStmt : Stmt {
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
     bool modifier = false; // `EXPR for LIST` — no implicit block (a `my` in EXPR leaks out)
+    bool emptyPointy = false; // `for @l -> { … }`: a signature of NO parameters (not serialized)
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 
@@ -1010,7 +1040,7 @@ struct SubsetDecl : Stmt {
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 
-struct WhateverExpr : Expr { bool hyper = false; WhateverExpr(): Expr(NK::Whatever) {} }; // hyper: `**` (HyperWhatever)
+struct WhateverExpr : Expr { bool hyper = false; bool curryClosed = false; WhateverExpr(): Expr(NK::Whatever) {} }; // hyper: `**` (HyperWhatever); curryClosed: `((*))` is a Whatever VALUE
 
 struct GivenStmt : Stmt {
     ExprPtr topic;
@@ -1064,6 +1094,11 @@ struct Program {
     // members from a runtime expression) — and means the old fully-lenient
     // rule.
     std::set<std::string> declaredTypeNames;
+    // …and the TERM names it declares without a sigil (`constant FOO`, `my \x`):
+    // a parameter may be a value constraint on one (`sub f(FOO)`), and a
+    // hoisted routine is declared before the constant has run
+    std::set<std::string> declaredTermNames;
+    std::set<std::string> labelNames;   // `L:` statement labels — a bare `L` is the Label
     bool typeNamesOpaque = true;
     // Does this unit `use`/`need`/`import` a MODULE (as opposed to a pragma)?
     // An import brings in type names this unit never spells, and a top-level

@@ -15,6 +15,20 @@
 
 namespace rakupp {
 
+// `<with'hyphen>` — inside an assertion's NAME an apostrophe between identifier
+// characters belongs to the name (Raku identifiers take `'` and `-`); it opens
+// no string. `raw` is the pattern text read so far, `next` the character after
+// the apostrophe. The regex scanners ask this before opening a quote.
+static bool rxNameApostrophe(const std::string& raw, char next) {
+    if (!ascii::isalpha((unsigned char)next) && next != '_') return false;
+    size_t b = raw.size();
+    while (b > 0 && (ascii::isalnum((unsigned char)raw[b - 1]) || raw[b - 1] == '_' ||
+                     raw[b - 1] == '-' || raw[b - 1] == '\'')) b--;
+    if (b == raw.size() || !(ascii::isalpha((unsigned char)raw[b]) || raw[b] == '_')) return false;
+    while (b > 0 && (raw[b - 1] == '.' || raw[b - 1] == '&' || raw[b - 1] == '?' || raw[b - 1] == '!')) b--;
+    return b > 0 && raw[b - 1] == '<';
+}
+
 // Minimal POD → text render for `--doc`: a `=headN TEXT` / `=item TEXT` line keeps
 // its text (the directive word is dropped); ordinary paragraph lines pass through.
 static std::string renderPod(const std::string& content) {
@@ -131,7 +145,8 @@ static FudgeProbe fudgeProbe(const std::string& src) {
 }
 
 static std::string applyRakudoFudge(const std::string& src) {
-    if (src.find("#?rakudo") == std::string::npos && src.find("#?DOES") == std::string::npos)
+    if (src.find("#?rakudo") == std::string::npos && src.find("#?DOES") == std::string::npos &&
+        src.find("#?v6") == std::string::npos)
         return src; // fast path: no directives
     static const std::set<std::string> testFns(std::begin(kFudgeTestFns), std::end(kFudgeTestFns));
 
@@ -209,6 +224,24 @@ static std::string applyRakudoFudge(const std::string& src) {
         }
 
         // ---- directive lines: #?rakudo[.backend] [N] verb [reason]
+        // …and the LANGUAGE-VERSION form, `#?v6.0.0+ skip 'why'`: roast's fudge
+        // applies one whenever it names an explicit verb (whatever the version),
+        // and one without a verb only on a version it does not match — never,
+        // for the v6.d a spectest targets
+        const bool verDirective = line.compare(p, 3, "#?v") == 0 && p + 3 < line.size() &&
+                                  ascii::isdigit((unsigned char)line[p + 3]) && isComment(li);
+        if (verDirective) {
+            size_t q = p + 2;
+            while (q < line.size() && line[q] != ' ' && line[q] != '\t') q++;
+            size_t r = q;
+            while (r < line.size() && (line[r] == ' ' || line[r] == '\t')) r++;
+            while (r < line.size() && ascii::isdigit((unsigned char)line[r])) r++;
+            while (r < line.size() && (line[r] == ' ' || line[r] == '\t')) r++;
+            std::string vv = fudgeLeadingWord(line.substr(r));
+            if (vv != "skip" && vv != "todo" && vv != "emit" && vv != "eval" && vv != "try") continue;
+            // rewrite it as the equivalent rakudo directive and fall through
+            line = std::string(p, ' ') + "#?rakudo" + line.substr(q);
+        }
         if (line.compare(p, 8, "#?rakudo") == 0 && isComment(li)) {
             size_t q = p + 8;
             std::string backend;
@@ -627,6 +660,53 @@ std::string constantStringFor(const std::string& src, const std::string& var) {
 // file's declarations are visible here; an imported one still needs its
 // module's own parse.
 void Lexer::scanUserOps() {
+    // `sub circumfix:<w ">` — a closer that is a double quote. In TERM position
+    // `"` still opens a string; right after a term it can only be the closer.
+    for (size_t p = src_.find("circumfix:<"); p != std::string::npos; p = src_.find("circumfix:<", p + 1)) {
+        size_t close = src_.find('>', p + 11);
+        if (close == std::string::npos) continue;
+        std::string in = src_.substr(p + 11, close - p - 11);
+        size_t sp = in.find_last_of(" \t");
+        if (sp != std::string::npos && in.substr(sp + 1) == "\"")
+            dquoteCloserAt_ = std::min(dquoteCloserAt_, close + 1);
+    }
+    // `circumfix:<<$x>>` / `<< {sym} >>` — the parts live in a constant
+    for (size_t p = src_.find("circumfix:<<"); p != std::string::npos; p = src_.find("circumfix:<<", p + 1)) {
+        size_t close = src_.find(">>", p + 12);
+        if (close == std::string::npos) continue;
+        std::string in = src_.substr(p + 12, close - p - 12);
+        size_t a = in.find_first_not_of(" {"), z = in.find_last_not_of(" }");
+        if (a == std::string::npos) continue;
+        std::string var = in.substr(a, z - a + 1);
+        std::string val = constantStringFor(src_, var);
+        size_t i = 0;
+        while (i < val.size()) {
+            while (i < val.size() && val[i] == ' ') i++;
+            size_t j = val.find(' ', i);
+            std::string part = val.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            if (part.size() == 1 && std::strchr("@$", part[0]) && userSigilOps_.find(part[0]) == std::string::npos)
+                userSigilOps_ += part[0];
+            else if (part.size() > 1) noteUserOp(part, false);
+            if (j == std::string::npos) break;
+            i = j;
+        }
+    }
+    // `circumfix:["@", "@"]` — quoted parts; a SIGIL among them is an operator
+    // where no variable can start (see userSigilOps_)
+    for (size_t p = src_.find("circumfix:["); p != std::string::npos; p = src_.find("circumfix:[", p + 1)) {
+        size_t close = src_.find(']', p + 11);
+        if (close == std::string::npos) continue;
+        std::string in = src_.substr(p + 11, close - p - 11);
+        for (size_t i = 0; i < in.size(); i++) {
+            if (in[i] != '"' && in[i] != '\'') continue;
+            size_t e = in.find(in[i], i + 1);
+            if (e == std::string::npos) break;
+            std::string part = in.substr(i + 1, e - i - 1);
+            if (part.size() == 1 && std::strchr("@$", part[0]) && userSigilOps_.find(part[0]) == std::string::npos)
+                userSigilOps_ += part[0];
+            i = e;
+        }
+    }
     for (const char* cat : {"infix:", "prefix:", "postfix:", "term:"}) {
         const size_t cl = std::strlen(cat);
         const bool term = cat[0] == 't';
@@ -723,6 +803,8 @@ void Lexer::noteUserOp(const std::string& name, bool term) {
         }
         return true;
     };
+    if (!term && name.size() == 1 && std::strchr("@$", name[0]) && userSigilOps_.find(name[0]) == std::string::npos)
+        userSigilOps_ += name[0];
     if (name.empty() || name.find_first_of(" \t\n") != std::string::npos) return;
     if (wordish(name)) return;
     int l0; cpAt(name, 0, l0);
@@ -924,10 +1006,46 @@ void Lexer::skipWhitespaceAndComments() {
                 unspaceEnd_ = pos_;
                 continue;
             }
-            if (uwsAt(1) || embCommentAt(1)) {
+            // `foo \ .lc` — after a NAME and a space the backslash is the
+            // Capture prefix of the listop's argument, not an unspace
+            bool afterSpacedName = false;
+            if (pos_ > 1 && (src_[pos_ - 1] == ' ' || src_[pos_ - 1] == '\t')) {
+                size_t k = pos_ - 1;
+                while (k > 0 && (src_[k] == ' ' || src_[k] == '\t')) k--;
+                size_t e = k + 1;
+                while (k > 0 && (rakuIdentCont(src_[k]) || src_[k] == '-')) k--;
+                size_t b = (rakuIdentCont(src_[k]) || src_[k] == '-') ? k : k + 1;
+                if (b < e && rakuIdentStart(src_[b]) && ascii::isalpha((unsigned char)src_[b]) &&
+                    !(b > 0 && std::strchr("$@%&.!^*?:", src_[b - 1])))
+                    afterSpacedName = true;
+            }
+            if (!afterSpacedName && (uwsAt(1) || embCommentAt(1))) {
                 advance(); // backslash
                 for (;;) {
-                    if (int w = uwsAt(0)) { for (int k = 0; k < w; k++) advance(); continue; }
+                    if (int w = uwsAt(0)) {
+                        const bool nl = peek() == '\n';
+                        for (int k = 0; k < w; k++) advance();
+                        // a pod block at the start of a line is whitespace too
+                        if (nl && peek() == '=' && src_.compare(pos_, 7, "=begin ") == 0) {
+                            size_t ne = src_.find('\n', pos_);
+                            std::string blk = src_.substr(pos_ + 7, (ne == std::string::npos ? src_.size() : ne) - pos_ - 7);
+                            size_t we = blk.find_first_of(" \t\r");
+                            std::string name = blk.substr(0, we);
+                            std::string endTag = "\n=end " + name;
+                            size_t e = src_.find(endTag, pos_);
+                            if (!name.empty() && e != std::string::npos) {
+                                size_t stop = src_.find('\n', e + endTag.size());
+                                if (stop == std::string::npos) stop = src_.size();
+                                while (pos_ < stop) advance();
+                            }
+                        }
+                        continue;
+                    }
+                    // an end-of-line comment inside the run
+                    if (peek() == '#' && !embCommentAt(0)) {
+                        while (!eof() && peek() != '\n') advance();
+                        continue;
+                    }
                     if (embCommentAt(0)) {
                         const int startLine = line_;
                         advance(); advance(); // # `
@@ -1306,6 +1424,11 @@ Token Lexer::lexNumber() {
         // forms are Confused on Rakudo, where the adverbial `:36<…>` form —
         // parsed in Parser.cpp — is X::Syntax::Malformed.)
         if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
+        // `0b1.1e10` — a fraction after a PREFIXED literal is a method call on
+        // it that no name can start: Rakudo's "Malformed postfix call"
+        if (peek() == '.' && ascii::isdigit((unsigned char)peek(1)))
+            throw ParseError("Malformed postfix call", line_, "X::Syntax::Malformed",
+                             {{"what", "postfix call"}});
         Token t = make(Tok::IntLit, std::string("0") + base + digits); // keep the 0x/0b spelling
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
         return t;
@@ -1337,14 +1460,19 @@ Token Lexer::lexNumber() {
             if (peek() == '_') { if (!isDigitNext(1)) underscoreRun(); num += advance(); }
         }
     }
+    // (the exponent's sign may be U+2212 MINUS SIGN: `1e−2`)
+    const bool uniMinusExp = (peek() == 'e' || peek() == 'E') &&
+        (unsigned char)peek(1) == 0xE2 && (unsigned char)peek(2) == 0x88 &&
+        (unsigned char)peek(3) == 0x92 && ascii::isdigit((unsigned char)peek(4));
     if ((peek() == 'e' || peek() == 'E') &&
-        (ascii::isdigit((unsigned char)peek(1)) ||
+        (ascii::isdigit((unsigned char)peek(1)) || uniMinusExp ||
          ((peek(1) == '+' || peek(1) == '-') && ascii::isdigit((unsigned char)peek(2))))) {
         // an exponent needs DIGITS after the e — `:1e` is the colonpair `e => 1`,
         // not a malformed float
         isFloat = true; hasExp = true;
         num += advance();
-        if (peek() == '+' || peek() == '-') num += advance();
+        if (uniMinusExp) { advance(); advance(); advance(); num += '-'; }
+        else if (peek() == '+' || peek() == '-') num += advance();
         while (ascii::isdigit((unsigned char)peek()) || peek() == '_') {
             if (peek() == '_') { if (!ascii::isdigit((unsigned char)peek(1))) underscoreRun(); }
             num += advance();
@@ -1854,6 +1982,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (!shortAdv.empty()) adverbs = shortAdv + adverbs; // Qs → Q:s
     const bool explicitAdverbs = !adverbs.empty(); // the implicit :samespace below is not one
     if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
+    if (w == "ms") adverbs = ":s " + adverbs;                       // ms// == m:sigspace//
     // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`,
     // and before `/` too (`s :g /pat//`, `qw /a b/` — Rakudo accepts both)
     // (a q/qq/Q may even have its delimiter on the NEXT line: `q\n<…>`)
@@ -1989,6 +2118,49 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         return false;
     };
+    // `m°b°`, `s€a€b€` — a match or substitution takes a Unicode SYMBOL or
+    // punctuation character as its delimiter too (S05-metasyntax/delimiters.t),
+    // the same one closing, when every closer it needs is on this line
+    if ((isRegex || w == "s" || w == "ss") && (unsigned char)src_[p] >= 0xC2) {
+        unsigned char b0 = (unsigned char)src_[p];
+        size_t dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+        uint32_t cp = b0 & (0xFF >> (dlen + 1));
+        for (size_t k = 1; k < dlen && p + k < src_.size(); k++) cp = (cp << 6) | ((unsigned char)src_[p + k] & 0x3F);
+        std::string cat = uniGeneralCategory(cp);
+        if (!cat.empty() && (cat[0] == 'S' || cat[0] == 'P') &&
+            cat != "Ps" && cat != "Pe" && cat != "Pi" && cat != "Pf" && p + dlen <= src_.size()) {
+            const std::string D = src_.substr(p, dlen);
+            size_t need = isSubst ? 2 : 1, q = p + dlen;
+            while (q < src_.size() && src_[q] != '\n' && need) {
+                if (src_[q] == '\\') { q += 2; continue; }
+                if (src_.compare(q, dlen, D) == 0) { need--; q += dlen; } else q++;
+            }
+            if (need == 0) {
+                while (pos_ < p) advance();
+                for (size_t k = 0; k < dlen; k++) advance();
+                auto readTo = [&]() {
+                    std::string raw;
+                    while (!eof() && src_.compare(pos_, dlen, D) != 0) {
+                        if (peek() == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
+                        raw += advance();
+                    }
+                    for (size_t k = 0; k < dlen && !eof(); k++) advance();
+                    return raw;
+                };
+                std::string pat = readTo();
+                if (isSubst) {
+                    std::string repl = readTo();
+                    out = make(Tok::SubstLit, adverbs + pat);
+                    out.text2 = repl;
+                    return true;
+                }
+                out = make(Tok::RegexLit, adverbs + pat);
+                out.flag = (w == "rx");
+                if (w == "m" || w == "mm" || w == "ms") out.ival = 1;
+                return true;
+            }
+        }
+    }
     // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes; no
     // nesting, backslash protects. Every q-family form (not m/s/tr). `q｢…｣` is
     // one of these: the standalone ｢…｣ quote handled elsewhere never sees the
@@ -2007,7 +2179,14 @@ bool Lexer::tryQuoteForm(Token& out) {
             {
                 uint32_t cp = (unsigned char)D[0] & (0xFF >> (dlen + 1));
                 for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)D[k] & 0x3F);
-                if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
+                // the curly quotes pair up by shape, not by category: ‘ and
+                // the low ‚ both close with ’, “ and „ with ”
+                if (cp == 0x2018 || cp == 0x201A || cp == 0x201C || cp == 0x201E) {
+                    uint32_t cc = (cp == 0x2018 || cp == 0x201A) ? 0x2019 : 0x201D;
+                    DC.clear();
+                    DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F));
+                }
+                else if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
                     // The closer is the MIRRORED glyph, not blindly cp+1: the tick
                     // brackets cross over (⦍ U+298D closes with ⦐ U+2990, ⦏ U+298F
                     // with ⦎ U+298E), and cp+1 picked the other pair's closer — the
@@ -2205,6 +2384,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         int sd = 0; // [ ] nesting: a char class <-[/]> / group shields the delimiter
         bool inClass = false; // …and inside a class the brackets are MEMBERS, not nesting
         bool classOpen = false; // just opened a P5 class: a `]` here is a member
+        size_t commentAt = std::string::npos; // where a `#` comment ate the closing delimiter
         while (!eof()) {
             char ch = peek();
             if (ch == '\\' && !rawQ) { classOpen = false; advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
@@ -2247,11 +2427,18 @@ bool Lexer::tryQuoteForm(Token& out) {
             // group's closer and the second quote opened a string to end of file.
             // (The other two scanners — the bare `/…/` one and tryRuleDecl —
             // already had this rule.)
-            if (quoteAware && !inClass && (ch == '\'' || ch == '"') && ch != close) { q = ch; raw += advance(); continue; }
+            if (quoteAware && !inClass && (ch == '\'' || ch == '"') && ch != close &&
+                !(ch == '\'' && rxNameApostrophe(raw, peek(1)))) { q = ch; raw += advance(); continue; }
             if (quoteAware && !inClass && (unsigned char)ch >= 0x80 && skipUniQuote(raw)) continue;
             // a `#` comment runs to the end of the line: a delimiter inside it
             // is commentary, not the end of the pattern
-            if (quoteAware && !p5 && !isRepl && !inClass && ch == '#') { skipRegexComment(raw); continue; }
+            if (quoteAware && !p5 && !isRepl && !inClass && ch == '#') {
+                size_t at = raw.size();
+                skipRegexComment(raw);
+                // the comment swallowed the closer: remember where the pattern was
+                if (commentAt == std::string::npos && raw.find(close, at) != std::string::npos) commentAt = at;
+                continue;
+            }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
             // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
             // Inside a CHARACTER CLASS a `[` is a literal member, not a nested
@@ -2283,6 +2470,18 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (isRepl)
                 throw ParseError(std::string("Malformed replacement part; couldn't find final ") + close,
                                  line_, true);
+            // `m/foo (#) bar /` — the comment took the `)` AND the delimiter; Rakudo
+            // reports the group left open where the comment began
+            if (commentAt != std::string::npos) {
+                int pd = 0;
+                for (size_t k = 0; k < commentAt; k++) {
+                    if (raw[k] == '\\') { k++; continue; }
+                    if (raw[k] == '(') pd++; else if (raw[k] == ')') pd--;
+                }
+                if (pd > 0)
+                    throw ParseError("Unable to parse regex; couldn't find final ')'", startLine, "X::Comp::Group",
+                                     {{"panic", "X::Comp::AdHoc"}, {"panic-msg", "Unable to parse regex; couldn't find final ')'"}});
+            }
             runawayTerm(std::string(1, close), std::string(1, d), startLine);
         }
         return raw;
@@ -2436,6 +2635,33 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     if (isRegex) {
         // matcher-only adverbs are illegal on an rx// literal (no match to drive)
+        if (w == "rx" || w == "m") {
+            // an adverb nobody defines is refused by name
+            static const std::set<std::string> kKnown = {
+                "i", "ignorecase", "ii", "samecase", "m", "ignoremark", "mm", "samemark",
+                "s", "sigspace", "ss", "samespace", "r", "ratchet", "P5", "Perl5",
+                "c", "continue", "p", "pos", "ov", "overlap", "ex", "exhaustive",
+                "g", "global", "nth", "x", "a", "ignoreaccent", "aa", "sameaccent",
+                "st", "nd", "rd", "th", "bytes", "codes", "chars", "graphs"};
+            for (size_t k = 0; k < adverbs.size(); k++) {
+                if (adverbs[k] != ':') continue;
+                size_t e = k + 1;
+                if (e < adverbs.size() && adverbs[e] == '!') e++;
+                size_t ns = e;
+                while (e < adverbs.size() && ascii::isdigit((unsigned char)adverbs[e])) e++;
+                size_t nameStart = e;
+                while (e < adverbs.size() && (ascii::isalnum((unsigned char)adverbs[e]) || adverbs[e] == '_' ||
+                                              adverbs[e] == '-'))
+                    e++;
+                std::string name = adverbs.substr(nameStart, e - nameStart);
+                if (name.empty() || (nameStart > ns && (name == "st" || name == "nd" || name == "rd" ||
+                                                        name == "th" || name == "x"))) continue;
+                if (!kKnown.count(name))
+                    throw ParseError("Adverb " + name + " not allowed on " + w, line_,
+                                     "X::Syntax::Regex::Adverb",
+                                     {{"adverb", name}, {"construct", w}});
+            }
+        }
         if (w == "rx") {
             static const std::pair<const char*, const char*> kBad[] = {
                 {":g ", "g"}, {":global ", "global"}, {":nth(", "nth"}, {":x(", "x"}};
@@ -2469,7 +2695,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
         // …and the explicit `m//` is the opposite: ALWAYS a match against $_, even
         // where a bare `/…/` would be the Regex object (`my $m = m/b/` is a Match)
-        if (w == "m" || w == "mm") out.ival = 1;
+        if (w == "m" || w == "mm" || w == "ms") out.ival = 1;
         return true;
     }
     bool interp = (w == "qq");
@@ -2906,7 +3132,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // in `[ ']'+ ]` (Form's numeric fields) is a literal bracket, and
         // reading it as the group's closer left a stray quote that ate the
         // statements after the regex without a word of complaint.
-        if ((ch == '\'' || ch == '"') && !inClass) { q = ch; body += advance(); continue; }
+        if ((ch == '\'' || ch == '"') && !inClass && !(ch == '\'' && rxNameApostrophe(body, peek(1)))) { q = ch; body += advance(); continue; }
         // a `#` comment at regex level runs to the end of the line, braces and all
         if (ch == '#' && !inClass) { skipRegexComment(body); continue; }
         // Inside a CHARACTER CLASS a `[` is a literal member, not a nested group:
@@ -3475,6 +3701,13 @@ Token Lexer::lexOperator(bool termBefore) {
             return make(Tok::Ident, "^" + nm);
         }
     }
+    // `$j &= 2` / `|=` / `^=` — the junction constructors' assignment metaop,
+    // in INFIX position only (a term-position `&` is a sigil)
+    if (termBefore && (peek() == '&' || peek() == '|' || peek() == '^') && peek(1) == '=' &&
+        peek(2) != '=' && peek(2) != '>') {
+        char j = advance(); advance();
+        return make(Tok::Op, std::string(1, j) + "=");
+    }
     char c = advance();
     return make(Tok::Op, std::string(1, c));
 }
@@ -3741,6 +3974,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
                              (lk == Tok::Op && (out.back().text == "*" || // Whatever-curry `*²`
+                                                out.back().text == "\xE2\x88\x9E" || // `∞²` — ∞ is a term
                                                 out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
             std::string digits;
             if (afterTerm && tryReadSuperscript(digits)) {
@@ -3881,9 +4115,34 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                                  "X::Comp::AdHoc", {});
             }
         } else if (c == '\'' && !inAngle) {
+            // `sub foo'($x)` — an apostrophe glued to a routine's NAME that does
+            // not continue it (a letter must follow) leaves the declaration with
+            // no signature or block: Rakudo reports the block missing
+            if (!spaced && out.size() >= 2 && out.back().kind == Tok::Ident &&
+                out[out.size() - 2].kind == Tok::Ident &&
+                (out[out.size() - 2].text == "sub" || out[out.size() - 2].text == "method") &&
+                !(pos_ + 1 < src_.size() && isIdentStart(src_[pos_ + 1])))
+                throw ParseError("Missing block", line_, "X::Syntax::Missing", {{"what", "block"}});
             t = lexQuoted('\'');
+        } else if (c == '"' && !inAngle && pos_ >= dquoteCloserAt_ && !out.empty() &&
+                   (out.back().kind == Tok::IntLit || out.back().kind == Tok::NumLit ||
+                    out.back().kind == Tok::StrLit || out.back().kind == Tok::StrInterp ||
+                    out.back().kind == Tok::Var || out.back().kind == Tok::RParen ||
+                    out.back().kind == Tok::RBracket)) {
+            t = make(Tok::Op, "\"");
+            advance();
         } else if (c == '"' && !inAngle) {
             t = lexQuoted('"');
+        } else if (!userSigilOps_.empty() && userSigilOps_.find(c) != std::string::npos && !inAngle &&
+                   // (not after `]`/`)`: `[+] @x` is a reduction over a variable)
+                   ((!out.empty() && (out.back().kind == Tok::IntLit || out.back().kind == Tok::NumLit ||
+                                      out.back().kind == Tok::StrLit || out.back().kind == Tok::StrInterp ||
+                                      out.back().kind == Tok::Var)) ||
+                    pos_ + 1 >= src_.size() || ascii::isspace((unsigned char)src_[pos_ + 1]))) {
+            // a declared operator spelled with a sigil: after a term, or with
+            // nothing a name could start with after it
+            t = make(Tok::Op, std::string(1, c));
+            advance();
         } else if (c == '$' || c == '@' || c == '%' || c == '&' || isIdentStart(c) || unicodeLetterHere()) {
             // '%' and '&' could be operators; treat as var only if followed by name/twigil
             if (c == '%' && !inAngle && (peek(1) == '-' || peek(1) == '+') && p5AssignAhead(2))
@@ -3936,7 +4195,9 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                            (isIdentStart(peek(2)) || unicodeLetterAt(2));
             if (!anonHash && !hashContext && !capHash && (c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || unicodeLetterAt(1) || peek(1) == '*' || peek(1) == '.' ||
-                  peek(1) == '!' || peek(1) == '^' ||
+                  peek(1) == '!' ||
+                  // `%^a` is a placeholder hash; `1%^^1` is modulo then `^^`
+                  (peek(1) == '^' && peek(2) != '^') ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   // `%:f` / `&:f` — the `:` twigil, a NAMED placeholder parameter,
                   // which names a variable just as `?`/`=`/`~` do
@@ -3957,7 +4218,20 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         // and lexing that as set-containment broke the whole file (AttrX::Mooish).
         // The exception is a metaop letter — `Z(|)`, `X(&)`, `R(-)` are written
         // tight — so a preceding bare Z/X/R still opens an operator.
-        } else if (c == '(' && (spaced || setOpFollows(out)) && trySetOp(t)) {
+        // …and after a routine declarator (`sub (|) {…}`, `sub f (|)`) the paren
+        // opens a SIGNATURE whose one parameter is an anonymous capture
+        } else if (c == '(' && (spaced || setOpFollows(out)) &&
+                   !([&] {
+                       auto isDecl = [](const Token& k) {
+                           return k.kind == Tok::Ident &&
+                                  (k.text == "sub" || k.text == "method" || k.text == "submethod" ||
+                                   k.text == "multi" || k.text == "proto" || k.text == "only");
+                       };
+                       size_t n = out.size();
+                       return (n >= 1 && isDecl(out[n - 1])) ||
+                              (n >= 2 && out[n - 1].kind == Tok::Ident && isDecl(out[n - 2]));
+                   }()) &&
+                   trySetOp(t)) {
             // `!(elem)` — the negation metaop written tight on a parenthesized
             // set operator is ONE negated infix (the `(!elem)` spelling the
             // parser reads), not prefix-not on a term. Template6 writes
@@ -4023,7 +4297,8 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // literal: the `<` then bumped the angle counter, the closing `/` was
                 // never found, and the whole statement failed to parse. (URI strips
                 // wrapping brackets with `/^ \s* ['<' | '"'] /`.)
-                if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0))
+                if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0) &&
+                    !(ch == '\'' && rxNameApostrophe(raw, peek(1))))
                     { quote = ch; raw += advance(); continue; }
                 if ((unsigned char)ch >= 0x80 && !(angle > 0 && brack > 0) && skipUniQuote(raw)) continue;
                 if (ch == '{') { brace++; raw += advance(); continue; }
@@ -4075,7 +4350,14 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 else if (ch == '/' && angle == 0 && brack == 0) break;
                 raw += advance();
             }
-            if (eof()) runawayTerm("/", "/", startLine);
+            if (eof()) { // Rakudo reports a regex it cannot end as a GROUP of errors
+                const std::string msg = "Couldn't find terminator / (corresponding / was at line " +
+                                        std::to_string(startLine) + ")";
+                ParseError e(msg, line_, "X::Comp::Group",
+                             {{"panic", "X::Comp::AdHoc"}, {"panic-msg", "Unable to parse regex; couldn't find final '/'"}});
+                e.atEof = true;
+                throw e;
+            }
             advance(); // closing /
             t = make(Tok::RegexLit, raw);
         }
@@ -4112,6 +4394,33 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     std::string pre = src_.substr(ls, pos_ + 1 - ls);
                     std::string post = pos_ + 1 < src_.size()
                         ? src_.substr(pos_ + 1, (le == std::string::npos ? src_.size() : le) - pos_ - 1) : std::string();
+                    // `:name<>` — a colonpair whose value is the empty list: legal,
+                    // but worth a worry (unless a lexical `no worries` is in force)
+                    if (!nullOp && n >= 2 && out[n - 1].kind == Tok::Ident && !out[n - 1].spaceBefore &&
+                        out[n - 2].kind == Tok::Op && out[n - 2].text == ":") {
+                        bool quiet = false;
+                        int depth = 0;
+                        for (size_t k = n; k-- > 0 && !quiet; ) {
+                            const Token& b = out[k];
+                            if (b.kind == Tok::RBrace) depth++;
+                            else if (b.kind == Tok::LBrace) { if (depth > 0) depth--; }
+                            else if (depth == 0 && b.kind == Tok::Ident && b.text == "worries" &&
+                                     k > 0 && out[k - 1].kind == Tok::Ident && out[k - 1].text == "no")
+                                quiet = true;
+                        }
+                        if (!quiet) {
+                            const std::string& key = out[n - 1].text;
+                            std::cerr << "Potential difficulties:\n    Pair with <> really means an empty list, "
+                                         "not null string; use :" << key << "('') to represent the null string,\n"
+                                         "      or :" << key << "() to represent the empty list more accurately\n"
+                                         "    at line " << line_ << "\n";
+                        }
+                        out.push_back(make(Tok::LParen, "("));
+                        advance();              // the `>` (the `<` is already consumed)
+                        t = make(Tok::RParen, ")");
+                        out.push_back(t);
+                        continue;
+                    }
                     if (nullOp)
                         throw ParseError("Null operator is not allowed", line_, "X::Comp::Group",
                                          {{"panic", "X::Syntax::Extension::Null"},
@@ -4125,7 +4434,12 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                                      "string or () for an empty list",
                                      line_, "X::Obsolete", {{"old", "<>"}});
                 }
-                if (t.text == "<" && peek() != ']' &&
+                // `:foo <3` — a SPACED `<` after a colonpair key is the infix
+                // comparison (Rakudo: `(:foo) < 3`); only a glued one is its value
+                bool spacedAfterPairKey = spaced && out.size() >= 2 && out.back().kind == Tok::Ident &&
+                    !out.back().spaceBefore && out[out.size() - 2].kind == Tok::Op &&
+                    out[out.size() - 2].text == ":" && !kTermAfterIdent.count(out.back().text);
+                if (t.text == "<" && peek() != ']' && !spacedAfterPairKey &&
                     (angleTermContext(out) ||
                      // `self<key>` — a postcircumfix on the term `self`, never a
                      // comparison (Intl::LanguageTag's `method x (--> Type) { self<ms> }`)

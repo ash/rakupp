@@ -253,13 +253,26 @@ struct Checker {
         }
     }
 
+    // A routine's own signature declares its names LEFT TO RIGHT: a default or
+    // `where` sees the parameters before it (and its own), never a later one —
+    // `sub foo($x where { $x == $y }, $y)` is X::Undeclared in Rakudo.
+    void paramsInOrder(const std::vector<Param>& ps) {
+        for (auto& p : ps) {
+            declare(p.name);
+            if (!p.namedKey.empty()) declare(std::string(1, p.sigil) + p.namedKey);
+            if (p.subSig) paramsInOrder(*p.subSig);
+            walkExpr(p.defaultVal.get());
+            walkExpr(p.whereExpr.get());
+            walkExpr(p.litVal.get());
+        }
+    }
+
     void walkBody(const std::vector<Param>& ps, const std::vector<StmtPtr>& body,
                   const std::vector<std::vector<Param>>* alts = nullptr,
                   const Expr* retLiteral = nullptr) {
         pushScope();
-        params(ps);
+        paramsInOrder(ps);
         if (alts) for (auto& a : *alts) params(a);   // `(sig1) | (sig2)` share the body
-        paramExprs(ps);
         walkStmts(body);
         walkExpr(retLiteral);                        // `--> $x` sees the signature
         popScope();

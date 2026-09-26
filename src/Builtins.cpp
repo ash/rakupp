@@ -28,6 +28,7 @@
 #include "BuiltinsShared.h"
 #include "RakuAstClasses.h"
 #include "BuildInfo.h"
+#include <filesystem>
 #include <algorithm>
 #include <atomic>
 #include <ctime>
@@ -60,6 +61,7 @@
 #include <sys/file.h>   // flock (rakupp-repo-lock)
 #include <sys/utsname.h>
 #include <sys/socket.h>
+#include <sys/un.h>     // PF_UNIX sockets (IO::Socket::INET :family(PF_UNIX))
 #include <poll.h>       // the async-read loop waits with a timeout so closing a
                         // TAP can stop it without touching the socket
 #include <netinet/in.h>
@@ -313,6 +315,15 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
         {"Match",   {"Match","Capture","Cool","Any","Mu"}},
         {"Capture", {"Capture","Any","Mu"}},
+        // the Code family: a Sub/Method IS a Routine IS a Block IS Code
+        // (type objects smartmatch through this: `Sub ~~ Routine`)
+        {"Sub",       {"Sub","Routine","Block","Code","Callable","Any","Mu"}},
+        {"Method",    {"Method","Routine","Block","Code","Callable","Any","Mu"}},
+        {"Submethod", {"Submethod","Routine","Block","Code","Callable","Any","Mu"}},
+        {"Routine",   {"Routine","Block","Code","Callable","Any","Mu"}},
+        {"Block",     {"Block","Code","Callable","Any","Mu"}},
+        {"WhateverCode", {"WhateverCode","Code","Callable","Any","Mu"}},
+        {"Code",      {"Code","Callable","Any","Mu"}},
         // a built-in encoding IS an Encoding::Builtin, which does the Encoding role
         {"Encoding", {"Encoding","Encoding::Builtin","Any","Mu"}},
         {"Encoding::Builtin", {"Encoding::Builtin","Encoding","Any","Mu"}},
@@ -1455,6 +1466,38 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
 // pipes, feeds them to the Supply taps, reaps it, and marks the promise Kept
 // (finished) or Broken (timed out). The fallback path spawns here, lazily —
 // for a promise whose eager spawn never happened (empty argv, fork failure).
+// A Proc::Async whose program cannot be found on PATH will never start —
+// the reason, in libuv's words, or "" when it looks runnable. (The spawn
+// itself happens late, when something awaits or drives the process; its
+// `.ready` and a `whenever` on its streams have to know sooner.)
+std::string procSpawnMissing(const Value& proc) {
+#if defined(_WIN32)
+    (void)proc; return "";
+#else
+    if (!(proc.t == VT::Hash && proc.hash())) return "";
+    auto it = proc.hash()->find("argv");
+    if (it == proc.hash()->end() || !it->second.arr() || it->second.arr()->empty()) return "";
+    std::string prog = (*it->second.arr())[0].toStr();
+    if (prog.empty()) return "";
+    auto bad = [&] {
+        return "Failed to spawn process " + prog + ": no such file or directory (error code -2)";
+    };
+    if (prog.find('/') != std::string::npos) return ::access(prog.c_str(), X_OK) == 0 ? "" : bad();
+    const char* path = std::getenv("PATH");
+    std::string ps = path ? path : "/usr/bin:/bin";
+    size_t st = 0;
+    for (;;) {
+        size_t c = ps.find(':', st);
+        std::string dir = ps.substr(st, c == std::string::npos ? std::string::npos : c - st);
+        if (dir.empty()) dir = ".";
+        if (::access((dir + "/" + prog).c_str(), X_OK) == 0) return "";
+        if (c == std::string::npos) break;
+        st = c + 1;
+    }
+    return bad();
+#endif
+}
+
 void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     if (!promise.hash()) return;
     if (promise.hash()->count("status") && (*promise.hash())["status"].toStr() != "Planned") return; // already run
@@ -1486,10 +1529,75 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     // runner relaying a build's progress relayed it all after the build (issue
     // #51). rakupp's own react loop drives it, so a `whenever` block printing a
     // line prints it now.
-    auto emitChunk = [&](const char* key, const std::string& data) {
-        if (data.empty()) return;
-        eachTap(key, [&](Value& cb, Value&, bool bin, bool) {
-            if (cb.t != VT::Code) return;
+    // A character stream decodes with the tap's `:enc`, else the process's,
+    // else UTF-8 — and bytes that are not UTF-8 QUIT the stream (a trailing
+    // partial sequence is only a chunk boundary, not an error).
+    auto validUtf8 = [](const std::string& d) {
+        size_t i = 0, n = d.size();
+        while (i < n) {
+            unsigned char c = (unsigned char)d[i];
+            int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+            if (!len || i + len > n) return false;
+            for (int k = 1; k < len; k++) if (((unsigned char)d[i + k] >> 6) != 2) return false;
+            i += len;
+        }
+        return true;
+    };
+    // A chunk boundary may fall INSIDE a character: its first bytes end this
+    // chunk and the rest open the next. The incomplete tail is held back per
+    // stream and put in front of the next chunk, so a character stream only
+    // ever sees whole characters (and malformed means malformed).
+    std::map<std::string, std::string> utf8Carry;
+    auto completeUtf8Prefix = [](const std::string& d) -> size_t {
+        size_t n = d.size();
+        for (size_t back = 1; back <= 3 && back <= n; back++) {
+            unsigned char c = (unsigned char)d[n - back];
+            if ((c >> 6) == 2) continue;                       // a continuation byte: keep looking
+            int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+            return (size_t)len > back ? n - back : n;          // the lead's sequence is incomplete
+        }
+        return n;
+    };
+    auto emitChunk = [&](const char* key, const std::string& data0) {
+        if (data0.empty()) return;
+        auto taps = proc.hash()->find(key);
+        if (taps == proc.hash()->end() || !taps->second.arr()) return;
+        std::string& carry = utf8Carry[key];
+        std::string whole = carry + data0;
+        const size_t cut = completeUtf8Prefix(whole);
+        carry = whole.substr(cut);
+        whole.resize(cut);
+        const std::string procEnc = proc.hash()->count("enc") ? (*proc.hash())["enc"].toStr() : std::string();
+        for (auto& t : *taps->second.arr()) {
+            Value cb = t; bool bin = false;
+            std::string enc = procEnc;
+            Value quitCb;
+            if (t.t == VT::Hash && t.hash()->count("emit")) {
+                cb = (*t.hash())["emit"];
+                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
+                auto e = t.hash()->find("enc"); if (e != t.hash()->end()) enc = e->second.toStr();
+                auto q = t.hash()->find("quit"); if (q != t.hash()->end()) quitCb = q->second;
+                if (t.hash()->count("quit-fired")) continue;
+            }
+            if (cb.t != VT::Code && quitCb.t != VT::Code) continue;
+            std::string data = data0;
+            if (!bin) {
+                if (enc.empty() || enc == "utf-8" || enc == "utf8") {
+                    data = whole;
+                    if (data.empty()) continue;   // only part of a character so far
+                    if (!validUtf8(data)) {
+                        if (t.t == VT::Hash) (*t.hash())["quit-fired"] = Value::boolean(true);
+                        if (quitCb.t == VT::Code) {
+                            Value ex = makeTypedEx("X::AdHoc", {{"payload", Value::str("Malformed UTF-8")}},
+                                                   "Malformed UTF-8");
+                            ValueList qa{ex}; callCallable(quitCb, qa);
+                        }
+                        continue;
+                    }
+                }
+                else data = decodeTextEnc(data, enc);
+            }
+            if (cb.t != VT::Code) continue;   // a tap with only a :quit
             Value chunk = Value::str(data);
             // `.stdout(:bin)` taps get the bytes as a Blob (zef's fetcher
             // Buf.appends them); a plain tap gets the DECODED Str, as
@@ -1505,7 +1613,7 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
             }
             ValueList ca{chunk};
             callCallable(cb, ca);
-        });
+        }
     };
     std::exception_ptr sinkErr;
     ChildChunkSink sink = [&](bool isErr, const char* d, size_t n) {
@@ -1536,6 +1644,18 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     // `.act({…}, :done({$err.done}))`) — with or without output, and whatever
     // the exit code.
     auto finishTaps = [&](const char* key) {
+        // an incomplete character left at the very end goes out as it is
+        {
+            auto ci = utf8Carry.find(key);
+            if (ci != utf8Carry.end() && !ci->second.empty()) {
+                std::string rest; rest.swap(ci->second);
+                eachTap(key, [&](Value& cb, Value&, bool bin, bool) {
+                    if (bin || cb.t != VT::Code) return;
+                    ValueList ca{Value::str(rest)};
+                    callCallable(cb, ca);
+                });
+            }
+        }
         eachTap(key, [&](Value& cb, Value& done, bool, bool lines) {
             if (lines && cb.t == VT::Code) {
                 ValueList fin{Value::str(""), Value::boolean(true)};
@@ -1561,6 +1681,14 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
 // `.WHAT` and the default renderer both disagreed with Rakudo.
 Value coerceToSigil(Value v, char sigil) {
     if (sigil == '@') {
+        // `has @.a is Buf`: a byte buffer IS the Positional container
+        if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) return v;
+        // an ITEMIZED list (`$[1,2,3]`, a `$x` holding an Array) is ONE element
+        if (v.t == VT::Array && v.itemized && v.enumName.empty()) {
+            Value a = Value::array();
+            a.arr()->push_back(v);
+            return a;
+        }
         // …and the attribute OWNS its buffer. Construction is assignment, not
         // binding: `T.new(pts => @src)` fills @!pts FROM @src, and passing the
         // caller's array through here let the class's own later
@@ -1826,6 +1954,16 @@ static Value arrayHoleFill(const Value& arr, const Value& e) {
 }
 
 std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen) {
+    // a FAILURE renders as the constructor call that rebuilds it, `handled`
+    // flag included: `.raku.EVAL` round-trips it
+    if (v.t == VT::Hash && v.hashKind == "Failure" && v.hash()) {
+        auto ex = v.hash()->find("exception");
+        auto hd = v.hash()->find("handled");
+        std::string out = "Failure.new(exception => " +
+            (ex != v.hash()->end() ? rakuRepr(ex->second, depth + 1, seen) : std::string("X::AdHoc.new"));
+        if (hd != v.hash()->end() && hd->second.truthy()) out += ", handled => Bool::True";
+        return out + ")";
+    }
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
     // style — nested occurrences included. (The .raku method arm pre-materialises
@@ -2262,6 +2400,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         }
         case VT::Object: {
             if (!v.obj() || !v.obj()->cls) return v.gist();
+            // a class's OWN `.raku` renders its objects, nested ones included
+            if (g_objMethodStr) { std::string o; if (g_objMethodStr(v, "raku", o)) return o; }
             std::string r = v.obj()->cls->name + ".new";
             // INHERITED attributes count: iterating only cls->attrs dropped every
             // one, so `class Q is P` reprd as `Q.new(q => 2)` and would not survive
@@ -3693,6 +3833,20 @@ static Value exactIntWeight(const Value& w) {
 // pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
 // (`set [foo=>1, bar=>2]` has two Pair elements); coercions (.Set/.Bag on a
 // Hash, new-from-pairs) keep the pair→count reading.
+// The EMPTY immutable Set/Bag/Mix is one object: `().Bag =:= bag()`. Only
+// the constructors that hand the value straight to the program use it —
+// makeBaggy's other callers may fill what they get in place.
+Value emptyQuantSingleton(const std::string& kind) {
+    static Value emptySet, emptyBag, emptyMix;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        emptySet = Value::makeHash(); emptySet.hashKind = "Set";
+        emptyBag = Value::makeHash(); emptyBag.hashKind = "Bag";
+        emptyMix = Value::makeHash(); emptyMix.hashKind = "Mix";
+    });
+    return kind == "Set" ? emptySet : kind == "Bag" ? emptyBag : emptyMix;
+}
+
 Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsElements) {
     Value h = Value::makeHash();
     h.hashKind = kind;
@@ -4402,6 +4556,41 @@ static bool fhWritesToFile(const ValueMap& m) {
 void Interpreter::fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::string& s) {
     if (!fhWritesToFile(*h)) return;
     std::string mode = (*h)["mode"].toStr();
+    // A read-write handle (`:update`, `:rw`) writes IN PLACE at its write
+    // position — overwriting, never truncating — and `.seek` moves it.
+    // …and so does a `:w` handle that was `.seek`ed (an `:a` one still appends)
+    if (mode == "rw" || mode == "update" || (mode == "w" && h->count("wpos"))) {
+        const std::string path = (*h)["path"].toStr();
+        { std::ofstream touch(path, std::ios::binary | std::ios::app); }   // `:rw` creates
+        std::fstream io(path, std::ios::binary | std::ios::in | std::ios::out);
+        long long wpos = 0;
+        auto wp = h->find("wpos");
+        if (wp != h->end()) wpos = wp->second.toInt();
+        // no seek yet: the write follows the READ cursor — `.lines` then `.say`
+        // appends after what was read
+        else {
+            auto ln = h->find("lines"), ps = h->find("pos");
+            if (ln != h->end() && ps != h->end() && ln->second.arr()) {
+                auto eo = h->find("line-eols");
+                long long n = ps->second.toInt();
+                auto& L = *ln->second.arr();
+                for (long long i = 0; i < n && i < (long long)L.size(); i++) {
+                    wpos += (long long)L[(size_t)i].toStr().size();
+                    if (eo != h->end() && eo->second.arr() && (size_t)i < eo->second.arr()->size())
+                        wpos += (long long)(*eo->second.arr())[(size_t)i].toStr().size();
+                }
+            }
+        }
+        if (h->count("rwappend")) {   // `:ra`: always at the end
+            std::error_code ec;
+            auto sz = std::filesystem::file_size(path, ec);
+            wpos = ec ? 0 : (long long)sz;
+        }
+        if (io) { io.seekp(wpos); io << s; }
+        (*h)["wpos"] = Value::integer(wpos + (long long)s.size());
+        (*h)["wrote"] = Value::boolean(true);
+        return;
+    }
     bool wrote = (*h)["wrote"].truthy();   // earlier bytes are already out there
     std::ofstream out((*h)["path"].toStr(),
                       std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
@@ -4409,6 +4598,7 @@ void Interpreter::fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::
     // Even an EMPTY write settles the truncate question: the file has been
     // opened for this handle, so the next one must append rather than start over.
     (*h)["wrote"] = Value::boolean(true);
+    if (!s.empty()) h->erase("wpos");   // an `:a` write lands at the end whatever was sought
 }
 
 bool Interpreter::fhFlush(const Value& h) {
@@ -5650,6 +5840,40 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // A FileSystem repo is the non-installed sibling: it serves a source tree
         // directly. rakupp does not enumerate its dists either, so `.files` answers
         // the same empty list rather than being absent.
+        // ONE repository per prefix: `CURFS.new(:prefix($p)) === CURFS.new(:prefix($p))`
+        if (inv.t == VT::Type && inv.s == "CompUnit::Repository::FileSystem" && m == "new" &&
+            classes_.count("CompUnit::Repository::FileSystem")) {
+            std::string pfx; Value next = Value::any();
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "prefix") pfx = a.pairVal()->toStr();
+                    else if (a.s == "next-repo") next = *a.pairVal();
+                }
+            static std::mutex curfsMu;
+            static std::map<std::string, Value> curfsCache;
+            std::lock_guard<std::mutex> lk(curfsMu);
+            auto hit = curfsCache.find(pfx);
+            if (hit != curfsCache.end()) return hit->second;
+            auto od = makePayload<ObjectData>();
+            od->cls = classes_["CompUnit::Repository::FileSystem"];
+            od->attrs["prefix"] = Value::str(pfx);
+            od->attrs["next-repo"] = next;
+            Value o = Value::object(od);
+            curfsCache[pfx] = o;
+            return o;
+        }
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->name == "CompUnit::Repository::FileSystem") {
+            auto& at = inv.obj()->attrs;
+            if (m == "prefix") {
+                Value p = Value::str(at.count("prefix") ? at["prefix"].toStr() : std::string());
+                p.hashKind = "IO"; return p;
+            }
+            if (m == "short-id") return Value::str("file");
+            if (m == "can-install") return Value::boolean(false);
+            if (m == "install")
+                throwTyped("X::AdHoc", {}, "Cannot install on CompUnit::Repository::FileSystem");
+        }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
             inv.obj()->cls->name == "CompUnit::Repository::FileSystem" &&
             (m == "files" || m == "candidates" || m == "installed")) {
@@ -5709,12 +5933,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
             }
             if (!found) return Value::nil();
-            if (m == "need") loadModule(want);
+            // the SAME CompUnit each time the repository is asked (Rakudo caches
+            // what it loaded): `$curlf.need(…) === $curlf.need(…)`
+            {
+                auto cit = inv.obj()->attrs.find("\x01cu:" + want);
+                if (cit != inv.obj()->attrs.end()) return cit->second;
+            }
+            if (m == "need") {
+                // the repository's OWN tree is where the module is: search it first
+                libPaths_.insert(libPaths_.begin(), prefix);
+                try { loadModule(want, {}, /*doImport=*/false); }
+                catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
+                libPaths_.erase(libPaths_.begin());
+            }
             Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
+            (*cu.hash())["from"] = Value::str("Raku");
             (*cu.hash())["short-name"] = Value::str(want);
             (*cu.hash())["repo"] = inv;
             // `no precompilation;` in the module keeps it out of the cache
             (*cu.hash())["precompiled"] = Value::boolean(unitPrecompilable(want, {prefix}));
+            inv.obj()->attrs["\x01cu:" + want] = cu;
             return cu;
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
@@ -6063,10 +6301,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return w;
         }
         if (inv.t == VT::Type) {
+            // a role-group CANDIDATE is documented by its own declaration, and
+            // the group by its default candidate's
+            if (inv.ext()) {
+                auto rc = std::static_pointer_cast<RoleCandidateRef>(inv.ext());
+                if (rc->ci && !rc->ci->pod.empty())
+                    return declarator(rc->ci->pod, rc->ci->podTrail, rc->ci->decl ? rc->ci->decl->line : 0);
+            }
             auto it = classes_.find(inv.s);
-            if (it != classes_.end() && !it->second->pod.empty())
-                return declarator(it->second->pod, it->second->podTrail,
-                                  it->second->decl ? it->second->decl->line : 0);
+            ClassInfo* dc = it != classes_.end() && it->second && it->second->isRole ? it->second->roleGroupDefault()
+                          : it != classes_.end() ? it->second.get() : nullptr;
+            if (dc && !dc->pod.empty())
+                return declarator(dc->pod, dc->podTrail, dc->decl ? dc->decl->line : 0);
             auto pi = pkgPod_.find(inv.s); // a module/package keeps its own
             if (pi != pkgPod_.end()) {
                 auto pt = pkgPodTrail_.find(inv.s);
@@ -6589,6 +6835,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (mm == "constraint_type") return Value::typeObj(from.empty() ? "Any" : from);
                 if (mm == "target_type") return Value::typeObj(target);
                 if (args.empty()) return Value::any();
+                // a value the CONSTRAINT refuses cannot be coerced at all
+                // (`Int(Str).^coerce(pi)`), and one already the target stays
+                if (!from.empty() && from != "Any" && from != "Mu" && !typeOrSubsetMatches(args[0], from) &&
+                    !typeOrSubsetMatches(args[0], target))
+                    throwTypedV("X::Coerce::Impossible",
+                        {{"target-type", Value::typeObj(target)}, {"from-type", Value::typeObj(args[0].typeName())}},
+                        "Impossible coercion from '" + args[0].typeName() + "' into '" + target +
+                        "': no acceptable coercion method found");
+                if (typeOrSubsetMatches(args[0], target) && rtIsDefined(args[0])) return args[0];
+                {   // a built-in target has no COERCE method: its own coercer
+                    auto uc = classes_.find(target);
+                    if (uc == classes_.end() || !uc->second->findMethod("COERCE"))
+                        return coerceToType(args[0], target);
+                }
                 return methodCall(Value::typeObj(target), "COERCE", ValueList{args[0]});
             }
         }
@@ -6719,6 +6979,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj() && inv.obj()->cls) ? Value::typeObj(inv.obj()->cls->name) : inv;
+        // an instance of a ROLE is its pun, and the pun DOES the role:
+        // `B.new.^roles` is (B, A…) where `B.^roles` is only what B does
+        if (mm == "roles" && inv.t == VT::Object && inv.obj() && inv.obj()->cls && inv.obj()->cls->isRole) {
+            Value rest = methodCall(tobj, m, args, rwArgs);
+            Value out = Value::array(); out.isList = true;
+            out.arr()->push_back(tobj);
+            bool transitive = true;
+            for (auto& a : args) if (a.t == VT::Pair && a.s == "transitive") transitive = !a.pairVal() || a.pairVal()->truthy();
+            if (transitive && rest.t == VT::Array && rest.arr())
+                for (auto& r : *rest.arr()) out.arr()->push_back(r);
+            return out;
+        }
         // …and the LINEARISATION questions resolve against the type object for a
         // plain value too: `42.^mro` is `(Int, Cool, Any, Mu)` and `Nil.^mro` is
         // `(Nil, Cool, Any, Mu)`. They used to be "no such method" on anything
@@ -6814,10 +7086,103 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // Date/DateTime fall through: they DO answer .^attributes (the
         // synthesized Rakudo-shaped list JSON::Unmarshal rebuilds from).
         // .^method_names rides along with .^methods for the same reason.
+        // …except the CORE types' own method surface, which is known: a
+        // table per type, walked along the built-in MRO (Any and Mu only
+        // under :all, as Rakudo's .^methods does)
+        if ((mm == "methods" || mm == "method_names") &&
+            !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s)))) {
+            static const std::map<std::string, std::vector<const char*>> kCoreMethods = {
+                {"Mu", {"ACCEPTS", "WHICH", "WHERE", "WHY", "Bool", "Str", "Stringy", "gist", "raku",
+                        "perl", "defined", "isa", "does", "can", "so", "not", "clone", "new", "bless",
+                        "print", "put", "say", "note", "item", "self", "return", "return-rw", "emit",
+                        "take", "dispatcher", "Capture", "sink", "iterator", "BUILDALL"}},
+                {"Any", {"list", "flat", "eager", "elems", "end", "keys", "values", "pairs", "kv",
+                         "antipairs", "grep", "map", "first", "head", "tail", "sort", "unique", "squish",
+                         "repeated", "reverse", "join", "min", "max", "minmax", "sum", "reduce", "produce",
+                         "classify", "categorize", "combinations", "permutations", "rotor", "batch",
+                         "pick", "roll", "Array", "List", "Hash", "Set", "Bag", "Mix", "SetHash",
+                         "BagHash", "MixHash", "Seq", "Slip", "hash", "array", "push", "append",
+                         "unshift", "prepend", "splice", "deepmap", "duckmap", "nodemap", "cache",
+                         "lazy", "skip", "toggle", "snip", "are", "invert", "Map", "Supply"}},
+                {"Cool", {"abs", "chars", "chop", "chomp", "comb", "contains", "ends-with", "fc",
+                          "flip", "index", "indices", "lc", "lines", "match", "ords", "parse-base",
+                          "sprintf", "split", "starts-with", "subst", "substr", "tc", "tclc", "trans",
+                          "trim", "trim-leading", "trim-trailing", "uc", "uniname", "uninames", "words",
+                          "Int", "Num", "Rat", "FatRat", "Numeric", "Real", "sqrt", "sin", "cos", "tan",
+                          "exp", "log", "log10", "round", "floor", "ceiling", "truncate", "sign", "chr",
+                          "chrs", "ord", "codes", "fmt", "IO", "EVAL", "samecase", "wordcase", "uniprop",
+                          "is-prime", "base", "Complex", "UInt"}},
+                {"List", {"ACCEPTS", "Bool", "Capture", "Int", "Numeric", "Str", "Supply", "elems",
+                          "end", "fmt", "gist", "join", "keys", "values", "kv", "pairs", "antipairs",
+                          "raku", "reverse", "rotate", "sum", "is-lazy", "iterator", "eager", "hyper",
+                          "race", "pick", "roll", "combinations", "permutations", "to", "from"}},
+                {"Array", {"ASSIGN-POS", "AT-POS", "BIND-POS", "DELETE-POS", "EXISTS-POS", "STORE",
+                           "append", "clone", "default", "dynamic", "name", "of", "pop", "prepend",
+                           "push", "shape", "shift", "splice", "unshift", "grab"}},
+                {"Str", {"ACCEPTS", "Bool", "Int", "Num", "Numeric", "Str", "WHICH", "chars", "chomp",
+                         "chop", "codes", "comb", "contains", "ends-with", "fc", "flip", "gist", "index",
+                         "indices", "lc", "lines", "match", "ord", "ords", "parse-base", "raku", "split",
+                         "starts-with", "subst", "subst-mutate", "substr", "substr-eq", "tc", "tclc",
+                         "trans", "trim", "uc", "words", "encode", "NFC", "NFD", "NFKC", "NFKD",
+                         "samemark", "wordcase", "succ", "pred", "Date", "DateTime", "IO"}},
+                {"Int", {"Bool", "Int", "Num", "Rat", "Str", "Range", "chr", "expmod", "is-prime",
+                         "lsb", "msb", "pred", "succ", "polymod", "sqrt-rem"}},
+                {"Num", {"Bool", "Int", "Num", "Rat", "Str", "Range", "pred", "succ", "rand"}},
+                {"Rat", {"Bool", "Int", "Num", "Rat", "Str", "nude", "numerator", "denominator",
+                         "norm", "base-repeating"}},
+                {"Map", {"AT-KEY", "EXISTS-KEY", "keys", "values", "kv", "pairs", "antipairs",
+                         "elems", "Bool", "Str", "gist", "raku", "Hash", "Map", "invert"}},
+                {"Hash", {"ASSIGN-KEY", "BIND-KEY", "DELETE-KEY", "STORE", "classify-list",
+                          "categorize-list", "default", "dynamic", "keyof", "of", "push", "append"}},
+                {"Range", {"min", "max", "bounds", "excludes-min", "excludes-max", "infinite",
+                           "is-int", "elems", "list", "minmax", "rand", "reverse"}},
+                {"Seq", {"iterator", "cache", "is-lazy", "eager", "sink", "List", "Slip", "list"}},
+            };
+            static const std::map<std::string, std::vector<const char*>> kCoreMro = {
+                {"Mu", {"Mu"}}, {"Any", {"Any", "Mu"}}, {"Cool", {"Cool", "Any", "Mu"}},
+                {"List", {"List", "Cool", "Any", "Mu"}}, {"Array", {"Array", "List", "Cool", "Any", "Mu"}},
+                {"Str", {"Str", "Cool", "Any", "Mu"}}, {"Int", {"Int", "Cool", "Any", "Mu"}},
+                {"Num", {"Num", "Cool", "Any", "Mu"}}, {"Rat", {"Rat", "Cool", "Any", "Mu"}},
+                {"Map", {"Map", "Cool", "Any", "Mu"}}, {"Hash", {"Hash", "Map", "Cool", "Any", "Mu"}},
+                {"Range", {"Range", "Cool", "Any", "Mu"}}, {"Seq", {"Seq", "Cool", "Any", "Mu"}},
+            };
+            std::string tn = tobj.t == VT::Type ? tobj.s.str() : inv.typeName();
+            auto mro = kCoreMro.find(tn);
+            if (mro != kCoreMro.end()) {
+                bool all = false, local = mm == "method_names";
+                for (auto& a : args) if (a.t == VT::Pair) {
+                    if (a.s == "all") all = a.pairVal() ? a.pairVal()->truthy() : true;
+                    if (a.s == "local") local = a.pairVal() ? a.pairVal()->truthy() : true;
+                }
+                Value o = Value::array(); o.isList = true;
+                std::set<std::string> seen;
+                for (const char* cls : mro->second) {
+                    std::string c = cls;
+                    if (!all && c != tn && (c == "Any" || c == "Mu")) break;
+                    auto tm = kCoreMethods.find(c);
+                    if (tm != kCoreMethods.end())
+                        for (const char* mn : tm->second) {
+                            if (!seen.insert(mn).second) continue;
+                            if (mm == "method_names") { o.arr()->push_back(Value::str(mn)); continue; }
+                            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                            std::string mname = mn;
+                            code.code()->name = mname; code.code()->isMethod = true;
+                            code.code()->builtin = [mname](Interpreter& I, ValueList& av) -> Value {
+                                if (av.empty()) return Value::any();
+                                Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
+                                return I.methodCall(in2, mname, rest);
+                            };
+                            o.arr()->push_back(code);
+                        }
+                    if (local) break;
+                }
+                return o;
+            }
+        }
         if ((mm == "methods" || mm == "method_names" || mm == "attributes") &&
             !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s))) &&
             !(mm == "attributes" && tobj.t == VT::Type &&
-              (tobj.s == "DateTime" || tobj.s == "Date"))) {
+              (tobj.s == "DateTime" || tobj.s == "Date" || tobj.s == "Attribute"))) {
             Value o = Value::array(); o.isList = true; return o;
         }
         // `T.^foo(…)` IS `T.HOW.foo(T, …)`, and nothing above answered — so ask
@@ -7287,10 +7652,28 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return sv;
     }
     // Junction.new("any", (1, 2)) — the constructor spelling of any(1, 2)
+    // …and Junction.new(@values, :type<all>)
     if (inv.t == VT::Type && inv.s == "Junction" && m == "new") {
         Value j = Value::array(); j.isList = true;
-        j.enumName = args.empty() ? "any" : args[0].toStr();
-        if (args.size() > 1) for (auto& e : args[1].flatten()) j.arr()->push_back(e);
+        std::string type = "any";
+        ValueList pos;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg) {
+                if (a.s == "type" && a.pairVal()) type = a.pairVal()->toStr();
+                continue;
+            }
+            pos.push_back(a);
+        }
+        if (pos.size() >= 2) {                       // ("any", @values)
+            type = pos[0].toStr();
+            for (auto& e : pos[1].flatten()) j.arr()->push_back(e);
+        }
+        else if (pos.size() == 1) {                  // (@values, :type)
+            if (pos[0].t == VT::Array || pos[0].t == VT::Range)
+                for (auto& e : pos[0].flatten()) j.arr()->push_back(e);
+            else type = pos[0].toStr();
+        }
+        j.enumName = type;
         return j;
     }
     // Format.new("%s|%s") — a reusable sprintf: calling it formats its arguments
@@ -7539,6 +7922,21 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (!keepOnObj.count(m)) return methodCall(inv.obj()->boxed, m, args, rwArgs);
     }
 
+    // `IO::Socket::INET.listen($host, $port, …)` / `.connect($host, $port, …)`:
+    // the positional spellings of `.new(:listen, :localhost, :localport)` and
+    // `.new(:host, :port)`
+    if (inv.t == VT::Type && inv.s == "IO::Socket::INET" && (m == "listen" || m == "connect")) {
+        ValueList na;
+        size_t pos = 0;
+        for (auto& a : args) {
+            if (a.t == VT::Pair) { na.push_back(a); continue; }
+            const char* key = pos == 0 ? (m == "listen" ? "localhost" : "host")
+                                       : (m == "listen" ? "localport" : "port");
+            if (pos++ < 2) { Value p = Value::pair(key, a); p.namedArg = true; na.push_back(p); }
+        }
+        if (m == "listen") { Value p = Value::pair("listen", Value::boolean(true)); p.namedArg = true; na.push_back(p); }
+        return methodCall(inv, "new", na);
+    }
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
     // IO::Socket::INET.new — a TCP client (:host/:port) or a listener (:listen).
     if (inv.t == VT::Type && inv.s == "IO::Socket::INET" && m == "new") {
@@ -7579,6 +7977,30 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             long v = std::strtol(tail.c_str(), &end, 10);
             if (end && *end == '\0') p = v;      // …and a non-numeric tail is simply dropped
         };
+        // PF_UNIX / PF_LOCAL: a UNIX-domain stream socket at the PATH the host names
+        bool unixFam = false;
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.s == "family" && a.pairVal() &&
+                (a.pairVal()->enumName == "PF_UNIX" || a.pairVal()->enumName == "PF_LOCAL")) unixFam = true;
+        if (unixFam) {
+            const std::string path = listen ? localhost : host;
+            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (fd < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot create a socket: " + std::string(std::strerror(errno))};
+            sockaddr_un ua{}; ua.sun_family = AF_UNIX;
+            std::strncpy(ua.sun_path, path.c_str(), sizeof(ua.sun_path) - 1);
+            int rc;
+            if (listen) rc = (::bind(fd, (sockaddr*)&ua, sizeof(ua)) < 0 || ::listen(fd, 128) < 0) ? -1 : 0;
+            else { bool pk = gilPark(); rc = ::connect(fd, (sockaddr*)&ua, sizeof(ua)); gilUnpark(pk); }
+            if (rc < 0) {
+                int err = errno; ::close(fd);
+                throw RakuError{Value::typeObj("X::AdHoc"), std::string(listen ? "Cannot listen on " : "Cannot connect to ") +
+                                path + ": " + std::strerror(err)};
+            }
+            Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash())["fd"] = Value::integer(fd);
+            (*s.hash())["unix"] = Value::boolean(true);
+            (*s.hash())[listen ? "localhost" : "peerhost"] = Value::str(path);
+            return s;
+        }
         if (listen) splitHostPort(localhost, localport);
         else        splitHostPort(host, port);
         // Validate before touching the OS: port 0..65535, family a sane small value.
@@ -8144,6 +8566,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "encoder") { // stateless: our strings are already UTF-8 bytes
             Value e = Value::makeHash(); e.hashKind = "Encoder";
             (*e.hash())["name"] = (*inv.hash())["name"];
+            // `:replacement` (True: the encoding's default) / `:replacement('f')`
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "replacement" && a.pairVal())
+                    (*e.hash())["replacement"] = *a.pairVal();
             return e;
         }
     }
@@ -8151,6 +8577,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // encode-chars(Str) → Blob of the encoded bytes (CBOR::Simple uses utf8,
         // which is our internal string representation, so bytes pass through).
         if (m == "encode-chars" || m == "encode") {
+            // any encoding other than UTF-8 goes through Str.encode, which knows
+            // them all — and carries the encoder's :replacement along
+            std::string enc = inv.hash()->count("name") ? (*inv.hash())["name"].toStr() : std::string("utf8");
+            std::string canon = canonEncodingName(enc);
+            if (!canon.empty() && canon != "utf8" && canon != "utf-8") {
+                ValueList ea{Value::str(enc)};
+                auto ri = inv.hash()->find("replacement");
+                if (ri != inv.hash()->end()) {
+                    Value p = Value::pair("replacement", ri->second); p.namedArg = true;
+                    ea.push_back(p);
+                }
+                Value src = Value::str(args.empty() ? std::string() : args[0].toStr());
+                return methodCall(src, "encode", ea);
+            }
             Value b = Value::str(args.empty() ? std::string() : args[0].toStr());
             b.hashKind = "Blob";
             return b;
@@ -8537,10 +8977,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         ValueList pos; // bare `a => "b"` is a NAMED arg — .new swallows it silently
         for (auto& a : args) if (!a.namedArg) pos.push_back(a);
         ValueList items;
-        for (auto& a : pos)
-            if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL)
+        for (auto& a : pos) {
+            bool lazy = endlessLazy(a) || (a.t == VT::Range && a.rTo() >= 9000000000000000000LL);
+            if (!lazy && a.t == VT::Range) { ValueList none; lazy = methodCall(a, "is-lazy", none).truthy(); }
+            if (lazy)
                 throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
                            "Cannot create a " + inv.s + " from a lazy list");
+        }
         // a quanthash arg is ONE element (Bag.new(set <a b c>) has 1 elem);
         // a plain Hash still iterates its pairs under the single-arg rule
         bool wholeQuant = pos.size() == 1 && pos[0].t == VT::Hash && quantValueType(pos[0].hashKind);
@@ -8783,7 +9226,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "cancel")    { if (cs) cs->cancelled.store(true); return Value::boolean(true); }
         if (m == "cancelled") return Value::boolean(cs && cs->cancelled.load());
     }
-    if (inv.t == VT::Type && inv.s == "IO::CatHandle" && m == "new") {
+    // IO::CatHandle is Raku source (CatHandleSrc.cpp), compiled at first use
+    if (inv.t == VT::Type && inv.s == "IO::CatHandle" && !classes_.count("IO::CatHandle") &&
+        !catHandleLoading_) {
+        extern const char* const kCatHandleSrc;
+        catHandleLoading_ = true;
+        auto saved = tctx_.cur;
+        tctx_.cur = global_;
+        try { evalString(kCatHandleSrc); }
+        catch (...) { tctx_.cur = saved; catHandleLoading_ = false; throw; }
+        tctx_.cur = saved;
+        catHandleLoading_ = false;
+        if (classes_.count("IO::CatHandle")) return methodCall(inv, m, args, rwArgs);
+    }
+    if (inv.t == VT::Type && inv.s == "IO::CatHandle" && m == "new" && !classes_.count("IO::CatHandle")) {
         // minimal CatHandle: a sequence of paths/handles slurped in order
         Value v = Value::makeHash(); v.hashKind = "CatHandle";
         Value files = Value::array();
@@ -9237,11 +9693,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
         if (m == "receive") {
+          for (;;) {
             // `.receive` BLOCKS until an item arrives (or the channel closes) —
             // under the cooperative GIL that means handing off to the workers that
             // could send. With no async engaged nothing ever could, so answer Nil
             // rather than deadlock; likewise once every worker has finished.
-            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_)) {
+            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_ || t_isWorker)) {
                 // No wall-clock deadline. A 300 ms cap used to stand in for "blocks
                 // until an item arrives", which made the wait a RACE against the
                 // producer: `start { sleep 0.2; $c.send(...) }` lost it whenever
@@ -9262,7 +9719,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 for (;;) {
                     { std::lock_guard<std::recursive_mutex> lk(chm);
                       if (!q.empty() || isClosed()) break; }
-                    if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                    // (a WORKER waits regardless: the main thread may still send —
+                    // `start { await $c }` then `$c.send(…)` from the mainline)
+                    if (!t_isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
                     if (gilHeld_) yieldToWorkerFor(0.02);
                     else std::this_thread::sleep_for(std::chrono::milliseconds(2)); // parallel mode: real wait
                 }
@@ -9273,9 +9732,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (inv.hash()->count("failCause")) throw RakuError{(*inv.hash())["failCause"], "Channel failed"};
                     throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive a message on a closed channel"};
                 }
+                // another receiver took the item this one woke for: a WORKER
+                // waits again (the mainline keeps its deadlock guard)
+                if (t_isWorker) continue;
                 return Value::nil(); // nothing running that could ever send
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
+                  }
         }
         if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
         // a Channel has no element count: it is a stream (Rakudo refuses)
@@ -10011,6 +10474,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (auto& x : args) {
                 if (x.t == VT::Pair) { // :w opens a stdin pipe at .start; :enc etc. are accepted
                     if (x.s == "w" && (!x.pairVal() || x.pairVal()->truthy())) (*p.hash())["w"] = Value::boolean(true);
+                    // `:enc('latin-1')` — what the streams decode and the writes encode with
+                    if (x.s == "enc" && x.pairVal()) (*p.hash())["enc"] = Value::str(canonEncodingName(x.pairVal()->toStr()));
                     continue;
                 }
                 // a Positional arg flattens into the command list (slurpy semantics):
@@ -10079,9 +10544,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*s.hash())["proc"] = inv; (*s.hash())["stream"] = Value::str(m);
             // `.stdout(:bin)` asks for the raw bytes: its taps keep Blob-kinded
             // chunks (zef Buf.appends them); a plain stream emits decoded Strs
-            for (auto& a : args)
+            for (auto& a : args) {
                 if (a.t == VT::Pair && a.s == "bin" && (!a.pairVal() || a.pairVal()->truthy()))
                     (*s.hash())["bin"] = Value::boolean(true);
+                if (a.t == VT::Pair && a.s == "enc" && a.pairVal())
+                    (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
+            }
             return s;
         }
         if (m == "w") return Value::boolean(inv.hash()->count("w") != 0);   // opened for writing
@@ -10218,6 +10686,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 (*p.hash())["result"] = ps->result;
                 return p;
             }
+            // a program that is not there: the promise is broken, with X::OS
+            if (std::string why = procSpawnMissing(inv); !why.empty()) {
+                auto ps = std::make_shared<PromiseState>();
+                Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+                ps->done = true; ps->broken = true;
+                ps->cause = makeTypedEx("X::OS", {{"os-error", Value::str(why)}}, why);
+                ps->causeMsg = why;
+                (*p.hash())["status"] = Value::str("Broken");
+                return p;
+            }
             Value pr = Value::makeHash(); pr.hashKind = "Promise";
             (*pr.hash())["kind"] = Value::str("proc-ready");
             (*pr.hash())["proc"] = inv;
@@ -10343,6 +10821,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // the bytes go out now; the Promise is kept with their count (Rakudo)
             std::string data = args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // a Blob is a byte-Str
             if (m == "say" || m == "put") data += "\n";
+            // text goes out in the process's encoding (a Blob is bytes already)
+            if (m != "write") {
+                auto ei = inv.hash()->find("enc");
+                if (ei != inv.hash()->end()) {
+                    std::string enc = ei->second.toStr();
+                    if (!enc.empty() && enc != "utf-8" && enc != "utf8") data = encodeTextEnc(data, enc);
+                }
+            }
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             bool ok = true; size_t off = 0; int werr = 0;
@@ -10535,6 +11021,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (kOneElem.count(m)) {
             Value one = Value::array(); one.arr()->push_back(inv); one.isList = true;
             return methodCall(one, m, args);
+        }
+    }
+    // `.new` on an INSTANCE of a built-in type is its type's constructor:
+    // `$pair.new(:key<a>, :value<b>)`, `5.new` — and a PARAMETERIZED type
+    // object spelled out as a name (`Array[Numeric]`, as an attribute's `.=`
+    // seed) constructs the base type with that element type
+    if (m == "new") {
+        if (inv.t == VT::Type && inv.s.str().find('[') != std::string::npos && inv.s.str().back() == ']') {
+            std::string full = inv.s.str();
+            size_t br = full.find('[');
+            Value base = Value::typeObj(full.substr(0, br));
+            base.ofTypeM() = full.substr(br + 1, full.size() - br - 2);
+            if (base.s != inv.s) return methodCall(base, "new", args);
+        }
+        if (inv.t != VT::Type && inv.t != VT::Object && inv.t != VT::Code && inv.t != VT::Any &&
+            inv.t != VT::Nil && rtIsDefined(inv)) {
+            std::string tn = inv.typeName();
+            if (!tn.empty() && isKnownTypeName(tn)) return methodCall(Value::typeObj(tn), "new", args);
         }
     }
     if (std::getenv("RAKUPP_TRACE"))
@@ -10748,6 +11252,17 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     ValueList vals; bool quit = false; Value quitReason; std::string quitMsg;
     auto ctx = std::make_shared<SupplyTapCtx>();
     ctx->collect = &vals;
+    // a `die` inside one of the block's WHENEVERs quits the supply too: the
+    // delivery reports it through quitCb, which records it here
+    auto lateQuit = std::make_shared<std::pair<bool, Value>>(false, Value());
+    {
+        Value qcb; qcb.t = VT::Code; qcb.setCode(std::make_shared<Callable>());
+        qcb.code()->builtin = [lateQuit](Interpreter&, ValueList& a) -> Value {
+            if (!lateQuit->first) { lateQuit->first = true; lateQuit->second = a.empty() ? Value::any() : a[0]; }
+            return Value::any();
+        };
+        ctx->quitCb = qcb;
+    }
     tctx_.tapStack.push_back(ctx);
     try {
         // S-53 holds here too: the body runs first, then what its whenevers'
@@ -10771,8 +11286,12 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
         // for them (bounded by "somebody could still settle them"), or the
         // drain returns before a promise-whenever delivered (cro-core's
         // drain-waits test caught this the day parallel became the default)
-        while (ctx->pending > 0 && liveWorkers_.load() > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // (…and not past a `done`/quit: an endless source — Supply.interval —
+        // stays "pending" for ever, and a cued job elsewhere keeps a worker live)
+        // (sleepYield: a GIL this thread holds is released while it waits, or
+        // an interval worker that needs it to deliver could never finish)
+        while (ctx->pending > 0 && !ctx->done && !lateQuit->first && liveWorkers_.load() > 0)
+            sleepYield(0.001);
     }
     else if (ctx->pending > 0 && gilHeld_ && !parallelMode_ && liveWorkers_.load() > 0) {
         static thread_local ExecContext parked;
@@ -10780,8 +11299,8 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
         gilYieldNotify();
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            gil_.lock();
-            if (ctx->pending <= 0 || liveWorkers_.load() == 0) break;
+            gilLock();
+            if (ctx->pending <= 0 || ctx->done || lateQuit->first || liveWorkers_.load() == 0) break;
             gilYieldNotify();
         }
         loadCtx(parked);
@@ -10790,6 +11309,11 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     {
         auto closers = std::move(ctx->closers); // on-close callbacks registered during the drain
         for (auto& cb : closers) if (cb.t == VT::Code) { try { ValueList na; callCallable(cb, na); } catch (...) {} }
+    }
+    if (!quit && lateQuit->first) {
+        quit = true; quitReason = lateQuit->second;
+        ValueList none;
+        try { quitMsg = methodCall(quitReason, "message", none).toStr(); } catch (...) { quitMsg = quitReason.toStr(); }
     }
     Value out = Value::makeHash(); out.hashKind = "Supply";
     Value v = Value::array(); *v.arr() = std::move(vals); (*out.hash())["values"] = v;
@@ -11053,7 +11577,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
             double left = std::chrono::duration<double>(end - now).count();
             std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
         }
-        self->gil_.lock();
+        self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         self->tctx_.cur = spawnScope;
         self->tctx_.dynStack.push_back(spawnScope.get());
@@ -11183,7 +11707,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         // Parallel mode has no GIL discipline; under the GIL this holds the lock
         // and yieldToWorkerFor cycles it (see spawnChannelWhenever — taking it
         // and never releasing made the first channel worker the accidental owner).
-        if (!self->parallelMode_) self->gil_.lock();
+        if (!self->parallelMode_) self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
@@ -11245,7 +11769,8 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         if (!ctx->done && !ctx->doneFired) {
             ValueList one{Value::integer((*tick)++)};
             try { I2.callCallable(blk, one); }
-            catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) {}
+            // `done` in the tick body ends the supply: the ticker stops too
+            catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
             catch (RakuError& e) {
                 // a die in the tick body QUITS the enclosing supply (same rule as
                 // the generic whenever path): its own QUIT phasers see it first,
@@ -11280,7 +11805,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         };
         sleepChunked(delay);
         while (!stop()) {
-            self->gil_.lock();
+            self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
             self->tctx_.cur = spawnScope;
             self->tctx_.dynStack.push_back(spawnScope.get());
@@ -11289,7 +11814,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
             if (stop()) break;
             sleepChunked(interval);
         }
-        self->gil_.lock(); // release the activation hold and let the supply finish
+        self->gilLock(); // release the activation hold and let the supply finish
         ExecContext wctx2; self->loadCtx(wctx2);
         self->tctx_.cur = spawnScope;
         self->tctx_.dynStack.push_back(spawnScope.get());
@@ -11325,7 +11850,7 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
             double left = std::chrono::duration<double>(end - now).count();
             std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
         }
-        self->gil_.lock();
+        self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
@@ -11360,7 +11885,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
             double left = std::chrono::duration<double>(end - now).count();
             std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
         }
-        self->gil_.lock();
+        self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
@@ -11431,7 +11956,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         long long tick = 0;
         bool lastEx = false;
         while (!closedNow() && !lastEx) {
-            self->gil_.lock();
+            self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
             tctx_.cur = spawnScope;
             tctx_.dynStack.push_back(spawnScope.get());
@@ -11475,7 +12000,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         // `lastEx` records. Tell the tapper, so a consumer waiting for done
         // stops waiting. Closing the tap is not a completion and says nothing.
         if (lastEx && doneCb.t == VT::Code) {
-            self->gil_.lock();
+            self->gilLock();
             ExecContext dctx; self->loadCtx(dctx);
             tctx_.cur = spawnScope;
             tctx_.dynStack.push_back(spawnScope.get());
@@ -11511,7 +12036,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         // worker starved at this line (the two-channel react in
         // S17-supply/syntax.t, the last of the P5 isolation livelocks).
         // Under the GIL the lock is real and yieldToWorkerFor cycles it.
-        if (!self->parallelMode_) self->gil_.lock();
+        if (!self->parallelMode_) self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
@@ -11631,7 +12156,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                     for (auto it = range.first; it != range.second; ++it) taps.push_back(it->second);
                 }
                 if (taps.empty()) continue;
-                self->gil_.lock();
+                self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
@@ -12339,7 +12864,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             bool firstPass = true;                  // the bucket starts FULL: the
             for (;;) {                              // first refill is one tick later
                 if (stopped()) break;
-                self->gil_.lock();
+                self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
@@ -12433,7 +12958,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             for (;;) {
                 int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
                 if (cfd < 0) break;                              // closed / shutdown
-                self->gil_.lock();
+                self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);           // fresh registers
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
@@ -12525,7 +13050,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);    // ready, so this will not block
                 if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
                 if (n <= 0) break;
-                self->gil_.lock();
+                self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
@@ -12572,7 +13097,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 self->gilYieldNotify();
                 if (tapClosed) break;
             }
-            self->gil_.lock();
+            self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
             tctx_.cur = spawnScope;
             tctx_.dynStack.push_back(spawnScope.get());
@@ -12683,6 +13208,17 @@ Value rtBChr(Interpreter&, const Value& v) {
     if (cp < 0 || cp > 0x10FFFF)
         throw RakuError{Value::typeObj("X::AdHoc"),
             "chr codepoint " + (v.big() ? v.big()->toString() : std::to_string(cp)) + " is out of bounds"};
+    // a Str is NFC, so a codepoint with a canonical singleton decomposition
+    // comes back as its equivalent (`0x2000.chr.ord` is 0x2002); nothing
+    // below U+0300 changes under NFC
+    if (cp >= 0x300) {
+        auto n = uniNormalize({(uint32_t)cp}, 1);
+        if (n.size() != 1 || n[0] != (uint32_t)cp) {
+            std::string out;
+            for (uint32_t c : n) out += cpToUtf8(c);
+            return Value::str(out);
+        }
+    }
     return Value::str(cpToUtf8((uint32_t)cp));
 }
 Value rtBOrd(Interpreter&, const Value& v) {
@@ -12733,8 +13269,8 @@ Value rtBAtan(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "atan",  
 Value rtBSinh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "sinh",  (double(*)(double))std::sinh); }
 Value rtBCosh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "cosh",  (double(*)(double))std::cosh); }
 Value rtBTanh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "tanh",  (double(*)(double))std::tanh); }
-Value rtBAsinh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "asinh", (double(*)(double))std::asinh); }
-Value rtBAcosh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "acosh", (double(*)(double))std::acosh); }
+Value rtBAsinh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "asinh", rakuAsinh); }
+Value rtBAcosh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "acosh", rakuAcosh); }
 Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", (double(*)(double))std::atanh); }
 
 // The logical working-directory name after entering `p` from `base`: purely
@@ -13151,7 +13687,15 @@ void Interpreter::registerBuiltins() {
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];
         // die with no argument reuses the current $! ("Died" only if $! is undefined)
-        if (a.empty()) { Value* be = I.tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be; }
+        // (…the ROUTINE's own $!: a sub's `die()` does not see its caller's error)
+        if (a.empty()) {
+            Value* be = nullptr;
+            for (Env* en = I.tctx_.cur.get(); en; en = en->parent.get()) {
+                if ((be = en->local("$!"))) break;
+                if (en->routineFrame) break;
+            }
+            if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be;
+        }
         std::string msg = payload.toStr();
         // `die($p, 42)` — several values: the message is their concatenation
         // and the X::AdHoc's payload the whole list
@@ -13216,8 +13760,20 @@ void Interpreter::registerBuiltins() {
         struct Restore { ExecContext& t; ExecContext::BuiltinFallback s;
                          ~Restore() { t.builtinFallback = s; } } r{I.tctx_, fb};
         I.tctx_.builtinFallback = ExecContext::BuiltinFallback{};
-        return I.methodCall(*fb.self, *fb.name, with ? *with : *fb.args,
-                            nullptr, /*skipOwn=*/true);
+        // nothing further up the MRO to defer to: the redispatch yields Nil
+        // (`method nw($a) { nextwith(42) }` on a class with no parent method)
+        try {
+            return I.methodCall(*fb.self, *fb.name, with ? *with : *fb.args,
+                                nullptr, /*skipOwn=*/true);
+        } catch (RakuError& e) {
+            const Value& p = e.payload;
+            std::string tn = p.t == VT::Type ? p.s.str()
+                           : (p.t == VT::Object && p.obj() && p.obj()->cls ? p.obj()->cls->name : std::string());
+            if (tn == "X::Method::NotFound" &&
+                e.message.find("'" + *fb.name + "'") != std::string::npos)
+                return Value::nil();
+            throw;
+        }
     };
     B["lastcall"] = [dispTop](Interpreter& I, ValueList&) -> Value {
         if (auto* d = dispTop(I)) d->lastcall = true;
@@ -13232,6 +13788,7 @@ void Interpreter::registerBuiltins() {
             return Value::nil(); // exhausted chain bottom
         }
         if (d->lastcall) return Value::nil(); // trimmed by lastcall
+        if (d->wrapperFrame) { if (d->spent) return Value::nil(); d->spent = true; }
         return d->next(d->sameArgs);
     };
     B["callwith"] = [dispTop, builtinNext](Interpreter& I, ValueList& a) -> Value {
@@ -13243,6 +13800,7 @@ void Interpreter::registerBuiltins() {
             return Value::nil();
         }
         if (d->lastcall) return Value::nil();
+        if (d->wrapperFrame) { if (d->spent) return Value::nil(); d->spent = true; }
         return d->next(a);
     };
     B["nextsame"] = [dispTop, builtinNext](Interpreter& I, ValueList&) -> Value {
@@ -13300,7 +13858,12 @@ void Interpreter::registerBuiltins() {
         // `fail $ex` / `fail "msg"` (→ X::AdHoc) / bare `fail` (picks up $!). `//` /
         // .defined treat it as undefined, so a fallback value is chosen.
         Value ex;
-        if (!a.empty() && a[0].t == VT::Object) {
+        // `fail $failure` RE-ARMS it: the new Failure carries the same exception
+        // (unhandled again) — `foo() orelse fail $_` passes the error up
+        if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Failure" && a[0].hash() &&
+            a[0].hash()->count("exception")) {
+            ex = (*a[0].hash())["exception"];
+        } else if (!a.empty() && a[0].t == VT::Object) {
             ex = a[0];
         } else if (!a.empty()) {
             auto it = I.classes_.find("X::AdHoc");
@@ -13405,8 +13968,9 @@ void Interpreter::registerBuiltins() {
     // is not. Optional message, plain Str back (never the allomorph `prompt`
     // returns — a numeric secret is not a number), Nil at end of input.
     B["rakupp-prompt-hidden"] = [](Interpreter&, ValueList& a) -> Value { return promptImpl(a, true); };
-    B["__qx__"] = [](Interpreter&, ValueList& a) -> Value { // qx// / qqx// shell capture
+    B["__qx__"] = [](Interpreter& I, ValueList& a) -> Value { // qx// / qqx// shell capture
         std::string cmd = a.empty() ? "" : a[0].toStr();
+        I.syncEnvToProcess();   // the child sees `%*ENV<X> = …` made before it
         std::string outp; char buf[4096]; size_t n;
 #if defined(_WIN32)
         FILE* p = _popen(cmd.c_str(), "r");
@@ -13565,8 +14129,11 @@ void Interpreter::registerBuiltins() {
     B["isnt"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();
+        // Test's `isnt(Mu $got, Mu:D $expected)` is `!$got.defined || $got ne $expected`:
+        // an undefined got is never the same as a defined expectation
+        const bool gotUndefDefExp = !defined(got) && defined(exp);
         isStrify(I, got); isStrify(I, exp);
-        bool c = !isEq(got, exp);
+        bool c = gotUndefDefExp || !isEq(got, exp);
         I.emitTest(c, testDesc(a, 2), testDirective(a)); // adverbs are not the description
         return Value::boolean(c);
     };
@@ -13672,7 +14239,10 @@ void Interpreter::registerBuiltins() {
     B["skip"] = [](Interpreter& I, ValueList& a) -> Value {
         long n = (a.size() > 1) ? a[1].toInt() : 1;
         std::string reason = a.empty() ? "" : a[0].toStr();
-        for (long k = 0; k < n; k++) I.emitTest(true, "", "skip " + reason);
+        // Rakudo's `ok N - # SKIP reason`, with the reason's own `#` escaped
+        std::string esc;
+        for (char ch : reason) { if (ch == '#') esc += " \\#"; else esc += ch; }
+        for (long k = 0; k < n; k++) I.emitTest(true, "", "SKIP " + esc);
         return Value::boolean(true);
     };
     B["dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -14029,15 +14599,28 @@ void Interpreter::registerBuiltins() {
         I.emitTest(failed, desc);
         return Value::boolean(failed);
     };
+    // (the EVAL moves the current line into its own text: a failure is reported
+    // at the CALLER's line, where the test is written)
     B["eval-lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool lived = true;
-        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); } catch (RakuError&) { lived = false; }
+        const int line = I.curLine_;
+        std::string why;
+        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); }
+        catch (RakuError& e) {
+            lived = false;
+            why = e.message;
+            if (why.rfind("EVAL parse error: ", 0) == 0) why = why.substr(18);
+        }
+        I.curLine_ = line;
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
+        if (!lived) std::cerr << "# Error: " << why << "\n";   // Rakudo's diag of what died
         return Value::boolean(lived);
     };
     B["eval-dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
+        const int line = I.curLine_;
         try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); } catch (RakuError&) { died = true; }
+        I.curLine_ = line;
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
     };
@@ -14352,6 +14935,7 @@ void Interpreter::registerBuiltins() {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         int inFd = -1; bool haveInHandle = false; // `:in($handle)`: the child's stdin itself
+        Value inFrom;   // `:in($other.out)` of a child still waiting to run
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         double timeoutSec = 0;
         // `:merge` — stdout and stderr as ONE captured stream, read back through
@@ -14373,6 +14957,18 @@ void Interpreter::registerBuiltins() {
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in") {
+                    // the `.out` of a child that has not RUN yet (`:in($sh1.out)`
+                    // while $sh1 still waits on its own stdin): this one waits
+                    // too, and takes that output as its input when it runs
+                    if (v.pairVal() && v.pairVal()->t == VT::Hash && v.pairVal()->hash() &&
+                        v.pairVal()->hash()->count("proc-owner")) {
+                        Value owner = (*v.pairVal()->hash())["proc-owner"];
+                        if (owner.t == VT::Hash && owner.hash() && owner.hash()->count("deferred") &&
+                            !owner.hash()->count("ran")) {
+                            inFrom = owner; wantIn = true;
+                            continue;
+                        }
+                    }
                     // a HANDLE is the child's stdin (stdinFdForHandle); a Bool
                     // keeps the deferred piped mode below
                     bool resolved = false;
@@ -14432,6 +15028,10 @@ void Interpreter::registerBuiltins() {
             (*p.hash())["out-str"] = Value::str("");
             (*p.hash())["err-str"] = Value::str("");
             (*p.hash())["exitcode"] = Value::integer(0);
+            if (inFrom.t == VT::Hash) {
+                (*p.hash())["in-from"] = inFrom;
+                (*p.hash())["pending-in"] = Value::str("");   // reading its output runs it
+            }
             return p;
         }
         std::string out, err; int code; bool timedout;
@@ -14726,13 +15326,12 @@ void Interpreter::registerBuiltins() {
             else named.push_back(v);            // a limit / :count rides along
         }
         if (src) return I.methodCall(*src, "lines", named);
-        Value argv = I.getArgs();
+        Value argv = I.liveArgs();
         if (argv.arr() && !argv.arr()->empty()) {
-            for (auto& fn : *argv.arr()) {
-                std::ifstream in(fn.toStr());
-                while (std::getline(in, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr()->push_back(Value::str(line)); }
-            }
-            return out;
+            // $*ARGFILES itself, so what this reads is gone for the next reader
+            VarExpr af("$*ARGFILES");
+            Value h = I.eval(&af);
+            return I.methodCall(h, "lines", named);
         }
         // Standard input is STREAMED, one line per pull. Slurping to EOF first is
         // a deadlock whenever the writer is still open — which is precisely how a
@@ -14742,6 +15341,9 @@ void Interpreter::registerBuiltins() {
         {
             auto st = std::make_shared<LazySeqState>();
             st->streaming = true;
+            // …but it ENDS: an eager context (`my @l = lines`, `reverse lines`)
+            // reads it all, as a handle's `.lines` does; only `for` walks it live
+            st->finiteSource = true;
             st->appendNext = [](ValueList& cache) -> bool {
                 std::string l;
                 if (!std::getline(std::cin, l)) return false;
@@ -14758,9 +15360,19 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a)
             if (!(v.t == VT::Pair && v.namedArg) && v.t != VT::Any && v.t != VT::Type && v.t != VT::Nil)
                 return I.methodCall(v, "get", ValueList{});
-        std::string line; if (!std::getline(std::cin, line)) return Value::nil();
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        return Value::str(line);
+        // get() is $*ARGFILES.get: the files in @*ARGS when there are any
+        {
+            Value argv = I.liveArgs();
+            if (argv.arr() && !argv.arr()->empty()) {
+                VarExpr af("$*ARGFILES");
+                Value h = I.eval(&af);
+                return I.methodCall(h, "get", ValueList{});
+            }
+        }
+        // …else $*IN.get, which knows the handle's own nl-in / chomp
+        VarExpr in("$*IN");
+        Value h = I.eval(&in);
+        return I.methodCall(h, "get", ValueList{});
     };
     B["words"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
@@ -14784,9 +15396,13 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) if (x.t != VT::Pair) { path = I.ioFsPath(x); break; }
         rejectNulPath(path);
         std::string mode = "r"; bool excl = false;
+        bool rwAppend = false;   // `:ra` — read, and every write lands at the end
         for (auto& x : a) if (x.t == VT::Pair) {
+            if (x.pairVal() && !x.pairVal()->truthy()) continue;   // `:!w` asks for nothing
             if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r";
             else if (x.s == "rw") mode = "rw";           // read/write, create if missing, NO truncate
+            else if (x.s == "ra") { mode = "rw"; rwAppend = true; }
+            else if (x.s == "rx") { mode = "rw"; excl = true; }
             else if (x.s == "update") mode = "update";   // read/write, must exist
             else if (x.s == "exclusive" || x.s == "x") excl = true; // create-new-or-fail (O_EXCL)
         }
@@ -14806,6 +15422,7 @@ void Interpreter::registerBuiltins() {
             }
             if (!modeAdv.empty() || wantCreate || wantTrunc || wantApp) {
                 if (modeAdv == "ro") mode = "r";
+                else if (wantApp && modeAdv == "rw") { mode = "rw"; rwAppend = true; }
                 else if (wantApp) mode = "a";
                 else if (wantTrunc) mode = "w";
                 else if (wantCreate) mode = "rw";       // create if missing, keep the content
@@ -14824,6 +15441,7 @@ void Interpreter::registerBuiltins() {
                 return f;
             }
             if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
+            if (mode == "update") mode = "rw"; // `:mode<rw>, :create, :exclusive` creates it
         }
         // TRY the open, do not assume it. The handle carries no OS descriptor —
         // every read and write reopens the path — so nothing later in the program
@@ -14875,6 +15493,7 @@ void Interpreter::registerBuiltins() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        if (rwAppend) (*h.hash())["rwappend"] = Value::boolean(true);
         // :bin — the handle reads BYTES, so `seek`/`tell` are byte offsets
         // rather than the line-boundary emulation a text handle gets
         for (auto& x : a) if (x.t == VT::Pair && x.s == "bin" && x.pairVal() && x.pairVal()->truthy())
@@ -14894,8 +15513,22 @@ void Interpreter::registerBuiltins() {
                 I.throwTyped("X::Encoding::Unknown", {{"name", x.pairVal()->toStr()}},
                              "Unknown string encoding '" + x.pairVal()->toStr() + "'");
             (*h.hash())["encoding"] = Value::str(canon);
+            // plain `utf16` (no byte order named) writes a BOM first — once, into
+            // a file that is empty when opened for writing
+            if ((canon == "utf16" || canon == "utf-16") && (mode == "w" || mode == "a" || mode == "rw")) {
+                struct stat bst;
+                if (::stat(path.c_str(), &bst) == 0 && bst.st_size == 0) {
+                    std::ofstream bom(path, std::ios::binary | std::ios::app);
+                    bom.write("\xFF\xFE", 2);
+                    (*h.hash())["wrote"] = Value::boolean(true);   // the first print must not truncate it away
+                }
+            }
         }
         if (nlIn.t != VT::Any) (*h.hash())["nl-in"] = nlIn;
+        // :nl-out(...) — what .say / .put / .print-nl end a record with
+        for (auto& x : a)
+            if (x.t == VT::Pair && x.s == "nl-out" && x.pairVal() && x.pairVal()->t == VT::Str)
+                (*h.hash())["nl-out"] = *x.pairVal();
         // :chomp / :!chomp — whether lines come back without their terminator
         for (auto& x : a) if (x.t == VT::Pair && x.s == "chomp")
             (*h.hash())["chomp"] = Value::boolean(!x.pairVal() || x.pairVal()->truthy());
@@ -14913,28 +15546,44 @@ void Interpreter::registerBuiltins() {
     // exposes (File::Find's suite builds a symlinked directory with the sub form
     // before walking it). `readlink` is a METHOD only, as in Rakudo.
     B["symlink"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() < 2) return Value::boolean(false);
-        std::string target = I.ioFsPath(a[0]), name = I.ioFsPath(a[1]);
-        // Rakudo absolutizes the TARGET. It matters: a relative target is read
-        // by the OS relative to the LINK's directory, not the cwd, so
-        // `symlink("t/dir1/d", "t/dir2/link")` would otherwise dangle.
-        if (!target.empty() && target[0] != '/') {
+        bool absolute = true;
+        ValueList pos;
+        for (auto& x : a) {
+            if (x.t == VT::Pair && x.s == "absolute") { absolute = !x.pairVal() || x.pairVal()->truthy(); continue; }
+            pos.push_back(x);
+        }
+        if (pos.size() < 2) return Value::boolean(false);
+        std::string target = absolute ? I.ioFsPath(pos[0]) : pos[0].toStr(), name = I.ioFsPath(pos[1]);
+        // Rakudo absolutizes the TARGET (unless `:!absolute`). It matters: a
+        // relative target is read by the OS relative to the LINK's directory,
+        // not the cwd, so `symlink("t/dir1/d", "t/dir2/link")` would otherwise dangle.
+        if (absolute && !target.empty() && target[0] != '/') {
             char cbuf[4096];
             if (getcwd(cbuf, sizeof cbuf)) target = std::string(cbuf) + "/" + target;
         }
-        if (platform_symlink(target.c_str(), name.c_str()) != 0)
-            throw RakuError{Value::typeObj("X::IO::Symlink"),
-                "Failed to create symlink called '" + name + "' on target '" + target +
-                "': " + std::strerror(errno)};
+        if (platform_symlink(target.c_str(), name.c_str()) != 0) {
+            std::string msg = "Failed to create symlink called '" + name + "' on target '" + target +
+                              "': " + std::strerror(errno);
+            return I.ioFailure("X::IO::Symlink",
+                               {{"target", Value::str(target)}, {"name", Value::str(name)},
+                                {"os-error", Value::str(std::strerror(errno))}}, msg);
+        }
         return Value::boolean(true);
     };
     B["link"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::boolean(false);
         std::string target = I.ioFsPath(a[0]), name = I.ioFsPath(a[1]);
-        if (platform_link(target.c_str(), name.c_str()) != 0)
-            throw RakuError{Value::typeObj("X::IO::Link"),
-                "Failed to create link called '" + name + "' on target '" + target +
-                "': " + std::strerror(errno)};
+        if (platform_link(target.c_str(), name.c_str()) != 0) {
+            // a Failure, as Rakudo's `link` answers — carrying what it tried
+            Value f = rakuppNewFailure();
+            (*f.hash())["exception"] = Value::typeObj("X::IO::Link");
+            (*f.hash())["message"] = Value::str("Failed to create link called '" + name + "' on target '" +
+                                                target + "': " + std::strerror(errno));
+            (*f.hash())["target"] = Value::str(target);
+            (*f.hash())["name"] = Value::str(name);
+            (*f.hash())["os-error"] = Value::str(std::strerror(errno));
+            return f;
+        }
         return Value::boolean(true);
     };
     // 6.d hands back the list of paths it removed; 6.e takes one path and hands
@@ -14990,7 +15639,7 @@ void Interpreter::registerBuiltins() {
     B["skip-rest"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string reason = a.empty() ? "" : a[0].toStr();
         long remaining = (I.planned_ > 0 ? I.planned_ : 0) - I.testNum_;
-        for (long k = 0; k < remaining; k++) I.emitTest(true, "", "skip " + reason);
+        for (long k = 0; k < remaining; k++) I.emitTest(true, "", "SKIP " + reason);
         return Value::boolean(true);
     };
     B["subtest"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -15232,7 +15881,7 @@ void Interpreter::registerBuiltins() {
             {"sin", std::sin}, {"cos", std::cos}, {"tan", std::tan},
             {"asin", std::asin}, {"acos", std::acos}, {"atan", std::atan},
             {"sinh", std::sinh}, {"cosh", std::cosh}, {"tanh", std::tanh},
-            {"asinh", std::asinh}, {"acosh", std::acosh}, {"atanh", std::atanh},
+            {"asinh", rakuAsinh}, {"acosh", rakuAcosh}, {"atanh", std::atanh},
         };
         for (auto& tf : tfs) {
             auto f = tf.fn; std::string name = tf.name;
@@ -15518,6 +16167,17 @@ void Interpreter::registerBuiltins() {
     B["cross"] = [](Interpreter& I, ValueList& a) -> Value {
         Value withF;
         std::vector<ValueList> rows;
+        // `+lists`: a SINGLE non-itemized list argument IS the list of lists —
+        // `cross(%h<>:v.map: *.flat)` crosses what the Seq holds
+        ValueList pos;
+        for (auto& v : a) if (!(v.t == VT::Pair && v.namedArg)) pos.push_back(v);
+        if (pos.size() == 1 && pos[0].t == VT::Array && pos[0].arr() && !pos[0].itemized) {
+            ValueList rest;
+            for (auto& v : a) if (v.t == VT::Pair && v.namedArg) rest.push_back(v);
+            ValueList spread = *pos[0].arr();
+            for (auto& e : spread) rest.push_back(e);
+            a = rest;
+        }
         for (auto& v : a) {
             if (v.t == VT::Pair && v.s == "with" && v.pairVal()) { withF = *v.pairVal(); continue; }
             if (v.t == VT::Array && v.arr()) rows.push_back(*v.arr());
@@ -15575,7 +16235,15 @@ void Interpreter::registerBuiltins() {
         if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) return Value::integer((long long)v.hash()->size());
         return Value::integer((long long)toList(v).size());
     };
-    B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
+    B["defined"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a Junction answers through its own `.defined`, which autothreads
+        // and collapses (`defined(any(Str, Int))` is False)
+        if (!a.empty() && a[0].t == VT::Array && !a[0].enumName.empty() &&
+            (a[0].enumName == "any" || a[0].enumName == "all" || a[0].enumName == "one" ||
+             a[0].enumName == "none"))
+            return I.methodCall(a[0], "defined", ValueList{});
+        return Value::boolean(!a.empty() && defined(a[0]));
+    };
     // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
     for (const char* mm : {"WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY"})
         B[mm] = [mm](Interpreter& I, ValueList& a) -> Value { ValueList none; return I.methodCall(a.empty() ? Value::any() : a[0], mm, none); };
@@ -16026,8 +16694,12 @@ void Interpreter::registerBuiltins() {
     B["join"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
         Value items = Value::array(); items.isList = true;
-        for (size_t i = 1; i < a.size(); i++)
+        for (size_t i = 1; i < a.size(); i++) {
+            // an ITEMIZED list (`$[…]`) is one thing to join, not several
+            if ((a[i].t == VT::Array || a[i].t == VT::Hash) && a[i].itemized && a[i].hashKind.empty() &&
+                a[i].enumName.empty()) { items.arr()->push_back(a[i]); continue; }
             for (auto& x : toList(a[i])) items.arr()->push_back(x);
+        }
         return I.methodCall(items, "join", ValueList{a[0]});
     };
     // `«a $x»` whose words interpolate (Parser::qqwwList): a[0] is "c"/"n"
@@ -16192,6 +16864,10 @@ void Interpreter::registerBuiltins() {
         if (a.empty())
             return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<reverse>");
         ValueList items;
+        // a lazy source (`reverse lines`) has to be read to its end first
+        if (a.size() == 1 && a[0].t == VT::Array && a[0].ext() && a[0].arr() &&
+            !std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite)
+            forceLazy(a[0]);
         if (a.size() == 1) items = toList(a[0]);
         else for (auto& v : a) {
             Value e = v;
@@ -17266,7 +17942,11 @@ void Interpreter::registerBuiltins() {
             // each argument is one element (a parenthesized group stays whole —
             // Digest::RIPEMD maps a destructuring block over two tuples), except
             // a Slip, which always flattens in
-            if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
+            // …and an ITEMIZED one (`map {…}, $hash`, `${…}`) is one element
+            if (a.size() == 2 && (a[1].t == VT::Hash || a[1].t == VT::Array) && a[1].itemized &&
+                a[1].hashKind.empty() && a[1].enumName.empty())
+                emit(a[1]);
+            else if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
             else for (size_t i = 1; i < a.size(); i++) {
                 if (a[i].t == VT::Array && a[i].isList && a[i].s == "Slip")
                     for (auto& v : *a[i].arr()) emit(v);
@@ -17474,10 +18154,19 @@ void Interpreter::registerBuiltins() {
         if (a.size() == 1) {
             if (a[0].t == VT::Range || (a[0].t == VT::Array && a[0].ext()))
                 return I.methodCall(a[0], "eager", ValueList{});
+            // a Seq reifies into a List: `eager (1,2).Seq` is (List)
+            if (a[0].t == VT::Array && a[0].s == "Seq" && !a[0].itemized) {
+                Value l = a[0]; l.s.clear(); l.isList = true; return l;
+            }
             return a[0];
         }
         Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr()->push_back(v); return out;
     };
+    // `hyper EXPR` / `race EXPR` — the list-op spellings of `.hyper`/`.race`:
+    // the values, all of them, in some order (the loop forms are statement
+    // prefixes in the parser). Computed eagerly, which is a legal schedule.
+    B["hyper"] = [](Interpreter& I, ValueList& a) -> Value { return I.callBuiltin("eager", a); };
+    B["race"]  = [](Interpreter& I, ValueList& a) -> Value { return I.callBuiltin("eager", a); };
     // `pair($key, $value)` — the sub spelling of `$key => $value`, for a key
     // that is computed rather than written (sheet HM-17). A non-Str key keeps
     // its own type, so `pair(1, 2)` renders `1 => 2`.
@@ -17582,6 +18271,23 @@ void Interpreter::registerBuiltins() {
         Value res = I.methodCall(list, "classify", ma);
         if (!into) return res;
         if (into->t != VT::Hash || !into->hash()) *into = Value::makeHash();
+        // into a QuantHash: each class COUNTS its members (a Setty just holds the key)
+        {
+            const std::string& qk = into->hashKind.str();
+            const bool baggy = qk == "BagHash" || qk == "Bag" || qk == "MixHash" || qk == "Mix";
+            const bool setty = qk == "SetHash" || qk == "Set";
+            if ((baggy || setty) && res.hash()) {
+                for (auto& kv : *res.hash()) {
+                    long long n = kv.second.t == VT::Array && kv.second.arr() ? (long long)kv.second.arr()->size() : 1;
+                    auto it = into->hash()->find(kv.first);
+                    Value nv = setty ? Value::boolean(true)
+                             : Value::integer((it != into->hash()->end() ? it->second.toInt() : 0) + n);
+                    nv.pairKeyM() = kv.second.pairKey();
+                    (*into->hash())[kv.first] = nv;
+                }
+                return *into;
+            }
+        }
         if (res.hash()) for (auto& kv : *res.hash()) { // append the grouped elements
             auto it = into->hash()->find(kv.first);
             if (it == into->hash()->end()) (*into->hash())[kv.first] = kv.second;
@@ -17852,6 +18558,12 @@ void Interpreter::registerBuiltins() {
             throw RakuError{Value::typeObj("X::AdHoc"), "Must specify at least one Awaitable to await"};
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
+            // a NESTED list of awaitables is awaited all the way down
+            if (p.t == VT::Array && p.arr() && p.enumName.empty() && p.hashKind.empty()) {
+                Value out = Value::array(); out.isList = true;
+                for (auto& e : *p.arr()) { Value ee = e; out.arr()->push_back(resolve(ee)); }
+                return out;
+            }
             // A user class that `does Awaitable` (TAP::Parser is one) supplies the
             // thing to wait on: Rakudo asks it for `get-await-handle`, and such a
             // class almost always delegates that to a Promise attribute. Resolve
@@ -17866,6 +18578,11 @@ void Interpreter::registerBuiltins() {
                 }
                 try { return I.methodCall(p, "result", {}); } catch (RakuError&) {}
                 return p;
+            }
+            // `await $channel` is `$channel.receive`: the next value, waiting
+            // for one; a closed, drained channel throws X::Channel::ReceiveOnClosed
+            if (p.t == VT::Hash && p.hashKind == "Channel") {
+                ValueList none; return I.methodCall(p, "receive", none);
             }
             // `await` a Supply drains it and yields its LAST emitted value.
             // S-52: a supply that QUIT has no value to give — the exception that
@@ -17890,12 +18607,34 @@ void Interpreter::registerBuiltins() {
                 I.awaitPromise(ps);
                 if (ps->broken) {
                     RakuError err{ ps->cause, causeMessageOf(I, ps->cause, ps->causeMsg) };
+                    auto awaitBt = err.bt;
                     // the error happened in the WORKER; this thread's chain is
                     // merely where it was collected, so it goes under a label
                     if (ps->causeBt && !ps->causeBt->frames.empty()) {
                         err.altBt = err.bt;
                         err.altLabel = "Awaited at:";
                         err.bt = ps->causeBt;
+                    }
+                    // …and the exception says so: it does X::Await::Died, whose
+                    // gist leads with where it was awaited (a copy — every
+                    // awaiter of the promise gets its own)
+                    // every awaiter gets its OWN copy: attaching frames writes to the
+                    // object, and several threads may await one broken promise at once
+                    if (err.payload.t == VT::Object && err.payload.obj()) {
+                        Value own = err.payload;
+                        own.setObj(std::make_shared<ObjectData>(*err.payload.obj()));
+                        err.payload = own;
+                    }
+                    Value ex = I.exceptionFor(err);
+                    if (ex.t == VT::Object && ex.obj()) {
+                        Value mixed = I.mixinValue(ex, Value::typeObj("X::Await::Died"), true);
+                        if (mixed.t == VT::Object && mixed.obj()) {
+                            if (awaitBt && !awaitBt->frames.empty()) {
+                                Value h = Value::any(); h.extM() = awaitBt;
+                                mixed.obj()->attrs["__awaitbt"] = std::move(h);
+                            }
+                            err.payload = mixed;
+                        }
                     }
                     throw err;
                 }
@@ -18017,8 +18756,13 @@ void Interpreter::registerBuiltins() {
             return out;
         }
         if (a.size() == 1) return resolve(a[0]);
+        // several awaitables: a result that is a Slip flattens into the list
         Value out = Value::array(); out.isList = true;
-        for (auto& x : a) out.arr()->push_back(resolve(x));
+        for (auto& x : a) {
+            Value r = resolve(x);
+            if (r.t == VT::Array && r.arr() && r.s == "Slip") for (auto& e : *r.arr()) out.arr()->push_back(e);
+            else out.arr()->push_back(r);
+        }
         return out;
     };
     // set()/bag()/mix() flatten iterable args, but an itemized `$[...]` stays one
@@ -18043,9 +18787,19 @@ void Interpreter::registerBuiltins() {
         }
         return out;
     };
-    B["set"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Set", true); };
-    B["bag"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Bag", true); };
-    B["mix"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Mix", true); };
+    // `set *..*` — an endless list cannot become a quanthash
+    auto refuseLazy = [](Interpreter& I, ValueList& a, const char* what) {
+        for (auto& x : a) {
+            bool lazy = endlessLazy(x);
+            if (!lazy && x.t == VT::Range) { ValueList none; lazy = I.methodCall(x, "is-lazy", none).truthy(); }
+            if (lazy)
+                I.throwTyped("X::Cannot::Lazy", {{"action", "coerce"}, {"what", what}},
+                             std::string("Cannot coerce a lazy list onto a ") + what);
+        }
+    };
+    B["set"] = [settyArgs, refuseLazy](Interpreter& I, ValueList& a) -> Value { refuseLazy(I, a, "Set"); ValueList i = settyArgs(a); return i.empty() ? emptyQuantSingleton("Set") : makeBaggy(i, "Set", true); };
+    B["bag"] = [settyArgs, refuseLazy](Interpreter& I, ValueList& a) -> Value { refuseLazy(I, a, "Bag"); ValueList i = settyArgs(a); return i.empty() ? emptyQuantSingleton("Bag") : makeBaggy(i, "Bag", true); };
+    B["mix"] = [settyArgs, refuseLazy](Interpreter& I, ValueList& a) -> Value { refuseLazy(I, a, "Mix"); ValueList i = settyArgs(a); return i.empty() ? emptyQuantSingleton("Mix") : makeBaggy(i, "Mix", true); };
     // `list(…)` builds a List of its ARGUMENTS — it does not flatten them, so
     // `list((1,2),(3,4))` has two elements. The one-arg rule still applies: a
     // lone Positional spreads, unless it is ITEMIZED (`$(1,2)` stays one thing).

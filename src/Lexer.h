@@ -131,6 +131,8 @@ private:
     // term `bc` and then a division with nothing after it). Offset just past
     // the declaration, so the text before it still reads `/…/` as a regex.
     size_t slashPrefixAt_ = (size_t)-1;
+    std::string userSigilOps_;            // `infix:["@"]`, `circumfix:["@", "@"]`: a sigil spelled as an operator
+    size_t dquoteCloserAt_ = (size_t)-1; // a `circumfix:<w ">` above: `"` after a term closes it
     size_t unspaceEnd_ = (size_t)-1;  // pos right after an unspace (`\` + whitespace/comment): not whitespace
     // names this file declares as TERMS (`constant X`, `my \x`, a `\x` parameter),
     // each with the brace depth it is scoped to: a `/` after one divides, and a

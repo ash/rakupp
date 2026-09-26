@@ -83,6 +83,7 @@ public:
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
+        else if (kind == "infix-non") userInfixNon_.insert(name);
         else if (kind == "prefix") userPrefix_.insert(name);
         else if (kind == "postfix") userPostfix_.insert(name);
         // a bracketing pair is spelled "OPEN CLOSE" (`&circumfix:<⌊ ⌋>`)
@@ -174,12 +175,22 @@ public:
     static bool isWordInfixName(const std::string& n);
 private:
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
+    std::set<std::string> labelNames_;       // statement labels, which are terms too
+    std::vector<std::set<std::string>> constNamesScoped_{1}; // constants declared per block scope
+    std::string retTypeSpecHere() const;     // the `--> T` / `--> T(S)` / `--> T:D()` at cur()
+    std::string newlineSeq_ = "\n";        // what `\n` means (`use newline :cr`)
+    std::set<std::string> userInfixNon_;     // …and `is assoc<non>` (they do not chain)
+    std::set<std::string> userInfixList_, userInfixChain_; // `is assoc<list>` / `is assoc<chain>`
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
+    std::map<std::string, int> userPrefixBp_; // a user prefix declared `is looser(…)`: its operand's binding power
     // Package DECLARATORS a used module supplies through EXPORTHOW::DECLARE:
     // the keyword → the name of the HOW that declaration's type gets. Red
     // exports `model` this way, so `model Foo { … }` is a class declaration
     // whose metaobject is a MetamodelX::Red::Model.
     std::map<std::string, std::string> userDeclarators_;
+    std::string pendingEnumType_;          // `my Str enum …`: the type the next enum declares
+    std::vector<std::string> circumfixClosers_; // innermost user circumfix being parsed: its closer ends the operand
+    std::map<std::string, std::string> supersedeHow_; // `EXPORTHOW::SUPERSEDE::class` — block-scoped
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
     std::set<std::string> declaredSubNames_; // plain `sub name` declarations seen so far (a listop, for `?? f !!`)
     std::set<std::string> sigillessRO_; // …of those, the `my \x = …` ones: a value, not a container (assigning dies)
@@ -302,6 +313,8 @@ private:
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     bool unitDecl_ = false;     // true while dispatching a `unit …` declaration (allows a bodyless `unit sub foo;`)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
+    // per enclosing type: the unqualified `self!name` calls its body makes (name, line)
+    std::vector<std::vector<std::pair<std::string, int>>> classPrivCalls_;
     bool sawPkgDecl_ = false; // a braced package was declared: too late for `sub MAIN;`
     std::vector<std::pair<std::string, bool>> pkgStack_; // enclosing packages (qualified name, is-module) for $?PACKAGE / $?MODULE
     std::set<std::string> completedPkgs_; // package names given a body ANYWHERE in this unit (a nested block counts): a file-scope stub is satisfied by one
@@ -365,13 +378,20 @@ private:
     void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets
+    bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
+public:
+    static thread_local int allowRoutineMagic;   // >0: parsing a regex's code block, where &?ROUTINE is the regex
+private:
     bool sawReturnRw_ = false; // a `return-rw` was parsed in the routine body being read
 private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
     ExprPtr applyExprModifiers(ExprPtr e); // trailing stmt modifiers inside (…)/@(…)/…
     std::unique_ptr<Block> parseBlock();
+    void checkPlaceholderOrder(size_t openAt);
+    void checkNativeParamAssign(const std::vector<Param>& params, size_t bodyAt);
+    void resolveConstWords(std::vector<std::string>& w);
     void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
     static void checkNullRegex(const std::string& pat, int line,
                                bool branches = true); // `/ /`; branches: `/a|/` too
@@ -379,6 +399,9 @@ private:
     StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false,
                        const std::string& kindKw = "");
     int classDepth_ = 0; // >0 while parsing inside a class/role/grammar body
+    bool dynScopeAll_ = false;               // `use dynamic-scope` in force (block-scoped)
+    const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
+    std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these
     std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)
     // `use MONKEY-TYPING` is lexically scoped: one frame per block, program frame at [0]
     std::vector<char> monkeyScopes_ = {0};

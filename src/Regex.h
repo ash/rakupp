@@ -123,6 +123,14 @@ struct GrammarHooks {
     // serves as a staleness stamp, since named-regex registration is
     // last-wins and a re-declared token must invalidate cached expansions.
     std::function<bool(const std::string& name, std::string& text, std::string& flags)> namedRule;
+    // A plain regex's `<name>` / `<&name>` reaching a lexical `my regex NAME`
+    // — the BACKTRACKING kind: answer its compiled body so the call threads its
+    // continuation through it, as the grammar path does. The atomic resolver
+    // took the callee's first match and never came back for another, so
+    // `my regex r { <?> || x <&r> }; "x" ~~ /<&r> $/` matched "" at 1 instead
+    // of "x" at 0. Null (or a null answer: a token/rule, or a name it does not
+    // know) keeps the resolver.
+    std::function<std::shared_ptr<const class Regex>(const std::string& name)> lexCallee;
     // A `<name>` that is neither a rule nor a proto of the grammar but an
     // ORDINARY METHOD on it. Rakudo compiles every subrule call as a method
     // call on the cursor, so `<.panic("…")>` reaches `method panic` — the
@@ -358,6 +366,7 @@ private:
         std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
         bool aliasDotted = false;        // <alias=.rule> — the alias captures, the rule name does NOT
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
+        bool noBack = false;             // written under :ratchet — the call commits to its first match
         // `<$var>` / `<alias=$var>`: the interpolated value, compiled with its own
         // front-end and CALLED here rather than pasted in. Owned by the host regex
         // (inlineSubs_), so the pointer lives exactly as long as this node does.
@@ -408,6 +417,7 @@ private:
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
     bool curImark_ = false; // parse-time adverb state: :m/:ignoremark scoped to the enclosing group
+    bool curRatchet_ = false; // parse-time adverb state: :r/:ratchet scoped to the enclosing group
     bool sigspace_ = false;
     bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
     int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)
@@ -568,7 +578,8 @@ public:
     // under `n->ruleName` when the assertion is aliased. `re` is the callee —
     // the node's own `inlineRx` for `<$var>`, or whatever a `<{ code }>` block
     // answered at match time.
-    bool matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k) const;
+    bool matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k,
+                        const std::string* capKeyOverride = nullptr, const std::string* alsoName = nullptr) const;
     // If rootIsSingleChar(), test it at `pos`: returns pos+1 on match, -1 on no match.
     long trySingleChar(const std::string& s, long pos) const;
 private:

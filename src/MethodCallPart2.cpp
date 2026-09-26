@@ -58,6 +58,8 @@ static long long supplyByArity(const rakupp::Value& c) {
 }
 
 namespace rakupp {
+const std::map<std::string, int>& signalNameMapFwd();
+Value makeSignalEnumValueFwd(int sig);
 
 // The per-class step alone, least-derived first down the primary parent chain
 // — what the construction protocol reduces to when no class in the ancestry
@@ -373,10 +375,17 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
 // What lands on the proc is a {emit, done, quit, bin, lines} RECORD: the feeder
 // reads the stream flavour and the :done/:quit callbacks from it (TAP relays
 // stderr with `.act({…}, :done({…}), :quit({…}))`, which used to lose both).
+std::string procSpawnMissing(const Value& proc);
 void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, Value quit) {
     if (!(inv.t == VT::Hash && inv.hash() && inv.hash()->count("proc"))) return;
     Value proc = (*inv.hash())["proc"];
     if (!(proc.t == VT::Hash && proc.hash())) return;
+    // the process can never start: its streams quit at once, with X::OS
+    if (std::string why = procSpawnMissing(proc); !why.empty()) {
+        Value ex = makeTypedEx("X::OS", {{"os-error", Value::str(why)}}, why);
+        if (quit.t == VT::Code) { callCallable(quit, ValueList{ex}); return; }
+        throw RakuError{ex, why};
+    }
     const char* key = inv.hash()->count("stream") &&
                       (*inv.hash())["stream"].toStr() == "stderr" ? "taps-err" : "taps";
     if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
@@ -430,6 +439,7 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
         (*rec.hash())["lines"] = Value::boolean(true);
     if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy())
         (*rec.hash())["bin"] = Value::boolean(true);
+    if (inv.hash()->count("enc")) (*rec.hash())["enc"] = (*inv.hash())["enc"];
     (*proc.hash())[key].arr()->push_back(rec);
     // the MERGED `.Supply` hears stderr as well (its end is announced once)
     if (inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply") {
@@ -508,7 +518,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                     break;
                 }
             }
-            if (pat && (pat->pub || pat->built)) {
+            if (pat && (pat->pub || pat->built) && !pat->notBuilt) {
                 const std::string& k = arg.s;
                 bool seen = false;
                 for (auto& pv : providedArgs)
@@ -616,12 +626,18 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                 slotBuf = std::string(1, at.sigil) + at.name;
                 slotp = &slotBuf;
             }
+            // a MORE-DERIVED class declares this name too: this level's storage
+            // is its own, under a class-qualified key (see attrSlotFor)
+            bool shadowedHere = false;
+            for (size_t k = 0; k < lvlIx && !shadowedHere; k++)
+                for (auto& a2 : chainAt(k)->attrs) if (a2.name == at.name) { shadowedHere = true; break; }
+            if (shadowedHere) { slotBuf = lvl->name + "\x01" + at.name; slotp = &slotBuf; }
             const std::string& slot = *slotp;
             const bool slotIsName = (slotp == &at.name);
             ProvidedArg* provided = nullptr;
             for (auto& pv : providedArgs)
                 if (*pv.name == at.name) { provided = &pv; break; }
-            if (provided && slotIsName) {
+            if (provided && (slotIsName || shadowedHere)) {
                 od->attrs[slot] = typedContainer(coerceToSigil(
                     nilResetForAttr(provided->val ? *provided->val : Value::any(), at), at.sigil), at);
                 provided->bound = true;
@@ -661,6 +677,18 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                     // `has %.Converter is DBDish::TypeConverter` and then
                     // calls `.convert` on it; as a plain Hash there was no
                     // such method and nothing said which line was at fault.
+                    ValueList none;
+                    ensureEnv();
+                    seed = methodCall(Value::typeObj(at.containerIs), "new", none);
+                }
+            }
+            // `has @.a is Buf` — an array attribute whose container is a byte buffer
+            // (or a user Positional type)
+            else if (!at.containerIs.empty() && at.sigil == '@') {
+                static const std::set<std::string> blobTypes = {
+                    "Blob", "Buf", "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
+                if (blobTypes.count(at.containerIs) || classes_.count(at.containerIs)) {
+                    userContainer = classes_.count(at.containerIs) != 0;
                     ValueList none;
                     ensureEnv();
                     seed = methodCall(Value::typeObj(at.containerIs), "new", none);
@@ -1427,11 +1455,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit"};
                 }
                 else if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
-            } else if (!args.empty() && args[0].t == VT::Code && inv.hash()->count("proc")) {
+            } else if (inv.hash()->count("proc") &&
+                       ((!args.empty() && args[0].t == VT::Code) || quit.t == VT::Code || done.t == VT::Code)) {
                 // a Proc::Async stream (zef's test/build/fetch backends are all
                 // written as `whenever $proc.stdout.lines { … }`): park the
                 // {emit, done, quit, bin} record on the proc for runProcPromise
-                registerProcStreamTap(inv, args[0], done, quit);
+                // (a tap may bring only its `:quit` / `:done`)
+                registerProcStreamTap(inv, !args.empty() && args[0].t == VT::Code ? args[0] : Value::any(), done, quit);
             }
             return eagerTap;
         }
@@ -2014,6 +2044,41 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 throw RakuError{(*inv.hash())["quit-reason"],
                                 inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit"};
             ValueList vs = listy ? vals() : ValueList{};
+            // an ON-DEMAND supply (`supply { whenever … }`) is tapped and waited
+            // out: done gives its last value, and a QUIT — a `die` in a
+            // whenever — is thrown, which is what `await supply {…}` reports
+            if (!listy && inv.hash()->count("block")) {
+                auto cell = std::make_shared<ValueList>();
+                auto state = std::make_shared<std::atomic<int>>(0);   // 1 done, 2 quit
+                auto quitV = std::make_shared<Value>();
+                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+                emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+                    if (!a.empty()) cell->push_back(a[0]);
+                    return Value::any();
+                };
+                Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+                doneCb.code()->builtin = [state](Interpreter&, ValueList&) -> Value {
+                    int z = 0; state->compare_exchange_strong(z, 1); return Value::any();
+                };
+                Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+                quitCb.code()->builtin = [state, quitV](Interpreter&, ValueList& a) -> Value {
+                    if (!a.empty()) *quitV = a[0];
+                    state->store(2); return Value::any();
+                };
+                tapSupply(inv, emitCb, doneCb, quitCb);
+                if (getenv("DBGW")) fprintf(stderr, "wait: tapped, state=%d\n", state->load());
+                while (state->load() == 0) {
+                    if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break;
+                    sleepYield(0.001);
+                }
+                if (state->load() == 2) {
+                    ValueList none;
+                    std::string msg;
+                    try { msg = methodCall(*quitV, "message", none).toStr(); } catch (...) { msg = quitV->toStr(); }
+                    throw RakuError{*quitV, msg};
+                }
+                return cell->empty() ? Value::nil() : cell->back();
+            }
             if (!listy) { ValueList na; Value l = methodCall(inv, "list", na);
                           if (l.t == VT::Array && l.arr()) vs = *l.arr(); }
             return vs.empty() ? Value::nil() : vs.back();
@@ -2150,6 +2215,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // value, which a metaclass adding an attribute at runtime uses in place
         // of the `= default` a declaration would have written.
         if (m == "set_build" && !args.empty()) { h["build"] = args[0]; return args[0]; }
+        // an Attribute is an object: `.raku` is its class and `.new`, not its slots
+        // (the bootstrap ones Attribute itself has are BOOTSTRAPATTRs)
+        if ((m == "raku" || m == "perl") && args.empty())
+            return Value::str(h.count("\x01bootstrap") ? "BOOTSTRAPATTR.new" : "Attribute.new");
         // `.build` without a set_build answers what Rakudo's does: Mu for an
         // attribute with no default, the value itself for a literal one, and
         // otherwise a METHOD thunk `(instance, Mu)` that computes it. Red's
@@ -2175,6 +2244,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             switch (ca->def->kind) {
                 case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
                     return eval(const_cast<Expr*>(ca->def));
+                // a double-quoted string with nothing interpolated is a literal too
+                case NK::InterpStr: {
+                    bool lit = true;
+                    for (auto& p : static_cast<const InterpStr*>(ca->def)->parts)
+                        if (p && p->kind != NK::StrLit) { lit = false; break; }
+                    if (lit) return eval(const_cast<Expr*>(ca->def));
+                    break;
+                }
                 default: break;
             }
             const Expr* def = ca->def;
@@ -2286,6 +2363,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "not") { (*inv.hash())["handled"] = Value::boolean(true); return Value::boolean(true); }
         if (m == "handled") return inv.hash()->count("handled") ? (*inv.hash())["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
+        // Mu's print/say/put take no arguments: `$failure.print: 42` finds no
+        // candidate, and the capture it reports holds the Failure itself
+        if ((m == "print" || m == "say" || m == "put") && !args.empty()) {
+            (*inv.hash())["handled"] = Value::boolean(true);
+            Value cap = Value::array(); cap.isList = true;
+            cap.arr()->push_back(inv);
+            for (auto& a : args) cap.arr()->push_back(a);
+            throwTypedV("X::Multi::NoMatch", {{"capture", cap}},
+                        "Cannot resolve caller " + m + "(Failure:D: ...); none of these signatures matches:\n"
+                        "    (Mu: *%_)");
+        }
         // .throw keeps the Failure's own exception TYPE and message — routing an
         // unthrown X::Str::Numeric through X::AdHoc lost both.
         if (m == "throw" || m == "sink") {
@@ -2331,9 +2419,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // lookup that missed (`$::($lang)`, Date::Names) went on as if it had
         // found something. The names that stay quiet are the Failure's own
         // and Mu's introspection — asking WHAT a thing is does not use it.
+        // …except .Capture of a HANDLED Failure: there is nothing to unpack
+        if (m == "Capture") {
+            auto h = inv.hash()->find("handled");
+            if (h != inv.hash()->end() && h->second.truthy())
+                throw RakuError{Value::typeObj("X::Cannot::Capture"),
+                                "Cannot unpack or Capture `" + inv.gist() + "`."};
+        }
         static const std::set<std::string> quiet = {
             "exception", "defined", "Bool", "so", "not", "handled", "self", "Failure",
-            "throw", "sink", "rethrow", "message", "raku", "perl", "new", "clone",
+            "throw", "sink", "rethrow", "message", "raku", "perl", "clone",
             "WHAT", "WHICH", "WHERE", "HOW", "WHO", "DEFINITE", "isa", "does", "can",
             "ACCEPTS", "item", "VAR", "mark-handled", "bless", "BUILDALL", "CREATE" };
         if (!m.empty() && m[0] != '^' && !quiet.count(m)) {
@@ -2402,6 +2497,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 #endif
             return Value::str("localhost");
         }
+    }
+    // `$*KERNEL.signals` — the Signal enum values indexed by their OS number
+    // (a slot with no signal is Any), and `.signal(…)` the number of one
+    // named by a Signal, a Str ("SIGHUP" or just "HUP") or an Int
+    if (inv.t == VT::Hash && inv.hashKind == "Kernel" && (m == "signals" || m == "signal")) {
+        if (m == "signals") {
+            Value out = Value::array(); out.isList = true;
+            int maxSig = 0;
+            for (auto& kv : signalNameMapFwd()) maxSig = std::max(maxSig, kv.second);
+            out.arr()->resize((size_t)maxSig + 1, Value::any());
+            for (auto& kv : signalNameMapFwd()) (*out.arr())[(size_t)kv.second] = makeSignalEnumValueFwd(kv.second);
+            return out;
+        }
+        if (args.empty()) return Value::nil();
+        const Value& a = args[0];
+        if (a.t == VT::Int && a.enumName.empty()) return Value::integer(a.i);
+        if (a.t == VT::Int) return Value::integer(a.i);
+        std::string nm = a.toStr();
+        int n = signalNumberOfName(nm);
+        if (n < 0) n = signalNumberOfName("SIG" + nm);
+        return n < 0 ? Value::nil() : Value::integer(n);
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash()->count("name") ? (*inv.hash())["name"].toStr() : "";
@@ -2629,6 +2745,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `$proc.out` / `$proc.err` — a read handle over what the child wrote. It
         // keeps the Proc it came from: Rakudo's IO::Pipe.close answers that Proc,
         // and sinking an unsuccessful one is what reports a failed child.
+        // reading a stream of a child still waiting on buffered input runs it
+        if ((m == "out" || m == "err") && inv.hash()->count("deferred") && !inv.hash()->count("ran")) {
+            // Nothing written yet, but a `start` block is live: it is the
+            // writer (`start { $p.in.write: …; $p.in.close }` then reading
+            // `$p.out` here). A real pipe would block this read until the
+            // child finished; wait for the writer rather than run it empty.
+            auto pin0 = inv.hash()->find("pending-in");
+            if ((pin0 == inv.hash()->end() || pin0->second.toStr().empty()) &&
+                !inv.hash()->count("in-from") && liveWorkers_.load() > 0) {
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        if ((m == "out" || m == "err") && inv.hash()->count("pending-in") && !inv.hash()->count("ran")) {
+            Value pin = inv; pin.hashKind = "ProcIn";
+            ValueList none; methodCall(pin, "close", none);
+        }
         if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; return h; }
         if (m == "sink" || m == "self") return inv;
         if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
@@ -2670,10 +2804,34 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Closing stdin without ever writing to it still runs the child — with no
         // input. `run(cmd, :in, :out); $p.in.close` was a pair of no-ops, so the
         // child never started and `.out` came back empty.
-        if (m == "print" || m == "spurt" || m == "write" || m == "say" ||
-            (m == "close" && !inv.hash()->count("ran"))) {
-            std::string input = (m == "close" || args.empty()) ? "" : args[0].toStr();
-            if (m == "say") input += "\n";
+        // Writes BUFFER until the pipe is closed (or the output is read): the
+        // child runs once, with all of it. `.print: "ab"; .flush; .print: "cd"`
+        // is one input "abcd", as a real pipe would deliver it.
+        if ((m == "print" || m == "spurt" || m == "write" || m == "say" || m == "put") &&
+            !inv.hash()->count("ran")) {
+            std::string add;
+            if (m == "write" && !args.empty() && args[0].t == VT::Str) add = args[0].s;
+            else for (auto& a : args) add += a.toStr();
+            if (m == "say" || m == "put") add += "\n";
+            auto pit = inv.hash()->find("pending-in");
+            std::string cur = pit != inv.hash()->end() ? pit->second.toStr() : std::string();
+            (*inv.hash())["pending-in"] = Value::str(cur + add);
+            return Value::boolean(true);
+        }
+        if (m == "flush") return Value::boolean(true);
+        if (m == "close" && !inv.hash()->count("ran")) {
+            auto pit = inv.hash()->find("pending-in");
+            std::string input = pit != inv.hash()->end() ? pit->second.toStr() : std::string();
+            // fed from another child's output: that child runs first
+            auto fit = inv.hash()->find("in-from");
+            if (fit != inv.hash()->end() && fit->second.t == VT::Hash && fit->second.hash()) {
+                Value src = fit->second;
+                if (!src.hash()->count("ran")) {
+                    Value sin = src; sin.hashKind = "ProcIn";
+                    ValueList none; methodCall(sin, "close", none);
+                }
+                input = (*src.hash())["out-str"].toStr();
+            }
             std::vector<std::string> argv;
             auto it = inv.hash()->find("argv");
             if (it != inv.hash()->end() && it->second.arr()) for (auto& x : *it->second.arr()) argv.push_back(x.toStr());
@@ -2846,6 +3004,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return Value::nil();
         }
+        // `.andthen(&code)` runs on a KEPT promise (a broken one passes its
+        // cause along); `.orelse(&code)` runs on a BROKEN one (a kept one
+        // passes its result along). Both are `.then` with that choice made.
+        if ((m == "andthen" || m == "orelse") && !args.empty() && args[0].t == VT::Code) {
+            Value cb = args[0]; const bool isAnd = m == "andthen";
+            Value wrap; wrap.t = VT::Code; wrap.setCode(std::make_shared<Callable>());
+            wrap.code()->builtin = [cb, isAnd](Interpreter& I, ValueList& a) -> Value {
+                Value p = a.empty() ? Value::any() : a[0];
+                const bool kept = I.methodCall(p, "status", ValueList{}).toStr() == "Kept";
+                if (kept == isAnd) return I.callCallable(cb, ValueList{p});
+                return I.methodCall(p, "result", ValueList{});   // a broken one rethrows its cause
+            };
+            return methodCall(inv, "then", ValueList{wrap});
+        }
         if (m == "then") {
             // Deferred: the block runs only once the promise settles, receiving the
             // (identical) promise; its return keeps the new Promise, a throw breaks it.
@@ -2985,8 +3157,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     "Cannot make a HyperWhatever object using .new");
     // Num had no constructor, so `Num.new(⅓)` fell through to the generic
     // type-object `.new` and answered 0 for every argument.
-    if (inv.t == VT::Type && inv.s == "Num" && m == "new")
-        return Value::number(args.empty() ? 0.0 : args[0].toNum());
+    if (inv.t == VT::Type && inv.s == "Num" && m == "new") {
+        if (args.empty()) return Value::number(0.0);
+        // anything that can `.Num` — a user object through its own method; a
+        // type object (`Num.new: class {}`) has nothing to give
+        if (args[0].t == VT::Object || args[0].t == VT::Type) {
+            // a user class with no Num of its own cannot become one
+            ClassInfo* uc = args[0].t == VT::Object && args[0].obj() ? args[0].obj()->cls.get()
+                          : classes_.count(args[0].s) ? classes_[args[0].s].get() : nullptr;
+            if (uc && !uc->findMethod("Num") && !uc->findMethod("Numeric") && uc->nativeParent.empty()) {
+                bool native = false;
+                for (ClassInfo* c = uc; c; c = c->parent.get()) if (!c->nativeParent.empty()) native = true;
+                if (!native)
+                    throwTypedV("X::Method::NotFound",
+                        {{"method", Value::str("Num")}, {"typename", Value::str(uc->name)}, {"private", Value::boolean(false)}},
+                        "No such method 'Num' for invocant of type '" + uc->name + "'");
+            }
+            Value r = methodCall(args[0], "Num", {});
+            return r.t == VT::Num ? r : Value::number(r.toNum());
+        }
+        return Value::number(args[0].toNum());
+    }
     // A NATIVE integer type's `.Range` is its exact two's-complement span, and a
     // native float's is -Inf..Inf. S02-types/int-uint.t opens by asking each of
     // them for `.Range.int-bounds` and could not get past line 24 without this;
@@ -3914,7 +4105,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // lines rather than a joined list of hashes. `.list`/`.elems`/`.grep` and
     // every other list method fall through to the Array surface untouched.
     if (inv.t == VT::Array && inv.s == "Backtrace" && inv.arr()) {
-        if (m == "Str" || m == "gist" || m == "full" || m == "nice" || m == "concise") {
+        // `.gist` is a summary, as in Rakudo: "Backtrace(3 frames)"
+        if (m == "gist") {
+            size_t n = inv.arr()->size();
+            return Value::str("Backtrace(" + std::to_string(n) + (n == 1 ? " frame)" : " frames)"));
+        }
+        // `.concise`: only the ROUTINE frames (Rakudo: non-hidden, non-setting routines)
+        if (m == "concise") {
+            Value only = Value::array(); only.isList = true; only.s = "Backtrace";
+            for (auto& fr : *inv.arr())
+                if (fr.t == VT::Hash && fr.hash()) {
+                    auto it = fr.hash()->find("code");
+                    if (it != fr.hash()->end() && it->second.t == VT::Code && it->second.code() &&
+                        !it->second.code()->isBlock && !it->second.code()->name.empty())
+                        only.arr()->push_back(fr);
+                }
+            BtStyle st; st.excerpt = st.typeLine = st.colour = false;
+            return Value::str(renderBacktraceValue(only, st));
+        }
+        if (m == "Str" || m == "full" || m == "nice") {
             BtStyle st; st.excerpt = st.typeLine = st.colour = false;
             if (m == "full") { st.full = true; st.collapse = false; }
             return Value::str(renderBacktraceValue(inv, st));
@@ -3935,8 +4144,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
-        if (m == "is-hidden" || m == "is-setting" || m == "is-routine")
-            return Value::boolean(false);
+        if (m == "is-hidden" || m == "is-setting") return Value::boolean(false);
+        // a frame whose code is a SUB or METHOD (not a bare block, not the mainline)
+        if (m == "is-routine") {
+            auto it = inv.hash()->find("code");
+            return Value::boolean(it != inv.hash()->end() && it->second.t == VT::Code &&
+                                  it->second.code() && !it->second.code()->isBlock &&
+                                  !it->second.code()->name.empty());
+        }
         if (m == "subname") {
             auto it = inv.hash()->find("code");
             // the mainline has no declaring routine: Rakudo names it <unit>,
@@ -3949,7 +4164,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
             BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;
             std::string r = renderBacktraceValue(one, plain);
-            if (!r.empty() && r.back() == '\n') r.pop_back();
+            // (a frame's Str is its LINE, newline included — joined, the
+            // frames are the backtrace text again)
+            if (m == "gist" && !r.empty() && r.back() == '\n') r.pop_back();
             return Value::str(r);
         }
     }
@@ -4103,7 +4320,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
         Value ex; bool haveEx = false; std::string msg;
+        bool handledArg = false, handledVal = false;
         for (auto& a : args) if (a.t == VT::Object) { ex = a; haveEx = true; } // Failure.new($ex) / :exception
+        // …and the NAMED spelling `.raku` round-trips through:
+        // `Failure.new(exception => X::…, handled => True)`
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.pairVal()) {
+                if (a.s == "exception" && a.pairVal()->t == VT::Object) { ex = *a.pairVal(); haveEx = true; }
+                else if (a.s == "handled") { handledArg = true; handledVal = a.pairVal()->truthy(); }
+            }
         // `Failure.new("oh noes!")` — a plain STRING is the message, wrapped in an
         // X::AdHoc exactly as Rakudo does. Ignored, the Failure had nothing to say
         // and its gist came back "(Any)".
@@ -4117,6 +4342,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value f = rakuppNewFailure();
         (*f.hash())["exception"] = ex;
         if (!msg.empty()) (*f.hash())["message"] = Value::str(msg);
+        if (handledArg && handledVal) (*f.hash())["handled"] = Value::boolean(true);
         return f;
     }
     if (inv.t == VT::Type && inv.s == "Proxy" && m == "new") {
@@ -4160,10 +4386,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         nl.arr()->push_back(Value::str("\n"));
         nl.arr()->push_back(Value::str("\r\n"));
         (*h.hash())["nl-in"] = nl;
+        // …unless it was given its own: `IO::Handle.new(:nl-in<foo>, :nl-out<meow>, :!chomp)`
+        // — what a later `.open` then keeps
+        for (auto& a : args) {
+            if (!(a.t == VT::Pair && a.pairVal())) continue;
+            if (a.s == "nl-in" && a.pairVal()->t != VT::Any) (*h.hash())["nl-in"] = *a.pairVal();
+            else if (a.s == "nl-out" && a.pairVal()->t != VT::Any) (*h.hash())["nl-out"] = *a.pairVal();
+            else if (a.s == "chomp") (*h.hash())["chomp"] = Value::boolean(a.pairVal()->truthy());
+        }
         return h;
     }
     if (inv.t == VT::Type && m == "new") {
         const std::string& t = inv.s;
+        // Bool is an ENUM: there is nothing to instantiate
+        if (t == "Bool" && inv.ofType().empty())
+            throwTypedV("X::Constructor::BadType", {{"type", Value::typeObj("Bool")}},
+                        "Enum 'Bool' is insufficiently type-like to be instantiated. Did you mean 'class'?");
         // `Int.new(5)` / `Str.new(value => 'x')` — the constructors Rakudo gives
         // these two. They were reached with the arguments already in hand and
         // answered 0 / "" for every one of them, which is what a `class Int64 is
@@ -4297,6 +4535,58 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             out.arr()->push_back(std::move(x));
         }
         return out;
+    }
+    // `Seq.from-loop(&body, &cond?, &afterwards?)` — the iterator a `loop`
+    // statement is: call &body while &cond (checked first) holds, calling
+    // &afterwards between. Without &cond it never ends, so the Seq is lazy.
+    if (inv.t == VT::Type && inv.s == "Seq" && m == "from-loop" && !args.empty() && args.size() <= 5) {
+        // `:label(L)` — a `last L` in the body ends THIS loop; `:repeat` runs
+        // the body once before the condition is first asked
+        ValueList pos; std::string label; bool repeat = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg && a.s == "label" && a.pairVal()) {
+                Value lv = *a.pairVal();
+                if (lv.t == VT::Hash && lv.hashKind == "Label" && lv.hash() && lv.hash()->count("name"))
+                    label = (*lv.hash())["name"].toStr();
+                else label = lv.toStr();
+            }
+            else if (a.t == VT::Pair && a.namedArg && a.s == "repeat") repeat = a.pairVal() && a.pairVal()->truthy();
+            else pos.push_back(a);
+        }
+        if (pos.empty() || pos.size() > 3)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller from-loop(Seq: " + std::to_string(pos.size()) +
+                            " positionals); none of these signatures matches"};
+        Value body = pos[0];
+        Value cond = pos.size() > 1 ? pos[1] : Value();
+        Value after = pos.size() > 2 ? pos[2] : Value();
+        bool hasCond = pos.size() > 1, hasAfter = pos.size() > 2;
+        Value a = Value::seq();
+        auto st = std::make_shared<LazySeqState>();
+        st->infinite = !hasCond;
+        // with a condition its end is unknown until it comes: walked live, like
+        // a stream — a `for` pulls one per iteration, nothing reads ahead
+        st->streaming = hasCond;
+        auto first = std::make_shared<bool>(true);
+        auto done = std::make_shared<bool>(false);
+        st->appendNext = [this, body, cond, after, hasCond, hasAfter, first, done, label, repeat](ValueList& cache) -> bool {
+            if (*done) return false;
+            if (!*first && hasAfter) callCallable(after, {});
+            bool wasFirst = *first;
+            *first = false;
+            if (hasCond && !(repeat && wasFirst) && !callCallable(cond, {}).truthy()) { *done = true; return false; }
+            try { cache.push_back(callCallable(body, {})); }
+            catch (LastEx& e) {
+                if (!e.label.empty() && e.label != label) throw;
+                *done = true; return false;
+            }
+            catch (NextEx& e) {
+                if (!e.label.empty() && e.label != label) throw;
+            }
+            return true;
+        };
+        a.extM() = st;
+        return a;
     }
     if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "array") && m == "new") {
         if (inv.s == "array" && inv.ofType().empty()) // native arrays need a type parameter
@@ -4508,6 +4798,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // order and flags match Rakudo's; every type is Any — the rebuild
         // treats the parts opaquely and .new ignores unknown nameds exactly
         // as Rakudo's does. Other built-ins keep answering the empty list.
+        // …and Attribute's own, which Rakudo builds before Attribute exists
+        if (m == "attributes" && inv.s == "Attribute") {
+            static const char* aA[][2] = {
+                {"$!name", "str"}, {"$!rw", "int"}, {"$!ro", "int"}, {"$!required", "Mu"},
+                {"$!is_built", "Mu"}, {"$!is_bound", "int"}, {"$!has_accessor", "int"},
+                {"$!type", "Mu"}, {"$!container_descriptor", "Mu"}, {"$!auto_viv_container", "Mu"},
+                {"$!build_closure", "Mu"}, {"$!package", "Mu"}, {"$!inlined", "int"},
+                {"$!dimensions", "Mu"}, {"$!box_target", "int"}, {"$!positional_delegate", "Mu"},
+                {"$!associative_delegate", "Mu"}, {"$!why", "Mu"}, {"$!container_initializer", "Mu"},
+                {"$!original", "Mu"}, {"$!composed", "int"}};
+            Value out = Value::array(); out.isList = true;
+            for (auto& a : aA) {
+                Value at = Value::makeHash(); at.hashKind = "Attribute";
+                (*at.hash())["name"] = Value::str(a[0]);
+                (*at.hash())["type"] = Value::typeObj(a[1]);
+                (*at.hash())["package"] = Value::typeObj("Attribute");
+                (*at.hash())["\x01bootstrap"] = Value::boolean(true);
+                out.arr()->push_back(at);
+            }
+            return out;
+        }
         if (m == "attributes" && !classes_.count(inv.s) &&
             (inv.s == "DateTime" || inv.s == "Date")) {
             static const char* dtA[] = {"$!hour", "$!minute", "$!second", "$!timezone",
@@ -4624,7 +4935,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                           : (m == "ver" ? pit->second.ver : m == "auth" ? pit->second.auth : pit->second.api);
             if (!classes_.count(inv.s) || pit != pkgMeta_.end()) {
                 if (m == "auth") return Value::str(v);
-                if (v.empty() && m == "ver") { Value ver = Value::str("6.c"); ver.hashKind = "Version"; return ver; }
+                // (the 6.e setting brings its own Grammar: `Grammar.^ver` is 6.e there)
+                if (v.empty() && m == "ver") {
+                    Value ver = Value::str(inv.s == "Grammar" && langRev_ >= 2 ? "6.e" : "6.c");
+                    ver.hashKind = "Version"; return ver;
+                }
                 if (v.empty()) return Value::any();
                 if (m == "ver") { if (v[0] == 'v') v.erase(0, 1); Value ver = Value::str(v); ver.hashKind = "Version"; return ver; }
                 return Value::str(v);
@@ -4665,8 +4980,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (arg.t == VT::Pair && arg.s == "actions" && arg.pairVal()) actions = *arg.pairVal();
                         if (arg.t == VT::Pair && arg.s == "args" && arg.pairVal()) {
                             const Value& av = *arg.pairVal();
-                            if (av.t == VT::Array && av.arr()) ruleArgs = *av.arr();
+                            if (av.typeName() == "Capture") {
+                                ValueList none;
+                                Value pl = methodCall(av, "list", none);
+                                if (pl.arr()) ruleArgs = *pl.arr();
+                                Value hh = methodCall(av, "hash", none);
+                                Value ph = methodCall(hh, "pairs", none);
+                                if (ph.arr()) for (auto& p : *ph.arr()) ruleArgs.push_back(p);
+                            }
+                            else if (av.t == VT::Array && av.arr()) ruleArgs = *av.arr();
                             else if (av.t != VT::Any) ruleArgs.push_back(av);
+                            // `:args(:arg(42),)` — a Pair in the list is a NAMED argument
+                            for (auto& ra : ruleArgs) if (ra.t == VT::Pair) ra.namedArg = true;
                         }
                     }
                     // an undefined parse target dies (Rakudo: warns on Any-to-Str
@@ -4676,6 +5001,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         throw RakuError{Value::typeObj("X::Method::NotFound"),
                             "No such method 'chars' for invocant of type '" +
                             a[0].typeName() + "'"};
+                    // no start rule at all: Rakudo calls it as a method and dies
+                    if (!ci->findRule(startRule) && !ci->findMethod(startRule) &&
+                        startRule != "ws" && startRule != "ident" && startRule != "alpha" &&
+                        startRule != "digit" && startRule != "alnum" && startRule != "any")
+                        throwTyped("X::Method::NotFound",
+                                   {{"method", startRule}, {"typename", ci->name}},
+                                   "No such method '" + startRule + "' for invocant of type '" + ci->name + "'");
                     std::string input = a.empty() ? "" : a[0].toStr();
                     Value r = grammarParse(ci.get(), input, sub, startRule, actions,
                                            ruleArgs.empty() ? nullptr : &ruleArgs);
@@ -4687,7 +5019,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // keeps answering with what it managed to match.
                     if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) {
                         Value f = rakuppNewFailure();
-                        (*f.hash())["exception"] = Value::typeObj("X::Syntax::Confused");
+                        // where it stopped: the parse's high-water mark, as a
+                        // line, a position, and the text either side of it
+                        auto& d = grammarParseDiag();
+                        std::vector<std::string> cps;
+                        for (size_t i = 0; i < input.size();) {
+                            unsigned char c0 = (unsigned char)input[i];
+                            size_t l = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+                            cps.push_back(input.substr(i, l)); i += l;
+                        }
+                        long pos = d.valid ? d.pos : 0;
+                        if (pos > (long)cps.size()) pos = (long)cps.size();
+                        // a failure at the START of a line is reported at the end of the
+                        // line before it (the newline was what the grammar could not use)
+                        if (pos > 0 && pos <= (long)cps.size() && cps[pos - 1] == "\n") pos--;
+                        long line = 1, ls = 0;
+                        for (long i = 0; i < pos; i++) if (cps[i] == "\n") { line++; ls = i + 1; }
+                        std::string pre, post;
+                        for (long i = ls; i < pos; i++) pre += cps[i];
+                        for (long i = pos; i < (long)cps.size() && cps[i] != "\n"; i++) post += cps[i];
+                        if (post.empty()) post = "<EOL>";
+                        Value ex = makeTypedEx("X::Syntax::Confused",
+                            {{"line", Value::integer(line)}, {"pos", Value::integer(pos)},
+                             {"pre", Value::str(pre)}, {"post", Value::str(post)},
+                             {"reason", Value::str("unknown")}}, "Confused");
+                        (*f.hash())["exception"] = ex;
                         (*f.hash())["message"]   = Value::str("Confused");
                         return f;
                     }
@@ -4695,7 +5051,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
                     std::string input = args.empty() ? "" : args[0].toStr();
-                    std::ifstream in(input); std::ostringstream ss; ss << in.rdbuf(); input = ss.str();
+                    std::ifstream in(input);
+                    if (!in)
+                        throwTyped("X::AdHoc", {},
+                                   "Failed to open file " + input + ": No such file or directory");
+                    std::ostringstream ss; ss << in.rdbuf(); input = ss.str();
                     // Rakudo's parsefile matches the file contents verbatim,
                     // trailing newline included (rule sigspace absorbs it)
                     ValueList a2 = args; if (!a2.empty()) a2[0] = Value::str(input); else a2.push_back(Value::str(input));
@@ -4719,12 +5079,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             // `.^candidates` / `R.HOW.candidates(R)` — every declaration of a
             // parametric role group, earliest first (a lone role is its own one)
-            if (m == "candidates" && ci->isRole) {
-                Value out = Value::array(); out.isList = true;
-                for (size_t k = 0; k <= ci->roleVariants.size(); k++)
-                    out.arr()->push_back(Value::typeObj(ci->name));
-                return out;
-            }
+            if (m == "candidates" && ci->isRole) return roleCandidates(ci.get());
             // metamodel (.^find_method / .^add_method / .^methods / .^lookup / .^can)
             if (m == "find_method" || m == "lookup") {
                 std::string mn = args.empty() ? "" : args[0].toStr();
@@ -4737,6 +5092,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // WriteOnceHash called itself until the stack ran out.
                 const bool roleWantsOriginal = ci->isRole && isContainerMethodName(mn);
                 Value* um = roleWantsOriginal ? nullptr : ci->findMethod(mn);
+                // a role GROUP answers with its default candidate's methods
+                if (!um && !roleWantsOriginal && ci->isRole && !ci->roleVariants.empty())
+                    um = ci->roleGroupDefault()->findMethod(mn);
                 if (um) return *um;
                 // a grammar's token/rule/regex is a method too: a Regex that
                 // matches its rule against what it is given, and knows its doc
@@ -4773,6 +5131,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             Value code; code.t = VT::Code;
                             code.setCode(std::make_shared<Callable>());
                             code.code()->name = mn; code.code()->isMethod = true;
+                            code.code()->retRw = a.rw;   // `.rw` answers for an `is rw` accessor
                             code.code()->builtin = [mn](Interpreter& I, ValueList& av) -> Value {
                                 if (av.empty()) return Value::any();
                                 Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
@@ -5083,9 +5442,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (m == "can") {
                 std::string mn = args.empty() ? "" : args[0].toStr();
-                Value* um = ci->findMethod(mn);
                 Value out = Value::array(); out.isList = true;
-                if (um) out.arr()->push_back(*um);
+                // EVERY class on the chain that has one, most derived first:
+                // `Puppy.^can('bark')` is (Puppy's bark, Dog's bark)
+                {
+                    std::set<const void*> seen;
+                    for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get()) {
+                        auto it = c2->methods.find(mn);
+                        if (it != c2->methods.end() && it->second.t == VT::Code && it->second.code() &&
+                            !(c2 != ci.get() && it->second.code()->isSubmethod) &&   // not inherited
+                            seen.insert(it->second.code()).second)
+                            out.arr()->push_back(it->second);
+                    }
+                }
+                if (out.arr()->empty()) if (Value* um = ci->findMethodForCall(mn)) out.arr()->push_back(*um);
                 // a public attribute's generated accessor is a method too, as on
                 // the instance `.can` arm: `class Q { has $.x }; Q.^can('x')`
                 if (out.arr()->empty())
@@ -5149,12 +5519,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value out = Value::array(); out.isList = true;
                 std::set<ClassInfo*> visited; // dedup by class (MRO), not by method name
                 std::set<std::string> seen;   // ...except inside one flattened table
+                std::set<std::string> classNames;   // names a CLASS already answered
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
                     for (auto& kv : c->methods) {
                         // private (!p) methods stay out, as in Rakudo
                         if (!kv.first.empty() && kv.first[0] == '!') continue;
                         if (local && !seen.insert(kv.first).second) continue;
+                        // a composed ROLE's method was flattened into the class
+                        // that does it: the class's entry (a multi's one
+                        // dispatcher) already stands for it
+                        if (!local && c->isRole && classNames.count(kv.first)) continue;
+                        if (!local && !c->isRole) classNames.insert(kv.first);
                         out.arr()->push_back(names ? Value::str(kv.first) : kv.second);
                         if (table) tblNames.push_back(kv.first);
                     }
@@ -5200,6 +5576,58 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `roles_to_compose` is Rakudo's "queued for composition" list; by the
             // time a user metaclass's `compose` asks, those roles are exactly the
             // ones the declaration named — which is what `roles` answers here.
+            if (m == "roles" && ci->decl) {
+                // In COMPOSITION order: the class's own roles (each followed by
+                // the roles it does, unless :!transitive), then its parents' —
+                // or only its own with :local. A parameterized role answers as
+                // written (`R3[Int]`), and a PUN (`B.new` of a role) does B.
+                bool local = false, transitive = true;
+                for (auto& a : args)
+                    if (a.t == VT::Pair) {
+                        bool v = !a.pairVal() || a.pairVal()->truthy();
+                        if (a.s == "local") local = v;
+                        else if (a.s == "transitive") transitive = v;
+                    }
+                auto baseOf = [](const std::string& n) { size_t b = n.find('['); return b == std::string::npos ? n : n.substr(0, b); };
+                std::function<std::vector<std::string>(ClassInfo*)> directRoles = [&](ClassInfo* c) {
+                    std::vector<std::string> r;
+                    if (!c || !c->decl) return r;
+                    const ClassDecl* d = c->decl;
+                    auto add = [&](const std::string& rn) {
+                        std::string disp = rn;
+                        for (auto& dr : c->doneRoles)
+                            if (dr.size() > rn.size() + 1 && dr.compare(0, rn.size() + 1, rn + "[") == 0) { disp = dr; break; }
+                        r.push_back(disp);
+                    };
+                    if (d->parentIsDoes && !d->parent.empty()) add(d->parent);
+                    for (auto& rn : d->roles) add(rn);
+                    return r;
+                };
+                std::vector<std::string> out; std::set<std::string> seen;
+                std::function<void(const std::string&)> addRole = [&](const std::string& rn) {
+                    if (!seen.insert(rn).second) return;
+                    out.push_back(rn);
+                    if (!transitive) return;
+                    auto rit = classes_.find(baseOf(rn));
+                    if (rit != classes_.end() && rit->second)
+                        for (auto& sub : directRoles(rit->second.get())) addRole(sub);
+                };
+                // a pun (or an instance of the role itself) does the role
+                if ((ci->isRole || (ci->decl && ci->decl->isRole)) && inv.t == VT::Object)
+                    addRole(ci->dispName.empty() ? ci->name : baseOf(ci->dispName));
+                else if (ci->name.find("\x01pun") != std::string::npos) addRole(ci->dispName.empty() ? ci->name : ci->dispName);
+                for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+                    if (c->isRole && c != ci.get()) continue;   // the role sitting in the parent slot
+                    for (auto& rn : directRoles(c)) addRole(rn);
+                    if (local) break;
+                }
+                Value res = Value::array(); res.isList = true;
+                for (auto& rn : out) {
+                    auto rit = classes_.find(rn);
+                    res.arr()->push_back(Value::typeObj(rit != classes_.end() ? rn : rn));
+                }
+                return res;
+            }
             if (m == "roles" || m == "role_typecheck_list" || m == "roles_to_compose") { // composed roles
                 Value out = Value::array(); out.isList = true;
                 for (auto& rn : ci->doneRoles) out.arr()->push_back(Value::typeObj(rn));
@@ -5515,6 +5943,41 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // so it indexes/pushes natively while .WHAT answers the user type.
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+                // `class Foo does Rational[Int,Int] {}` (or a subclass of one):
+                // `.new(nu, de)` is that ratio — box a real Rat so numerator,
+                // denominator, arithmetic and coercions all have it
+                if ((nb.empty() || nb == "Cool" || nb == "Real" || nb == "Numeric" || nb == "Rational") &&
+                    !ci->findMethod("new")) {
+                    bool rational = false;
+                    for (ClassInfo* c = ci.get(); c && !rational; c = c->parent.get())
+                        for (auto& r : c->doneRoles)
+                            if (r == "Rational" || r.rfind("Rational[", 0) == 0) { rational = true; break; }
+                    if (!rational) rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");
+                    ValueList pos;
+                    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+                    if (rational && pos.size() <= 2) {
+                        auto od = makePayload<ObjectData>();
+                        od->cls = ci; od->hasBoxed = true;
+                        ValueList na{pos.size() > 0 ? pos[0] : Value::integer(0),
+                                     pos.size() > 1 ? pos[1] : Value::integer(1)};
+                        od->boxed = methodCall(Value::typeObj("Rat"), "new", na);
+                        Value self = Value::object(od);
+                        runBuildChain(ci.get(), self, args);
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
+                }
+                // `class Foo does Baggy {}` — composing the quanthash ROLE is enough
+                // to be one: `Foo.new(<a a b>)` holds a bag of those elements
+                // (…unless the class brings its own storage: one defining `pairs`
+                // answers the role's methods itself)
+                if ((nb == "Baggy" || nb == "Setty" || nb == "Mixy") &&
+                    (ci->findMethod("pairs") || ci->findMethod("keys") || ci->findMethod("elems")))
+                    nb.clear();
+                if (nb == "Baggy") nb = "Bag";
+                else if (nb == "Setty") nb = "Set";
+                else if (nb == "Mixy") nb = "Mix";
+
                 // Every arm below tests `nb` — the nearest BUILT-IN ancestor — against
                 // a name, and a plain user class has no built-in ancestor at all: `nb`
                 // is empty, and all twenty-three comparisons are a std::string against
@@ -5805,7 +6268,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // an attribute with no default can be satisfied this way.
                         if (!at.def && !at.hasDefVal) {
                             auto ait = od->attrs.find(at.name);
-                            if (ait != od->attrs.end() && defined(ait->second)) continue;
+                            // (an Array/Hash attribute is always "defined": it
+                            // counts as filled once it holds something)
+                            if (ait != od->attrs.end() && defined(ait->second)) {
+                                const Value& av = ait->second;
+                                if (!((at.sigil == '@' && av.t == VT::Array && av.arr() && av.arr()->empty()) ||
+                                      (at.sigil == '%' && av.t == VT::Hash && av.hash() && av.hash()->empty())))
+                                    continue;
+                            }
                         }
                         throwTypedV("X::Attribute::Required",
                                     {{"name", Value::str("$!" + at.name)},
@@ -5817,6 +6287,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                     "but you did not provide a value for it.");
                     }
                 };
+                // `is required` is asked BEFORE the defaults are judged: `has Int:D $.y =
+                // self.x` must not complain about y when the real fault is the
+                // missing x (only a class with no BUILD of its own can be judged now)
+                for (size_t ci2 = nChain; ci2-- > 0;) {
+                    ClassInfo* rc = chainAt(ci2);
+                    if (rc->methods.count("BUILD")) continue;
+                    bool anyDefConstraint = false;
+                    for (auto& at : rc->attrs) if (at.defConstraint) anyDefConstraint = true;
+                    if (!anyDefConstraint) continue;
+                    for (auto& at : rc->attrs) {
+                        if (!at.required || at.def || at.hasDefVal) continue;
+                        bool gotArg = false;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (!gotArg) { checkRequiredFor(rc); break; }
+                    }
+                }
                 for (size_t ci2 = nChain; ci2-- > 0;)
                     for (auto& at : chainAt(ci2)->attrs) {
                         if (!at.defConstraint) continue;
@@ -5846,6 +6333,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             throwTypedV("X::TypeCheck::Assignment", {{"got", wit->second}},
                                 "Type check failed on attribute '$!" + at.name +
                                 "'; the value does not satisfy its where constraint");
+                    }
+                // a SHAPED array attribute (`has @.a[3;3]`) is that shape,
+                // filled from whatever it was given
+                for (size_t ci2 = nChain; ci2-- > 0;)
+                    for (auto& at : chainAt(ci2)->attrs) {
+                        if (!at.shape || at.sigil != '@') continue;
+                        std::vector<long long> dims = evalShapeDims(const_cast<Expr*>(at.shape));
+                        if (dims.empty()) continue;
+                        ValueList flat;
+                        auto ait = od->attrs.find(at.name);
+                        if (ait != od->attrs.end()) {
+                            std::function<void(const Value&)> fl = [&](const Value& v) {
+                                if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) fl(e); }
+                                else flat.push_back(v);
+                            };
+                            if (ait->second.t == VT::Array && ait->second.arr())
+                                for (auto& e : *ait->second.arr()) fl(e);
+                        }
+                        long long cap = 1;
+                        for (auto d : dims) cap *= d;
+                        if ((long long)flat.size() > cap)
+                            throwTypedV("X::OutOfRange", {},
+                                        "Index " + std::to_string(cap) + " for dimension 1 out of range (must be 0.." +
+                                        std::to_string(cap - 1) + ")");
+                        od->attrs[at.name] = makeShapedContainer(dims, at.type, &flat);
                     }
                 // …and the attribute's declared TYPE holds for what `new` was
                 // handed: `has Small $.small` refuses `small => 20` as Rakudo
@@ -6081,6 +6593,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         const ClassAttr* at = ci->findAttr(m);
         if (at && at->pub) {
+            // a generated accessor takes no positional arguments:
+            // `A.new.x(42)` is "Too many positionals"
+            {
+                long long pos = 0;
+                for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos++;
+                if (pos > 0)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Too many positionals passed; expected 1 argument but got " + std::to_string(pos + 1)};
+            }
             auto it = inv.obj()->attrs.find(m);
             // X::AdHoc.message IS its payload stringified (Rakudo defines the
             // method that way), so `X::AdHoc.new(payload => "boom").message`
@@ -6166,6 +6687,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Whatever) {
         // introspection metamethods do NOT autocurry: *.WHAT is (Whatever)
         if (m == "WHAT") return Value::typeObj("Whatever");
+        // …and a Whatever VALUE has no Capture to give (`((*)).Capture`)
+        if (m == "Capture")
+            throw RakuError{Value::typeObj("X::Cannot::Capture"),
+                            std::string("Cannot unpack or Capture `") + (inv.b ? "**" : "*") + "`.\n"
+                            "To create a Capture, add parentheses: \\(...)\n"
+                            "If unpacking in a signature, perhaps you needlessly used parentheses? -> ($x) {} vs. -> $x {}\n"
+                            "or missed `:` in signature unpacking? -> &c:(Int) {}"};
         if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku")
             { /* fall through to the generic paths below with the Whatever value */ }
         else {
@@ -6352,13 +6880,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
                                         (!inv.code()->params || inv.code()->params->empty());
             if (!byPlaceholders && (inv.code()->hasPrimed || inv.code()->params)) {
-                for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional) n++;
+                // (a DEFAULT makes a parameter optional as surely as `?` does)
+                for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional && !p->defaultVal) n++;
             }
             else n = (long long)inv.code()->placeholders.size();
             return Value::integer(n);
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
+            // a BARE block's signature is `(;; $_? is raw)`: arity 0, count 1
+            // (one that reads `@_` has `(*@_)` instead: count Inf)
+            if (inv.code()->isBlock && !inv.code()->hadSig && !inv.code()->isMethod &&
+                (!inv.code()->params || inv.code()->params->empty()) && inv.code()->placeholders.empty() &&
+                !inv.code()->hasPrimed) {
+                if (bodyUsesAtUnderscore(inv.code())) return Value::number(std::numeric_limits<double>::infinity());
+                return Value::integer(1);
+            }
             std::vector<const Param*> ps; countedParams(ps);
             long long n = 0; bool slurpy = false;
             const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
@@ -6502,6 +7039,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return d;
             }
             if (inv.code()->isMultiDispatcher) return inv;
+            // a `multi` candidate: find the group that holds it — the class's
+            // method of that name, or the sub of that name in scope
+            if (!inv.code()->name.empty()) {
+                const std::string nm = inv.code()->name;
+                auto holds = [&](const Value& d) {
+                    if (d.t != VT::Code || !d.code() || !d.code()->isMultiDispatcher) return false;
+                    for (auto& c : d.code()->candidates)
+                        if (c.code() == inv.code() || (c.code() && c.code()->body && c.code()->body == inv.code()->body))
+                            return true;
+                    return false;
+                };
+                if (inv.code()->isMethod) {
+                    for (auto& kv : classes_) {
+                        auto mit = kv.second->methods.find(nm);
+                        if (mit != kv.second->methods.end() && holds(mit->second)) return mit->second;
+                    }
+                }
+                else if (tctx_.cur) {
+                    if (Value* d = tctx_.cur->find("&" + nm)) if (holds(*d)) return *d;
+                    if (inv.code()->closure)
+                        if (Value* d = inv.code()->closure->find("&" + nm)) if (holds(*d)) return *d;
+                }
+            }
             return Value::typeObj("Mu");
         }
         // &routine.wrap(&wrapper): push a wrapper in front of the routine. Because
@@ -6523,13 +7083,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (!args.empty() && !(args[0].t == VT::Hash && args[0].hashKind == "WrapHandle"))
                 throwTypedV("X::Routine::Unwrap", {},
                             "Cannot unwrap routine: invalid wrap handle");
-            if (!args.empty() && args[0].t == VT::Hash && args[0].hashKind == "WrapHandle" &&
-                args[0].hash()->count("wrapper")) {
+            // …and it is REQUIRED: `&foo.unwrap()` binds no candidate
+            if (args.empty())
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Too few positionals passed; expected 2 arguments but got 1"};
+            if (args[0].hash()->count("wrapper")) {
                 const Value& target = (*args[0].hash())["wrapper"];
+                bool found = false;
                 for (size_t k = ws.size(); k-- > 0; )
-                    if (ws[k].code() == target.code()) { ws.erase(ws.begin() + k); break; }
+                    if (ws[k].code() == target.code()) { ws.erase(ws.begin() + k); found = true; break; }
+                // a handle whose wrapper is already gone restores nothing
+                if (!found)
+                    throwTypedV("X::Routine::Unwrap", {}, "Cannot unwrap routine: invalid wrap handle");
             }
-            else if (!ws.empty()) ws.pop_back();
             noteSymbolMutation("routine .unwrap");
             return inv;
         }
@@ -6541,7 +7107,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value routine = inv.hash()->count("routine") ? (*inv.hash())["routine"] : Value();
         if (routine.t == VT::Code && routine.code()) {
             ValueList one{inv};
-            return methodCall(routine, "unwrap", one);
+            try { methodCall(routine, "unwrap", one); }
+            catch (RakuError&) { return Value::boolean(false); }   // already restored
+            return Value::boolean(true);
         }
         return Value::boolean(false);
     }
@@ -6563,6 +7131,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // opened on `:localport(0)`, which is how a test gets a free port without
         // guessing one — the answer is only knowable after bind, from the OS.
         if (m == "localport" || m == "localhost" || m == "peerport" || m == "peerhost") {
+            // a UNIX-domain socket has a PATH, no port
+            if (inv.hash()->count("unix")) {
+                if (m == "localport" || m == "peerport") return Value::integer(0);
+                auto given = inv.hash()->find(m);
+                return given != inv.hash()->end() ? given->second : Value::str("");
+            }
             sockaddr_in sa{};
             socklen_t sl = sizeof(sa);
             bool peer = m[0] == 'p';
@@ -6612,6 +7186,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 got += (size_t)n;
                 if (m != "read") break;   // recv is "up to", not "exactly"
             }
+            // TEXT: a character the byte count cut in two is completed from the
+            // stream — `.recv(1)` of "ꀁ" is that one character, not its first byte
+            if (!bin && got > 0) {
+                size_t k = got, lead = got;
+                while (k > 0 && (k == got || ((unsigned char)buf[k] & 0xC0) == 0x80)) {
+                    k--;
+                    if (((unsigned char)buf[k] & 0xC0) != 0x80) { lead = k; break; }
+                }
+                if (lead < got) {
+                    unsigned char c0 = (unsigned char)buf[lead];
+                    size_t need = c0 >= 0xF0 ? 4 : c0 >= 0xE0 ? 3 : c0 >= 0xC0 ? 2 : 1;
+                    size_t have = got - lead;
+                    if (have < need) {
+                        buf.resize(got + (need - have));
+                        while (have < need) {
+                            ssize_t n = ::recv(fd, buf.data() + got, need - have, 0);
+                            if (n <= 0) break;
+                            got += (size_t)n; have += (size_t)n;
+                        }
+                    }
+                }
+            }
             gilUnpark(p);
             Value r = Value::str(std::string(buf.data(), got)); // got==0 => "" (peer closed)
             if (bin) { r.hashKind = "Buf"; identify(r); }
@@ -6630,10 +7226,36 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "get" || m == "lines") {
             Value& lbv = (*inv.hash())["linebuf"];
             if (lbv.t != VT::Str) lbv = Value::str("");
+            // a separator of the socket's OWN (`$sock.nl-in = '.'`) replaces the
+            // default newline pair
+            std::vector<std::string> seps;
+            {
+                auto nit = inv.hash()->find("nl-in");
+                if (nit != inv.hash()->end()) {
+                    if (nit->second.t == VT::Array && nit->second.arr())
+                        for (auto& x : *nit->second.arr()) seps.push_back(x.toStr());
+                    else if (nit->second.t == VT::Str) seps.push_back(nit->second.toStr());
+                }
+            }
+            bool chompIt = true;
+            { auto cit = inv.hash()->find("chomp"); if (cit != inv.hash()->end()) chompIt = cit->second.truthy(); }
             auto getOne = [&](bool& eof) -> Value {
                 for (;;) {
                     std::string& lb = lbv.s.mut();
-                    size_t nl = lb.find('\n');
+                    if (!seps.empty()) {
+                        size_t best = std::string::npos, blen = 0;
+                        for (auto& sp : seps) {
+                            if (sp.empty()) continue;
+                            size_t at = lb.find(sp);
+                            if (at != std::string::npos && (at < best || (at == best && sp.size() > blen))) { best = at; blen = sp.size(); }
+                        }
+                        if (best != std::string::npos) {
+                            std::string line = lb.substr(0, chompIt ? best : best + blen);
+                            lb.erase(0, best + blen);
+                            return Value::str(line);
+                        }
+                    }
+                    size_t nl = seps.empty() ? lb.find('\n') : std::string::npos;
                     if (nl != std::string::npos) {
                         std::string line = lb.substr(0, nl);
                         lb.erase(0, nl + 1);
@@ -6912,6 +7534,34 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Rat) return Value::boolean(inv.ratD() && inv.ratD()->isZero() && inv.ratN() && inv.ratN()->isZero()); // 0/0
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
+    // A plain user object has no number in it: Rakudo's Mu gives no .Num, and
+    // .Numeric/.Real have only a type-object candidate (`Numeric(A:D: )` is
+    // "Cannot resolve caller"). Numifying one to 0 hid real bugs.
+    if ((m == "Num" || m == "Numeric" || m == "Real") && args.empty() &&
+        inv.t == VT::Object && inv.obj() && !inv.obj()->hasBoxed && inv.obj()->cls &&
+        !inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findMethod("Bridge")) {
+        bool plain = true;
+        std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+            if (!c || !plain) return;
+            if (!c->nativeParent.empty() && c->nativeParent != "Any" && c->nativeParent != "Mu") plain = false;
+            for (auto& r : c->doneRoles)
+                if (r == "Numeric" || r == "Real" || r == "Rational" || r == "Cool") plain = false;
+            if (c->name.rfind("X::", 0) == 0 || c->name == "Exception") plain = false;
+            walk(c->parent.get());
+            for (auto& ep : c->extraParents) walk(ep.get());
+        };
+        walk(inv.obj()->cls.get());
+        if (plain) {
+            std::string tn = inv.typeName();
+            if (m == "Num")
+                throwTypedV("X::Method::NotFound",
+                            {{"typename", Value::str(tn)}, {"method", Value::str("Num")}, {"invocant", inv}},
+                            "No such method 'Num' for invocant of type '" + tn + "'");
+            throwTypedV("X::Multi::NoMatch", {},
+                        "Cannot resolve caller " + m + "(" + tn + ":D: ); none of these signatures matches:\n"
+                        "    (Mu:U \\v: *%_)");
+        }
+    }
     if (m == "Num") {
         if ((inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph()) || inv.t == VT::Match) {
             Value nv = numifyStrFailure(inv.toStr());
@@ -6928,6 +7578,37 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "Numeric" && inv.t == VT::Complex) { // a Complex is Numeric already (this arm numified it to Num 0)
         if (inv.isAllomorph()) { Value n = inv; n.hashKind.clear(); n.s.clear(); return n; } // ComplexStr sheds — see below
         return inv;
+    }
+    // `Int.Numeric` / `ComplexStr.Real` — a numeric TYPE OBJECT warns that it
+    // is undefined and answers its type's zero (Complex is not Real: .Real on
+    // it is the Num zero). A class doing Numeric/Real makes itself with .new.
+    if ((m == "Numeric" || m == "Real") && inv.t == VT::Type && args.empty()) {
+        static const std::map<std::string, int> zeroKind = {
+            {"Int", 0}, {"IntStr", 0}, {"Num", 1}, {"NumStr", 1}, {"Rat", 2}, {"RatStr", 2},
+            {"FatRat", 3}, {"Complex", 4}, {"ComplexStr", 4},
+            {"Mu", 0}, {"Any", 0}, {"Cool", 0}};   // (Mu.Numeric is 0, with the warning)
+        auto zk = zeroKind.find(inv.s.str());
+        ClassInfo* uc = nullptr;
+        if (zk == zeroKind.end()) {
+            auto cit = classes_.find(inv.s);
+            if (cit != classes_.end() && cit->second &&
+                (cit->second->doneRoles.count("Numeric") || cit->second->doneRoles.count("Real") ||
+                 cit->second->nativeParent == "Numeric" || cit->second->nativeParent == "Real"))
+                uc = cit->second.get();
+        }
+        if (zk != zeroKind.end() || uc) {
+            warnUninit("Use of uninitialized value of type " + inv.s.str() + " in numeric context");
+            if (uc) { ValueList none; return methodCall(inv, "new", none); }
+            int k = zk->second;
+            if (k == 4 && m == "Real") k = 1;
+            switch (k) {
+                case 0: return Value::integer(0);
+                case 1: return Value::number(0.0);
+                case 2: return Value::rat(BigInt(0), BigInt(1));
+                case 3: { Value r = Value::rat(BigInt(0), BigInt(1)); ValueList none; return methodCall(r, "FatRat", none); }
+                default: return Value::complex(0.0, 0.0);
+            }
+        }
     }
     if (m == "Numeric" || m == "Real") {
         // a string numifies via the type-preserving ladder ("1"->Int, "1.5"->Rat,
@@ -6973,6 +7654,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::number(inv.toNum());
     }
     if (m == "Bool" || m == "so") {
+        // `/joo/.Bool` is a match against `$_`, as `so /joo/` is — and sets `$/`
+        if (inv.t == VT::Regex && args.empty()) {
+            Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr;
+            if (!topic || topic->t == VT::Nil || topic->t == VT::Any || topic->t == VT::Type) return Value::boolean(false);
+            return Value::boolean(regexMatch(rxSubject(*topic), inv.s, &inv).truthy());
+        }
         if (inv.t == VT::Object) return Value::boolean(boolify(inv)); // honours user Bool / Real Bridge
         if (inv.t == VT::Range) return Value::boolean(boolify(inv));  // 6.e: emptiness, not "has endpoints"
         return Value::boolean(inv.truthy());
@@ -7007,10 +7694,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `R.HOW.candidates(R)` — the declarations of R's role group
             if (m == "candidates" && !args.empty() && args[0].t == VT::Type) {
                 auto ci = classes_.find(args[0].s);
+                if (ci != classes_.end() && ci->second) return roleCandidates(ci->second.get());
                 Value out = Value::array(); out.isList = true;
-                if (ci != classes_.end() && ci->second)
-                    for (size_t k = 0; k <= ci->second->roleVariants.size(); k++)
-                        out.arr()->push_back(Value::typeObj(args[0].s));
                 return out;
             }
             if (m == "archetypes") {
@@ -7075,7 +7760,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj()) ci = inv.obj()->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(resolveClassAlias(inv.s)); if (it != classes_.end()) ci = it->second.get(); }
-        if (ci) if (Value* um = ci->findMethod(mn)) out.arr()->push_back(*um);
+        if (ci) {   // every class on the chain that has one, most derived first
+            std::set<const void*> seen;
+            for (ClassInfo* c2 = ci; c2; c2 = c2->parent.get()) {
+                auto it = c2->methods.find(mn);
+                if (it != c2->methods.end() && it->second.t == VT::Code && it->second.code() &&
+                    !(c2 != ci && it->second.code()->isSubmethod) &&   // a submethod is not inherited
+                    seen.insert(it->second.code()).second)
+                    out.arr()->push_back(it->second);
+            }
+            if (out.arr()->empty()) if (Value* um = ci->findMethodForCall(mn)) out.arr()->push_back(*um);
+        }
         // a public attribute's auto-generated accessor answers .can too
         // (Cro's router gates on `$handler.can('method')` for `has $.method`)
         if (ci && out.arr()->empty()) {
@@ -7214,7 +7909,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Match && m == "Capture") return inv; // a Match already IS one
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
-        if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
+        if (inv.t == VT::Array) {
+            Value r = inv; r.isList = true; r.s = "Slip";
+            // a snapshot: pushing onto the Array afterwards leaves the Slip as it was
+            if (!inv.ext() && inv.arr()) r.setArr(makePayload<ValueList>(*inv.arr()));
+            return r;
+        }
         // Everything else slips the list it STANDS for, which for a non-Iterable
         // is the one-element list: `42.Slip` is `slip(42,)`, `Nil.Slip` is
         // `slip(Nil,)`, a Hash slips its pairs (Nil-Any sheet NA-04, NA-16).
@@ -7292,6 +7992,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return methodCall(o, "toggle", args, rwArgs);
     }
     if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
+    // an ITEMIZED value sits in a Scalar: `$[1,2].VAR` / `<a b>.Set.item.VAR`
+    if (m == "VAR" && inv.itemized && (inv.t == VT::Array || inv.t == VT::Hash)) {
+        Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+        (*sc.hash())["name"] = Value::str("$");
+        (*sc.hash())["value"] = inv;
+        return sc;
+    }
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     if (m == "item") { // .item: decontainerize to a single item (itemize a container)
         Value v = inv;
@@ -7308,6 +8015,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // MATCHER is a number, and the one an enum value answers with (an enum value
     // is a Numeric). It was missing entirely, so `$level.ACCEPTS($message)` —
     // what Lumberjack's smartmatch comes down to — was a missing method.
+    // An ALLOMORPH accepts by what it is handed: a Str against its string
+    // face, a Numeric against its number, anything else against both
+    if (inv.isAllomorph() && m == "ACCEPTS" && !args.empty() && args[0].t != VT::Type && args[0].t != VT::Any && args[0].t != VT::Nil) {
+        const Value& a = args[0];
+        Value num = inv; num.hashKind.clear(); num.s.clear();
+        ValueList one{a};
+        bool isNum = a.t == VT::Int || a.t == VT::Num || a.t == VT::Rat || a.t == VT::Complex;
+        bool isStr = !isNum && a.t == VT::Str && a.hashKind.empty();
+        if (isNum) return methodCall(num, "ACCEPTS", one);
+        if (isStr) return Value::boolean(a.s == inv.s);
+        ValueList none;
+        std::string as;
+        try { as = methodCall(a, "Str", none).toStr(); } catch (RakuError&) { return Value::boolean(false); }
+        if (as != inv.s.str()) return Value::boolean(false);
+        return methodCall(num, "ACCEPTS", one);
+    }
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) && m == "ACCEPTS") {
         if (args.empty()) return Value::boolean(false);
         Value topic = args[0];
@@ -7452,9 +8175,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (!kv.first.empty() && kv.first[0] == '\x01') continue;
             addEntry(Value::str(kv.first), kv.second);
         }
+        // …and at one position, an EMPTY capture before one that goes on: it was
+        // matched first (`("XX")+ %% $<d>=<[a..z]>*` is 0, d, 0, d, 0, d)
         std::stable_sort(entries.begin(), entries.end(),
                          [](const std::pair<Value, Value>& a, const std::pair<Value, Value>& b) {
-                             return a.second.rFrom() < b.second.rFrom();
+                             if (a.second.rFrom() != b.second.rFrom()) return a.second.rFrom() < b.second.rFrom();
+                             bool ae = a.second.rTo() == a.second.rFrom(), be = b.second.rTo() == b.second.rFrom();
+                             return ae && !be;
                          });
         Value o = Value::array(); o.isList = true;
         for (auto& e : entries) {
@@ -7540,6 +8267,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Hash) if (const char* vt = quantValueType(inv.hashKind)) return Value::typeObj(vt);
         if (inv.ofType().empty()) return Value::typeObj("Mu");
         std::string ot = inv.ofType(); auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
+        // a PARAMETERIZED element type (`my Array of Int @x`) comes back as the
+        // type object `Array[Int]` is — base name plus parameter — so `===` holds
+        size_t br = ot.find('[');
+        if (br != std::string::npos && ot.back() == ']' && br > 0) {
+            Value t = Value::typeObj(ot.substr(0, br));
+            t.ofTypeM() = ot.substr(br + 1, ot.size() - br - 2);
+            return t;
+        }
         return Value::typeObj(ot);
     }
     // `self.rakuseen(NAME, { … })` — Rakudo's cycle guard for a user-written
@@ -8163,6 +8898,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else items.push_back(x);
         }
+        if (items.empty() && (m == "Set" || m == "Bag" || m == "Mix")) return emptyQuantSingleton(m.s);
         return makeBaggy(items, m);
     }
     return std::nullopt;   // not handled here — fall through to the next segment

@@ -306,6 +306,13 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         std::string val = p.substr(lt + 1, p.size() - lt - 2);
         if (prop == "bc" || prop == "bidiclass")
             return normProp(uniBidiClass(cp)) == normProp(val);
+        // an ENUMERATED property with its value: <:Numeric_Type<Digit>>,
+        // <:Line_Break<AL>> — compare the codepoint's own value (these tables
+        // are never cut)
+        {
+            std::string ev = uniEnumProp(p.substr(0, lt), cp);
+            if (!ev.empty()) return normProp(ev) == normProp(val);
+        }
         // sc/script/gc/generalcategory and unknown property keys alike: the
         // bare-value handlers match on the value alone
         return uniMatchesProp(cp, val);
