@@ -212,6 +212,8 @@ std::mutex& rtOutMutex();
 // fresh handle), so THEIR setting lives in a process-wide slot instead, one per
 // stream — the same place the std::ostream it controls lives.
 long long& rtStdOutBuffer(bool err);
+void rtInstallStdoutCounter();     // wrap std::cout once, so $*OUT.tell can count on a pipe (Builtins.cpp)
+long long rtStdoutBytesWritten();  // …and the bytes it has counted
 // The block a FILE handle holds back when nobody said otherwise. The standard
 // handles do not use it: they default to 0 (unbuffered), as Rakudo's do — see
 // rtStdOutBuffer. A file handle keeps a block because rakupp has no persistent
@@ -1853,7 +1855,7 @@ public:
     Value pseudoStashCall(const std::string& m, const Value& self, ValueList& args);
     bool pseudoStashGet(const Value& self, const std::string& key, Value& out);
     static bool isPseudoChain(const std::string& chain);
-    std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr, std::string* rawOut = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::)
+    std::string symRefName(SymbolicRef* sr, bool* callerHead = nullptr, std::string* rawOut = nullptr, bool* settingTail = nullptr); // effective name of a multi-segment symbolic ref (callerHead: it began with CALLER::; settingTail: a SETTING::/CORE:: head followed it, so the name is the builtin's)
     void checkDeclTypeSane(const VarExpr* ve);
     [[noreturn]] void throwUndeclaredVar(const std::string& name,
                                          const std::vector<std::string>* extraCands = nullptr);
@@ -1988,7 +1990,7 @@ public:
     // modules whose source registers a slang; their EXPORT runs for real only in
     // the host, so its failing to find `$*LANG` in THIS interpreter is expected
     std::set<std::string> slangModules_;
-    std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
+    std::vector<std::string> libPaths_{"lib", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)

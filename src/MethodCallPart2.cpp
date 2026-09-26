@@ -3107,7 +3107,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::nil();
         }
         if (m == "result") {
-            if (kind == "anyof" || kind == "allof") return Value::boolean(true);
+            // a combinator's .result WAITS, as `await` does: allof until every
+            // member has settled, anyof until one has — it answered True at
+            // once before, and S17-promise/allof.t read its shared array
+            // before nine of the ten starts had written to it
+            if (kind == "anyof" || kind == "allof") {
+                ValueList aw{inv};
+                callBuiltin("await", aw);
+                return Value::boolean(true);
+            }
             if (ps) { awaitPromise(ps); if (ps->broken) throw RakuError{ ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg }; return ps->result; }
             if (kind == "timer" && st != "Broken" && !inv.hash()->count("result")) { // .result blocks until the timer fires, like await (a keep-settled timer falls through to its stored result)
                 double left = timerRemainingSecs(inv);
@@ -4990,6 +4998,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
+        // `.^roles` on a PARAMETERIZED ROLE REFERENCE this engine has no class
+        // for: `R1[T]` in another role's `does` list, T still generic. It names
+        // R1's variant, and its roles are R1's own — S14-roles/generic-subtyping.t
+        // asks `T.^roles[0].^roles` from a trait, before the role is composed.
+        if ((m == "roles" || m == "role_typecheck_list") && !classes_.count(inv.s) &&
+            inv.s.find('[') != std::string::npos) {
+            const std::string base = inv.s.substr(0, inv.s.find('['));
+            auto bit = classes_.find(base);
+            if (bit == classes_.end()) bit = classes_.find(resolveClassAlias(base));
+            if (bit != classes_.end()) return methodCall(Value::typeObj(bit->second->name), m, args);
+            Value out = Value::array(); out.isList = true;
+            return out;
+        }
         if (m == "mro" && !classes_.count(inv.s)) {
             // `.^mro(:roles)` asks for the linearisation WITH the roles in it —
             // `Int.^mro(:roles)` is (Int Real Numeric Cool Any Mu). typeAncestry
@@ -5350,6 +5371,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (args.size() >= 2) {
                     noteSymbolMutation("runtime .^add_method");
                     Value add = args[1];
+                    // An anonymous `token {…}`/`rule {…}`/`regex {…}` installed on
+                    // a grammar is a RULE of it — `<foo>` in another rule and
+                    // `.parse` must find it where the declared ones live, not in
+                    // the method table (S12-meta/grammarhow.t builds a grammar
+                    // this way, from `Metamodel::GrammarHOW.new_type`).
+                    if (add.t == VT::Regex && ci->isGrammar) {
+                        const std::string rn = args[0].toStr();
+                        ci->rules[rn] = add.s;
+                        ci->ruleKind[rn] = add.hashKind.empty() ? std::string("regex") : add.hashKind.str();
+                        ci->ruleLitOnly.erase(rn);
+                        if (std::find(ci->ruleOrder.begin(), ci->ruleOrder.end(), rn) == ci->ruleOrder.end())
+                            ci->ruleOrder.push_back(rn);
+                        return args[1];
+                    }
                     // Adding a bare PROTO under a second name (Method::Also aliases a
                     // `proto method … is also<…>`) must alias the whole multi GROUP,
                     // or the alias runs the proto body — `{ * }` — instead of
@@ -8778,6 +8813,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 else if (a.s == "api") ci->api = a.pairVal()->toStr();
             }
         noteSymbolMutation("runtime .new_type");
+        // …and a GrammarHOW type is a grammar: it derives from Grammar as a
+        // declared `grammar G { }` does, so `.new.parse` finds `parse` on it —
+        // without this the type it made was a plain class and roast's
+        // S12-meta/grammarhow.t died "No such method 'parse'".
+        if (inv.s == "Metamodel::GrammarHOW") { ci->isGrammar = true; ci->nativeParent = "Grammar"; }
         ci->awaitingCompose = true;
         classes_[ci->name] = ci;
         return Value::typeObj(ci->name);

@@ -4568,6 +4568,38 @@ long long& rtStdOutBuffer(bool err) {
     static long long out = 0, er = 0;
     return err ? er : out;
 }
+// Bytes written to standard output through std::cout, for `$*OUT.tell` on a
+// handle that cannot seek: on a tty or a pipe Rakudo answers the count of
+// bytes it has sent so far, and S32-io/tell.t asks for that after its TAP
+// output. Counted by a streambuf wrapped around cout's own at start-up, so
+// every writer counts — the Test module prints straight to std::cout, and
+// ioEmit's lock is outside this, so the counter only needs to be atomic.
+namespace {
+struct CountingOutBuf : std::streambuf {
+    std::streambuf* inner;
+    std::atomic<long long> n{0};
+    explicit CountingOutBuf(std::streambuf* i) : inner(i) {}
+    int overflow(int ch) override {
+        if (traits_type::eq_int_type(ch, traits_type::eof())) return inner->pubsync() == 0 ? 0 : traits_type::eof();
+        int r = inner->sputc(traits_type::to_char_type(ch));
+        if (!traits_type::eq_int_type(r, traits_type::eof())) ++n;
+        return r;
+    }
+    std::streamsize xsputn(const char* s, std::streamsize c) override {
+        std::streamsize w = inner->sputn(s, c);
+        if (w > 0) n += w;
+        return w;
+    }
+    int sync() override { return inner->pubsync(); }
+};
+CountingOutBuf* g_stdoutCounter = nullptr;
+}
+void rtInstallStdoutCounter() {
+    if (g_stdoutCounter) return;
+    g_stdoutCounter = new CountingOutBuf(std::cout.rdbuf());
+    std::cout.rdbuf(g_stdoutCounter);
+}
+long long rtStdoutBytesWritten() { return g_stdoutCounter ? g_stdoutCounter->n.load() : 0; }
 // $*IN has no output to buffer; it answers 0 and keeps the two output slots
 // out of reach — routing it to $*OUT's would let `$*IN.out-buffer = 0` silently
 // unbuffer someone else's stream.
@@ -5568,6 +5600,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         static const std::set<std::string> junctionMatcherMethods = {
             "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
         if (m.empty() || m[0] == '^' || junctionMatcherMethods.count(m)) break;
+        // a HANDLE's output methods take `**@text`: the junction is printed
+        // whole, as its gist (`$*OUT.say: (1, 2).all` is one line, `all(1, 2)`),
+        // not once per eigenstate (roast S16-io/print.t)
+        if (inv.t == VT::Hash && inv.hashKind == "FileHandle" &&
+            (m == "say" || m == "print" || m == "note" || m == "put")) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
         Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
         for (auto& e : *args[ai].arr()) {

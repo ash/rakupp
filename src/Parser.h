@@ -72,7 +72,7 @@ public:
     ExprPtr parseExpressionPublic() { return parseExpression(); }
     // Module search path, for finding the operators a `use`d module declares —
     // filled by the runtime from -I/RAKULIB before parsing. See scanModuleOps.
-    std::vector<std::string> libPaths_{"lib", ".", "rakulib"};
+    std::vector<std::string> libPaths_{"lib", "rakulib"};
     // Path of the file being parsed, so `use lib $?FILE.IO.parent.add('lib')`
     // can name a directory while the parse is still running. "" / "-e" = none.
     std::string srcFile_;

@@ -3289,9 +3289,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         // hand. Without this the subscript was silently dropped and the ARRAY
         // itself took part in the arithmetic (Text::Levenshtein::Damerau's
         // inner loop, which then answered a distance of 1 for every pair).
+        // The word-list subscript is one too: `%h\<b>` is `%h<b>` (the lexer
+        // already opened the word list, since a `<` after an operator is in
+        // term position) — without this the `\` was left in place and the
+        // `<b>` was read as a separate word-list term, so `is %A::a\<b>, 2`
+        // received the whole hash and an empty test name.
         if (isOp("\\") && !cur().spaceBefore &&
             (peek().kind == Tok::LBracket || peek().kind == Tok::LBrace ||
-             peek().kind == Tok::LParen)) { advance(); continue; }
+             peek().kind == Tok::LParen ||
+             (peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore))) { advance(); continue; }
         // when parsing the operand of a prefix op, a space-preceded `.method` binds
         // to the whole prefix expression, not the operand — stop here so the caller grabs it.
         if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
@@ -6692,7 +6698,23 @@ ExprPtr Parser::parsePrimary() {
                     return c;
                 }
             }
-            auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
+            // `&CALLER::SETTING::not` — a setting head BEHIND a caller head: in
+            // 6.e the caller's SETTING is CORE whatever the caller shadows, so
+            // the name is the builtin's, exactly as `&CORE::not` is below. One
+            // strip takes CALLER:: off; the second takes the setting head, and
+            // the CORE mark rides along (roast S02-names/SETTING-6e.t). Under
+            // 6.c/6.d an EVAL's SETTING is the code that called it, shadows and
+            // all, so there the plain lexical lookup stands (pseudo-6d.t asks
+            // `&CALLER::SETTING::not(True)` to reach a `sub not` identity).
+            std::string stripped = stripPseudoPkg(raw);
+            bool callerSetting = false;
+            if (langRev_ >= 2 && stripped != raw && stripped.size() > 1 && std::strchr("$@%&", stripped[0]) &&
+                (stripped.compare(1, 6, "CORE::") == 0 || stripped.compare(1, 9, "SETTING::") == 0)) {
+                callerSetting = true;
+                stripped = stripPseudoPkg(stripped);
+            }
+            auto e = std::make_unique<VarExpr>(stripped);
+            if (callerSetting) { e->viaPseudoPkg = true; e->pseudoPkg = "CORE"; }
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
             if (raw.size() > 2 && raw[1] == '*' && raw == e->name && !dynUsed_.empty())
                 dynUsed_.back().insert(raw);

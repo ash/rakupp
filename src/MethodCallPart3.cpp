@@ -2812,16 +2812,33 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             auto fdit = inv.hash()->find("fd");
             if (fdit != inv.hash()->end()) return Value::integer(fdit->second.toInt());
-            // A handle opened on a PATH holds no descriptor here — this IO layer
-            // is path-and-buffer based, and reads and writes reopen rather than
-            // keep one. Upstream answers a real fd. -1 is C's own "no
-            // descriptor", and it is what makes the gap VISIBLE: Nil was the
-            // first answer, and `Nil >= 0` is True, so
-            // S32-io/native-descriptor.t reported 4 of 4 while its fourth row
-            // was asking something this engine cannot answer. -1 fails that one
-            // row and leaves the other three counted, which is the honest
-            // reading; a Failure would detonate and lose all four.
-            return Value::integer(-1);
+            // A handle opened on a PATH holds no descriptor of its own here —
+            // this IO layer is path-and-buffer based, and reads and writes
+            // reopen rather than keep one. Upstream answers a real fd, and a
+            // caller that wants one wants it for the OS (a lock, a select, a
+            // tty probe), so open one on the path the first time it is asked
+            // for, keep it on the handle, and close it with the handle. It is
+            // NOT the descriptor the reads and writes go through; it is a
+            // descriptor on the same file, which is what the asker can use.
+            // -1 stays the answer when the path cannot be opened: C's own "no
+            // descriptor", and honest (`Nil >= 0` is True, and hid the gap).
+            auto nit = inv.hash()->find("nfd");
+            if (nit != inv.hash()->end()) return Value::integer(nit->second.toInt());
+            // a LOCKED handle already holds one on the path — that is the
+            // descriptor, and opening a second would leak the number (roast
+            // S32-io/lock.t opens, locks, closes, opens again and expects the
+            // same descriptor back)
+            auto lit = inv.hash()->find("lockfd");
+            if (lit != inv.hash()->end() && lit->second.toInt() >= 0) return Value::integer(lit->second.toInt());
+            auto pit = inv.hash()->find("path");
+            if (pit == inv.hash()->end() || inv.hash()->count("closed")) return Value::integer(-1);
+            const std::string mode = inv.hash()->count("mode") ? (*inv.hash())["mode"].toStr() : std::string("r");
+            int flags = mode == "r" ? O_RDONLY : (mode == "w" || mode == "a") ? O_WRONLY : O_RDWR;
+            if (mode == "a") flags |= O_APPEND;
+            int nfd = ::open(pit->second.toStr().c_str(), flags);
+            if (nfd < 0) return Value::integer(-1);
+            (*inv.hash())["nfd"] = Value::integer(nfd);
+            return Value::integer(nfd);
         }
         if (m == "tell") {
             auto stdit = inv.hash()->find("std");
@@ -2830,6 +2847,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 int fd = which == "err" ? 2 : which == "in" ? 0 : 1;
                 if (fd == 1) std::cout.flush(); else if (fd == 2) std::cerr.flush();
                 long long off = (long long)::lseek(fd, 0, SEEK_CUR);
+                // a tty or a pipe cannot seek: the answer is what has been
+                // written so far, as Rakudo keeps for its standard handles
+                if (off < 0 && fd == 1) off = rtStdoutBytesWritten();
                 return Value::integer(off < 0 ? 0 : off);
             }
             auto bp = inv.hash()->find("bpos");
@@ -3076,6 +3096,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (lfd != inv.hash()->end() && lfd->second.toInt() >= 0) {
                     ::close((int)lfd->second.toInt());
                     (*inv.hash())["lockfd"] = Value::integer(-1);
+                }
+                // …and the descriptor .native-descriptor opened on the path
+                auto nfd = inv.hash()->find("nfd");
+                if (nfd != inv.hash()->end() && nfd->second.toInt() >= 0) {
+                    ::close((int)nfd->second.toInt());
+                    inv.hash()->erase(nfd);
                 }
             }
             std::string mode = (*inv.hash())["mode"].toStr();
@@ -3868,7 +3894,30 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
         };
         bool cp1252 = norm == "windows1252" || norm == "cp1252";
-        bool latin1 = norm == "iso88591" || norm == "latin1" || cp1252;
+        // windows-1251 (Cyrillic) shares nothing with latin-1 above 0x7F: the
+        // whole upper half is its own table (Unicode's CP1251.TXT), with the
+        // single unassigned slot 0x98 kept as U+0098, as Rakudo keeps it.
+        // S32-str/windows-1251-windows-1252-encode-decode.t checks it byte by byte.
+        static const uint32_t kCp1251High[128] = {
+            0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021,
+            0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
+            0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+            0x0098, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
+            0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7,
+            0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+            0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7,
+            0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
+            0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+            0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F,
+            0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+            0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+            0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437,
+            0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+            0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+            0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+        };
+        bool cp1251 = norm == "windows1251" || norm == "cp1251";
+        bool latin1 = norm == "iso88591" || norm == "latin1" || cp1252 || cp1251;
         // The CJK multibyte encodings Rakudo ships — gb2312, gb18030 and
         // Shift-JIS (windows-932) — go through the platform's iconv, which has
         // their tables. Encoding runs a character at a time, so an unencodable
@@ -3980,7 +4029,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool ascii = norm == "ascii" || norm == "usascii";
             // what cannot be encoded, with no replacement asked for, is an error
             auto unencodable = [&](uint32_t cp) {
-                const std::string en = ascii ? "ASCII" : cp1252 ? "Windows-1252" : "Latin-1";
+                const std::string en = ascii ? "ASCII" : cp1252 ? "Windows-1252" : cp1251 ? "Windows-1251" : "Latin-1";
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Error encoding " + en + " string: could not encode codepoint " + std::to_string(cp)};
             };
@@ -3989,7 +4038,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string bytes;
                 for (uint32_t cp : utf8cp(inv.s)) {
                     int byte = -1;
-                    if (cp1252) {
+                    if (cp1251) {
+                        if (cp < 0x80) byte = (int)cp;
+                        else for (int k = 0; k < 128; k++) if (kCp1251High[k] == cp) { byte = 0x80 + k; break; }
+                    }
+                    else if (cp1252) {
                         for (int k = 0; k < 32; k++) if (kCp1252High[k] == cp) { byte = 0x80 + k; break; }
                         // a C1 control that windows-1252 spends on a character
                         // has no byte of its own left
@@ -4075,7 +4128,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (latin1) { // each byte is a codepoint
             std::string out;
             for (unsigned char byte : inv.s)
-                out += cpToUtf8(cp1252 && byte >= 0x80 && byte <= 0x9F ? kCp1252High[byte - 0x80] : byte);
+                out += cpToUtf8(cp1251 && byte >= 0x80 ? kCp1251High[byte - 0x80]
+                                : cp1252 && byte >= 0x80 && byte <= 0x9F ? kCp1252High[byte - 0x80] : byte);
             return Value::str(out);
         }
         // utf-16 / utf-32: read fixed-width code units, form codepoints (with

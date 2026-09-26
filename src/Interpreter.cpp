@@ -4205,6 +4205,7 @@ Interpreter::Interpreter() {
     global_ = std::make_shared<Env>();
     curPkgEnv_ = global_;
     tctx_.cur = global_;
+    rtInstallStdoutCounter();   // `$*OUT.tell` on a pipe counts bytes from here on
     // Module search paths. "lib"/"."/"rakulib" are relative to the CWD; the rest
     // come from the environment so a checkout works anywhere:
     //   RAKULIB  extra module dirs, separated by ',' (Rakudo's spelling) or ':'
@@ -11291,6 +11292,20 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
                 if (tv->t == VT::Type) {
                     auto tit = classes_.find(tv->s);
                     if (tit != classes_.end() && tit->second && tit->second->isRole) {
+                        // A role composing a role that declares the same attribute
+                        // is a conflict the PUN reports — the role itself may only
+                        // be a stub of what a class will resolve, so its own
+                        // composition let the duplicate pass; punning it is
+                        // composing it for real (roast S14-roles/conflicts.t:
+                        // `role S does R { has $.grfuffle }; S.new` dies).
+                        for (auto& ra : tit->second->attrs)
+                            for (auto& own : role->attrs)
+                                if (own.name == ra.name && own.sigil == ra.sigil &&
+                                    !(own.declId && ra.declId && own.declId == ra.declId))
+                                    throw RakuError{Value::typeObj("X::Role::Attribute::Conflicts"),
+                                        "Attribute '" + std::string(1, ra.sigil) + "!" + ra.name +
+                                        "' conflicts in role '" + roleName + "' composition: declared in both '" +
+                                        roleName + "' and '" + tit->first + "'"};
                         pun->doneRoles.insert(tit->first);
                         for (auto& sub : tit->second->doneRoles) pun->doneRoles.insert(sub);
                     }
@@ -13387,7 +13402,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // record hoistSubs parked. A stale entry made the method-not-found
             // fallback re-EXECUTE this body — statements, is()-calls and all —
             // on the first missed method call against the class.
-            pendingTypes_.erase(cd->name);
+            {   // (a STUB leaves the entry when it holds the stub's own
+                // completion, further down the scope: the completion is built
+                // from it where the stub is registered — see stubOverCompleted)
+                auto pend = pendingTypes_.find(cd->name);
+                if (pend != pendingTypes_.end() &&
+                    !(cd->isStubDecl && pend->second != cd && !pend->second->isStubDecl))
+                    pendingTypes_.erase(pend);
+            }
             // Parameterized-role value params: bind each composed role's `[...]`
             // params to this class's `does R[args]` arguments, so the role body
             // (methods/submethods) sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
@@ -13894,6 +13916,19 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // unit, not to the block it stands in.
             bool stubOverCompleted = false;
             if (cd->isStubDecl) {
+                // …and a stub whose COMPLETION is further down the same scope
+                // is completed NOW: the completing declaration is compile-time
+                // in Rakudo, so `class X::B { ... }; X::B.new.a; class X::B {
+                // has $.a = 42 }` prints 42 there (roast S12-class/stubs.t).
+                // The scope-entry pass recorded the completion as the pending
+                // type for the name (the stub matched too, and the later one
+                // won the slot); building it here, in place of the stub, is
+                // what makes the name usable in between.
+                if (!classes_.count(clsName)) {
+                    auto pend = pendingTypes_.find(cd->name);
+                    if (pend != pendingTypes_.end() && pend->second != cd && !pend->second->isStubDecl)
+                        materializePendingType(cd->name);
+                }
                 auto ex = classes_.find(clsName);
                 stubOverCompleted = ex != classes_.end() && ex->second &&
                                     !(ex->second->decl && ex->second->decl->isStubDecl);
@@ -16349,8 +16384,9 @@ void Interpreter::throwTyped(const std::string& type,
 // the front (`OUR::('$x')` looks up `$OUR::x`), then rewrite pseudo-package
 // heads (GLOBAL:: strips, OUR:: is the current package, MY::/UNIT::/OUTER::/
 // CALLER::/SETTING::/CORE:: fall back to the lexical chain — approximations).
-std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead, std::string* rawOut) {
+std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead, std::string* rawOut, bool* settingTail) {
     if (callerHead) *callerHead = false;
+    if (settingTail) *settingTail = false;
     std::string nm;
     if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
     for (auto& sg : sr->segs) {
@@ -16380,8 +16416,16 @@ std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead, std::stri
         else if (nm.rfind("OUTER::",   0) == 0) nm = nm.substr(7);
         else if (nm.rfind("CALLER::",  0) == 0) { nm = nm.substr(8); if (callerHead) *callerHead = true; } // the caller's frame — see the read site
         else if (nm.rfind("CALLERS::", 0) == 0) { nm = nm.substr(9); if (callerHead) *callerHead = true; }
-        else if (nm.rfind("SETTING::", 0) == 0) nm = nm.substr(9);
-        else if (nm.rfind("CORE::",    0) == 0) nm = nm.substr(6);
+        // `CALLER::SETTING::not` / `CALLER::CORE::not` — in 6.e the SETTING
+        // of the caller is CORE whatever the caller has shadowed, so once a
+        // setting head is met the caller's frame is no longer where to look:
+        // the name is the builtin's (roast S02-names/SETTING-6e.t reaches
+        // CORE's negating `&not` through exactly this chain, past a `sub not`
+        // identity shadow in the frame the CALLER:: head would have searched).
+        // Under 6.c/6.d an EVAL's SETTING is the code that called it, shadows
+        // and all, so there the lexical lookup stands (pseudo-6d.t).
+        else if (nm.rfind("SETTING::", 0) == 0) { nm = nm.substr(9); if (sixE() && callerHead && *callerHead) { *callerHead = false; if (settingTail) *settingTail = true; } }
+        else if (nm.rfind("CORE::",    0) == 0) { nm = nm.substr(6); if (sixE() && callerHead && *callerHead) { *callerHead = false; if (settingTail) *settingTail = true; } }
         else break;
     }
     return sig + nm;
@@ -26731,9 +26775,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
         }
         Value* base;
-        if (idx->base->kind == NK::Call) {
+        if (idx->base->kind == NK::Call || idx->base->kind == NK::ArrayLit) {
             // `foo()[$i] = v` — index into a call's result; the returned Value
-            // shares its arr/hash with the real container, so writes stick
+            // shares its arr/hash with the real container, so writes stick.
+            // An ARRAY LITERAL's elements are containers too: `++[$[0]][0][0]`
+            // (roast S09-autovivification/autoincrement.t) and `[1,2][0]++`
+            // write into the fresh array, which the hold keeps alive for the
+            // write; without this the literal had no lvalue at all and the
+            // increment died "Target is not assignable".
             static thread_local Value callBaseHold;
             callBaseHold = eval(idx->base.get());
             base = &callBaseHold;
@@ -28851,6 +28900,50 @@ static std::string ourPublishedName(const std::string& name, const std::string& 
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // `(my @a) = [42, @a]` — a PARENTHESISED declaration is in scope for its
+    // own right side (the bare `my @a = …, @a` is refused at parse time, so
+    // this is the only way the right side can name the variable it fills).
+    // It is how `.raku` renders a self-containing array, and what its EVAL
+    // has to rebuild (roast S32-array/perl.t). Declared after the right side
+    // was evaluated, that `@a` was a miss and the literal held a stranger. So
+    // when the right side MENTIONS the declared `@`/`%` name, declare first
+    // and store through the container the literal already holds.
+    if (a->op == "=" && a->target && a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (ve->declare && ve->declScope == "my" && ve->name.size() > 1 &&
+            (ve->name[0] == '@' || ve->name[0] == '%') && a->value) {
+            std::set<std::string> mentioned;
+            collectMentionedE(a->value.get(), mentioned);
+            if (mentioned.count(ve->name)) {
+                (void)lvalue(ve);
+                Value rhs = eval(a->value.get());
+                struct Redeclare { VarExpr* v; ~Redeclare() { v->declare = true; } } redeclare{ve};
+                ve->declare = false;
+                Value* lv = lvalue(ve);
+                // …IN PLACE: the literal's element is a view of this very
+                // storage, so the storage must stay and take the new contents
+                // (replacing the Value would leave the element looking at the
+                // empty array it saw during evaluation)
+                if (ve->name[0] == '@') {
+                    Value arr = coerceArray(rhs, isNativeScalarName(lv->ofType()));
+                    if (lv->t == VT::Array && lv->arr() && arr.t == VT::Array && arr.arr() && lv->arr() != arr.arr()) {
+                        ValueList contents = *arr.arr();
+                        *lv->arr() = std::move(contents);
+                    }
+                    else *lv = std::move(arr);
+                }
+                else {
+                    Value h = coerceHash(rhs, /*store=*/true, lv->objKeyed);
+                    if (lv->t == VT::Hash && lv->hash() && h.t == VT::Hash && h.hash() && lv->hash() != h.hash()) {
+                        auto contents = *h.hash();
+                        *lv->hash() = std::move(contents);
+                    }
+                    else *lv = std::move(h);
+                }
+                return sink ? Value::any() : *lv;
+            }
+        }
+    }
     if (a->op == ":=" && a->target) {
         // …and through the setting's stash: `CORE::.<&none> := &f`
         if (a->target->kind == NK::Index) {
@@ -30239,8 +30332,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // approximates := as assignment for containers throughout (as with
     // sigilless ); File::Temp's t/03 does `my (&tempfile, &tempdir) := ...`
     if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
-        Value rhs = eval(a->value.get());
         auto* tl = static_cast<ListExpr*>(a->target.get());
+        // A declaration on the left is in scope for the right side: `(my @a)
+        // = [42, @a]` fills @a with an array that holds @a ITSELF — which is
+        // what `.raku` of a self-containing array renders, and what its EVAL
+        // has to rebuild (roast S32-array/perl.t). Declared here after the
+        // right side was evaluated, that `@a` was an undeclared miss and the
+        // literal held an empty stranger. So a declared `@`/`%` item the
+        // right side MENTIONS is declared first, and the fill below then
+        // stores THROUGH that container rather than making a second one —
+        // for the few statements that do this; every other one is untouched.
+        std::vector<VarExpr*> early;
+        for (auto& it : tl->items) {
+            if (!it || it->kind != NK::VarExpr) continue;
+            auto* ve = static_cast<VarExpr*>(it.get());
+            if (!ve->declare || ve->declScope != "my" || ve->name.size() < 2 ||
+                (ve->name[0] != '@' && ve->name[0] != '%')) continue;
+            std::set<std::string> mentioned;
+            collectMentionedE(a->value.get(), mentioned);
+            if (mentioned.count(ve->name)) early.push_back(ve);
+        }
+        struct Undeclare { std::vector<VarExpr*>& v; ~Undeclare() { for (auto* ve : v) ve->declare = true; } } undeclare{early};
+        for (auto* ve : early) { (void)lvalue(ve); }
+        Value rhs = eval(a->value.get());
+        for (auto* ve : early) ve->declare = false;   // restored by Undeclare
         assignListTarget(tl, rhs, a->op == ":=");
         if (sink) return Value::any();
         // the answer is the LEFT side, filled: `(($a, $b) = 1, 2, 3, 4)` is
@@ -48265,11 +48380,15 @@ struct NodeCountReport {
         }
         case NK::SymbolicRef: {
             auto* sr = static_cast<SymbolicRef*>(e);
-            bool callerHead = false;
+            bool callerHead = false, settingTail = false;
             std::string rawNm;
-            std::string nm = symRefName(sr, &callerHead, &rawNm);
+            std::string nm = symRefName(sr, &callerHead, &rawNm, &settingTail);
             if (nm.empty())
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+            // `&CALLER::SETTING::not` is CORE's &not (see symRefName): the
+            // builtin, not whatever `not` the lexical chain would find
+            if (settingTail && nm.size() > 1 && nm[0] == '&')
+                if (const Value* bref = builtinRef(nm.substr(1))) return *bref;
             // `::("MY")`, `::($caller)::($caller)::x`, `::($my)::('$l')`: a name
             // that STARTS with a pseudo-package chain is a pseudo-stash, or a
             // key in one
