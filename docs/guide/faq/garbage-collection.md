@@ -3,6 +3,8 @@
 There isn't one. Raku++ has no tracing, generational or incremental collector,
 no heap to size, no GC knobs and no GC log. Lifetime is `shared_ptr` reference
 counting: a value is freed the moment the last reference to it goes away.
+How the counting itself works, in Raku terms, is
+[refcounting.md](refcounting.md).
 
 That answers most of the questions on this page in one line, but the
 consequences are worth spelling out, because two of them will eventually bite
@@ -153,6 +155,12 @@ sub outer($x) {
     helper($x) + 1;
 }
 ```
+
+**Not in 4.0.0 and 4.0.1:** a regression makes the interpreter skip that cut
+once `helper` has been called, so today the routine above keeps every frame it
+makes: about 1.5 KB per call, 1.5 GB over a million calls. Declaring `helper`
+at unit scope avoids it. [refcounting.md](refcounting.md) has the shapes
+affected, measured.
 
 That is the only cycle handled automatically. Cycles in *your* data are yours.
 

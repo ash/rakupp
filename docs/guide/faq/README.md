@@ -88,6 +88,11 @@ only way these can drift.
   descent and Pratt, is the grammar a CFG, is there an IR or a bytecode VM or a
   JIT, tree-walk vs transpile, garbage collection, and whether it is
   self-hosted. Short answers; Chapter 3 of the Internals book has the reasoning.
+- **[refcounting.md](refcounting.md)** — how reference counting works, in Raku
+  terms: what is counted and what is copied, which operations move a count,
+  shallow copies and binding, shared string bodies, what keeps a closure's
+  frame alive, why `DESTROY` waits for a sweep, and the cycles you make
+  without noticing.
 - **[hand-written.md](hand-written.md)** — "hand-written lexer and parser"
   vs. written by a human: what the compiler term of art claims (no parser
   generator — the sense GCC, Clang and Go use of themselves, with receipts),
