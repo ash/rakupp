@@ -1075,10 +1075,10 @@ say "Files: ", @files.elems, "   fully-pass: ", $pass,
     }
 }
 say sprintf("Wall time:            %.1f s  (%d workers)", (now - $T0).Num, $WORKERS);
-say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP and +%d from %d timed-out files, read from source; %d more have no static plan)%s",
+say sprintf("Files fully passing:  %d / %d  (%.2f%%)", $pass, @files.elems, $fpct);
+say sprintf("Assertions passed:    %d / %d  (%.2f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
+say sprintf("Assertions passed:    %d / %d  (%.2f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
+say sprintf("Assertions passed:    %d / %d  (%.2f%%)  of ALL declared tests (+%d from %d no-TAP and +%d from %d timed-out files, read from source; %d more have no static plan)%s",
             $tot-pass, $declared, $dpct, $notap-declared, $notap-counted,
             $timeout-declared, $timeout-counted, $notap-unknown + $timeout-unknown,
             ($lost ?? sprintf(" — and +%d from %d LOST file%s, which %s not measured at all", $lost-declared, $lost, $lost == 1 ?? '' !! 's', $lost == 1 ?? 'was' !! 'were') !! ''));
@@ -1090,7 +1090,7 @@ say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d
 my $fudged    = $tot-skip + $tot-todofail + $tot-todopass;
 my $must-pass = $declared - $fudged;
 my $do-pass   = $tot-pass - $fudged;
-say sprintf("Assertions passed without skip/todo: %d / %d  (%.1f%%)  left out: %d skipped + %d todo-failed + %d todo-passed = %d",
+say sprintf("Assertions passed without skip/todo: %d / %d  (%.2f%%)  left out: %d skipped + %d todo-failed + %d todo-passed = %d",
             $do-pass, $must-pass, $must-pass ?? 100 * $do-pass / $must-pass !! 0,
             $tot-skip, $tot-todofail, $tot-todopass, $fudged);
 
@@ -1142,7 +1142,7 @@ my @rows;
 for @secs -> $s {
     my $a = %sec-pass{$s} // 0;
     my $b = %sec-tot{$s}  // 0;
-    my $pct = $b ?? sprintf('%d%%', (100 * $a / $b).round) !! '—';
+    my $pct = $b ?? sprintf('%.2f%%', 100 * $a / $b) !! '—';
     @rows.push([ $s, (%theme{$s} // '—'),
                  ~(%sec-full{$s} // 0), ~(%sec-part{$s} // 0), ~(%sec-time{$s} // 0), ~(%sec-notap{$s} // 0),
                  "$a/$b", $pct ]);
