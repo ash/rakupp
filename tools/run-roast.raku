@@ -118,6 +118,9 @@ my %SLOW-FILES =
     'S17-scheduler/in.t'   => 30,  # cues :in(1)/:in(2) and sleeps 3 s, four times:
     'S17-scheduler/at.t'   => 30,  # ~12 s here, ~28 s on Rakudo (each)
     'S17-scheduler/every.t' => 45, # the same with :every, twice over: ~24 s
+    'S07-hyperrace/basics.t' => 30, # two stress loops sized to run ~1 s each, 10 racing
+                                   # workers per round, 9 of them throwing
+                                   # X::Seq::Consumed: ~9 s alone, more under load
     'S32-io/lock.t'        => 60,  # each blocking check runs a child that sleeps
                                    # $SLEEP (1 s) while it waits on the lock: ~36 s
 ;
@@ -146,6 +149,17 @@ $SCRATCH.mkdir;
 $SCRATCH.add('t').mkdir;
 $SCRATCH.add('t/placeholder.t').spurt("# keeps t/ non-empty: dir.t reads dir('t').[0]\n");
 $SCRATCH.add('README.md').spurt("Scratch working directory for a rakupp Roast run.\n");
+# …and the CJK encoding tests (S32-str/gb2312-, gb18030-, shiftjis-encode-
+# decode.t) read their sample files as `t/spec/S32-str/text-samples/…`, which is
+# where they are under an implementation's checkout. Only that one directory is
+# linked in: local.t builds its own `t/spec/S22-package-format/` here, and a
+# link to the whole checkout would have it write into Roast.
+with $ROOT.IO.add('S32-str/text-samples') -> $samples {
+    if $samples.d {
+        $SCRATCH.add('t/spec/S32-str').mkdir;
+        symlink($samples.absolute, $SCRATCH.add('t/spec/S32-str/text-samples').absolute);
+    }
+}
 sub rmtree($p) {
     return unless $p.e || $p.l;          # .e is False for a DANGLING symlink
     if $p.d && !$p.l {

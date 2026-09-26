@@ -1011,7 +1011,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if ((m == "tap" || m == "act") && inv.hash()->count("kind")) {
             std::string k = inv.hash()->at("kind").toStr();
             if (k == "async-read" || k == "async-listen" || k == "signal" ||
-                k == "interval" || k == "throttle" || k == "throttle-run" ||
+                k == "interval" || k == "watch" || k == "throttle" || k == "throttle-run" ||
                 k == "combine" || k == "flatten" || k == "migrate") {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
@@ -4825,7 +4825,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // "13" are two keys, and `.keys` gives back the Int. Stringifying here made
         // `"13" (elem) Hash[Any,Any].new(13 => "x")` True.
         if (inv.ofType().find(',') != std::string::npos) v.objKeyed = true;
+        // `Hash[Int].new("a", "b")`: the parameter constrains the VALUES
+        std::string valT = inv.ofType().substr(0, inv.ofType().find(','));
+        if (valT == "Any" || valT == "Mu") valT.clear();
         auto put = [&](const Value& key, const Value& val) {
+            if (!valT.empty() && val.t != VT::Nil && !typeOrSubsetMatches(val, valT))
+                throwTypedV("X::TypeCheck::Assignment",
+                            {{"got", val}, {"expected", Value::typeObj(valT)}},
+                            "Type check failed in assignment to %h; expected " + valT +
+                            " but got " + val.typeName() + " (" + val.gist() + ")");
             if (!v.objKeyed) { (*v.hash())[key.toStr()] = val; return; }
             Value stored = val;
             stored.pairKeyM() = std::make_shared<Value>(key);
@@ -5047,6 +5055,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // — `subset Even of Int …; Even.^ver` is 6.d in a 6.d unit and 6.e
             // in a 6.e one. Types that declare their own :ver fall through.
             if (m == "ver") {
+                // a revision's own PseudoStash (the class, or a stash of it)
+                if (inv.t == VT::Type && (inv.s == "CORE::v6c::PseudoStash" || inv.s == "CORE::v6e::PseudoStash")) {
+                    Value ver = Value::str(inv.s.str()[8] == 'e' ? "6.e" : "6.c");
+                    ver.hashKind = "Version"; return ver;
+                }
+                if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && inv.obj()->cls->name == "PseudoStash") {
+                    auto rit = inv.obj()->attrs.find("\x01rev");
+                    Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+                    ver.hashKind = "Version"; return ver;
+                }
                 auto sit = subsets_.find(inv.s);
                 if (sit != subsets_.end())
                     // A plain Str, as Rakudo's is: `E.^ver.^name` is Str there
@@ -5547,6 +5565,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "rw" && args.empty()) return Value::boolean(ci->classRw);
             if (m == "set_auth" && !args.empty()) { ci->auth = args[0].toStr(); return inv; }
             if (m == "set_api"  && !args.empty()) { ci->api  = args[0].toStr(); return inv; }
+            // a pseudo-stash is its revision's CORE class: 6.e's, or 6.c's
+            if (m == "ver" && ci->name == "PseudoStash" && inv.t == VT::Object && inv.obj()) {
+                auto rit = inv.obj()->attrs.find("\x01rev");
+                Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+                ver.hashKind = "Version"; return ver;
+            }
             if (m == "ver")  return ci->ver.empty()  ? Value::any() : ([&]{ Value v = Value::str(ci->ver);  v.hashKind = "Version"; return v; }());
             if (m == "auth") return Value::str(ci->auth);
             if (m == "api")  return ci->api.empty() ? Value::any() : Value::str(ci->api);
@@ -8630,6 +8654,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return it;
     }
     if (m == "iterator") { // S07: make an Iterator over this value's elements
+        // A HyperSeq/RaceSeq hands out ONE iterator: a second `.iterator`, from
+        // this thread or any other racing it, is X::Seq::Consumed (Rakudo #4413).
+        // Keyed by the shared element buffer every copy of the value holds.
+        if (inv.t == VT::Array && (inv.s == "HyperSeq" || inv.s == "RaceSeq") && inv.arr()) {
+            static std::mutex mu;
+            static std::map<const void*, std::weak_ptr<ValueList>> taken;
+            std::lock_guard<std::mutex> lk(mu);
+            for (auto t = taken.begin(); t != taken.end();)
+                t = t->second.expired() ? taken.erase(t) : std::next(t);
+            auto hit = taken.find(inv.arr());
+            if (hit != taken.end())
+                throwTypedV("X::Seq::Consumed", {},
+                            "The iterator of this Seq is already in use/consumed by another Seq\n"
+                            "(you might solve this by adding .cache on usages of the Seq, or\n"
+                            "by assigning the Seq into an array)");
+            taken[inv.arr()] = inv.arrS();
+        }
         Value it = Value::makeHash(); it.hashKind = "Iterator";
         Value items = Value::array();
         bool lazy = false;

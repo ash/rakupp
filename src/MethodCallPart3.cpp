@@ -8,6 +8,9 @@
 #include "BuiltinsShared.h"
 #include "Parser.h"
 #include <fcntl.h>
+#if !defined(_WIN32)
+#include <iconv.h>
+#endif
 #include <unistd.h>
 #include <cerrno>
 #include <filesystem>
@@ -1718,6 +1721,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!statOrFailure(ioFsPath(inv), inv.toStr(), st, fail)) return fail;
         return Value::integer((long long)(m == "user" ? st.st_uid : st.st_gid));
     }
+    if (m == "watch" && inv.hashKind == "IO" && args.empty()) {   // the file's changes, as a Supply
+        // (a FILE only: a directory's events — creations, renames, removals —
+        // need the platform's notifier, which this poller is not)
+        {
+            struct stat wst{};
+            if (::stat(ioFsPath(inv).c_str(), &wst) == 0 && S_ISDIR(wst.st_mode))
+                throwTyped("X::NYI", {{"feature", "watching a directory"}},
+                           "Watching a directory is not yet implemented. Sorry.");
+        }
+        Value sup = Value::makeHash(); sup.hashKind = "Supply";
+        (*sup.hash())["kind"] = Value::str("watch");
+        (*sup.hash())["path"] = Value::str(ioFsPath(inv));
+        return sup;
+    }
     if (m == "mkdir" && inv.hashKind == "IO") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents (a bare Str has no mkdir)
         std::string path = ioFsPath(inv); // the invocant's own :CWD decides where
         long long mode = 0777;
@@ -3206,7 +3223,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
             }
             std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
-            return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
+            // TEXT mode folds CRLF to LF, as IO::Path.slurp does (Rakudo's text
+            // decoders translate the line separator; a Buf's .decode does not)
+            std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+            if (text.find('\r') != std::string::npos) {
+                std::string outT; outT.reserve(text.size());
+                for (size_t i = 0; i < text.size(); i++) {
+                    if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+                    outT += text[i];
+                }
+                text.swap(outT);
+            }
+            return Value::str(text);
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
         if (m == "getc" || m == "readchars") {
@@ -3841,6 +3869,102 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         };
         bool cp1252 = norm == "windows1252" || norm == "cp1252";
         bool latin1 = norm == "iso88591" || norm == "latin1" || cp1252;
+        // The CJK multibyte encodings Rakudo ships — gb2312, gb18030 and
+        // Shift-JIS (windows-932) — go through the platform's iconv, which has
+        // their tables. Encoding runs a character at a time, so an unencodable
+        // one can take the :replacement (itself encoded the same way).
+#if !defined(_WIN32)
+        static const std::map<std::string, const char*> kIconv = {
+            {"gb2312", "GB2312"}, {"gb18030", "GB18030"},
+            {"shiftjis", "CP932"}, {"windows932", "CP932"}, {"cp932", "CP932"}};
+        if (auto ic = kIconv.find(norm); ic != kIconv.end()) {
+            auto conv = [](const char* to, const char* from, const std::string& in, std::string& out) {
+                iconv_t cd = iconv_open(to, from);
+                if (cd == (iconv_t)-1) return false;
+                out.clear();
+                std::string src = in;
+                char* ip = src.empty() ? nullptr : &src[0];
+                size_t il = src.size();
+                bool ok = true;
+                while (il > 0) {
+                    char buf[4096]; char* op = buf; size_t ol = sizeof buf;
+                    size_t r = iconv(cd, &ip, &il, &op, &ol);
+                    out.append(buf, (size_t)(op - buf));
+                    if (r == (size_t)-1 && errno != E2BIG) { ok = false; break; }
+                }
+                if (ok) {   // flush any shift state
+                    char buf[64]; char* op = buf; size_t ol = sizeof buf;
+                    iconv(cd, nullptr, nullptr, &op, &ol);
+                    out.append(buf, (size_t)(op - buf));
+                }
+                iconv_close(cd);
+                return ok;
+            };
+            const std::string rname = norm == "gb2312" ? "gb2312" : norm == "gb18030" ? "gb18030" : "windows-932";
+            if (m == "encode") {
+                bool haveRepl = false; std::string repl;
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.s == "replacement" &&
+                        (!a.pairVal() || a.pairVal()->t == VT::Str || a.pairVal()->truthy())) {
+                        haveRepl = true;
+                        repl = (a.pairVal() && a.pairVal()->t == VT::Str) ? a.pairVal()->s.str() : std::string("?");
+                    }
+                std::string bytes, one, replBytes;
+                bool replDone = false;
+                for (uint32_t cp : utf8cp(inv.s.str())) {
+                    // (the Private Use Area has no mapping in Rakudo's tables,
+                    // whatever the platform's iconv makes of it)
+                    const bool pua = cp >= 0xE000 && cp <= 0xF8FF;
+                    if (!pua && conv(ic->second, "UTF-8", cpToUtf8(cp), one)) { bytes += one; continue; }
+                    if (!haveRepl)
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Error encoding " + rname + " string: could not encode codepoint " + std::to_string(cp)};
+                    if (!replDone) {
+                        replDone = true;
+                        if (!conv(ic->second, "UTF-8", repl, replBytes))
+                            throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Error encoding " + rname + " string: could not encode the replacement"};
+                    }
+                    bytes += replBytes;
+                }
+                Value b = Value::str(bytes);
+                b.hashKind = "Blob";
+                b.enumName = "Blob[uint8]";
+                b.ofTypeM() = "uint8";
+                return b;
+            }
+            // decode: a byte sequence the encoding does not have takes the
+            // :replacement when one is given (one per bad byte), else it dies
+            bool haveRepl = false; std::string repl;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "replacement" && a.pairVal() && a.pairVal()->t == VT::Str) {
+                    haveRepl = true; repl = a.pairVal()->s.str();
+                }
+            std::string out;
+            iconv_t cd = iconv_open("UTF-8", ic->second);
+            if (cd == (iconv_t)-1)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Error decoding " + rname + " string: no converter"};
+            std::string src = inv.s.str();
+            char* ip = src.empty() ? nullptr : &src[0];
+            size_t il = src.size();
+            while (il > 0) {
+                char buf[4096]; char* op = buf; size_t ol = sizeof buf;
+                size_t r = iconv(cd, &ip, &il, &op, &ol);
+                out.append(buf, (size_t)(op - buf));
+                if (r != (size_t)-1 || errno == E2BIG) continue;
+                if (!haveRepl) {
+                    iconv_close(cd);
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Error decoding " + rname + " string: invalid byte sequence"};
+                }
+                out += repl;               // the bad byte, replaced; carry on after it
+                ip++; il--;
+                iconv(cd, nullptr, nullptr, nullptr, nullptr);   // reset the shift state
+            }
+            iconv_close(cd);
+            return Value::str(nfcNormalize(out));
+        }
+#endif
         if (m == "encode") {
             // `:replacement` substitutes for every character the encoding cannot
             // represent; a bare `:replacement` means "?". Without it an

@@ -2541,7 +2541,14 @@ std::vector<uint32_t> utf8cp(const std::string& s) {
         else if ((c >> 4) == 0xe) { cp = c & 0x0f; len = 3; }
         else if ((c >> 3) == 0x1e) { cp = c & 0x07; len = 4; }
         else { cp = c; len = 1; }
-        for (int k = 1; k < len && i + k < n; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3f);
+        // a lead byte whose continuation bytes are not there (utf8-c8 keeps
+        // such bytes as they came: `Buf.new(76, 0xE9, 111, 110)`) is a
+        // character of its own — as the continuation-skipping byte walkers
+        // count it, so an index here and a byte offset there agree
+        for (int k = 1; k < len; k++)
+            if (i + k >= n || ((unsigned char)s[i + k] & 0xC0) != 0x80) { cp = c; len = 1; break; }
+        if (len > 1)
+            for (int k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3f);
         out.push_back(cp); i += len;
     }
     return out;
@@ -2905,6 +2912,8 @@ std::string canonEncodingName(const std::string& name, bool* known) {
         {"iso_8859-1", "iso-8859-1"}, {"iso-8859-1", "iso-8859-1"},
         {"windows1251", "windows-1251"}, {"windows-1251", "windows-1251"},
         {"windows1252", "windows-1252"}, {"windows-1252", "windows-1252"},
+        {"gb2312", "gb2312"}, {"gb18030", "gb18030"},
+        {"shiftjis", "windows-932"}, {"windows932", "windows-932"}, {"windows-932", "windows-932"},
     };
     auto it = alias.find(key);
     if (it != alias.end()) return it->second;
@@ -8761,7 +8770,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             "utf16", "utf-16", "utf16le", "utf-16le", "utf16-le", "utf-16-le",
             "utf16be", "utf-16be", "utf16-be", "utf-16-be",
             "windows932", "windows-932", "windows1251", "windows-1251",
-            "windows1252", "windows-1252"};
+            "windows1252", "windows-1252", "gb2312", "gb18030", "shiftjis"};
         if (!known.count(key))
             throwTyped("X::Encoding::Unknown", {{"name", name}},
                        "Unknown string encoding '" + name + "'");
@@ -8774,7 +8783,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             {"utf16", {"utf-16"}},
             {"utf16le", {"utf-16le", "utf16-le", "utf-16-le"}},
             {"utf16be", {"utf-16be", "utf16-be", "utf-16-be"}},
-            {"windows-932", {"windows932"}},
+            {"windows-932", {"windows932", "shiftjis"}},
+            {"gb2312", {}},
+            {"gb18030", {}},
             {"windows-1251", {"windows1251"}},
             {"windows-1252", {"windows1252"}},
         };
@@ -12556,6 +12567,39 @@ void Interpreter::replayPreserved(const Value& sup, Value& tapRec) {
     }
 }
 
+// `$path.IO.watch` rides an interval ticker: this wraps the block a tick
+// would run so that it runs only when the file's size or modification time
+// has moved since the last look, with an IO::Notification-shaped event.
+Value watchFilter(const Value& sup, const Value& blk) {
+    const std::string path = sup.t == VT::Hash && sup.hash() && sup.hash()->count("path")
+                           ? sup.hash()->at("path").toStr() : std::string();
+    auto sig = [](const std::string& p) {
+        struct stat st{};
+        if (::stat(p.c_str(), &st) != 0) return std::pair<long long, long long>(-1, -1);
+#if defined(__APPLE__)
+        long long mt = (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#elif defined(_WIN32)
+        long long mt = (long long)st.st_mtime;
+#else
+        long long mt = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
+        return std::pair<long long, long long>((long long)st.st_size, mt);
+    };
+    auto last = std::make_shared<std::pair<long long, long long>>(sig(path));
+    Value cb; cb.t = VT::Code; cb.setCode(std::make_shared<Callable>());
+    cb.code()->builtin = [last, blk, path, sig](Interpreter& I2, ValueList&) -> Value {
+        auto now = sig(path);
+        if (now == *last || blk.t != VT::Code) return Value::any();
+        *last = now;
+        Value ev = Value::makeHash();
+        (*ev.hash())["path"] = Value::str(path);
+        (*ev.hash())["event"] = Value::str("FileChanged");
+        ValueList one{ev};
+        return I2.callCallable(blk, one);
+    };
+    return cb;
+}
+
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
     if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash())) {
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -13160,6 +13204,12 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash())["wired"] = Value::boolean(true);
         return t;
+    }
+    // `$path.IO.watch`: a file's changes as a Supply (see watchFilter)
+    if (h.count("kind") && h.at("kind").toStr() == "watch") {
+        auto handle = std::make_shared<TapHandle>();
+        std::shared_ptr<ReactCtx> rctx = reactStack_.empty() ? nullptr : reactStack_.back();
+        return spawnIntervalWhenever(0.01, 0, watchFilter(s, emitCb), rctx, handle, doneCb);
     }
     // Supply.interval(N) tapped directly (.tap, or inside a supply {…} block):
     // each tap gets its OWN ticker; the returned Tap's handle stops it on .close.
@@ -17379,6 +17429,9 @@ void Interpreter::registerBuiltins() {
             // whenever Supply.interval(N) in a supply block: a repeating ticker
             // that keeps this activation open until done/close stops it.
             if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash()->count("kind") &&
+                (*src.hash())["kind"].toStr() == "watch")
+                return I.spawnSupplyInterval(0.01, 0, watchFilter(src, I.wrapSupplyChain(src, blk)), ctx);
+            if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash()->count("kind") &&
                 (*src.hash())["kind"].toStr() == "interval") {
                 double iv = src.hash()->count("interval") ? (*src.hash())["interval"].toNum() : 1;
                 double dl = src.hash()->count("delay") ? (*src.hash())["delay"].toNum() : 0;
@@ -17593,6 +17646,11 @@ void Interpreter::registerBuiltins() {
             }
             // whenever Supply.interval(N) { … } in a react: a live ticker source —
             // the react waits on it (forever, unless `done`/`last` ends it).
+            if (s.t == VT::Hash && s.hashKind == "Supply" &&
+                s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "watch") {
+                std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                return I.spawnIntervalWhenever(0.01, 0, watchFilter(s, I.wrapSupplyChain(s, blk)), ctx, nullptr);
+            }
             if (s.t == VT::Hash && s.hashKind == "Supply" &&
                 s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "interval") {
                 double iv = s.hash()->count("interval") ? (*s.hash())["interval"].toNum() : 1;

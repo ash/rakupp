@@ -3307,7 +3307,10 @@ inline Value numToIntExact(double x) {
 // overflows to Inf once x² does (`asinh(1e200)` is Inf there); below that the
 // libm answer is the same number, only more accurate.
 inline double rakuAsinh(double x) { return !std::isinf(x) && std::isinf(x * x) ? std::log(x + std::sqrt(x * x + 1)) : std::asinh(x); }
-inline double rakuAcosh(double x) { return !std::isinf(x) && std::isinf(x * x) ? std::log(x + std::sqrt(x * x - 1)) : std::acosh(x); }
+inline double rakuAcosh(double x) {
+    if (x < 1) return std::nan("");   // below the domain, however far (-1e200 too)
+    return !std::isinf(x) && std::isinf(x * x) ? std::log(x + std::sqrt(x * x - 1)) : std::acosh(x);
+}
 inline bool rtNonFiniteReal(const Value& v) {
     return v.t == VT::Num && !std::isfinite(v.n);
 }

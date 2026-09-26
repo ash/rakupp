@@ -378,6 +378,11 @@ target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 # runs in manylinux 2.28, whose glibc 2.28 still keeps libdl apart, and there
 # dlopen/dlsym/dlclose/dlerror went unresolved at the executable link.
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+# the CJK encodings (gb2312, gb18030, windows-932) go through iconv, which glibc
+# carries in libc and macOS ships as a library of its own
+if(APPLE)
+  target_link_libraries(rakupp_rt PUBLIC iconv)
+endif()
 # On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
 # so the rk_* extension ABI lands in the export table of whatever links this
 # library — the rakupp CLI and `--exe` binaries alike, either of which may host

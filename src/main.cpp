@@ -706,6 +706,7 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     // interpreter's 1 GiB big-stack thread. 512 MiB is the arm64 ld cap; the
     // recursion guard reads it via pthread_get_stacksize_np automatically.
     c += " -Wl,-stack_size,0x20000000";
+    c += " -liconv";   // the CJK encodings (gb2312, gb18030, windows-932) — iconv is its own library here
     if (g_slim.deadStrip) c += " -Wl,-dead_strip";
     // ld64's -x keeps local symbols out of the output — the same table
     // `strip -x` would remove, without a second process.

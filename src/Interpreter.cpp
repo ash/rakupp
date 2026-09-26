@@ -2486,10 +2486,17 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             while (out.arr()->size() < SCAP) {
                 bool ok = true;
                 std::string nxt = desc ? strPred(cur, ok) : strSucc(cur);
+                // going DOWN, a pred that has nowhere to go is an error, not an
+                // end: `'ZZ' ... 'A'` reaches 'AA', whose leftmost letter is never
+                // removed (Rakudo: "Decrement out of range")
+                if (!ok && desc)
+                    throw RakuError{Value::typeObj("X::AdHoc"), "Decrement out of range"};
                 if (!ok || nxt == cur) break;   // a value succ/pred cannot advance
                 long long nxtLen = u8CpLen(nxt);
                 if (!desc && (nxtLen > endLen || (nxtLen == endLen && nxt > end))) break;
-                if (desc && (nxtLen < endLen || (nxtLen == endLen && nxt < end))) break;
+                // …and it stops at the first value that sorts BEFORE the end,
+                // whatever its length: 'Z' ... 'AA' is Z Y … B, as 'A' lt 'AA'
+                if (desc && nxt < end) break;
                 out.arr()->push_back(Value::str(nxt));
                 cur = nxt;
                 if (cur == end) { if (exclusive) out.arr()->pop_back(); break; }
@@ -16326,6 +16333,12 @@ void Interpreter::throwTyped(const std::string& type,
         // …and a FLAG is a Bool (X::Method::NotFound's `private`)
         else if (kv.first == "private" && (kv.second == "True" || kv.second == "False"))
             va.emplace_back(kv.first, Value::boolean(kv.second == "True"));
+        // …and X::Comp::Trait::Scope's `supported` is a LIST of scopes
+        else if (kv.first == "supported" && type == "X::Comp::Trait::Scope") {
+            Value l = Value::array(); l.isList = true;
+            l.arr()->push_back(Value::str(kv.second));
+            va.emplace_back(kv.first, l);
+        }
         else
             va.emplace_back(kv.first, Value::str(kv.second));
     throwTypedV(type, std::move(va), message);
@@ -17936,6 +17949,16 @@ static bool classOutsideAny(const Value& arg) {
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type == "Any" && (arg.t == VT::Object || arg.t == VT::Type) && classOutsideAny(arg)) return false;
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // `CORE::v6c::PseudoStash` / `CORE::v6e::PseudoStash`: the revision's own
+    // class — a stash made under 6.c or 6.d is the first, under 6.e the second
+    if (type.size() == 22 && type.compare(0, 8, "CORE::v6") == 0 && type.compare(9, 13, "::PseudoStash") == 0) {
+        if (arg.t == VT::Type) return arg.s == type;
+        if (arg.t != VT::Object || !arg.obj() || !arg.obj()->cls || arg.obj()->cls->name != "PseudoStash")
+            return false;
+        auto it = arg.obj()->attrs.find("\x01rev");
+        const bool sixE = it != arg.obj()->attrs.end() && it->second.toInt() >= 2;
+        return type[8] == 'e' ? sixE : !sixE;
+    }
     // a flavored path (IO::Path::Win32 …) is an IO::Path, and IO, and Cool
     if (arg.t == VT::Str && arg.hashKind == "IO" && !arg.enumName.empty() &&
         (type == "IO::Path" || type == "IO" || type == "Cool" || type == "IO::Path::" + arg.enumName.str()))
@@ -20138,17 +20161,22 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
     // `(Foo.new) .= meth`: an invocant with no container behind it is an
     // OBJECT, and assigning to an object is its STORE (Rakudo's assign to a
     // non-container) — the invocant is already evaluated, so it is not re-run
-    auto freshObj = [](Expr* t) {
-        if (t->kind == NK::Call) return true;
+    // (…parenthesized too: `(my class Foo {…}.new).=foo`)
+    std::function<bool(Expr*)> freshObj = [&](Expr* t) -> bool {
+        if (t->kind == NK::ListExpr && static_cast<ListExpr*>(t)->items.size() == 1)
+            return freshObj(static_cast<ListExpr*>(t)->items[0].get());
+        if (t->kind == NK::Call || t->kind == NK::Unary) return true;   // (a `do`/declaration term too)
         if (t->kind != NK::MethodCall) return false;
         const std::string& mn = static_cast<MethodCall*>(t)->method;
         return mn == "new" || mn == "bless" || mn == "clone" || mn == "CREATE";
     };
+    // …and the answer is the OBJECT the value was stored into, as an
+    // assignment answers its target
     if (invVal && target && freshObj(target) &&
         invVal->t == VT::Object && invVal->obj() && invVal->obj()->cls &&
         invVal->obj()->cls->findMethod("STORE")) {
         methodCall(*invVal, "STORE", ValueList{v});
-        return v;
+        return *invVal;
     }
     // A parenthesised list target distributes: `($a, $b) .= reverse` is the
     // mutating form of `($a, $b) = ($a, $b).reverse`, and lvalue() has nothing
@@ -20715,6 +20743,9 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     if (cit != classes_.end()) od->cls = cit->second;
     od->attrs["chain"] = Value::str(chain);
     od->attrs["mode"] = Value::str(std::string(1, mode));
+    // the CORE it belongs to: 6.c's class serves 6.c and 6.d, 6.e has its own
+    // (`CORE::v6e::PseudoStash` — a multi told apart by revision)
+    od->attrs["\x01rev"] = Value::integer(langRev_);
     od->attrs["dyn"] = Value::integer(dynIdx);
     if (raw) od->attrs["raw"] = Value::integer((long long)(uintptr_t)raw);
     else if (env) { Value ctx = Value::makeHash(); ctx.hashKind = "PseudoCtx"; ctx.extM() = std::static_pointer_cast<void>(env); od->attrs["ctx"] = ctx; }
@@ -31082,6 +31113,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             for (auto& k : ks)
                                 if (k.t == VT::Code && k.code() && k.code()->isWhateverCode)
                                     k = whateverPos(k, (long long)bp->arr()->size());
+                        // a LAZY array reifies up to the highest index first, or the
+                        // generator appends its own values after the ones written
+                        // here: `my @a = 1..Inf; @a[0,1] = 98, 99` is 98 99 3 …
+                        if (!ix->isHash && bp->t == VT::Array && bp->arr() && bp->ext()) {
+                            long long hi = -1;
+                            for (auto& k : ks) if (k.isNumeric()) hi = std::max(hi, k.toInt());
+                            if (hi >= 0) materializeLazy(*bp, (size_t)hi + 1);
+                        }
                         // a Blob/Buf slice-assign writes the BYTES in place —
                         // `$new-state[$_ ..^ $_+8] = store64 $lane` is how
                         // Digest::SHA3 serialises each Keccak lane
@@ -48377,6 +48416,9 @@ struct NodeCountReport {
                 std::strchr("cde", n[8])) {
                 const std::string rest = n.substr(11);
                 if (rest == "CORE-SETTING-REV") return Value::str(std::string(1, n[8]));
+                // (6.d has no PseudoStash of its own: it is 6.c's)
+                if (rest == "PseudoStash")
+                    return Value::typeObj(n[8] == 'e' ? "CORE::v6e::PseudoStash" : "CORE::v6c::PseudoStash");
                 if (!rest.empty() && rest != "PseudoStash") {
                     NameTerm inner(rest); inner.line = e->line;
                     return eval(&inner);
@@ -50334,8 +50376,15 @@ Value Interpreter::eval(Expr* e) {
                 // `my C constant T .= new(…)` — a typed CONSTANT's `.=` calls on
                 // its declared type, as `my C $x .= new` does on its container's
                 if (ve->declare && ve->declScope == "constant" && !ve->declType.empty()) {
-                    NameTerm tn(ve->declType); tn.line = mc->line;
+                    // (a parameterized one, `Array[Numeric]`, is its base type
+                    // carrying the parameter — the shape `Array[Numeric]` evaluates to)
+                    const std::string& dt = ve->declType;
+                    const size_t br = dt.find('[');
+                    NameTerm tn(br != std::string::npos && dt.back() == ']' ? dt.substr(0, br) : dt);
+                    tn.line = mc->line;
                     Value typ = eval(&tn);
+                    if (br != std::string::npos && dt.back() == ']' && typ.t == VT::Type)
+                        typ.ofTypeM() = dt.substr(br + 1, dt.size() - br - 2);
                     ValueList cargs = evalArgs(mc->args);
                     return assignChecked(mc->inv.get(), methodCall(typ, mc->method, cargs));
                 }
@@ -51048,6 +51097,15 @@ Value Interpreter::eval(Expr* e) {
             std::string prefixed;
             if (mc->bang || mc->meta) prefixed = (mc->bang ? "!" : "^") + mc->method;
             const std::string& mname = (mc->bang || mc->meta) ? prefixed : mc->method;
+            // `$stash.^ver` — a pseudo-stash is its revision's CORE class (6.e's,
+            // or 6.c's for 6.c and 6.d), which only the instance knows
+            if (mc->meta && mc->method == "ver" && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+                inv.obj()->cls->name == "PseudoStash") {
+                auto rit = inv.obj()->attrs.find("\x01rev");
+                Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+                ver.hashKind = "Version";
+                return ver;
+            }
             // `.+m` / `.*m` — the results of the candidates, as a List (one
             // candidate here: the method that dispatch finds); `.*` of a
             // method nobody has is the empty List, `.+` of one dies

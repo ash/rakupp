@@ -315,6 +315,11 @@ static InfixInfo classifyInfix(const Token& t) {
                              t.line, "X::Syntax::CannotMeta",
                              {{"meta", std::string(1, o[0])}, {"operator", "?? !!"}});
         if (kAssignOps.count(o)) { in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; }
+        // `5 R:= $x` — a binding has no reversed form
+        if (o == "R:=" || o == "R::=")
+            throw ParseError("Cannot reverse the args of := because list assignment operators are too fiddly",
+                             t.line, "X::Syntax::CannotMeta",
+                             {{"meta", "reverse the args of"}, {"operator", ":="}, {"reason", "too fiddly"}});
         // Bare `R=` — the reverse metaop on plain assignment, so `1 R= my $x`
         // is `my $x = 1`. The general form below needs a base operator between
         // the R and the `=`, which this does not have.
@@ -2172,6 +2177,25 @@ ExprPtr Parser::parseExpr(int minbp) {
             throw ParseError("Cannot " + cur().text.substr(0, 1) + " ?? !! because conditional operators are too fiddly",
                              cur().line, "X::Syntax::CannotMeta",
                              {{"meta", cur().text.substr(0, 1)}, {"operator", "?? !!"}});
+        // (`R:=` may arrive as `:` then `=`)
+        if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && peek().text == ":" &&
+            !peek().spaceBefore && peek(2).kind == Tok::Op && peek(2).text == "=" && !peek(2).spaceBefore)
+            throw ParseError("Cannot reverse the args of := because list assignment operators are too fiddly",
+                             cur().line, "X::Syntax::CannotMeta",
+                             {{"meta", "reverse the args of"}, {"operator", ":="}, {"reason", "too fiddly"}});
+        // `$a R[and]= 42`: an assignment form under R
+        if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::LBracket && !peek().spaceBefore) {
+            size_t j = 2; int depth = 1;
+            for (; j < 16 && depth > 0; j++) {
+                if (peek((int)j).kind == Tok::LBracket) depth++;
+                else if (peek((int)j).kind == Tok::RBracket) depth--;
+                else if (peek((int)j).kind == Tok::End) break;
+            }
+            if (depth == 0 && peek((int)j).kind == Tok::Op && peek((int)j).text == "=" && !peek((int)j).spaceBefore)
+                throw ParseError("Cannot reverse the args of = because assignment operators are too fiddly",
+                                 cur().line, "X::Syntax::CannotMeta",
+                                 {{"meta", "reverse the args of"}, {"operator", "="}, {"reason", "too fiddly"}});
+        }
         // `3 X. foo` / `3 R. "foo"` / `5 R:= $x`: metaops that cannot apply
         if (cur().kind == Tok::Ident && (cur().text == "R" || cur().text == "X" || cur().text == "Z") &&
             peek().kind == Tok::Op && !peek().spaceBefore && (peek().text == "." || peek().text == ":=")) {
@@ -4482,8 +4506,24 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         size_t k = 1;
         if (peek(1).kind == Tok::Op && peek(1).text == ":" && peek(2).kind == Tok::Ident &&
             (peek(2).text == "D" || peek(2).text == "U" || peek(2).text == "_")) k = 3;
+        // …a PARAMETERIZED one too: `my Array[Numeric] constant foo7 .= new: …`
+        std::string param;
+        if (peek(1).kind == Tok::LBracket) {
+            int depth = 0; size_t j = 1;
+            for (; j < 64; j++) {
+                const Token& tk = peek((int)j);
+                if (tk.kind == Tok::End) break;
+                if (tk.kind == Tok::LBracket) { if (depth++ > 0) param += tk.text; continue; }
+                if (tk.kind == Tok::RBracket) { if (--depth == 0) break; param += tk.text; continue; }
+                param += tk.text;
+            }
+            if (depth == 0 && j < 64 && peek((int)j + 1).kind == Tok::Ident && peek((int)j + 1).text == "constant")
+                k = j + 1;
+            else param.clear();
+        }
         if (peek((int)k).kind == Tok::Ident && peek((int)k).text == "constant") {
             std::string t = cur().text;
+            if (!param.empty()) t += "[" + param + "]";
             for (size_t j = 0; j <= k; j++) advance();   // type [: smiley] constant
             ExprPtr d = parseDeclarator("constant");
             if (d && d->kind == NK::VarExpr && static_cast<VarExpr*>(d.get())->declType.empty())
@@ -5113,6 +5153,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
         if ((scope == "my" || scope == "state") && (dynScopeAll_ || dynScopeNames_.count(ve->name)))
             ve->declDynamic = true;   // `use dynamic-scope`
+        // `my $x is export` — only an `our` variable is in a package to export
+        if (lastIsExport_ && (scope == "my" || scope == "state") && !ve->name.empty() &&
+            std::strchr("$@%&", ve->name[0]))
+            throw ParseError("Can't apply trait 'is export' on a " + scope +
+                             " scoped variable. Only our scoped variables are supported.", cur().line,
+                             "X::Comp::Trait::Scope",
+                             {{"type", "is"}, {"subtype", "export"}, {"declaring", "variable"},
+                              {"scope", scope}, {"supported", "our"}});
         if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         if (lastWillBlock_) {
@@ -14461,7 +14509,10 @@ StmtPtr Parser::parseStatementImpl() {
                     StmtPtr st = parseStatement();
                     if (st && st->kind == NK::ExprStmt) {
                         Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
-                        if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                        // (`… constant foo7 .= new: …` as well as `… = …`)
+                        if (e && e->kind == NK::MethodCall && static_cast<MethodCall*>(e)->mutate)
+                            e = static_cast<MethodCall*>(e)->inv.get();
+                        else if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
                         if (e && e->kind == NK::VarExpr) {
                             auto* ve = static_cast<VarExpr*>(e);
                             if (ve->declare && ve->declScope == "constant" && ve->declType.empty())
