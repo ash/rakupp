@@ -159,8 +159,8 @@ sub outer($x) {
 **Not in 4.0.0 and 4.0.1:** a regression makes the interpreter skip that cut
 once `helper` has been called, so today the routine above keeps every frame it
 makes: about 1.5 KB per call, 1.5 GB over a million calls. Declaring `helper`
-at unit scope avoids it. [refcounting.md](refcounting.md) has the shapes
-affected, measured.
+at unit scope avoids it. The shapes affected are measured in
+[refcounting.md](refcounting.md).
 
 That is the only cycle handled automatically. Cycles in *your* data are yours.
 

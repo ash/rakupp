@@ -8,9 +8,10 @@ to zero frees it, right there, before the next statement runs.
 
 This page is about the mechanism: what is counted, which Raku operations
 move a count, what is shared and what is copied, and the one thing counting
-cannot see, which is a cycle. [garbage-collection.md](garbage-collection.md) is
-the companion page about consequences: the memory floor, the absence of pauses,
-the cost of a big free, and what `DESTROY` does and does not promise.
+cannot see, which is a cycle. The consequences (the memory floor, the absence
+of pauses, the cost of a big free, and what `DESTROY` does and does not
+promise) are on the companion page,
+[garbage-collection.md](garbage-collection.md).
 
 Rakudo counts nothing. MoarVM has a tracing, generational collector that finds
 unreachable objects by walking from the roots. So the programs below print the
@@ -115,8 +116,8 @@ Each `@a` is freed at the end of its own iteration, before the next one
 allocates. A tracing collector frees the same arrays in batches, whenever it
 next runs, so several of them are alive at the peak.
 
-The flip side is that the work of freeing lands at the drop.
-[garbage-collection.md](garbage-collection.md) measures what that costs for a
+The flip side is that the work of freeing lands at the drop. See
+[garbage-collection.md](garbage-collection.md) for what that costs with a
 two-million-element structure.
 
 ## Does `my @b = @a` copy the array?
@@ -292,9 +293,9 @@ $*VM.request-garbage-collection; say "sweep 3";
 | `sweep 3` | `sweep 3` |
 
 The memory itself is not held up the same way: only the objects that have a
-`DESTROY` wait for sweeps.
-[garbage-collection.md](garbage-collection.md) has the rest of the `DESTROY`
-story, including why it should never be what closes a file.
+`DESTROY` wait for sweeps. The rest of the `DESTROY` story, including why it
+should never be what closes a file, is in
+[garbage-collection.md](garbage-collection.md).
 
 ## What happens with a reference cycle?
 
@@ -428,9 +429,9 @@ Two things can show you the effect of a count:
 - **Peak memory footprint.** On macOS that is
   `/usr/bin/time -l rakupp prog.raku 2>&1 | grep "peak memory footprint"`.
   Run the program at two sizes. A leak grows with the iteration count, and a
-  structure you are merely holding grows with the data.
-  [garbage-collection.md](garbage-collection.md) explains why resident set size
-  misleads here.
+  structure you are merely holding grows with the data. Why resident set size
+  misleads here is explained in
+  [garbage-collection.md](garbage-collection.md).
 
 ## Is the counting thread-safe?
 
@@ -444,12 +445,12 @@ Rakudo. See [ASYNC.md](../ASYNC.md).
 
 Further reading, from here inwards:
 
-- [garbage-collection.md](garbage-collection.md): what refcounting buys and
-  costs, measured; `DESTROY` timing on both engines; filehandles.
-- [implementations.md](implementations.md): refcounting here, refcounting plus a
-  cycle collector in mutsu, a tracing collector in Rakudo.
-- [RUNTIME.md](../../internals/RUNTIME.md): what a `Value` is, and where
-  assignment deliberately breaks the sharing.
+- What refcounting buys and costs, measured; `DESTROY` timing on both
+  engines; filehandles: [garbage-collection.md](garbage-collection.md).
+- Refcounting here, refcounting plus a cycle collector in mutsu, a tracing
+  collector in Rakudo: [implementations.md](implementations.md).
+- What a `Value` is, and where assignment deliberately breaks the sharing:
+  [RUNTIME.md](../../internals/RUNTIME.md).
 - The Internals book: [Chapter 8](../../book/ch/08-value.md) on the `Value`
   layout, [Chapter 9](../../book/ch/09-strings.md) on shared string bodies,
   [Chapter 12](../../book/ch/12-containers.md) on containers, and
