@@ -36,11 +36,25 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 Next up:
 
-- **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the **v5.0.0 candidate list**
-  (collecting, 2026-09-17): every open, wanted or deferred item the findings,
-  plans, issues and experiments name, in ten themes, each with the number it
-  would move and what measurement already closed nearby; ends with the five
-  framings a major could be named for.
+- **[plans/V5-PLAN.md](plans/V5-PLAN.md)** — **v5.0.0, 100% Roast and the
+  errors behind it** (planned 2026-09-26). Covers:
+  - the regressions a battery compile scan found (strictness refusing code
+    Rakudo accepts)
+  - crashes
+  - silent wrong answers
+  - the ecosystem queue's clusters
+  - compiled backends that disagree
+  - the Roast cluster map for the parallel campaign
+- **[plans/V6-PLAN.md](plans/V6-PLAN.md)** — **v6.0.0, Raku that is fast**
+  (planned 2026-09-26). Covers the steady-state kernels where Rakudo leads
+  (`objects` 2.93×, `multiwhere` 4.8×), a multi-dispatch cache for issue #47,
+  the bytes-per-element table, compile and load time, and `--exe` coverage
+  (65% of fully passing Roast files). It also lists what was measured and not
+  pursued.
+- **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
+  were chosen from (collecting, 2026-09-17). What it still holds is
+  unscheduled: platforms and hosts, the capability sandbox, modules and the
+  supply chain, and developer experience.
 - **[plans/TRANSPILE-PLAN.md](plans/TRANSPILE-PLAN.md)** — `--target=js`, a **second
   Codegen with JavaScript as its output** (design draft 2026-09-03, for
   review): why reach rather than speed justifies it, the probes that fixed the

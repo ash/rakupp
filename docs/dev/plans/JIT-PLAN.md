@@ -474,7 +474,7 @@ machinery *between* nodes (the loop runner, the block re-scan, the
 thread-local access) that the native-math revisit priced at roughly half an
 iteration, and which a per-node fast path cannot remove.
 
-**Compiling grammars** caps at ~2× (V5-IDEAS §3).
+**Compiling grammars** caps at ~2× (measured closed; listed in V6-PLAN.md, "Measured, and not pursued").
 
 ## Phases
 

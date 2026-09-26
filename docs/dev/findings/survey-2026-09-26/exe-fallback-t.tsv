@@ -1,0 +1,784 @@
+file	exit	signal	ms	first note
+t/cnp/cases/bool-and-shortcircuit.raku	0	0	7	
+t/cnp/cases/boxed-registers.raku	0	0	6	
+t/cnp/cases/enum-in-register.raku	0	0	6	
+t/cnp/cases/hoisted-throw.raku	0	0	6	
+t/cnp/cases/int-overflow-loop.raku	0	0	6	
+t/cnp/cases/mixed-numeric.raku	0	0	6	
+t/cnp/cases/nan-compare.raku	0	0	6	
+t/cnp/cases/shared-flag.raku	0	0	6	
+t/cnp/cases/string-loop.raku	0	0	6	
+t/cnp/cases/ternary-and-unary.raku	0	0	6	
+t/exe/fuzz.raku	0	0	7	
+t/exe/run.raku	0	0	8	
+t/fixtures/chat-client.raku	0	0	6	
+t/fixtures/native-parity.raku	0	0	6	
+t/fixtures/native-terms.raku	0	0	6	
+t/fixtures/operator-overloads.raku	0	0	7	
+t/fixtures/shadows-builtin.raku	0	0	7	
+t/fixtures/slim-demo.raku	0	0	6	
+t/fixtures/standalone/uses-missing.raku	0	0	6	
+t/fixtures/standalone/uses-mod.raku	0	0	6	
+t/fixtures/standalone/uses-native.raku	0	0	6	
+t/fixtures/standalone/uses-resources.raku	0	0	6	
+t/fixtures/uses-modules.raku	2	0	8	===SORRY!=== Parse error at line 7: unexpected operator in term position (got '⊕')
+t/fixtures/yamlish/t/anchor-alias.t	0	0	11	
+t/fixtures/yamlish/t/basic.t	0	0	10	
+t/fixtures/yamlish/t/p5-tests.t	0	0	10	
+t/fixtures/yamlish/t/roundtrip.t	0	0	10	
+t/fixtures/yamlish/t/test-harness.t	0	0	11	
+t/install/run.raku	0	0	15	
+t/jit/cases/after-loop.raku	0	0	6	
+t/jit/cases/basic-while.raku	0	0	6	
+t/jit/cases/body-locals.raku	0	0	6	
+t/jit/cases/comma-header.raku	0	0	6	
+t/jit/cases/counted-for.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/jit/cases/cstyle-loop.raku	0	0	6	
+t/jit/cases/floats.raku	0	0	7	
+t/jit/cases/ineligible.raku	0	0	6	
+t/jit/cases/last-next.raku	0	0	6	
+t/jit/cases/nested.raku	0	0	6	
+t/jit/cases/operator-overload.raku	0	0	7	
+t/jit/cases/overflow.raku	0	0	6	
+t/jit/cases/reentry.raku	0	0	6	
+t/jit/cases/strings.raku	0	0	6	
+t/jit/cases/throws.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/jit/cases/typed-slot.raku	0	0	6	
+t/jit/run.raku	0	0	9	
+t/js/interop/async.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/js/interop/callbacks.raku	0	0	7	
+t/js/interop/dom-basics.raku	0	0	7	
+t/js/interop/values.raku	0	0	7	
+t/js/run.raku	0	0	10	
+t/regression/6e-gating.raku	0	0	8	
+t/regression/6e-pm-extension.raku	0	0	7	
+t/regression/absolute-is-idempotent.raku	0	0	8	
+t/regression/allomorph-encode.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/allomorph-numeric-sheds-the-str.raku	0	0	7	
+t/regression/angle-list-dollar-caret.raku	0	0	6	
+t/regression/angle-subscript-glued-infix.raku	0	0	7	
+t/regression/angle-subscript-hash-comment.raku	0	0	7	
+t/regression/anon-param-and-whatevercode-bind.raku	5	0	9	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/anon-sigil-in-named-alias.raku	0	0	14	
+t/regression/anton-batch-2026-09-12.raku	5	0	9	note: an `is rw` parameter mutated by a closure — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/anton-batch-round2.raku	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/any-flatmap-and-match-flat.raku	0	0	7	
+t/regression/any-identity.raku	5	0	7	note: the parameterized type 'Array[Int]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/any-narrower-than-mu.raku	0	0	7	
+t/regression/approx-equal-tolerance.raku	0	0	8	
+t/regression/argfiles.raku	0	0	6	
+t/regression/arity-lax-callers.raku	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/array-coercion-decont.raku	0	0	8	
+t/regression/array-is-list-container.raku	0	0	7	
+t/regression/array-mutators-no-snapshot.raku	5	0	8	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/array-op-args-getc-get-and-friends.raku	0	0	7	
+t/regression/array-type-meta.raku	0	0	8	
+t/regression/assoc-index-on-scalar-dies.raku	0	0	7	
+t/regression/ast-cache-publication.raku	0	0	8	
+t/regression/async-socket-supply-and-decoder.raku	0	0	8	
+t/regression/async-socket-taps.raku	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/atomic-forms.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/attr-container-type.raku	0	0	8	
+t/regression/attr-default-block-placeholder.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/attr-smiley-typecheck.raku	0	0	7	
+t/regression/attribute-trait-argument-shapes.raku	0	0	8	
+t/regression/attribute-user-traits.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/augment-composes-role.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/backtrace-caught.raku	0	0	8	
+t/regression/backtrace-new.raku	0	0	7	
+t/regression/backtrace-uncaught.raku	0	0	7	
+t/regression/backtrace-warn-fail-await.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/bare-sigil-anon-in-block.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/bare-sigil-anonymous-declaration.raku	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/bare-type-is-an-anonymous-slot.raku	0	0	7	
+t/regression/bare-whatever-before-a-closing-bracket.raku	0	0	7	
+t/regression/base-exact-and-exp-base.raku	0	0	8	
+t/regression/base64-sextet.raku	5	0	7	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/batch1-silent-wrong-answers.raku	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/batch11-parse-cluster.raku	5	0	6	note: if EXPR -> $x with elsif — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/batch11b-typed-blobs.raku	5	0	6	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/batch2-twin-consolidation.raku	0	0	7	
+t/regression/before-assertion-group.raku	0	0	6	
+t/regression/bigint-multiply-kernel.raku	0	0	9	
+t/regression/bind-to-hash-slot.raku	0	0	7	
+t/regression/binding-a-list-target-is-a-signature.raku	5	0	7	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/binding-is-a-list-operation.raku	0	0	7	
+t/regression/binding-slots-ops-create-invocant.raku	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/blob-iteration-and-mutate-lvalue.raku	5	0	6	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/blob-numeric-and-zip-metaop.raku	5	0	6	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/bool-binds-a-native-int.raku	0	0	7	
+t/regression/bound-array-param-stays-a-list.raku	0	0	6	
+t/regression/bound-attribute-truthiness.raku	0	0	7	
+t/regression/bound-scalar-array-identity.raku	0	0	7	
+t/regression/bson-simple-and-hash-agnostic.raku	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/bson-simple-codec.raku	0	0	8	
+t/regression/buf-signed-element-type.raku	5	0	7	note: the parameterized type 'Buf[int8]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/build-tweak-walk-the-mro.raku	0	0	8	
+t/regression/buildall-role-hook-belongs-to-composer.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/builtin-char-class-rules.raku	0	0	8	
+t/regression/builtin-class-vs-grammar-token.raku	0	0	7	
+t/regression/callable-as-infix.raku	0	0	7	
+t/regression/callable-context-callme-raw.raku	5	0	6	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/callables-method-rw-capture-required.raku	5	0	6	note: a method sub at statement level — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/can-on-a-mixin-over-a-builtin.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/can-on-builtin-dateish.raku	0	0	7	
+t/regression/can-on-builtin-types.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/capture-candidate-is-least-specific.raku	5	0	7	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/capture-no-flatten.raku	0	0	7	
+t/regression/capture-scoping.raku	0	0	8	
+t/regression/carray-type-identity.raku	5	0	7	note: the parameterized type 'CArray[int32]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/catch-in-method.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/categorical-method-name.raku	0	0	7	
+t/regression/cbor-and-nqp-buffer-ops.raku	5	0	17	note: prefix operator '~^' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/child-output-live.raku	0	0	7	
+t/regression/class-begin-and-run-sink.raku	0	0	8	
+t/regression/class-range-spaces-set-identity-alias.raku	5	0	7	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/class-traits-and-module-gates.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/class-type-named-parameter.raku	0	0	7	
+t/regression/clone-semantics.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/cmp-ok-smartmatch-matcher.raku	0	0	6	
+t/regression/code-accepts-and-regex-callable.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/code-objects-have-a-list-view.raku	0	0	7	
+t/regression/codegen-captured-container-and-autoviv.raku	0	0	6	
+t/regression/codegen-drops-param-constraints.raku	0	0	6	
+t/regression/coercing-return-type.raku	0	0	7	
+t/regression/coercion-type-converts-on-assignment.raku	0	0	7	
+t/regression/coercion-typed-container.raku	0	0	6	
+t/regression/colon-arg-anon-class-has.raku	0	0	6	
+t/regression/colon-listop-paren-arg.raku	0	0	7	
+t/regression/colonpair-key-may-be-unicode.raku	5	0	7	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/colonpair-value-takes-statement-modifiers.raku	0	0	7	
+t/regression/comma-assign-metaop.raku	0	0	7	
+t/regression/comma-before-assign-is-an-error.raku	0	0	7	
+t/regression/compiled-program-name.raku	0	0	7	
+t/regression/compose-cross-placeholder.raku	0	0	6	
+t/regression/concurrent-match-scoping.raku	5	0	7	note: an `s///` replacement with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/concurrent-output.raku	0	0	6	
+t/regression/conformance-io-path.raku	0	0	6	
+t/regression/conformance-list-adverbs.raku	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/conformance-missing-routines.raku	0	0	6	
+t/regression/conformance-phase1-repr.raku	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/conformance-phase2-introspection.raku	5	0	7	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/conformance-phase3-containers.raku	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/container-class-survives-its-initialiser.raku	0	0	6	
+t/regression/container-store-initialize.raku	0	0	7	
+t/regression/contextualizer-modifiers-and-dir.raku	0	0	7	
+t/regression/contextualizer-postfix-binding.raku	0	0	6	
+t/regression/control-handled-leaves-block-lax-package-var-str-warns.raku	0	0	6	
+t/regression/control-vs-catch-phaser.raku	0	0	6	
+t/regression/control-warn-and-datetime-attrs.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/cool-round-and-numeric-failures.raku	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/copy-move-refuse-a-directory.raku	0	0	7	
+t/regression/corpus-batch-1.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/corpus-batch-2.raku	0	0	6	
+t/regression/cro-core-cluster.raku	5	0	7	note: the parameterized type 'R[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/cro-family-cluster.raku	5	0	7	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/cro-live-cluster.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/cro-live-server.raku	5	0	325	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/currying-and-signature-render.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/custom-iterator-protocol.raku	5	0	7	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/custom-real-bridges.raku	5	0	7	note: a multi method with a parent class this compilation cannot see (Fixed2.new) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-dump-cluster.raku	0	0	7	
+t/regression/data-generators-cluster.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-csv.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-digest-reference.raku	5	0	11	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-digest.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-json.raku	5	0	11	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-precedence.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-random-reference.raku	5	0	10	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-random.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-zlib-reference.raku	5	0	11	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/data-native-zlib.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/date-compares-by-daycount.raku	0	0	7	
+t/regression/date-formatter-everywhere.raku	0	0	6	
+t/regression/date-new-instant-dateish.raku	0	0	6	
+t/regression/date-new-ymd-strings.raku	0	0	6	
+t/regression/datetime-components-and-exactness.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/datetime-timer-clock.raku	0	0	7	
+t/regression/dbdish-native-and-list-defects.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/decl-type-compiled.raku	0	0	6	
+t/regression/default-object-renderer.raku	0	0	6	
+t/regression/definiteness-types-and-runtime-classes.raku	5	0	6	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/dependency-specification-names-its-type.raku	0	0	7	
+t/regression/digest-bigint-and-native-cluster.raku	5	0	7	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/digest-native-widths-cluster.raku	5	0	8	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/dir-test-without-path.raku	0	0	7	
+t/regression/dist-suite-quartet.raku	5	0	7	note: an `s///` pattern that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/distro-macos.raku	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/divergence-result-types.raku	0	0	7	
+t/regression/divide-by-zero-failure.raku	0	0	6	
+t/regression/divmod-zero-6e.raku	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/doc-missing-methods.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/dot-equals-new-attr-default.raku	5	0	6	note: attribute access outside a method — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/dot-method-call-and-formatter.raku	0	0	7	
+t/regression/dot-twigil-needs-a-name.raku	0	0	7	
+t/regression/dynamic-handle-rebind.raku	0	0	6	
+t/regression/dynamic-method-lvalue.raku	0	0	6	
+t/regression/dynamic-var-caller-chain.raku	5	0	7	note: assignment to '&c7' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/dynamic-var-not-found.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/eco-blockers-2026-09-14.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ecosweep-1000-batch.raku	0	0	7	
+t/regression/ecosweep-2026-09.raku	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ecosweep-900-batch.raku	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ecosweep-batch-five.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ecosweep-batch-three.raku	0	0	8	
+t/regression/ecosweep-condition-binders-and-hyper.raku	5	0	7	note: if EXPR -> $x with elsif — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/element-binds-the-container.raku	5	0	7	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/embedded-comment-guillemets.raku	0	0	7	
+t/regression/embedded-comment-repeated-brackets.raku	0	0	6	
+t/regression/empty-block-is-nil.raku	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/empty-global-match-is-a-list.raku	0	0	7	
+t/regression/empty-import-list-imports-nothing.raku	0	0	7	
+t/regression/end-anchor-in-assertion-and-match-slice.raku	5	0	7	note: an `s///` replacement with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/end-phaser-in-sub.raku	0	0	7	
+t/regression/endless-range-reduce.raku	0	0	7	
+t/regression/enum-numify.raku	5	0	6	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/enum-raku-and-divzero.raku	5	0	6	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/env-extras-lazy.raku	0	0	6	
+t/regression/eqv-list-vs-array.raku	0	0	6	
+t/regression/eval-loop-control.raku	0	0	7	
+t/regression/evalfile.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/exception-gist-message-method.raku	0	0	6	
+t/regression/exception-hierarchy.raku	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/exception-messages-and-mop-mutators.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/exe-endless-range.raku	0	0	7	
+t/regression/exe-nativecall.raku	0	0	7	
+t/regression/exe-nested-sub-capture.raku	0	0	9	
+t/regression/export-failure-fails-the-use.raku	0	0	7	
+t/regression/export-tag-selective.raku	0	0	6	
+t/regression/ext-in-compiled-binary.raku	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/failed-match-stale-captures.raku	0	0	7	
+t/regression/fails-like-returned-failure.raku	0	0	7	
+t/regression/failure-detonates-on-any-method.raku	0	0	7	
+t/regression/failure-detonation.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/failure-is-concrete-for-smiley.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/fallback-nil-and-slices.raku	0	0	7	
+t/regression/feed-into-prefix-operator.raku	5	0	7	note: prefix operator '§' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ffi-wide-args-and-words.raku	0	0	7	
+t/regression/file-magical-in-module.raku	0	0	6	
+t/regression/filesystem-repo-resolves-to-a-compunit.raku	0	0	7	
+t/regression/flat-squish-and-exit-from-a-worker.raku	0	0	7	
+t/regression/flipflop-and-exclusive-seq.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/flipflop-and-nil-term.raku	0	0	6	
+t/regression/fmt-after-fudge-directive.raku	0	0	6	
+t/regression/fmt-basics.raku	0	0	7	
+t/regression/for-expression-is-a-list.raku	5	0	7	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/for-immutable-topic.raku	5	0	7	note: a read-write (<->) loop parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/for-loop-var-is-readonly.raku	5	0	6	note: a read-write (<->) loop parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/for-param-type-is-kept.raku	0	0	6	
+t/regression/for-subsig-multi-element.raku	0	0	6	
+t/regression/for-values-view-aliases.raku	5	0	6	note: a read-write (<->) loop parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/forward-types-and-statement-end.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/fractional-range.raku	0	0	6	
+t/regression/fresh100-parse-cluster-and-hostname.raku	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/from-iterator-keeps-its-type.raku	0	0	7	
+t/regression/fudge-inside-a-literal.raku	0	0	6	
+t/regression/gather-loop-lazy-for.raku	5	0	7	note: a LAST phaser — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/gather-probe-budget.raku	0	0	6	
+t/regression/gather-probe-stops-looping.raku	0	0	6	
+t/regression/get-attribute-for-usage.raku	0	0	6	
+t/regression/getopt-long-parameter-traits.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/global-match-carries-its-subject.raku	0	0	8	
+t/regression/global-package-slot.raku	0	0	7	
+t/regression/goal-operator-and-term-category.raku	0	0	6	
+t/regression/grammar-action-my-dynamic.raku	0	0	7	
+t/regression/grammar-ancestry.raku	0	0	6	
+t/regression/grand-review-b-parser.raku	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-c1-interp.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-c2-methods.raku	0	0	8	
+t/regression/grand-review-c3-procs.raku	0	0	7	
+t/regression/grand-review-c3b-subscripts.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-c4a-types.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-c4b-modules-seq.raku	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-e-regex.raku	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/grand-review-f-cli.raku	0	0	7	
+t/regression/grapheme-indexing.raku	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/guillemet-subscript.raku	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/handle-flush-and-main-usage.raku	0	0	7	
+t/regression/handle-spurt-close.raku	0	0	8	
+t/regression/handles-assign-key.raku	0	0	7	
+t/regression/has-in-sub-in-class.raku	0	0	7	
+t/regression/hash-classify-list-and-defaults.raku	0	0	6	
+t/regression/hash-map-pair-semantics-sheet.raku	5	0	9	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/hash-new-flatten-and-cool-encode.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/hash-push-append-and-itemised-values.raku	0	0	8	
+t/regression/hash-vs-block-and-caps-subs.raku	0	0	6	
+t/regression/head-tap-single-done.raku	0	0	6	
+t/regression/heredoc-any-delimiter.raku	0	0	8	
+t/regression/heredoc-positive-interpolation-adverbs.raku	0	0	7	
+t/regression/heredoc-trailing-comment.raku	0	0	7	
+t/regression/highlight-lossless.raku	0	0	7	
+t/regression/highlight-multiline-comment.raku	0	0	7	
+t/regression/highlight-unicode-delimiter.raku	0	0	7	
+t/regression/hoist-expr-decls-cache.raku	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/how-declaration-hooks.raku	0	0	8	
+t/regression/http-simple-cluster.raku	0	0	7	
+t/regression/http-useragent-cluster.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/hyper-ascii-markers-and-shape.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/hyper-chains-and-the-m-form.raku	0	0	7	
+t/regression/hyper-compound-assign.raku	0	0	7	
+t/regression/hyper-configuration-remembers-args.raku	0	0	7	
+t/regression/hyper-in-whatevercode.raku	0	0	7	
+t/regression/hyper-metaop-precedence.raku	0	0	7	
+t/regression/hyperwhatever.raku	0	0	7	
+t/regression/hyphen-continues-a-name-in-a-replacement.raku	5	0	7	note: an `s///` pattern that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/hyphen-ident-vs-subtraction.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ident-continuation-and-native-return-boundary.raku	0	0	7	
+t/regression/implementation-detail-is-a-trait.raku	0	0	7	
+t/regression/import-statement-tags.raku	0	0	7	
+t/regression/imported-token-runs-as-a-subrule.raku	0	0	7	
+t/regression/indirect-declarations.raku	5	0	6	note: an anonymous sub at statement level — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/indirect-method-call-native.raku	0	0	7	
+t/regression/install-gc.raku	0	0	8	
+t/regression/installed-newest-version-wins.raku	0	0	7	
+t/regression/interp-identifier-chars.raku	0	0	7	
+t/regression/interp-meta-mixin-block-sig-allomorph.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/interp-postcircumfix-call.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/invocant-coercion-and-smiley.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/invocant-smiley-and-role-multis.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/io-cwd-capture.raku	0	0	7	
+t/regression/io-native-descriptor.raku	0	0	8	
+t/regression/io-path-cwd-operations.raku	0	0	7	
+t/regression/io-path-extension-and-flavors.raku	0	0	7	
+t/regression/io-path-methods-undefined.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/io-path-subclass-boxed.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/io-path-symlink-link.raku	0	0	7	
+t/regression/io-path-user-group-mode.raku	5	0	7	note: if EXPR -> ($a, $b) destructuring binder — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/iospec-parts-and-numeric-identity.raku	0	0	7	
+t/regression/iospec-versioning-enums-filetest.raku	5	0	7	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/is-deeply-strict-and-anton-batch.raku	5	0	9	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/is-dynamic-and-sum.raku	0	0	6	
+t/regression/issue-18-react-phasers.raku	0	0	6	
+t/regression/issue-43-private-method-quoted-name.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue-64-grammar-method-subrule.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue-65-interp-quote-in-postfix.raku	0	0	6	
+t/regression/issue-68-multidim-endless-range.raku	5	0	7	note: a Range in a multi-dimensional index — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue-98-seqalt-quantified-capture.raku	0	0	8	
+t/regression/issue34-handles-renaming.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue34-hyper-hash-subscript.raku	0	0	7	
+t/regression/issue34-io-path-relative.raku	0	0	6	
+t/regression/issue34-named-coercion-and-await.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue34-pointy-destructure.raku	5	0	7	note: if EXPR -> ($a, $b) destructuring binder — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue34-proto-body-dispatch.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue34-supply-lines.raku	0	0	6	
+t/regression/issue37-fez-zef-install.raku	5	0	7	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue54-interpolated-assertion-captures.raku	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue63-typed-container-elements.raku	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/issue91-atomicint-is-a-native-int.raku	5	0	7	note: the parameterized type 'array[atomicint]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/istype-dateish-role.raku	0	0	7	
+t/regression/itemization-and-list-folds.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/iterable-object-and-named-subsig.raku	0	0	7	
+t/regression/iteration-buffer-create.raku	0	0	6	
+t/regression/js-backend-framework-cluster.raku	5	0	8	note: a LAST phaser — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/json-fast-cluster.raku	5	0	8	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/json-fast-native-fastpath.raku	0	0	12	
+t/regression/junction-arg-autothreads-everywhere.raku	0	0	7	
+t/regression/junction-interpolation.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/junction-regex-match-var.raku	0	0	7	
+t/regression/keyof-capture-and-cool-subs.raku	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/keyword-pair-keys.raku	0	0	7	
+t/regression/langrev-travels-with-code.raku	0	0	6	
+t/regression/lazy-list-through-slurpy.raku	5	0	7	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/leave-after-early-return.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/lexer-line-after-backtrack.raku	0	0	8	
+t/regression/librarycheck-native-role.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/list-array-semantics-sheet.raku	5	0	9	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/list-methods-no-copy.raku	0	0	7	
+t/regression/listop-star-method-vs-multiplication.raku	0	0	6	
+t/regression/listop-takes-a-brace-composer.raku	0	0	7	
+t/regression/listop-terms-and-empty-container-failures.raku	0	0	7	
+t/regression/lizmat-containers-and-dispatch.raku	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/lizmat-nqp-ops.raku	0	0	9	
+t/regression/logical-newlines.raku	0	0	8	
+t/regression/loop-header-my-shadows.raku	0	0	7	
+t/regression/loop-state-frame-scan.raku	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/loose-prefixes-and-listop-adverbs.raku	0	0	6	
+t/regression/lsp-reports-undeclared.raku	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/ltm-declarative-prefix.raku	0	0	7	
+t/regression/ltm-sep-quantifier-first-element.raku	0	0	6	
+t/regression/main-args-conventions.raku	0	0	7	
+t/regression/main-args-exe.raku	0	0	7	
+t/regression/main-bool-named-value.raku	0	0	8	
+t/regression/main-enum-argument.raku	0	0	7	
+t/regression/main-named-allomorph.raku	0	0	6	
+t/regression/main-return-value-is-sunk.raku	0	0	8	
+t/regression/main-usage-17.raku	0	0	7	
+t/regression/match-numify-int.raku	0	0	6	
+t/regression/match-values-slips-captures.raku	0	0	7	
+t/regression/math-sparsematrix-install.raku	5	0	9	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/metamodel-mixin-and-trait-imports.raku	5	0	10	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/method-also-role-composition-2026-09-02.raku	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/method-introspection-and-indirect-call.raku	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/method-name-is-not-a-listop.raku	0	0	7	
+t/regression/method-trait-mixin.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/min-max-mapper-after-adverb.raku	0	0	7	
+t/regression/missing-routines-batch.raku	0	0	8	
+t/regression/mixin-keeps-parameterized-of.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/mkdir-failure-is-a-failure.raku	0	0	8	
+t/regression/modifier-for-drains-an-iterator.raku	0	0	7	
+t/regression/modifier-my-declares.raku	0	0	8	
+t/regression/modinfo-ecosystem-cluster.raku	5	0	9	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/module-compat-cluster.raku	5	0	16	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/module-extensions-exclude-raku.raku	0	0	8	
+t/regression/module-fixes-batch-1.raku	5	0	8	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/module-name-case.raku	0	0	7	
+t/regression/module-page-sextet.raku	5	0	9	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/module-supplied-package-declarator.raku	0	0	9	
+t/regression/module-unblock-batch.raku	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/mop-metamodel.raku	0	0	8	
+t/regression/msb-lsb-builtins.raku	0	0	8	
+t/regression/mu-roles-and-itemization.raku	0	0	7	
+t/regression/multi-method-compiled-dispatch.raku	0	0	9	
+t/regression/multi-narrowness-band.raku	0	0	8	
+t/regression/multi-where-evaluated-twice.raku	5	0	8	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/my-list-slot-coercion-type.raku	0	0	8	
+t/regression/my-redeclare-keeps-container.raku	0	0	8	
+t/regression/naive-word-wrapper-wraps-at-71.raku	0	0	7	
+t/regression/named-alias-bracket-subsig.raku	0	0	7	
+t/regression/named-param-subsignature.raku	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/named-regex-callable-flags.raku	0	0	11	
+t/regression/named-where-sees-its-siblings.raku	5	0	9	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-and-resources.raku	5	0	8	note: a NativeCall sub with `is native(&sub)` — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-buffer-symbol-and-null.raku	5	0	8	note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-lib-expression-and-resources.raku	0	0	8	
+t/regression/native-lib-keg-only.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-library-folded-into-libsystem.raku	5	0	8	note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-return-carray-param.raku	5	0	7	note: the parameterized type 'CArray[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/native-smartmatch-and-whatever-values.raku	0	0	7	
+t/regression/nativecall-alias-repr-deref.raku	5	0	7	note: a NativeCall sub with an `is rw` out-parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-cache-and-rw-pointer.raku	5	0	7	note: a NativeCall sub with an `is rw` out-parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-carray-elements.raku	5	0	7	note: the parameterized type 'CArray[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-features.raku	5	0	7	note: a NativeCall sub with an `is rw` out-parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-has-inline-struct.raku	5	0	7	note: the parameterized type 'CArray[int32]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-libffi.raku	5	0	7	note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-openssl-symbol-alias.raku	5	0	7	note: a NativeCall sub with `is native(&sub)` — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-struct-callback.raku	5	0	7	note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-types-and-versioned-cglobal.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecall-void-and-exports.raku	5	0	7	note: a NativeCall sub with a buffer/CArray parameter (needs copy-back) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nativecast-of-a-routine.raku	0	0	7	
+t/regression/needle-compile-cluster.raku	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/negated-reduce-and-blocking-receive.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/negative-subscript.raku	0	0	7	
+t/regression/nested-named-alias-and-reverse-comma.raku	0	0	6	
+t/regression/nested-sub-backtrace-file.raku	0	0	6	
+t/regression/nested-sub-keeps-its-closure.raku	0	0	7	
+t/regression/new-strays-and-virtual-accessor.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/no-strict-exe.raku	0	0	7	
+t/regression/no-strict-lexical.raku	0	0	7	
+t/regression/non-breaking-space-is-lexer-whitespace.raku	0	0	7	
+t/regression/nqp-codegen.raku	0	0	7	
+t/regression/nqp-iterator-buffer-and-bindattr.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nqp-json-fast-support.raku	5	0	7	note: prefix operator 'return' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nqp-key-and-null-ops.raku	0	0	6	
+t/regression/nqp-p6definite.raku	0	0	6	
+t/regression/nqp-scope-and-list.raku	0	0	7	
+t/regression/nqp-sha1.raku	0	0	7	
+t/regression/nqp-stat.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/nqp-string-compare-ops.raku	0	0	7	
+t/regression/nqp-string-ops-ascii.raku	0	0	8	
+t/regression/nqp-subset.raku	0	0	7	
+t/regression/number-dot-and-bracket-infix.raku	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/numeric-coercions-and-refusals.raku	5	0	8	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/object-hash-keys.raku	0	0	6	
+t/regression/one-arg-rule-and-qw-allomorphs.raku	5	0	7	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/only-ellipsis-bracketed-infix.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/open-failure-is-loud.raku	0	0	7	
+t/regression/open-modes-bind-end-shift.raku	5	0	7	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/operator-as-value-identity.raku	0	0	6	
+t/regression/operator-by-assignment.raku	5	0	7	note: prefix operator 'neg' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/operator-strictness.raku	0	0	6	
+t/regression/our-multi-under-proto.raku	0	0	6	
+t/regression/our-qualified-name-is-absolute.raku	0	0	7	
+t/regression/our-var-in-package-block.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/our-var-subscript-writes-through.raku	5	0	7	note: the same class-body `my %h` in two classes — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/out-buffer.raku	0	0	6	
+t/regression/p5-regex-literal-amp.raku	0	0	6	
+t/regression/package-constant-qualified.raku	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/package-name-adverbs.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/package-relative-names.raku	0	0	7	
+t/regression/package-stash-symbols.raku	5	0	7	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/package-symbols-and-package-how.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/package-then-role-coexist.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/pair-and-list-are-immutable.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/pair-as-key-value-and-pattern.raku	0	0	6	
+t/regression/param-readonly.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/parameter-introspection-details.raku	5	0	7	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/parameter-why.raku	0	0	7	
+t/regression/parameterized-decl-bind-pos.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/parameterized-role-value-params.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/parameterized-type-smartmatch.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/paren-is-not-a-quote-delimiter.raku	0	0	7	
+t/regression/parse-unicode-and-shapes.raku	0	0	7	
+t/regression/path-methods-need-a-path.raku	0	0	6	
+t/regression/pdf-family-2026-09.raku	5	0	10	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/perl-is-raku-alias.raku	0	0	6	
+t/regression/perl5var-legal-readings.raku	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/pipe-whatever-curries.raku	0	0	7	
+t/regression/pod-blocks-and-text.raku	0	0	7	
+t/regression/pod-verbatim-margin.raku	0	0	6	
+t/regression/precomp-langrev.raku	0	0	7	
+t/regression/pred-answer-regex-and-modifier-temp.raku	0	0	6	
+t/regression/primed-code-arity-count.raku	0	0	6	
+t/regression/private-attr-not-inherited.raku	0	0	7	
+t/regression/private-call-and-import-shadowing.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/private-method-notfound-payload.raku	0	0	6	
+t/regression/private-public-method-same-name.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/proc-async-eager-start.raku	0	0	7	
+t/regression/proc-in-streams.raku	0	0	6	
+t/regression/proc-new-runs-later.raku	0	0	7	
+t/regression/proc-pipe-close-reports-a-failed-child.raku	0	0	7	
+t/regression/proc-run-shell.raku	0	0	6	
+t/regression/proc-stream-tap-fidelity.raku	0	0	7	
+t/regression/process-scope-and-sigilless-while.raku	5	0	7	note: while EXPR -> $x — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/process-stash-computed-key.raku	0	0	7	
+t/regression/promise-planned-bool.raku	0	0	6	
+t/regression/prompt-takes-no-nameds.raku	0	0	7	
+t/regression/proto-method-package.raku	5	0	6	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/proto-multi-as-term.raku	0	0	7	
+t/regression/pseudo-package-adverbs.raku	0	0	7	
+t/regression/pseudo-package-stash-value.raku	0	0	6	
+t/regression/qualified-dispatch-and-nil-smartmatch.raku	5	0	6	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/quanthash-coerce-flatten.raku	0	0	7	
+t/regression/quanthash-exact-sethash-zen-dynamic.raku	0	0	6	
+t/regression/quanthash-roles-bind.raku	0	0	8	
+t/regression/quantifier-modifiers-and-anon-methods.raku	5	0	7	note: `self` outside a method — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/quote-names-as-type-names.raku	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/quote-word-sub-scope.raku	0	0	8	
+t/regression/quoted-literal-backslash.raku	0	0	7	
+t/regression/qw-val-adverb.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/raku-version-is-main-units.raku	0	0	7	
+t/regression/rakuast-deparse.raku	0	0	8	
+t/regression/rakuast-doc.raku	0	0	7	
+t/regression/rakuast-eval.raku	0	0	8	
+t/regression/rakuast-l10n.raku	0	0	12	
+t/regression/rakuast-registry.raku	0	0	9	
+t/regression/rakuast-view.raku	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rakuast-visit.raku	0	0	7	
+t/regression/rakupp-upgrade.raku	0	0	8	
+t/regression/range-construction-and-membership.raku	0	0	8	
+t/regression/range-endpoint-objects.raku	0	0	10	
+t/regression/range-endpoints-and-adverbs.raku	0	0	11	
+t/regression/range-rand.raku	0	0	7	
+t/regression/rat-rounding-exact.raku	0	0	8	
+t/regression/react-done-and-timer.raku	0	0	7	
+t/regression/recursion-failure-and-match-deref.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/redispatch-grammar-parse-override.raku	0	0	6	
+t/regression/redispatch-past-a-builtin-ancestor.raku	0	0	7	
+t/regression/reduce-assoc-and-classify-as.raku	0	0	7	
+t/regression/regex-after-listop-name.raku	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-alias-interp-comb-match.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-alt-captures-and-cursor.raku	0	0	7	
+t/regression/regex-array-in-code-blocks.raku	5	0	7	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-as-callable-param-and-loop-phasers.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-body-scan-groups-and-classes.raku	0	0	7	
+t/regression/regex-capture-marker-and-mirrored-quotes.raku	0	0	8	
+t/regression/regex-class-bracket-member.raku	0	0	6	
+t/regression/regex-class-members-and-match-var.raku	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-closure-and-io-dot.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-code-block-interpolation.raku	5	0	7	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-code-blocks.raku	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-cursor-protocol.raku	0	0	7	
+t/regression/regex-literal-is-a-value.raku	5	0	8	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-negated-class-escapes.raku	0	0	7	
+t/regression/regex-p5-class-and-splice.raku	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/regex-quoted-escapes.raku	0	0	7	
+t/regression/regex-spaced-negated-class.raku	0	0	7	
+t/regression/regex-tight-inline-adverb.raku	0	0	7	
+t/regression/regex-var-interpolation.raku	5	0	6	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/repl-echo-rule.raku	5	0	7	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/repl-sandbox-and-capture-scoping.raku	0	0	7	
+t/regression/require-symbolic-name.raku	0	0	6	
+t/regression/resolve-completely-fails.raku	0	0	7	
+t/regression/return-in-comma-list.raku	5	0	8	note: prefix operator 'return' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/return-listop-in-parens.raku	5	0	7	note: prefix operator 'return' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/return-rw-local-not-dangling.raku	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/return-type-package-scope.raku	0	0	6	
+t/regression/return-type-same-module.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/role-body-class-finds-the-original.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/role-parameter-reaches-body-subs.raku	5	0	7	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/role-params-and-bare-attributes.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/role-pun-binds-named-parameters.raku	5	0	7	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/role-state-and-nested-assign.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rotor-sub-6e.raku	0	0	6	
+t/regression/round-to-scale.raku	0	0	6	
+t/regression/routine-scoped-match-and-when-last.raku	5	0	8	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rule-separator-sigspace.raku	0	0	6	
+t/regression/run-adverbs-keep-undo-rule-capture.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/run-child-process-group.raku	0	0	7	
+t/regression/run-env-adverb-shapes.raku	0	0	7	
+t/regression/run-env-cwd.raku	0	0	6	
+t/regression/run-in-file-handle.raku	0	0	6	
+t/regression/run-main-protocol.raku	5	0	7	note: assignment to '@*ARGS' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/run-stderr-inherit.raku	0	0	6	
+t/regression/runtime-built-signature.raku	5	0	8	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/runtime-metamodel-surface.raku	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rw-chain-keeps-the-intermediate-frame-current.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rw-returns-and-container-traits.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/rw-sub-lvalue.raku	5	0	7	note: prefix operator 'return-rw' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/scalar-param-itemizes.raku	5	0	7	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/scalars-nil-junction-complex-date.raku	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/self-as-pair-key.raku	0	0	6	
+t/regression/self-referential-render.raku	0	0	7	
+t/regression/semicolon-arglist-segments.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/seq-bigint-gist-cap.raku	0	0	6	
+t/regression/seq-generator-shapes.raku	0	0	6	
+t/regression/seq-lol-and-callable-named.raku	5	0	7	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/set-ops-reduce-max-adverbs.raku	0	0	7	
+t/regression/setty-str.raku	0	0	6	
+t/regression/shaped-array-assign.raku	5	0	7	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/shell-cwd-adverb.raku	0	0	7	
+t/regression/shell-out-to-a-handle.raku	0	0	7	
+t/regression/shift-count-does-not-fit-native-int.raku	0	0	6	
+t/regression/sigilled-compile-time-class.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/sigilless-name-shadows-term.raku	0	0	7	
+t/regression/sigilless-traits-and-container-assign.raku	0	0	6	
+t/regression/signal-enum-has-its-names.raku	0	0	7	
+t/regression/signal-supply.raku	0	0	6	
+t/regression/single-dash-long-option.raku	0	0	6	
+t/regression/sink-context-method.raku	0	0	7	
+t/regression/sink-does-not-descend-a-container.raku	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/slang-seams.raku	0	0	46	
+t/regression/slices-trans-and-exact-sequences.raku	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/slip-flattens-into-every-slurpy.raku	0	0	8	
+t/regression/slurpy-is-wider-than-a-declared-parameter.raku	0	0	7	
+t/regression/smartmatch-reads-a-proxy.raku	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/smartmatch-topic-pad.raku	0	0	7	
+t/regression/socket-host-carries-port.raku	0	0	7	
+t/regression/socket-read-and-stringy.raku	0	0	8	
+t/regression/socket-role-and-recv-inf.raku	0	0	7	
+t/regression/socket-type-and-regex-expr-interpolation.raku	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/sparrow6-blockers.raku	0	0	7	
+t/regression/splice-hash-element-2026-09-02.raku	0	0	7	
+t/regression/splice-rotor-rettype-and-placeholders.raku	0	0	6	
+t/regression/split-adverbs-and-regex-values.raku	0	0	7	
+t/regression/split-zero-width-match.raku	0	0	6	
+t/regression/statistics-distributions-cluster.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/str-abs-numifies-exactly.raku	0	0	8	
+t/regression/str-ignorecase-and-indices.raku	0	0	7	
+t/regression/str-match-adverbs-and-substr.raku	0	0	7	
+t/regression/str-position-and-ignoremark.raku	0	0	7	
+t/regression/str-range-bounds-and-runaway.raku	0	0	7	
+t/regression/str-range-consumers.raku	0	0	6	
+t/regression/string-bitwise-codepoints.raku	5	0	7	note: prefix operator '~^' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/string-escapes-c-x-o.raku	0	0	6	
+t/regression/string-numification-without-throwing.raku	0	0	6	
+t/regression/stub-completed-in-nested-block.raku	0	0	6	
+t/regression/stub-role-after-use.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/submatch-orig.raku	0	0	6	
+t/regression/subset-return-undefined.raku	0	0	6	
+t/regression/subsig-after-traits.raku	0	0	7	
+t/regression/subst-assign-placeholder.raku	5	0	6	note: an `s///` replacement with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/subtest-tap-format.raku	0	0	7	
+t/regression/succ-pred-exact-tower.raku	0	0	7	
+t/regression/sum-through-the-exact-tower.raku	0	0	6	
+t/regression/superscript-call-but-bool-redo-copy-and-friends.raku	5	0	7	note: an unsupported construct (NK 37) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/supply-block-whenever-ordering.raku	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/supply-channel-supply-live.raku	0	0	6	
+t/regression/supply-combinators.raku	0	0	8	
+t/regression/supply-factories-and-coercers.raku	0	0	7	
+t/regression/supply-interval-ticker.raku	0	0	6	
+t/regression/supply-protocol-lifecycle.raku	0	0	8	
+t/regression/symbolic-package-variable-miss.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/symlink-and-x-io.raku	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/target-spellings-and-js-pragma.raku	0	0	8	
+t/regression/temp-and-env-allomorph.raku	0	0	7	
+t/regression/temporal-out-of-range.raku	0	0	7	
+t/regression/test-failure-line-is-the-callers.raku	0	0	6	
+t/regression/text-slurp-crlf.raku	5	0	7	note: the parameterized type 'Buf[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/tilde-is-a-quote-delimiter.raku	0	0	7	
+t/regression/tls-handshake-chain-and-identity.raku	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/tmpdir-exists.raku	0	0	8	
+t/regression/top100-chunk-b2b3-2026-09-03.raku	0	0	7	
+t/regression/top100-chunk-c-b1-2026-09-03.raku	0	0	7	
+t/regression/top100-chunk-css-2026-09-03.raku	0	0	7	
+t/regression/top100-chunk-d-grammar-made-2026-09-03.raku	0	0	7	
+t/regression/top100-chunk-export-tags-2026-09-03.raku	0	0	6	
+t/regression/top100-four-roots-2026-09-02.raku	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/top100-refresh-2026-09-03.raku	5	0	8	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/top100-roots-2026-09-02.raku	5	0	9	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/topic-alias-and-repl-methods.raku	5	0	8	note: an `s///` replacement with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/topic-binding-keeps-containerness.raku	0	0	6	
+t/regression/tr-non-mutating.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/trans-regex-key.raku	0	0	6	
+t/regression/tries-with-frequencies.raku	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/type-capture-after-constraint.raku	0	0	6	
+t/regression/type-capture-constrains.raku	0	0	6	
+t/regression/type-capture-smiley-is-constraint.raku	5	0	6	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/type-coercion-call.raku	0	0	6	
+t/regression/type-object-needle-and-signature-blob.raku	0	0	6	
+t/regression/type-object-stringifies-empty.raku	0	0	6	
+t/regression/type-objects-as-lists-and-adverbs.raku	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/type-registry.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/typed-buf-elements.raku	0	0	6	
+t/regression/typed-exception-payloads.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/uint-type-constraint.raku	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/unboxed-loop-lanes.raku	0	0	7	
+t/regression/undeclared-attr-sorry-banner.raku	0	0	6	
+t/regression/undeclared-bare-names.raku	0	0	6	
+t/regression/undeclared-type-in-declaration.raku	0	0	6	
+t/regression/undeclared-var-compile-time.raku	0	0	7	
+t/regression/undefined-array-head-lvalue-empty-match.raku	0	0	7	
+t/regression/uni-and-date-rendering.raku	0	0	7	
+t/regression/unicode-num-sigma-fold-collate.raku	0	0	7	
+t/regression/unicode-ops-quadratic.raku	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/unit-module-our-sub-qualified.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/unspace-after-block-close.raku	0	0	7	
+t/regression/unterminated-quotes-at-eof.raku	0	0	8	
+t/regression/untyped-param-rejects-mu.raku	0	0	7	
+t/regression/use-if-is-answered-natively.raku	0	0	7	
+t/regression/use-ok-adverbed-name.raku	0	0	7	
+t/regression/use-ver-meta-provides.raku	0	0	6	
+t/regression/user-method-vs-mop-noop.raku	0	0	7	
+t/regression/user-str-in-join-and-sprintf.raku	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/user-terms-across-units.raku	0	0	8	
+t/regression/value-identity.raku	5	0	7	note: the parameterized type 'Array[Int]' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/valuelist-relocating-growth.raku	0	0	7	
+t/regression/version-star-parts.raku	0	0	7	
+t/regression/version-wildcards-and-io-succ.raku	0	0	6	
+t/regression/vm-config-hash.raku	0	0	6	
+t/regression/vm-name-override.raku	0	0	7	
+t/regression/whatever-curry-is-syntactic.raku	0	0	7	
+t/regression/whatever-prefix-numify.raku	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/whatever-sub-and-modifier-decl.raku	0	0	7	
+t/regression/whatever-subscript-asks-the-container.raku	0	0	8	
+t/regression/whatever-value-smartmatch.raku	5	0	7	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/when-condition-whatever-curry.raku	0	0	7	
+t/regression/whenever-done-semantics.raku	0	0	7	
+t/regression/whenever-nested-sub-and-react-teardown.raku	0	0	6	
+t/regression/whenever-promise-emit-preserving.raku	0	0	6	
+t/regression/whenever-supply-transform-chain.raku	0	0	6	
+t/regression/where-sees-earlier-params-ov-and-cursor.raku	5	0	7	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/which-identity-and-set-op-elements.raku	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/while-destructure-and-cando.raku	5	0	7	note: while EXPR -> $x — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/who-stash-and-export-slots.raku	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/word-list-escapes-comma-op-forward-type.raku	0	0	8	
+t/regression/wordop-name-called-as-listop.raku	0	0	7	
+t/regression/wrap-builtin.raku	0	0	6	
+t/regression/xml-triad-backref-indirect-coerce.raku	0	0	7	
+t/regression/yamlish-issue-100.raku	0	0	10	
+t/regression/zef-ecosystem-cluster.raku	0	0	6	
+t/regression/zef-install-cluster.raku	5	0	6	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/zef-load-fixes.raku	0	0	6	
+t/regression/zen-slice-decontainerizes.raku	5	0	7	note: a read-write (<->) loop parameter — not natively compilable; --exe would fall back to AOT (--aot)
+t/regression/zero-denominator-rat-ordering.raku	0	0	7	
+t/regression/zero-denominator-rat-orders.raku	0	0	7	
+t/regression/zero-dep-module-sweep.raku	0	0	6	
+t/run.raku	5	0	19	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+t/slim/run.raku	0	0	9	
+t/standalone/run.raku	0	0	7	
+t/stress/atomic-counter.raku	0	0	6	
+t/stress/cas-containers.raku	0	0	7	
+t/stress/channel-pipeline.raku	0	0	6	
+t/stress/hash-guarded.raku	0	0	6	
+t/stress/lock-counter.raku	0	0	6	
+t/stress/parallel-map.raku	0	0	6	
+t/stress/promise-chain.raku	0	0	6	
+t/stress/run.raku	0	0	7	
+t/stress/supply-fanin.raku	0	0	7	
+t/stress/ub-array-push.raku	0	0	6	
+t/stress/ub-env-sharing.raku	5	0	7	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+t/stress/ub-hash-write.raku	0	0	6	
+t/stress/ub-iterate-during-push.raku	0	0	7	
+t/stress/ub-object-attrs.raku	0	0	9	
+t/stress/ub-torn-values.raku	0	0	8	
+t/windows/platform.raku	0	0	9	

@@ -1,0 +1,50 @@
+file	HEAD (f8975833)	v3.27.0
+Air-0.1.32/lib/Air/Base.rakumod	===SORRY!=== Parse error at line 464: Two terms in a row	===SORRY!=== Parse error at line 464: expected ] (got ';')
+Air-0.1.32/lib/Air/Base/Elements.rakumod	===SORRY!=== Parse error at line 96: Two terms in a row	===SORRY!=== Parse error at line 96: expected ] (got ';')
+BDD--Behave-0.9.4/lib/BDD/Behave.rakumod	===SORRY!=== Parse error at line 6: `use BDD::Behave::Slang`: the module registered no slang (got 'sub')	Syntax OK
+Blogin-0.9.1/lib/Blogin/Markdown.rakumod	===SORRY!=== Parse error at line 457: Couldn't find terminator / (corresponding / was at line 83)	===SORRY!=== Parse error at line 457: Couldn't find terminator / (corresponding 
+Cairo-0.2.7/lib/Cairo.pm6	===SORRY!=== Parse error at line 171: Redeclaration of return type for 'write_to_png_stream' (previous return type was int32)	Syntax OK
+CompUnit--Util-0.7.0/t/lib/push-multi.rakumod	===SORRY!=== Parse error at line 3: Malformed my (did you mean to declare a sigilless \foo or $foo?)	===SORRY!=== Parse error at line 3: expected variable after declarator (got 'mul
+Draku-0.0.3/lib/Draku/Search.rakumod	===SORRY!=== Parse error at line 23: Missing required term after infix	===SORRY!=== Parse error at line 23: Missing required term after infix
+GLib-0.0.11/lib/GLib/Object/Raw/Binding.pm6	===SORRY!=== Parse error at line 32: Redeclaration of return type for 'g_object_bind_property_full' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Array.pm6	===SORRY!=== Parse error at line 142: Redeclaration of return type for 'g_ptr_array_find_with_equal_func' (previous return type was guint)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Dataset.pm6	===SORRY!=== Parse error at line 60: Redeclaration of return type for 'g_datalist_id_dup_data' (previous return type was gpointer)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Exceptions.pm6	===SORRY!=== Parse error at line 134: expected parameter variable (got ':')	===SORRY!=== Parse error at line 134: expected parameter variable (got ':')
+GLib-0.0.11/lib/GLib/Raw/HashTable.pm6	===SORRY!=== Parse error at line 54: Redeclaration of return type for 'g_hash_table_find' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/IOChannel.pm6	===SORRY!=== Parse error at line 36: Redeclaration of return type for 'g_io_add_watch' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Main.pm6	===SORRY!=== Parse error at line 82: Redeclaration of return type for 'g_idle_add' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Queue.pm6	===SORRY!=== Parse error at line 47: Redeclaration of return type for 'g_queue_find_custom' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Regex.pm6	===SORRY!=== Parse error at line 191: Redeclaration of return type for 'g_regex_replace_eval' (previous return type was gboolean)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Sequence.pm6	===SORRY!=== Parse error at line 83: Redeclaration of return type for 'g_sequence_insert_sorted' (previous return type was gint)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Struct_Subs.pm6	===SORRY!=== Parse error at line 29: Redeclaration of return type for 'sprintf-P-P' (previous return type was gpointer)	Syntax OK
+GLib-0.0.11/lib/GLib/Raw/Structs.pm6	===SORRY!=== Parse error at line 886: expected ) (got '{')	===SORRY!=== Parse error at line 886: expected ) (got '{')
+GLib-0.0.11/lib/GLib/Roles/Signals/Generic.pm6	===SORRY!=== Parse error at line 961: Redeclaration of return type for 'g_connect_rbool' (previous return type was gboolean)	===SORRY!=== Error while compiling GLib-0.0
+GLib-0.0.11/lib/GLib/Roles/StaticClass.pm6	===SORRY!=== Error while compiling GLib-0.0.11/lib/GLib/Roles/StaticClass.pm6	===SORRY!=== Error while compiling GLib-0.0
+GLib-0.0.11/lib/GLib/Source.pm6	===SORRY!=== Parse error at line 271: The following packages were stubbed but not defined:	===SORRY!=== Parse error at line 271: The following packages were stubbed but no
+GLib-0.0.11/lib/GLib/Variant.pm6	===SORRY!=== Parse error at line 1445: expected ) (got '{')	===SORRY!=== Parse error at line 582: expected '!!' in ternary (got ' ')
+Getopt--Advance-1.2.0/lib/Getopt/Advance/Parser.rakumod	===SORRY!=== Parse error at line 468: Two terms in a row	===SORRY!=== Parse error at line 468: expected ] (got ';')
+Gzz--Text--Utils-0.1.23/lib/Gzz/Text/Utils.rakumod	===SORRY!=== Parse error at line 5485: Missing block	===SORRY!=== Parse error at line 244: unexpected operator in term position (got 
+HTTP--Server--Async-0.2/t/lib/HTTP/Server/Async/Plugins/Middleware/Inject.rakumod	===SORRY!=== Parse error at line 7: Two terms in a row across lines (missing semicolon or comma?)	===SORRY!=== Parse error at line 7: Two terms in a row across lines (missing sem
+IRC--Client-4.0.15/lib/IRC/Client.rakumod	===SORRY!=== Parse error at line 89: No appropriate parametric role variant available for 'Message'	Syntax OK
+Implementation--Loader-0.0.10/t/lib/LoaderTestFailing.rakumod	===SORRY!=== Parse error at line 8: Missing block	===SORRY!=== Parse error at line 8: expected } (got '')
+Inline--Perl5-0.61/lib/Inline/Perl5.pm6	===SORRY!=== Parse error at line 1021: Backtrack control ':' does not seem to have a preceding atom to control	Syntax OK
+Inline--Perl5-0.61/lib/Inline/Perl5/Interpreter.pm6	===SORRY!=== Parse error at line 28: Redeclaration of return type for 'p5_init_perl' (previous return type was Pointer)	Syntax OK
+JSON--Class-0.0.6/lib/JSON/Class/Attr.rakumod	===SORRY!=== Parse error at line 23: Variable definition of type Str:D requires an initializer	Syntax OK
+JSON--Class-0.0.6/lib/JSON/Class/Attr/Collection.rakumod	===SORRY!=== Parse error at line 9: Variable definition of type Bool:D requires an initializer	Syntax OK
+JSON--Class-0.0.6/lib/JSON/Class/Descriptor.rakumod	===SORRY!=== Parse error at line 23: Variable definition of type Bool:D requires an initializer	Syntax OK
+JSON--Class-0.0.6/lib/JSON/Class/HOW/Collection/Role.rakumod	===SORRY!=== Parse error at line 3: Redeclaration of symbol '::Mu'	Syntax OK
+JSON--Class-0.0.6/lib/JSON/Class/ItemDescriptor.rakumod	===SORRY!=== Parse error at line 15: Variable definition of type Str:D requires an initializer	Syntax OK
+LibCurl-1.5/lib/LibCurl/EasyHandle.rakumod	===SORRY!=== Parse error at line 780: Redeclaration of return type for 'curl_easy_setopt_data-cb' (previous return type was uint32)	Syntax OK
+PDF--Content-0.9.11/lib/PDF/Content/Text/Box.rakumod	===SORRY!=== Parse error at line 207: Variable $!text used where no 'self' is available	Syntax OK
+PDF--Font--Loader-0.8.15/lib/PDF/Font/Loader.rakumod	===SORRY!=== Parse error at line 62: expected ) (got ':')	===SORRY!=== Parse error at line 62: expected ) (got ':')
+Qwiratry--Test-0.0.1/lib/Qwiratry/Test/Format.rakumod	===SORRY!=== Parse error at line 133: expected ) (got '↱')	===SORRY!=== Parse error at line 133: expected ) (got '↱')
+Qwiratry--Test-0.0.1/lib/Qwiratry/Test/Location.rakumod	===SORRY!=== Parse error at line 144: unexpected operator in term position (got '⮷')	===SORRY!=== Parse error at line 144: unexpected operator in term position (got 
+Qwiratry-0.10.0/lib/Qwiratry.rakumod	===SORRY!=== Parse error at line 31: `use Qwiratry::Mold::Slang`: the slang failed to activate: Could not find Implementation::Loader in:	Syntax OK
+Qwiratry-0.10.0/lib/Qwiratry/Transformer.rakumod	===SORRY!=== Parse error at line 22: `use Qwiratry::Mold::Slang`: the slang failed to activate: Could not find Implementation::Loader in:	Syntax OK
+Rakudo-Type-Introspection-0.0.1/lib/Rakudo-Type-Introspection.rakumod	===SORRY!=== Parse error at line 130: Two terms in a row	===SORRY!=== Parse error at line 130: expected ) (got 'LEVEL')
+Template--Mustache-1.2.6/lib/Template/Mustache.rakumod	===SORRY!=== Parse error at line 121: Unable to parse regex; couldn't find final ')'	Syntax OK
+Terminal--Print-0.978/lib/Terminal/Print/DecodedInput.pm6	===SORRY!=== Parse error at line 199: unexpected operator in term position (got '>')	===SORRY!=== Parse error at line 199: unexpected operator in term position (got 
+Text--CSV-0.022/lib/Text/CSV.rakumod	===SORRY!=== Parse error at line 223: Confused: expected '!!' in ternary	===SORRY!=== Parse error at line 223: expected '!!' in ternary (got '(')
+Text--CSV-0.022/lib/Text/IO/String.rakumod	===SORRY!=== Parse error at line 35: expected ) (got '(')	===SORRY!=== Parse error at line 35: expected ) (got '(')
+Text--CSV-0.022/lib/V.rakumod	===SORRY!=== Parse error at line 14: expected ) (got '(')	===SORRY!=== Parse error at line 14: expected ) (got '(')
+ValueClass-0.0.10/lib/MetamodelX/ValueClassHOW.rakumod	===SORRY!=== Parse error at line 19: Confused (got '}')	===SORRY!=== Parse error at line 19: Confused (got '}')

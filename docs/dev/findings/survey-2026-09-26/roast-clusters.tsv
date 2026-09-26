@@ -1,0 +1,233 @@
+file	clusters	failing	failing tests
+6.c/APPENDICES/A03-older-specs/01-misc.t	IO,MISC	7	.open with "-" as path uses $*IN/$*OUT|.open with "-" as path can open closed $*IN/$*OUT|can .slurp from "-".IO path|now-deprecated subst-mutate
+6.c/APPENDICES/A04-experimental/01-misc.t	COERCE	1	type coercions work in returns
+6.c/MISC/bug-coverage-stress.t	CONC	2	Supply.merge on signals handles signal
+6.c/MISC/bug-coverage.t	LAZY,MISC	4	.count-only/.bool-only for iterated content|thunking closure scoping|$_ and with/andthen/for combinations are not buggy|cover potential bugs in possible optimization of `for .
+6.c/S02-names/pseudo-6c.t	PSEUDO	5	can bind through OUR::.{}|CALLER::UNIT works|CALLER::UNIT works (indirect)|::("SETTING") finds eval context
+6.c/S04-declarations/my-6c.t	PSEUDO	2	OUTER::<$x>|SETTING::<$x>
+6.c/S12-class/mro-6c.t	MOP	1	Hidden classes
+APPENDICES/A01-limits/misc.t	MULTI	1	role multi tiebreaking (TEST USES UNSUPPORTED FEATURES)
+APPENDICES/A01-limits/overflow.t	NUM	1	raising a Rat to largish power does not throw
+APPENDICES/A02-some-day-maybe/misc.t	DIAG	3	same exception with and without type smiley for failing|attempting to use defaults with slurpy parameters throw|repeating with Inf is NYI
+MISC/misc.t	DIAG,IO	3	:sym<> colonpair on subroutine names is reserved|$*ARGFILES is set to $*IN inside sub MAIN|use of `undefine` issues deprecation warning in 6.d
+S02-literals/heredocs.t	PARSE	2	heredoc fails in block 2a|heredoc fails in block 4
+S02-literals/misc-interpolation.t	DIAG	1	... but whitespace is not allowed
+S02-literals/quoting-unicode.t	DIAG	1	Can't quote a regex with a snowman and comet (U+2603 an
+S02-literals/quoting.t	DIAG,PARSE	2	unclosed quote after array variable is an error|qx passes STDERR through
+S02-literals/string-interpolation.t	DIAG	2	did we throws-like X::Undeclared::Symbols?|did we throws-like X::Undeclared::Symbols?
+S02-magicals/dollar-underscore.t	CONT	1	outer $_ increments
+S02-names-vars/names.t	MISC	2	no Null PMC access when printing a variable typed as ::|can use compile-time variables in names
+S02-names-vars/signature.t	DIAG	1	cannot increment an Int
+S02-names-vars/variables-and-packages.t	DIAG	2	can't redeclare something with an implicit outer bindin|can't redeclare something with an implicit outer bindin
+S02-names/caller.t	PSEUDO	1	rebinding $CALLER:: variables works (3)
+S02-names/identifier.t	MISC	1	
+S02-names/our.t	SCOPE	1	call to eval-born sub outside eval dies
+S02-names/pseudo-6d.t	PSEUDO	5	can bind through OUR::.{}|CALLER::UNIT works|CALLER::UNIT works (indirect)|::("SETTING") finds eval context
+S02-names/pseudo-6e.t	PSEUDO	11	Root|Cannot use MY::A2 directly from outer scope|$MY:: binding works on our-aliases|Can bind through LEXICAL::.{}
+S02-names/symbolic-deref.t	MISC	1	name with trailing :: not same as sans
+S02-types/array-shapes.t	SHAPE	5	accessing past num items in my @arr[num] dies|@c[some shape] accepts a .new: :shape(same shape)...|@shaped-array.pairs provides with writable container in|Z= shape filling
+S02-types/array.t	SLICE	3	hat trick:|reification of zen and whatever slices|no funny business in assignment
+S02-types/array_ref.t	CONT	2	creating arrays using [] creates new containers (1)|creating arrays using [] creates new containers (2)
+S02-types/autovivification.t	CONT	1	binding does not immediately autovivify
+S02-types/capture.t	CONT	3	Can modify Capture positional elements|Can modify Capture associative elements|
+S02-types/generics.t	GENERIC	1	Nominalizable generic
+S02-types/hash.t	MISC	1	doesn't really make sense, but shouldn't segfault, eith
+S02-types/isDEPRECATED.t	MISC	1	right deprecation for D.new.foo
+S02-types/lazy-lists.t	LAZY	13	sanity: make-lazy-list sets 0.|sanity: binding won't slurp up the lazy list|first is lazy|grep is lazy
+S02-types/list.t	CONT	1	List.new does not create unwanted containers
+S02-types/lists.t	CONT	2	assigning a list element changed the original variable|using list slices as lvalues works (1)
+S02-types/mu.t	MISC	2	Mu.return-rw|smartmatching
+S02-types/multi_dimensional_array.t	SHAPE	1	Insertion and reading of shaped array elements
+S02-types/native.t	NATIVE	2	can identify native type with multi dispatch (str)|a too large argument for a native parameter should thro
+S02-types/nil.t	MISC	2	
+S02-types/nominalizables.t	COERCE	3	Subset of a coercion|Subset of a definite coercion|Nested coercers
+S02-types/num.t	NUM	2	no hangs/crashes when parsing nums with huge exponents|does num ** -1e20 return a Failure
+S02-types/pair.t	CONT,MISC	3	setting .value does change the original var as it was i|cannot assign a Str to an Int|Clone of Pair does not share .WHICH
+S02-types/quanthash.t	CONT	3	did all keys get removed|did all keys get removed|did all keys get removed
+S02-types/set.t	MISC	1	have typechecking on a Hashifeid Set iterator
+S02-types/whatever.t	MISC	3	{*.{}}() dies|WhateverCode parameters are rw|WhateverCode curry correctly propagates `use fatal` pra
+S03-binding/arrays.t	CONT,DIAG	3	array assignment creates new containers (4)|can only bind Positional stuff to @a|binding Failure to Array throws useful error
+S03-binding/attributes.t	VARTRAIT	4	
+S03-binding/hashes.t	CONT	1	hash assignment creates new containers (4)
+S03-binding/nested.t	CONT	1	binding an element of a structure to an element of the 
+S03-binding/scalars.t	CONT,DIAG	3	cannot bind to a literal|bound readonly sub param remains readonly (1)|bound readonly sub param remains readonly (2)
+S03-metaops/eager-hyper.t	LAZY	1	iterator was lazy and only ran the block once
+S03-metaops/hyper.t	HYPER	5	method call variants respect nodality|hyper method calls string/var method names|does hypering a Map give a Map without issues|did we throws-like X::Seq::Consumed?
+S03-metaops/misc.t	MISC	2	cover metaop call simplification optimization|,= metaop works properly with []
+S03-metaops/reduce.t	CONT	1	[=:=] after binding
+S03-metaops/reverse.t	DIAG	2	adequate error message on trying to metaop-reverse bind|did we throws-like X::Syntax::CannotMeta?
+S03-operators/assign.t	PARSE	3	xor= operator parses as list assignment 2|lhs treats $::('Foo::b') as scalar (2)|lhs treats @a[@b[$c,]] as list
+S03-operators/context-forcers.t	MISC	2	list listop doesn't cache|list listop doesn't cache
+S03-operators/identity.t	CONT	8	rebinding of array elements (1)|assignment destroyed the bindings (1)|binding of scalar subparam retains =:= (1)|binding of scalar subparam retains =:= (3)
+S03-operators/inplace.t	MISC	2	coverage for performance optimizations|various weird cases of .= calls
+S03-operators/precedence.t	PARSE	1	and after say is not interpreted as infix:<and>
+S03-operators/ternary.t	DIAG	1	bogus code before !! of conditional operator is compile
+S03-sequence/arity-2-or-more.t	DIAG	1	no internals leaking out with series operator used wron
+S04-declarations/constant.t	MISC	2	constant can be explicitly "my"-scoped|can create synonym of operator in different grammatical
+S04-declarations/our.t	MISC	2	redeclaration will make previous value available|... and the value stays
+S04-declarations/will.t	PHASER	1	all begin/check blocks in order
+S04-exception-handlers/catch.t	EXC	2	
+S04-exception-handlers/control.t	EXC	2	
+S04-exceptions/exceptions-alternatives.t	EXC	2	can handle exception without `message` method|can handle X::Undeclared::Symbols exception
+S04-phasers/begin.t	PHASER	1	BEGIN block was executed before a parse error happened 
+S04-phasers/enter-leave.t	PHASER	1	ENTER works as an r-value (sub)
+S04-phasers/in-loop.t	PHASER	2	"last" statement called by LEAVE breaks out of while lo|POST should not see outer $_
+S04-phasers/pre-post.t	PHASER	1	POST runs on exception, with correct $!
+S04-statement-modifiers/for.t	CONT	1	for loops do not decontainerize
+S04-statements/for.t	CONT,HOLES	2	for loops do not decontainerize|holes were changed correctly (for @a[*])
+S04-statements/for_with_only_one_item.t	CONT	2	for on (a_single_var) -> is rw|for on a_single_var -> is rw
+S04-statements/gather.t	LAZY	4	not yet gathered|gather is lazy|take with multiple arguments produces one item each|gather/take does not flatten out sublists
+S04-statements/once.t	CONT	1	`once` does not containerize its values
+S04-statements/repeat.t	MISC	1	placeholders and "repeat while" mix
+S04-statements/return.t	PHASER,DIAG	2	CHECK return handled correctly|X::ControlFlow::Return tells when return is outside of 
+S04-statements/try.t	EXC	1	CATCH allows to resume to right after the exception
+S04-statements/when.t	CONT	2	when does not strip Scalar containers|default does not strip Scalar containers
+S05-capture/match-object.t	REGEX	1	non-Str orig
+S05-grammar/inheritance.t	REGEX	2	does it have the right type|does it type check ok
+S05-metasyntax/longest-alternative.t	REGEX	1	non constants don't count toward LTM
+S06-advanced/callframe.t	MISC	1	
+S06-advanced/dispatching.t	MULTI	1	Args to callwith in wrapper are used by enclosing multi
+S06-advanced/lexical-subs.t	SCOPE	1	subs without scoping modifiers are not entered in the n
+S06-advanced/return-prioritization.t	PHASER	2	LEAVE can overwrite return value with a return|LEAVE can overwrite implicit return value with a return
+S06-advanced/return.t	DIAG	2	did we throws-like X::Redeclaration?|did we throws-like X::TypeCheck::Return?
+S06-advanced/stub.t	DIAG	2	executing stub subroutine dies|executing stub subroutine dies
+S06-advanced/wrap.t	MULTI	1	multi methods with a wrapped one are in order
+S06-currying/positional.t	COERCE	1	Priming :(Int(Str) $a) with \(1.1) mixed in a Failure 
+S06-multi/proto.t	MULTI	1	proto signature is checked, not just that of the candid
+S06-multi/subsignature.t	MULTI	2	proto signature is checked, not just that of the candid|dispatch tied as expected
+S06-multi/type-based.t	MULTI	3	arguments after ;; not considered by multi-dispatch|handling of anonymous subset|did we throws-like X::TypeCheck::Return?
+S06-multi/unpackability.t	MULTI	2	Multi-dispatch descends into sub signatures (1)|One-level unpack callsame and nextcallee
+S06-operator-overloading/circumfix.t	DIAG	1	constants containing too many parts throw correctly
+S06-operator-overloading/imported-subs.t	SCOPE	4	not-exported operator was not imported|not imported operator fails with X::Syntax::Confused.|the reason is "Two terms in a row"|import of operators is lexical
+S06-operator-overloading/workout.t	MISC	2	Vector.new requires 3 parameters|Vector.new requires an array with 3 members
+S06-other/introspection.t	MULTI	2	junction sig matches first candidate|junction sig matches second candidate
+S06-other/main.t	MISC	1	MAIN can take type-constraint using a subset declared i
+S06-other/pairs-as-lvalues.t	SIGBIND	4	
+S06-routine-modifiers/proxy.t	CONT	2	lvalue_test3() was called (9)|creating and using a subclass of Proxy
+S06-signature/code.t	SCOPE	1	the inner &foo is undefined (scoping)
+S06-signature/definite-return.t	MISC	1	and the last statement of the function was sunk
+S06-signature/introspection.t	MISC	1	.raku of a sigature that has ::?CLASS
+S06-signature/named-parameters.t	MISC	2	quoted pair key => positional parameter|Pair shown as a Pair
+S06-signature/outside-subroutine.t	SIGBIND	2	signature binding outside of routine calls|smartmatch on signatures with literals
+S06-signature/shape.t	SHAPE	2	can use earlier parameters in shape specification (3)|can have an Enum as a shape definition
+S06-signature/slurpy-params.t	LAZY	4	produces the right error|iteration dies on second pass|+@args converts Seq to List|+@args handles List from Seq
+S06-signature/type-capture.t	GENERIC	2	can use captured type in declaration|Return typecheck
+S06-signature/unspecified.t	MISC	1	
+S06-traits/is-rw.t	CONT	2	pairs are mutable|'is rw' not necessary on objects/references
+S06-traits/misc.t	DIAG	2	is rw dies in signature binding if passed an itemized a|duplicate traits warn
+S06-traits/precedence.t	PARSE	1	Postifix declared looser than prefix
+S06-traits/slurpy-is-rw.t	CONT	2	@test was changed|$test was changed
+S07-hyperrace/basics.t	CONC	1	Concurrent iterator access
+S07-hyperrace/for.t	CONC	2	A race for loop runs the body over threads|A hyper for loop runs the body over threads
+S09-autovivification/autovivification.t	MISC	3	autovivification to an array by &push|autovivified to Array|autovivification to an array by &unshift
+S09-multidim/indexing.t	CONT	1	Really bound an Int, so cannot assign
+S09-subscript/slice.t	SLICE	2	assigning a slice too many items yields a correct retur|nested slices
+S09-typed-arrays/arrays.t	HOLES,DIAG	4	inner array enforces the type constraint|Binding variablle to typed array checks type|deleted element of typed arrays does not lose type info|.gist on typed array shows real type objects
+S09-typed-arrays/native-int.t	HOLES	1	did we survive the hole
+S09-typed-arrays/native-num.t	HOLES	1	did we survive the hole
+S09-typed-arrays/native-str.t	HOLES	1	did we survive the hole
+S10-packages/basic.t	MISC	2	die if module "is" a nonexistent|accessing module variable from within sub called from o
+S10-packages/export.t	SCOPE	2	'is export' works correctly even when not exporting to |lexical export is indeed lexical
+S10-packages/precompilation.t	CUR	7	Twisty maze of dependencies, all different|RT123276|GLOBAL symbols exist after re-precompiled|1. changing SHA of dependency doesn't break re-precompi
+S10-packages/require-and-use.t	CUR	2	circular dependencies are detected and reported|use lib with empty string throws a useful error
+S10-packages/scope.t	SCOPE	2	can see package declared in same scope|correct $?PACKAGE
+S11-modules/export.t	ROLEGRP	3	role group is exported
+S11-modules/import.t	SCOPE	2	doesn't import non-exported routines|importing by tag is sufficiently selective
+S11-modules/importing.t	SCOPE	2	Foo::foo is undefined in outer scope|die while trying to import a non-existent export tag
+S11-modules/lexical.t	SCOPE	2	sub is only imported into the inner lexical scope|Package is only imported into the inner lexical scope
+S11-modules/require.t	SCOPE	5	require Test installs stub Test package at compile time|&bar didn't leak to outer scope|&-less import of sub does not produce `Null PMC access`|throws correct exception
+S11-repository/cur-candidates.t	CUR	1	
+S11-repository/cur-current-distribution.t	CUR	3	CompUnit::Repository::FileSystem without META6.json|CompUnit::Repository::FileSystem with META6.json|CompUnit::Repository::Installation
+S11-repository/curli-install.t	CUR	17	repository does C::R::Installable|repository does C::R::Locally|short-id exposes type of repository
+S12-attributes/defaults.t	DIAG	1	Attribute constraint checked at run-time
+S12-attributes/instance.t	DIAG,CONT	2	cannot sneak in access to private attribute through the|Scalar containers respected in attribute initialization
+S12-attributes/native.t	DIAG	1	did we throws-like X::Syntax::NoSelf?
+S12-class/anonymous.t	MOP	1	anon class is actually anon
+S12-class/attributes.t	DIAG,MISC	2	no attr access for sub inside class|typed array attribute (2)
+S12-class/augment-supersede.t	MOP	2	used to crash rakudo|used to crash rakudo
+S12-class/interface-consistency.t	MISC	2	*%_ shows up in .raku of the Signature|is hidden means no implicit *%_
+S12-class/mro-6e.t	MOP	1	Rolified MRO
+S12-class/namespaced.t	SCOPE	1	class A::B not available outside of class as B
+S12-coercion/coercion-methods.t	COERCE	2	Classes|Roles
+S12-coercion/coercion-types.t	COERCE	1	Can coerce invocant to subclass
+S12-coercion/parameterized.t	COERCE	2	Basics|Double Parameterization
+S12-construction/BUILD.t	EXC	1	fail in BUILD works
+S12-enums/thorough.t	ENUM	3	enum itself stringififes
+S12-introspection/attributes.t	MISC	1	did we actually call STORE now
+S12-methods/attribute-params.t	MISC	1	any Signature binds attributively to the next self in t
+S12-methods/fallback.t	MOP	1	A CALL-ME mixed into a proto in a trait_mod is called
+S12-methods/qualified.t	ROLEGRP	2	parameterizations and inheritance|relaxed dispatch ambiguities
+S12-subset/type-subset.t	MISC	1	When a subset is declared within a module
+S14-roles/basic.t	DIAG	1	undeclared type in signature in role results in X::Para
+S14-roles/conflicts.t	DIAG	1	attribute conflict with pun
+S14-roles/parameterized-basic.t	DIAG	1	use of ::?CLASS results in the right exception
+S14-roles/parameterized-type.t	ROLEGRP	4	
+S14-roles/typecheck.t	ROLEGRP	2	Role group matches a parent class of its non-parameteri|Role group doesn't match a parent class of a parameteri
+S14-roles/versioning.t	CUR	2	Multi-module and multi-version|Submethods
+S14-traits/attributes.t	VARTRAIT	3	
+S14-traits/package.t	ROLEGRP	1	
+S14-traits/routines.t	VARTRAIT,DIAG	3	declaration of a sub with an unknown trait mentions tra
+S14-traits/variables.t	VARTRAIT	5	have correct number of names noted from trait applied b|trait recorded correct information
+S16-filehandles/io_in_for_loops.t	IO	2	$fh.lines loop sets .tell|last in loop leaves .tell at the same place
+S16-io/eof.t	IO	3	.eof on TTY STDIN works right|.eof works right even when we seek past end and back|.eof on empty files
+S16-io/print.t	IO	1	printing routines with Junctions
+S16-io/words.t	IO	1	
+S17-channel/basic.t	CONC	1	
+S17-procasync/stress.t	CONC	1	.Supply on multiple Proc::Async's does not deadlock
+S17-promise/basic.t	CONC	1	subclasses create subclassed Promises
+S17-supply/basic.t	CONC	2	.tap block with incorrect signature must fail|.tap block with incorrect signature must fail
+S17-supply/syntax.t	CONC	1	supply block loop did not run more than expected number
+S22-package-format/local.t	CUR	1	is there one candidate and is it sane
+S24-testing/1-basic.t	ROLEGRP	1	The object is-a 'Metamodel::ParametricRoleGroupHOW'
+S26-documentation/wacky.t	POD	3	trailing document within an anoymous sub|two attrs on a line, first ignored|space separation ok for leading, not for trailing
+S26-documentation/why-both.t	ROLEGRP	1	Role group's WHY is the one of its default candidate
+S32-array/adverbs.t	CONT	2	container respected in array :exists|container respected in array :delete
+S32-array/create.t	CONT	2	array elements get writable containers|Array.clone [partially-reified]
+S32-array/delete-adverb.t	LAZY	1	:delete on lazy Arrays
+S32-array/delete.t	HOLES	2	.Slip and .List on Arrays with holes|Array.List fills holes with Nils
+S32-basics/xxPOS.t	CONT	1	Could we change the "element" without creating ASSIGN-P
+S32-exceptions/misc.t	DIAG,EXC	6	did we throws-like X::Comp::Group?|we correctly have 2 elements in .list|.list contains correct items|expecting 4 frames in the backtrace
+S32-hash/kv.t	CONT	1	aliases returned by $pair.kv should be rw (2)
+S32-hash/map.t	CONT	2	did the .WHICH stay unchanged|a hash value is containerized
+S32-hash/slice.t	SLICE	1	assigning a slice too many items yields a correct retur
+S32-io/IO-Socket-Async-UDP.t	NET	3	
+S32-io/IO-Socket-Async.t	NET	2	Can set encoding on incoming Supply separately|Latin-1 client socket correctly encodes
+S32-io/IO-Socket-INET.t	NET	1	
+S32-io/io-path-win.t	WINPATH	1	append to cwd
+S32-io/io-path.t	WINPATH	7	Str does not include CWD [multi-part .new()]|.sibling|.parts attribute|.SPEC attribute
+S32-io/io-spec-win.t	WINPATH	2	.absolute with paths that have combiners on slashes|.path
+S32-io/slurp.t	IO	2	&slurp(IO::Handle)|:bin arg to IO::Handle.slurp method
+S32-list/classify.t	MISC	1	classify works with Junctions
+S32-list/deepmap.t	MISC	2	do we get a List if the constraint disallows|did the keys and values match up?
+S32-list/grep.t	CONT,LAZY	2	grep is rw-like, can chain it to modify elements of gre|grep() propagates .is-lazy
+S32-list/iterator.t	LAZY	1	Mu.iterator
+S32-list/map.t	CONT,PHASER	2	map can modify what it iterates|Did the LAST phaser get run
+S32-list/pick.t	LAZY	2	did .pick(**) give a lazy Seq|all with .pick(**) twice
+S32-list/reduce.t	CONT,MISC	2	Reduce method respects chain associativity|reduce returns raw containers when specified
+S32-list/reverse.t	HOLES	1	reverse returns containers, also for holes
+S32-list/rotor.t	MISC	2	using negative gap that lands past the list's head thro
+S32-list/seq.t	LAZY	16	.raku.EVAL-roundtripped Seq throws when attempting to c|methods on cached Seqs
+S32-list/skip.t	LAZY	2	.skip-all and .push-all on slipping slippy iterators|Seq.skip does not leave original Seq consumable
+S32-list/squish.t	LAZY	2	:as + :with, iterator use|:with + iterator use
+S32-list/tail.t	LAZY	1	tail makes use .count-only when it is implemented
+S32-list/unique.t	LAZY	1	Seq as the result of an :as caches the Seq
+S32-scalar/undef.t	CONT	4	undefine array referent|dangling array reference|dangling hash reference|attempt to undefine returned array lives
+S32-str/comb.t	REGEX	1	$/ inside comb
+integration/advent2009-day08.t	MISC	2	Comb ASCII hex chars with hyperop to convert to ASCII e|Comb ASCII hex chars using map to convert to ASCII equi
+integration/advent2009-day20.t	MISC	2	mapping two at a time|mapping three at a time
+integration/advent2009-day24.t	REGEX	3	base grammar|derived grammar|derived grammar is extended
+integration/advent2010-day12.t	MISC	2	|
+integration/advent2010-day22.t	MISC	2	Rat $!numerator $!denominator& attributes|Rat Str and round methods
+integration/advent2011-day07.t	MISC	2	num calls recorded|time recorded
+integration/advent2011-day11.t	MISC	1	order total with typo
+integration/advent2011-day14.t	MISC	4	
+integration/advent2011-day23.t	MISC	1	@array[ rand*@array ];
+integration/advent2012-day04.t	MISC	1	
+integration/advent2012-day15.t	PHASER	2	INIT sub call|FIRST/NEXT/LAST example
+integration/advent2012-day19.t	MISC	3	range object
+integration/advent2013-day09.t	MOP	1	
+integration/advent2013-day20.t	VARTRAIT	3	default doesn't set type
+integration/error-reporting.t	DIAG	5	Error for obsolete syntax contains line number|Correct error and a backtrace for return in mainline co|useful error message for ‘%::{''}’ construct|composition errors do not crash when printing
+integration/precompiled.t	CUR	9	
+integration/role-composition-vs-attribute.t	MOP	2	did we see the Int private attribute from the role|did we see the Int private attribute from the embedded 
+integration/weird-errors.t	DIAG	2	fails correctly|no segfault

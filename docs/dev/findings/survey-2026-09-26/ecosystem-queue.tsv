@@ -1,0 +1,775 @@
+dist	status	blocking dist	first error
+ADT	self-fail	ADT	Undefined routine 'trait_mod:<handles>'
+ANTLR4	self-fail	ANTLR4	# Failed test 'IRI.g4' at …/ANTLR4-Grammar-20c8c1b1247f14a77c1658338b8160dd04549c71/t/02-corpus.t line 31
+ANTLR4::Grammar	self-fail	ANTLR4::Grammar	# Failed test 'IRI.g4' at …/ANTLR4-Grammar-0.6.3/t/02-corpus.t line 39
+API::Discord	dep-fail	InterceptAllMethods	No such method 'foo' for invocant of type 'Foo'
+ASN::BER	self-fail	ASN::BER	No such method 'new' for invocant of type 'Any'
+ASN::Grammar	self-fail	ASN::Grammar	# Failed test 'LDAP spec is parsed' at …/t/00-sanity.t line 370
+AWS::Pricing	self-fail	AWS::Pricing	Constraint type check failed in binding to parameter '$region'
+AccessorFacade	self-fail	AccessorFacade	trait 'accessor-facade' only takes Callable arguments
+Acme::Anguish	timeout	Acme::Anguish	
+Acme::BaseCJK	self-fail	Acme::BaseCJK	Cannot resolve caller CJK(); no matching multi candidate
+Acme::Cow	self-fail	Acme::Cow	# Failed test at …/Acme-Cow-0.0.5/t/balloon.t line 15
+Acme::Polyglot::Levenshtein::Damerau	self-fail	Acme::Polyglot::Levenshtein::Damerau	# Failed test at …/Acme-Polyglot-Levenshtein-Damerau-0.1/t/basic.t line 4
+Acme::Rautavistic::Sort	self-fail	Acme::Rautavistic::Sort	# Failed test 'Num - double elements' at …/Acme-Rautavistic-Sort-0.0.1/t/01-basic.rakutest line 12
+Acme::Text::UpsideDown	self-fail	Acme::Text::UpsideDown	# Failed test 'did ASCII text get rotated' at …/Acme-Text-UpsideDown-0.0.9/t/01-basic.rakutest line 6
+Actor	self-fail	Actor	This thread has no receiver
+Adverb::Eject	self-fail	Adverb::Eject	Unexpected adverbs passed to subscript: eject
+Air::Plugin::Donate	self-fail	Air::Plugin::Donate	===SORRY!=== Parse error at line 33: Error while compiling module Air::Plugin::Donate (line 33): expected ] (got ';')
+Algorithm::Diff	self-fail	Algorithm::Diff	Undefined routine 'Algorithm::Diff::_longestCommonSubsequence'
+Algorithm::Evolutionary::Simple	self-fail	Algorithm::Evolutionary::Simple	# Failed test '0 chromosome xovered' at …/dist/t/00-functions.t line 25
+Algorithm::GooglePolylineEncoding	self-fail	Algorithm::GooglePolylineEncoding	# Failed test '-179.9832104 encodes to `~oia@' at …/Algorithm-GooglePolylineEncoding-1.0.3/t/02-encode-number.rakutest line 18
+Algorithm::Heap::Binary	self-fail	Algorithm::Heap::Binary	# Failed test 'heapify values' at …/Algorithm-Heap-Binary-0.0.1/t/02-binary-heap.t line 12
+Algorithm::HierarchicalPAM	self-fail	Algorithm::HierarchicalPAM	# No such method 'flatmap' for invocant of type 'Str'
+Algorithm::KdTree	self-fail	Algorithm::KdTree	# Failed test 'It shouldn't insert a Str array' at …/Algorithm-KdTree-0.0.8/t/02-insert.t line 7
+Algorithm::LBFGS	self-fail	Algorithm::LBFGS	# Failed test 'Given the default parameter and an optimizable objective function, then it should return the resulting variables' at …/Algorithm-LBFGS-0.0.6/t/02-status.t line 19
+Algorithm::LDA	self-fail	Algorithm::LDA	# No such method 'flatmap' for invocant of type 'Str'
+Algorithm::LibSVM	timeout	Algorithm::LibSVM	
+Algorithm::SkewHeap	self-fail	Algorithm::SkewHeap	Type check failed in assignment; expected Node but got Any
+Algorithm::Tarjan	self-fail	Algorithm::Tarjan	# Failed test 'list of strong components in graph' at …/p6-Algorithm-Tarjan-master/t/basic.t line 60
+Algorithm::Treap	self-fail	Algorithm::Treap	# Failed test 'It shouldn't handle a type object' at …/Algorithm-Treap-0.10.3/t/01-basic.t line 12
+App::APOTD	self-fail	App::APOTD	Usage:
+App::ByWord	self-fail	App::ByWord	No such method 'migrate' for invocant of type 'Supply'
+App::CPAN	self-fail	App::CPAN	# Failed test 'Found 75 items' at …/App-CPAN-0.0.2/t/parse-feed.t line 34
+App::Cal	self-fail	App::Cal	No such method 'Date' for invocant of type 'Instant'
+App::Ecosystems	dep-fail	Commands	# Failed test 'check primaries' at …/Commands-0.0.9/t/01-basic.rakutest line 65
+App::Football	dep-fail	WebService::FootballData	No %!links attribute in A
+App::Gitstatus	self-fail	App::Gitstatus	# Failed test at …/App-Gitstatus-0.0.2/t/01-bin-prog.rakutest line 8
+App::Mi6	self-fail	App::Mi6	Potential difficulties:
+App::ModuleSnap	self-fail	App::ModuleSnap	# Failed test 'perl version is correct' at …/App-ModuleSnap-0.0.14/t/020-basic.t line 22
+App::Rak::Markdown	self-fail	App::Rak::Markdown	# Failed test 'is number of items ok' at …/App-Rak-Markdown-0.0.5/t/02-unicode.rakutest line 44
+App::Stouch	self-fail	App::Stouch	# Failed test 'The module can be use-d ok: App::Stouch' at …/dist/t/00-use.rakutest line 5
+App::Uni	self-fail	App::Uni	No such method 'version' for invocant of type 'Unicode'
+App::nm2perl6	self-fail	App::nm2perl6	Variable '$x' is not declared
+App::snippet	self-fail	App::snippet	Cannot locate native library '/usr/local/lib/libreadline.7.dylib': dlopen(/usr/local/lib/libreadline.7.dylib, 0x0009): tried: '/usr/local/lib/libreadline.7.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/usr/local/lib/libreadline.7.dylib' (no such file), '/usr/local/ …
+App::termie	self-fail	App::termie	# Failed test 'The module can be use-d ok: Termie::Commands' at …/App-termie-0.2.4/t/01-basic.rakutest line 7
+App::tmeta	self-fail	App::tmeta	# Failed test 'The module can be use-d ok: tmeta::commands' at …/dist/t/01-basic.t line 7
+Archive::Ar	self-fail	Archive::Ar	Cannot convert string to number: base-8 number must begin with valid digits or '.' in ':8<>'
+Archive::SimpleZip	self-fail	Archive::SimpleZip	# Failed test 'Can load "Archive::SimpleZip" ok' at …/dist/t/001-use.t line 9
+Archive::Tar::PP	self-fail	Archive::Tar::PP	No such method 'push' for invocant of type 'Str'
+Arithmetic::PaperAndPencil	self-fail	Arithmetic::PaperAndPencil	===SORRY!=== Parse error at line 81: Error while compiling module Arithmetic::PaperAndPencil (line 81): expected { (got '☈')
+Array::Agnostic	self-fail	Array::Agnostic	# Failed test 'do we have one element less now: elems' at …/Array-Agnostic-0.0.18/t/01-basic.rakutest line 59
+Array::Circular	self-fail	Array::Circular	# Failed test '4 time append' at …/Array-Circular-0.0.7/t/01-basic.rakutest line 15
+Array::Rounded	self-fail	Array::Rounded	# Failed test 'is 1.50 ok on Array' at …/Array-Rounded-0.0.3/t/01-basic.rakutest line 14
+Array::Shaped::Console	self-fail	Array::Shaped::Console	Unsupported operator '='
+Array::Sparse	self-fail	Array::Sparse	# Failed test 'does a value slice work' at …/Array-Sparse-0.0.13/t/01-basic.rakutest line 64
+Array::Unsorted::Map	self-fail	Array::Unsorted::Map	# Failed test 'did we numify ok' at …/Array-Unsorted-Map-0.0.4/t/01-basic.rakutest line 21
+ArrayHash	self-fail	ArrayHash	===SORRY!=== Parse error at line 18: Error while compiling module ArrayHash (line 18): unexpected operator in term position (got '&')
+Ask	self-fail	Ask	# Failed test 'return value' at …/Ask-0.0.3/t/ask-prompt-alias.t line 26
+AttrX::Lazy	self-fail	AttrX::Lazy	No such method 'private_method_table' for invocant of type 'Foo'
+AttrX::Mooish	self-fail	AttrX::Mooish	# No such method 'get_attribute_for_usage' for invocant of type 'Attribute'
+AttrX::PrivateAccessor	self-fail	AttrX::PrivateAccessor	No such method 'private_method_table' for invocant of type 'Teenager'
+Attribute::Lazy	self-fail	Attribute::Lazy	# Failed test 'got the value from the block ( basic )' at …/Attribute-Lazy-0.0.7/t/020-trait.t line 21
+Audio::Hydrogen	self-fail	Audio::Hydrogen	# Failed test 'from-xml' at …/Audio-Hydrogen-0.0.7/t/020-drumkit.t line 14
+Audio::Icecast	self-fail	Audio::Icecast	# Failed test 'create Stats from xml' at …/Audio-Icecast-0.0.6/t/020-stats-basic.t line 14
+Audio::Liquidsoap	self-fail	Audio::Liquidsoap	# Failed test 'Can use Audio::Liquidsoap' at …/Audio-Liquidsoap-0.1.3/t/010-use.t line 7
+Audio::PortAudio	self-fail	Audio::PortAudio	# some drivers may emit some output when they are initialised, sorry about that
+Avro	self-fail	Avro	Type check failed in assignment; expected Iterable but got Hash
+BSON	self-fail	BSON	# Error while compiling module BSON::Decode (line 182): expected ] (got ';')
+BTree	self-fail	BTree	# Failed test 'The module can be use-d ok: BTree' at …/t/01-basic.rakutest line 2
+Badger	self-fail	Badger	===WARNING=== Module Badger EXPORT failed: Type check failed on attribute '$!return'; expected AST::Return:D but got AST::Return
+Base::Any	self-fail	Base::Any	Cannot resolve caller to-base(); no matching multi candidate
+Bench	self-fail	Bench	# Failed test 'Timing test' at …/t/basic.t line 9
+Benchmark	self-fail	Benchmark	===SORRY!=== Parse error at line 13: expected ) (got '&')
+Benchy	self-fail	Benchy	Cannot invoke non-Callable value of type Pair
+Bencode	self-fail	Bencode	# Failed test at …/dist/t/00-Bencode.t line 12
+BigRoot	self-fail	BigRoot	# Type check failed for return value; expected FatRat but got Num (1e0)
+Bin::Utils	self-fail	Bin::Utils	Failed to open file ./: Is a directory
+Binary::Structured	self-fail	Binary::Structured	# Failed test 'int8' at …/perl6-binary-structured-master/t/010-basic-numeric.t line 41
+BinaryHeap	self-fail	BinaryHeap	# Failed test 'heap includes the elements of the provided Slip' at …/raku-binaryheap/t/01-binaryheap.rakutest line 9
+BioInfo	self-fail	BioInfo	# Failed test 'Translated Amino acid sequence has the correct length when coerced to Numeric.' at …/BioInfo-master/t/sequences.t line 21
+BioPerl6	self-fail	BioPerl6	# Failed test 'Role consumed by class' at …/bioperl6-master/t/Range.t line 74
+BitEnum	self-fail	BitEnum	# Failed test 'Numify' at …/BitEnum-0.5/t/01-simple.t line 20
+Build::Graph	self-fail	Build::Graph	Type check failed on attribute '$!graph'; expected Build::Graph:D but got Build::Graph
+C::Parser	self-fail	C::Parser	Undefined routine 'is_typedef'
+CLDR::List	self-fail	CLDR::List	Index out of range. Is: -2, should be in 0..^Inf
+CLI::Ecosystem	dep-fail	shorten-sub-commands	# Failed test 'does foo give foozle?' at …/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+CRDT	self-fail	CRDT	# Failed test 'X++' at …/CRDT-0.0.16/t/02-g-counter.rakutest line 28
+CSS::Font::Resources	self-fail	CSS::Font::Resources	Method 'dimension' must be implemented by CSS::Module::CSS3::Values_and_Units because it is required by roles: CSS::Module::CSS3::Values_and_Units::Gen::External.
+CSS::Grammar	self-fail	CSS::Grammar	usage: $.token($ast, :$type)
+CSS::Minifier	self-fail	CSS::Minifier	Cannot resolve caller uc(Any:U); the invocant is a type object, not an instance
+CSS::Module	self-fail	CSS::Module	Method 'color' must be implemented by CSS::Module::CSS1 because it is required by roles: CSS::Module::CSS1::Gen::External.
+CSS::Module::CSS3::Selectors	self-fail	CSS::Module::CSS3::Selectors	# Failed test 'css3x-selectors simple-selector ast' at …/CSS-Module-CSS3-Selectors-0.0.6/t/00basic.t line 85
+CSS::Properties	self-fail	CSS::Properties	# Failed test 'code sample' at …/CSS-Properties-0.10.9/t/00-readme.t line 16
+CSS::Selector::To::XPath	self-fail	CSS::Selector::To::XPath	===SORRY!=== Parse error at line 236: Error while compiling module CSS::Selector::To::XPath (line 236): expected ) (got ':')
+CSS::Specification	self-fail	CSS::Specification	# Failed test 'css3 terms uri parse: url(foo.jpg)' at …/CSS-Specification-0.5.3/t/defs.t line 56
+CSS::Stylesheet	self-fail	CSS::Stylesheet	Method 'dimension' must be implemented by CSS::Module::CSS3::Values_and_Units because it is required by roles: CSS::Module::CSS3::Values_and_Units::Gen::External.
+CSS::TagSet	self-fail	CSS::TagSet	Method 'dimension' must be implemented by CSS::Module::CSS3::Values_and_Units because it is required by roles: CSS::Module::CSS3::Values_and_Units::Gen::External.
+CSS::Writer	self-fail	CSS::Writer	# Failed test 'writer stringification' at …/CSS-Writer-0.3.3/t/00basic.t line 11
+CSV-Autoclass	self-fail	CSV-Autoclass	# Failed test 'unknown named arg' at …/CSV-Autoclass-0.2.0/t/2-bin-tests.t line 28
+Cache::LRU	self-fail	Cache::LRU	# Failed test at …/perl6-Cache-LRU-master/t/00base.t line 51
+Carp	self-fail	Carp	===SORRY!=== Parse error at line 26: unexpected operator in term position (got ' ')
+CellularAutomata	self-fail	CellularAutomata	===SORRY!=== Parse error at line 143: Error while compiling module CellularAutomata::Scan (line 143): unexpected operator in term position (got '*=')
+Chart::EasyGnuplot	dep-build-fail	Chart::EasyGnuplot	
+Chart::Gnuplot	build-fail	Chart::Gnuplot	
+CheckedSQL	self-fail	CheckedSQL	===WARNING=== Module CheckedSQL EXPORT failed: Type check failed on attribute '$!return'; expected AST::Return:D but got AST::Return
+Chemistry::Elements	self-fail	Chemistry::Elements	# Failed test 'Can't assign negative number to ZInt' at …/Chemistry-Elements-0.2.2/t/005.ZInt-subtype.rakutest line 11
+Chemistry::Stoichiometry	self-fail	Chemistry::Stoichiometry	Method '!clone-rows' must be implemented by Math::Matrix because it is required by roles: Math::Matrix::Util.
+Chinese	self-fail	Chinese	Undefined routine '且'
+ClassX::StrictConstructor	self-fail	ClassX::StrictConstructor	# Failed test 'Can create an instace of a Class that does StrictClass' at …/ClassX-StrictConstructor-0.2/t/02-roles.rakutest line 12
+ClassicalChinese	self-fail	ClassicalChinese	Useless use of constant integer 4 in sink context (line 27)
+Code::Coverage	self-fail	Code::Coverage	===WARNING=== Module META::verauthapi EXPORT failed: Too many levels of recursion
+CodeUnit	self-fail	CodeUnit	# Failed test 'Could we eval' at …/CodeUnit-0.0.11/t/01-basic.rakutest line 8
+Collection	self-fail	Collection	# Failed test 'The module can be use-d ok: Collection' at …/dist/t/05-sanity.rakutest line 3
+Color::DirColors	self-fail	Color::DirColors	Unknown name for export: 'stat'
+Color::Palette	self-fail	Color::Palette	# Failed test 'got palette' at …/dist/t/02-gpl.rakutest line 19
+Colorizable	self-fail	Colorizable	# No such method 'is-colorized' for invocant of type 'Str'
+Command::Despatch	self-fail	Command::Despatch	"test default with args" does not start with a recognised command
+CommandLine::Usage	self-fail	CommandLine::Usage	No such method 'constraint_list' for invocant of type 'Parameter'
+Commands	self-fail	Commands	# Failed test 'check primaries' at …/Commands-0.0.9/t/01-basic.rakutest line 65
+CompUnit::Repository::Mask	self-fail	CompUnit::Repository::Mask	Method 'load' must be implemented by CompUnit::Repository::Mask because it is required by roles: CompUnit::Repository.
+CompUnit::Repository::Tar	self-fail	CompUnit::Repository::Tar	# Failed test 'The module can be use-d ok: CompUnit::Repository::Tar' at …/Raku-CompUnit--Repository--Tar-main/t/00-load.rakutest line 4
+CompUnit::Util	self-fail	CompUnit::Util	# Failed test 'load again returns same thing' at …/CompUnit-Util-0.7.0/t/01-utils.rakutest line 10
+Concurrent::BoundedChannel	self-fail	Concurrent::BoundedChannel	No such method 'signal' for invocant of type 'Lock'
+Concurrent::File::Find	self-fail	Concurrent::File::Find	# Failed test 'can find files' at …/perl6-concurrent-file-find-master/t/01-basic.t line 9
+Concurrent::Iterator	self-fail	Concurrent::Iterator	# Failed test 'That Seq contains a Concurrent::Iterator' at …/Concurrent-Iterator-1.1/t/convenience.rakutest line 14
+Concurrent::PChannel	self-fail	Concurrent::PChannel	===SORRY!=== Parse error at line 6: Error while compiling module Test::Async::Hub (line 6): `use Test::Async::Decl`: the module registered no slang (got 'unit')
+Concurrent::PriorityQueue	self-fail	Concurrent::PriorityQueue	No such method 'push' for invocant of type 'Concurrent::PriorityQueue'
+Concurrent::Progress	self-fail	Concurrent::Progress	No such method 'share' for invocant of type 'Supply'
+Concurrent::Queue	self-fail	Concurrent::Queue	# Failed test 'Empty queue is falsey' at …/Concurrent-Queue-1.2/t/basic.rakutest line 6
+Concurrent::Stack	self-fail	Concurrent::Stack	# Failed test 'Pushed/popped correct values' at …/Concurrent-Stack-1.3/t/stress.rakutest line 20
+Concurrent::Trie	self-fail	Concurrent::Trie	# Failed test 'Emptry Trie is falsey' at …/Concurrent-Trie-1.2/t/basic.rakutest line 11
+Config::DataLang::Refine	self-fail	Config::DataLang::Refine	Sorry, encountered invalid TOML:
+Config::JSON	self-fail	Config::JSON	No such method 'unlink' for invocant of type 'Any'
+Config::Netrc	self-fail	Config::Netrc	Type Str does not support associative indexing.
+Config::Parser::NetRC	dep-fail	Net::NetRC	# Failed test at …/Net-NetRC-0.0.7/t/02-functionality.rakutest line 59
+Config::Parser::toml	self-fail	Config::Parser::toml	Sorry, encountered invalid TOML:
+Configuration	self-fail	Configuration	No such method 'type' for invocant of type 'Conf1'
+Contact	self-fail	Contact	Cannot parse contact:
+Context	self-fail	Context	# Failed test 'basic' at …/Context-master/t/basic.t line 8
+Control::Bail	self-fail	Control::Bail	===SORRY!=== Parse error at line 11: `use Control::Bail`: it overrides `statement_control:sym<bail>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'my')
+Cookie::Jar	self-fail	Cookie::Jar	# Failed test 'simple key=value' at …/Cookie-Jar-0.1.3/t/add.t line 329
+Cooklang	self-fail	Cooklang	# Failed test 'The module can be use-d ok: Cooklang' at …/dist/t/00-use.rakutest line 8
+Coro::Simple	self-fail	Coro::Simple	# Failed test at …/Coro-Simple-master/t/fibonacci.t line 20
+Crane	self-fail	Crane	# Failed test 'Is expected value' at …/Crane-0.1.2/t/add.rakutest line 63
+Cro::H	self-fail	Cro::H	merge requires list-backed Supply arguments (a live supply cannot be merged yet)
+Crypt::RC4	self-fail	Crypt::RC4	Impossible coercion from 'array[uint8]' into 'Blob'
+Crypt::RSA	timeout	Crypt::RSA	
+CucumisSextus	self-fail	CucumisSextus	===SORRY!=== Parse error at line 7: Error while compiling module StepDefs (line 7): Missing required term after infix
+Curlie	self-fail	Curlie	No such method 'find_private_method' for invocant of type 'Curlie'
+CustomImporting	self-fail	CustomImporting	===SORRY!=== Parse error at line 23: expected ) (got 'is')
+DAWG	self-fail	DAWG	# Failed test 'Can load DAWG' at …/dist/t/02-serialization.rakutest line 22
+DB::ORM::Quicky	self-fail	DB::ORM::Quicky	DBDish::SQLite: Error: Wrong number of arguments to method execute: got 2, expected 4 (-1)
+DB::Xoos	self-fail	DB::Xoos	# Failed test 'basic select' at …/t/01-sql.t line 21
+DNS::Zone	self-fail	DNS::Zone	# Failed test '$origin example.com' at …/dns-zone-master/t/00_controlEntry.t line 26
+DSL::Entity::Foods	self-fail	DSL::Entity::Foods	No such method 'ws' for invocant of type 'Match'
+DSL::Entity::MachineLearning	self-fail	DSL::Entity::MachineLearning	Start argument to substr out of range. Is: -1, should be in 0..9; use *-1 if you want to index relative to the end
+DSL::Entity::Metadata	self-fail	DSL::Entity::Metadata	Start argument to substr out of range. Is: -1, should be in 0..17; use *-1 if you want to index relative to the end
+DSL::Entity::WeatherData	self-fail	DSL::Entity::WeatherData	Start argument to substr out of range. Is: -1, should be in 0..5; use *-1 if you want to index relative to the end
+Dan	self-fail	Dan	===SORRY!=== Parse error at line 43: unexpected operator in term position (got '=')
+Dan::Pandas	self-fail	Dan::Pandas	===SORRY!=== Parse error at line 32: unexpected operator in term position (got '=')
+Data::Importers	self-fail	Data::Importers	# Failed test 'g05.rua round-trip is byte-identical' at …/dist/t/03-harwell-boeing-roundtrip.rakutest line 16
+Data::MessagePack	self-fail	Data::MessagePack	# Failed test 'hash packed correctly' at …/Data-MessagePack-0.1.4/t/107-pack-hash.rakutest line 9
+Data::Reshapers	self-fail	Data::Reshapers	===SORRY!=== Parse error at line 4: Error while compiling module Text::CSV (line 4): `use Slang::Tuxic`: it overrides `routine_declarator:sym<sub>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'use')
+Data::Section::Simple	self-fail	Data::Section::Simple	# Failed test at …/Data-Section-Simple-master/t/01-function.t line 8
+Data::Selector	self-fail	Data::Selector	===SORRY!=== Parse error at line 403: Error while compiling module Data::Selector (line 403): expected ] (got ';')
+Data::StaticTable	self-fail	Data::StaticTable	===SORRY!=== Parse error at line 125: Error while compiling module Data::StaticTable (line 125): Confused (got ']')
+Data::Summarizers	self-fail	Data::Summarizers	===SORRY!=== Parse error at line 4: Error while compiling module Text::CSV (line 4): `use Slang::Tuxic`: it overrides `routine_declarator:sym<sub>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'use')
+Data::TextOrBinary	self-fail	Data::TextOrBinary	# Failed test 'Basic text with some UNIX newlines is considered text' at …/Data-TextOrBinary-1.5/t/blob.rakutest line 4
+DataStar	self-fail	DataStar	# Failed test 'Module 'DataStar' used okay' at …/DataStar-0.0.5/t/0-load-test.rakutest line 10
+Date::Calendar::CopticEthiopic	self-fail	Date::Calendar::CopticEthiopic	# Failed test at …/dist/t/03-accessors.rakutest line 24
+Date::Calendar::FrenchRevolutionary	self-fail	Date::Calendar::FrenchRevolutionary	Index out of range. Is: 1, should be in 0..0
+Date::Calendar::Gregorian	self-fail	Date::Calendar::Gregorian	Undefined routine 'check-locale'
+Date::Calendar::Hebrew	self-fail	Date::Calendar::Hebrew	List::MoreUtils doesn't know how to export: before
+Date::Calendar::Julian	self-fail	Date::Calendar::Julian	List::MoreUtils doesn't know how to export: last_index
+Date::WorkdayCalendar	self-fail	Date::WorkdayCalendar	===SORRY!=== Parse error at line 14: Confused (got ',')
+Date::YearDay	self-fail	Date::YearDay	# Failed test 'The object is-a 'Date::YearDay'' at …/Date-YearDay-0.0.2/t/01-test-new.t line 22
+DateTime::Format::W3CDTF	self-fail	DateTime::Format::W3CDTF	# Failed test at …/p6-datetime-format-w3cdtf-master/t/main.t line 19
+DateTime::Monotonic	self-fail	DateTime::Monotonic	# No such method 'new' for invocant of type 'Kernel'
+DateTime::strftime	self-fail	DateTime::strftime	Class 'DateTime' cannot inherit from / compose itself
+Debug::Transput	self-fail	Debug::Transput	===SORRY!=== Parse error at line 4: Error while compiling module Debug::Transput (line 4): Missing required term after infix
+Debugging::Tool	self-fail	Debugging::Tool	# Failed test 'Expected OUT' at …/t/all.rakutest line 17
+Definitely	self-fail	Definitely	The attribute '$!s' is required, but you did not provide a value for it.
+Deps	self-fail	Deps	===SORRY!=== Parse error at line 100: Error while compiling module Deps (line 100): Confused (got ';')
+Digest::BubbleBabble	self-fail	Digest::BubbleBabble	# Failed test 'Decoding 'xigak-nyryk-humil-bosek-sonax' succeeds' at …/Digest-Bubblebabble-0.0.3/t/01-basic.t line 26
+Digest::PSHA1	self-fail	Digest::PSHA1	# Failed test 'psha1(grrlU, YLABh) is Wv3Qz' at …/Digest-PSHA1-1.0.2/t/01-basic.rakutest line 18
+DirHandle	self-fail	DirHandle	# Failed test 'did we get all entries' at …/DirHandle-0.0.9/t/opendir.rakutest line 28
+Directory	dep-fail	IO::Dir	Testo::Test::Result
+DispatchMap	self-fail	DispatchMap	===SORRY!=== Parse error at line 114: Error while compiling module DispatchMap (line 114): expected variable after declarator (got 'proto')
+Dist::Helper	self-fail	Dist::Helper	# Failed test 'Output has correct contents' at …/Dist-Helper-1.0.1/t/01-template.t line 30
+Distribution::Common	self-fail	Distribution::Common	# Failed test 'The module can be use-d ok: Distribution::Common' at …/Raku-Distribution--Common-main/t/00-sanity.rakutest line 4
+Distribution::Common::Remote	self-fail	Distribution::Common::Remote	# Failed test 'The module can be use-d ok: Distribution::Common::Remote::Github' at …/Raku-Distribution--Common--Remote-main/t/00-sanity.rakutest line 4
+Distribution::Extension::Updater	self-fail	Distribution::Extension::Updater	Testo::Test::Result
+Docker::File	self-fail	Docker::File	# Failed test 'Correct volumes' at …/Docker-File-1.1/t/parse-basic.rakutest line 583
+Draw2D::Furniture	self-fail	Draw2D::Furniture	===SORRY!=== Parse error at line 18: Couldn't find terminator / (corresponding / was at line 8)
+Duo	self-fail	Duo	No such method 'add_method' for invocant of type 'GLOBAL'
+EC	dep-fail	FiniteFields	# Failed test at …/finite-fields-raku/t/basic.t line 6
+ECMA262Regex	self-fail	ECMA262Regex	# Failed test at …/ECMA262Regex-1.2/t/10-parsing.rakutest line 16
+ENIGMA::Machine	self-fail	ENIGMA::Machine	==> Invalid connection: 0 21
+Ecosystem	self-fail	Ecosystem	Undefined routine 'nqp::gethllsym'
+Ecosystem::Cache	self-fail	Ecosystem::Cache	Undefined routine 'nqp::gethllsym'
+Email::Address	self-fail	Email::Address	===SORRY!=== Parse error at line 21: Error while compiling module Email::Address::Format (line 21): indirect method call requires parentheses: $obj.'name'() (got '.')
+Email::Simple	self-fail	Email::Simple	# Failed test 'We can get a header' at …/Email-Simple-2.1.4/t/01-basic.rakutest line 12
+Email::Valid	self-fail	Email::Valid	No such method 'flat' for invocant of type 'Match'
+English	self-fail	English	Could not find , in:
+Env	self-fail	Env	# Failed test 'did we change inside %*ENV also' at …/Env-0.99/t/01-all.rakutest line 14
+Env::File	self-fail	Env::File	===WARNING=== Module Env::File EXPORT failed: Variable '$val' is not declared
+Event::Emitter	self-fail	Event::Emitter	
+EventSource::Server	self-fail	EventSource::Server	# Failed test 'An object of type 'EventSource::Server' can do the method 'emit'' at …/EventSource-Server-0.0.11/t/020-basic.t line 16
+FINALIZER	self-fail	FINALIZER	===WARNING=== Module FINALIZER EXPORT failed: No such method 'find-attach-target' for invocant of type 'Any'
+FStrings	self-fail	FStrings	# Failed test 'general g small' at …/FStrings-0.0.1/t/01-basic.rakutest line 27
+FastCGI	self-fail	FastCGI	# Failed test 'The module can be use-d ok: FastCGI' at …/FastCGI-0.9.0/t/01-basic.rakutest line 5
+Fasta	self-fail	Fasta	Target is not assignable
+File-Path-Copy	self-fail	File-Path-Copy	===SORRY!=== Parse error at line 7: expected ) (got '«')
+File::Ignore	self-fail	File::Ignore	# Failed test '"result-[AB].txt" ignores file result-A.txt' at …/File-Ignore-1.2/t/charclass.rakutest line 12
+File::Path::Copy	self-fail	File::Path::Copy	===SORRY!=== Parse error at line 7: expected ) (got '«')
+File::Spec::Case	self-fail	File::Spec::Case	# Failed test 'tolerant is True in cwd' at …/p6-File-Spec-Case-master/t/00_basic.t line 11
+File::TreeBuilder	self-fail	File::TreeBuilder	===SORRY!=== Parse error at line 54: Cannot use underscore between digits unless it is between two digits
+File::XML::DMARC::Google	self-fail	File::XML::DMARC::Google	Failure
+Finance::GDAX::API	self-fail	Finance::GDAX::API	# Failed test 'External secret file key' at …/P6-Finance-GDAX-API-master/t/020-api.t line 34
+FindBin	self-fail	FindBin	# FindBin
+FindBin::libs	self-fail	FindBin::libs	# Failed test 'Exported FindBin-libs-dirs' at …/FindBin-libs-0.3.0/t/02-export.rakutest line 8
+FiniteFields	self-fail	FiniteFields	# Failed test at …/finite-fields-raku/t/basic.t line 6
+FixedInt	self-fail	FixedInt	===SORRY!=== Parse error at line 23: expected variable after declarator (got ':')
+Form	self-fail	Form	# Failed test 'Lines were correct' at …/Form-1.1/t/03-textformatting.rakutest line 28
+Format::Lisp	self-fail	Format::Lisp	# Failed test at …/Format-Lisp-0.0.3/t/02-build-tree.rakutest line 14
+Fortran::Grammar	self-fail	Fortran::Grammar	# the licence ‘GPL-3.0’ is valid but deprecated, you may want to use another license.
+French	self-fail	French	Undefined routine 'et'
+Function::Validation	self-fail	Function::Validation	===SORRY!=== Parse error at line 125: Error while compiling module Function::Validation (line 125): unexpected operator in term position (got ' ')
+Functional::LinkedList	self-fail	Functional::LinkedList	===SORRY!=== Parse error at line 19: Error while compiling module MetamodelX::ValueClassHOW (line 19): Confused (got '}')
+Functional::Queue	dep-fail	Functional::LinkedList	===SORRY!=== Parse error at line 19: Error while compiling module MetamodelX::ValueClassHOW (line 19): Confused (got '}')
+Functional::Stack	dep-fail	Functional::LinkedList	===SORRY!=== Parse error at line 19: Error while compiling module MetamodelX::ValueClassHOW (line 19): Confused (got '}')
+FunctionalParsers	self-fail	FunctionalParsers	===SORRY!=== Parse error at line 35: expected ) (got '(')
+Future	self-fail	Future	# Undefined routine 'new-future'
+GNU::Time	self-fail	GNU::Time	Cannot resolve caller like(Str:D, Regex); the expected value must be a Regex
+Games::TauStation::DateTime	self-fail	Games::TauStation::DateTime	# Failed test 'D198.14/07:106GCT' at …/Games-TauStation-DateTime-1.1/t/01-basic.rakutest line 25
+Games::Wordle	self-fail	Games::Wordle	samewith is not in the dynamic scope of a dispatcher
+Gauge	self-fail	Gauge	# Failed test 'can use Gauge' at …/ra-Gauge/t/01-version.rakutest line 6
+Geo::Basic	self-fail	Geo::Basic	No such method 'parse-base' for invocant of type 'IntStr'
+Geo::Coordinates::UTM	self-fail	Geo::Coordinates::UTM	Ellipsoid Bessel 1841 Nambia  unknown.
+Geo::IP2Location::Lite	self-fail	Geo::IP2Location::Lite	# Failed test 'lookup with missing IP' at …/geo-ip2location-lite-p6-master/t/004_exceptions.t line 13
+Geo::Polyline	self-fail	Geo::Polyline	# Failed test 'The module can be use-d ok: Geo::Polyline' at …/Geo-Polyline-0.0.4/t/01-use.rakutest line 5
+GeoIP2	self-fail	GeoIP2	# Failed test 'locate IPv4' at …/dist/t/00-reader.rakutest line 121
+German	self-fail	German	Undefined routine 'und'
+Getopt::Advance	self-fail	Getopt::Advance	===SORRY!=== Parse error at line 468: Error while compiling module Getopt::Advance::Parser (line 468): expected ] (got ';')
+Getopt::Kinoko	self-fail	Getopt::Kinoko	# Failed test 'short option check ok.' at …/Getopt-Kinoko-master/t/02-option.t line 125
+Getopt::Std	self-fail	Getopt::Std	# Failed test 'empty string [all: True permute: False unknown: False]: fails' at …/Getopt-Std-1.0.2/t/01-getopts.rakutest line 43
+Getopt::Subcommands	self-fail	Getopt::Subcommands	Cannot resolve caller MAIN(); no matching multi candidate
+Getopt::Tiny	self-fail	Getopt::Tiny	Could not find Pod::To::Text in:
+Getopt::Type	self-fail	Getopt::Type	# Failed test at …/Getopt-Type-0.2/t/01-basic.rakutest line 17
+Gherkin::Grammar	self-fail	Gherkin::Grammar	Unknown language 'English'.
+Git::Config	self-fail	Git::Config	No such method 'Hash' for invocant of type 'Match'
+Grammar::BNF	self-fail	Grammar::BNF	No such method 'set_name' for invocant of type 'Regex'
+Grammar::Common	self-fail	Grammar::Common	# No such method 'Hash' for invocant of type 'Match'
+Grammar::ErrorReporting	self-fail	Grammar::ErrorReporting	# Failed test 'error-position 2' at …/Grammar-Error-Reporting-0.2/t/01-basic.t line 27
+Grammar::Extractor	self-fail	Grammar::Extractor	No such method 'new' for invocant of type 'Any'
+Grammar::HTTP	self-fail	Grammar::HTTP	# Failed test at …/Raku-Grammar--HTTP-main/t/01-http-grammar.rakutest line 19
+Grammar::Highlighter	self-fail	Grammar::Highlighter	No such method 'add_fallback' for invocant of type 'Grammar::Highlighter'
+Grammar::Message	self-fail	Grammar::Message	# Failed test 'Pointer created' at …/raku-grammar-message/t/00-basic.t line 32
+Grammar::PrettyErrors	self-fail	Grammar::PrettyErrors	Too many levels of recursion
+Grammar::Profiler::Simple	self-fail	Grammar::Profiler::Simple	# Failed test 'Rule ``TOP'' was called 1 times (1)' at …/Grammar-Profiler-Simple-0.05/t/csv.rakutest line 29
+Graph	self-fail	Graph	Type check failed on attribute '$!center'; expected Str:D but got Whatever
+GraphQL	self-fail	GraphQL	# Failed test 'Caught parse error' at …/Perl6-GraphQL-master/t/01-parse-bad.t line 24
+Graphviz::DOT::Grammar	self-fail	Graphviz::DOT::Grammar	# Failed test 'Triangle with quotes' at …/dist/t/02-mermaid-js.rakutest line 64
+Green	self-fail	Green	Undefined routine 'test'
+Grid	self-fail	Grid	[3 4] is not subgrid of element
+HTML::Entity::Fast	self-fail	HTML::Entity::Fast	# Failed test 'encoding with entities' at …/HTML-Entity-Fast-0.0.5/t/01-basic.rakutest line 10
+HTML::Functional	self-fail	HTML::Functional	Undefined routine 'h1'
+HTML::Parser::XML	self-fail	HTML::Parser::XML	Undefined routine 'enum'
+HTML::Strip	self-fail	HTML::Strip	Undefined routine 'nqp::lc'
+HTML::Tag	self-fail	HTML::Tag	# Failed test 'HTML::Tag::p.id works' at …/HTML-Tag/t/0010-html.t line 17
+HTML::Template	self-fail	HTML::Template	# Failed test 'true condition' at …/dist/t/01.t line 143
+HTTP::API::MusicBrainz	dep-fail	URL	# No matching multi candidate for method new
+HTTP::Headers	self-fail	HTTP::Headers	No matching multi candidate for method header
+HTTP::MultiPartParser	self-fail	HTTP::MultiPartParser	# Failed test 'parts (--xxx\x0DFoo:\x20Foo\x0DBar:\x20Bar\x0D\x0D\x0D--xxx--\x0D)' at …/p6-HTTP-MultiPartParser-master/t/035_headers.t line 57
+HTTP::Request::Supply	timeout	HTTP::Request::Supply	
+HTTP::Server::Async	self-fail	HTTP::Server::Async	No such method 'host' for invocant of type 'IO::Socket::INET'
+HTTP::Server::Async::Plugins::Router::Simple	self-fail	HTTP::Server::Async::Plugins::Router::Simple	Cannot resolve caller match(Any:U); the invocant is a type object, not an instance
+HTTP::Server::Logger	self-fail	HTTP::Server::Logger	No such method 'bytes' for invocant of type '<anon|2>'
+HTTP::Server::Middleware::JSON	self-fail	HTTP::Server::Middleware::JSON	# Failed test 'Not parsed' at …/dist/t/00-basic.t line 45
+HTTP::Server::Ogre	self-fail	HTTP::Server::Ogre	# Failed test 'The module can be use-d ok: HTTP::Server::Ogre' at …/HTTP-Server-Ogre-master/t/00-load.t line 8
+HTTP::Server::Tiny	timeout	HTTP::Server::Tiny	
+HTTP::Supply	timeout	HTTP::Supply	
+HTTP::UserAgent::Strict	self-fail	HTTP::UserAgent::Strict	# Failed test 'set-cookie 1/11' at …/dist/t/030-cookies.rakutest line 24
+Hash-with	self-fail	Hash-with	# Failed test 'does lower case give right answer' at …/Hash-with-0.0.6/t/01-basic.rakutest line 7
+Hash2Class	self-fail	Hash2Class	No such method 'foo' for invocant of type 'A'
+Hash::Consistent	self-fail	Hash::Consistent	# Failed test 'cardinality on insert' at …/dist/t/basic.rakutest line 44
+Hash::LRU	self-fail	Hash::LRU	Variable '$max' is not declared
+Hash::MultiValue	self-fail	Hash::MultiValue	# Failed test 'b = 13, 12' at …/Hash-MultiValue-0.7/t/basic.t line 42
+Hash::MutableKeys	self-fail	Hash::MutableKeys	Class 'Proxy' cannot inherit from / compose itself
+Hash::Restricted	self-fail	Hash::Restricted	# Failed test 'does STORE return self' at …/Hash-Restricted-0.0.9/t/01-basic.rakutest line 10
+Hash::Sorted	self-fail	Hash::Sorted	Variable '$cmp' is not declared
+Hash::Util	self-fail	Hash::Util	# Failed test 'is &all_keys externally accessible?' at …/Hash-Util-0.0.5/t/01-basic.t line 20
+Hashids	self-fail	Hashids	Cannot resolve caller chars(Any:U); the invocant is a type object, not an instance
+Heap	self-fail	Heap	# Failed test at …/Heap-0.0.1/t/01-test.rakutest line 99
+Holidays::Miscellaneous	dep-fail	Date::Calendar::Hebrew	List::MoreUtils doesn't know how to export: before
+HomoGlypher	self-fail	HomoGlypher	samewith is not in the dynamic scope of a dispatcher
+Humming-Bird	dep-fail	ULID	# Failed test 'non-random ULID looks okay' at …/ULID-0.1.0/t/basic.t line 54
+Humming-Bird::Core	self-fail	Humming-Bird::Core	===SORRY!=== Parse error at line 97: Error while compiling module Humming-Bird::Core (line 97): Confused (got '}')
+Hydrate	self-fail	Hydrate	Extra attributes while building Inner
+I18N::LangTags	self-fail	I18N::LangTags	No such method 'contents' for invocant of type 'Any'
+IO::CatHandle::AutoLines	self-fail	IO::CatHandle::AutoLines	===SORRY!=== Parse error at line 49: expected ) (got ':')
+IO::Dir	self-fail	IO::Dir	Testo::Test::Result
+IO::Maildir	self-fail	IO::Maildir	No such method 'value' for invocant of type 'Hash'
+IO::Notification::Recursive	self-fail	IO::Notification::Recursive	No such method 'watch' for invocant of type 'IO::Path'
+IO::Path::Mode	self-fail	IO::Path::Mode	# Failed test 'and it's the right sort of thing' at …/IO-Path-Mode-0.1.0/t/020-basic.t line 10
+IO::Prompt	self-fail	IO::Prompt	# Failed test 'call "ask_yn( 'da2?', Bool::False )" => "da2? [y/n] " expected "da2? [y/N] "' at …/dist/t/01-simple.rakutest line 96
+IO::String	self-fail	IO::String	===SORRY!=== Parse error at line 26: Error while compiling module IO::String (line 26): expected { (got 'with')
+IP::Addr	self-fail	IP::Addr	Undefined routine 'actions'
+IP::Random	self-fail	IP::Random	# Failed test 'default_ipv4_exclude' at …/IP-Random-0.1.0/t/01-basic.t line 19
+IRC::Channel::Log	dep-fail	IRC::Log::Colabti	Type check failed in binding to parameter '$hour'; expected int but got Str ("05")
+IRC::Log::Colabti	self-fail	IRC::Log::Colabti	Type check failed in binding to parameter '$hour'; expected int but got Str ("05")
+IRC::Log::Textual	self-fail	IRC::Log::Textual	# Failed test 'does .gist generate the raw log again' at …/IRC-Log-Textual-0.0.18/t/01-basic.rakutest line 58
+Image::PNG::Portable	self-fail	Image::PNG::Portable	Undefined routine 'String::CRC32::crc32'
+Image::RGBA	self-fail	Image::RGBA	read past end of buffer
+Injector	self-fail	Injector	Undefined routine 'bind'
+Inline::Brainfuck	timeout	Inline::Brainfuck	
+Inline::Python	self-fail	Inline::Python	No such method 'add_fallback' for invocant of type 'Metamodel::ParametricRoleGroupHOW'
+InterceptAllMethods	self-fail	InterceptAllMethods	No such method 'foo' for invocant of type 'Foo'
+Interval	self-fail	Interval	Undefined routine 'seconds'
+Intl::BCP47	self-fail	Intl::BCP47	===SORRY!=== Parse error at line 8: Error while compiling module Intl::BCP47 (line 8): unexpected operator in term position (got ' ')
+Intl::CLDR	self-fail	Intl::CLDR	# Failed test at …/dist/t/01-spot-check.rakutest line 20
+IoC	self-fail	IoC	No such method 'fetch' for invocant of type 'Any'
+Iter::Able	self-fail	Iter::Able	===SORRY!=== Parse error at line 47: Error while compiling module Iter::Able::Group-Conseq (line 47): expected ) (got 'with')
+JS::Minify	timeout	JS::Minify	
+JSON::Collector	self-fail	JSON::Collector	# Failed test 'was the file transferred to the expected location' at …/JSON-Collector-0.0.4/t/01-basic.rakutest line 40
+JSON::Hjson	self-fail	JSON::Hjson	Input (383 characters) is not a valid JSON string
+JSON::Mask	self-fail	JSON::Mask	'self' used where no object is available
+JSON::Pointer	self-fail	JSON::Pointer	# Failed test at …/JSON-Pointer-1.0/t/01-basic.t line 48
+JSON::RPC	self-fail	JSON::RPC	Can't serialize an object of type Range
+JSON::RepositoryEvent	self-fail	JSON::RepositoryEvent	Cannot look up empty name
+JSON::Schema	self-fail	JSON::Schema	# Failed test 'When type is described as array, items must be unique' at …/JSON-Schema/t/01-basic.t line 41
+JSON::Stream	self-fail	JSON::Stream	# Failed test 'With import, function is available' at …/Module-Pod-master/t/export.t line 17
+JSONL	self-fail	JSONL	# Type check failed for return value; expected Seq but got List (("\{\"id\":1,\"name\...)
+Japanese	self-fail	Japanese	Useless use of constant integer 4 in sink context (line 28)
+JavaScript::D3	self-fail	JavaScript::D3	# Failed test 'The object is-a 'Map'' at …/dist/t/06-named-colors.rakutest line 11
+Jupyter::Converter	self-fail	Jupyter::Converter	# Notebook hash must have a <cells> array
+Keyring	self-fail	Keyring	Type check failed on attribute '$!backend-priority'; expected Keyring::Backend:U but got Array
+Kind	self-fail	Kind	No such method 'set_parameterizer' for invocant of type 'Metamodel::Primitives'
+L10N	self-fail	L10N	===SORRY!=== Parse error at line 4: `use L10N`: the module registered no slang (got 'my')
+LIVR	self-fail	LIVR	# RULE_BUILDER [required] SHOULD BE A CODEREF
+LLM::Data::Pipeline	timeout	LLM::Data::Pipeline	
+LLM::Functions	self-fail	LLM::Functions	# Failed test at …/dist/t/04-LLM-chats.rakutest line 67
+LLM::Graph	self-fail	LLM::Graph	# Only Routine:D callables are supported. Please use subs or annonymous subs as callable specs.
+LLM::Prompts	self-fail	LLM::Prompts	# Failed test 'Parsing function cell spec' at …/dist/t/02-prompt-parsing.rakutest line 33
+LLM::RetrievalAugmentedGeneration	self-fail	LLM::RetrievalAugmentedGeneration	# Failed test 'Expected failure for non-CArray distance function' at …/dist/t/01-ingest-vector-database.rakutest line 65
+Lang::JA::Kana	self-fail	Lang::JA::Kana	# Failed test 'Half-width voiced combinations' at …/dist/t/01-basic.t line 57
+Lang::Transliterate	self-fail	Lang::Transliterate	# Failed test 'Arabic BGNPCGN' at …/dist/t/01-basic.t line 74
+LibXML::Writer	self-fail	LibXML::Writer	Undefined routine 'xmlInitParser'
+LibraryMake	self-fail	LibraryMake	Unknown VM; don't know how to build
+License::Software	self-fail	License::Software	===SORRY!=== Parse error at line 70: Error while compiling module License::Software (line 70): expected ) (got '$alias')
+Lingua::EN::Stem::Porter	self-fail	Lingua::EN::Stem::Porter	# Failed test 'The stem of cyme, cym, should be cyme' at …/Lingua-EN-Stem-Porter-1.2/t/01-wordlist.rakutest line 18
+Lingua::Stem::Bulgarian	self-fail	Lingua::Stem::Bulgarian	Undefined routine 'algorithm'
+Lingua::Stem::Portuguese	self-fail	Lingua::Stem::Portuguese	Undefined routine 'ns'
+Lingua::Stem::Russian	self-fail	Lingua::Stem::Russian	# Failed test 'correct stems' at …/dist/t/01-stem-word.rakutest line 25
+Lingua::StopwordsISO	self-fail	Lingua::StopwordsISO	# Failed test 'Bulgarian text' at …/Lingua-StopwordsISO-0.1.0/t/02-delete-stopwords.rakutest line 29
+List::Divvy	self-fail	List::Divvy	===SORRY!=== Parse error at line 12: expected method name after '.' (got '³')
+List::MoreUtils	self-fail	List::MoreUtils	# Failed test 'is &after externally accessible?' at …/List-MoreUtils-0.0.10/t/01-basic.rakutest line 23
+List::Operator::DoublePlus	self-fail	List::Operator::DoublePlus	Target is not assignable
+List::Util	self-fail	List::Util	# Failed test 'is &reduce externally accessible?' at …/List-Util-0.0.10/t/01-basic.t line 17
+List::UtilsBy	self-fail	List::UtilsBy	# Failed test 'is &bundle_by externally accessible?' at …/List-UtilsBy-0.0.8/t/01-basic.rakutest line 16
+Listicles	self-fail	Listicles	# Failed test 'Should die if insufficent elements' at …/Listicles/t/01-basic.rakutest line 92
+Locale::Codes::Country	self-fail	Locale::Codes::Country	# Failed test 'codeToCountry country=BANGLADESH' at …/dist/t/01-basic.rakutest line 6
+Log::Any	self-fail	Log::Any	# Failed test 'continue on match' at …/log-any-master/t/02-basic.t line 60
+Log::Dispatch	timeout	Log::Dispatch	
+Log::Reader	self-fail	Log::Reader	No such method 'parse' for invocant of type 'Any'
+Log::Timeline	self-fail	Log::Timeline	# Timeout while waiting for first events
+LogP6	self-fail	LogP6	Undeclared name 'Level::trace'
+LogP6-Writer-Journald	self-fail	LogP6-Writer-Journald	Undeclared name 'Level::trace'
+LogP6::Writer::StackDriver	self-fail	LogP6::Writer::StackDriver	Undeclared name 'Level::trace'
+Logic::Ternary	self-fail	Logic::Ternary	# Failed test 'not3 False -> True (function)' at …/Logic-Ternary-0.0.4/t/01-basic.rakutest line 11
+MCP::Server::Tool::Ask	self-fail	MCP::Server::Tool::Ask	# No such method 'required' for invocant of type 'Attribute'
+META::verauthapi	self-fail	META::verauthapi	# Failed test ':auth on A at compile-time' at …/META-verauthapi-0.0.1/t/01-basic.rakutest line 28
+MIDI::Make	self-fail	MIDI::Make	No such method 'write-uint32' for invocant of type 'Buf'
+ML::AssociationRuleLearning	self-fail	ML::AssociationRuleLearning	===SORRY!=== Parse error at line 4: Error while compiling module Text::CSV (line 4): `use Slang::Tuxic`: it overrides `routine_declarator:sym<sub>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'use')
+ML::FindTextualAnswer	self-fail	ML::FindTextualAnswer	# Failed test at …/dist/t/01-llm-results-post-processing.rakutest line 18
+ML::SparseMatrixRecommender	self-fail	ML::SparseMatrixRecommender	# Failed test 'expected long form dataset type' at …/dist/t/01-creation.rakutest line 120
+MQTT::Client	self-fail	MQTT::Client	# Failed test '4.7.1.3, 'sport/tennis/player1/ranking' should not match 'sport/tennis/+'' at …/MQTT-Client-0.2/t/regex.rakutest line 41
+Mac::Applications::List	self-fail	Mac::Applications::List	No such method 'osname' for invocant of type 'VM'
+MacOS::AudioDevices	self-fail	MacOS::AudioDevices	Type check failed in binding to parameter '$cfstring'; expected Pointer but got CArray ({:addr(5032177568), ...)
+Magento	self-fail	Magento	# Failed test 'The module can be use-d ok: Magento::Bundle' at …/Magento-0.0.2/t/00-basics.t line 11
+Manifest::StopWar	self-fail	Manifest::StopWar	# No such method 'private_methods' for invocant of type 'Manifest::StopWar'
+Manifesto	self-fail	Manifesto	# Failed test 'got what we expected' at …/Manifesto-0.0.7/t/040-synopsis.t line 29
+Map::DeckGL	self-fail	Map::DeckGL	# Failed test 'The module can be use-d ok: Map::DeckGL' at …/Map-DeckGL-0.0.4/t/00-use.rakutest line 6
+Map::Mapnik	self-fail	Map::Mapnik	Too many levels of recursion
+Map::Match	self-fail	Map::Match	Length argument to substr out of range. Is: -17, should be in 0..0; use *-17 if you want to index relative to the end
+Markdown::Grammar	self-fail	Markdown::Grammar	'self' used where no object is available
+Markup::Calendar	self-fail	Markup::Calendar	Cannot resolve caller calendar-year(); no matching multi candidate
+Marrow	self-fail	Marrow	bad parameter or other API misuse
+Math::Angle	self-fail	Math::Angle	===SORRY!=== Parse error at line 165: Error while compiling module Math::Angle (line 165): expected method name after '.' (got '»')
+Math::Arrow	self-fail	Math::Arrow	===SORRY!=== Parse error at line 9: unexpected operator in term position (got '↑')
+Math::Combinatorics	self-fail	Math::Combinatorics	Unknown name for export: 'ALL'
+Math::Constants	self-fail	Math::Constants	===SORRY!=== Parse error at line 1: unexpected operator in term position (got '﻿')
+Math::Fitting	dep-fail	Math::Matrix	# Failed test 'The module can be use-d ok: Math::Matrix' at …/Perl6-Math-Matrix-master/t/010-load.t line 6
+Math::FractionalPart	self-fail	Math::FractionalPart	# Failed test 'is f(Inf) = NaN for function fractional' at …/Math-FractionalPart-0.0.6/t/frac-methods.t line 18
+Math::Handy	self-fail	Math::Handy	===SORRY!=== Parse error at line 4: expected ) (got '!')
+Math::Interval	self-fail	Math::Interval	# Failed test 'R+R' at …/dist/t/01-rop.rakutest line 20
+Math::Matrix	self-fail	Math::Matrix	# Failed test 'The module can be use-d ok: Math::Matrix' at …/dist/t/010-load.rakutest line 5
+Math::Model	dep-fail	Math::RungeKutta	# took 0 seconds
+Math::Quaternion	self-fail	Math::Quaternion	# Failed test 'Add      Complex' at …/Math-Quaternion-0.2.1/t/math_with_complex.rakutest line 12
+Math::Roman	self-fail	Math::Roman	# Failed test at …/Math-Roman-0.0.1/t/01-basic.rakutest line 22
+Math::Root	self-fail	Math::Root	Type check failed in binding to parameter '$integer'; expected Int but got Num (3.814697265625e+20)
+Math::RungeKutta	self-fail	Math::RungeKutta	# took 0 seconds
+Math::Sequences	self-fail	Math::Sequences	===SORRY!=== Parse error at line 481: Error while compiling module Math::Sequences::Integer (line 481): expected method name after '.' (got '²')
+Math::Symbolic	self-fail	Math::Symbolic	===SORRY!=== Parse error at line 58: Error while compiling module Math::Symbolic (line 58): unexpected operator in term position (got '∈')
+Math::Vector	self-fail	Math::Vector	# Failed test 'Math::Vector by Scalar divide gets proper direction' at …/dist/t/01-basics.rakutest line 7
+Math::Vector3D	self-fail	Math::Vector3D	# Failed test 'length-squared' at …/Math-Vector3D-0.0.1/t/basics.p6.t line 9
+Memoize	self-fail	Memoize	# Failed test '&memoize externally accessible?' at …/Memoize-0.0.11/t/01-basic.rakutest line 8
+MergeOrderedSeqs	self-fail	MergeOrderedSeqs	# Failed test at …/MergeOrderedSeqs-0.0.2/t/01-basic.rakutest line 17
+MermaidJS::Grammar	self-fail	MermaidJS::Grammar	# Failed test 'sample 2 parses' at …/dist/t/01-flowchart.rakutest line 61
+MessagePack	self-fail	MessagePack	Private method call to 'unpack-uint8' outside the defining class
+MessagePack::Class	self-fail	MessagePack::Class	Cannot look up attributes in a Inner type object
+MetamodelX::Dataclass	self-fail	MetamodelX::Dataclass	===SORRY!=== Parse error at line 14: Error while compiling module MetamodelX::Dataclass (line 14): expected ) (got '$obj')
+Method::Misspelt	self-fail	Method::Misspelt	Variable '$END' is not declared
+Method::Modifiers	self-fail	Method::Modifiers	# Failed test 'wrapper was called' at …/perl6-method-modifiers-master/t/01-functions.t line 17
+Method::Protected	self-fail	Method::Protected	No such method 'add_attribute' for invocant of type 'GLOBAL'
+MinG	self-fail	MinG	Type check failed for an element of @!features; expected MinG::Feature but got Int (2)
+MoarVM::Bytecode	timeout	MoarVM::Bytecode	
+Modf	self-fail	Modf	# Failed test 'modf '-0o10', real: 0' at …/Modf-0.0.4/t/modf2.t line 21
+Module::Does	self-fail	Module::Does	# Failed test at …/t/00-test.t line 20
+Module::Pod	self-fail	Module::Pod	# Failed test 'With import, function is available' at …/Module-Pod-master/t/export.t line 17
+Monad	self-fail	Monad	===SORRY!=== Parse error at line 28: unexpected operator in term position (got '>>=')
+Monad-Result	self-fail	Monad-Result	===SORRY!=== Parse error at line 15: unexpected operator in term position (got '>>=')
+Moneys	self-fail	Moneys	===SORRY!=== Parse error at line 34: expected ) (got 'USD')
+Monitor::Monit	self-fail	Monitor::Monit	# Failed test 'from-xml' at …/Monitor-Monit-0.0.6/t/030-status.t line 12
+Music::Engine	dep-fail	ScaleVec	# Failed test 'Pitch vector out matches pitch vector in' at …/ScaleVec-0.0.6/t/ScaleVec.t line 13
+Music::Helpers	self-fail	Music::Helpers	Could not find Note in:
+Mux	self-fail	Mux	No such method 'max_threads' for invocant of type 'Scheduler'
+Native::Compile	self-fail	Native::Compile	Unknown VM; don't know how to build
+Native::Overflow	self-fail	Native::Overflow	===WARNING=== Module Native::Overflow EXPORT failed: No such symbol 'bit'
+Native::Packing	self-fail	Native::Packing	# Failed test 'code sample' at …/Native-Packing-0.0.6/t/00-readme.t line 14
+NativeHelpers::Blob	self-fail	NativeHelpers::Blob	Unknown VM; don't know how to compile test libraries
+NativeHelpers::iovec	self-fail	NativeHelpers::iovec	# Failed test 'Is a copy of the Blob' at …/NativeHelpers-iovec-0.0.1/t/01-basic.rakutest line 11
+Net::HTTP	self-fail	Net::HTTP	# Failed test 'The module can be use-d ok: Net::HTTP::URL' at …/Raku-Net--HTTP-main/t/00-load.rakutest line 7
+Net::IP::Parse	self-fail	Net::IP::Parse	===SORRY!=== Parse error at line 11: expected ) (got 'ip')
+Net::NetRC	self-fail	Net::NetRC	# Failed test at …/Net-NetRC-0.0.7/t/02-functionality.rakutest line 59
+Net::Netmask	self-fail	Net::Netmask	Constraint type check failed in binding to parameter '@address'
+Net::Netmask::Fast	self-fail	Net::Netmask::Fast	Undefined routine 'nqp::coerce_is'
+Net::SMTP	self-fail	Net::SMTP	Bad client-send: MAIL FROM:
+Net::Telnet	self-fail	Net::Telnet	No such method 'new' for invocant of type 'Any'
+Net::Whois	self-fail	Net::Whois	# Failed test 'The module can be use-d ok: Net::Whois' at …/Net-Whois-0.0.3/t/00-use.rakutest line 6
+Net::Whois::Async	self-fail	Net::Whois::Async	# Failed test 'invalid IP rejected by IP subset' at …/dist/t/01-basic.rakutest line 1
+November	self-fail	November	===SORRY!=== Parse error at line 111: Error while compiling module Text::Markup::Wiki::MediaWiki (line 111): expected ] (got ')')
+Number::Denominate	self-fail	Number::Denominate	Attempt to divide 0 by zero using infix:<div>
+Number::More	self-fail	Number::More	Cannot assign to a readonly variable or a value
+Numeric::Pack	self-fail	Numeric::Pack	Type check failed in binding to parameter '$bytes'; expected CArray[uint8] but got CArray ({:addr(4981920128), ...)
+OLE::Storage_Lite	self-fail	OLE::Storage_Lite	# Header ID incorrect
+OO::Actors	self-fail	OO::Actors	# Failed test 'Correct number of entries' at …/OO-Actors-0.4/t/basic.rakutest line 31
+Object::Delayed	dep-fail	InterceptAllMethods	No such method 'foo' for invocant of type 'Foo'
+Object::Permission	self-fail	Object::Permission	# Failed test 'throws when it gets an exception' at …/Object-Permission-0.0.7/t/020-basic.t line 13
+Object::Trampoline	dep-fail	InterceptAllMethods	No such method 'foo' for invocant of type 'Foo'
+ObjectCache	self-fail	ObjectCache	# Failed test 'does absence of ID die' at …/ObjectCache-0.0.6/t/01-basic.rakutest line 18
+OneSeq	self-fail	OneSeq	===SORRY!=== Parse error at line 7: unexpected operator in term position (got '>>')
+OpenAPI::Model	self-fail	OpenAPI::Model	# Failed test 'Can parse the document' at …/OpenAPI-Model/t/00-openapi-model.t line 80
+OpenAPI::Schema::Validate	self-fail	OpenAPI::Schema::Validate	# Failed test 'Valid relative JSON Pointer accepted' at …/OpenAPI-Schema-Validate/t/format.t line 50
+Operator-grandpa	self-fail	Operator-grandpa	===SORRY!=== Parse error at line 10: Error while compiling module Operator::grandpa (line 10): expected ) (got ':')
+Operator::dB	self-fail	Operator::dB	===SORRY!=== Parse error at line 12: Malformed radix number
+Operator::defined-alternation	self-fail	Operator::defined-alternation	# Failed test 'load module Operator::defined-alternation' at …/perl6-operator-defined-alternation-master/t/00-load.t line 7
+Operator::grandpa	self-fail	Operator::grandpa	===SORRY!=== Parse error at line 33: unexpected operator in term position (got '==')
+Ops::SI	self-fail	Ops::SI	# Failed test 'Module can be used' at …/Ops-SI-0.1.1/t/01-use.t line 9
+OrderedHash	self-fail	OrderedHash	# Failed test 'default value type' at …/OrderedHash-0.0.4/t/01-basic.t line 10
+Oyatul	self-fail	Oyatul	# Failed test 'and it is a template' at …/Oyatul-0.0.9/t/030-detail.t line 28
+P5-X	self-fail	P5-X	===SORRY!=== Parse error at line 22: expected ) (got '$file')
+P5__DATA__	self-fail	P5__DATA__	===SORRY!=== Parse error at line 5: `use P5__DATA__`: it overrides `term:sym<p5end>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'plan')
+P5caller	self-fail	P5caller	# Failed test 'did we get the right file name' at …/P5caller-0.0.13/t/01-basic.rakutest line 13
+P5chomp	self-fail	P5chomp	# Failed test 'did we actually chomp' at …/P5chomp-0.0.11/t/02-chomp.rakutest line 14
+P5defined	self-fail	P5defined	===SORRY!=== Parse error at line 17: Unsupported use of undef as a value; in Raku please use something more specific: an undefined type object such as Any, or Nil as the absence of a value
+P5fileno	self-fail	P5fileno	No such method 'opened' for invocant of type 'FileHandle'
+P5pack	self-fail	P5pack	Variable 'EXPERIMENTAL-PACK' is not declared
+P5print	self-fail	P5print	# Failed test 'STDIN imported?' at …/P5print-0.0.8/t/01-basic.rakutest line 10
+P5quotemeta	self-fail	P5quotemeta	# Failed test 'Codepoint 0 [0] # using $_' at …/P5quotemeta-0.0.7/t/01-basic.rakutest line 14
+P5ref	self-fail	P5ref	# Failed test 'did we get CODE' at …/P5ref-0.0.9/t/01-basic.rakutest line 15
+P5reset	self-fail	P5reset	# Failed test 'was $a reset' at …/P5reset-0.0.7/t/01-basic.rakutest line 14
+P5seek	self-fail	P5seek	No such method 'enum_value_list' for invocant of type 'SeekType'
+P5substr	self-fail	P5substr	# Failed test 'did we get an exception on lvalue out of range' at …/P5substr-0.0.7/t/01-basic.t line 34
+P5times	self-fail	P5times	Undefined routine 'nqp::getrusage'
+P5unlink	self-fail	P5unlink	# Failed test 'does "bar" no longer exist' at …/P5unlink-0.0.1/t/01-basic.rakutest line 19
+PDF::API6	self-fail	PDF::API6	Undefined routine 'export'
+PDF::Class	self-fail	PDF::Class	Undefined routine 'export'
+PDF::ISO_32000	self-fail	PDF::ISO_32000	# Failed test 'interface role missing method - dies' at …/PDF-ISO_32000-0.0.13/t/interface-roles.t line 15
+PDF::ISO_32000_2	self-fail	PDF::ISO_32000_2	# Failed test 'interface role missing method - dies' at …/PDF-ISO_32000_2-0.0.3/t/interface-roles.t line 15
+PDF::Lite	self-fail	PDF::Lite	# Failed test 'code sample' at …/PDF-Lite-0.0.15/t/00-readme.t line 19
+PDF::Tags	self-fail	PDF::Tags	Undefined routine 'export'
+POFile	self-fail	POFile	# Failed test 'Format comment is set' at …/POFile-0.9/t/01-basic.rakutest line 103
+PSpec	self-fail	PSpec	Undefined routine 'xxx'
+PURL	dep-fail	Version::Repology	Too many levels of recursion
+Pakku::RecMan::Client	dep-fail	Retry	# Failed test 'we can retry for *' at …/dist/t/01-basic.rakutest line 49
+Path::Map	self-fail	Path::Map	No such method 'lookup' for invocant of type 'Any'
+Path::Router	self-fail	Path::Router	===SORRY!=== Parse error at line 29: unexpected operator in term position (got '<=')
+Path::Util	self-fail	Path::Util	# Failed test 'getdirlevel' at …/pathutil-master/t/all.t line 27
+PatternMatching	self-fail	PatternMatching	===SORRY!=== Parse error at line 26: expected variable in named-parameter alias (got '[')
+Perl6::TypeGraph	self-fail	Perl6::TypeGraph	No such method 'actions' for invocant of type 'Match'
+Pinterest::URL::Normalizer	self-fail	Pinterest::URL::Normalizer	Type check failed for return value; expected Pinterest::URL::Normalizer::X::PinterestURL but got Pinterest::URL::Normalizer::PinterestURL (Pinterest::URL::Norm...)
+Pluggable	self-fail	Pluggable	# Failed test at …/t/01-oop.t line 18
+Pod::Contents	self-fail	Pod::Contents	# Failed test 'The module can be use-d ok: Pod::Contents:auth<zef:CIAvash>' at …/dist/t/00-load.rakutest line 7
+Pod::EOD	self-fail	Pod::EOD	# Failed test 'rearrangement should be successful for feature 'sub example {}'' at …/Pod-EOD-0.1.1/t/01-basic.rakutest line 30
+Pod::Parser	self-fail	Pod::Parser	# Failed test 'part 0 - content' at …/perl6-Pod-Parser-master/t/01-parse.t line 36
+Pod::Perl5	self-fail	Pod::Perl5	Variable '$begin_end_name' is not declared
+Pod::PerlTricks	dep-fail	Pod::Perl5	Variable '$begin_end_name' is not declared
+Pod::Test::Code	dep-fail	Module::Pod	# Failed test 'With import, function is available' at …/Module-Pod-master/t/export.t line 17
+Pod::To::BigPage	self-fail	Pod::To::BigPage	Variable '$none-exclude' is not declared
+Pod::To::HTML	self-fail	Pod::To::HTML	# Failed test at …/Pod-To-HTML-0.9.0/t/010-basic.rakutest line 11
+Pod::To::Man	self-fail	Pod::To::Man	# Failed test 'first pod renders ok' at …/Pod-To-Man-1.2.1/t/01-basic.rakutest line 126
+Pod::To::Markdown	self-fail	Pod::To::Markdown	# Failed test 'Pod with lang set renders correctly' at …/Pod-To-Markdown-0.2.2/t/code-lang.rakutest line 18
+Pod::To::PDF::Lite	self-fail	Pod::To::PDF::Lite	Undefined routine 'export'
+Pod::TreeWalker	self-fail	Pod::TreeWalker	# Type check failed in binding to parameter '$node'; expected Pod::Block but got Pod::Block::Named ({:contents($[{:conte...)
+Point	self-fail	Point	Undefined routine 'nqp::add_n'
+Polyglot::Regexen	self-fail	Polyglot::Regexen	===SORRY!=== Parse error at line 5: `use Polyglot::Regexen`: the slang module did not compile (line 351): Error while compiling module Polyglot::Regex::ECMA262::Actions (line 351): Couldn't find terminator , (corresponding , was at line 74) (got 'ok')
+Pop	dep-fail	TOML::Thumb	===SORRY!=== Parse error at line 204: Error while compiling module TOML::Thumb (line 204): expected } (got '')
+Portuguese	self-fail	Portuguese	===SORRY!=== Parse error at line 26: expected ) (got 'verdadeiro')
+PostCocoon::Url	self-fail	PostCocoon::Url	# Failed test 'Encode null-char' at …/PostCocoon-Url-1.1/t/00-url.rakutest line 7
+Prettier::Table	self-fail	Prettier::Table	# No such method '' for invocant of type 'Prettier::Table'
+Pretty::Table	self-fail	Pretty::Table	# No such method '' for invocant of type 'Pretty::Table'
+PrettyDump	self-fail	PrettyDump	# Failed test 'Empty arrays flatten' at …/dist/t/01.dump.rakutest line 30
+Prime::Factor	self-fail	Prime::Factor	# Failed test 'non-Integer string fails' at …/Prime-Factor-0.4.3/t/00-basic.rakutest line 30
+Printing::Jdf	self-fail	Printing::Jdf	Undefined routine 'Printing::Jdf::mm'
+PriorityQueue	self-fail	PriorityQueue	# Failed test at …/p6-priorityqueue-master/t/basic.t line 21
+ProblemSolver	self-fail	ProblemSolver	# Failed test 'The module can be use-d ok: ProblemSolver::State' at …/ProblemSolver-master/t/02-state.t line 4
+Proc::Async::Timeout	self-fail	Proc::Async::Timeout	# Failed test 'infinite timeout will not throw' at …/raku-proc-async-timeout-master/t/020-basic.t line 15
+Proc::Easier	self-fail	Proc::Easier	# Failed test 'creates object using simplified interface' at …/Proc-Easier-0.0.5/t/01-basic.rakutest line 8
+Proc::Q	self-fail	Proc::Q	Constraint type check failed in binding to parameter '@tags'
+Progress::Bar	self-fail	Progress::Bar	# Failed test 'ProgressBar loads ok' at …/dist/t/basic.rakutest line 6
+Prometheus::Client	self-fail	Prometheus::Client	Cannot invoke non-Callable value of type Any
+Protobuf	dep-fail	Grammar::PrettyErrors	Too many levels of recursion
+Protocol	self-fail	Protocol	# Failed test at …/Protocol-0.0.1/t/01-protocol.rakutest line 9
+Protocol::MQTT	self-fail	Protocol::MQTT	Method '!encode-body' must be resolved by class Protocol::MQTT::Packet::PubAck because it exists in multiple roles (Protocol::MQTT::Packet, Protocol::MQTT::Packet::JustId)
+Proxee	self-fail	Proxee	# No matching multi candidate for method new
+Proxy::Watched	self-fail	Proxy::Watched	# Failed test 'Type error when assigning string to watched-int' at …/Proxy-Watched-0.0.2/t/01-basic.t line 23
+PublicSuffix	self-fail	PublicSuffix	# Failed test 'uk.com -> null' at …/PublicSuffix-0.1.20250910/t/external.t line 28
+Punnable	self-fail	Punnable	# Failed test at …/Punnable-master/t/01-punnable.t line 12
+Pygments	self-fail	Pygments	No such method 'add_fallback' for invocant of type 'Metamodel::ParametricRoleGroupHOW'
+Pyrint	self-fail	Pyrint	# Failed test 'no arg call ok' at …/dist/t/01.rakutest line 6
+RDF::Turtle	self-fail	RDF::Turtle	Cannot look up attributes in a RDF::Turtle::Grammar type object
+RPG::Base	self-fail	RPG::Base	# Failed test 'still only one exit set on original location' at …/RPG-Base-master/t/05-location.t line 52
+RPi::Device::ST7036	self-fail	RPi::Device::ST7036	Variable $.DOGM081_5V used where no 'self' is available
+RSV	self-fail	RSV	===SORRY!=== Parse error at line 65: Error while compiling module RSV (line 65): Unable to parse quote-words subscript; couldn't find '>>' (got '')
+Rainbow	self-fail	Rainbow	# Failed test '…/dist/t/test-data/rakudoc-lang' at …/dist/t/sub-langs.rakutest line 24
+Rake	self-fail	Rake	Variable '@types' is not declared
+RakuAST::Utils	self-fail	RakuAST::Utils	No such method 'roles' for invocant of type 'Array[Int]'
+RakuDoc::Test::Files	self-fail	RakuDoc::Test::Files	No such method 'INCLUDE' for invocant of type 'Rakudo::Internals'
+Rakudo-Type-Introspection	self-fail	Rakudo-Type-Introspection	===SORRY!=== Parse error at line 130: Error while compiling module Rakudo-Type-Introspection (line 130): expected ) (got 'LEVEL')
+Rakudo::CORE::META	self-fail	Rakudo::CORE::META	Undefined routine 'nqp::gethllsym'
+Rakudo::Options	self-fail	Rakudo::Options	Variable '$options' is not declared
+Rakudo::Perl6::Parsing	self-fail	Rakudo::Perl6::Parsing	Undeclared name 'Perl6::Grammar'
+Rakudo::Perl6::Tracer	self-fail	Rakudo::Perl6::Tracer	# Failed test 'The module can be use-d ok: Rakudo::Perl6::Tracer' at …/perl6tracer-master/t/00-use-module.t line 7
+Rakudo::Slippy::Semilist	self-fail	Rakudo::Slippy::Semilist	# Failed test 'chaining subscript' at …/perl6-rakudo-slippy-semilists-master/t/01-basic.t line 11
+Rakudo::Version	self-fail	Rakudo::Version	Rakudo::Version is supposed to run on Rakudo, not 'Raku++'
+RakupodObject	self-fail	RakupodObject	# Failed test 'good pod string' at …/RakupodObject-0.0.7/t/1-critical.t line 22
+Random::Choice	self-fail	Random::Choice	# Failed test at …/Random-Choice-0.0.9/t/01-basic.t line 5
+Random::Names	self-fail	Random::Names	No such method 'set_why' for invocant of type 'Str'
+Range::SetOps	self-fail	Range::SetOps	# Failed test 'ok 5 (elem) Set(1 2 3 4.5 5.5)' at …/Range-SetOps-0.0.4/t/02-elem.t line 22
+Rat::Power	self-fail	Rat::Power	# Failed test 'Int' at …/dist/t/01-basic.rakutest line 4
+Raylib::Bindings	self-fail	Raylib::Bindings	# Failed test 'Parsing define macro rule' at …/raylib-raku-0.0.20/t/00-use.rakutest line 160
+ReadWriteLock	self-fail	ReadWriteLock	# No such method 'signal_all' for invocant of type 'Lock'
+Reaper::Control	self-fail	Reaper::Control	No such method 'bind-udp' for invocant of type 'IO::Socket::Async'
+Recipe::Parser	self-fail	Recipe::Parser	# Failed test 'valid-string('salt')' at …/dist/t/01-test-parse-valid-string.rakutest line 23
+Regex::FuzzyToken	self-fail	Regex::FuzzyToken	===SORRY!=== Parse error at line 8: Error while compiling module Regex::FuzzyToken (line 8): unexpected operator in term position (got ' ')
+RegexUtils	self-fail	RegexUtils	# Failed test 'fo\n, foo\n, FOO\n, ... whole string case insensitive' at …/t/020-compile.rakutest line 6
+Repl::Tools	self-fail	Repl::Tools	No such method 'wrap' for invocant of type 'Any'
+Repository::Precomp::Cleanup	self-fail	Repository::Precomp::Cleanup	# Failed test 'The module can be use-d ok: Repository::Precomp::Cleanup' at …/Repository-Precomp-Cleanup-0.0.1/t/01-basic.rakutest line 4
+RepositoryEvent	dep-fail	JSON::RepositoryEvent	Cannot look up empty name
+Resource::Wrangler	self-fail	Resource::Wrangler	
+Retry	self-fail	Retry	# Failed test 'we can retry for *' at …/dist/t/01-basic.rakutest line 49
+Router::Boost	self-fail	Router::Boost	# Failed test at …/Router-Boost-0.0.1/t/01-basic.t line 13
+Router::Right	self-fail	Router::Right	===SORRY!=== Parse error at line 55: Error while compiling module Router::Right::Submapper (line 55): expected ] (got ';')
+SAT	self-fail	SAT	# Failed test 'The module can be use-d ok: Test::SAT' at …/raku-SAT-master/t/00-use.t line 9
+SION	self-fail	SION	# Failed test 'SION loads' at …/dist/t/00-load.rakutest line 6
+SP6	self-fail	SP6	# Failed test 'base' at …/SP6-master/t/02-base-line.rakutest line 9
+SQL::Abstract	self-fail	SQL::Abstract	===SORRY!=== Parse error at line 1674: Error while compiling module SQL::Abstract (line 1674): Confused (got '}')
+SQL::Builder	self-fail	SQL::Builder	# Failed test at …/SQL-Builder-0.2.0/t/01-basic.rakutest line 8
+SQL::Lexer	self-fail	SQL::Lexer	# Failed test 'Successful match returned' at …/SQL-Lexer-0.2.2/t/compound_statement.t line 19
+SQL::NamedPlaceholder	self-fail	SQL::NamedPlaceholder	# Failed test at …/SQL-NamedPlaceholder-0.1.2/t/02-extend.rakutest line 15
+SSL	self-fail	SSL	Error setting digest
+SVG::Plot	self-fail	SVG::Plot	===SORRY!=== Parse error at line 80: Error while compiling module SVG::Plot (line 80): Confused (got ')')
+Scalar::History	self-fail	Scalar::History	# Required named parameter 'FETCH' not passed
+Scalar::Util	self-fail	Scalar::Util	# Failed test 'is &blessed externally accessible?' at …/Scalar-Util-0.0.10/t/01-basic.t line 15
+ScaleVec	self-fail	ScaleVec	# Failed test 'Pitch vector out matches pitch vector in' at …/ScaleVec-0.0.6/t/ScaleVec.t line 13
+Scheduler::DelayBetween	self-fail	Scheduler::DelayBetween	# Failed test 'did catch' at …/Scheduler-DelayBetween-1.3.2/t/00-test.t line 55
+Search::Dict	self-fail	Search::Dict	# search for 1 existing words
+SelectiveImporting	self-fail	SelectiveImporting	===SORRY!=== Parse error at line 86: Confused (got ',')
+Selkie::UI	self-fail	Selkie::UI	===SORRY!=== Parse error at line 403: Error while compiling module Selkie::App::Internal::Dispatch (line 403): unexpected operator in term position (got '==')
+Semantic::Versioning	self-fail	Semantic::Versioning	# Failed test 'major version from version' at …/Semantic-Versioning-master/t/01-version-manipulation.t line 13
+Seq::Bounded	self-fail	Seq::Bounded	# Failed test 'Test sequence created' at …/Seq-Bounded-1.0.1/t/bounds.t line 7
+Seq::PreFetch	self-fail	Seq::PreFetch	Type check failed in binding to parameter '$s'; expected Seq but got List ((...).lazy.Seq)
+SeqSplitter	self-fail	SeqSplitter	Type check failed in binding to parameter '$orig-seq'; expected Sequence but got Seq ((0, 1, 2, 3, 4, 5, 6...)
+Sequence::Generator	self-fail	Sequence::Generator	# Failed test 'not the same as the core &infix:<...>' at …/Sequence-Generator-0.0.8/t/01-basic.rakutest line 16
+Services::PortMapping	self-fail	Services::PortMapping	# Failed test 'The module can be use-d ok: Services::PortMapping' at …/raku-service-portmapping/t/00-load.t line 4
+Set::Equality	self-fail	Set::Equality	# Failed test 'a(-1) is NOT (==) of Mix' at …/Set-Equality-0.0.8/t/set_equality.rakutest line 365
+Shell::Capture	self-fail	Shell::Capture	# Failed test 'raku -e "print" said the right thing' at …/Shell-Capture-0.2.4/t/02-nl-enc.rakutest line 19
+SixPM	self-fail	SixPM	===SORRY!=== Parse error at line 25: Error while compiling module App::six-pm::ZefInstaller (line 25): Unable to parse expression in double quotes; couldn't find final '"' (corresponding starter was at line 20)
+Slang::AltTernary	self-fail	Slang::AltTernary	===SORRY!=== Parse error at line 6: `use Slang::AltTernary`: it overrides `term:sym<No>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'plan')
+Slang::Comments	self-fail	Slang::Comments	sorry, Slang::Comments requires AST support: please set RAKUDO_RAKUAST to a true value
+Slang::Forgiven	self-fail	Slang::Forgiven	===SORRY!=== Parse error at line 5: `use Slang::Forgiven`: it overrides `statement_control:sym<forgiven>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got '}')
+Slang::Kazu	self-fail	Slang::Kazu	===SORRY!=== Parse error at line 21: Slang::Kazu: Undefined routine 'nqp::findmethod'
+Slang::Otherwise	self-fail	Slang::Otherwise	===SORRY!=== Parse error at line 5: `use Slang::Otherwise`: it overrides `statement-control:sym<for>`, which rakupp cannot apply (docs/dev/plans/SLANG-PLAN.md) (got 'plan')
+Slang::Predicate	self-fail	Slang::Predicate	# ------------------------------------------------------------------------------
+Slang:Date	dep-fail	Grammar::BNF	No such method 'set_name' for invocant of type 'Regex'
+Slangify::Tutorial	self-fail	Slangify::Tutorial	===SORRY!=== Parse error at line 117: `use Slangify::Tutorial`: the module registered no slang (got 'subtest')
+Slippy::Semilist	self-fail	Slippy::Semilist	# Failed test 'chaining subscript' at …/perl6-slippy-semilist-master/t/01-basic.t line 11
+Smooth::Numbers	self-fail	Smooth::Numbers	Undeclared name 'Smooth'
+Sprockets	self-fail	Sprockets	# Failed test 'Gets the correct content, and make sure an included file remembers where it is' at …/Sprockets.pl-master/t/file.t line 8
+Stache	self-fail	Stache	Could not find META6::Query in:
+Staticish	self-fail	Staticish	# Failed test 'another class doesn't wind up the wrong class' at …/Staticish-0.0.9/t/020-test.t line 39
+Stomp	dep-fail	Concurrent::Iterator	# Failed test 'That Seq contains a Concurrent::Iterator' at …/Concurrent-Iterator-1.1/t/convenience.rakutest line 14
+Stream::Buffered	self-fail	Stream::Buffered	# Failed test at …/Stream-Buffered-0.0.1/t/01-basic.t line 41
+String::CRC32	self-fail	String::CRC32	Undefined routine 'String::CRC32::crc32'
+String::Fields	self-fail	String::Fields	# Failed test 'did $foo become a String::Fields object' at …/String-Fields-0.0.7/t/01-basic.rakutest line 28
+String::Koremutake	self-fail	String::Koremutake	# Failed test 'got ba' at …/p6-String-Koremutake-master/t/01_sane.t line 12
+String::Splice	self-fail	String::Splice	# Failed test '3 param non-string insert fails ok' at …/String-Splice-0.0.4/t/01-basic.rakutest line 31
+Sub::Memoized	self-fail	Sub::Memoized	# Failed test 'is memoized: positional, did we not execute the body this time' at …/Sub-Memoized-0.0.8/t/01-basic.rakutest line 25
+Sub::Name	self-fail	Sub::Name	# Failed test 'did we get the right name?' at …/Sub-Name-0.0.10/t/01-basic.rakutest line 8
+Sub::Util	self-fail	Sub::Util	# Failed test 'is &subname externally accessible?' at …/Sub-Util-0.0.7/t/01-basic.rakutest line 12
+Subset::Helper	self-fail	Subset::Helper	===SORRY!=== Parse error at line 7: unexpected operator in term position (got '>')
+Subsets::Common	self-fail	Subsets::Common	# Failed test 'PosInt caught out of range' at …/dist/t/basic.rakutest line 28
+SuperMAIN	self-fail	SuperMAIN	# Failed test 'space separated named param' at …/SuperMAIN-master/t/01-submainopts.rakutest line 27
+Supply::Folds	self-fail	Supply::Folds	# Failed test 'can fold supplies' at …/Supply-Folds-0.0.1/t/01-fold-and-scan.t line 10
+Supply::Timeout	self-fail	Supply::Timeout	# Failed test 'Timeout not happened' at …/Supply-Timeout-0.0.2/t/02-supply.t line 13
+SupplyTimeWindow	timeout	SupplyTimeWindow	
+Sustenance	self-fail	Sustenance	The attribute '$!carbohydrates' is required, but you did not provide a value for it.
+Symbol	self-fail	Symbol	Unrecognized regex adverb: :foo1
+Syndicate	self-fail	Syndicate	No such method 'new' for invocant of type 'FeedFormat'
+Syntax::Highlighters	self-fail	Syntax::Highlighters	===SORRY!=== Parse error at line 324: Error while compiling module Syntax::Highlighters (line 324): expected { (got '«')
+T	self-fail	T	# Failed test 'The module can be use-d ok: T:auth<zef:CIAvash>' at …/dist/t/00-load.rakutest line 8
+TAP::Harness	self-fail	TAP::Harness	# Failed test 'planned 2' at …/TAP-0.0.4/t/source-file.t line 13
+TCP::LowLevel	self-fail	TCP::LowLevel	# No such method 'socket-port' for invocant of type 'Tap'
+TOML	self-fail	TOML	42 vs
+TOML::Thumb	self-fail	TOML::Thumb	===SORRY!=== Parse error at line 204: Error while compiling module TOML::Thumb (line 204): expected } (got '')
+Tee	self-fail	Tee	'"\$one"' cannot be used as a source
+Template6	self-fail	Template6	# Failed test 'Get statement.' at …/dist/t/01-simple.rakutest line 19
+Template::Anti	self-fail	Template::Anti	# Failed test 'output is as expected' at …/Template-Anti-0.5.2/t/basic-embed.t line 18
+Template::Classic	self-fail	Template::Classic	Unterminated <%
+Template::HAML	self-fail	Template::HAML	# Failed test 'child after multi-line hash records the actual source line' at …/dist/t/0200-multiline-attrs.rakutest line 157
+Template::Jinja2	self-fail	Template::Jinja2	# Failed test 'Equals operator' at …/Template-Jinja2-0.3.0/t/01-lexer.rakutest line 95
+Template::Mojo	self-fail	Template::Mojo	# Failed test 'not enough arguments' at …/Template-Mojo-0.2.2/t/00-basic.rakutest line 50
+Template::Mustache	self-fail	Template::Mustache	# Failed test 'Standalone interpolation should not alter surrounding whitesp' at …/Template-Mustache-1.2.6/t/01-basic.rakutest line 6
+Template::Nest	self-fail	Template::Nest	===SORRY!=== Parse error at line 992: Error while compiling module Template::Nest (line 992): Semicolon form of 'sub' without unit scope is illegal. You probably want 'unit sub'. (X::UnitScope::Invalid)
+Template::Nest::Fast	self-fail	Template::Nest::Fast	===SORRY!=== Parse error at line 265: Error while compiling module Template::Nest::Fast (line 265): expected { (got '(!==)')
+Term::Choose	self-fail	Term::Choose	# Failed test 'invalid value hello for option default dies ok' at …/dist/t/20-arguments.t line 13
+Term::Choose::Util	self-fail	Term::Choose::Util	===SORRY!=== Parse error at line 350: Error while compiling module Term::Choose::Util (line 350): Malformed radix number
+Term::TablePrint	dep-fail	Term::Choose::Util	===SORRY!=== Parse error at line 350: Error while compiling module Term::Choose::Util (line 350): Malformed radix number
+Terminal::ANSIParser	self-fail	Terminal::ANSIParser	# Failed test 'ignorable control bytes skipped; non-control bytes kept' at …/Terminal-ANSIParser-0.0.4/t/02-strings.rakutest line 37
+Terminal::Capabilities	self-fail	Terminal::Capabilities	# Failed test 'ASCII is a valid SymbolSet enumerant' at …/Terminal-Capabilities-0.0.21/t/01-symbol-set.rakutest line 9
+Terminal::LineEditor	self-fail	Terminal::LineEditor	No such method 'enum_value_list' for invocant of type 'SymbolSet'
+Terminal::MultiProgress	self-fail	Terminal::MultiProgress	Undeclared name 'Event::Status::Started'
+Terminal::QuickCharts	self-fail	Terminal::QuickCharts	tput: No value for $TERM and no -T specified
+Terminal::ReadKey	self-fail	Terminal::ReadKey	# Failed test 'with-termios lives' at …/Terminal-ReadKey-0.0.2/t/99-bug-return-type.rakutest line 19
+Terminal::Size	self-fail	Terminal::Size	Cannot locate native library 'libc.so.6': dlopen(libc.so.6, 0x0009): tried: 'libc.so.6' (no such file), '/System/Volumes/Preboot/Cryptexes/OSlibc.so.6' (no such file), '/usr/lib/libc.so.6' (no such file, not in dyld cache), 'libc.so.6' (no such file)
+Terminal::Table	self-fail	Terminal::Table	# Failed test at …/Terminal-Table-0.1.1/t/05-generator.rakutest line 63
+Terminal::UI	self-fail	Terminal::UI	# Failed test 'The module can be use-d ok: Terminal::UI' at …/Terminal-UI-0.1.14/t/00-basic.rakutest line 5
+Terminal::Widgets	self-fail	Terminal::Widgets	The attribute '$!desc' is required, but you did not provide a value for it.
+Test::Assertion	self-fail	Test::Assertion	# Failed test 'we did not add an unneeded 'is test-assertion' candidate' at …/Test-Assertion-0.0.6/t/01-basic.rakutest line 20
+Test::Async	self-fail	Test::Async	===SORRY!=== Parse error at line 6: `use Test::Async::Decl`: the module registered no slang (got 'use')
+Test::Builder	self-fail	Test::Builder	No such method 'data' for invocant of type 'FileHandle'
+Test::Coverage	self-fail	Test::Coverage	===WARNING=== Module META::verauthapi EXPORT failed: Too many levels of recursion
+Test::Declare	self-fail	Test::Declare	# Failed test 'stderr - stderr' at …/Test-Declare-0.0.3/t/04-streams.rakutest line 46
+Test::Deeply::Relaxed	self-fail	Test::Deeply::Relaxed	# Failed test 'non-cached - did not preserve the sequence' at …/Test-Deeply-Relaxed-0.1.3/t/05-cache.rakutest line 17
+Test::Describe	self-fail	Test::Describe	===SORRY!=== Parse error at line 114: unexpected operator in term position (got '&')
+Test::Fuzz	self-fail	Test::Fuzz	# Failed test 'An object of type 'Parameter' can do the method 'generate'' at …/Test-Fuzz-master/t/01-generator.t line 23
+Test::HTTP::Server	self-fail	Test::HTTP::Server	Cannot connect to 127.0.0.1:23376:23376: Address family not supported by protocol family
+Test::Inline	self-fail	Test::Inline	Sub object coerced to string (please use .gist or .raku to do that)
+Test::Lab	self-fail	Test::Lab	# Failed test 'provides an empty default context' at …/Test-Lab-master/t/010-lab.rakutest line 16
+Test::Mock	self-fail	Test::Mock	# Failed test 'never called shave with arguments matching :($ where { ... })' at …/Test-Mock-1.8/t/computing.rakutest line 39
+Test::Run	self-fail	Test::Run	# Failed test 'The module can be use-d ok: Test::Run:auth<zef:CIAvash>' at …/dist/t/00-load.rakutest line 8
+Test::Scheduler	self-fail	Test::Scheduler	# Failed test 'one value after 1s' at …/Test-Scheduler-1.2/t/synopsis.rakutest line 42
+Test::Script	self-fail	Test::Script	# Failed test 'Prints environment ' at …/dist/t/00-output-env.t line 55
+Test::Script::Output	self-fail	Test::Script::Output	# Failed test 'runnable output is OK' at …/dist/t/01-basic.t line 19
+Test::Time	self-fail	Test::Time	# Failed test at …/Test-Time-0.0.2/t/01-tdd.t line 12
+TestML	self-fail	TestML	===SORRY!=== Parse error at line 108: Error while compiling module TestML::Runner (line 108): Confused (got ')')
+Testo	self-fail	Testo	Cannot invoke non-Callable value of type Pair
+Text::Abbrev	self-fail	Text::Abbrev	# Failed test 'Non stringy arguments should be stringified.' at …/perl6-Text-Abbrev-master/t/00-basic.t line 23
+Text::CSV	self-fail	Text::CSV	No such method 'tap' for invocant of type 'Bool'
+Text::Emoji	self-fail	Text::Emoji	# Failed test 'it works!' at …/Text-Emoji-0.0.11/t/01-basic.rakutest line 10
+Text::Emotion	self-fail	Text::Emotion	# Failed test ''abhors' is scored as -3' at …/Text--Emotion-master/t/basic.t line 11
+Text::Flags	self-fail	Text::Flags	Unrecognized character name [
+Text::Fortune	self-fail	Text::Fortune	Failed to open file empty.dat: No such file or directory
+Text::LTSV	self-fail	Text::LTSV	# No matching multi candidate for method stringify
+Text::Markov	timeout	Text::Markov	
+Text::MathematicalCase	self-fail	Text::MathematicalCase	Text::MathematicalCase doesn't know how to export: all
+Text::Names	self-fail	Text::Names	Failed to open file /./resources/dist.female.first: No such file or directory
+Text::ShellWords	self-fail	Text::ShellWords	===SORRY!=== Parse error at line 132: Couldn't find terminator } (corresponding { was at line 92)
+Text::Sorensen	self-fail	Text::Sorensen	# Failed test 'basic sorenson ok' at …/Text-Sorensen-0.0.2/t/01-basic.t line 32
+Text::Table::Simple	self-fail	Text::Table::Simple	# Failed test 'Create a table (header + body + footer + custom options)' at …/Raku-Text--Table--Simple-main/t/basics.rakutest line 155
+Text::Template	self-fail	Text::Template	Could not find Pod::To::Text in:
+Time::Crontab	self-fail	Time::Crontab	# Failed test '* * * * * matches 2026-09-15T17:59:00Z' at …/Time-Crontab-1.0.0/t/crontab.t line 23
+Time::Duration	self-fail	Time::Duration	next without loop construct
+Time::Repeat	self-fail	Time::Repeat	Died
+TimeBomb	self-fail	TimeBomb	Potential difficulties:
+TimeUnit	self-fail	TimeUnit	# Failed test '===' at …/dist/t/01-usage.rakutest line 20
+Timer	self-fail	Timer	# Failed test 'Returns a reasonable time' at …/Timer-0.0.3/t/01-basic.t line 10
+Timer::Stopwatch	self-fail	Timer::Stopwatch	# Failed test 'Supply receives Durations' at …/t/01-basic.t line 23
+Tinky	self-fail	Tinky	# Failed test 'apply workflow' at …/Tinky-0.1.5/t/040-workflow-object.t line 38
+Tinky::Declare	self-fail	Tinky::Declare	# Failed test 'The module can be use-d ok: Tinky::Declare' at …/Tinky-Declare-0.0.2/t/010-use.t line 7
+Tinky::Hash	self-fail	Tinky::Hash	# Workflow wf1
+Toaster	dep-fail	Proc::Q	Constraint type check failed in binding to parameter '@tags'
+Tomty	dep-fail	Colorizable	# No such method 'is-colorized' for invocant of type 'Str'
+Trait::Enum	self-fail	Trait::Enum	# Failed test 'Write enumeration' at …/Trait-Enum-0.1/t/01-basic.t line 23
+Trait::Env	self-fail	Trait::Env	# Failed test 'We have a test value' at …/Trait-Env-1.1.2/t/02-env-only.rakutest line 20
+Trait::IO	self-fail	Trait::IO	
+Tree::Binary	self-fail	Tree::Binary	# Failed test 'The module can be use-d ok: Tree::Binary' at …/Tree-Binary-0.0.7/t/01-basic.rakutest line 2
+Trie	dep-fail	OrderedHash	# Failed test 'default value type' at …/OrderedHash-0.0.4/t/01-basic.t line 10
+Trove	self-fail	Trove	===SORRY!=== Parse error at line 13: Error while compiling module Trove::Config::Parser (line 13): expected variable after declarator (got ' ')
+Tuple	self-fail	Tuple	# Failed test 'a Tuple with elements is True' at …/Tuple-0.0.12/t/01-basic.rakutest line 7
+Typesafe::HTML	self-fail	Typesafe::HTML	===SORRY!=== Parse error at line 32: Error while compiling module Typesafe::HTML (line 32): Unable to parse expression in double quotes; couldn't find final '"' (corresponding starter was at line 7)
+ULID	self-fail	ULID	# Failed test 'non-random ULID looks okay' at …/ULID-0.1.0/t/basic.t line 54
+UML::Translators	self-fail	UML::Translators	Cannot load name space MyPackageClass.
+UNIX::Daemonize	self-fail	UNIX::Daemonize	Some exceptions were thrown in END blocks:
+URI::Query::FromHash	self-fail	URI::Query::FromHash	Impossible coercion from 'Str' into 'Hash'
+URI::Template	self-fail	URI::Template	Undeclared name 'URI::Template::Grammar'
+URL	self-fail	URL	# No matching multi candidate for method new
+URL::Find	self-fail	URL::Find	# Failed test 'Test finding Unicode URL's' at …/URL-Find-0.2.3/t/01-url-find-unicode.rakutest line 22
+US-ASCII	self-fail	US-ASCII	# Failed test 'alpha with "_" correct US-ASCII char subset' at …/US-ASCII-0.6.6/t/01-basic.t line 54
+Ujumla	self-fail	Ujumla	# Failed test 'got item in top level' at …/Ujumla-0.0.5/t/030-synopsis.t line 19
+Uni63	self-fail	Uni63	===SORRY!=== Parse error at line 31: Error while compiling module Uni63 (line 31): unexpected operator in term position (got '/')
+Unix::errno	timeout	Unix::errno	
+User::Timezone	self-fail	User::Timezone	Undefined routine 'override-user-timezone'
+UserTimezone	self-fail	UserTimezone	Undefined routine 'override-user-timezone'
+Util::Uuencode	self-fail	Util::Uuencode	# Failed test 'uuencode (binary file)' at …/Util-Uuencode-0.0.3/t/010-encode-decode.t line 65
+Uxmal	self-fail	Uxmal	No such method 'max_threads' for invocant of type 'Scheduler'
+VERS	dep-fail	Version::Repology	Too many levels of recursion
+ValueClass	self-fail	ValueClass	===SORRY!=== Parse error at line 12: expected variable after declarator (got 'value-class')
+ValueList	self-fail	ValueList	# Failed test 'a ValueList with elements is True' at …/ValueList-0.0.5/t/01-basic.rakutest line 7
+ValueMap	self-fail	ValueMap	# Failed test 'are $c and %a the same value type' at …/ValueMap-0.0.3/t/01-basic.rakutest line 14
+ValuePair	self-fail	ValuePair	# Failed test 'check whether they are the same value type (1)' at …/ValuePair-0.0.3/t/01-basic.rakutest line 10
+ValueType	self-fail	ValueType	Attribute '$!WHICH' is not a Value Type
+ValueTypeCache	self-fail	ValueTypeCache	No such method 'new' for invocant of type 'ValueObjAt'
+Version::Conan	self-fail	Version::Conan	# Failed test 'is pre-release ok' at …/Version-Conan-0.0.3/t/01-basic.rakutest line 38
+Version::Nginx	self-fail	Version::Nginx	# Failed test 'can we compare with cmp' at …/Version-Nginx-0.0.1/t/01-basic.rakutest line 9
+Version::Raku	self-fail	Version::Raku	# Failed test 'can we compare with cmp' at …/Version-Raku-0.0.2/t/01-basic.rakutest line 9
+Version::Repology	self-fail	Version::Repology	Too many levels of recursion
+Version::RubyGems	self-fail	Version::RubyGems	# Failed test 'is pre-release ok' at …/Version-RubyGems-0.0.1/t/01-basic.rakutest line 36
+Version::Semantic	self-fail	Version::Semantic	Version::Semantic.new(major => Int, minor => Int, patch => Int)
+Version::Semver	self-fail	Version::Semver	# Failed test 'is pre-release ok' at …/Version-Semver-0.0.2/t/01-basic.rakutest line 36
+Version::Semverish	self-fail	Version::Semverish	# Failed test 'is pre-release ok' at …/Version-Semverish-0.0.2/t/01-basic.rakutest line 41
+W3C::DOM	self-fail	W3C::DOM	Method 'appendChild' must be implemented by Dtd because it is required by roles: W3C::DOM::DocumentType.
+WAT	self-fail	WAT	
+WAT--CLI	self-fail	WAT--CLI	
+WWW::HorizonsEphemerisSystem	self-fail	WWW::HorizonsEphemerisSystem	Cannot convert string to number: base-10 number must begin with valid digits or '.' in 'AngularDegrees'
+WebService::AWS::Auth::V4	self-fail	WebService::AWS::Auth::V4	# Failed test 'match aws date example' at …/dist/t/basic.rakutest line 34
+WebService::AWS::S3	self-fail	WebService::AWS::S3	Too many levels of recursion
+WebService::FootballData	self-fail	WebService::FootballData	No %!links attribute in A
+WhereList	self-fail	WhereList	===SORRY!=== Parse error at line 14: expected ) (got 'where')
+WriteOnceHash	self-fail	WriteOnceHash	# Failed test 'did we get an exception' at …/WriteOnceHash-0.0.8/t/01-basic.rakutest line 33
+XML::Actions	self-fail	XML::Actions	# Variable '$expr' is not declared
+XML::Class	self-fail	XML::Class	# Failed test 'to-xml(:document)' at …/XML-Class-0.0.11/t/020-basic-out.t line 19
+XML::Fast	self-fail	XML::Fast	Undefined routine 'xmlInitParser'
+XML::Parser::Tiny	self-fail	XML::Parser::Tiny	# Failed test '<?aaa x='1' ?><?bbb y='2' ?><doc></doc>' at …/p6-xml-parser-tiny-master/t/02-actions.t line 120
+XML::Rabbit	self-fail	XML::Rabbit	A method 'x' already exists, can't create lazy accessor '$.x'
+Xmav::JSON	self-fail	Xmav::JSON	# Failed test 'formfeed and unicode' at …/Xmav-JSON-master/t/02_values.t line 26
+YAML	dep-fail	TestML	===SORRY!=== Parse error at line 108: Error while compiling module TestML::Runner (line 108): Confused (got ')')
+Zef::Configuration	dep-fail	shorten-sub-commands	# Failed test 'does foo give foozle?' at …/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+annotations	self-fail	annotations	===SORRY!=== Parse error at line 175: Error while compiling module annotations::containers (line 175): expected ) (got '\')
+antlia	dep-fail	Terminal::Table	# Failed test at …/raku-terminal-table-master/t/05-generator.rakutest line 63
+caelum	dep-fail	Terminal::Table	# Failed test at …/raku-terminal-table-master/t/05-generator.rakutest line 63
+eigenstates	self-fail	eigenstates	# Failed test 'did we get the eigenstates' at …/eigenstates-0.0.12/t/01-basic.rakutest line 6
+envy	self-fail	envy	Usage:
+flow	self-fail	flow	
+fornax	self-fail	fornax	
+from	self-fail	from	# Failed test 'was &skip NOT imported' at …/from-0.0.5/t/01-basic.rakutest line 7
+hide-methods	self-fail	hide-methods	# Failed test 'can we call B.bar' at …/hide-methods-0.0.8/t/01-basic.rakutest line 33
+immutable	dep-fail	ValuePair	# Failed test 'check whether they are the same value type (1)' at …/ValuePair-0.0.3/t/01-basic.rakutest line 10
+inode-dev-devtype	self-fail	inode-dev-devtype	No such method 'FILETEST-E' for invocant of type 'Rakudo::Internals'
+jmp	self-fail	jmp	# Failed test 'The module can be use-d ok: JMP' at …/jmp.nigelhamilton.com-master/t/00-load.t line 6
+mod-div-specs	self-fail	mod-div-specs	# Failed test 'div dies with dispatch error if non-int' at …/mod-div-specs-0.0.1/t/01-basic.rakutest line 27
+mv2d	self-fail	mv2d	===SORRY!=== Parse error at line 145: Error while compiling module App::MoarVM::Debug::Formatter (line 145): unexpected operator in term position (got '>')
+overload::constant	self-fail	overload::constant	===WARNING=== Module overload::constant EXPORT failed: No such method 'refine_slang' for invocant of type 'Any'
+python::itertools	self-fail	python::itertools	===SORRY!=== Parse error at line 53: expected { (got '(')
+raku-pod-from-cache	self-fail	raku-pod-from-cache	# Failed test 'Instantiates with minimum parameters' at …/raku-pod-from-cache-a01093826d48e008389f7982ec5793320b341675/t/10-cache.t line 14
+shorten-sub-commands	self-fail	shorten-sub-commands	# Failed test 'does foo give foozle?' at …/shorten-sub-commands-0.0.8/t/01-basic.rakutest line 11
+sourcery	self-fail	sourcery	# Failed test 'does Any:D.Str give 2 locations' at …/sourcery-0.0.6/t/01-basic.rakutest line 11
+span	timeout	span	
+subs	self-fail	subs	# Failed test 'did the executing stub foo die' at …/subs-0.0.4/t/01-basic.t line 11
+uniname-words	self-fail	uniname-words	Undefined routine 'nqp::lc'
+uniprop	self-fail	uniprop	Unexpected backend name: cpp
+vCard::Parser	self-fail	vCard::Parser	# Failed test 'The module can be use-d ok: vCard::Parser' at …/vCard-Parser-0.0.2/t/01-basic.rakutest line 5
+vars	self-fail	vars	# Failed test 'did we get an export for $frob at BEGIN' at …/vars-0.0.8/t/01-basic.t line 9
+zef	self-fail	zef	# Failed test at …/dist/t/distribution-depends-parsing.rakutest line 68

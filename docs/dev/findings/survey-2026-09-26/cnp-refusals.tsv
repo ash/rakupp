@@ -1,0 +1,27 @@
+loop	reason
+examples/brainfuck.raku:28	an expression the kernel whitelist does not cover
+examples/brainfuck.raku:60	an expression the kernel whitelist does not cover
+examples/factorize.raku:11	++/-- on a non-variable
+examples/factorize.raku:12	++/-- on a non-variable
+examples/life.raku:56	an expression the kernel whitelist does not cover
+examples/life.raku:32	a statement the kernel whitelist does not cover
+examples/life.raku:33	an expression the kernel whitelist does not cover
+examples/life.raku:48	an expression the kernel whitelist does not cover
+examples/mandel.raku:31	an expression the kernel whitelist does not cover
+examples/nqueens.raku:36	an expression the kernel whitelist does not cover
+examples/nqueens.raku:18	an expression the kernel whitelist does not cover
+examples/primes.raku:11	an expression the kernel whitelist does not cover
+examples/roman.raku:20	an expression the kernel whitelist does not cover
+examples/sierpinski.raku:21	an expression the kernel whitelist does not cover
+examples/sierpinski.raku:28	an expression the kernel whitelist does not cover
+tools/bench/arraypush.raku:7	an expression the kernel whitelist does not cover
+tools/bench/arraypush.raku:11	an expression the kernel whitelist does not cover
+tools/bench/arraypush.raku:14	an expression the kernel whitelist does not cover
+tools/bench/hash.raku:3	++/-- on a non-variable
+tools/bench/hashfill.raku:5	assignment to a non-variable
+tools/bench/mainwhen.raku:14	a statement the kernel whitelist does not cover
+tools/bench/multiwhere.raku:17	an expression the kernel whitelist does not cover
+tools/bench/objects.raku:13	an expression the kernel whitelist does not cover
+tools/bench/precomp-table.raku:63	an expression the kernel whitelist does not cover
+tools/bench/rats.raku:13	an expression the kernel whitelist does not cover
+tools/bench/regex.raku:3	operator '~~'

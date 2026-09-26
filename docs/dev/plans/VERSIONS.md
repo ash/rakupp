@@ -373,13 +373,56 @@ log-parsing grammar driven from Python, against the same grammar run by
 > outcome is in [MODULES-PLAN.md](MODULES-PLAN.md). **Open before tagging
 > v4.0.0:** the release-procedure sweep.
 
-## v5.0.0 — not yet named (collecting, 2026-09-17)
+## v5.0.0 — 100% Roast, and the errors behind it (planned 2026-09-26)
 
-No pillars are decided. The candidate list — everything the findings, plans,
-issues and experiments currently name as open, grouped by theme, each with the
-number it would move and what was already decided nearby — is
-[V5-IDEAS.md](V5-IDEAS.md). Its closing section lists the five framings the
-evidence supports; this section is written when one of them is chosen.
+Chosen by the user on 2026-09-26, from [V5-IDEAS.md](V5-IDEAS.md) and a
+survey taken that day ([findings/survey-2026-09-26/](../findings/survey-2026-09-26/)).
+**v5 is about errors.** That means every measured way the engine gets an answer
+wrong: it refuses code Rakudo runs, it crashes, it returns a wrong value without
+raising, or a compiled backend fails to build or disagrees with the interpreter.
+The plan is [V5-PLAN.md](V5-PLAN.md).
+
+The Roast half is a campaign already running in parallel, taking the remaining
+files of the default set (Roast's `spectest.data`, 1,434 files) to passing. v5
+is tagged when that campaign has finished and the error batches have landed on
+top of it.
+
+**The numbers:**
+
+- Roast: *N of N* files of the default set fully passing.
+- 0 battery module files that compiled under the last release and fail at the
+  tag. There were 25 at HEAD against v3.27.0.
+- 0 crashes:
+  - the use smoke finishes without a signal
+  - the `evalCall` race repro dies 0 times in 1,000 runs
+  - every program `--cpp` accepts builds
+- 0 disagreeing programs in the JavaScript gate. There were 102.
+- Distributions passing, of the 1,791 Rakudo passes, with none that passed at
+  v4.0.0 failing.
+
+## v6.0.0 — Raku that is fast (planned 2026-09-26)
+
+Chosen with v5, and starting after it is tagged. **v6 is about speed** in four
+senses:
+
+- time on the workloads where Rakudo still leads
+- memory per value
+- time to compile and load
+- how much of Raku the native compiler handles without falling back
+
+The plan is [V6-PLAN.md](V6-PLAN.md).
+
+**The numbers:**
+
+- Every perf-guard kernel at or below Rakudo's time at steady state. `objects`
+  reads 2.93× and `multiwhere` 4.8× once Rakudo's startup is out of the
+  measurement.
+- Issue #47 at parity. The Math::NumberTheory driver reads 2.35×.
+- Every row of the bytes-per-element table at or below Rakudo's. Seven rows are
+  above it today, the worst by 26×.
+- `--exe` compiling ≥ 90% of the fully passing Roast files natively. It is 65%
+  today.
+- An `--exe` hello's compile time halved, and a warm module load's time halved.
 
 ---
 

@@ -1,0 +1,1202 @@
+file	exit	signal	ms	first note
+6.c/MISC/misc-6.c.t	0	0	10	
+6.c/S02-names/SETTING-6c.t	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+6.c/S02-types/subset-6c.t	5	0	8	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+6.c/S03-operators/set_precedes.t	0	0	8	
+6.c/S05-grammar/methods.t	0	0	7	
+6.c/S05-grammar/parse_and_parsefile-6c.t	0	0	7	
+6.c/S06-other/main-refactored.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+6.c/S14-roles/attributes.t	0	0	7	
+6.c/S14-roles/mixin-6c.t	5	0	9	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+6.c/S14-roles/submethods.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+6.c/S32-io/file-tests.t	0	0	12	
+6.d/S02-literals/version.t	0	0	7	
+6.d/S05-capture/match-object.t	0	0	8	
+6.d/S09-multidim/indexing.t	0	0	7	
+6.d/S15-unicode-information/uniname.t	0	0	7	
+6.d/S32-num/atanh.t	0	0	7	
+6.d/S32-num/log.t	0	0	7	
+6.d/S32-num/sign.t	0	0	8	
+6.d/S32-num/sqrt.t	0	0	7	
+6.d/S32-str/sprintf-b.t	0	0	8	
+6.d/S32-str/sprintf-c.t	0	0	7	
+6.d/S32-str/sprintf-d.t	0	0	8	
+6.d/S32-str/sprintf-e.t	0	0	7	
+6.d/S32-str/sprintf-f.t	0	0	8	
+6.d/S32-str/sprintf-o.t	0	0	9	
+6.d/S32-str/sprintf-s.t	0	0	8	
+6.d/S32-str/sprintf-u.t	0	0	7	
+6.d/S32-str/sprintf-x.t	0	0	8	
+6.d/S32-str/sprintf.t	5	0	11	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+APPENDICES/A02-some-day-maybe/concreteness.t	0	0	6	
+APPENDICES/A02-some-day-maybe/io-cathandle.t	0	0	7	
+APPENDICES/A02-some-day-maybe/multi-no-match.t	0	0	6	
+MISC/bug-coverage-6.d.t	0	0	8	
+MISC/bug-coverage-stress.t	0	0	9	
+S01-perl-5-integration/array.t	0	0	7	
+S01-perl-5-integration/basic.t	0	0	6	
+S01-perl-5-integration/class.t	0	0	6	
+S01-perl-5-integration/context.t	0	0	7	
+S01-perl-5-integration/eval_lex.t	5	0	8	note: the parameterized type 'Buf[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S01-perl-5-integration/exception_handling.t	0	0	6	
+S01-perl-5-integration/hash.t	0	0	7	
+S01-perl-5-integration/import.t	0	0	6	
+S01-perl-5-integration/isms.t	0	0	6	
+S01-perl-5-integration/method.t	0	0	7	
+S01-perl-5-integration/return.t	0	0	7	
+S01-perl-5-integration/roundtrip.t	0	0	7	
+S01-perl-5-integration/strings.t	0	0	7	
+S01-perl-5-integration/subs.t	0	0	7	
+S02-lexical-conventions/bom.t	0	0	7	
+S02-lexical-conventions/comments.t	0	0	8	
+S02-lexical-conventions/finish-pod.t	5	0	6	note: special/dynamic variable '$=finish' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-lexical-conventions/minimal-whitespace.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-lexical-conventions/one-pass-parsing.t	0	0	7	
+S02-lexical-conventions/pod-in-multi-line-exprs.t	0	0	7	
+S02-lexical-conventions/sub-block-parsing.t	0	0	7	
+S02-lexical-conventions/unicode-whitespace.t	0	0	8	
+S02-lexical-conventions/unicode.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S02-lists/indexing.t	0	0	7	
+S02-lists/tree.t	0	0	7	
+S02-literals/adverbs.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-literals/allomorphic.t	5	0	12	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-literals/array-interpolation.t	0	0	7	
+S02-literals/autoref.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S02-literals/char-by-name.t	0	0	9	
+S02-literals/char-by-number.t	0	0	7	
+S02-literals/fmt-interpolation.t	0	0	6	
+S02-literals/format.t	0	0	7	
+S02-literals/hash-interpolation.t	0	0	7	
+S02-literals/hex_chars.t	0	0	13	
+S02-literals/listquote-whitespace.t	0	0	8	
+S02-literals/listquote.t	5	0	8	note: prefix operator 'hyper:|' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-literals/numeric.t	0	0	9	
+S02-literals/pair-boolean.t	0	0	7	
+S02-literals/pairs.t	0	0	8	
+S02-literals/pod.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-literals/radix.t	0	0	10	
+S02-literals/sub-calls.t	0	0	8	
+S02-literals/subscript.t	0	0	7	
+S02-literals/types.t	0	0	6	
+S02-literals/underscores.t	0	0	6	
+S02-literals/version.t	0	0	6	
+S02-magicals/78258.t	0	0	8	
+S02-magicals/DISTRO.t	0	0	7	
+S02-magicals/GROUP.t	0	0	7	
+S02-magicals/KERNEL.t	0	0	8	
+S02-magicals/PERL.t	0	0	7	
+S02-magicals/RAKU.t	0	0	7	
+S02-magicals/USER.t	0	0	6	
+S02-magicals/VM.t	0	0	7	
+S02-magicals/args.t	5	0	8	note: assignment to '@*ARGS' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-magicals/block.t	0	0	8	
+S02-magicals/dollar_bang.t	0	0	7	
+S02-magicals/env.t	0	0	8	
+S02-magicals/file_line.t	0	0	6	
+S02-magicals/pid.t	0	0	8	
+S02-magicals/progname.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S02-magicals/sub.t	0	0	7	
+S02-magicals/subname.t	0	0	6	
+S02-names/bare-sigil.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names/dynamic-scope.t	0	0	7	
+S02-names/indirect.t	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names/is_default.t	5	0	30	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names/is_dynamic.t	0	0	10	
+S02-names/name.t	5	0	8	note: assignment to '&a' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names/strict.t	5	0	7	note: `no strict` in a unit the declaration check could not finish — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names-vars/contextual.t	0	0	6	
+S02-names-vars/fmt.t	0	0	6	
+S02-names-vars/list_array_perl.t	5	0	7	note: prefix operator 'hyper:-' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names-vars/perl.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-names-vars/varnames.t	0	0	7	
+S02-one-pass-parsing/less-than.t	0	0	6	
+S02-one-pass-parsing/misc.t	0	0	7	
+S02-packages/package-lookup.t	0	0	6	
+S02-types/WHICH.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/anon_block.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/array_extending.t	0	0	6	
+S02-types/assigning-refs.t	0	0	6	
+S02-types/bag-iterator.t	0	0	7	
+S02-types/bag.t	5	0	11	note: the parameterized type 'Bag[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/baggy.t	0	0	8	
+S02-types/baghash.t	5	0	16	note: the parameterized type 'BagHash[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/bool.t	0	0	8	
+S02-types/built-in.t	0	0	7	
+S02-types/catch_type_cast_mismatch.t	0	0	6	
+S02-types/compact.t	0	0	6	
+S02-types/declare.t	5	0	8	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/fatrat.t	0	0	6	
+S02-types/flattening.t	0	0	8	
+S02-types/hash_ref.t	0	0	7	
+S02-types/hyperwhatever.t	0	0	6	
+S02-types/infinity.t	0	0	9	
+S02-types/instants-and-durations.t	0	0	6	
+S02-types/int-uint.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/is-type.t	5	0	9	note: the parameterized type 'Array[Str,D]' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/mix-iterator.t	0	0	10	
+S02-types/mix.t	5	0	14	note: the parameterized type 'Mix[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/mixed_multi_dimensional.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/mixhash.t	5	0	16	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/nan.t	0	0	7	
+S02-types/nested_arrays.t	0	0	6	
+S02-types/nested_pairs.t	0	0	6	
+S02-types/parsing-bool.t	0	0	6	
+S02-types/range-iterator.t	0	0	6	
+S02-types/range.t	5	0	11	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/resolved-in-setting.t	0	0	6	
+S02-types/set-iterator.t	0	0	7	
+S02-types/sethash.t	5	0	13	note: the parameterized type 'SetHash[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/sigils-and-types.t	5	0	7	note: assignment to '&a' — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/signed-unsigned-native.t	0	0	8	
+S02-types/stash.t	0	0	7	
+S02-types/subscripts_and_context.t	0	0	6	
+S02-types/subset-6e.t	5	0	10	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/type.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S02-types/undefined-types.t	0	0	7	
+S02-types/unicode.t	0	0	7	
+S02-types/version-stress.t	0	0	8	
+S02-types/version.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S03-binding/closure.t	0	0	6	
+S03-binding/ro.t	0	0	7	
+S03-buf/read-int.t	5	0	8	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S03-buf/read-num.t	5	0	6	note: the parameterized type 'Blob[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-buf/read-write-bits.t	0	0	7	
+S03-buf/write-int.t	0	0	8	
+S03-buf/write-num.t	0	0	7	
+S03-feeds/basic.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-junctions/associative.t	0	0	6	
+S03-junctions/autothreading.t	5	0	9	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S03-junctions/boolean-context.t	0	0	8	
+S03-junctions/misc.t	5	0	12	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-metaops/cross.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-metaops/infix.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-metaops/not.t	0	0	7	
+S03-metaops/zip.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/adverbial-modifiers.t	5	0	8	note: prefix operator 'blub' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/also.t	0	0	6	
+S03-operators/andthen.t	0	0	7	
+S03-operators/arith.t	5	0	10	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/assign-is-not-binding.t	0	0	6	
+S03-operators/autoincrement-range.t	0	0	8	
+S03-operators/autoincrement.t	0	0	8	
+S03-operators/autovivification.t	0	0	6	
+S03-operators/basic-types.t	0	0	6	
+S03-operators/bit.t	5	0	9	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/boolean-bitwise.t	0	0	6	
+S03-operators/brainos.t	0	0	6	
+S03-operators/buf.t	5	0	8	note: prefix operator '~^' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/chained-declarators.t	0	0	6	
+S03-operators/cmp.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/comparison-simple.t	0	0	6	
+S03-operators/comparison.t	5	0	8	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/composition.t	0	0	7	
+S03-operators/context.t	0	0	7	
+S03-operators/custom.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/div.t	0	0	7	
+S03-operators/equality.t	0	0	6	
+S03-operators/eqv.t	5	0	8	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/flip-flop.t	5	0	8	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/gcd.t	0	0	6	
+S03-operators/increment.t	0	0	7	
+S03-operators/infixed-function.t	0	0	6	
+S03-operators/is-divisible-by.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/lcm.t	0	0	6	
+S03-operators/list-quote-junction.t	0	0	6	
+S03-operators/minmax.t	0	0	8	
+S03-operators/misc.t	5	0	9	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/names.t	0	0	6	
+S03-operators/nesting.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/not.t	0	0	6	
+S03-operators/notandthen.t	0	0	7	
+S03-operators/numeric-shift.t	0	0	6	
+S03-operators/orelse.t	0	0	6	
+S03-operators/overflow.t	0	0	8	
+S03-operators/range-basic.t	0	0	8	
+S03-operators/range-int.t	0	0	11	
+S03-operators/range.t	0	0	10	
+S03-operators/reduce-le1arg.t	0	0	7	
+S03-operators/relational.t	0	0	9	
+S03-operators/repeat.t	5	0	10	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/scalar-assign.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_addition.t	0	0	11	
+S03-operators/set_difference.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_elem.t	5	0	7	note: the parameterized type 'Hash[Any,Any]' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_equality.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_intersection.t	5	0	10	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_multiply.t	5	0	10	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_proper_subset.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_subset.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_symmetric_difference.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/set_union.t	5	0	10	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/short-circuit.t	0	0	10	
+S03-operators/so.t	0	0	6	
+S03-operators/spaceship-and-containers.t	0	0	6	
+S03-operators/spaceship.t	0	0	6	
+S03-operators/subscript-adverbs.t	5	0	7	note: index adverb on assignment — not natively compilable; --exe would fall back to AOT (--aot)
+S03-operators/subscript-vs-lt.t	0	0	6	
+S03-operators/u2212-minus.t	0	0	7	
+S03-operators/value_equivalence.t	0	0	7	
+S03-sequence/arity0.t	0	0	6	
+S03-sequence/basic.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-sequence/exhaustive.t	0	0	10	
+S03-sequence/limit-arity-2-or-more.t	0	0	6	
+S03-sequence/misc.t	0	0	8	
+S03-sequence/nonnumeric.t	0	0	7	
+S03-smartmatch/00-sanity.t	0	0	6	
+S03-smartmatch/any-any.t	0	0	6	
+S03-smartmatch/any-bool.t	0	0	6	
+S03-smartmatch/any-callable.t	0	0	6	
+S03-smartmatch/any-complex.t	0	0	6	
+S03-smartmatch/any-hash-pair.t	0	0	6	
+S03-smartmatch/any-method.t	0	0	6	
+S03-smartmatch/any-num.t	0	0	6	
+S03-smartmatch/any-pair.t	0	0	6	
+S03-smartmatch/any-str.t	0	0	6	
+S03-smartmatch/any-sub.t	0	0	6	
+S03-smartmatch/any-type.t	5	0	6	note: the parameterized type 'Array[Str]' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-smartmatch/array-array.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S03-smartmatch/array-hash.t	0	0	6	
+S03-smartmatch/array-map.t	0	0	6	
+S03-smartmatch/capture-signature.t	5	0	6	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+S03-smartmatch/disorganized.t	0	0	6	
+S03-smartmatch/hash-hash.t	0	0	6	
+S03-smartmatch/range-range.t	0	0	7	
+S03-smartmatch/regex-hash.t	0	0	6	
+S03-smartmatch/scalar-hash.t	0	0	6	
+S03-smartmatch/signature-signature.t	5	0	7	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+S04-blocks-and-statements/let.t	5	0	6	note: prefix operator 'stmtseq' — not natively compilable; --exe would fall back to AOT (--aot)
+S04-blocks-and-statements/pointy-rw.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S04-blocks-and-statements/pointy.t	5	0	6	note: an unsupported construct (NK 37) — not natively compilable; --exe would fall back to AOT (--aot)
+S04-blocks-and-statements/temp.t	5	0	7	note: prefix operator 'stmtseq' — not natively compilable; --exe would fall back to AOT (--aot)
+S04-declarations/constant-6.d.t	5	0	10	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S04-declarations/implicit-parameter.t	0	0	6	
+S04-declarations/multiple.t	0	0	6	
+S04-declarations/my-6e.t	5	0	9	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-declarations/smiley.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-declarations/state.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-exception-handlers/top-level.t	0	0	6	
+S04-exceptions/control_across_runloop.t	0	0	6	
+S04-exceptions/fail-6e.t	0	0	7	
+S04-exceptions/fail.t	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S04-exceptions/pending.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/ascending-order.t	0	0	6	
+S04-phasers/check.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/descending-order.t	0	0	6	
+S04-phasers/end.t	5	0	7	note: a nested END phaser — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/exit-in-check.t	0	0	6	
+S04-phasers/first.t	0	0	6	
+S04-phasers/in-eval.t	5	0	6	note: a nested END phaser — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/init.t	5	0	6	note: a nested INIT phaser — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/interpolate.t	5	0	6	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/keep-undo.t	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/multiple.t	0	0	6	
+S04-phasers/next.t	5	0	7	note: a NEXT phaser — not natively compilable; --exe would fall back to AOT (--aot)
+S04-phasers/rvalue.t	5	0	6	note: prefix operator 'BEGIN' — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statement-modifiers/given.t	0	0	6	
+S04-statement-modifiers/if.t	0	0	6	
+S04-statement-modifiers/unless.t	0	0	6	
+S04-statement-modifiers/until.t	0	0	6	
+S04-statement-modifiers/values_in_bool_context.t	0	0	6	
+S04-statement-modifiers/while.t	0	0	6	
+S04-statement-modifiers/with.t	0	0	7	
+S04-statement-modifiers/without.t	0	0	6	
+S04-statement-parsing/hash.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/do.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/for-scope.t	0	0	6	
+S04-statements/given.t	5	0	8	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/if.t	5	0	7	note: if EXPR -> $x with elsif — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/label.t	5	0	6	note: an unsupported construct (NK 37) — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/last.t	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/lazy.t	0	0	5	
+S04-statements/leave.t	0	0	6	
+S04-statements/loop.t	0	0	7	
+S04-statements/map-and-sort-in-for.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/next.t	0	0	6	
+S04-statements/no-implicit-block.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/quietly.t	0	0	7	
+S04-statements/redo.t	5	0	6	note: an unsupported construct (NK 37) — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/sink.t	5	0	7	note: .= on this invocant — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/terminator.t	0	0	6	
+S04-statements/unless.t	0	0	6	
+S04-statements/until.t	0	0	6	
+S04-statements/while.t	5	0	6	note: while EXPR -> $x — not natively compilable; --exe would fall back to AOT (--aot)
+S04-statements/with.t	0	0	7	
+S05-capture/alias.t	5	0	6	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-capture/array-alias.t	0	0	7	
+S05-capture/caps.t	0	0	6	
+S05-capture/dot.t	0	0	7	
+S05-capture/named.t	0	0	6	
+S05-capture/subrule.t	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-grammar/action-stubs.t	0	0	7	
+S05-grammar/example.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S05-grammar/namespace-6e.t	0	0	6	
+S05-grammar/namespace.t	0	0	6	
+S05-grammar/parse_and_parsefile-6e.t	0	0	6	
+S05-grammar/polymorphism.t	0	0	6	
+S05-grammar/protoregex.t	0	0	7	
+S05-grammar/protos.t	0	0	6	
+S05-grammar/signatures.t	0	0	6	
+S05-grammar/ws.t	0	0	6	
+S05-interpolation/lexicals.t	0	0	6	
+S05-interpolation/regex-in-variable.t	5	0	9	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-mass/charsets.t	0	0	7	
+S05-mass/named-chars.t	0	0	13	
+S05-mass/properties-block.t	0	0	18	
+S05-mass/properties-contributory.t	0	0	7	
+S05-mass/properties-derived.t	0	0	11	
+S05-mass/properties-general.t	0	0	19	
+S05-mass/properties-script.t	0	0	14	
+S05-mass/recursive.t	0	0	6	
+S05-mass/rx.t	5	0	18	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-mass/stdrules.t	0	0	9	
+S05-match/arrayhash.t	0	0	6	
+S05-match/basics.t	0	0	6	
+S05-match/blocks.t	0	0	6	
+S05-match/capturing-contexts.t	5	0	10	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S05-match/make.t	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-match/non-capturing.t	0	0	6	
+S05-match/positions.t	0	0	6	
+S05-match/raku.t	0	0	7	
+S05-metachars/closure.t	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metachars/line-anchors.t	0	0	7	
+S05-metachars/newline.t	0	0	7	
+S05-metachars/tilde.t	0	0	7	
+S05-metasyntax/angle-brackets.t	5	0	9	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/assertions.t	5	0	7	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/changed.t	0	0	6	
+S05-metasyntax/charset.t	0	0	7	
+S05-metasyntax/delimiters.t	0	0	7	
+S05-metasyntax/interpolating-closure.t	5	0	8	note: a regex with an interpolated subregex (<$…>/<{…}>) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/litvar.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/lookaround.t	0	0	6	
+S05-metasyntax/null.t	0	0	6	
+S05-metasyntax/proto-token-ltm.t	0	0	6	
+S05-metasyntax/regex.t	5	0	11	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/repeat.t	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/sequential-alternation.t	5	0	6	note: a regex that interpolates a variable (@ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-metasyntax/single-quotes.t	0	0	6	
+S05-metasyntax/unicode-property-pair.t	0	0	7	
+S05-metasyntax/unknown.t	0	0	7	
+S05-modifier/Perl_0.t	5	0	7	note: an `s///` replacement with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_1.t	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_10.t	0	0	6	
+S05-modifier/Perl_2.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_3.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_4.t	5	0	8	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_5.t	5	0	8	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_6.t	5	0	8	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_7.t	0	0	7	
+S05-modifier/Perl_8.t	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/Perl_9.t	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/continue.t	0	0	6	
+S05-modifier/counted-match.t	0	0	6	
+S05-modifier/counted.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/exhaustive.t	5	0	7	note: a regex that interpolates a variable (@ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/global.t	5	0	6	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/ignorecase-and-ignoremark.t	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/ignorecase.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/ignoremark.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/ii.t	5	0	7	note: an `s///` replacement that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/my.t	5	0	7	note: a regex with an embedded code block ({…}) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-modifier/overlapping.t	0	0	7	
+S05-modifier/pos.t	0	0	7	
+S05-modifier/ratchet.t	0	0	6	
+S05-modifier/repetition-exhaustive.t	0	0	6	
+S05-modifier/repetition.t	0	0	6	
+S05-modifier/samemark.t	0	0	7	
+S05-modifier/sigspace.t	0	0	7	
+S05-substitution/67222.t	0	0	7	
+S05-substitution/match.t	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-substitution/subst.t	5	0	13	note: an `s///` replacement that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-syntactic-categories/new-symbols.t	0	0	7	
+S05-transliteration/79778.t	0	0	6	
+S05-transliteration/trans-TR-operator.t	5	0	7	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S05-transliteration/trans-tr-lowercase-operator.t	5	0	7	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S05-transliteration/trans.t	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S05-transliteration/with-closure.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S06-advanced/callsame.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-advanced/recurse.t	0	0	6	
+S06-currying/assuming-and-mmd.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-currying/misc.t	5	0	8	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-currying/named.t	5	0	7	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-currying/slurpy.t	5	0	7	note: prefix operator 'siglit' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/by-trait.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/compile-time.t	0	0	6	
+S06-multi/lexical-multis.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/positional-vs-named.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/redispatch.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/syntax.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-multi/value-based.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-operator-overloading/infix.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S06-operator-overloading/methods.t	0	0	8	
+S06-operator-overloading/prefix.t	5	0	7	note: prefix operator 'X' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-operator-overloading/semicolon.t	0	0	6	
+S06-operator-overloading/sub.t	5	0	8	note: prefix operator 'Σ' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-operator-overloading/term.t	0	0	7	
+S06-other/anon-hashes-vs-blocks.t	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S06-other/main-eval.t	0	0	6	
+S06-other/main-semicolon.t	5	0	8	note: assignment to '@*ARGS' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-other/main-usage.t	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S06-other/misc.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S06-parameters/smiley.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S06-routine-modifiers/lvalue-subroutines.t	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S06-routine-modifiers/native-lvalue-subroutines.t	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S06-routine-modifiers/scoped-named-subs.t	0	0	7	
+S06-signature/arity.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/closure-over-parameters.t	0	0	6	
+S06-signature/closure-parameters.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/defaults.t	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/errors.t	5	0	7	note: a regex that interpolates a variable (% — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/mixed-placeholders.t	0	0	7	
+S06-signature/multi-invocant.t	0	0	7	
+S06-signature/multidimensional.t	0	0	7	
+S06-signature/named-placeholders.t	0	0	7	
+S06-signature/named-renaming.t	0	0	6	
+S06-signature/optional.t	5	0	7	note: the parameterized type 'Array[Int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/passing-arrays.t	0	0	7	
+S06-signature/passing-hashes.t	0	0	7	
+S06-signature/positional-placeholders.t	0	0	8	
+S06-signature/positional.t	0	0	7	
+S06-signature/scalar-type.t	5	0	6	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/sigilless.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/slurpy-and-interpolation.t	0	0	7	
+S06-signature/slurpy-placeholders.t	0	0	6	
+S06-signature/sub-ref.t	0	0	6	
+S06-signature/tree-node-parameters.t	0	0	7	
+S06-signature/types.t	5	0	8	note: the parameterized type 'Callable[Int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/unpack-array.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-signature/unpack-object.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S06-traits/as.t	0	0	6	
+S06-traits/is-assoc.t	0	0	7	
+S06-traits/is-copy.t	5	0	7	note: given/with EXPR -> ($a, $b) destructuring binder — not natively compilable; --exe would fall back to AOT (--aot)
+S06-traits/is-readonly.t	0	0	6	
+S06-traits/native-is-copy.t	0	0	6	
+S06-traits/native-is-rw.t	0	0	7	
+S07-hyperrace/stress.t	0	0	6	
+S07-iterationbuffer/iterationbuffer.t	0	0	6	
+S07-iterators/range-iterator.t	0	0	8	
+S07-slip/slip.t	0	0	7	
+S09-hashes/objecthash.t	5	0	8	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+S09-multidim/XX-POS-on-dimensioned.t	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S09-multidim/XX-POS-on-undimensioned.t	0	0	8	
+S09-multidim/assign.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S09-multidim/decl.t	0	0	7	
+S09-multidim/methods.t	5	0	8	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S09-multidim/subs.t	5	0	8	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S09-subscript/multidim-assignment.t	5	0	7	note: a Whatever in a multi-dimensional index — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/hashes.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/native-decl.t	5	0	7	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/native-shape1-int.t	5	0	8	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/native-shape1-num.t	5	0	9	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/native-shape1-str.t	5	0	9	note: binding (:=) of a non-scalar — not natively compilable; --exe would fall back to AOT (--aot)
+S09-typed-arrays/native.t	5	0	8	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S10-packages/joined-namespaces.t	0	0	7	
+S10-packages/nested-use.t	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S10-packages/use-with-class.t	0	0	9	
+S11-compunit/compunit-dependencyspecification.t	0	0	6	
+S11-compunit/compunit-repository.t	0	0	6	
+S11-compunit/rt126904.t	0	0	7	
+S11-modules/gh2979.t	0	0	8	
+S11-modules/import-multi.t	5	0	8	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S11-modules/import-tag.t	0	0	7	
+S11-modules/module-file.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S11-modules/module.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S11-modules/need.t	0	0	7	
+S11-modules/nested.t	0	0	9	
+S11-modules/re-export.t	0	0	7	
+S11-modules/runtime.t	0	0	7	
+S11-modules/versioning.t	0	0	8	
+S12-attributes/augment-and-initialization.t	0	0	8	
+S12-attributes/class.t	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S12-attributes/clone.t	5	0	7	note: while EXPR -> $x — not natively compilable; --exe would fall back to AOT (--aot)
+S12-attributes/delegation.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S12-attributes/inheritance.t	0	0	7	
+S12-attributes/mutators.t	0	0	7	
+S12-attributes/recursive.t	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S12-attributes/smiley.t	0	0	8	
+S12-attributes/undeclared.t	0	0	7	
+S12-class/attributes-required.t	5	0	7	note: `self` outside a method — not natively compilable; --exe would fall back to AOT (--aot)
+S12-class/basic.t	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S12-class/declaration-order.t	0	0	6	
+S12-class/extending-arrays.t	0	0	7	
+S12-class/inheritance-class-methods.t	0	0	6	
+S12-class/inheritance.t	0	0	7	
+S12-class/instantiate.t	0	0	7	
+S12-class/lexical.t	0	0	6	
+S12-class/literal.t	5	0	7	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S12-class/magical-vars.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S12-class/open.t	0	0	6	
+S12-class/parent_attributes.t	0	0	6	
+S12-class/rw.t	0	0	6	
+S12-class/self-inheritance.t	0	0	7	
+S12-class/type-object.t	0	0	6	
+S12-coercion/coercion-return.t	5	0	8	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-construction/TWEAK.t	0	0	7	
+S12-construction/autopairs.t	0	0	6	
+S12-construction/construction.t	5	0	8	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+S12-construction/destruction.t	0	0	14	
+S12-construction/named-params-in-BUILD.t	0	0	8	
+S12-construction/new.t	5	0	8	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S12-construction/roles-6e.t	0	0	8	
+S12-enums/anonymous.t	5	0	7	note: prefix operator 'stmtseq' — not natively compilable; --exe would fall back to AOT (--aot)
+S12-enums/as-role.t	0	0	6	
+S12-enums/basic.t	5	0	9	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S12-enums/misc.t	0	0	7	
+S12-enums/non-int.t	0	0	6	
+S12-enums/pseudo-functional.t	5	0	6	note: a non-literal enum value — not natively compilable; --exe would fall back to AOT (--aot)
+S12-introspection/WHAT.t	5	0	6	note: the parameterized type 'Array[Int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S12-introspection/can.t	0	0	7	
+S12-introspection/definite.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S12-introspection/meta-class.t	0	0	6	
+S12-introspection/methods.t	5	0	7	note: a multi method with a candidate in a parent class (D.bar) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-introspection/parents.t	0	0	7	
+S12-introspection/roles.t	0	0	6	
+S12-introspection/walk.t	0	0	7	
+S12-meta/classhow.t	0	0	6	
+S12-meta/exporthow.t	0	0	8	
+S12-meta/primitives.t	0	0	7	
+S12-methods/accessors.t	0	0	7	
+S12-methods/calling_sets.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/calling_syntax.t	0	0	6	
+S12-methods/chaining.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/class-and-instance.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/default-trait.t	0	0	6	
+S12-methods/defer-call.t	5	0	7	note: a multi method with a candidate in a parent class (BarCallSame.doit) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/defer-next.t	5	0	7	note: a multi method with a candidate in a parent class (BarNextSame.doit) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/delegation.t	0	0	6	
+S12-methods/how.t	0	0	6	
+S12-methods/indirect_notation.t	5	0	7	note: `self` outside a method — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/instance.t	0	0	7	
+S12-methods/lastcall.t	5	0	6	note: a multi method with a candidate in a parent class (BazLastCallNext.doit) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/lvalue.t	0	0	6	
+S12-methods/method-vs-sub.t	0	0	7	
+S12-methods/multi.t	5	0	7	note: a multi method with a candidate in a parent class (Bar.a) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/parallel-dispatch.t	5	0	8	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/private.t	0	0	6	
+S12-methods/submethods.t	0	0	6	
+S12-methods/syntax.t	5	0	6	note: assignment to '&Manip::a' — not natively compilable; --exe would fall back to AOT (--aot)
+S12-methods/topic.t	0	0	6	
+S12-methods/trusts.t	0	0	6	
+S12-methods/typed-attributes.t	0	0	6	
+S12-methods/what.t	5	0	7	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S12-subset/multi-dispatch.t	5	0	6	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+S12-subset/subtypes.t	5	0	11	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S12-traits/precomp.t	0	0	6	
+S13-overloading/fallbacks-deep.t	0	0	6	
+S13-overloading/metaoperators.t	0	0	6	
+S13-overloading/multiple-signatures.t	0	0	6	
+S13-overloading/operators.t	0	0	7	
+S13-overloading/typecasting-long.t	5	0	6	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+S13-syntax/aliasing.t	0	0	6	
+S13-type-casting/methods.t	0	0	6	
+S14-roles/anonymous.t	0	0	6	
+S14-roles/attributes-6e.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/bool.t	0	0	6	
+S14-roles/composition.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/crony.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/instantiation.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/lexical.t	0	0	6	
+S14-roles/mixin-6e.t	5	0	7	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/namespaced.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/parameter-subtyping.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/parameterized-mixin.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/rw.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/stubs.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S14-roles/submethods-6e.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S15-literals/identifiers.t	0	0	7	
+S15-literals/numbers.t	0	0	8	
+S15-nfg/GraphemeBreakTest-0.t	0	0	19	
+S15-nfg/GraphemeBreakTest-1.t	0	0	17	
+S15-nfg/GraphemeBreakTest-2.t	0	0	18	
+S15-nfg/GraphemeBreakTest-3.t	0	0	17	
+S15-nfg/case-change.t	0	0	7	
+S15-nfg/cgj.t	0	0	6	
+S15-nfg/concat-stable.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S15-nfg/concatenation.t	0	0	7	
+S15-nfg/crlf-encoding.t	0	0	7	
+S15-nfg/emoji-test.t	0	0	105	
+S15-nfg/from-buf.t	0	0	8	
+S15-nfg/from-file.t	0	0	7	
+S15-nfg/grapheme-break.t	0	0	6	
+S15-nfg/long-uni.t	0	0	6	
+S15-nfg/many-combiners.t	0	0	7	
+S15-nfg/many-threads.t	5	0	6	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+S15-nfg/mass-equality.t	0	0	18	
+S15-nfg/mass-roundtrip-nfc.t	0	0	15	
+S15-nfg/mass-roundtrip-nfd.t	0	0	8	
+S15-nfg/mass-roundtrip-nfkc.t	0	0	8	
+S15-nfg/mass-roundtrip-nfkd.t	0	0	8	
+S15-nfg/regex.t	0	0	6	
+S15-normalization/nfc-0.t	0	0	36	
+S15-normalization/nfc-1.t	0	0	36	
+S15-normalization/nfc-10.t	0	0	7	
+S15-normalization/nfc-2.t	0	0	35	
+S15-normalization/nfc-3.t	0	0	36	
+S15-normalization/nfc-4.t	0	0	36	
+S15-normalization/nfc-5.t	0	0	37	
+S15-normalization/nfc-6.t	0	0	37	
+S15-normalization/nfc-7.t	0	0	36	
+S15-normalization/nfc-8.t	0	0	44	
+S15-normalization/nfc-9.t	0	0	47	
+S15-normalization/nfc-concat.t	5	0	160	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+S15-normalization/nfc-sanity.t	0	0	14	
+S15-normalization/nfd-0.t	0	0	36	
+S15-normalization/nfd-1.t	0	0	39	
+S15-normalization/nfd-10.t	0	0	7	
+S15-normalization/nfd-2.t	0	0	38	
+S15-normalization/nfd-3.t	0	0	40	
+S15-normalization/nfd-4.t	0	0	39	
+S15-normalization/nfd-5.t	0	0	40	
+S15-normalization/nfd-6.t	0	0	38	
+S15-normalization/nfd-7.t	0	0	36	
+S15-normalization/nfd-8.t	0	0	45	
+S15-normalization/nfd-9.t	0	0	51	
+S15-normalization/nfd-sanity.t	0	0	15	
+S15-normalization/nfkc-0.t	0	0	37	
+S15-normalization/nfkc-1.t	0	0	38	
+S15-normalization/nfkc-10.t	0	0	9	
+S15-normalization/nfkc-2.t	0	0	36	
+S15-normalization/nfkc-3.t	0	0	36	
+S15-normalization/nfkc-4.t	0	0	36	
+S15-normalization/nfkc-5.t	0	0	38	
+S15-normalization/nfkc-6.t	0	0	36	
+S15-normalization/nfkc-7.t	0	0	38	
+S15-normalization/nfkc-8.t	0	0	44	
+S15-normalization/nfkc-9.t	0	0	48	
+S15-normalization/nfkc-sanity.t	0	0	38	
+S15-normalization/nfkd-0.t	0	0	39	
+S15-normalization/nfkd-1.t	0	0	40	
+S15-normalization/nfkd-10.t	0	0	8	
+S15-normalization/nfkd-2.t	0	0	40	
+S15-normalization/nfkd-3.t	0	0	41	
+S15-normalization/nfkd-4.t	0	0	40	
+S15-normalization/nfkd-5.t	0	0	40	
+S15-normalization/nfkd-6.t	0	0	39	
+S15-normalization/nfkd-7.t	0	0	37	
+S15-normalization/nfkd-8.t	0	0	45	
+S15-normalization/nfkd-9.t	0	0	51	
+S15-normalization/nfkd-sanity.t	0	0	15	
+S15-string-types/NF-types.t	0	0	6	
+S15-string-types/NFK-types.t	0	0	6	
+S15-string-types/Str.t	0	0	7	
+S15-string-types/Uni.t	0	0	6	
+S15-unicode-information/unimatch-general.t	0	0	9	
+S15-unicode-information/uniname.t	5	0	8	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S15-unicode-information/uniprop.t	0	0	12	
+S15-unicode-information/unival.t	0	0	8	
+S16-filehandles/argfiles.t	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S16-filehandles/chmod.t	0	0	7	
+S16-filehandles/filestat.t	0	0	7	
+S16-filehandles/filetest.t	5	0	9	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+S16-filehandles/io.t	0	0	11	
+S16-filehandles/io_in_while_loops.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S16-filehandles/misc.t	0	0	8	
+S16-filehandles/mkdir_rmdir.t	0	0	6	
+S16-filehandles/mode.t	0	0	8	
+S16-filehandles/open.t	0	0	6	
+S16-filehandles/unlink.t	0	0	6	
+S16-io/bare-say.t	0	0	8	
+S16-io/basic-open.t	0	0	8	
+S16-io/bom.t	0	0	7	
+S16-io/comb.t	0	0	8	
+S16-io/cwd.t	0	0	7	
+S16-io/getc.t	0	0	7	
+S16-io/handles-between-threads.t	0	0	8	
+S16-io/home.t	0	0	8	
+S16-io/lines.t	0	0	8	
+S16-io/newline.t	0	0	6	
+S16-io/note.t	5	0	6	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S16-io/prompt.t	0	0	8	
+S16-io/put.t	0	0	8	
+S16-io/readchars.t	0	0	8	
+S16-io/say-and-ref.t	0	0	7	
+S16-io/say.t	5	0	6	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S16-io/split.t	0	0	7	
+S16-io/supply.t	5	0	7	note: the parameterized type 'Buf[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S16-io/tmpdir.t	0	0	8	
+S16-io/watch.t	5	0	7	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+S16-unfiled/getpeername.t	0	0	6	
+S16-unfiled/rebindstdhandles.t	0	0	6	
+S17-channel/stress.t	5	0	6	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S17-channel/subscription-drain-in-react.t	0	0	6	
+S17-lowlevel/atomic-ops.t	0	0	7	
+S17-lowlevel/atomic.t	5	0	7	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-lowlevel/cas-int.t	0	0	7	
+S17-lowlevel/cas-loop-int.t	0	0	6	
+S17-lowlevel/cas-loop.t	0	0	7	
+S17-lowlevel/cas.t	5	0	7	note: an unsupported construct (NK 48) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-lowlevel/lock.t	0	0	7	
+S17-lowlevel/semaphore.t	0	0	6	
+S17-lowlevel/thread-start-join-stress.t	0	0	6	
+S17-lowlevel/thread.t	0	0	7	
+S17-procasync/basic.t	5	0	8	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-procasync/bind-handles.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S17-procasync/encoding.t	0	0	7	
+S17-procasync/kill.t	5	0	8	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S17-procasync/many-processes-no-close-stdin.t	0	0	8	
+S17-procasync/no-runaway-file-limit.t	0	0	8	
+S17-procasync/nonexistent.t	0	0	6	
+S17-procasync/print.t	0	0	6	
+S17-procasync/windows-arg-quoting.t	5	0	7	note: an `s///` pattern that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-promise/anyof.t	0	0	6	
+S17-promise/at.t	0	0	7	
+S17-promise/in.t	0	0	7	
+S17-promise/lock-async-stress.t	0	0	7	
+S17-promise/lock-async-stress2.t	0	0	7	
+S17-promise/lock-async.t	0	0	7	
+S17-promise/nonblocking-await.t	5	0	9	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+S17-promise/single-assignment.t	5	0	6	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S17-promise/start.t	5	0	8	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+S17-promise/stress.t	5	0	7	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+S17-promise/then.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S17-scheduler/at.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S17-scheduler/basic.t	5	0	8	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-scheduler/every.t	0	0	7	
+S17-scheduler/in.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S17-scheduler/times.t	0	0	9	
+S17-supply/Channel.t	0	0	7	
+S17-supply/Promise.t	0	0	8	
+S17-supply/Seq.t	0	0	7	
+S17-supply/act.t	0	0	6	
+S17-supply/batch.t	0	0	7	
+S17-supply/categorize.t	0	0	7	
+S17-supply/classify.t	0	0	7	
+S17-supply/collate.t	0	0	7	
+S17-supply/comb.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/construction-recursion.t	0	0	6	
+S17-supply/decode.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/delayed.t	0	0	7	
+S17-supply/do.t	0	0	6	
+S17-supply/elems.t	0	0	6	
+S17-supply/encode.t	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/first.t	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/flat.t	0	0	6	
+S17-supply/from-list.t	0	0	6	
+S17-supply/grab.t	0	0	6	
+S17-supply/grep.t	0	0	6	
+S17-supply/head.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/interval.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/lines.t	0	0	7	
+S17-supply/list.t	0	0	7	
+S17-supply/map.t	0	0	7	
+S17-supply/max.t	0	0	7	
+S17-supply/merge.t	0	0	7	
+S17-supply/migrate.t	0	0	6	
+S17-supply/min.t	0	0	7	
+S17-supply/minmax.t	0	0	7	
+S17-supply/on-demand.t	0	0	7	
+S17-supply/produce.t	0	0	7	
+S17-supply/reduce.t	0	0	7	
+S17-supply/repeated.t	0	0	7	
+S17-supply/return-in-tap.t	0	0	7	
+S17-supply/reverse.t	0	0	7	
+S17-supply/rotate.t	0	0	7	
+S17-supply/rotor.t	0	0	10	
+S17-supply/schedule-on.t	0	0	9	
+S17-supply/skip.t	0	0	7	
+S17-supply/snip.t	0	0	8	
+S17-supply/sort.t	0	0	8	
+S17-supply/split.t	0	0	8	
+S17-supply/squish.t	0	0	7	
+S17-supply/stable.t	0	0	8	
+S17-supply/start.t	0	0	7	
+S17-supply/syntax-nonblocking-await.t	0	0	8	
+S17-supply/tail.t	0	0	7	
+S17-supply/throttle.t	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/unique.t	0	0	8	
+S17-supply/wait.t	0	0	7	
+S17-supply/words.t	0	0	8	
+S17-supply/zip-latest.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S17-supply/zip.t	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S19-command-line/arguments.t	5	0	8	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S19-command-line/dash-e.t	0	0	9	
+S19-command-line/help.t	0	0	8	
+S19-command-line/repl.t	0	0	9	
+S19-command-line-options/02-dash-n.t	0	0	8	
+S19-command-line-options/03-dash-p.t	0	0	9	
+S19-command-line-options/04-negation.t	0	0	9	
+S24-testing/0-compile.t	0	0	7	
+S24-testing/10-is-approx.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S24-testing/11-plan-skip-all-subtests.t	0	0	9	
+S24-testing/11-plan-skip-all.t	0	0	8	
+S24-testing/12-subtest-todo.t	5	0	9	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S24-testing/13-cmp-ok.t	0	0	8	
+S24-testing/14-like-unlike.t	0	0	8	
+S24-testing/15-done-testing.t	0	0	8	
+S24-testing/2-force_todo.t	0	0	8	
+S24-testing/3-output.t	0	0	8	
+S24-testing/6-done_testing.t	0	0	7	
+S24-testing/7-bail_out.t	0	0	7	
+S24-testing/8-die_on_fail.t	0	0	8	
+S24-testing/9-is_deeply.t	0	0	8	
+S24-testing/fails-like.t	0	0	7	
+S24-testing/line-numbers.t	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/01-delimited.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/02-paragraph.t	5	0	9	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/03-abbreviated.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/04-code.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/04a-input-output.t	0	0	8	
+S26-documentation/05-comment.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/06-lists.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/07-tables.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/07a-tables.t	5	0	9	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/07b-tables.t	0	0	7	
+S26-documentation/07c-tables.t	0	0	6	
+S26-documentation/08-formattingcodes.t	5	0	8	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/09-configuration.t	5	0	9	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/10-doc-cli.t	0	0	8	
+S26-documentation/12-non-breaking-space.t	5	0	8	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/14-defn.t	5	0	6	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/15-numbered-alias.t	5	0	6	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/block-leading-user-format.t	5	0	7	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/block-leading.t	5	0	9	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/block-trailing.t	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/module-comment.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/multiline-leading.t	0	0	6	
+S26-documentation/multiline-trailing.t	0	0	6	
+S26-documentation/why-leading.t	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S26-documentation/why-trailing.t	5	0	8	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+S28-named-variables/cwd.t	0	0	6	
+S28-named-variables/init-instant.t	0	0	7	
+S28-named-variables/slangs.t	5	0	6	note: special/dynamic variable '$~MAIN' — not natively compilable; --exe would fall back to AOT (--aot)
+S29-any/are.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S29-any/cmp.t	0	0	6	
+S29-any/deg-trans.t	0	0	7	
+S29-any/isa.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S29-any/minpairs-maxpairs.t	0	0	11	
+S29-context/die.t	0	0	9	
+S29-context/eval.t	0	0	10	
+S29-context/evalfile.t	5	0	8	note: a nested END phaser — not natively compilable; --exe would fall back to AOT (--aot)
+S29-context/exit-in-if.t	0	0	6	
+S29-context/exit.t	0	0	7	
+S29-context/sleep.t	0	0	8	
+S29-conversions/hash.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S29-conversions/ord_and_chr.t	0	0	9	
+S29-os/system.t	5	0	10	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-array/bool.t	0	0	7	
+S32-array/delete-adverb-native.t	5	0	9	note: a conditional ($var) index adverb — not natively compilable; --exe would fall back to AOT (--aot)
+S32-array/elems.t	0	0	6	
+S32-array/end.t	0	0	6	
+S32-array/exists-adverb.t	5	0	7	note: a conditional ($var) index adverb — not natively compilable; --exe would fall back to AOT (--aot)
+S32-array/keys_values.t	0	0	6	
+S32-array/kv.t	0	0	6	
+S32-array/multislice-6e.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-array/pairs.t	0	0	6	
+S32-array/pop.t	0	0	7	
+S32-array/push.t	0	0	7	
+S32-array/rotate.t	0	0	7	
+S32-array/shift.t	0	0	6	
+S32-array/splice.t	5	0	11	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-array/unshift.t	0	0	7	
+S32-basics/pairup.t	0	0	7	
+S32-basics/warn.t	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-basics/xxKEY.t	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-basics/xxPOS-native.t	5	0	7	note: the parameterized type 'array[T]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-container/buf.t	5	0	8	note: the parameterized type 'array[int]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-container/cat.t	0	0	6	
+S32-container/roundrobin.t	0	0	6	
+S32-container/stringify.t	0	0	6	
+S32-container/zip.t	0	0	6	
+S32-encoding/decoder.t	5	0	8	note: the parameterized type 'Blob[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-encoding/encoder.t	0	0	7	
+S32-encoding/registry.t	0	0	8	
+S32-exceptions/misc2.t	5	0	11	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/adverbs.t	5	0	12	note: assignment to nested index — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/antipairs.t	0	0	6	
+S32-hash/delete-adverb.t	5	0	9	note: a conditional ($var) index adverb — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/delete.t	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/exists-adverb.t	5	0	7	note: a conditional ($var) index adverb — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/exists.t	5	0	6	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/hyperslice.t	5	0	7	note: prefix operator 'dimslip' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/invert.t	0	0	6	
+S32-hash/iterator.t	0	0	7	
+S32-hash/keys_values.t	0	0	7	
+S32-hash/multislice-6e.t	5	0	9	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-hash/pairs.t	0	0	7	
+S32-hash/push.t	0	0	6	
+S32-io/IO-Socket-INET-UNIX.t	0	0	6	
+S32-io/chdir-process.t	0	0	8	
+S32-io/chdir.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/child-secure.t	5	0	9	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/copy.t	0	0	9	
+S32-io/dir.t	5	0	8	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/indir.t	5	0	9	note: method-call form (.?) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/io-cathandle.t	5	0	16	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/io-handle.t	5	0	11	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/io-path-cygwin.t	0	0	8	
+S32-io/io-path-extension.t	5	0	9	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/io-path-subclasses.t	0	0	7	
+S32-io/io-path-symlink.t	0	0	8	
+S32-io/io-path-unix.t	0	0	8	
+S32-io/io-spec-cygwin.t	0	0	9	
+S32-io/io-spec-qnx.t	0	0	9	
+S32-io/io-spec-unix.t	0	0	10	
+S32-io/io-special.t	0	0	7	
+S32-io/lock.t	5	0	10	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/mkdir_rmdir.t	0	0	11	
+S32-io/move.t	0	0	9	
+S32-io/note.t	0	0	8	
+S32-io/null-char.t	0	0	7	
+S32-io/open.t	5	0	10	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/other-stress.t	0	0	8	
+S32-io/other.t	0	0	6	
+S32-io/out-buffering.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/pipe.t	0	0	9	
+S32-io/rename.t	0	0	6	
+S32-io/seek.t	5	0	8	note: the parameterized type 'Buf[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/signals.t	0	0	6	
+S32-io/socket-accept-and-working-threads.t	5	0	7	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/socket-fail-invalid-values.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/socket-host-port-split.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/socket-recv-vs-read.t	0	0	7	
+S32-io/spurt.t	5	0	10	note: the parameterized type 'Buf[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-io/utf16.t	5	0	8	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/are.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/batch.t	0	0	7	
+S32-list/categorize-list.t	0	0	15	
+S32-list/categorize.t	0	0	8	
+S32-list/classify-list.t	0	0	11	
+S32-list/combinations.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/create.t	0	0	6	
+S32-list/cross.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/duckmap.t	0	0	6	
+S32-list/end.t	0	0	6	
+S32-list/first-end-k.t	0	0	6	
+S32-list/first-end-kv.t	0	0	7	
+S32-list/first-end-p.t	0	0	7	
+S32-list/first-end-v.t	0	0	6	
+S32-list/first-end.t	0	0	6	
+S32-list/first-k.t	0	0	6	
+S32-list/first-kv.t	0	0	7	
+S32-list/first-p.t	0	0	6	
+S32-list/first-v.t	0	0	6	
+S32-list/first.t	5	0	8	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/flat.t	0	0	7	
+S32-list/grep-k.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/grep-kv.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/grep-p.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/grep-v.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/head.t	0	0	7	
+S32-list/join.t	0	0	7	
+S32-list/map_function_return_values.t	0	0	6	
+S32-list/minmax.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/permutations.t	0	0	7	
+S32-list/produce.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/repeated.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/roll.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/snip.t	0	0	7	
+S32-list/sort.t	5	0	9	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-list/toggle.t	0	0	6	
+S32-num/abs.t	0	0	6	
+S32-num/base.t	0	0	8	
+S32-num/complex-logarithms.t	0	0	6	
+S32-num/complex.t	0	0	9	
+S32-num/cool-num.t	0	0	7	
+S32-num/exp.t	0	0	6	
+S32-num/expmod.t	0	0	7	
+S32-num/fatrat.t	0	0	9	
+S32-num/int.t	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/is-prime.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/log.t	0	0	6	
+S32-num/narrow.t	0	0	6	
+S32-num/negative-zero.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/pi.t	0	0	7	
+S32-num/polar.t	0	0	6	
+S32-num/polymod.t	5	0	6	note: an endless `xx *` repetition — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/power.t	0	0	9	
+S32-num/rand.t	0	0	6	
+S32-num/rat.t	5	0	13	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/real-bridge.t	5	0	8	note: a multi method with a parent class this compilation cannot see (Fixed2.new) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/roots.t	0	0	7	
+S32-num/rounders.t	5	0	9	note: a symbolic reference (::("…")) — native locals have no runtime names — not natively compilable; --exe would fall back to AOT (--aot)
+S32-num/rshift_pos_amount.t	0	0	13	
+S32-num/sign.t	0	0	6	
+S32-num/sqrt.t	0	0	6	
+S32-num/stress.t	0	0	6	
+S32-num/stringify.t	0	0	7	
+S32-num/unpolar.t	0	0	6	
+S32-scalar/defined.t	0	0	6	
+S32-scalar/perl.t	0	0	6	
+S32-str/Collation.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/CollationTest_NON_IGNORABLE-0.t	0	0	34	
+S32-str/CollationTest_NON_IGNORABLE-1.t	0	0	34	
+S32-str/CollationTest_NON_IGNORABLE-2.t	0	0	37	
+S32-str/CollationTest_NON_IGNORABLE-3.t	0	0	25	
+S32-str/append.t	0	0	7	
+S32-str/bool.t	0	0	6	
+S32-str/capitalize.t	0	0	7	
+S32-str/chomp.t	0	0	7	
+S32-str/chop.t	0	0	6	
+S32-str/contains.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/encode.t	5	0	7	note: a regex that interpolates a variable ($ — native locals live outside the engine's scope) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/ends-with.t	5	0	7	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/fc.t	0	0	6	
+S32-str/flip.t	0	0	6	
+S32-str/format.t	0	0	6	
+S32-str/gb18030-encode-decode.t	0	0	7	
+S32-str/gb2312-encode-decode.t	0	0	7	
+S32-str/indent.t	5	0	8	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/index.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/indices.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/lc.t	0	0	6	
+S32-str/length.t	0	0	7	
+S32-str/lines.t	0	0	7	
+S32-str/numeric.t	0	0	8	
+S32-str/ords.t	0	0	8	
+S32-str/parse-base.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/pos.t	0	0	6	
+S32-str/rindex.t	0	0	7	
+S32-str/samecase.t	0	0	7	
+S32-str/samemark.t	0	0	6	
+S32-str/shiftjis-encode-decode.t	0	0	8	
+S32-str/space-chars.t	0	0	7	
+S32-str/split-simple.t	5	0	8	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/split.t	5	0	13	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/sprintf-b.t	0	0	9	
+S32-str/sprintf-c.t	0	0	8	
+S32-str/sprintf-d.t	0	0	9	
+S32-str/sprintf-e.t	0	0	8	
+S32-str/sprintf-f.t	0	0	8	
+S32-str/sprintf-o.t	0	0	8	
+S32-str/sprintf-s.t	0	0	8	
+S32-str/sprintf-u.t	0	0	7	
+S32-str/sprintf-x.t	0	0	9	
+S32-str/sprintf.t	5	0	11	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/starts-with.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/substr-eq.t	5	0	8	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/substr-rw.t	5	0	12	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/substr.t	0	0	11	
+S32-str/tc.t	0	0	8	
+S32-str/tclc.t	0	0	8	
+S32-str/trim.t	0	0	7	
+S32-str/uc.t	0	0	7	
+S32-str/uniparse.t	0	0	8	
+S32-str/utf8-c8.t	5	0	10	note: the parameterized type 'Blob[uint8]' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/val.t	5	0	10	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-str/words.t	0	0	9	
+S32-temporal/Date.t	5	0	9	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-temporal/DateTime-Instant-Duration.t	5	0	8	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+S32-temporal/DateTime.t	5	0	12	note: prefix operator 'capture' — not natively compilable; --exe would fall back to AOT (--aot)
+S32-temporal/baum-gregorian-data.t	5	0	7	note: a `:D`/`:U` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+S32-temporal/calendar.t	0	0	7	
+S32-temporal/greg-jd-frac-seconds.t	0	0	7	
+S32-temporal/juliandate.t	0	0	6	
+S32-temporal/local.t	0	0	7	
+S32-trig/atan2.t	5	0	8	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cos.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cosec.t	5	0	8	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cosech.t	5	0	6	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cosh.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cotan.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/cotanh.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/e.t	0	0	6	
+S32-trig/pi.t	0	0	6	
+S32-trig/sec.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/sech.t	5	0	6	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/simple.t	0	0	6	
+S32-trig/sin.t	5	0	6	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/sinh.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/tan.t	5	0	7	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+S32-trig/tanh.t	5	0	6	note: a multi method with a parent class this compilation cannot see (NotComplex.Numeric) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-01-to-10.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-11-to-20.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-21-to-30.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-31-to-40.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-41-to-50.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-51-to-60.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+integration/99problems-61-to-70.t	0	0	7	
+integration/advent2009-day01.t	0	0	6	
+integration/advent2009-day02.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day03.t	0	0	6	
+integration/advent2009-day04.t	0	0	6	
+integration/advent2009-day05.t	5	0	7	note: prefix operator 'stmtseq' — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day06.t	5	0	6	note: prefix operator 'hyper:~' — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day07.t	5	0	7	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day09.t	5	0	6	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day10.t	0	0	6	
+integration/advent2009-day11.t	0	0	6	
+integration/advent2009-day12.t	0	0	6	
+integration/advent2009-day13.t	0	0	6	
+integration/advent2009-day14.t	0	0	6	
+integration/advent2009-day15.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day16.t	5	0	6	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day17.t	0	0	7	
+integration/advent2009-day18.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2009-day19.t	0	0	6	
+integration/advent2009-day21.t	0	0	6	
+integration/advent2009-day22.t	0	0	6	
+integration/advent2009-day23.t	0	0	6	
+integration/advent2010-day03.t	0	0	6	
+integration/advent2010-day04.t	0	0	6	
+integration/advent2010-day06.t	0	0	6	
+integration/advent2010-day07.t	0	0	6	
+integration/advent2010-day08.t	0	0	6	
+integration/advent2010-day10.t	0	0	6	
+integration/advent2010-day11.t	5	0	6	note: declaration used as a sub-expression — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2010-day14.t	5	0	6	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2010-day16.t	0	0	6	
+integration/advent2010-day19.t	0	0	6	
+integration/advent2010-day21.t	0	0	6	
+integration/advent2010-day23.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2011-day03.t	0	0	6	
+integration/advent2011-day04.t	0	0	6	
+integration/advent2011-day05.t	0	0	6	
+integration/advent2011-day10.t	5	0	7	note: special/dynamic variable '$=pod' — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2011-day15.t	0	0	6	
+integration/advent2011-day16.t	0	0	6	
+integration/advent2011-day20.t	0	0	6	
+integration/advent2011-day22.t	0	0	6	
+integration/advent2011-day24.t	0	0	6	
+integration/advent2012-day02.t	0	0	6	
+integration/advent2012-day03.t	0	0	6	
+integration/advent2012-day06.t	0	0	7	
+integration/advent2012-day09.t	0	0	6	
+integration/advent2012-day10.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2012-day12.t	0	0	6	
+integration/advent2012-day13.t	0	0	7	
+integration/advent2012-day14.t	5	0	6	note: assignment to this target — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2012-day16.t	0	0	6	
+integration/advent2012-day20.t	0	0	6	
+integration/advent2012-day21.t	5	0	7	note: a `when` outside `given` — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2012-day22.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2012-day24.t	0	0	6	
+integration/advent2013-day02.t	5	0	6	note: a multi candidate with a where/:D constraint — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day04.t	0	0	5	
+integration/advent2013-day06.t	5	0	6	note: a `where` constraint on a routine parameter — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day07.t	0	0	6	
+integration/advent2013-day08.t	0	0	6	
+integration/advent2013-day10.t	0	0	6	
+integration/advent2013-day12.t	5	0	6	note: a conditional ($var) index adverb — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day14.t	5	0	7	note: phaser / CATCH block — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day15.t	5	0	6	note: an unsupported construct (NK 24) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day18.t	0	0	6	
+integration/advent2013-day19.t	0	0	6	
+integration/advent2013-day21.t	5	0	7	note: a nested multi sub — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2013-day22.t	0	0	6	
+integration/advent2013-day23.t	0	0	6	
+integration/advent2014-day05.t	5	0	6	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+integration/advent2014-day13.t	0	0	6	
+integration/advent2014-day16.t	0	0	6	
+integration/code-blocks-as-sub-args.t	0	0	6	
+integration/deep-recursion-initing-native-array.t	0	0	6	
+integration/diamond.t	0	0	6	
+integration/eval-and-threads.t	0	0	6	
+integration/failure-and-callsame.t	0	0	6	
+integration/gather-with-loops.t	5	0	8	note: an unsupported construct (NK 37) — not natively compilable; --exe would fall back to AOT (--aot)
+integration/lazy-bentley-generator.t	0	0	6	
+integration/lexical-array-in-inner-block.t	0	0	5	
+integration/lexicals-and-attributes.t	0	0	6	
+integration/man-or-boy.t	0	0	6	
+integration/method-calls-and-instantiation.t	0	0	6	
+integration/no-indirect-new.t	0	0	6	
+integration/packages.t	5	0	5	note: a role/package — not natively compilable; --exe would fall back to AOT (--aot)
+integration/pair-in-array.t	0	0	6	
+integration/passing-pair-class-to-sub.t	0	0	6	
+integration/real-strings.t	5	0	6	note: a closure that mutates a captured local variable — not natively compilable; --exe would fall back to AOT (--aot)
+integration/rule-in-class-Str.t	0	0	6	
+integration/say-crash.t	0	0	6	
+integration/sequence.t	0	0	6	
+integration/substr-after-match-in-gather-in-for.t	0	0	6	
+integration/topic_in_double_loop.t	0	0	6	
+integration/variables-in-do.t	5	0	6	note: a do-loop collecting values — not natively compilable; --exe would fall back to AOT (--aot)
+t/test-util/01-is-eqv.t	0	0	7	
