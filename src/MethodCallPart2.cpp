@@ -6049,8 +6049,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
                         auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
-                        if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
-                        else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
+                        // the elements come from the arguments that are not the
+                        // class's own attributes, through the BUILT-IN's constructor:
+                        // `class A is Array {}; A.new(1, 2, 3)` holds three elements
+                        ValueList builtinArgs;
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        if (builtinArgs.empty()) {
+                            if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
+                            else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
+                        }
+                        else {
+                            od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                            od->boxed.itemized = false;
+                        }
                         od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
                         // An attribute with no value is its DECLARED TYPE OBJECT
                         // (`has Int $.obj-num` answers Int, not Any) and a typed
@@ -8109,9 +8121,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else if (m == "values") o.arr()->push_back(v);
             else if (m == "kv") { o.arr()->push_back(k); o.arr()->push_back(v); }
             else {
-                Value p = Value::pair(v.toStr(), k);
-                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v);
-                o.arr()->push_back(p);
+                // .invert spreads an Iterable value: each element keys the name
+                ValueList vs = (m == "invert" && v.t == VT::Array && v.arr()) ? *v.arr() : ValueList{v};
+                for (auto& vv : vs) {
+                    Value p = Value::pair(vv.toStr(), k);
+                    if (vv.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(vv);
+                    o.arr()->push_back(p);
+                }
             }
         }
         return o;

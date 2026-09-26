@@ -450,6 +450,11 @@ struct PadLayout {
 // paid it everywhere. A false positive only costs the full lookup, which is what
 // used to happen unconditionally.
 extern std::atomic<uint64_t> g_lexShadowMask;
+// A plain (non-multi) `sub prefix:<op>` was declared somewhere: it replaces the
+// built-in prefix for EVERY operand in its scope (`my sub prefix:<->($x)` then
+// `-"fish"`), so evalUnary has to look it up — this keeps that lookup off every
+// other program's unary operators.
+extern std::atomic<bool> g_userPrefixShadow;
 inline unsigned lexShadowSlot(const char* p, size_t n) {
     return (unsigned)((p[0] * 31u + p[n - 1] * 7u + n) & 63u);
 }
@@ -475,9 +480,16 @@ struct Env {
     bool unitFrame = false;    // a loaded module's FILE scope: what `UNIT::` names inside it
     bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
                                // auto-vivification inside it belongs to (see laxVarRef)
+    bool evalFrame = false;    // a user-level EVAL's own scope (evalOwnScope): lexical, so
+                               // `my`/`sub` stay inside — but a package-scoped type the
+                               // EVAL declares belongs to the scope around it
     bool loopFrame = false;    // a loop-statement `state` frame: plain `my` declares
                                // (e.g. in a while COND) skip past it to the enclosing
                                // scope, so they stay visible after the loop
+    // The statements of the block this scope runs, when it is a block's: what
+    // the scope DECLARES, all of it, as the compiler would know it — so an EVAL
+    // can see a `my` further down that has not run yet (it exists, undefined).
+    const void* declStmts = nullptr;   // really `const std::vector<StmtPtr>*`
 
     // `x()` materialises the extras (use for WRITES); `xr()` returns a shared
     // empty instance when there are none (use for READS, so a lookup never
@@ -562,6 +574,11 @@ struct Env {
               (v.code()->isMultiDispatcher || v.code()->isMultiCandidate || v.code()->isProto)))
             g_lexShadowMask.fetch_or(1ull << lexShadowSlot(name.data() + 8, name.size() - 9),
                                      std::memory_order_relaxed);
+        if (name.size() > 10 && name[0] == '&' && name[1] == 'p' &&
+            name.compare(0, 9, "&prefix:<") == 0 &&
+            v.t == VT::Code && v.code() && !v.code()->isMultiDispatcher && !v.code()->isMultiCandidate &&
+            !v.code()->isProto && !v.code()->builtin)
+            g_userPrefixShadow.store(true, std::memory_order_relaxed);
         if (layout) {
             auto it = layout->byName.find(name);
             if (it != layout->byName.end()) {
@@ -912,6 +929,7 @@ struct ExecContext {
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
     size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
+    Env* curRoutineEnv = nullptr; // …and that activation's own scope (identity: frame numbers repeat)
     // The BUILT-IN standing behind the user method currently running, for
     // callsame/nextsame. A user method that overrides a built-in (`method clone
     // { … callsame … }` over Mu.clone) has no user candidate under it, so
@@ -1142,6 +1160,8 @@ public:
     // `R.^candidates`: one type object per declaration of R's role group, each
     // carrying its declaration (RoleCandidateRef in ext) so `.WHY` can tell them apart
     Value roleCandidates(ClassInfo* ci);
+    std::string docModeText(); // what `--doc` prints: $=pod through Pod::To::Text
+    void checkReturnInDynamicScope(uint64_t lexicalFrame); // a return whose routine has already exited dies
     // what a program BOUND into the setting: `$CORE::_ := 50` (the `&` names
     // go to builtinRefs_, where `&none` finds them)
     std::unordered_map<std::string, Value> coreVars_;
@@ -1451,7 +1471,7 @@ public:
     // Store through an lvalue expression, refusing a readonly container. Used by
     // the `.=` write-backs, which do not go through the assignment operator and
     // so never met its guard.
-    Value assignChecked(struct Expr* target, Value v);
+    Value assignChecked(struct Expr* target, Value v, const Value* invVal = nullptr);
     void assignListTarget(struct ListExpr* lst, const Value& rhs, bool isBinding = false);
     // A code assertion (`<?{…}>` / `<!{…}>`) only evaluates when the engine is
     // handed a hook; with none it defaults to PASS. Every site that builds its
@@ -1603,6 +1623,7 @@ public:
     Value takeRwSlotProxy(Expr* arg); // its arg → slot Proxy (or non-Proxy Any)
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
     std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
+    Value* pairsAliasSource(Expr* listExpr);   // `%h.pairs` over a plain hash variable: the hash
     // The array behind `for @$x` — likewise; the topic aliases its elements.
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The array behind `for @a.values` / `for @a.list` — the array twin of
@@ -1611,6 +1632,7 @@ public:
     // True when the loop source yields bare values, so a write to the topic has
     // nowhere to land and Rakudo refuses it — see the definition.
     static bool immutableLoopSource(const Expr* listExpr);
+    bool immutableQuantSource(const Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
     // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT
@@ -1906,6 +1928,18 @@ public:
     std::pair<long, long> dynQuantLimits(const Value& v, bool unboundedHint); // `** { … }` bounds
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
                      bool checkOnly = false);
+    // a user-level EVAL: the unit is a lexical scope of its own, nested in the
+    // caller's — it sees the caller's lexicals, and what it DECLARES (`my $x`,
+    // `sub x {}`) stays inside it. The REPL keeps calling evalString directly,
+    // so its lines still share one scope.
+    Value evalOwnScope(const std::string& src, bool checkOnly = false) {
+        auto sc = std::make_shared<Env>();
+        sc->parent = tctx_.cur;
+        sc->evalFrame = true;
+        struct R { ExecContext& t; std::shared_ptr<Env> s; ~R() { t.cur = s; } } restore{tctx_, tctx_.cur};
+        tctx_.cur = sc;
+        return evalString(src, /*mainlinePH=*/true, /*incompleteOut=*/nullptr, checkOnly);
+    }
     // ---- REPL support (src/Repl.cpp) ----------------------------------------
     // A REPL never calls run(): it keeps ONE Interpreter alive and feeds it
     // evalString per line, so the mainline scope IS the session. These two cover
@@ -2013,6 +2047,17 @@ public:
                        long* consumedEnd = nullptr); // consumedEnd: where matching stopped (differs from .to under `<( )>`)
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
+    // Metamodel::Primitives: types whose metaobject is a USER object
+    // (`Metamodel::Primitives.create_type($how)`), keyed by the type's
+    // internal name. CustomHow.cpp; haveCustomHows_ gates every hook.
+    struct CustomHowType;
+    std::unordered_map<std::string, std::shared_ptr<CustomHowType>> customHows_;
+    std::mutex customHowMu_;
+    std::atomic<bool> haveCustomHows_{false};
+    std::shared_ptr<CustomHowType> customHowOf(const Value& v);
+    bool customHowMethod(const Value& inv, const std::string& m, ValueList& args, Value& out);
+    int customHowMatch(const Value& l, const Value& r);
+    bool customIsType(const Value& obj, const Value& type);
     // Package-relative SHORT names: registering a qualified class `URI::Path`
     // aliases its tail `Path` -> `URI::Path` (first wins; a real class of the
     // short name always beats the alias). Approximates Rakudo's package-stash

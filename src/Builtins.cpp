@@ -2409,7 +2409,18 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             std::vector<const ClassAttr*> pub;
             collectPubAttrs(v.obj()->cls.get(), pub);
             std::string inner;
+            // An exception's `message` is a METHOD in Rakudo, not an attribute
+            // it was built with: `X::AdHoc.new(payload => "…")` is the whole of
+            // its .raku (ours keeps the text in a slot so .message can answer)
+            bool isEx = false;
+            for (ClassInfo* c = v.obj()->cls.get(); c && !isEx; c = c->parent.get())
+                if (c->name == "Exception" || c->nativeParent == "Exception") isEx = true;
             for (auto* at : pub) {
+                if (isEx && at->name == "message") {
+                    bool own = false;   // …unless the class declares one itself
+                    for (auto& a2 : v.obj()->cls->attrs) if (&a2 == at) own = true;
+                    if (!own || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
+                }
                 auto it = v.obj()->attrs.find(at->name);
                 // an UNSET typed attribute shows its declared type (`i => Int`)
                 Value av = it != v.obj()->attrs.end() ? it->second
@@ -2657,6 +2668,27 @@ uint32_t cpAtByte(const std::string& s, size_t b) {
 // is one codepoint), and no CR, because CR LF is the one ASCII sequence that
 // clusters (GB3, which is why "a\r\nb".chars is 3). When it holds, .chars is a
 // byte count and .substr is a byte slice, with nothing to decode.
+// Is byte offset `p` of `s` a GRAPHEME boundary? Only a following non-ASCII
+// byte (at or past U+0300) can extend a cluster, so ASCII text never pays.
+bool atGraphemeBoundary(const std::string& s, size_t p) {
+    const size_t len = s.size();
+    if (p == 0 || p >= len || (unsigned char)s[p] < 0x80 ||
+        ((unsigned char)s[p] >= 0xC2 && (unsigned char)s[p] <= 0xCB)) return true;
+    if (((unsigned char)s[p] & 0xC0) == 0x80) return false;   // mid-codepoint
+    size_t b = p - 1;
+    while (b > 0 && ((unsigned char)s[b] & 0xC0) == 0x80) b--;
+    return uniClusterEndUtf8(s, b, len) <= p;
+}
+// std::string::find, but a match must begin AND end on grapheme boundaries:
+// "b" is not found in "ab\x[308]c", whose b̈ is one character (Rakudo's NFG)
+size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from) {
+    size_t f = hay.find(ndl, from);
+    while (f != std::string::npos) {
+        if (atGraphemeBoundary(hay, f) && atGraphemeBoundary(hay, f + ndl.size())) return f;
+        f = hay.find(ndl, f + 1);
+    }
+    return f;
+}
 bool byteIsGraphemeIndex(const std::string& s) {
     return allAscii(s) && std::memchr(s.data(), '\r', s.size()) == nullptr;
 }
@@ -5381,6 +5413,56 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // `.^roles` of a CORE numeric or string type: the roles its class does
+    // (`42.2.^roles.grep(Rational)`, Rakudo's lists, most specific first)
+    if (m == "^roles" && args.empty()) {
+        std::string tn = inv.t == VT::Type ? inv.s.str() : inv.typeName();
+        const std::vector<const char*>* rl = nullptr;
+        static const std::vector<const char*> kRat{"Rational", "Real", "Numeric"};
+        static const std::vector<const char*> kReal{"Real", "Numeric"};
+        static const std::vector<const char*> kNum{"Numeric"};
+        static const std::vector<const char*> kStr{"Stringy"};
+        if (tn == "Rat" || tn == "FatRat") rl = &kRat;
+        else if (tn == "Int" || tn == "Num") rl = &kReal;
+        else if (tn == "Complex") rl = &kNum;
+        else if (tn == "Str") rl = &kStr;
+        if (rl && !classes_.count(tn)) {
+            Value out = Value::array(); out.isList = true;
+            for (const char* r : *rl) out.arr()->push_back(Value::typeObj(r));
+            return out;
+        }
+    }
+    // `.squish` of an ENDLESS source stays lazy: it is a grep that remembers
+    // the previous key (`squish 1..Inf` is lazy, as Rakudo's is)
+    if (m == "squish" &&
+        ((inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL) ||
+         (inv.t == VT::Array && inv.arr() && inv.ext() &&
+          std::static_pointer_cast<LazySeqState>(inv.ext())->infinite))) {
+        Value asF, withF;
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.pairVal() && a.pairVal()->t == VT::Code) {
+                if (a.s == "as") asF = *a.pairVal(); else if (a.s == "with") withF = *a.pairVal();
+            }
+        auto st = std::make_shared<std::pair<bool, Value>>(true, Value());
+        Value filt; filt.t = VT::Code; filt.setCode(std::make_shared<Callable>());
+        filt.code()->builtin = [st, asF, withF](Interpreter& I, ValueList& a) -> Value {
+            Value v = a.empty() ? Value::any() : a[0];
+            Value k = asF.t == VT::Code ? I.callCallable(asF, ValueList{v}) : v;
+            bool keep = st->first ||
+                !(withF.t == VT::Code ? I.callCallable(withF, ValueList{st->second, k}).truthy()
+                                      : applyArith("===", k, st->second).truthy());
+            st->first = false; st->second = k;
+            return Value::boolean(keep);
+        };
+        ValueList ga{filt};
+        return methodCall(inv, "grep", std::move(ga));
+    }
+    // a type made by a user metaobject answers through it (CustomHow.cpp)
+    if (haveCustomHows_.load(std::memory_order_relaxed) ||
+        (inv.t == VT::Type && inv.s == "Metamodel::Primitives")) {
+        Value out;
+        if (customHowMethod(inv, m, args, out)) return out;
+    }
     // Built-in methods called with arguments no candidate takes: Rakudo's
     // dispatcher answers X::Multi::NoMatch (roast APPENDICES multi-no-match.t)
     {
@@ -14491,7 +14573,7 @@ void Interpreter::registerBuiltins() {
                 // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
                 if (a.empty()) {}
                 else if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
-                else if (a[0].t == VT::Str) I.sinkValue(I.evalString(a[0].s, /*mainlinePH=*/true));
+                else if (a[0].t == VT::Str) I.sinkValue(I.evalOwnScope(a[0].s));
                 // …and anything else has ALREADY been evaluated, so what arrived
                 // is whatever it produced: a Failure that has not detonated yet
                 // is the throw this is asking about. Roast calls
@@ -14582,7 +14664,7 @@ void Interpreter::registerBuiltins() {
             try {
                 Value r;
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) r = I.evalString(a[0].s, /*mainlinePH=*/true);
+                else if (a[0].t == VT::Str) r = I.evalOwnScope(a[0].s);
                 failed = judge(r);
             } catch (ReturnEx&) {
                 // `fail` in a bare block unwinds as the return of the enclosing
@@ -14605,7 +14687,7 @@ void Interpreter::registerBuiltins() {
         bool lived = true;
         const int line = I.curLine_;
         std::string why;
-        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); }
+        try { if (!a.empty()) I.evalOwnScope(a[0].toStr()); }
         catch (RakuError& e) {
             lived = false;
             why = e.message;
@@ -14619,7 +14701,7 @@ void Interpreter::registerBuiltins() {
     B["eval-dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
         const int line = I.curLine_;
-        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); } catch (RakuError&) { died = true; }
+        try { if (!a.empty()) I.evalOwnScope(a[0].toStr()); } catch (RakuError&) { died = true; }
         I.curLine_ = line;
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
@@ -14658,8 +14740,9 @@ void Interpreter::registerBuiltins() {
             return rakuAstEval(I, code);
         // control flow may not escape an EVAL: a top-level `return`/`next`/… in
         // the string is X::ControlFlow, not a silent unwind of the whole program
-        // evalString itself converts escaping control flow (routine-aware)
-        return I.evalString(code.toStr(), /*mainlinePH=*/true, /*incompleteOut=*/nullptr, checkOnly);
+        // evalString itself converts escaping control flow (routine-aware),
+        // and the unit is a lexical scope of its own (see evalOwnScope)
+        return I.evalOwnScope(code.toStr(), checkOnly);
     };
     // EVALFILE($path, :$lang) — Rakudo's is `EVAL slurp($filename), :$lang`,
     // so the file is read first (a missing one dies before the language is
@@ -15735,6 +15818,31 @@ void Interpreter::registerBuiltins() {
                 for (auto& r : rest) if (r.t == VT::Complex) r = Value::number(r.n);
                 for (auto& o : opts) rest.push_back(o);
                 return I.methodCall(src, nm, rest);
+            }
+            // …and a LARGE count is a lazy Seq that KNOWS its length: `+permutations(30)`
+            // is 30! without building a single ordering
+            if (std::string(nm) == "permutations" && items.size() == 1 && items[0].t == VT::Int &&
+                !items[0].big() && items[0].toInt() > kMax && items[0].toInt() <= 100000) {
+                const long long n = items[0].toInt();
+                Value fact = Value::integer(1);
+                for (long long k = 2; k <= n; k++) fact = applyArith("*", fact, Value::integer(k));
+                auto idx = std::make_shared<std::vector<size_t>>((size_t)n);
+                for (long long k = 0; k < n; k++) (*idx)[(size_t)k] = (size_t)k;
+                auto started = std::make_shared<bool>(false);
+                auto st = std::make_shared<LazySeqState>();
+                st->infinite = true;      // never materialised whole
+                st->hasCount = true; st->countVal = fact;
+                st->appendNext = [idx, started](ValueList& cache) -> bool {
+                    if (*started && !std::next_permutation(idx->begin(), idx->end())) return false;
+                    *started = true;
+                    Value perm = Value::array(); perm.isList = true;
+                    for (size_t i : *idx) perm.arr()->push_back(Value::integer((long long)i));
+                    cache.push_back(perm);
+                    return true;
+                };
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                out.extM() = st;
+                return out;
             }
             // `combinations(@list, $k)` — an ITERABLE first argument is the list
             // and what follows is the argument, not more elements. The other
@@ -18046,7 +18154,15 @@ void Interpreter::registerBuiltins() {
     // the `$(5,6)`. Delegating wholesale to the METHOD is not the same thing:
     // that rule never opens an Array below the top level, which is what Cro's
     // router walks.
-    B["flat"] = [](Interpreter&, ValueList& a) -> Value {
+    B["flat"] = [](Interpreter& I, ValueList& a) -> Value {
+        // ONE lazy argument stays lazy — `flat(42 xx *)` is the method's
+        // answer, which keeps the laziness walking it eagerly here would not
+        if (a.size() == 1 && !a[0].itemized &&
+            ((a[0].t == VT::Array && a[0].arr() && a[0].ext()) ||
+             (a[0].t == VT::Range && a[0].rTo() >= 9000000000000000000LL))) {
+            ValueList none;
+            return I.methodCall(a[0], "flat", none);
+        }
         Value out = Value::seq();   // flat answers a Seq (Rakudo)
         // Same rule as `.flat`, and it is about the SLOT: a bare list slot
         // spreads its Iterable, an ARRAY's slot never does — array assignment

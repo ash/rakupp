@@ -1353,6 +1353,13 @@ struct ClassInfo {
             if (owner) *owner = this;
             return &it->second;
         }
+        // A PUBLIC attribute of this class is a generated accessor method of
+        // its own, and it hides a parent's method of the same name (`our $.bar`
+        // in the parent, `has $.bar` here): answer "none" so the call takes
+        // the accessor, rather than inheriting past it.
+        if (!isRole)
+            for (auto& at : attrs)
+                if (at.pub && at.name == m) { if (owner) *owner = nullptr; return nullptr; }
         // A submethod reached through a real ancestor CLASS is never inherited.
         auto inherited = [&](ClassInfo* c) -> Value* {
             if (!c) return nullptr;

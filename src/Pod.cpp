@@ -115,6 +115,22 @@ static Value mkFmt(char type, const std::string& inner) {
             if (endp && *endp == '\0' && endp != ent.c_str() + off) { out += utf8((uint32_t)v); continue; }
             auto h = kHtml5.find(ent);
             if (h != kHtml5.end()) { out += h->second; continue; }
+            // …and the HTML5 GREEK letters, `alpha` to `omega` and `Alpha` to `Omega`
+            {
+                static const char* kGreek[] = {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+                    "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho",
+                    "sigmaf", "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega"};
+                bool found = false;
+                for (int gi = 0; gi < 25 && !found; gi++) {
+                    if (ent == kGreek[gi]) { out += utf8(0x3B1 + gi); found = true; }
+                    else if (gi != 17 && ent.size() > 1 && ascii::isupper((unsigned char)ent[0]) &&
+                             (char)ascii::tolower((unsigned char)ent[0]) == kGreek[gi][0] &&
+                             ent.compare(1, std::string::npos, kGreek[gi] + 1) == 0) {
+                        out += utf8(0x391 + gi); found = true;
+                    }
+                }
+                if (found) continue;
+            }
             int32_t cp = uniCharByName(ent);
             if (cp >= 0) { out += utf8((uint32_t)cp); continue; }
             out += ent;   // unknown: as written
@@ -282,9 +298,11 @@ static Value cfgValue(char open, const std::string& body) {
             else w += c;
         }
         if (!w.empty()) words.push_back(w);
-        if (words.size() == 1) return Value::str(words[0]);
+        // …each a WORD in Raku's sense: one that spells a number is an
+        // allomorph (`:feist<1 2 3 4>` holds IntStrs)
+        if (words.size() == 1) return valAllomorph(Value::str(words[0]));
         Value lst = Value::array(); lst.isList = true;
-        for (auto& s : words) lst.arr()->push_back(Value::str(s));
+        for (auto& s : words) lst.arr()->push_back(valAllomorph(Value::str(s)));
         return lst;
     }
     if (open == '{') { // hash: `k => v` pairs; a bare element is the KEY of the next element
@@ -483,12 +501,23 @@ static std::string podCellNorm(const std::string& c) {
         if (t.compare(0, 2, "\xC2\xA0") == 0) { t = strip(t.substr(2)); again = true; }
         if (t.size() >= 2 && t.compare(t.size() - 2, 2, "\xC2\xA0") == 0) { t = strip(t.substr(0, t.size() - 2)); again = true; }
     }
+    // every BREAKING space collapses (tab, space, the U+2000 block, ogham,
+    // ideographic…); a NON-breaking one (U+00A0, U+202F, U+2060, U+FEFF) is text
+    auto breaking = [](uint32_t c) {
+        return c == ' ' || c == '\t' || c == 0x1680 || c == 0x180E || (c >= 0x2000 && c <= 0x200A) ||
+               c == 0x205F || c == 0x3000;
+    };
     bool sp = false;
-    for (char ch : t) {
-        if (ch == ' ' || ch == '\t') { sp = true; continue; }
+    for (size_t k = 0; k < t.size();) {
+        unsigned char b0 = (unsigned char)t[k];
+        size_t cl = b0 < 0x80 ? 1 : (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xE ? 3 : (b0 >> 3) == 0x1E ? 4 : 1;
+        uint32_t cp = b0 < 0x80 ? b0 : (uint32_t)(b0 & (0xFF >> (cl + 1)));
+        for (size_t q = 1; q < cl && k + q < t.size(); q++) cp = (cp << 6) | ((unsigned char)t[k + q] & 0x3F);
+        if (breaking(cp)) { sp = true; k += cl; continue; }
         if (sp && !out.empty()) out += ' ';
         sp = false;
-        out += ch;
+        out.append(t, k, cl);
+        k += cl;
     }
     return out;
 }
@@ -734,6 +763,7 @@ static std::string classForBlock(const std::string& name, int& level) {
     if (name == "code")    return "Pod::Block::Code";
     if (name == "comment") return "Pod::Block::Comment";
     if (name == "table")   return "Pod::Block::Table";
+    if (name == "para")    return "Pod::Block::Para";
     return "Pod::Block::Named";
 }
 
@@ -791,7 +821,17 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     while (!code.empty() && strip(code.back()).empty()) code.pop_back();
                     std::string text; for (size_t k = 0; k < code.size(); k++) { if (k) text += "\n"; text += code[k]; }
                     if (cls == "Pod::Block::Comment" && !text.empty()) text += "\n"; // comments keep a trailing NL
-                    Value cc = Value::array(); if (!text.empty()) cc.arr()->push_back(Value::str(text));
+                    Value cc = Value::array();
+                    // `=begin code :allow<B>` — the named formatting codes are live
+                    // inside the otherwise verbatim text
+                    bool allow = false;
+                    {
+                        auto ci = block.hash()->find("config");
+                        if (ci != block.hash()->end() && ci->second.t == VT::Hash && ci->second.hash() &&
+                            ci->second.hash()->count("allow")) allow = true;
+                    }
+                    if (allow && cls == "Pod::Block::Code" && !text.empty()) parseFormatting(text, *cc.arr());
+                    else if (!text.empty()) cc.arr()->push_back(Value::str(text));
                     (*block.hash())["contents"] = cc;
                     if (i < lines.size()) i++;
                     out.push_back(block);
@@ -834,12 +874,32 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     if (!v.empty()) ic.arr()->push_back(Value::str(v));
                 } else {
                     std::string para = collectPara(lines, i);
+                    // `=for para` IS the paragraph, not a block holding one
+                    if (cls == "Pod::Block::Para" && !para.empty()) {
+                        Value pp = mkPara(para);
+                        if (block.hash()->count("config")) (*pp.hash())["config"] = (*block.hash())["config"];
+                        out.push_back(pp);
+                        continue;
+                    }
                     if (!para.empty()) ic.arr()->push_back(mkPara(para));
                 }
                 (*block.hash())["contents"] = ic;
                 out.push_back(block);
                 continue;
             }
+            // `=para # foo` — a `#` opening an ABBREVIATED block's text is the
+            // :numbered alias: it sets the config and is not content
+            struct NumberedAlias {
+                ValueList& out; size_t before; bool on;
+                ~NumberedAlias() {
+                    if (!on || out.size() <= before || out.back().t != VT::Hash || !out.back().hash()) return;
+                    Value& cfg = (*out.back().hash())["config"];
+                    if (cfg.t != VT::Hash || !cfg.hash()) cfg = Value::makeHash();
+                    (*cfg.hash())["numbered"] = Value::boolean(true);
+                }
+            } numberedAlias{out, out.size(),
+                            kw != "config" && rest.size() > 1 && rest[0] == '#' && (rest[1] == ' ' || rest[1] == '\t')};
+            if (numberedAlias.on) rest = strip(rest.substr(1));
             int level = 0;
             if (splitLeveled(kw, "head", level)) {
                 std::string text = rest; i++;
@@ -1063,6 +1123,8 @@ std::string pod2text(const Value& v) {
     if (pc == "Pod::Block::Named") {
         auto n = v.hash()->find("name");
         std::string name = n == v.hash()->end() ? std::string() : n->second.s.str();
+        // (Pod::To::Text renders a `nested` or `config` block as nothing)
+        if (name == "nested" || name == "config") return "";
         std::string kids = podKids(v, true);
         if (name.empty() || name == "pod") return kids;
         return kids.empty() ? name : name + "\n" + kids;
@@ -1173,7 +1235,18 @@ ValueList parsePod(const std::string& src, bool strict) {
             k = j;
             continue;
         }
-        if (t.rfind("#|", 0) == 0) { if (!leading.empty()) leading += ' '; leading += trim(t.substr(2)); continue; }
+        // (a BLANK `#|` line adds nothing: the parts join with ONE space)
+        if (t.rfind("#|", 0) == 0) {
+            std::string part = trim(t.substr(2));
+            if (!part.empty()) {
+                if (leading == " ") leading.clear();
+                if (!leading.empty()) leading += ' ';
+                leading += part;
+            }
+            else if (leading.empty()) leading = " ";   // keeps the block open; trimmed below
+            continue;
+        }
+        if (leading == " ") leading.clear();
         if (!leading.empty()) {
             Value d = mkPod("Pod::Block::Declarator");
             Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
@@ -1207,7 +1280,12 @@ ValueList parsePod(const std::string& src, bool strict) {
                 top.back().hash()->count("trailRunEnd") &&
                 (*top.back().hash())["trailRunEnd"].toInt() == (long long)k) {
                 auto& c = *(*top.back().hash())["contents"].arr();
-                if (!c.empty()) c.back() = Value::str(c.back().toStr() + " " + trim(t.substr(h + 2)));
+                std::string part = trim(t.substr(h + 2));
+                if (!c.empty() && !part.empty()) {
+                    std::string cur = c.back().toStr();
+                    const bool atLineStart = cur.empty() || cur.back() == '\n';
+                    c.back() = Value::str(cur + (atLineStart ? "" : " ") + part);
+                }
                 (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
                 continue;
             }

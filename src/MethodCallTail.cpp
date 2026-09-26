@@ -712,6 +712,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
         bool infinite = lst->infinite;
+        // a sequence whose length is KNOWN (`permutations(30)`, `42 xx 2**62`)
+        // answers its count without building anything
+        if (lst->hasCount && (m == "elems" || m == "Numeric" || m == "Int" || m == "Bool") &&
+            !(lst->countVal.t == VT::Num && std::isinf(lst->countVal.n))) {
+            if (m == "Bool") return Value::boolean(applyArith(">", lst->countVal, Value::integer(0)).truthy());
+            return lst->countVal;
+        }
         // `.cache` of a STREAMING Seq (one whose end is not known yet) keeps it
         // lazy: it remembers what gets pulled, it does not pull everything now
         if (m == "cache" && lst->streaming && !lst->finiteSource) {
@@ -1601,7 +1608,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // form — 1..* and 1..Inf — instead of dying, the same as Rakudo.)
         if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" ||
             m == "Array" || m == "eager" || m == "join")
-            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
+            throwTyped("X::Cannot::Lazy", {{"action", m.s}}, "Cannot " + m + " an infinite range");
     }
     // `.hyper` / `.race` — the parallel iteration wrappers, run SERIALLY: the
     // stand-in is the same flat list a Seq would give (ordered, which race

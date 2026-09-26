@@ -2244,6 +2244,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.s == "parts" && a.pairVal()) {
                     partsGiven = true;
                     const Value& p = *a.pairVal();
+                    // a Str range, or one with a NaN end, counts no parts
+                    if (p.t == VT::Range) {
+                        bool bad = p.ofType() == "Str";
+                        if (const RangeEnds* re = rangeEnds(p))
+                            bad = bad || std::isnan(re->from.toNum()) || std::isnan(re->to.toNum()) ||
+                                  re->from.t == VT::Str || re->to.t == VT::Str;
+                        if (p.rNum() && (std::isnan(p.n) || std::isnan(p.im())))
+                            bad = true;
+                        if (bad) throw RakuError{Value::typeObj("X::AdHoc"),
+                                                 "Can only use numeric, non-NaN Ranges as :parts"};
+                    }
                     if (p.t == VT::Range) {
                         lo = p.rFrom() + (p.rExFrom() ? 1 : 0);
                         hi = p.rTo() >= 9000000000000000000LL ? avail : p.rTo() - (p.rExTo() ? 1 : 0);
@@ -5349,7 +5360,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (args[i].toInt() > (long long)graphemeCount(s)) return Value::boolean(false);
                     break;
                 }
-            return Value::boolean(from <= s.size() && s.find(n, from) != std::string::npos);
+            return Value::boolean(from <= s.size() && graphemeFind(s, n, from) != std::string::npos);
         }
         if (m == "starts-with") return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0);
         return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0);
@@ -5489,7 +5500,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; bestWhich = di; }
                     }
                 } else if (!d.str.empty()) {
-                    size_t f = s.find(d.str, pos);
+                    size_t f = graphemeFind(s, d.str, pos);
                     if (f != std::string::npos && (f < bestStart || (f == bestStart && d.str.size() > bestLen))) { bestStart = f; bestLen = d.str.size(); bestWhich = di; }
                 }
             }

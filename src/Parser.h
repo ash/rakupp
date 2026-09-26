@@ -411,6 +411,9 @@ private:
     // consulted: an inner block may rebind the name as a parameter, which this
     // map never sees.
     std::vector<std::map<std::string, std::string>> scalarDeclTypes_ = {{}};
+    // per block: the `$*dynamic` names READ so far — a later `my $*x` in the
+    // same block is X::Dynamic::Postdeclaration
+    std::vector<std::set<std::string>> dynUsed_ = std::vector<std::set<std::string>>(1);
     void noteScalarDecls(const Expr* e);
     bool monkeyActive() const {
         for (char f : monkeyScopes_) if (f) return true;

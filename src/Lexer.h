@@ -207,6 +207,7 @@ private:
     void processHeredocs(std::vector<Token>& out);          // fill q:to/MARKER/ bodies at line end
     // pending heredocs: (marker, token index in out, interpolating?)
     std::vector<std::tuple<std::string, size_t, bool>> pendingHeredocs_;
+    std::vector<int> vcsConflicts_;   // lines holding a `<<<<<<<` version-control conflict marker
     std::string heredocFeats_; // interpolation features of a `qq:!c:to/…/` heredoc ("" = all)
     std::vector<std::string> pendingHeredocFeats_; // one per pendingHeredocs_ entry
     std::string heredocMarker_;  // set by tryQuoteForm when a :to form is seen

@@ -214,6 +214,8 @@ bool allAscii(const std::string& s);
 // True when a byte index into `s` is also a grapheme index — ASCII and CR-free,
 // so Raku's grapheme-indexed string methods can work on bytes without decoding.
 bool byteIsGraphemeIndex(const std::string& s);
+bool atGraphemeBoundary(const std::string& s, size_t p);                       // Builtins.cpp
+size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from); // find on cluster boundaries
 // The cached forms: same answers, memoized on a long string's immutable body.
 // The scanning ops call these once per character examined, so the difference
 // between memoized and not is the difference between a linear tokenizer and a

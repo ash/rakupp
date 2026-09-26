@@ -936,6 +936,24 @@ void Lexer::skipWhitespaceAndComments() {
         // stream. Only the newline is withheld; the spaces and the comment before
         // it are still skipped by the iterations that got us here.
         if (c == '\n' && !pendingHeredocs_.empty()) return;
+        // a version-control CONFLICT MARKER at the start of a line: note it and
+        // skip the whole conflict, through its `>>>>>>>` line — the unit then
+        // fails with "Found a version control conflict marker" (tokenizeImpl)
+        if (atLineStart && c == '<' && src_.compare(pos_, 7, "<<<<<<<") == 0 &&
+            (pos_ + 7 >= src_.size() || src_[pos_ + 7] == ' ' || src_[pos_ + 7] == '\n' ||
+             src_[pos_ + 7] == '\r')) {
+            vcsConflicts_.push_back(line_);
+            for (;;) {
+                while (!eof() && peek() != '\n') advance();
+                if (eof()) break;
+                advance();   // the newline
+                if (src_.compare(pos_, 7, ">>>>>>>") == 0) {
+                    while (!eof() && peek() != '\n') advance();
+                    break;
+                }
+            }
+            continue;
+        }
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
             c == '\v' || c == '\f') { // VT (U+000B), FF (U+000C)
             advance();
@@ -986,9 +1004,21 @@ void Lexer::skipWhitespaceAndComments() {
                 return 0;
             };
             // an embedded comment counts as unspace-able whitespace: `4\#`(quux).sqrt`
+            // (…or any Unicode OPEN bracket: `#`〝 comment 〞`)
+            auto uniOpenAt = [&](size_t p, uint32_t& cp, int& dlen) -> bool {
+                if (p >= src_.size() || (unsigned char)src_[p] < 0x80) return false;
+                unsigned char b0 = (unsigned char)src_[p];
+                dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+                if (p + dlen > src_.size()) return false;
+                cp = b0 & (0xFF >> (dlen + 1));
+                for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)src_[p + k] & 0x3F);
+                return uniGeneralCategory(cp) == "Ps" || cp == 0x301D;
+            };
             auto embCommentAt = [&](int off) -> bool {
-                return peek(off) == '#' && peek(off + 1) == '`' &&
-                       (peek(off + 2) == '(' || peek(off + 2) == '[' || peek(off + 2) == '{');
+                if (!(peek(off) == '#' && peek(off + 1) == '`')) return false;
+                if (peek(off + 2) == '(' || peek(off + 2) == '[' || peek(off + 2) == '{') return true;
+                uint32_t cp; int dl;
+                return uniOpenAt(pos_ + off + 2, cp, dl);
             };
             // zero-width unspace before a postfix dot: `"xxxxxx"\.chars`
             if (peek(1) == '.' && !ascii::isdigit((unsigned char)peek(2))) {
@@ -1025,6 +1055,14 @@ void Lexer::skipWhitespaceAndComments() {
                     if (int w = uwsAt(0)) {
                         const bool nl = peek() == '\n';
                         for (int k = 0; k < w; k++) advance();
+                        // an abbreviated/paragraph pod block (`=for comment`) at the
+                        // start of a line runs to the next blank line
+                        if (nl && peek() == '=' && src_.compare(pos_, 5, "=for ") == 0) {
+                            size_t e = src_.find("\n\n", pos_);
+                            size_t stop = e == std::string::npos ? src_.size() : e + 1;
+                            while (pos_ < stop) advance();
+                            continue;
+                        }
                         // a pod block at the start of a line is whitespace too
                         if (nl && peek() == '=' && src_.compare(pos_, 7, "=begin ") == 0) {
                             size_t ne = src_.find('\n', pos_);
@@ -1049,6 +1087,32 @@ void Lexer::skipWhitespaceAndComments() {
                     if (embCommentAt(0)) {
                         const int startLine = line_;
                         advance(); advance(); // # `
+                        uint32_t ucp; int udl;
+                        if (uniOpenAt(pos_, ucp, udl)) {
+                            // its closer is the mirrored glyph (U+301D 〝, which has
+                            // none, closes with 〞 — the next codepoint — only)
+                            int32_t mir = uniBidiMirror(ucp);
+                            auto enc = [](uint32_t cc) {
+                                std::string o;
+                                if (cc < 0x800) { o += (char)(0xC0 | (cc >> 6)); o += (char)(0x80 | (cc & 0x3F)); }
+                                else if (cc < 0x10000) { o += (char)(0xE0 | (cc >> 12)); o += (char)(0x80 | ((cc >> 6) & 0x3F)); o += (char)(0x80 | (cc & 0x3F)); }
+                                else { o += (char)(0xF0 | (cc >> 18)); o += (char)(0x80 | ((cc >> 12) & 0x3F)); o += (char)(0x80 | ((cc >> 6) & 0x3F)); o += (char)(0x80 | (cc & 0x3F)); }
+                                return o;
+                            };
+                            const std::string open = src_.substr(pos_, udl);
+                            const std::string close1 = enc(mir >= 0 ? (uint32_t)mir : ucp + 1);
+                            const std::string close2 = close1;
+                            for (int k = 0; k < udl; k++) advance();
+                            int d = 1;
+                            while (!eof() && d > 0) {
+                                if (src_.compare(pos_, open.size(), open) == 0) { d++; for (size_t k = 0; k < open.size(); k++) advance(); }
+                                else if (src_.compare(pos_, close1.size(), close1) == 0 ||
+                                         src_.compare(pos_, close2.size(), close2) == 0) { d--; for (size_t k = 0; k < close1.size(); k++) advance(); }
+                                else advance();
+                            }
+                            if (d > 0) runawayTerm(close1, open, startLine);
+                            continue;
+                        }
                         char ob = peek(), cb = ob == '(' ? ')' : ob == '[' ? ']' : '}';
                         int d = 0;
                         do { if (peek() == ob) d++; else if (peek() == cb) d--; advance(); }
@@ -1765,7 +1829,9 @@ static bool quoteFeatAdverbs(const std::string& adverbs, std::string& feats) {
     toggle("f", 'f'); toggle("function", 'f');
     toggle("c", 'c'); toggle("closure", 'c');
     toggle("b", 'b'); toggle("backslash", 'b');
-    if (adverbs.find(":qq ") != std::string::npos) { anyFeat = true; feats = "sahfcb"; }
+    if (adverbs.find(":qq ") != std::string::npos || adverbs.find(":double ") != std::string::npos) {
+        anyFeat = true; feats = "sahfcb";   // `Q:double` is `Q:qq`
+    }
     return anyFeat;
 }
 
@@ -4502,6 +4568,19 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         (void)hi; (void)hx;
         throw ParseError("Ending delimiter " + hm + " not found for heredoc", line_, true);
     }
+    // conflict markers: one is the error; more are sorrows, the last the panic
+    if (!vcsConflicts_.empty()) {
+        const std::string m = "Found a version control conflict marker";
+        if (vcsConflicts_.size() == 1)
+            throw ParseError(m, vcsConflicts_[0], "X::Comp::AdHoc", {{"payload", m}});
+        std::string all;
+        for (size_t k = 0; k < vcsConflicts_.size(); k++) all += (k ? "\n" : "") + m;
+        throw ParseError(all, vcsConflicts_.back(), "X::Comp::Group",
+                         {{"sorrow", "X::Comp::AdHoc"}, {"sorrow-msg", m},
+                          {"sorrow-line", std::to_string(vcsConflicts_[0])},
+                          {"panic", "X::Comp::AdHoc"}, {"panic-msg", m},
+                          {"panic-line", std::to_string(vcsConflicts_.back())}});
+    }
     out.push_back(make(Tok::End, ""));
 }
 
@@ -4572,10 +4651,35 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
             throw ParseError("Ending delimiter " + marker + " not found for heredoc", line_, true);
         // dedent by the closing marker's indentation
         std::string body;
+        // Indentation is measured in COLUMNS, a tab reaching the next multiple
+        // of $?TABSTOP (8): a marker under two tabs dedents `        \tline`
+        // and `\t        line` alike, and a tab straddling the cut leaves the
+        // columns past it as spaces. (Only reached when a tab is involved —
+        // a spaces-only mismatch keeps the line as it was.)
+        auto tabCols = [](const std::string& ws) {
+            int c = 0;
+            for (char ch : ws) c = ch == '\t' ? (c / 8 + 1) * 8 : c + 1;
+            return c;
+        };
+        const int wantCols = tabCols(closeIndent);
         for (size_t i = 0; i < lines.size(); i++) {
             std::string ln = lines[i];
             if (!closeIndent.empty() && ln.compare(0, closeIndent.size(), closeIndent) == 0)
                 ln = ln.substr(closeIndent.size());
+            else if (!closeIndent.empty()) {
+                size_t k = 0;
+                while (k < ln.size() && (ln[k] == ' ' || ln[k] == '\t')) k++;
+                if (closeIndent.find('\t') != std::string::npos || ln.substr(0, k).find('\t') != std::string::npos) {
+                    int c = 0; size_t j = 0;
+                    std::string lead;
+                    while (j < k && c < wantCols) {
+                        int nc = ln[j] == '\t' ? (c / 8 + 1) * 8 : c + 1;
+                        if (nc > wantCols) { lead = std::string(nc - wantCols, ' '); j++; break; }
+                        c = nc; j++;
+                    }
+                    ln = lead + ln.substr(j);
+                }
+            }
             body += ln;
             body += "\n";
         }
