@@ -29340,8 +29340,12 @@ std::shared_ptr<Value> Interpreter::varCell(Env* owner, const std::string& name)
 // `$v`, or the one `my $v = 42` / `my $ = 42` just declared — promoted on first
 // use, so a Pair built from it (`a => $v`) holds that very container, as
 // Rakudo's does. Null for anything else: a value, an element, `$_`, a
-// parameter still linked the old way.
-std::shared_ptr<Value> Interpreter::exprVarCell(const Expr* e) {
+// parameter still linked the old way — and a name bound to a VALUE (a
+// readonly parameter, `my $x := 42`), which has no container to share: a Pair
+// over it holds the value, read-only, and `*boundToValue` says so. (Sharing
+// that slot handed its readonly mark to whatever copied the Pair's value —
+// `C.new(q => $v)` left the attribute unassignable.)
+std::shared_ptr<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     if (e && e->kind == NK::Assign) {
         auto* as = static_cast<const Assign*>(e);
         if (as->op != "=" || !as->target || as->target->kind != NK::VarExpr ||
@@ -29354,8 +29358,13 @@ std::shared_ptr<Value> Interpreter::exprVarCell(const Expr* e) {
     if (n.size() < 2 || n[0] != '$' || n == "$_" ||
         !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_' || n[1] == '\x01')) return nullptr;
     Env* own = nullptr;
-    if (!tctx_.cur->findRaw(n, &own) || !own) return nullptr;
+    Value* raw = tctx_.cur->findRaw(n, &own);
+    if (!raw || !own) return nullptr;
     if (own->ex && (own->ex->rwLinks.count(n) || own->ex->rwDirect.count(n))) return nullptr;
+    if (const Value* v = raw->deref(); v->readonly || v->immutableBind) {
+        if (boundToValue) *boundToValue = true;
+        return nullptr;
+    }
     return varCell(own, n);
 }
 
@@ -50906,7 +50915,9 @@ struct NodeCountReport {
                 Value pr = Value::pair(kv.toStr(), vv0);
                 markPairValueRO(pr, p->value.get());
                 // `$k => $v` holds $v's CONTAINER: `$pair.value = 5` writes $v
-                if (auto c = exprVarCell(p->value.get())) { pr.setPairVal(std::move(c)); pr.setPairLive(); }
+                bool bare = false;
+                if (auto c = exprVarCell(p->value.get(), &bare)) { pr.setPairVal(std::move(c)); pr.setPairLive(); }
+                else if (bare) pr.pairValRO = true;
                 // a non-string key (number, object, match, array, hash, code) is preserved
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
@@ -50925,7 +50936,9 @@ struct NodeCountReport {
             {   // `:err(/pat/)` → Regex value
                 Value pr = Value::pair(p->key, pairValueOf(p->value.get()));
                 markPairValueRO(pr, p->value.get());
-                if (auto c = exprVarCell(p->value.get())) { pr.setPairVal(std::move(c)); pr.setPairLive(); }   // `:$v`
+                bool bare = false;   // `:$v`
+                if (auto c = exprVarCell(p->value.get(), &bare)) { pr.setPairVal(std::move(c)); pr.setPairLive(); }
+                else if (bare) pr.pairValRO = true;
                 return pr;
             }
         }

@@ -1730,7 +1730,7 @@ public:
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
     bool isContainerElem(const Value& v);    // …is this element one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
-    std::shared_ptr<Value> exprVarCell(const struct Expr* e); // the cell of the variable `e` names
+    std::shared_ptr<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
     const void* containerId(const Value* slot); // what `=:=` compares (see Interpreter.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
