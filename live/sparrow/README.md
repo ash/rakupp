@@ -83,7 +83,7 @@ Sparrow's wall-clock line prefixes normalised:
 sh live/sparrow/compare.sh
 ```
 
-Both take `rakupp` and `raku` from `PATH`. Running out of a build tree instead?
+Both take `rakupp` and `rakudo` from `PATH`. Running out of a build tree instead?
 Name it: `RAKUPP=./build/rakupp sh live/sparrow/compare.sh`.
 
 (If you would rather run against an unpacked checkout than an installed dist,
@@ -118,7 +118,7 @@ script:
 cd live/sparrow
 
 # 1. Rakudo throughout
-time raku scenario.raku
+time rakudo scenario.raku
 
 # 2. Raku++ runs the scenario — but Sparrow6 still spawns `raku` for Raku tasks
 time rakupp scenario.raku

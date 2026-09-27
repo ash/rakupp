@@ -114,8 +114,8 @@ without `-I lib`, and a program finds a module sitting beside it without
 
 ```sh
 cd myproject && rakupp app.raku     # finds lib/Helper.rakumod and ./Helper.rakumod
-cd myproject && raku  app.raku      # Could not find Helper
-cd myproject && raku -I. -Ilib app.raku   # …now it does
+cd myproject && rakudo app.raku     # Could not find Helper
+cd myproject && rakudo -I. -Ilib app.raku # …now it does
 ```
 
 Two consequences. A program written against Raku++ and never run elsewhere may

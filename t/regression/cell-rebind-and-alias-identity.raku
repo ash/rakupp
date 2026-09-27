@@ -12,7 +12,7 @@
 #    a compact alias of the slot it came from, and comparing the alias's own
 #    address with the slot's said False (S04-statements/gather.t test 38).
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

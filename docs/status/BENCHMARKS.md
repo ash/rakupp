@@ -180,8 +180,8 @@ there.)
   features (Cranelift JIT on, as it ships). Native **arm64** — see "The mutsu
   lane" above for why that needed a second Rust toolchain, and why an x86_64
   build would have silently flattered every Raku++ row here.
-- **Rakudo:** `raku` v2026.08 (MoarVM backend), the oracle era this release
-  verifies against. **The 2026-09-20 sitting measured `/opt/homebrew/bin/raku`,
+- **Rakudo:** `rakudo` v2026.08 (MoarVM backend), the oracle era this release
+  verifies against. **The 2026-09-20 sitting measured `/opt/homebrew/bin/rakudo`,
   the homebrew/core `arm64_sequoia` bottle, not a from-source build** — no
   from-source arm64 Rakudo survives on this box, and the note below says a
   bottle and a source build of the same version can differ by up to 12%. In the
@@ -194,7 +194,7 @@ there.)
   **Raku++ itself** — `/usr/local/bin/raku` answers `--version` with
   `Raku++ 4.0.1-…` and `$*VM.name` with `cpp`. A harness that takes the default
   `RAKUDO=raku` therefore benchmarks Raku++ against Raku++ and prints suspiciously
-  level rows; always pass `RAKUDO=/opt/homebrew/bin/raku`.
+  level rows; always pass `RAKUDO=/opt/homebrew/bin/rakudo`.
   The previous revision of this file measured v2026.07; the
   reference column moved a few percent in both directions across the upgrade
   (`strcat` 179.9 → 166.3 ms, `loopsum` 261.7 → 276.4 ms — **translated-era
@@ -215,7 +215,7 @@ there.)
   from source, `strcat` 9% faster, `loopsum` 6% slower — reproduced to within
   1% across three separate runs. On `fib` that is the difference between
   Raku++ level and Raku++ 1.1× behind, so the reference build is named here,
-  not just its version. The bottle lives at `/opt/homebrew/bin/raku` and has
+  not just its version. The bottle lives at `/opt/homebrew/bin/rakudo` and has
   to be asked for by path, since `/usr/local/bin` precedes `/opt/homebrew/bin`
   on this machine's `$PATH` and bare `raku` still resolves to the x86_64 build.
 
@@ -1007,11 +1007,11 @@ cargo build --release && file target/release/mutsu
 The same check applies to **Rakudo**, which the harness does not verify — its
 arch guard inspects `$RAKUPP` only. On Apple Silicon an Intel Homebrew Rakudo
 runs under Rosetta 2 at a per-kernel cost of 1.0–1.8× (figures in the
-methodology), and `raku --version` does not report the architecture:
+methodology), and `rakudo --version` does not report the architecture:
 
 ```sh
 file $(which rakudo)               # want: Mach-O 64-bit executable arm64
-raku -e 'say $*KERNEL.hardware'    # want: arm64 — reads x86_64 when translated
+rakudo -e 'say $*KERNEL.hardware'  # want: arm64 — reads x86_64 when translated
 ```
 
 _**2026-09-20 re-snapshot at `v4.0.1-84-ga4291988`** (705 / 1,464 Roast files
@@ -1428,7 +1428,7 @@ _**2026-08-31, later the same day: the caveat above is fixable after all, and
 the penalty it assumed was too large.** homebrew/core ships an `arm64_sequoia`
 bottle for rakudo/moarvm/nqp at v2026.08 — the exact version this sitting
 measures — so "the ARM prefix has no rakudo formula" was stale, not a
-constraint. It is installed at `/opt/homebrew/bin/raku`. Measuring the two
+constraint. It is installed at `/opt/homebrew/bin/rakudo`. Measuring the two
 builds of v2026.08 against each other gives a translation penalty of **1.00× to
 1.84×, mean 1.38×**, not the uniform 1.7–2× this file had assumed by carrying
 the figure over from mis-built Raku++ binaries. Only `startup` (1.84×) and

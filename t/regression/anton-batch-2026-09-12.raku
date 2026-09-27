@@ -2,7 +2,7 @@
 # (2026-09-12). Both were blockers with real reach — IO::Capture::Simple carries
 # 70 not-yet-green dists across the whole ecosystem, Clipboard 7 of his.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box is a symlink that has pointed at
 # rakupp. Green on both engines.
 

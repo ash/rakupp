@@ -419,7 +419,7 @@ and no step had ever looked (issue #82).
 ### 6. The distribution bar
 
 ```bash
-RAKUPP=/path/to/rakupp raku tier2/run-dist-tests.raku    # in raku-module-battery
+RAKUPP=/path/to/rakupp rakudo tier2/run-dist-tests.raku  # in raku-module-battery
 ```
 
 The battery is real third-party code, and it catches what the suites above
@@ -450,8 +450,8 @@ mines that string and nothing warns when it goes stale.
 
 ```bash
 # in the raku.online checkout, sites/spec
-rakupp tools/typerun.raku --rakupp=/path/to/rakupp --oracle=raku   # types
-rakupp tools/matrix.raku  --rakupp=/path/to/rakupp --oracle=raku   # operators
+rakupp tools/typerun.raku --rakupp=/path/to/rakupp --oracle=rakudo # types
+rakupp tools/matrix.raku  --rakupp=/path/to/rakupp --oracle=rakudo # operators
 rakupp tools/conformance.raku && rakupp tools/divergences.raku     # reports
 ```
 
@@ -741,7 +741,7 @@ strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'
 
 cd sites/spec
 rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)      # 2. gate 1's output
-rakupp tools/snapshot.raku   --rakupp=/path/to/rakupp --oracle=raku # 3. BEFORE the dashboard
+rakupp tools/snapshot.raku   --rakupp=/path/to/rakupp --oracle=rakudo # 3. BEFORE the dashboard
 rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++ \
                                --battery=/path/to/raku-module-battery   # 4.
 ./verify.sh                                     # every example, publishes nothing
@@ -759,8 +759,8 @@ with a newer date:
 
 ```bash
 cd sites/spec                                   # gate 7 must have run this cycle
-rakupp tools/typerun.raku --rakupp=/path/to/rakupp --oracle=raku
-rakupp tools/matrix.raku  --rakupp=/path/to/rakupp --oracle=raku
+rakupp tools/typerun.raku --rakupp=/path/to/rakupp --oracle=rakudo
+rakupp tools/matrix.raku  --rakupp=/path/to/rakupp --oracle=rakudo
 rakupp tools/conformance.raku && rakupp tools/divergences.raku
 cd ../.. && ./build.sh spec                     # /spec and /spec/rules
 

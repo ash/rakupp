@@ -2,7 +2,7 @@
 # Run the Sparrow6 scenario under Rakudo and under Raku++ and diff STDOUT.
 # This is the claim the entry makes, made checkable.
 #
-#   sh compare.sh                          # uses `rakupp` and `raku` from PATH
+#   sh compare.sh                          # uses `rakupp` and `rakudo` from PATH
 #   RAKUPP=../../build/rakupp sh compare.sh # …or name a build tree explicitly
 #
 # Sparrow6 is NOT installed by this script. Install it first, with either

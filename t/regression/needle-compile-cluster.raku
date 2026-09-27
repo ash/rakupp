@@ -3,7 +3,7 @@
 # actually stood in the way was nine ordinary engine bugs.
 #
 # Every expectation below was checked against Rakudo 2026.08 — run from
-# /opt/homebrew/bin/raku, NOT the bare name `raku`, which on the author's box is
+# /opt/homebrew/bin/rakudo, NOT the bare name `raku`, which on the author's box is
 # a symlink that has pointed at rakupp. This file is green on both engines.
 
 my $fails = 0;

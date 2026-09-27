@@ -14,7 +14,7 @@
 #   CATCH by hand, and when/default in a CATCH match without a throw; the
 #   rest of this file pins down that the handler sees the same things.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

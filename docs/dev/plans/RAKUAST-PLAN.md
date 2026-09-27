@@ -2361,7 +2361,7 @@ different, and each is now blocked for a precisely different reason — none of
 them traversal:
 
 * **ASTQuery 0.0.7 does not compile on Rakudo 2026.08 either.** It names
-  `RakuAST::CurryThunk`, which upstream has no class for; `raku -Ilib
+  `RakuAST::CurryThunk`, which upstream has no class for; `rakudo -Ilib
   t/01-basic.rakutest` fails with the same symbol we fail with. It is not a gate
   until upstream moves, and 0.0.7 is the only version published.
 * **FINALIZER needs `$*R.find-attach-target`** — Rakudo's compile-time Resolver,

@@ -229,7 +229,7 @@ gate
       # claiming PASS. We cannot doctor the committed file without a commit, so
       # this reads the runner's own comparison of a real dist and checks it is
       # reported against git HEAD rather than against the file just written.
-      my ($rc, $out, $err) = sh('/usr/local/bin/raku', 'tier2/run-dist-tests.raku',
+      my ($rc, $out, $err) = sh('rakudo', 'tier2/run-dist-tests.raku',
                                 '--only=Digest', :cwd($bat.Str),
                                 :env(%( RAKUPP => $RAKUPP )));
       my $names-git = ($out ~ $err).contains('COMMITTED baseline (git HEAD');

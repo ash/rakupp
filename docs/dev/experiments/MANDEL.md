@@ -38,7 +38,7 @@ the *same reason*.
 
 | Implementation | Result on the original file |
 | --- | --- |
-| Rakudo (system `raku`) | `===SORRY!=== Malformed loop spec` at line 17 |
+| Rakudo (system `rakudo`) | `===SORRY!=== Malformed loop spec` at line 17 |
 | Raku++ (system `rakupp`) | `===SORRY!=== Parse error at line 17: expected ; (got '10.0')` |
 
 The wording differs; the diagnosis is identical. Because the reference
@@ -148,11 +148,11 @@ prints the same picture, and the two outputs are **byte-for-byte identical**
 
 ```sh
 # modern Raku (reference)
-raku examples/mandel.raku
+rakudo examples/mandel.raku
 
 # Raku++
 build/rakupp examples/mandel.raku
 
 # they match exactly
-diff <(raku examples/mandel.raku) <(build/rakupp examples/mandel.raku)
+diff <(rakudo examples/mandel.raku) <(build/rakupp examples/mandel.raku)
 ```

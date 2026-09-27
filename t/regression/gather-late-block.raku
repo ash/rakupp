@@ -13,7 +13,7 @@
 #   inside a gather (`gather { for <a b> { take $^v } }`) was claimed by the
 #   gather's own block, which then wanted an argument.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

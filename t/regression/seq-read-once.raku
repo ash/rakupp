@@ -8,7 +8,7 @@
 # The half that matters most is the second one: every use Rakudo caches must
 # cache here too, or a program that works there dies here.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

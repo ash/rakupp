@@ -275,7 +275,7 @@ runs after the tag: see step 6 of [dev/RELEASING.md](../dev/RELEASING.md).
    rakupp rules.raku                      # the /rules sub-site
    ```
    Every example is executed through rakupp (and the Rakudo oracle, if
-   `ORACLE=raku`); **any drift fails the build**, so the spec can never
+   `ORACLE=rakudo`); **any drift fails the build**, so the spec can never
    contradict the shipped interpreter.
 3. **Assemble and publish** — from the root of the raku.online checkout:
    ```sh
@@ -315,13 +315,13 @@ program or README changes here:
 # in the raku.online checkout
 sites/examples/sync.sh   ~/raku++      # programs + README
 sites/showcase/sync.sh   ~/raku++      # showcase/ + live/ READMEs + live/ADOPTIONS.md (skips raytracer)
-( cd sites/examples && rakupp build.raku --capture --oracle=raku )   # re-run every program
+( cd sites/examples && rakupp build.raku --capture --oracle=rakudo ) # re-run every program
 ./build.sh examples && ./build.sh showcase
 ```
 
 then commit `sites/` **together with** `www/`, and push. `--capture` executes
 every example under the native interpreter and stores what it printed; with
-`--oracle=raku` it fails on any byte difference under Rakudo (the one
+`--oracle=rakudo` it fails on any byte difference under Rakudo (the one
 random-soup program, `life`, is exempt). An ordinary `./build.sh` never runs
 the programs — it renders the committed captures, so a page can never show
 output the program did not produce. The live editors on the example pages load
@@ -419,7 +419,7 @@ Rakudo remains only the observed oracle child:
 
 /path/to/new/rakupp -Ilib bin/rakumap explore \
   --generator=all --seed=1 --cases=1000 --repeat=3 \
-  --oracle=raku --candidate=/path/to/new/rakupp --out=out/release-candidate
+  --oracle=rakudo --candidate=/path/to/new/rakupp --out=out/release-candidate
 ```
 
 Bulk output stays in the ignored `out/` directory. Preserve only useful,

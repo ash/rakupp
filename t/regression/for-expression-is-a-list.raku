@@ -22,7 +22,7 @@
 # having passed only because eqv ignored the container type.
 #
 # Checked against Rakudo, and this file is meant to pass under both — run
-# `raku t/regression/for-expression-is-a-list.raku` as the oracle.
+# `rakudo t/regression/for-expression-is-a-list.raku` as the oracle.
 #
 # Contract: exit 0 + last line PASS.
 my @fail;

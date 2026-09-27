@@ -3,7 +3,7 @@
 Found on 20 July 2026 by cross-checking every runnable example on the
 **[Raku++ Specification](https://raku.online/spec/)** (repo:
 [ash/raku.online, sites/spec](https://github.com/ash/raku.online/tree/main/sites/spec)) under `build/rakupp` and
-Rakudo (v2026.06). The spec's generator (`build.raku --verify --oracle=raku`)
+Rakudo (v2026.06). The spec's generator (`build.raku --verify --oracle=rakudo`)
 runs each `raku`/`output` example pair through **both** interpreters and fails
 the build on any disagreement, so every divergence below was caught mechanically,
 not by eye. Rakudo is treated as the authority; the spec's declared output
@@ -209,7 +209,7 @@ Each snippet above runs headlessly under both interpreters:
 ```sh
 printf '%s\n' 'say (-3.5).round;' > /tmp/x.raku
 build/rakupp /tmp/x.raku      # rakupp
-raku          /tmp/x.raku      # Rakudo v2026.06
+rakudo        /tmp/x.raku      # Rakudo v2026.06
 ```
 
 Or open the linked spec page and press **Run** — the editor executes the same

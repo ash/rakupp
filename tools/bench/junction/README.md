@@ -7,7 +7,7 @@ compare:
 
 ```sh
 ./build/rakupp tools/bench/junction/width.raku
-raku          tools/bench/junction/width.raku
+rakudo        tools/bench/junction/width.raku
 ```
 
 For a before/after table across engines, let `drive.raku` do the alternating and
@@ -18,7 +18,7 @@ alone:
 git worktree add /tmp/jbefore <commit>
 cmake -S /tmp/jbefore -B /tmp/jbefore/build -DCMAKE_BUILD_TYPE=Release
 make -C /tmp/jbefore/build -j6 rakupp
-raku tools/bench/junction/drive.raku before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=raku
+raku tools/bench/junction/drive.raku before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=rakudo
 git worktree remove --force /tmp/jbefore
 ```
 

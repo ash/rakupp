@@ -429,8 +429,8 @@ and SIGINT as three `whenever` streams.
 export RAKULIB=$HOME/raku-modules/GUI-Wings/lib
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/counter.raku    # Raku++
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/calculator.raku # the calculator
-raku showcase/gui/counter.raku                                 # Rakudo, unchanged
-WINGS_AUTODRIVE=3 raku showcase/gui/counter.raku               # clicks itself, ~4 s
+rakudo showcase/gui/counter.raku                               # Rakudo, unchanged
+WINGS_AUTODRIVE=3 rakudo showcase/gui/counter.raku             # clicks itself, ~4 s
 ```
 
 The pump thread owns the toolkit and reconciles widget state each pump turn; the

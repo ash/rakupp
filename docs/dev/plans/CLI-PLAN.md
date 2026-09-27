@@ -274,7 +274,7 @@ Scope for the first version, deliberately modest:
   a scratch directory, and `-i` behavior when one of three files is
   unreadable.
 - Differential tests: the same one-liners run under `perl` (for `-i`, `-a`,
-  `-F`, `-0777`) and under `raku` (for `-M`, `-c`) where the reference
+  `-F`, `-0777`) and under `rakudo` (for `-M`, `-c`) where the reference
   engine is present; skipped otherwise.
 - Full Roast + battery unchanged. The only interpreter-adjacent change is
   the `-n`/`-p` wrapper source; its current form is pinned by a golden

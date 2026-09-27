@@ -18,7 +18,7 @@ the raw lane reports are `rc-work/review-grand/findings/L*.md`.
 - Roast: 649 / 648 / 646 fully-passing (union of the three: 653 files);
   199,025 / 218,284 declared assertions (91.2%)
 - `t/run.raku` 762/762
-- Oracle: `/opt/homebrew/bin/raku` = Rakudo 2026.08 (the bare `raku` on this
+- Oracle: `/opt/homebrew/bin/rakudo` = Rakudo 2026.08 (the bare `raku` on this
   box is a different x86_64 binary)
 
 ## What the review found, in one paragraph

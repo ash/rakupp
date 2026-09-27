@@ -9,7 +9,7 @@
 # named (`BUILD(:$!x)`). Found while fixing A2's `C.new(q => $v)` regression
 # (ROAST-TRACKS-PLAN track A, 2026-09-27); these routes are older than it.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

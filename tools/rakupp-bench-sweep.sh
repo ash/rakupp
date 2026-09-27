@@ -7,7 +7,7 @@
 # fetched; nothing is installed system-wide; all state lives under --workdir.
 #
 #   ./rakupp-bench-sweep.sh                        # Linux/macOS, builds Rakudo
-#   ./rakupp-bench-sweep.sh --rakudo-mode=single --rakudo=/usr/bin/raku
+#   ./rakupp-bench-sweep.sh --rakudo-mode=single --rakudo=/usr/bin/rakudo
 #   ./rakupp-bench-sweep.sh --kernels=all --workdir=/scratch/sweep
 #
 # Send back:  <workdir>/series.tsv  and  <workdir>/environment.txt
@@ -163,7 +163,7 @@ done
 # why cross-machine comparison of the rakudo column must say which it was.
 build_rakudo() {
   ver=$1
-  [ -x "$WORKDIR/rakudo-$ver/bin/raku" ] && return 0
+  [ -x "$WORKDIR/rakudo-$ver/bin/rakudo" ] && return 0
   say "building Rakudo $ver from source (this takes a while) ..."
   [ -d rakudo-src ] || git clone --quiet "$RAKUDO_URL" rakudo-src
   ( cd rakudo-src
@@ -176,16 +176,16 @@ build_rakudo() {
     make -j"$JOBS"  >> "$WORKDIR/rakudo-$ver.log" 2>&1
     make install    >> "$WORKDIR/rakudo-$ver.log" 2>&1
   ) || die "Rakudo $ver build failed — see $WORKDIR/rakudo-$ver.log"
-  [ -x "$WORKDIR/rakudo-$ver/bin/raku" ] || die "Rakudo $ver did not install"
+  [ -x "$WORKDIR/rakudo-$ver/bin/rakudo" ] || die "Rakudo $ver did not install"
 }
 
 rakudo_for() {   # era -> path
   if [ "$RAKUDO_MODE" = single ]; then printf '%s' "$RAKUDO_SINGLE"
-  else printf '%s' "$WORKDIR/rakudo-$1/bin/raku"; fi
+  else printf '%s' "$WORKDIR/rakudo-$1/bin/rakudo"; fi
 }
 
 if [ "$RAKUDO_MODE" = single ]; then
-  [ -n "$RAKUDO_SINGLE" ] || die "--rakudo-mode=single needs --rakudo=/path/to/raku"
+  [ -n "$RAKUDO_SINGLE" ] || die "--rakudo-mode=single needs --rakudo=/path/to/rakudo"
   command -v "$RAKUDO_SINGLE" >/dev/null 2>&1 || [ -x "$RAKUDO_SINGLE" ] \
     || die "not executable: $RAKUDO_SINGLE"
   say "Rakudo: single build for every tag -> $RAKUDO_SINGLE"
@@ -208,7 +208,7 @@ fi
   say "driver rakupp : $DRIVER_TAG"
   say "rakudo mode   : $RAKUDO_MODE"
   for v in 2026.06 2026.07 2026.08; do
-    p=$WORKDIR/rakudo-$v/bin/raku
+    p=$WORKDIR/rakudo-$v/bin/rakudo
     [ -x "$p" ] && say "rakudo $v : $("$p" --version 2>&1 | head -1)"
   done
   [ "$RAKUDO_MODE" = single ] && say "rakudo single : $("$RAKUDO_SINGLE" --version 2>&1 | head -1)"

@@ -151,7 +151,7 @@ that the three remaining assertions fail on Rakudo too, so the dist could not go
 green on either engine. That was measured through `/usr/local/bin/raku`, which a
 concurrent session on this machine repointed to `build-arm64/rakupp` at 21:00 —
 so the "oracle" was rakupp. Against the real Rakudo
-(`/opt/homebrew/bin/raku`, v2026.08 on MoarVM) **CBOR::Simple passes in full**:
+(`/opt/homebrew/bin/rakudo`, v2026.08 on MoarVM) **CBOR::Simple passes in full**:
 94/94, 75/75, 39/39. The 98 dists behind it are still live, and the two bugs
 left are named below. Pin the oracle by PATH, never by name.
 

@@ -9,7 +9,7 @@
 # - `+@a` handed one Seq binds a List; a sigilless `+a` is always a List.
 # - `Buf.iterator` iterated the Buf as ONE item.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

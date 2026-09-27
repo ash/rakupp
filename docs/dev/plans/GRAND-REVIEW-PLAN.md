@@ -34,7 +34,7 @@ Unicode tables, `unicode_names.cpp` and `JsRuntimeSrc.cpp` excluded).
 **Method** — the same as REVIEW-2.0 and REVIEW-3.7: parallel read-only
 reviewers, one per lane, each reading its slice in full plus the docs that
 specify it; every finding verified on the running engine against the Rakudo
-oracle (`/opt/homebrew/bin/raku`, arm64 2026.08) with a probe file kept;
+oracle (`/opt/homebrew/bin/rakudo`, arm64 2026.08) with a probe file kept;
 findings ranked by user impact (silent wrong answer > crash > divergence >
 twin drift > dead code > perf); then fixes applied in **gated batches**, the
 rest on a deferred list. The shared brief is `rc-work/review-grand/BRIEF.md`;

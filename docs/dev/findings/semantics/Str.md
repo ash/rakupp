@@ -1450,7 +1450,7 @@ with a limit and a needle list (ST-42, ST-44); the `subst` adverb family
    Where a method delegates outside them (`succ`/`pred`, `encode`, the
    regex engine) only the observable result is recorded.
 2. Each behaviour turned into a one-line probe; probes run through
-   `perl -e 'alarm 10; exec @ARGV' raku -e …` on the Homebrew 2026.08 binary
+   `perl -e 'alarm 10; exec @ARGV' rakudo -e …` on the Homebrew 2026.08 binary
    and on `build-arm64/rakupp`; outputs recorded verbatim. A probe whose
    expression may throw, fail or return Nil is wrapped in the `f` helper
    described at the top, so that one bad case cannot take the rest of the

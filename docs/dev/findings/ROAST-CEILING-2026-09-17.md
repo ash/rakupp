@@ -10,7 +10,7 @@ with the only definition of 100% that is real.
 ## Method
 
 - `tools/run-roast.raku` scores whatever engine runs it (`$*EXECUTABLE`), so the
-  run was `raku tools/run-roast.raku` — **Rakudo 2026.08** as the engine under
+  run was `rakudo tools/run-roast.raku` — **Rakudo 2026.08** as the engine under
   test, Roast **b2cbe8a42**, the same 1,464 files, the same counting rules.
 - Rakudo does not apply `#?rakudo` fudge directives itself; its spectest runs
   Roast's `fudge` first. Raku++ applies the same directives in its lexer. So

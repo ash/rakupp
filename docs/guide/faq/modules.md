@@ -133,7 +133,7 @@ Not sure where yours is? Ask Rakudo — every `inst#…` line is a store Raku++ 
 read:
 
 ```sh
-raku -e '.say for $*REPO.repo-chain'
+rakudo -e '.say for $*REPO.repo-chain'
 ```
 
 The layout differs by installer, and the easy one to miss is **rakubrew's extra
@@ -159,7 +159,7 @@ rakupp -e 'use Digest::SHA1'    # fine — the dist "Digest" provides this
 ```
 
 Rakudo refuses `use Digest` in exactly the same way, so try the failing line
-under `raku`: if it fails there too, the name is the problem, not the engine.
+under `rakudo`: if it fails there too, the name is the problem, not the engine.
 
 ## Can I use a module I am working on, uninstalled?
 

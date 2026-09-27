@@ -17,7 +17,7 @@ each release is compared against its contemporary. To skip that and use one
 Rakudo for every tag:
 
 ```sh
-./rakupp-bench-sweep.sh --rakudo-mode=single --rakudo=$(command -v raku)
+./rakupp-bench-sweep.sh --rakudo-mode=single --rakudo=$(command -v rakudo)
 ```
 
 Useful flags: `--kernels=all` (all 16 kernels instead of the 3 charted ones),

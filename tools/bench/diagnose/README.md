@@ -36,8 +36,8 @@ R=./build-arm64/rakupp
 
 ```bash
 for n in 200 400 800 1600; do $R json-gen.raku --out=d$n.json $n; done
-$R   -I$L json-parse.raku --reps=3 d200.json d400.json d800.json d1600.json
-raku -I$L json-parse.raku --reps=5 d200.json d400.json d800.json d1600.json
+$R     -I$L json-parse.raku --reps=3 d200.json d400.json d800.json d1600.json
+rakudo -I$L json-parse.raku --reps=5 d200.json d400.json d800.json d1600.json
 ```
 
 and, for the third configuration — the native extension module, which needs

@@ -36,7 +36,7 @@ app 'Counter', {
 ```sh
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/counter.raku    # Raku++
 RAKUPP_MAIN_THREAD=1 build/rakupp showcase/gui/calculator.raku                # the calculator
-raku showcase/gui/counter.raku                                 # Rakudo, unchanged
+rakudo showcase/gui/counter.raku                               # Rakudo, unchanged
 ```
 
 The window comes up, the title ticks like a clock, the label counts your
@@ -55,7 +55,7 @@ released.
 Neither program mentions Cocoa, so neither is macOS-only: `GUI::Wings` splits
 into a toolkit-free front and `GUI::Wings::Backend::{Cocoa,Gtk,Win32}`, chosen
 by OS and overridable with `WINGS_BACKEND`. The same two files run on GTK3
-unchanged — `WINGS_BACKEND=Gtk raku showcase/gui/counter.raku` — which is how
+unchanged — `WINGS_BACKEND=Gtk rakudo showcase/gui/counter.raku` — which is how
 they were verified here against Homebrew GTK. The Win32 backend is written but
 has never been run.
 

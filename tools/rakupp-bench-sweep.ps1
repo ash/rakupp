@@ -19,13 +19,13 @@
   measurement -- the output records which was used.
 
 .EXAMPLE
-  .\rakupp-bench-sweep.ps1 -Rakudo 'C:\rakudo\bin\raku.exe'
+  .\rakupp-bench-sweep.ps1 -Rakudo 'C:\rakudo\bin\rakudo.exe'
 
 .EXAMPLE
   .\rakupp-bench-sweep.ps1 -RakudoEra @{
-      '2026.06' = 'C:\rakudo-2026.06\bin\raku.exe'
-      '2026.07' = 'C:\rakudo-2026.07\bin\raku.exe'
-      '2026.08' = 'C:\rakudo-2026.08\bin\raku.exe' }
+      '2026.06' = 'C:\rakudo-2026.06\bin\rakudo.exe'
+      '2026.07' = 'C:\rakudo-2026.07\bin\rakudo.exe'
+      '2026.08' = 'C:\rakudo-2026.08\bin\rakudo.exe' }
 
 .NOTES
   Send back: <WorkDir>\series.tsv and <WorkDir>\environment.txt
@@ -86,7 +86,7 @@ if (-not $Rakudo -and -not $RakudoEra) {
   Die @"
 No Rakudo given. This script does not build one on Windows.
 Install Rakudo (https://rakudo.org/downloads or rakubrew), then either:
-  -Rakudo 'C:\path\to\raku.exe'                  (one build for every tag)
+  -Rakudo 'C:\path\to\rakudo.exe'                (one build for every tag)
   -RakudoEra @{'2026.06'=...;'2026.07'=...;'2026.08'=...}   (era-matched)
 "@
 }

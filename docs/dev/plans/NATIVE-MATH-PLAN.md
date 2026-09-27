@@ -30,7 +30,7 @@ found a control-flow defect worth more than everything else on this page
 combined.
 
 Measured 2026-08-31 on Darwin 25.5, arm64, `build-rel/rakupp`
-v3.23.0-1-g18b3151-modified, clang 21.0.0, against Homebrew `raku`. These are
+v3.23.0-1-g18b3151-modified, clang 21.0.0, against Homebrew `rakudo`. These are
 `/usr/bin/time -p` best-of-2/3 runs on a working machine, **not** the
 quiet-machine protocol the BENCHMARKS tables use — good to a factor, not to a
 percent. Every number below is a factor.
@@ -431,7 +431,7 @@ not far worse, and any numeric-typing pass has to decide what it does about
 
 ```sh
 # §1 — the loop-control throw
-raku -e 'my $n = 0; for ^200000 { next if $_ % 2; $n = $n + 1 }; say $n'
+rakudo -e 'my $n = 0; for ^200000 { next if $_ % 2; $n = $n + 1 }; say $n'
 rakupp -e 'my $n = 0; for ^200000 { next if $_ % 2; $n = $n + 1 }; say $n'
 # the same body inside a sub, which takes the cooperative path:
 rakupp -e 'my $n = 0; sub f() { while True { $n = $n + 1; last } }; for ^20000 { f() }; say $n'

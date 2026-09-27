@@ -995,7 +995,7 @@ Where rakupp 4.0.2 differs from Rakudo, and why:
 
 1. `git show 2026.08:src/core.c/<file>` for the five files; read in full.
 2. Each behaviour turned into a one-line probe; probes run through
-   `perl -e 'alarm 10; exec @ARGV' raku -e …` on the Homebrew 2026.08 binary
+   `perl -e 'alarm 10; exec @ARGV' rakudo -e …` on the Homebrew 2026.08 binary
    and on `build-arm64/rakupp`; outputs recorded verbatim.
 3. D flag from `grep` over `doc/Type/Supply.rakudoc` and neighbours in the
    local docs checkout; R flag from reading the named files in

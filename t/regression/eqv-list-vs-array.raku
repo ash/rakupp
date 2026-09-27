@@ -18,7 +18,7 @@
 # Junction/Capture/Uni from their own tags.
 #
 # EVERY CASE BELOW WAS CHECKED AGAINST RAKUDO, and this file is meant to pass
-# under both engines — run `raku t/regression/eqv-list-vs-array.raku` as the
+# under both engines — run `rakudo t/regression/eqv-list-vs-array.raku` as the
 # oracle. That is how the bug was caught in the first place.
 #
 # Contract: exit 0 + last line PASS.

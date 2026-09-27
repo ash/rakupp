@@ -352,7 +352,7 @@ names at *compile* time. On Rakudo the name does not exist, so the file fails to
 compile and your fallback never gets the chance to run:
 
 ```
-$ raku -e 'sub f() { rakupp-ext-load("x") }'
+$ rakudo -e 'sub f() { rakupp-ext-load("x") }'
 ===SORRY!=== Error while compiling -e
 Undeclared routine:
     rakupp-ext-load used at line 1
@@ -363,7 +363,7 @@ time. The line is valid Raku either way, so the *same source file* compiles on
 both engines and simply finds nothing on Rakudo:
 
 ```
-$ raku   -e 'my &l = try &::("rakupp-ext-load"); say &l.defined'   # False
+$ rakudo -e 'my &l = try &::("rakupp-ext-load"); say &l.defined'   # False
 $ rakupp -e 'my &l = try &::("rakupp-ext-load"); say &l.defined'   # True
 ```
 

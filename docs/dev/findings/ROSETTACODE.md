@@ -12,7 +12,7 @@ For each task in `Category:Raku`, the harness (`tools/rc-compare.raku`):
 
 1. fetches the wiki page, extracts the **first** Raku solution
    (`<syntaxhighlight lang="raku">…`);
-2. runs it under `raku` (Rakudo) and `rakupp`, each with a **10 s timeout** and
+2. runs it under `rakudo` and `rakupp`, each with a **10 s timeout** and
    **closed stdin** (so input-readers hit EOF instead of hanging);
 3. compares stdout and buckets the result.
 

@@ -9,7 +9,7 @@ ThreadSanitizer. The suite's FIRST RUN found three P4 primitive gaps the
 plan had predicted: `atomicint` loses updates, `Channel` with N producers
 hangs, and `Supplier.emit` drops cross-thread emissions — all in parallel
 mode, all on the known-bad list. Bonus datum: Rakudo itself dies on the
-unguarded-hash race (`t/stress/ub-hash-write.raku` under real `raku`
+unguarded-hash race (`t/stress/ub-hash-write.raku` under real `rakudo`
 produced no output), so the no-crash contract aims higher than the
 reference's observed behavior. One of the three **v3.0.0** pillars
 ([VERSIONS.md](VERSIONS.md); the others are [CLI-PLAN.md](CLI-PLAN.md) and

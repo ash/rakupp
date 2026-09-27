@@ -479,7 +479,7 @@ nonblocking-await.t noTAP→11, defer-next.t full, advent2012-day10 +3.
 Perf: mandel/fib/loop/hash/method-call unchanged (method-heavy slightly
 faster). Battery: 28/50 byte-identical (unchanged; remaining DIFFs are
 Rakudo-sandbox failures). NOTE: the tier2 battery is driven by
-`raku tier2/run.raku` — `sh tier2/run.sh` has an unexported-`R` bug and
+`rakudo tier2/run.raku` — `sh tier2/run.sh` has an unexported-`R` bug and
 reports rp=[] for everything.
 
 **Known divergence (accepted for now)**: state vars in an inline-executed

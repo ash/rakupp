@@ -4,7 +4,7 @@
 # step makes the seed it was deduced up to a Rat as well: an element is the
 # one before it plus the step, so `0.1, 2 ... 3` is (0.1, 2.0).
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

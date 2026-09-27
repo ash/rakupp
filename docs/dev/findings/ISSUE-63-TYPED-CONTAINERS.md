@@ -129,7 +129,7 @@ The row is kept, annotated, so the numbering in the commit message still reads.)
 
 ```sh
 build-arm64/rakupp t/regression/issue63-typed-container-elements.raku   # PASS
-raku               t/regression/issue63-typed-container-elements.raku   # PASS — every
+rakudo             t/regression/issue63-typed-container-elements.raku   # PASS — every
                                                                         # assertion is
                                                                         # oracle-verified
 ```

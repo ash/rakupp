@@ -5,7 +5,7 @@
 # A plain `else { }` after one still gets the tested value as `$_`, and a
 # pointy `else -> $e { }` does not.
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

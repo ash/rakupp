@@ -69,7 +69,7 @@ installed, that comparison *is* the test:
 
 ```bash
 rakupp prog.raku > a.txt
-raku   prog.raku > b.txt
+rakudo prog.raku > b.txt
 diff a.txt b.txt
 ```
 

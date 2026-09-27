@@ -13,7 +13,7 @@
 #
 #     ./build/rakupp tools/run-bench.raku
 #
-# It also runs under Rakudo (`raku tools/run-bench.raku`). Either way the runner
+# It also runs under Rakudo (`rakudo tools/run-bench.raku`). Either way the runner
 # only spawns each engine as a fresh subprocess and times it, so the language it
 # is written in does not favour any contestant.
 #
@@ -250,7 +250,7 @@ if $tfh {
             # Split across statements on purpose: as one chained ternary, with
             # `.split(':')` continued onto its own line, Rakudo ends the
             # expression before the `[1]` and dies with "Missing infix inside
-            # []" — so `raku -c tools/run-bench.raku` failed even though rakupp
+            # []" — so `rakudo -c tools/run-bench.raku` failed even though rakupp
             # parsed it. This file documents that it runs under BOTH engines.
             my $model = '/proc/cpuinfo'.IO.e
                         ?? ('/proc/cpuinfo'.IO.lines.first(*.starts-with('model name')) // '')

@@ -2356,7 +2356,7 @@ extra positionals (an engine-wide arity gap, not a 6.e matter).
 - **The 100 newest distributions in the ecosystem** ([the first freshness
   sweep](docs/dev/findings/FRESH100-2026-08-20.md)): 16 pass their own suite, 32
   fail on their own account, 49 never reach their tests. Its parse cluster was
-  proven ours by a `raku -c` control and fixed — a named slurpy in a declaration
+  proven ours by a `rakudo -c` control and fixed — a named slurpy in a declaration
   list, a sigilless capture as invocant, a typed pointy parameter on a statement
   condition, chained statement modifiers, and `with` after a parenless call.
 - **`require ::($name)` had stopped loading anything**, found by this release's

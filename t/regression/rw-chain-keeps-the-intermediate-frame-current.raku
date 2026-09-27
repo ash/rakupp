@@ -10,7 +10,7 @@
 # parser threads `$ip is rw` through every `: … ;` and `if … then`, so it lost
 # its place after the first definition and died of "stack underflow".
 #
-# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/raku — NOT
+# Expectations checked against Rakudo 2026.08 via /opt/homebrew/bin/rakudo — NOT
 # the bare name `raku`, which on this box has pointed at rakupp. Green on both.
 
 my $fails = 0;

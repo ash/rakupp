@@ -68,7 +68,7 @@ which is why its stage 3 exists.
 ```bash
 # a shim so the sweep's own harness runs under Rakudo unchanged
 #   $1 == "test"; the rest is `--to=<store> <name>`
-exec raku tools/install.raku --test-only "$@"
+exec rakudo tools/install.raku --test-only "$@"
 
 rakupp tools/eco-fresh/sweep-fresh.raku --store=<copy of the seeded store> \
     --logs=<dir> --out=<out.tsv> --timeout=180 --rakupp=<shim> <list.tsv>

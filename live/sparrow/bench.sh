@@ -4,13 +4,13 @@
 # Rakudo's very first run compiles Sparrow6's module graph and takes tens of
 # seconds — a real cost, but a one-off, and not what this is measuring.
 #
-#   sh bench.sh                  # uses `rakupp` and `raku` from PATH, 3 runs
+#   sh bench.sh                  # uses `rakupp` and `rakudo` from PATH, 3 runs
 #   RUNS=5 sh bench.sh           # more runs
 #   RAKUPP=./build/rakupp sh bench.sh
 #
 # Install Sparrow6 first (see README). The three configurations are:
 #
-#   rakudo    raku runs the scenario, and `raku` runs the Raku tasks
+#   rakudo    rakudo runs the scenario, and `raku` runs the Raku tasks
 #   mixed     rakupp runs the scenario, but Sparrow6 still spawns `raku` for
 #             the Raku tasks — because it builds that command with a LITERAL
 #             `raku`. This is what you get by just switching interpreters.

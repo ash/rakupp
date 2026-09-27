@@ -177,7 +177,7 @@ our sub f() is export { say $?FILE }
 
 ```
 rakupp -I. -e 'use F; f()'   # /cwd/-e          <- the MAIN PROGRAM
-raku   -I. -e 'use F; f()'   # /path/F.rakumod (F)
+rakudo -I. -e 'use F; f()'   # /path/F.rakumod (F)
 ```
 
 So any module computing a path from `$?FILE` — resources, sibling data files,

@@ -73,7 +73,7 @@ if @*ARGS.grep({ $_ eq '--help' || $_ eq '-h' }) {
     Usage: build/rakupp tools/run-roast.raku [OPTION ...] [PATTERN ...]
 
     Runs Roast, the Raku specification tests, on whichever engine runs this
-    file — `raku tools/run-roast.raku` scores Rakudo on the same bar — and
+    file — `rakudo tools/run-roast.raku` scores Rakudo on the same bar — and
     prints the per-file results, the summary, the skip/todo table and the
     by-synopsis table. This invocation:
 

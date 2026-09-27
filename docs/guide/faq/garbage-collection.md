@@ -21,7 +21,7 @@ program, not the collector. The program here is a file containing one
 statement, `say 1`, measured whole-process from launch to exit:
 
 ```bash
-/usr/bin/time -l rakupp floor.raku          # and the same line for `raku`
+/usr/bin/time -l rakupp floor.raku          # and the same line for `rakudo`
 ```
 
 | running `say 1` | peak footprint | max RSS |
