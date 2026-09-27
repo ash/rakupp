@@ -8061,8 +8061,8 @@ ExprPtr Parser::parsePrimary() {
                 // BEGIN/ENTER in value position evaluate their block/expr and yield it
                 // (a tree-walker has no separate compile phase, so `do` semantics suffice).
                 // hyper/race/eager/lazy collect the loop's values like `do` does.
-                // The values are what a program reads; the parallelism hyper/race
-                // additionally promise is not modelled here.
+                // A `hyper for`/`race for` also marks its ForStmt, whose
+                // iterations then run over worker threads (runHyperLoop).
                 // BEGIN keeps its own op: it evaluates ONCE (per node, the
                 // tree-walker's compile-once) — Digest::SHA2 indexes
                 // `(BEGIN blob64.new: map { frac 3√$_, 64 }, @primes[^80])[$t]`
@@ -8092,6 +8092,8 @@ ExprPtr Parser::parsePrimary() {
                     // in sink context — what it keeps is what it `take`s, and
                     // each iteration's last value is sunk (`.sink` runs)
                     if (name != "gather") markLoopAsExpr(st.get());
+                    if (loopPrefix && (name == "hyper" || name == "race") && st && st->kind == NK::ForStmt)
+                        static_cast<ForStmt*>(st.get())->hyper = name == "hyper" ? 'h' : 'r';
                     be->body.push_back(std::move(st));
                     u->operand = std::move(be);
                 } else {

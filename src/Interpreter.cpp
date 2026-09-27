@@ -5764,6 +5764,30 @@ std::atomic<int> g_stmtLine{0};
 std::atomic<bool> g_stmtLineThreaded{false};
 thread_local int t_stmtLine = 0;
 thread_local Value t_threadSelf;
+
+long long Interpreter::newThreadId() {
+    static std::atomic<long long> next{2};
+    return next++;
+}
+
+// `$*THREAD`. A Thread.start thread answers the object it was started as. Any
+// other worker — a `start`, a `hyper for` batch, a timer's continuation — gets
+// one of its own the first time it asks: its own id, and not the initial
+// thread. They all used to answer the initial thread's id 1, so no code could
+// tell it had left the main thread at all.
+Value Interpreter::currentThread() {
+    if (t_threadSelf.t == VT::Hash) return t_threadSelf;
+    Value h = Value::makeHash(); h.hashKind = "Thread";
+    if (t_isWorker) {
+        (*h.hash())["initial"] = Value::boolean(false);
+        (*h.hash())["id"] = Value::integer(newThreadId());
+        t_threadSelf = h;
+        return h;
+    }
+    (*h.hash())["initial"] = Value::boolean(threadDepth_ == 0);
+    (*h.hash())["id"] = Value::integer(1);
+    return h;
+}
 thread_local unsigned t_safePtCtr = 0;
 thread_local unsigned t_gatherTickCtr = 0;
 thread_local long long t_gatherDeadline = 0;
@@ -5986,6 +6010,127 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
     plk.unlock();          // drop ps->m BEFORE reacquiring the GIL (avoids ABBA with keep/break/second-awaiter)
     gil_.lock();
     loadCtx(parked);
+}
+
+bool Interpreter::promiseSettled(const Value& p) {
+    if (p.ext()) {
+        auto ps = std::static_pointer_cast<PromiseState>(p.ext());
+        std::lock_guard<std::mutex> lk(ps->m);
+        return ps->done;
+    }
+    if (!p.hash()) return true;
+    const ValueMap& h = *p.hash();
+    auto st = h.find("status");
+    if (st != h.end()) {
+        const std::string s = st->second.toStr();
+        if (s == "Kept" || s == "Broken") return true;
+    }
+    auto k = h.find("kind");
+    const std::string kind = k != h.end() ? k->second.toStr() : std::string();
+    if (kind == "timer") return timerRemainingSecs(p) <= 0;
+    // `$proc.ready` keeps no state of its own either: it is ready once its
+    // process has been started (the process itself runs lazily, see "proc")
+    if (kind == "proc-ready") {
+        auto pr = h.find("proc");
+        return pr != h.end() && pr->second.hash() &&
+               (pr->second.hash()->count("started") || pr->second.hash()->count("pid"));
+    }
+    if (kind == "anyof" || kind == "allof") {
+        // anyof: kept once one member has settled; allof: once every one has
+        // (a broken member does not fail it); no members at all: kept
+        auto ms = h.find("promises");
+        if (ms == h.end() || !ms->second.arr()) return true;
+        const bool any = kind == "anyof";
+        for (auto& m : *ms->second.arr())
+            if (promiseSettled(m) == any) return any;
+        return !any || ms->second.arr()->empty();
+    }
+    return false;
+}
+
+// `.then` on an anyof/allof. The combinator has no PromiseState of its own —
+// its state is a fold over its members — so it cannot queue a continuation the
+// way a start promise does, and running `fn` on the spot (as it used to) handed
+// `Promise.allof(@workers).then({…})` its callback before any worker had run.
+// Instead every start/vow member, a nested combinator's included, gets a
+// continuation that re-folds the combinator, and the first fold to come out
+// settled runs `fn`: on the thread that settled the member, as `.then` on that
+// member would. Nothing settles a timer, so when the combinator holds any, one
+// worker sleeps from moment to moment re-folding as each passes — woken early,
+// and gone, as soon as `fn` has run.
+void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
+    if (promiseSettled(combo)) { fn(); return; }
+    struct Watch { std::mutex m; std::condition_variable cv; bool fired = false; };
+    auto w = std::make_shared<Watch>();
+    std::function<void()> refold = [combo, w, fn]() {
+        if (!promiseSettled(combo)) return;
+        { std::lock_guard<std::mutex> lk(w->m); if (w->fired) return; w->fired = true; }
+        w->cv.notify_all();
+        fn();
+    };
+    std::vector<double> moments;   // the unfired timer members' fire times (the `now` clock)
+    std::function<void(const Value&)> hook = [&](const Value& m) {
+        if (m.ext()) {
+            auto ps = std::static_pointer_cast<PromiseState>(m.ext());
+            bool now = false;
+            { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(refold); }
+            if (now) refold();
+            return;
+        }
+        if (!m.hash() || promiseSettled(m)) return;
+        auto k = m.hash()->find("kind");
+        const std::string kind = k != m.hash()->end() ? k->second.toStr() : std::string();
+        if (kind == "anyof" || kind == "allof") {
+            auto ms = m.hash()->find("promises");
+            if (ms != m.hash()->end() && ms->second.arr())
+                for (auto& x : *ms->second.arr()) hook(x);
+        }
+        else if (kind == "timer") moments.push_back(epochNowSecs() + timerRemainingSecs(m));
+        else if (kind == "proc") {
+            // a lazily-realized process promise is realized by whoever waits on
+            // it (await, `.then`): run it now, as `.then` on it alone does
+            Value pv = m;
+            runProcPromise(pv, 0);
+            refold();
+        }
+    };
+    hook(combo);
+    // a member that settled while the others were being hooked, without a
+    // continuation to say so (a timer whose moment passed meanwhile)
+    refold();
+    if (moments.empty()) return;
+    { std::lock_guard<std::mutex> lk(w->m); if (w->fired) return; }
+    std::sort(moments.begin(), moments.end());
+    engageGil();
+    liveWorkers_++;
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    throttleSpawn();
+    addWorker(BigStackThread([self, w, refold, moments, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        for (double at : moments) {
+            bool stop = false;                                        // GIL not held
+            {
+                std::unique_lock<std::mutex> lk(w->m);
+                for (;;) {
+                    if (w->fired || self->workerAbort_.load(std::memory_order_relaxed)) { stop = true; break; }
+                    double left = at - epochNowSecs();
+                    if (!(left > 0)) break;                           // (a NaN moment: now)
+                    w->cv.wait_for(lk, std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+                }
+            }
+            if (stop) break;
+            self->gilLock();
+            ExecContext wctx; self->loadCtx(wctx);
+            tctx_.cur = spawnScope;
+            tctx_.dynStack.push_back(spawnScope.get());
+            try { refold(); } catch (...) {}
+            self->gilYieldNotify();
+        }
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin);
 }
 
 // The `react` event loop: block until every live source has signalled done (or
@@ -11036,6 +11181,143 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
             suppressLoopFirst_ = savedSF; return false;
         }
         catch (...) { suppressLoopFirst_ = savedSF; throw; }
+    }
+}
+
+// `hyper for` / `race for`. The iterations go out in batches of 64, in order,
+// to as many workers as the machine has cores less one (Rakudo's `.hyper`
+// defaults), and this thread waits for them. Each iteration binds its loop
+// variable in its worker's scope and runs the body through runLoopBody, as the
+// serial loop does — so `next`, `redo`, a `when` and the collected value behave
+// as they do there. That scope also holds the worker's own `$/`: a match in the
+// body would otherwise write the enclosing routine's from several threads at once.
+//
+// The values come back in source order, which hyper promises and race permits.
+// A `last` ends the loop where it stands: every iteration before it counts,
+// none after it (a later batch already under way is thrown away). A die ends it
+// too, reaching the caller doing X::HyperRace::Died, as in Rakudo; whichever of
+// the two came first in the source decides.
+void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
+                               const HyperBind& writeBack, ValueList* collect) {
+    constexpr size_t kBatch = 64;
+    const size_t nb = (n + kBatch - 1) / kBatch;
+    const unsigned hc = std::thread::hardware_concurrency();
+    const size_t degree = std::min<size_t>(nb, hc > 1 ? hc - 1 : 1);
+    struct Run {
+        std::atomic<size_t> next{0};           // the next batch to hand out
+        std::atomic<size_t> stop{SIZE_MAX};    // the earliest iteration that ended the loop
+        std::mutex m;                          // guards errAt/err/lastAt
+        size_t errAt = SIZE_MAX, lastAt = SIZE_MAX;
+        std::exception_ptr err;
+        std::vector<ValueList> out;            // each batch's values
+    };
+    auto run = std::make_shared<Run>();
+    if (collect) run->out.resize(nb);
+    auto lower = [](std::atomic<size_t>& a, size_t v) {
+        size_t cur = a.load();
+        while (v < cur && !a.compare_exchange_weak(cur, v)) {}
+    };
+    auto loopScope = tctx_.cur;
+    Block* body = fs->body.get();
+    const std::string label = fs->label;
+    const bool keep = collect != nullptr;
+    // a worker's own `$/` starts as the one the loop sees: a match made before
+    // the loop still reads the same inside it
+    Value outerMatch = Value::nil();
+    if (loopScope) if (Value* m = loopScope->find("$/")) outerMatch = *m;
+    const bool flat = flatLoopBody(body);   // (asked here: it caches on the node)
+    Value work; work.t = VT::Code; work.setCode(std::make_shared<Callable>());
+    // (bind/writeBack are the caller's, alive until every worker has finished)
+    work.code()->builtin = [run, lower, loopScope, outerMatch, body, label, keep, flat, n, nb, &bind, &writeBack]
+                           (Interpreter& I, ValueList&) -> Value {
+        // One scope per worker, kept across its iterations as the serial loop
+        // keeps one: a scope per iteration made every worker bump the one
+        // shared parent's reference count, and seven cores contending for that
+        // cache line ran the loop slower than one thread did. A fresh scope
+        // only when the last escaped (a closure in the body captured it);
+        // otherwise emptied between iterations, or for a flat body overwritten.
+        std::shared_ptr<Env> scope;
+        // …and a frame of its own to stand in: a worker starts out in the
+        // spawner's scope, which they all share, and every body entry saves
+        // and restores the current scope — one more shared count per iteration
+        auto own = std::make_shared<Env>();
+        own->parent = loopScope;
+        struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx_.cur = std::move(s); } } curG{tctx_.cur};
+        tctx_.cur = own;
+        for (;;) {
+            const size_t b = run->next.fetch_add(1);
+            if (b >= nb || b * kBatch > run->stop.load()) break;
+            ValueList* out = keep ? &run->out[b] : nullptr;
+            if (out) out->reserve(kBatch);
+            for (size_t i = b * kBatch, e = std::min(n, i + kBatch); i < e; i++) {
+                if (i > run->stop.load()) break;
+                if (!scope || scope.use_count() > 1) {
+                    scope = std::make_shared<Env>();
+                    scope->parent = loopScope;
+                    scope->define("$/", outerMatch);
+                }
+                else if (!flat) {
+                    scope->vars.clear();
+                    scope->define("$/", outerMatch);
+                }
+                bool cont = true;
+                try {
+                    if (!bind(i, scope)) continue;
+                    std::function<void()> rebind = [&] { bind(i, scope); };   // redo: the element afresh
+                    cont = I.runLoopBody(body, scope, label, i == 0, i + 1 == n, out, rebind);
+                    if (writeBack) writeBack(i, scope);
+                }
+                // a next/last labeled for an OUTER loop: that loop is on another
+                // thread, out of reach, so it acts on this one
+                catch (NextEx&) { continue; }
+                catch (LastEx&) { cont = false; }
+                catch (...) {
+                    { std::lock_guard<std::mutex> lk(run->m);
+                      if (i < run->errAt) { run->errAt = i; run->err = std::current_exception(); } }
+                    lower(run->stop, i);
+                    break;
+                }
+                if (!cont) {
+                    { std::lock_guard<std::mutex> lk(run->m); if (i < run->lastAt) run->lastAt = i; }
+                    lower(run->stop, i);
+                    break;
+                }
+            }
+        }
+        return Value::nil();
+    };
+    // A `hyper for` nested in another's body spawns from a worker. Past the
+    // spawn cap (throttleSpawn) a spawner waits for the herd to thin, which the
+    // parents parked here awaiting their own workers never do — so well short
+    // of the cap the batches run on this thread instead.
+    if (liveWorkers_.load(std::memory_order_relaxed) + (int)degree > 256) {
+        ValueList none;
+        work.code()->builtin(*this, none);
+    }
+    else {
+        std::vector<Value> workers;
+        workers.reserve(degree);
+        for (size_t k = 0; k < degree; k++) workers.push_back(spawnPromise(work));
+        for (auto& p : workers) awaitPromise(std::static_pointer_cast<PromiseState>(p.ext()));
+    }
+    // every worker has settled: nothing below races them
+    if (run->err && run->errAt < run->lastAt) {
+        try { std::rethrow_exception(run->err); }
+        catch (RakuError& e) {
+            RakuError err = e;
+            Value ex = exceptionFor(err);
+            if (ex.t == VT::Object && ex.obj()) {
+                Value mixed = mixinValue(ex, Value::typeObj("X::HyperRace::Died"), true);
+                if (mixed.t == VT::Object && mixed.obj()) err.payload = mixed;
+            }
+            throw err;
+        }
+        // anything else (a control exception, a teardown abort) goes on as it was
+    }
+    if (collect) {
+        const size_t upTo = run->lastAt == SIZE_MAX ? nb : run->lastAt / kBatch + 1;
+        for (size_t b = 0; b < upTo; b++)
+            for (auto& v : run->out[b]) collect->push_back(std::move(v));
     }
 }
 
@@ -16095,6 +16377,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     return forResult();
                 }
             }
+            // `hyper for` / `race for` run their iterations over worker threads
+            // (runHyperLoop) from the two paths below: an integer Range and an
+            // array already in hand. A body with a loop phaser or a `state`
+            // stays serial — per-loop state has no meaning split over threads
+            // (Rakudo refuses the phasers outright: "not yet implemented").
+            const bool hyperLoop = fs->hyper && fs->hasStateCache == 0 &&
+                                   loopPhaserMask(fs->body.get()) == 0;
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
             if (!scalarItem && !fs->destructure && loopVars.size() <= 1 &&
@@ -16131,6 +16420,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
                     long long lo = listv.rFrom() + (listv.rExFrom() ? 1 : 0);
                     long long hi = listv.rTo() - (listv.rExTo() ? 1 : 0);
+                    // (an endless range is not handed out: only a `last` ends it)
+                    if (hyperLoop && hi >= lo && (unsigned long long)hi - (unsigned long long)lo < (1ULL << 32)) {
+                        runHyperLoop(fs, (size_t)((unsigned long long)hi - (unsigned long long)lo) + 1,
+                            [&](size_t i, const std::shared_ptr<Env>& sc) {
+                                sc->define(var, topicInt(lo + (long long)i));
+                                return true;
+                            }, nullptr, col);
+                        return forResult();
+                    }
                     // Flat body (see flatLoopBody): one scope, ONE topic map
                     // node, overwritten in place — no clear and no re-emplace
                     // per iteration. A closure capturing the scope bumps
@@ -16387,6 +16685,29 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (topic) *topic = asTopic((*arr)[P(i)], var, 0);
                             else scope->define(var, asTopic((*arr)[P(i)], var, 0)); } }
                     };
+                    // (a live source is walked serially: only this thread may grow it)
+                    if (hyperLoop && !live && n0 > 0) {
+                        runHyperLoop(fs, n0,
+                            [&](size_t k, const std::shared_ptr<Env>& sc) {
+                                ParStripe es(*this, arr.get());
+                                const size_t pk = P(k);
+                                if (pk >= arr->size()) return false;
+                                sc->define(var, asTopic((*arr)[pk], var, 0));
+                                return true;
+                            },
+                            rw ? HyperBind([&](size_t k, const std::shared_ptr<Env>& sc) {
+                                auto it = sc->vars.find(var);
+                                if (it == sc->vars.end()) return true;
+                                ParStripe es(*this, arr.get());
+                                const size_t pk = P(k);
+                                if (pk < arr->size()) {
+                                    (*arr)[pk] = *it->second.deref();
+                                    if ((*arr)[pk].t == VT::Array && arrayElemSrc) (*arr)[pk].itemized = false;
+                                }
+                                return true;
+                            }) : HyperBind(), col);
+                        return forResult();
+                    }
                     TopicAliasFrame taf(tctx_, rw, var, arr); // take-rw's view of the aliasing
                     for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
                         const size_t pi = P(i);
@@ -21423,7 +21744,7 @@ Value Interpreter::dynVar(const std::string& name) {
     // no arithmetic can use.
     if (name == "$*TOLERANCE") return Value::number(1e-15);
     if (name == "$*INIT-INSTANT") return initInstantVal();
-    if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash())["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash())["id"] = Value::integer(1); return h; }
+    if (name == "$*THREAD") return currentThread();
     if (name == "$*SCHEDULER") {
         if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
         return defaultScheduler_; // shared .hash(): attr writes (uncaught_handler) persist
@@ -52586,7 +52907,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash())["name"] = Value::str(platKernelName()); return h; }
             if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash())["name"] = Value::str(vmName());   return h; }
             if (ve->name == "$*SPEC") return Value::typeObj("IO::Spec::Unix"); // POSIX platform
-            if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash())["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash())["id"] = Value::integer(1); return h; }
+            if (ve->name == "$*THREAD") return currentThread();
             if (ve->name == "$*SCHEDULER") {
                 if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
                 return defaultScheduler_;

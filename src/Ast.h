@@ -996,6 +996,9 @@ struct ForStmt : Stmt {
     bool asExpr = false; // used in value context: collect each iteration's value into a List
     bool modifier = false; // `EXPR for LIST` — no implicit block (a `my` in EXPR leaks out)
     bool emptyPointy = false; // `for @l -> { … }`: a signature of NO parameters (not serialized)
+    // `hyper for` ('h') / `race for` ('r'): the iterations run over worker
+    // threads, in batches (Interpreter's runHyperLoop); 0 is an ordinary loop
+    char hyper = 0;
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 

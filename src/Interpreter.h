@@ -1229,6 +1229,13 @@ public:
                      const std::function<void()>& rebind = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
                                                     // collect!=null: append each iteration's value (value context)
     void runLoopLast(Block* body, const std::shared_ptr<Env>& scope); // LAST {…} at loop end, in the final iteration's scope
+    // `hyper for` / `race for`: run `n` iterations of `fs` over worker threads.
+    // `bind` defines iteration i's loop variable in its fresh scope (false: no
+    // such element any more, skip it); `writeBack`, when given, carries a write
+    // through the variable back to the source afterwards.
+    using HyperBind = std::function<bool(size_t, const std::shared_ptr<Env>&)>;
+    void runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind, const HyperBind& writeBack,
+                      ValueList* collect);
 
     // calling
     // `whereVerified`: the multi dispatcher already evaluated this candidate's
@@ -2737,6 +2744,14 @@ public:
     int noCycleBreak_ = 0; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
+    // Has promise `p` settled? Every shape a Promise takes here: a start/vow
+    // promise (its PromiseState), a timer (its moment has passed, or it was kept
+    // or broken by hand), an anyof/allof combinator (folded from its members, a
+    // nested combinator included), anything else by its stored status.
+    static bool promiseSettled(const Value& p);
+    // `.then` on an anyof/allof: run `fn` once the combinator settles, at once
+    // if it already has (see the definition for how the members are watched).
+    void thenCombinator(const Value& combo, std::function<void()> fn);
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
@@ -2903,6 +2918,10 @@ public:
     std::unordered_map<std::string, Value> compiledEnums_; // --exe: enum members by name (registerEnumMember)
     static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
     static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
+public:
+    Value currentThread();            // `$*THREAD`: the Thread this code runs on
+    static long long newThreadId();   // the next Thread id (1 is the initial thread's)
+private:
     // (cur_/dynStack_/curStateEnv_/gatherStack_/supplyStack_/makeTargets_/pkgPrefix_/
     //  callDepth_ moved into the thread_local tctx_ above.)
 public:

@@ -197,15 +197,18 @@ what it protects small.
 looks concurrent and reads as concurrent: 8023 ms against 2021 ms for the same
 four requests.
 
-**`race` and `hyper` do not fan out on Raku++ 3.27.** They give the right
-answer, in one thread, at serial speed: 158 ms against 145 ms for the loop
-they replace, where `start`/`await` over the same chunks took 32 ms. The same
-`race` under Rakudo 2026.08 took 51 ms against 220 ms serial. If a program
-here needs parallelism today, express it with `start` and `await`.
+**The `.race` and `.hyper` methods do not fan out on Raku++.** They give the
+right answer, in one thread, at serial speed: 158 ms against 145 ms for the
+loop they replace, where `start`/`await` over the same chunks took 32 ms. The
+same `race` under Rakudo 2026.08 took 51 ms against 220 ms serial. The loop
+forms do fan out: `race for 2 ..^ $limit { $_ if .is-prime }` counts the same
+primes in 52 ms, against 185 ms for that loop without the `race`. When a
+program here needs parallelism, write the loop form, or `start` and `await`.
 
-**Counting threads will not tell you whether you are parallel.** `$*THREAD.id`
-answers `1` inside every `start` block on Raku++ 3.27, including the ones that
-demonstrably run at the same time. Rakudo answers the real ids. Measure the
+**Counting threads will not tell you whether you are parallel.** Every `start`
+block runs on a thread of its own on Raku++, so each one reports a new
+`$*THREAD.id` whether or not it overlapped with any other; Rakudo reuses a pool,
+so its ids repeat. Neither count says what ran at the same time. Measure the
 wall clock instead — the ratio in `cpu.raku` is the honest test.
 
 **An exception in a `start` block waits for you.** The promise is broken, not

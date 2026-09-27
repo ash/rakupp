@@ -10243,8 +10243,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             Value t = Value::makeHash(); t.hashKind = "Thread";
             for (auto& x : args) if (x.t == VT::Pair && x.s == "name" && x.pairVal()) (*t.hash())["name"] = *x.pairVal();
-            static std::atomic<long long> nextThreadId{2}; // 1 = the initial thread
-            (*t.hash())["id"] = Value::integer(nextThreadId++);
+            (*t.hash())["id"] = Value::integer(newThreadId());   // one sequence with every worker's
             (*t.hash())["initial"] = Value::boolean(false);
             if (code.t == VT::Code) {
                 t.extM() = std::static_pointer_cast<void>(
@@ -19300,44 +19299,29 @@ void Interpreter::registerBuiltins() {
                 // process; anyof keeps its single-process behaviour
                 if (kind == "allof") for (auto* pp : procs) I.runProcPromise(*pp, timers.empty() ? 0 : timerLeft(true));
                 else if (procP) I.runProcPromise(*procP, timers.empty() ? 0 : timerLeft(true));
-                // WAIT for the member start-promises — anyof: until ANY settles (a
-                // timer member is the deadline); allof: until EVERY one settles.
-                // (They were ignored before, so `await Promise.anyof: $todo, $time-up`
-                // returned at t=0 with $todo still Planned — zef's fetch timeout wrap.)
-                if (!pss.empty()) {
-                    auto anyDone = [&]() {
-                        for (auto& ps : pss) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) return true; }
-                        return false;
-                    };
-                    if (kind == "allof") {
-                        for (auto& ps : pss) I.awaitPromise(ps);
-                    } else {
-                        // double-rep deadline: a huge/Inf timer must not overflow
-                        // the int64 nanosecond range (it means "no deadline")
-                        double dl = timers.empty() ? 3600 : timerLeft(true);
-                        auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(dl);
-                        while (!anyDone() && std::chrono::steady_clock::now() < deadline)
-                            I.sleepYield(0.01); // GIL released so the workers can run
-                    }
-                    // reflect settled members onto their hashes so `.so`/`.status` read true
-                    for (size_t i = 0; i < pss.size(); i++) {
-                        std::lock_guard<std::mutex> lk(pss[i]->m);
-                        if (pss[i]->done && psvals[i]->hash()) {
-                            (*psvals[i]->hash())["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
-                            if (!pss[i]->broken) (*psvals[i]->hash())["result"] = pss[i]->result;
-                        }
-                    }
+                // WAIT until the fold says settled — anyof: one member, allof:
+                // every one (a timer at its moment, a nested combinator by its
+                // own fold) — on a latch the combinator's `.then` keeps, so the
+                // wait ends the moment the deciding member settles. anyof used
+                // to poll every 10 ms, and a nested combinator member was not
+                // waited on at all. (Members were ignored once entirely, so
+                // `await Promise.anyof: $todo, $time-up` returned at t=0 with
+                // $todo still Planned — zef's fetch timeout wrap.)
+                if (!Interpreter::promiseSettled(p)) {
+                    auto latch = std::make_shared<PromiseState>();
+                    I.thenCombinator(p, [latch]() {
+                        { std::lock_guard<std::mutex> lk(latch->m); latch->done = true; }
+                        latch->cv.notify_all();
+                    });
+                    I.awaitPromise(latch);
                 }
-                else if (kind == "anyof" && !timers.empty() && !procP) {
-                    // only timers: anyof settles with the NEAREST one — it
-                    // returned at t=0 before (issue #41's family)
-                    double L = timerLeft(true);
-                    if (L > 0) I.sleepYield(L);
-                }
-                if (kind == "allof" && !timers.empty()) {
-                    // allof is not settled until every timer member has fired too
-                    double L = timerLeft(false);
-                    if (L > 0) I.sleepYield(L);
+                // reflect settled members onto their hashes so `.so`/`.status` read true
+                for (size_t i = 0; i < pss.size(); i++) {
+                    std::lock_guard<std::mutex> lk(pss[i]->m);
+                    if (pss[i]->done && psvals[i]->hash()) {
+                        (*psvals[i]->hash())["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
+                        if (!pss[i]->broken) (*psvals[i]->hash())["result"] = pss[i]->result;
+                    }
                 }
                 // timer members whose moment has passed are Kept now
                 for (auto* t : timers) if (timerRemainingSecs(*t) <= 0) {

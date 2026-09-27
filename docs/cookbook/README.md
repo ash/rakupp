@@ -50,8 +50,9 @@ where a recipe needs one, and the output shown is what it printed.
 - **[parallel.md](parallel.md)** — four requests in 2021 ms instead of 8020,
   primes 4.5× faster over eight promises, results in the order they arrive, a
   `Channel` worker pool, and eight threads sharing one `Array` — with what each
-  one measured. What bites: `await` inside the loop, `race`/`hyper` not fanning
-  out on this engine today, `$*THREAD.id` answering 1 everywhere, and an
+  one measured. What bites: `await` inside the loop, the `.race`/`.hyper`
+  methods not fanning out on this engine today (the `race for` loop does),
+  thread ids that count `start` blocks rather than parallelism, and an
   exception in a `start` block that waits for you. Programs: [parallel/](parallel/).
 
 ## Adding one

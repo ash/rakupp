@@ -94,6 +94,21 @@ folds two different changes into one ratio.
 `start EXPR` thunks `EXPR` and runs it *on the worker* (it is not evaluated eagerly
 on the spawning thread), so `start work($n)` parallelises just like `start { work($n) }`.
 
+`hyper for` and `race for` fan a loop out without writing the `start`s: the
+iterations go to worker threads in batches of 64, one worker per core less one,
+and the statement ends when the last batch has. The values come back in the
+order of the list (`race` allows any order, and gets this one). The `.hyper`
+and `.race` *methods* do not fan out on this engine — they run their chain
+serially and give the same answer.
+
+```raku
+my $main = $*THREAD.id;
+my @ids = hyper for ^1000 { $*THREAD.id };
+say @ids.grep(* == $main).elems;          # → 0   (no iteration ran on the main thread)
+my @squares = hyper for ^6 { $_ * $_ };
+say @squares;                             # → [0 1 4 9 16 25]
+```
+
 **Match the fan-out to the physical *performance* cores.** The speed-up tops out
 at the number of full-speed cores, not the logical-CPU count. On the 4P+4E
 machine above, eight `start` blocks do *not* reach ~5×: the extra work spills

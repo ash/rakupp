@@ -3134,30 +3134,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "vow") { takeVow(); Value v = inv; v.hashKind = "Vow"; return v; }
 
-        // Fold the state of an anyof/allof combinator lazily from its children.
-        auto childState = [&](Value& c, bool& done, bool& broken) {
-            done = broken = false;
-            if (c.ext()) { auto s = std::static_pointer_cast<PromiseState>(c.ext()); done = s->done; broken = s->broken; }
-            else if (c.hash() && c.hash()->count("status")) {
-                auto s = (*c.hash())["status"].toStr(); broken = (s == "Broken"); done = (s == "Kept" || s == "Broken");
-                // an UNSETTLED timer child settles when its moment passes (nobody
-                // flips the hash) — but an explicit keep/break above wins
-                if (!done && c.hash()->count("kind") && (*c.hash())["kind"].toStr() == "timer")
-                    done = timerRemainingSecs(c) <= 0;
-            }
-        };
-        auto comboStatus = [&]() -> std::string {
-            if (!inv.hash()->count("promises")) return "Kept";
-            auto& kids = *(*inv.hash())["promises"].arr();
-            if (kids.empty()) return "Kept";
-            if (kind == "anyof") { for (auto& c : kids) { bool d, b; childState(c, d, b); if (d) return "Kept"; } return "Planned"; }
-            bool all = true; // allof: Kept once every child has settled (a broken child doesn't fail it)
-            for (auto& c : kids) { bool d, b; childState(c, d, b); if (!d) { all = false; break; } }
-            return all ? "Kept" : "Planned";
-        };
-
+        // an anyof/allof is folded from its members, nested combinators too
         std::string st;
-        if (kind == "anyof" || kind == "allof") st = comboStatus();
+        if (kind == "anyof" || kind == "allof") st = promiseSettled(inv) ? "Kept" : "Planned";
         else if (ps) st = ps->done ? (ps->broken ? "Broken" : "Kept") : "Planned";
         else if (kind == "timer") {
             // time-derived: nobody flips the hash when the delay elapses — but an
@@ -3259,6 +3238,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool now = false;
             if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
             else if (kind == "timer") spawnDelayedNative(timerRemainingSecs(inv), run); // fire when the timer does, not at t=0
+            else if (kind == "anyof" || kind == "allof") thenCombinator(inv, run);     // when its members say so
             else if (kind == "proc") {
                 // a lazily-realized process promise: nobody else will run it, so
                 // `.then` is a realization point (as await is) — the callback

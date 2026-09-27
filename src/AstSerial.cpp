@@ -392,7 +392,8 @@ template <class IO> void visit(IO& io, WhileStmt& n){ ioExpr(io, n.cond); ioBloc
 template <class IO> void visit(IO& io, ForStmt& n)  { ioExpr(io, n.list); ioVec(io, n.vars);
                                                       ioVec(io, n.varTraits); F(io, n.rwVars);
                                                       F(io, n.destructure); ioParams(io, n.params);
-                                                      ioBlock(io, n.body); F(io, n.asExpr); F(io, n.modifier); }
+                                                      ioBlock(io, n.body); F(io, n.asExpr); F(io, n.modifier);
+                                                      F(io, n.hyper); }
 template <class IO> void visit(IO& io, ReturnStmt& n) { ioExpr(io, n.value); F(io, n.isRw); }
 template <class IO> void visit(IO& io, LastStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, NextStmt& n) { F(io, n.target); }
