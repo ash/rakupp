@@ -386,6 +386,7 @@ build/rakupp tools/run-roast.raku             # run the suite, print a summary
 build/rakupp tools/run-roast.raku S03-operators   # only paths matching a substring
 build/rakupp tools/run-roast.raku S04             # filter by path substring
 build/rakupp tools/run-roast.raku --all       # every .t in the checkout, not just Rakudo's list
+build/rakupp tools/run-roast.raku --help      # every option with its default, and the environment
 ```
 
 The harness runs every file Roast's own `spectest.data` lists — Rakudo's run

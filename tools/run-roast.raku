@@ -3,6 +3,7 @@
 #
 # Usage:
 #   build/rakupp tools/run-roast.raku [-j=N] [--workers=N] [--cpu=N] [--list=FILE] [--times=FILE] [--failed[=FILE]] [--fudge=IMPL|none] [--all] [--skip-marker=WORD[,WORD]] [PATTERN ...]
+#   build/rakupp tools/run-roast.raku --help   # every option with its default, and the environment
 #
 # With no PATTERN, runs every file Roast's own spectest.data lists — Rakudo's
 # run list, kept at the checkout root since 2019 — all of them, whatever
@@ -60,6 +61,84 @@ my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
+
+# --help is answered before anything else runs: the engine check below spawns
+# the binary, and the scratch directory after it is created on disk. END blocks
+# run after this exit too, which is why the one that removes the scratch
+# directory checks first that there is one.
+if @*ARGS.grep({ $_ eq '--help' || $_ eq '-h' }) {
+    my $cores = ($*KERNEL.cpu-cores // 2) max 1;
+    my $roast = $ROOT ~ ($ROOT.IO.d ?? '' !! '   (no such directory: set ROAST)');
+    print qq:to/USAGE/;
+    Usage: build/rakupp tools/run-roast.raku [OPTION ...] [PATTERN ...]
+
+    Runs Roast, the Raku specification tests, on whichever engine runs this
+    file — `raku tools/run-roast.raku` scores Rakudo on the same bar — and
+    prints the per-file results, the summary, the skip/todo table and the
+    by-synopsis table. This invocation:
+
+      engine  $BIN
+      roast   $roast
+
+    Selecting files (default: every file Roast's spectest.data lists)
+      PATTERN              only the files whose path in the checkout contains
+                           PATTERN; given several, a file matching any of them
+      --all                every .t file in the checkout, spectest.data ignored
+      --skip-marker=WORD[,WORD]
+                           keep out the files spectest.data marks WORD;
+                           `--skip-marker=stress` is exactly the set Rakudo's
+                           `make spectest` runs, `--skip-marker=slow` a quick run
+
+    Scheduling
+      -j=N, -jN            use N cores: a CPU budget of N, filled by 2N worker
+                           threads (default: every core, $cores here)
+      --cpu=N              the CPU budget alone (wins over an earlier -j)
+      --workers=N          the worker threads alone (wins over an earlier -j)
+      --times=FILE         order the queue and estimate each file's CPU from
+                           the per-file times in FILE, then rewrite it with
+                           this run's (not when a PATTERN filters the run);
+                           `--times=` reads nothing.
+                           Default: read docs/status/roast-lists/roast.times
+                           (rakupp only), write nothing
+
+    Output
+      --list=FILE          write the fully-passing paths to FILE, sorted, and
+                           the run's provenance to FILE.meta, OVERWRITING both:
+                           to gate a change, write a scratch file and diff it
+                           against the committed baseline
+      --failed             after the summary, list every file that did not
+                           fully pass, with the source lines of its failing
+                           tests
+      --failed=FILE        write those paths to FILE instead, one per line,
+                           ready to pass back as PATTERNs
+      -h, --help           print this and exit
+
+    Foreign engines
+      --fudge=IMPL         have Roast's `fudge` apply IMPL's directives to the
+                           files first (default: rakudo.moar); `--fudge=none`
+                           runs them raw. Ignored under rakupp, whose lexer
+                           applies the #?rakudo directives itself
+
+    Environment
+      ROAST                the Roast checkout (default: \$HOME/roast)
+      ROAST_TIMEOUT        seconds a file may run before it is killed and
+                           scored as a timeout (default: 10, or 60 under a
+                           foreign engine); files that sleep by spec have
+                           limits of their own
+      MUTSU_FUDGE=1        mutsu applies the #?rakudo directives itself, and
+                           the harness hands it the raw files
+
+    Examples
+      build/rakupp tools/run-roast.raku                     # the whole list
+      build/rakupp tools/run-roast.raku S05 S32-str         # two corners of it
+      build/rakupp tools/run-roast.raku -j4 --failed        # 4 cores; what failed
+      build/rakupp tools/run-roast.raku --list=/tmp/r.list  # a list to diff
+
+    The comments in tools/run-roast.raku give the reasons, and the measurements,
+    behind each default.
+    USAGE
+    exit 0;
+}
 
 # WHICH engine is being measured. `$*EXECUTABLE` is whatever ran this file, and
 # running the harness under a foreign compiler is a supported, useful thing to do
@@ -179,7 +258,7 @@ sub rmtree($p) {
     }
     else { try unlink($p) }
 }
-END { rmtree($SCRATCH) }
+END { rmtree($SCRATCH) if $SCRATCH.defined }   # unset when --help exited first
 
 # Run a test file, capturing stdout, with a hard timeout. Returns
 # (output-string, timed-out-bool).
@@ -473,7 +552,7 @@ for @*ARGS -> $a {
     elsif $a.starts-with('-') {
         # a misspelt or valueless flag would otherwise become a PATTERN that
         # matches nothing, and the run would select 0 files without a word
-        note "run-roast: unknown option $a (see the usage note at the top of tools/run-roast.raku)";
+        note "run-roast: unknown option $a (--help lists the options)";
         exit 2;
     }
     else { @patterns.push($a) }
