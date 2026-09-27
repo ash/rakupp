@@ -5697,10 +5697,11 @@ static std::string ctorParamStr(const Value& p, bool inSignature) {
     return out;
 }
 
-// (defined with makeAsyncSocket below). At namespace scope, not as a block-scope
-// `extern` inside methodCallInner: MSVC gives a block-scope declaration GLOBAL
-// linkage, so the call went unresolved against this rakupp:: definition.
-bool asyncSockAddrFwd(const std::string&, int, sockaddr_storage&, socklen_t&);
+// Declared at namespace scope, not as block-scope `extern`s inside
+// methodCallInner: MSVC gives a block-scope declaration GLOBAL linkage, so the
+// use went unresolved against the rakupp:: definition.
+bool asyncSockAddrFwd(const std::string&, int, sockaddr_storage&, socklen_t&);  // with makeAsyncSocket below
+extern const char* const kCatHandleSrc;                                          // CatHandleSrc.cpp
 
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
                                    bool skipOwn) {
@@ -9571,7 +9572,6 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // IO::CatHandle is Raku source (CatHandleSrc.cpp), compiled at first use
     if (inv.t == VT::Type && inv.s == "IO::CatHandle" && !classes_.count("IO::CatHandle") &&
         !catHandleLoading_) {
-        extern const char* const kCatHandleSrc;
         catHandleLoading_ = true;
         auto saved = tctx_.cur;
         tctx_.cur = global_;
@@ -13776,6 +13776,11 @@ std::string Interpreter::ioFsPath(const Value& v) {
     if (v.hashKind != "IO" || v.t != VT::Str) return v.toStr();
     const std::string& p = v.s;
     if (p.empty() || p[0] == '/') return p;
+#ifdef _WIN32
+    // absolute here too: `D:\x`, `D:/x`, `\\host\x`, `\x`. A resolved path carries
+    // a CWD of `/`, and joining the two made `/D:\x`, which no file test finds.
+    if (p[0] == '\\' || (p.size() >= 2 && p[1] == ':')) return p;
+#endif
     const std::string& base = v.ofType();
     if (base.empty()) return p;
     // …the current directory of the PROCESS, that is — the one the OS resolves

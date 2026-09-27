@@ -75,13 +75,16 @@ static std::string heredoc(const char* name, const unsigned char* p, size_t n) {
 
 std::string docToolSource() {
     std::string s(reinterpret_cast<const char*>(kDoc), kDocLen);
-    static const char kMarker[] = \"my %DOCS;\\n\";
-    size_t at = s.find(kMarker);
-    if (at == std::string::npos) return s;   // no declaration to fill: run as-is
-    std::string fill = kMarker;
+    // The declaration's whole line, whatever ends it: a checkout with CRLF
+    // line endings (core.autocrlf, Git for Windows' default) never matched a
+    // marker spelled with a bare LF, so a lone rakupp.exe baked no guides.
+    size_t at = s.find(\"my %DOCS;\");
+    size_t eol = at == std::string::npos ? at : s.find('\\n', at);
+    if (eol == std::string::npos) return s;   // no declaration to fill: run as-is
+    std::string fill = s.substr(at, eol + 1 - at);
     fill += heredoc(\"REFERENCE.md\", kRef, kRefLen);
     fill += heredoc(\"FEATURES.md\", kFeat, kFeatLen);
-    s.replace(at, sizeof(kMarker) - 1, fill);
+    s.replace(at, eol + 1 - at, fill);
     return s;
 }
 } // namespace rakupp
