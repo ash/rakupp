@@ -2268,6 +2268,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             return o;
         }
         case VT::Hash: {
+            // a bare `Mu.new` / `Any.new` instance: no attributes, no container
+            if ((v.hashKind == "Mu" || v.hashKind == "Any") && (!v.hash() || v.hash()->empty()))
+                return v.hashKind + ".new";
             if (v.hash() && !seen.insert(v.hash()).second) return reprSelfName(v.hash(), true); // cycle
             std::vector<std::string> keys;
             if (v.hash()) for (auto& kv : *v.hash()) keys.push_back(kv.first);

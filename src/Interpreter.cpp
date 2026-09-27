@@ -1248,7 +1248,17 @@ std::vector<long long> Interpreter::evalShapeDims(Expr* shape) {
     };
     if (shape && shape->kind == NK::ListExpr)
         for (auto& d : static_cast<ListExpr*>(shape)->items) dims.push_back(dim(eval(d.get())));
-    else if (shape) dims.push_back(dim(eval(shape)));
+    else if (shape) {
+        // one expression that yields a LIST is the whole shape:
+        // `my @md[(1..$n).reverse]`, `my @y[$dims]` (S02-types/multi_dimensional_array.t)
+        Value sv = eval(shape);
+        if (sv.t == VT::Range)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Setting a shape with a Range not allowed: " + sv.toStr()};
+        if (sv.t == VT::Array && sv.arr() && !isJunction(sv))
+            for (auto& d : toList(sv)) dims.push_back(dim(d));
+        else dims.push_back(dim(sv));
+    }
     return dims;
 }
 // default value for a typed declaration: native lowercase types (num/int/str) have
@@ -1317,6 +1327,14 @@ Value rtTypedDefault(const char* type, char sigil) {
 // built-in. Running the expression yields the real parameterized type object,
 // which is what `$h.push` then dispatches on.
 Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
+    // `my ::foo $x` with no `foo` anywhere: $x holds a BARE type of that name
+    if (ve && !ve->declStubType.empty() && sigil == '$' && ve->declType.empty()) {
+        const std::string& sn = ve->declStubType;
+        if (!classes_.count(sn) && !isKnownTypeName(sn) && !(tctx_.cur && tctx_.cur->find(sn))) {
+            bareStubTypes_.insert(sn);
+            return Value::typeObj(sn);
+        }
+    }
     // A declaration whose TYPE names nothing is the error Rakudo makes it —
     // `my Foo $x` is "Type 'Foo' is not declared" there and declared an untyped
     // variable here. See declTypeIsKnown for how carefully the question is
@@ -1897,7 +1915,9 @@ static bool exprYieldsContainer(const Expr* e) {
 // X::Proc::Unsuccessful (Rakudo's Proc.sink). One rule, wherever the sink is.
 void Interpreter::sinkValue(const Value& r) {
     // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
-    if (r.t == VT::Array && r.ext() && r.arr() &&
+    // (…but an ITEM is a container, and sinking a container reads nothing:
+    // `lives-ok { my $s = (gather die)[] }` lives — S02-types/array.t)
+    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
         (std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource ||
          std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe)) { forceLazy(r); return; }
     if (r.t != VT::Hash) return;
@@ -3608,6 +3628,9 @@ static Value reifyIfFinite(const Value& v) {
         Value r = Value::array(*v.arr()); r.isList = false; return r;
     }
     if (!st->gatherSeq) return v;
+    // `lazy gather {…}` (or a list ending in one) stays lazy: assignment runs
+    // none of it (S02-types/array.t)
+    if (st->declaredLazy) { Value r = v; r.isList = false; r.s.clear(); return r; }
     forceLazy(v);
     // …and past the first growth step, too: list assignment is EAGER in Rakudo
     // (a plain gather is not lazy), so a finite gather of a few hundred takes
@@ -4055,6 +4078,9 @@ Interpreter* Interpreter::liveTarget() { return g_revInterp; }
 thread_local ExecContext Interpreter::tctx_;
 thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
+thread_local const Interpreter::ArgWriter* Interpreter::builtinArgWriter_ = nullptr;
+thread_local const Interpreter::ArgWriter* Interpreter::pendingArgWriter_ = nullptr;
+thread_local bool Interpreter::deferGather_ = false;
 thread_local bool Interpreter::noAutothread_ = false;
 thread_local bool Interpreter::valueSmartmatch_ = false;
 thread_local bool Interpreter::matchVarSuppressed_ = false;
@@ -11736,6 +11762,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 info.langRev = langRev_;   // `Even.^ver` answers with this
                 info.defConstraint = sd->defConstraint;   // `of Str:D`
                 info.coerce = sd->coerceBase;             // `of Str()`
+                info.coerceFrom = sd->coerceFrom;         // `of Num(Str)`
                 info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
                 subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
@@ -12349,7 +12376,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // a DIFFERENT `our sub` of the same name already owns the
                     // package slot: `{ our sub foo {…} }; { our sub foo {…} }`
                     if (!sd->isMulti && !sd->isProto && !sd->isMethod) {   // methods live in their class
-                        if (Value* had = curPkgEnv_->local("&" + sname))
+                        Value* had = curPkgEnv_->local("&" + sname);
+                        if (!had) had = curPkgEnv_->local("\x01OUR&" + sname);   // an EVAL-born one
+                        if (had)
                             if (had->t == VT::Code && had->code() && code.code() &&
                                 had->code()->body && had->code()->body != code.code()->body &&
                                 !had->code()->isMultiDispatcher)
@@ -12357,7 +12386,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                     {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
                                     "Redeclaration of routine '" + sname + "'");
                     }
-                    curPkgEnv_->define("&" + sname, code);
+                    // …but one an EVAL declared at the top level is in the PACKAGE,
+                    // not in any later unit's lexical scope: `EVAL 'our sub f {…}';
+                    // EVAL 'f()'` is X::Undeclared::Symbols (S02-names/our.t)
+                    if (!g_evalUnits.empty() && curPkgEnv_ == global_ && tctx_.pkgPrefix.empty() &&
+                        !sd->isMulti && !sd->isProto && !sd->isMethod)
+                        curPkgEnv_->define("\x01OUR&" + sname, code);
+                    else
+                        curPkgEnv_->define("&" + sname, code);
                 }
                 // and publish the fully-qualified name (Foo::Bar::name) so callers
                 // outside the module can reach an unexported `our sub` — the only
@@ -13556,6 +13592,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
                 ca.def = a.def || a.sigil != '$' ? a.def.get() : a.defaultTrait.get(); ca.shape = a.shape.get(); ca.defaultTrait = a.defaultTrait.get();
                 ca.where = a.whereExpr.get();
+                if (a.deprecated)
+                    ca.deprecated = std::make_shared<std::string>(a.deprecatedWith.empty() ? "something else" : a.deprecatedWith);
                 // the default must fit the declared type — judged here, at
                 // composition, as Rakudo does (a role's type may be a capture
                 // still unbound, so only a class is checked)
@@ -15544,6 +15582,45 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // asTopic, and with it the readonly mark — so `for %h.values ->
                 // $v { $v = 9 }` edited the hash where Rakudo refuses it. Falling
                 // through lands on the ordinary path, which marks it.
+                if (Value* ph = pairsAliasSource(fs->list.get()); ph && ph->t == VT::Array && isMultiDimShaped(*ph)) {
+                    // `my @a[2;2]; for @a.pairs -> $p { $p.value = 42 }` — the
+                    // leaves in row-major order, keyed by their index List
+                    size_t ndim = ph->shape()->size();
+                    std::vector<std::vector<size_t>> paths;
+                    std::vector<size_t> idx;
+                    std::function<void(const Value&)> walk = [&](const Value& node) {
+                        if (idx.size() == ndim) { paths.push_back(idx); return; }
+                        if (node.t == VT::Array && node.arr())
+                            for (size_t k = 0; k < node.arr()->size(); k++) {
+                                idx.push_back(k); walk((*node.arr())[k]); idx.pop_back();
+                            }
+                    };
+                    walk(*ph);
+                    // re-resolved per step: the body may reassign the array
+                    auto leaf = [&](const std::vector<size_t>& path) -> Value* {
+                        Value* n = ph;
+                        for (size_t k : path) {
+                            if (n->t != VT::Array || !n->arr() || k >= n->arr()->size()) return nullptr;
+                            n = &(*n->arr())[k];
+                        }
+                        return n;
+                    };
+                    for (size_t i = 0; i < paths.size(); i++) {
+                        Value* slot = leaf(paths[i]);
+                        if (!slot) continue;
+                        freshScope();
+                        Value key = Value::array(); key.isList = true;
+                        for (auto ix : paths[i]) key.arr()->push_back(Value::integer((long long)ix));
+                        Value pr = Value::pair(key.toStr(), *slot);
+                        pr.pairKeyM() = std::make_shared<Value>(key);
+                        if (!var.empty() && var[0] == '$') markTopic(pr, 0);
+                        scope->define(var, pr);
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == paths.size(), col);
+                        if (pr.pairVal()) if (Value* s2 = leaf(paths[i])) *s2 = *pr.pairVal();
+                        if (!cont) break;
+                    }
+                    return forResult();
+                }
                 if (Value* ph = pairsAliasSource(fs->list.get()); ph && ph->t == VT::Array) {
                     auto arr = ph->arrS();
                     for (size_t i = 0; i < arr->size(); i++) {
@@ -16524,6 +16601,33 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
         std::string t = ptype + (p.defConstraint == 1 ? ":D" : p.defConstraint == 2 ? ":U" : "");
         return t + "(" + p.coerceFrom + ")";
     };
+    // a NESTED from-type, `Str(Rat(Source))`: the argument is a Rat, or a
+    // Source coerced to one, before the outer coercion sees it
+    if (size_t lp = from.find('('); lp != std::string::npos && from.back() == ')') {
+        std::function<bool(Value&, const std::string&)> satisfy = [&](Value& x, const std::string& spec) -> bool {
+            size_t l = spec.find('(');
+            if (l == std::string::npos || spec.back() != ')') {
+                std::string t = spec; int sm = 0;
+                if (t.size() > 2 && t[t.size() - 2] == ':') {
+                    char c = t.back(); sm = c == 'D' ? 1 : c == 'U' ? 2 : 0; t.resize(t.size() - 2);
+                }
+                if (sm == 1 && !isDefined(x)) return false;
+                if (sm == 2 && isDefined(x)) return false;
+                return t.empty() || t == "Any" || t == "Mu" || typeOrSubsetMatches(x, t);
+            }
+            std::string t = spec.substr(0, l), f = spec.substr(l + 1, spec.size() - l - 2);
+            if (typeOrSubsetMatches(x, t)) return true;
+            if (!satisfy(x, f)) return false;
+            x = coerceToType(x, t);
+            return true;
+        };
+        if (!satisfy(v, from))
+            throwTypedV("X::TypeCheck::Binding::Parameter",
+                {{"got", v}, {"expected", Value::typeObj(ptype)}, {"symbol", Value::str(p.name)}},
+                "Type check failed in binding to parameter '" + p.name + "'; expected " + render() +
+                " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
+        from = from.substr(0, lp);
+    }
     const bool defined = isDefined(v);
     if ((!from.empty() && from != "Any" && from != "Mu" && !typeOrSubsetMatches(v, from)) ||
         (from.empty() && v.t == VT::Type && v.s == "Mu") ||
@@ -16951,8 +17055,21 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (!params[i].type.empty() || isMuTypeObject(v) || params[i].codeSig)
                         typeCheckBind(params[i], v, blockParams, whereVerified, env.get());
                     // a native-int param truncates on bind (see the slow path)
+                    // a machine-width `int` does not wrap, but a bigint does not fit it either
+                    if (v.t == VT::Int && v.big() && params[i].type == "int" && !v.big()->fitsLL())
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Cannot unbox " + std::to_string(v.big()->bitLength() + 1) +
+                            " bit wide bigint into native integer"};
                     { int spec = paramNatSpec(params[i]);
-                      if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
+                      if (spec >> 1) {
+                          // (…but refuses a value no machine word holds at all)
+                          if (v.t == VT::Int && v.big() &&
+                              ((spec & 1) ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
+                              throw RakuError{Value::typeObj("X::AdHoc"),
+                                  "Cannot unbox " + std::to_string(v.big()->bitLength() + (spec & 1)) +
+                                  " bit wide bigint into native integer"};
+                          wrapNative(v, spec >> 1, spec & 1);
+                      } }
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
@@ -17688,9 +17805,25 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         const Param& p = params[i];
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
         bool sign; int bits = Value::natWidthOfType(p.type, sign);
+        if (!bits && p.type == "int") { bits = 64; sign = true; }   // checked, not wrapped (below)
         if (!bits) continue;
-        if (Value* bound = env->find(slotName(p, i)))
+        if (Value* bound = env->find(slotName(p, i))) {
+            if (p.type == "int") {
+                if (bound->t == VT::Int && bound->big() && !bound->big()->fitsLL())
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Cannot unbox " + std::to_string(bound->big()->bitLength() + 1) +
+                        " bit wide bigint into native integer"};
+                continue;
+            }
+            // …but a value no machine word holds at all is refused, not wrapped
+            // (`sub (int $x) {}(99999999999999999999)`, S02-types/native.t)
+            if (bound->t == VT::Int && bound->big() &&
+                (sign ? !bound->big()->fitsLL() : bound->big()->bitLength() > 64))
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot unbox " + std::to_string(bound->big()->bitLength() + (sign ? 1 : 0)) +
+                    " bit wide bigint into native integer"};
             wrapNative(*bound, bits, sign);
+        }
     }
     // enforce `where` constraints on the bound values (a single sub isn't dispatched,
     // so scoreCandidate never ran — `sub p(Int $n where * > 0)` must reject p(-1))
@@ -18412,6 +18545,13 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
 void Interpreter::checkBareSubsetDecl(const VarExpr* ve, char sigil) {
     if (!ve->declBare || sigil != '$' || ve->declDefault || ve->declType.empty()) return;
     auto si = subsets_.find(ve->declType);
+    // a DEFINITE coercion base (`subset S of Str:D(Rat)`) has no type object
+    // to start from under any revision (S02-types/nominalizables.t)
+    if (si != subsets_.end() && si->second.coerce && si->second.defConstraint == 1)
+        throwTypedV("X::Syntax::Variable::MissingInitializer",
+            {{"type", Value::str(ve->declType)}, {"implicit", Value::str(": by pragma")}},
+            "Variable definition of type " + ve->declType +
+            " (implicit : by pragma) needs to be given an initializer");
     if (si == subsets_.end() || si->second.langRev < 2) return;
     std::string base = si->second.base;
     for (int guard = 0; guard < 16; guard++) {
@@ -18458,6 +18598,28 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     // Everything below (the smiley, the where clause) sees the COERCED value.
     Value coerced;
     const Value* vp = &v;
+    // A coercion type ACCEPTS its target and its source: `of Num(Str)` takes a
+    // Num or a Str (the Str type object too), and not an Int (S02-types/
+    // nominalizables.t). Only a defined source is coerced for the checks below.
+    if (si.coerce && !si.base.empty() && !si.coerceFrom.empty() && si.coerceFrom != "Any" &&
+        si.coerceFrom != "Mu" && !subsetMatches(si.base, v, depth + 1)) {
+        std::string f = si.coerceFrom;
+        if (f.size() > 2 && f[f.size() - 2] == ':') f.resize(f.size() - 2);
+        if (!typeOrSubsetMatches(v, f)) {
+            if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
+            return false;
+        }
+        // a type object is no DEFINITE target (`of Str:D(Numeric)` refuses Int)
+        if (!isDefined(v) && si.defConstraint == 1) {
+            if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
+            return false;
+        }
+        // nothing further to ask of it: no coercion is needed to say yes
+        if (!isDefined(v) || (!si.where && si.defConstraint == 0)) {
+            if (!cacheKey.empty()) typeSubsetCache[cacheKey] = true;
+            return true;
+        }
+    }
     if (si.coerce && !si.base.empty() && isDefined(v) && v.typeName() != si.base) {
         try { coerced = coerceToType(v, si.base); }
         catch (...) { if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
@@ -19250,10 +19412,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
             // a NATIVE argument (`my int $i`) is exactly a native parameter:
             // `multi f(int)` beats `multi f(Int)` for it, and loses for a boxed one
-            if ((pos[i].natBits || pos[i].natFloat) && isNativeTypeName(p->type)) {
+            if ((pos[i].natBits || pos[i].natFloat) && isNativeTypeName(p->type) && pos[i].t != VT::Str) {
                 const bool pFloat = p->type.rfind("num", 0) == 0;
                 if (pFloat == (bool)pos[i].natFloat) score += 4;
             }
+            // …and a native STR read (marked natFloat, which a Str never uses
+            // otherwise) is exactly a `str` parameter (S02-types/native.t)
+            if (pos[i].t == VT::Str && pos[i].natFloat && p->type == "str") score += 4;
         }
         if (p->whereExpr) {
             // A COERCION parameter's `where` sees the COERCED value:
@@ -20315,7 +20480,9 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
     // coercion cannot leak into an ordinary assignment.)
     if (target && target->kind == NK::VarExpr) {
         const std::string& nm = static_cast<VarExpr*>(target)->name;
-        if (!nm.empty() && nm[0] == '@') v = coerceArray(v);
+        // (a SHAPED array is already the Array it will be — coercing it would
+        // flatten its rows: `my @c[2;2] .= new(:shape(2,2), …)`)
+        if (!nm.empty() && nm[0] == '@' && !(v.t == VT::Array && v.shape())) v = coerceArray(v);
         else if (!nm.empty() && nm[0] == '%') v = coerceHash(v);
     }
     if (Value* lv = lvalue(target)) {
@@ -20577,15 +20744,17 @@ std::shared_ptr<std::string> Interpreter::deprecationFor(SubDecl* sd) {
 // A call of a deprecated routine: remembered by (kind, name, package, advice),
 // with the line it was made from, until `Deprecation.report` collects them.
 void Interpreter::noteDeprecatedCall(const Callable& c, int line) {
+    noteDeprecation(c.isMethod ? "Method" : "Sub", c.name, c.pkg.empty() ? "GLOBAL" : c.pkg, *c.deprecated, line);
+}
+void Interpreter::noteDeprecation(const std::string& kind, const std::string& name, const std::string& from,
+                                  const std::string& with, int line) {
     std::lock_guard<std::mutex> lk(deprecM_);
-    std::string kind = c.isMethod ? "Method" : "Sub";
-    std::string from = c.pkg.empty() ? "GLOBAL" : c.pkg;
     for (auto& r : deprecations_)
-        if (r.kind == kind && r.name == c.name && r.from == from && r.with == *c.deprecated) {
+        if (r.kind == kind && r.name == name && r.from == from && r.with == with) {
             if (std::find(r.lines.begin(), r.lines.end(), line) == r.lines.end()) r.lines.push_back(line);
             return;
         }
-    deprecations_.push_back({kind, c.name, from, *c.deprecated, {line}});
+    deprecations_.push_back({kind, name, from, with, {line}});
 }
 
 Value Interpreter::deprecationReport() {
@@ -20829,15 +20998,17 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     };
     // the unit: a loaded module's file frame when we stand in one, else the
     // mainline's, which is the global frame itself
+    // (an EVAL's own scope is a unit too — also for a closure it made, run
+    // later: `$CALLER::UNIT::x` from inside one names the EVAL's, pseudo-6*.t)
     auto unitOf = [&]() {
         if (raw) {
             Env* r = raw;
-            while (r && !r->unitFrame) r = r->parent.get();
+            while (r && !r->unitFrame && !r->evalFrame) r = r->parent.get();
             raw = r ? r : global_.get();
         }
         else {
             std::shared_ptr<Env> u = env;
-            while (u && !u->unitFrame) u = u->parent;
+            while (u && !u->unitFrame && !u->evalFrame) u = u->parent;
             env = u ? u : !g_evalUnits.empty() && g_evalUnits.back() ? g_evalUnits.back() : global_;
         }
     };
@@ -20887,6 +21058,30 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     };
     if (mode == 'L') for (Env* f = e; f; f = f->parent.get()) takeFrame(f);
     else if (mode == 'F' || mode == 'C') takeFrame(e);
+    else if (mode == 'D') {
+        // every `$*` name the dynamic lookup could reach: this frame's chain,
+        // each caller's, then GLOBAL's `$x` and PROCESS's (pseudo-6e.t)
+        auto takeDyn = [&](Env* f) {
+            for (; f; f = f->parent.get()) {
+                for (auto& kv : f->vars)
+                    if (kv.first.size() > 2 && kv.first[1] == '*' && std::strchr("$@%&", kv.first[0]) &&
+                        !snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = kv.second;
+                if (f->layout)
+                    for (auto& nm : f->layout->names)
+                        if (nm.size() > 2 && nm[1] == '*' && !snap.hash()->count(nm))
+                            if (Value* p = f->padFind(nm)) (*snap.hash())[nm] = *p;
+            }
+        };
+        takeDyn(tctx_.cur.get());
+        for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it) takeDyn(*it);
+        if (global_)
+            for (auto& kv : global_->vars)
+                if (kv.first.size() > 9 && kv.first.compare(1, 8, "GLOBAL::") == 0 &&
+                    kv.first.find("::", 9) == std::string::npos) {
+                    std::string dn = kv.first.substr(0, 1) + "*" + kv.first.substr(9);
+                    (*snap.hash())[dn] = kv.second;
+                }
+    }
     od->attrs["snap"] = snap;
     return Value::object(od);
 }
@@ -20953,7 +21148,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
             if (Value* p = findDynamicLenient(key)) { out = *p; return true; }
             return false;
         case 'D':
-            if (dynName) if (Value* p = findDynamicLenient(key)) { out = *p; return true; }
+            if (dynName) if (Value* p = findDynamicViaGlobal(key)) { out = *p; return true; }
             return false;
         default: break;
     }
@@ -21001,7 +21196,8 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
         Value* slot = nullptr;
         if (mode == 'F' && e) slot = e->local(key);
         else if ((mode == 'C' || mode == 'L') && e) slot = e->find(key);
-        if (!slot && (mode == 'L' || mode == 'D') && key.size() > 1 && key[1] == '*') slot = findDynamicLenient(key);
+        if (!slot && mode == 'D' && key.size() > 1 && key[1] == '*') slot = findDynamicViaGlobal(key);
+        if (!slot && mode == 'L' && key.size() > 1 && key[1] == '*') slot = findDynamicLenient(key);
         if (!slot && mode == 'K' && key == "$_") slot = tctx_.cur ? tctx_.cur->find("$_") : nullptr;
         if (!slot && (mode == 'F' || mode == 'C' || mode == 'L') && e) slot = &e->define(key, Value::any());
         if (!slot && (mode == 'G' || mode == 'O') && global_) slot = &global_->define(key, Value::any());
@@ -21034,6 +21230,19 @@ Value* Interpreter::findDynamicSlot(const std::string& name) {
     for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
         if (*it) if (Value* p = dynInFrame(*it, name)) return p;
     return nullptr;
+}
+
+// A `$*x` through DYNAMIC:: as Rakudo resolves it: the call chain, then
+// GLOBAL's `$x`, then PROCESS's — so GLOBAL shadows a same-named PROCESS
+// symbol (pseudo-6e.t). PROCESS's live in global_ under the `$*x` spelling.
+Value* Interpreter::findDynamicViaGlobal(const std::string& name) {
+    // (a hit IN global_ under the `$*x` spelling is PROCESS's entry, which the
+    // lexical walk reaches last of all — GLOBAL's `$x` comes before it)
+    Value* processSlot = global_ ? global_->local(name) : nullptr;
+    if (Value* p = findDynamicSlot(name)) if (p != processSlot) return p;
+    if (global_ && name.size() > 2 && name[1] == '*')
+        if (Value* g = global_->local(name.substr(0, 1) + "GLOBAL::" + name.substr(2))) return g;
+    return findDynamicLenient(name);
 }
 
 Value* Interpreter::findDynamicLenient(const std::string& name) {
@@ -23733,6 +23942,7 @@ struct PooledFrame {
 };
 } // namespace
 
+static bool argIsNeverContainer(const Expr* e);
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // --profile: routine-level entry/exit (RAII — this function returns in many
@@ -23782,6 +23992,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
+    const ArgWriter* argW = pendingArgWriter_; pendingArgWriter_ = nullptr; // one-shot too
     bool noAT = noAutothread_; noAutothread_ = false; // one-shot too (Junction.THREAD)
     int lpc = loopPhaserCtl_; loopPhaserCtl_ = 0; // one-shot: loop-phaser control from an iterating driver (map)
     bool implicitTopic_local = false;
@@ -24217,9 +24428,34 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.builtin) {
         // a builtin body can't do the env-based $_ copy-back — hand it the
         // aliased element directly (deepmap/map drivers + the ++* curry)
-        struct BWG { Interpreter& I; Value* s; ~BWG() { I.builtinTopicWB_ = s; } }
-            bwg{*this, builtinTopicWB_};
+        struct BWG { Interpreter& I; Value* s; const ArgWriter* w;
+                     ~BWG() { I.builtinTopicWB_ = s; I.builtinArgWriter_ = w; } }
+            bwg{*this, builtinTopicWB_, builtinArgWriter_};
         builtinTopicWB_ = topicWB;
+        builtinArgWriter_ = nullptr;
+        // WhateverCode parameters are rw: `my &c = *++; c($x)` bumps $x, as
+        // `f(*++)` with `sub f($i) { $i($*f) }` bumps $*f (S02-types/
+        // whatever.t). The write resolves the argument's container only when
+        // the curry actually writes, so a read-only curry never autovivifies.
+        ArgWriter fromExprs;
+        if (c.isWhateverCode) {
+            if (argW) builtinArgWriter_ = argW;
+            else if (!topicWB && rwArgs && rwArgs->size() == args.size()) {
+                auto callerEnv = tctx_.cur;
+                fromExprs = [this, rwArgs, callerEnv](size_t i, const Value& nv) {
+                    if (i >= rwArgs->size()) return;
+                    Expr* ae = (*rwArgs)[i].get();
+                    if (!ae || argIsNeverContainer(ae)) return;
+                    auto saved = tctx_.cur;
+                    tctx_.cur = callerEnv;
+                    struct R { std::shared_ptr<Env> v; ~R() { tctx_.cur = v; } } r{saved};
+                    try {
+                        if (Value* lv = lvalue(ae)) if (!lv->readonly) *lv = nv;
+                    } catch (RakuError&) {}
+                };
+                builtinArgWriter_ = &fromExprs;
+            }
+        }
         return c.builtin(*this, args);
     }
 
@@ -26653,6 +26889,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (!global_->vars.count(ve->name)) global_->define(ve->name, defaultFor(sigil));
             return &global_->vars[ve->name];
         }
+        // `DYNAMIC::<$*x> := v` binds wherever the lookup finds `$*x` — a
+        // caller's, else GLOBAL's `$x`, else PROCESS's (pseudo-6e.t)
+        if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && !ve->declare &&
+            ve->name.size() > 2 && ve->name[1] == '*')
+            if (Value* p = findDynamicViaGlobal(ve->name)) return p;
+        // `OUR::<$x> = …` at the top level, with no `our $x` anywhere: the
+        // package variable springs into being, as `$GLOBAL::x = …` does
+        // (pseudo-6e.t's root subtest writes one and reads it back)
+        if (ve->viaPseudoPkg && ve->pseudoPkg == "OUR" && !ve->declare && global_ &&
+            tctx_.pkgPrefix.empty() && ve->name.size() > 1 && std::strchr("$@%", ve->name[0]) &&
+            tctx_.cur && !tctx_.cur->find(ve->name)) {
+            global_->define(ve->name, defaultFor(sigil));
+            return &global_->vars[ve->name];
+        }
 
         if (ve->declare) {
             if (ve->declScope == "state" && tcx.curStateEnv) { // persistent across calls
@@ -27533,10 +27783,21 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 }
                 return &(*base->hash())[akey];
             }
-            Value* cur = base;
+            // `@md.AT-POS(|$k) = v` — a slipped index list spreads into the
+            // dimensions (S02-types/multi_dimensional_array.t)
+            ValueList idxs;
             for (auto& a : mc->args) {
+                if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
+                    Value sv = eval(static_cast<Unary*>(a.get())->operand.get());
+                    if (sv.t == VT::Array && sv.arr()) for (auto& e : toList(sv)) idxs.push_back(e);
+                    else idxs.push_back(sv);
+                }
+                else idxs.push_back(eval(a.get()));
+            }
+            Value* cur = base;
+            for (auto& iv : idxs) {
                 if (cur->t != VT::Array) *cur = Value::array();
-                long long i = eval(a.get()).toInt();
+                long long i = iv.toInt();
                 if (i < 0) negIndexThrow(i);
                 if (i < 0) i = 0;
                 while ((long long)cur->arr()->size() <= i) cur->arr()->push_back(Value::any());
@@ -28111,7 +28372,7 @@ Value* Interpreter::pairsAliasSource(Expr* listExpr) {
     if (!hv) return nullptr;
     // …and `@a.pairs` over a real Array, whose elements are containers too
     if (ve->name[0] != '%' && hv->t == VT::Array && hv->arr() && !hv->isList && !hv->ext() &&
-        !isJunction(*hv) && !isMultiDimShaped(*hv))
+        !isJunction(*hv))
         return hv;
     if (ve->name[0] == '@' || hv->t != VT::Hash || !hv->hash() || !hv->hashKind.empty()) return nullptr;
     return hv;
@@ -28496,6 +28757,11 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
                         (p.t == VT::Object && p.obj() && p.obj()->cls && p.obj()->cls->name == "X::Method::NotFound");
         if (!notFound && (type == "Date" || type == "DateTime" || type == "Int" || type == "Num" ||
                           type == "Rat" || type == "Numeric" || type == "Real" || type == "Complex"))
+            throw;
+        // …and a USER coercion method that died is the answer too: `my
+        // Str(Source) $e = Source.new` with `method Str { die … }` dies with
+        // that (S02-types/nominalizables.t)
+        if (!notFound && v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod(type))
             throw;
     }
     if (type == "IO::Path") return methodCall(v, "IO", ValueList{});
@@ -29147,6 +29413,33 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         }
         return sink ? Value::any() : rhs;
     }
+    // `$CALLER::foo := $other` REBINDS the caller's variable to our container:
+    // later writes to $other show through $foo (S02-names/caller.t) — the same
+    // shared cell `$y := $x` makes, installed in the slot the symbolic ref names
+    if (a->op == ":=" && a->target && a->target->kind == NK::SymbolicRef && a->value &&
+        a->value->kind == NK::VarExpr) {
+        auto* sv = static_cast<VarExpr*>(a->value.get());
+        if (sv->name.size() > 1 && sv->name[0] == '$' &&
+            (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) {
+            std::shared_ptr<Env> owner;
+            for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                if (en->local(sv->name)) { owner = en; break; }
+            if (owner) {
+                Value* srcSlot = owner->local(sv->name);
+                std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
+                if (!cell && srcSlot && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+                    cell = std::make_shared<Value>(*srcSlot);
+                    *srcSlot = makeSharedCellProxy(cell);
+                }
+                Value* blv = nullptr;
+                try { blv = lvalue(a->target.get()); } catch (RakuError&) { blv = nullptr; }
+                if (blv) {
+                    *blv = cell ? makeSharedCellProxy(cell) : makeEnvSlotProxy(owner, sv->name);
+                    return sink ? Value::any() : eval(a->value.get());
+                }
+            }
+        }
+    }
     if (a->op == ":=" && a->target) {
         // …and through the setting's stash: `CORE::.<&none> := &f`
         if (a->target->kind == NK::Index) {
@@ -29159,6 +29452,57 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 const std::string tn = bv.t == VT::Array && bv.isList ? "List" : bv.typeName();
                 throwTypedV("X::Bind::Slice", {{"type", Value::typeObj(tn)}},
                             "Cannot bind to " + tn + " slice");
+            }
+            // `OUR::.<$x> := $y` binds the package variable, as `$OUR::x := $y` does
+            // (pseudo-6d.t): the same bind, spelled through the stash
+            if (ix->isHash && ix->base && ix->base->kind == NK::Call && ix->index && a->value &&
+                a->value->kind == NK::VarExpr) {
+                auto* c = static_cast<Call*>(ix->base.get());
+                const std::string stashPkg = c->name == "__pseudo-stash" && c->args.size() == 1 &&
+                    c->args[0]->kind == NK::StrLit ? static_cast<StrLit*>(c->args[0].get())->v : std::string();
+                // (…and MY:: / LEXICAL::, whose slots are the lexicals themselves:
+                // `$MY::a := $x`, `LEXICAL::.{'$z'} := $y`)
+                if (stashPkg == "OUR" || stashPkg == "MY" || stashPkg == "LEXICAL") {
+                    std::string key = eval(ix->index.get()).toStr();
+                    // `LEXICAL::.{'$*k'} := $f` rebinds the DYNAMIC `$*k` (in whatever
+                    // caller holds it) to $f's container — through an `is rw`
+                    // parameter, the caller's own variable (pseudo-6e.t)
+                    if (key.size() > 2 && key[0] == '$' && key[1] == '*' && stashPkg == "LEXICAL") {
+                        auto* sv = static_cast<VarExpr*>(a->value.get());
+                        std::shared_ptr<Env> owner;
+                        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                            if (en->local(sv->name)) { owner = en; break; }
+                        Value* srcSlot = owner ? owner->local(sv->name) : nullptr;
+                        if (owner && owner->ex && owner->ex->rwLinks.count(sv->name))
+                            if (Value* through = lvalueThroughRw(a->value.get())) srcSlot = through;
+                        tctx_.rwMirror.clear();
+                        tctx_.rwMirrorSigil = 0;
+                        if (srcSlot) {
+                            std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
+                            if (!cell && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+                                cell = std::make_shared<Value>(*srcSlot);
+                                *srcSlot = makeSharedCellProxy(cell);
+                            }
+                            VarExpr dv(key);
+                            Value* dst = nullptr;
+                            try { dst = lvalue(&dv); } catch (RakuError&) { dst = nullptr; }
+                            if (dst && cell) {
+                                *dst = makeSharedCellProxy(cell);
+                                return sink ? Value::any() : eval(a->value.get());
+                            }
+                        }
+                    }
+                    if (key.size() > 1 && key[0] == '$' && ascii::isalpha((unsigned char)key[1])) {
+                        Assign alias;
+                        alias.op = ":=";
+                        auto tv = std::make_unique<VarExpr>(key);
+                        if (stashPkg == "OUR") { tv->viaPseudoPkg = true; tv->pseudoPkg = "OUR"; }
+                        alias.target = std::move(tv);
+                        alias.value.reset(a->value.get());
+                        struct Give { Assign& a; ~Give() { a.value.release(); } } give{alias};
+                        return evalAssign(&alias, sink);
+                    }
+                }
             }
             if (ix->isHash && ix->base && ix->base->kind == NK::Call && ix->index) {
                 auto* c = static_cast<Call*>(ix->base.get());
@@ -30121,6 +30465,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value rhs = I.eval(rhsE);
             Value nv = op == "=" ? rhs : I.applyBinOp(op.substr(0, op.size() - 1), cur, rhs);
             if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
+            else if (I.builtinArgWriter_) (*I.builtinArgWriter_)(0, nv);
             if (!as.empty()) as[0] = nv;
             return nv;
         };
@@ -30560,6 +30905,29 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value rhs = eval(a->value.get());
         for (auto* ve : early) ve->declare = false;   // restored by Undeclare
         assignListTarget(tl, rhs, a->op == ":=");
+        // `my ($a) := \(3)` — a scalar bound to a LITERAL part of a literal
+        // capture holds the value itself: no container to assign or step
+        // (S02-names-vars/signature.t)
+        if (a->op == ":=" && a->value->kind == NK::Unary &&
+            static_cast<Unary*>(a->value.get())->op == "capture") {
+            Expr* op = static_cast<Unary*>(a->value.get())->operand.get();
+            std::vector<Expr*> parts;
+            if (op && op->kind == NK::ListExpr && !static_cast<ListExpr*>(op)->parenned)
+                for (auto& it : static_cast<ListExpr*>(op)->items) parts.push_back(it.get());
+            else if (op) parts.push_back(op);
+            for (size_t k = 0; k < tl->items.size() && k < parts.size(); k++) {
+                Expr* t = tl->items[k].get();
+                const NK pk = parts[k]->kind;
+                if (!t || t->kind != NK::VarExpr || static_cast<VarExpr*>(t)->name.size() < 2 ||
+                    static_cast<VarExpr*>(t)->name[0] != '$') continue;
+                if (pk != NK::IntLit && pk != NK::NumLit && pk != NK::StrLit) continue;
+                auto* tv = static_cast<VarExpr*>(t);
+                const bool wasDecl = tv->declare;
+                tv->declare = false;
+                struct Re { VarExpr* v; bool d; ~Re() { v->declare = d; } } re{tv, wasDecl};
+                if (Value* lv = lvalue(t)) lv->readonly = lv->immutableBind = true;
+            }
+        }
         if (sink) return Value::any();
         // the answer is the LEFT side, filled: `(($a, $b) = 1, 2, 3, 4)` is
         // (1, 2) — only what the targets took passes on
@@ -30704,6 +31072,67 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
               static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
              (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^"));
     };
+    // `((@b[*-3,*-2,*-1,*-4] = @x) = @y[…])` — a slice assignment answers the
+    // slice's element CONTAINERS, so assigning to it again writes those same
+    // elements: the inner assignment runs, then the outer value distributes
+    // over the slots it named (S02-types/array.t, the "hat trick"). Only a
+    // subscript whose items are side-effect free is re-read to find them.
+    if (a->op == "=" && a->target && a->target->kind == NK::Assign) {
+        auto* in = static_cast<Assign*>(a->target.get());
+        std::function<bool(const Expr*)> pure = [&](const Expr* e) -> bool {
+            if (!e) return false;
+            switch (e->kind) {
+                case NK::IntLit: case NK::Whatever: return true;
+                case NK::VarExpr: return !static_cast<const VarExpr*>(e)->declare &&
+                                         !static_cast<const VarExpr*>(e)->name.empty() &&
+                                         static_cast<const VarExpr*>(e)->name[0] == '$';
+                case NK::Binary: {
+                    auto* b = static_cast<const Binary*>(e);
+                    return (b->op == "-" || b->op == "+") && pure(b->lhs.get()) && pure(b->rhs.get());
+                }
+                default: return false;
+            }
+        };
+        auto* ix = in->op == "=" && in->target && in->target->kind == NK::Index
+                     ? static_cast<Index*>(in->target.get()) : nullptr;
+        bool ok = ix && !ix->isHash && ix->adverb.empty() && !ix->multiDim && ix->index &&
+                  ix->index->kind == NK::ListExpr && ix->base && ix->base->kind == NK::VarExpr;
+        if (ok) for (auto& it : static_cast<ListExpr*>(ix->index.get())->items) if (!pure(it.get())) { ok = false; break; }
+        auto plainArray = [&](Value* b) {
+            return b && b->t == VT::Array && b->arr() && !b->ext() && !b->shape() && elemTypeOf(*b).empty();
+        };
+        if (ok) {
+            Value* b0 = nullptr;
+            try { b0 = lvalue(ix->base.get()); } catch (RakuError&) {}
+            ok = plainArray(b0);
+        }
+        if (ok) {
+            evalAssignInner(in, true);
+            Value* base = lvalue(ix->base.get());
+            if (plainArray(base)) {
+                const long long n = (long long)base->arr()->size();
+                std::vector<long long> idx;
+                for (auto& it : static_cast<ListExpr*>(ix->index.get())->items) {
+                    Value k = eval(it.get());
+                    if (k.t == VT::Code && k.code() && k.code()->isWhateverCode) k = whateverPos(k, n);
+                    idx.push_back(k.toInt());
+                }
+                Value rv = evalValueOf(a->value.get());
+                ValueList vs = rv.t == VT::Array && rv.arr() ? toList(rv) : ValueList{rv};
+                Value out = Value::array(); out.isList = true;
+                for (size_t i = 0; i < idx.size(); i++) {
+                    long long k = idx[i];
+                    if (k < 0) negIndexThrow(k);
+                    while ((long long)base->arr()->size() <= k) base->arr()->push_back(Value::any());
+                    Value v = i < vs.size() ? vs[i] : Value::any();
+                    v.itemized = false;
+                    (*base->arr())[(size_t)k] = v;
+                    out.arr()->push_back(v);
+                }
+                return sink ? Value::any() : out;
+            }
+        }
+    }
     // `$s.substr-rw(from, len) = $repl` / `substr-rw($s, from, len) = $repl` — splice
     // the replacement over [from, from+len) CHARACTERS in place. A zero length inserts
     // before that character rather than replacing anything.
@@ -31548,6 +31977,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
+                // `my $a := $_` before anything wrote `$_`: the topic's container
+                // exists all the same — the routine's (or the unit's) — so make
+                // it there and alias it (S02-magicals/dollar-underscore.t)
+                if (!owner && sv->name == "$_" && tctx_.cur) {
+                    std::shared_ptr<Env> at = tctx_.cur;
+                    while (at->parent && !at->routineFrame) at = at->parent;
+                    at->define("$_", Value::any());
+                    owner = at;
+                }
                 if (owner) {
                     Value* srcSlot = owner->local(sv->name);
                     // …and when the source is an `is rw` PARAMETER, the container
@@ -31612,6 +32050,52 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (bindsSlot && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->value.get());
             if (ix->isHash && ix->index && !ix->multiDim && slotTarget) {
+                // A slot that does not EXIST yet is not made by the binding: `my $b
+                // := %h<a><b>` leaves %h empty until something is ASSIGNED through
+                // $b (S02-types/autovivification.t). Bind a proxy that reads the
+                // path without vivifying and writes it with — for a plain variable
+                // base whose chain is missing the key.
+                {
+                    Expr* root = ix->base.get();
+                    while (root && root->kind == NK::Index) root = static_cast<Index*>(root)->base.get();
+                    if (root && root->kind == NK::VarExpr && static_cast<VarExpr*>(root)->name.size() > 1 &&
+                        static_cast<VarExpr*>(root)->name[0] == '%' && ix->index->kind == NK::StrLit) {
+                        Value bv;
+                        bool present = false;
+                        try {
+                            bv = eval(ix->base.get());
+                            if (bv.t == VT::Hash && bv.hash() && bv.hashKind.empty())
+                                present = bv.hash()->count(hashSubKey(eval(ix->index.get()), &bv)) > 0;
+                        } catch (RakuError&) { present = true; }   // leave odd shapes to the path below
+                        if (!present) {
+                            auto scope = tctx_.cur;
+                            Index* path = ix;
+                            Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                            Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+                            fetch.code()->builtin = [scope, path](Interpreter& I, ValueList&) -> Value {
+                                auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+                                Value r;
+                                try { r = I.eval(path); } catch (...) { I.tctx_.cur = saved; throw; }
+                                I.tctx_.cur = saved;
+                                return r;
+                            };
+                            Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+                            store.code()->builtin = [scope, path](Interpreter& I, ValueList& sa) -> Value {
+                                Value nv = sa.empty() ? Value::any() : sa[0];
+                                auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+                                try { if (Value* slot = I.lvalue(path)) *slot = nv; }
+                                catch (...) { I.tctx_.cur = saved; throw; }
+                                I.tctx_.cur = saved;
+                                return nv;
+                            };
+                            (*proxy.hash())["FETCH"] = fetch;
+                            (*proxy.hash())["STORE"] = store;
+                            Value* blv = lvalue(a->target.get());
+                            *blv = proxy;
+                            return sink ? Value::any() : Value::any();
+                        }
+                    }
+                }
                 // the base may have no lvalue at all — `$x := PROCESS::{"\$OUT"}`
                 // subscripts a pseudo-package, not a container. Fall through to the
                 // ordinary bind rather than letting "not assignable" escape.
@@ -32803,7 +33287,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         ValueList rs = rhs.t == VT::Array && rhs.arr() ? *rhs.arr()
                      : rhs.t == VT::Range              ? rhs.flatten()
                                                        : ValueList{rhs};
-        if (lv->t == VT::Array && lv->arr() && !rs.empty()) {
+        // a MULTI-dimensional shaped array is filled through its LEAVES, row
+        // after row: `my int @a[2;3] Z= 0..5` (S02-types/array-shapes.t)
+        if (lv->t == VT::Array && lv->arr() && !rs.empty() && lv->shape() && lv->shape()->size() >= 2) {
+            std::vector<Value*> leaves;
+            const size_t nd = lv->shape()->size();
+            std::function<void(Value&, size_t)> walk = [&](Value& node, size_t d) {
+                if (d == nd) { leaves.push_back(&node); return; }
+                if (node.t == VT::Array && node.arr())
+                    for (auto& e : *node.arr()) walk(e, d + 1);
+            };
+            walk(*lv, 0);
+            if (binop == "Z") for (size_t i = 0; i < leaves.size() && i < rs.size(); i++) *leaves[i] = rs[i];
+            else              for (auto* e : leaves) *e = rs.back();
+        }
+        else if (lv->t == VT::Array && lv->arr() && !rs.empty()) {
             auto& es = *lv->arr();
             if (binop == "Z") for (size_t i = 0; i < es.size() && i < rs.size(); i++) es[i] = rs[i];
             else              for (auto& e : es) e = rs.back();
@@ -33831,7 +34329,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 case '+': if (c1 == '\0') return Value::number(a + b); break;
                 case '-': if (c1 == '\0') return Value::number(a - b); break;
                 case '*': if (c1 == '\0') return Value::number(a * b);
-                          if (c1 == '*') return Value::number(std::pow(a, b)); break;
+                          if (c1 == '*') {
+                              double res = std::pow(a, b);
+                              // underflow is a Failure (see the full chain's `**`)
+                              if (res == 0 && a != 0 && !std::isnan(a) && std::isfinite(b)) break;
+                              return Value::number(res);
+                          }
+                          break;
                 // …but an INEXACT divide by zero is a Failure, not an IEEE
                 // infinity — only two exact operands answer the zero-denominator
                 // Rat `<1/0>`. Falls through to the full chain, which says so.
@@ -34238,13 +34742,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (g_lexInfixLookup) if (Value* sf = g_lexInfixLookup(opc)) shadow = *sf;
         code.code()->builtin = [opc, lc, rc, shadow](Interpreter& I, ValueList& a) -> Value {
             size_t idx = 0;
+            const Interpreter::ArgWriter* outerW = I.builtinArgWriter_;
             auto resolve = [&](const Value& v) -> Value {
                 if (v.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
                 if (v.t == VT::Code && v.code() && v.code()->isWhateverCode) {
                     long long ar = v.code()->whateverArity > 0 ? v.code()->whateverArity : 1;
+                    size_t base = idx;
                     ValueList sub;
                     for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
-                    return I.callCallable(v, sub);
+                    // `*++ + *--`: each side writes ITS arguments back
+                    // through the composed call's writer, re-indexed
+                    if (!outerW) return I.callCallable(v, sub);
+                    Interpreter::ArgWriter shifted = [outerW, base](size_t i, const Value& nv) {
+                        (*outerW)(base + i, nv);
+                    };
+                    Interpreter::pendingArgWriter_ = &shifted;
+                    try { Value r = I.callCallable(v, sub); Interpreter::pendingArgWriter_ = nullptr; return r; }
+                    catch (...) { Interpreter::pendingArgWriter_ = nullptr; throw; }
                 }
                 return v;
             };
@@ -34913,9 +35427,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return Value::integer(op == "div" ? l.toInt() / b : l.toInt() % b);
     }
     if (op == "**") {
-        double res = std::pow(l.toNum(), r.toNum());
+        double lb = l.toNum(), re = r.toNum();
+        double res = std::pow(lb, re);
         if (bothInt() && r.toInt() >= 0 && std::fabs(res) < 9e18)
             return Value::integer((long long)llround(res));
+        // a nonzero base under a FINITE power that lands on zero underflowed:
+        // `5e0 ** -1e20` fails X::Numeric::Underflow (an infinite power, as in
+        // `5e0 ** -Inf`, is a true 0e0)
+        if (res == 0 && lb != 0 && !std::isnan(lb) && std::isfinite(re))
+            return armedFailure("X::Numeric::Underflow", "Numeric underflow");
         return Value::number(res);
     }
     if (op == "~") {
@@ -40001,6 +40521,14 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         bool same = f(l, "year") == f(r, "year") && f(l, "month") == f(r, "month") && f(l, "day") == f(r, "day");
         return Value::boolean(op == "~~" ? same : !same);
     }
+    // a bare `Mu.new` / `Any.new` accepts itself (===), and a Mu instance
+    // also accepts its own type object: `Mu ~~ Mu.new` is True, `Any ~~ Mu.new`
+    // False (S02-types/mu.t)
+    if (r.t == VT::Hash && (r.hashKind == "Mu" || r.hashKind == "Any") && (op == "~~" || op == "!~~")) {
+        bool ok = (l.t == VT::Hash && l.hash() && l.hash() == r.hash()) ||
+                  (r.hashKind == "Mu" && l.t == VT::Type && l.s == "Mu");
+        return Value::boolean(op == "~~" ? ok : !ok);
+    }
     // an OBJECT-like built-in (a Promise, a Vow, a Channel, …) smartmatches by
     // identity, as Any.ACCEPTS does — never by comparing its fields as a Hash
     if (r.t == VT::Hash && !r.hashKind.empty() && r.hash() && (op == "~~" || op == "!~~") &&
@@ -41120,6 +41648,48 @@ Value Interpreter::evalBinary(Binary* b) {
                                       lp->itemized == rp->itemized && lp->pk_ == rp->pk_ &&
                                       lp->p_ && lp->p_ == rp->p_));
         }
+        // An ELEMENT against a VARIABLE is container identity too: a slot of
+        // an array LITERAL is a fresh container, never the variable that filled
+        // it (`[$foo][0] =:= $foo` is False, S02-types/array_ref.t), and an
+        // element of an array held in a variable is its own slot unless it was
+        // BOUND to that variable's container (then both share one cell).
+        else if ((b->lhs->kind == NK::Index && b->rhs->kind == NK::VarExpr) ||
+                 (b->rhs->kind == NK::Index && b->lhs->kind == NK::VarExpr)) {
+            auto* ix = static_cast<Index*>(b->lhs->kind == NK::Index ? b->lhs.get() : b->rhs.get());
+            auto* ve = static_cast<VarExpr*>(b->lhs->kind == NK::VarExpr ? b->lhs.get() : b->rhs.get());
+            bool decided = false;
+            if (!ix->isHash && !ix->multiDim && ix->index && ve->name.size() > 1 && ve->name[0] == '$' &&
+                (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                if (ix->base && ix->base->kind == NK::ArrayLit) { same = false; decided = true; }
+                else if (ix->base && ix->base->kind == NK::VarExpr) {
+                    Value* bp = nullptr; Value* vp = nullptr;
+                    try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                    try { vp = lvalue(ve); } catch (RakuError&) {}
+                    Value idx = eval(ix->index.get());
+                    Value* arr = bp && bp->t == VT::Hash && bp->hashKind == "Proxy" ? nullptr : bp;
+                    if (arr && arr->t == VT::Array && arr->arr() && !arr->ext() && idx.t == VT::Int && vp) {
+                        long long k = idx.toInt();
+                        if (k >= 0 && k < (long long)arr->arr()->size()) {
+                            Value* ep = &(*arr->arr())[(size_t)k];
+                            const bool epProxy = ep->t == VT::Hash && ep->hashKind == "Proxy";
+                            const bool vpProxy = vp->t == VT::Hash && vp->hashKind == "Proxy";
+                            if (cellOfProxy(ep) && cellOfProxy(vp)) { same = cellOfProxy(ep) == cellOfProxy(vp); decided = true; }
+                            // two PLAIN slots are two containers; a binding (a proxy
+                            // on either side) is judged the old way below
+                            else if (!epProxy && !vpProxy) { same = ep == vp; decided = true; }
+                        }
+                    }
+                }
+            }
+            if (!decided) {
+                Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
+                if (l.hashKind == "Proxy") l = deproxy(l);
+                if (r.hashKind == "Proxy") r = deproxy(r);
+                if (l.t == VT::Type && r.t == VT::Type) same = (l.s == r.s && l.ofType() == r.ofType());
+                else if (isRefValue(l) || isRefValue(r)) same = identicalRef(l, r);
+                else same = (l.t == r.t) && valueEq(l, r);
+            }
+        }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
             // A take-rw'd sequence element is a Proxy over the slot it came
@@ -41689,6 +42259,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // because a Proxy is a Hash and the hook wants an Object.
         if (r.hashKind == "Proxy") r = deproxy(r);
         if (lTopic.hashKind == "Proxy") lTopic = deproxy(lTopic);
+        // a bare Mu.new / Any.new matcher is Mu.ACCEPTS, not a Hash key lookup
+        if (r.t == VT::Hash && (r.hashKind == "Mu" || r.hashKind == "Any") && !isJunction(lTopic))
+            return applyBinOp(op, lTopic, r);
         // `$x ~~ "text"` is Str.ACCEPTS — it asks what the topic SAYS it is, not
         // what its repr looks like. An Object with a `method Str`, and the tagged
         // hashes $*DISTRO / $*KERNEL / $*VM whose `.Str` is a method, all
@@ -43752,6 +44325,7 @@ Value Interpreter::evalUnary(Unary* u) {
         catch (...) { quietDepth_--; throw; }
     }
     if (u->op == "gather") {
+        const bool deferGather = deferGather_; deferGather_ = false;
         Unary* gu = u;
         Value blockClosure;
         if (u->operand->kind == NK::BlockExpr)
@@ -43839,6 +44413,32 @@ Value Interpreter::evalUnary(Unary* u) {
         // that nothing would ever read. A probe that runs out of budget stops
         // where it is and the gather becomes LAZY, which is not a new state: it
         // is what every gather of more than 64 takes already is.
+        if (deferGather) {
+            // under `lazy`: no probe — the first pull runs the block, and only
+            // then does the replay state start to matter
+            Value arr = Value::array(); arr.isList = true; arr.s = "Seq"; arr.b = true;
+            auto st = std::make_shared<LazySeqState>();
+            st->gatherSeq = true;
+            st->declaredLazy = true;
+            LazySeqState* stp = st.get();
+            auto ran = std::make_shared<bool>(false);
+            st->appendNext = [runGather, stp, snap, ran, genv](ValueList& out) -> bool {
+                // the replay state is where the FIRST pull found it, not where
+                // the program stood when `lazy gather` was written
+                if (!*ran && genv)
+                    for (auto& kv : *snap)
+                        if (Value* p = genv->find(kv.first)) kv.second = gatherDeepCopy(*p);
+                ValueList grown;
+                bool more = runGather(out.size() + std::max<size_t>(64, out.size()), 0, grown,
+                                      /*restore=*/*ran && !snap->empty());
+                *ran = true;
+                for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
+                stp->exhausted = !more;
+                return more;
+            };
+            arr.extM() = st;
+            return arr;
+        }
         const size_t INITIAL = 64;
         const long long PROBE_US = 20000;   // 20ms — a generator this slow is not one to probe
         ValueList prefix;
@@ -43905,6 +44505,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     : applyArith(op == "++" ? "+" : "-",
                                  cur.t == VT::Any ? Value::integer(0) : cur, Value::integer(1));
                 if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
+                else if (I.builtinArgWriter_) (*I.builtinArgWriter_)(0, nv);
                 return post ? (cur.t == VT::Any ? Value::integer(0) : cur) : nv;
             };
             return code;
@@ -44005,6 +44606,17 @@ Value Interpreter::evalUnary(Unary* u) {
                                            u->operand->kind == NK::NumLit ? "Num:D" : "Str:D") +
                     "); the following candidates match the type but require mutable arguments"};
             default: break;
+        }
+        // …and neither has a scalar BOUND to a value (`my ($a) := \(3)`)
+        if (u->operand->kind == NK::VarExpr && (u->op == "++" || u->op == "--")) {
+            const std::string& vn = static_cast<VarExpr*>(u->operand.get())->name;
+            if (vn.size() > 1 && vn[0] == '$' && tctx_.cur)
+                if (Value* sl = tctx_.cur->find(vn))
+                    if (sl->readonly && sl->immutableBind && sl->t != VT::Hash)
+                        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot resolve caller " + std::string(u->postfix ? "postfix" : "prefix") +
+                            ":<" + u->op + ">(" + sl->typeName() + ":D); the following candidates match the type but "
+                            "require mutable arguments"};
         }
         Value* lv = lvalue(u->operand.get());
         // a NativeCall Pointer steps by ELEMENTS through `.succ`/`.pred`, as
@@ -44428,6 +45040,11 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             else args.push_back(v);
         } else {
             Value v = eval(a.get());
+            // a native `str` variable's value goes out marked native (see
+            // VarExpr::nativeStrRead), for `multi f(str)` over `multi f(Str)`
+            if (v.t == VT::Str && a->kind == NK::VarExpr && static_cast<VarExpr*>(a.get())->nativeStrRead &&
+                v.hashKind.empty() && !v.isAllomorph())
+                v.natFloat = true;
             // A Proxy reaching a routine as an argument is READ: run its FETCH.
             // (Not at the subscript — `$.root{$k}` inside an `is rw` AT-KEY has to
             // hand back the container itself, which is how a write reaches STORE.)
@@ -44618,6 +45235,9 @@ static void failureDetonate(const Value& v) {
 }
 std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     failureDetonate(v);
+    if (v.t == VT::Type && !bareStubTypes_.empty() && bareStubTypes_.count(std::string(v.s.c_str())))
+        throwTypedV("X::Method::NotFound", {{"method", Value::str("gist")}, {"typename", Value::str(v.s.str())}},
+                    "Method " + v.s.str() + ".gist not found");
     // an enum's type object gists as any type object does: `say day` is (day)
     if (isEnumTypeObject(v)) return "(" + std::string(v.enumType.str()) + ")";
     // An ENDLESS lazy sequence gists as Rakudo's "(...)", and a lazy ARRAY as
@@ -45389,6 +46009,17 @@ Value Interpreter::evalCall(Call* c) {
     // a detached COPY, and the whole point is taking the storage itself
     if (c->name == "take-rw" && c->args.size() == 1 && !tctx_.cur->find("&take-rw"))
         return evalTakeRw(c);
+    // `lazy gather { … }` runs NOTHING until pulled: `my @a = 1, |(lazy gather
+    // { $n++ })` leaves $n alone (S02-types/array.t). A plain gather probes.
+    if (c->name == "lazy" && !c->callee && c->args.size() == 1 && c->args[0]->kind == NK::Unary &&
+        static_cast<Unary*>(c->args[0].get())->op == "gather" && !tctx_.cur->find("&lazy")) {
+        deferGather_ = true;
+        Value v;
+        try { v = eval(c->args[0].get()); } catch (...) { deferGather_ = false; throw; }
+        deferGather_ = false;
+        if (v.t == VT::Array) v.b = true;   // .is-lazy
+        return v;
+    }
     ValueList args = evalArgs(c->args);
     // Whatever-curry over USER-DEFINED infixes: `* quack 5` / `5 quack *` /
     // `* quack *` build a WhateverCode, exactly like built-in binaries
@@ -45456,6 +46087,13 @@ Value Interpreter::evalCall(Call* c) {
         // A DECLARED `my &f` that merely holds nothing keeps the invoke error,
         // which is what it is. (roast S02-literals/string-interpolation.t asks
         // for the routine's error through the interpolated spelling `"&nope()"`.)
+        // an `our sub` an EVAL declared lives in the PACKAGE only: `&OUR::name`
+        // (which the parser spells `&name`) reaches it where a bare call does not
+        if (!isDefined(f) && c->callee->kind == NK::VarExpr && global_) {
+            const std::string& cn0 = static_cast<VarExpr*>(c->callee.get())->name;
+            if (cn0.size() > 1 && cn0[0] == '&')
+                if (Value* ou = global_->local("\x01OUR" + cn0)) f = *ou;
+        }
         if (!isDefined(f) && c->callee->kind == NK::VarExpr) {
             auto* cv = static_cast<VarExpr*>(c->callee.get());
             const std::string& cn = cv->name;
@@ -47022,6 +47660,9 @@ Value Interpreter::evalIndex(Index* idx) {
                             if (el.t == VT::Array) el.itemized = true;
                             return el;
                         }
+                        // a SHAPED array's bound is fixed: reading past it dies
+                        // (`my @arr[7]; @arr[7]`, S02-types/array-shapes.t)
+                        if (bp->shape()) shapedBoundsCheck(bp->shape(), 0, ix);
                         return Value::any();
                     }
                     // non-Int subscript (range/whatever/list): fall through with the
@@ -48133,12 +48774,13 @@ Value Interpreter::evalIndex(Index* idx) {
             Value iv = eval(idx->index.get());
             std::string key = iv.toStr();
             bool capturish = base.hashKind == "Capture"; // \(…) — even with no named parts
-            if (base.arr())
+            // …or an argument list that kept its NAMED parts; a plain List of
+            // Pairs is no Associative at all (`(a => "b",)<a>` dies, hash.t)
+            if (base.arr() && !capturish)
+                for (auto& el : *base.arr()) if (el.t == VT::Pair && el.namedArg) { capturish = true; break; }
+            if (base.arr() && capturish)
                 for (auto& el : *base.arr())
-                    if (el.t == VT::Pair) {
-                        capturish = true;
-                        if (el.s == key) return el.pairVal() ? *el.pairVal() : Value::any();
-                    }
+                    if (el.t == VT::Pair && el.s == key) return el.pairVal() ? *el.pairVal() : Value::any();
             if (capturish) return Value::any(); // Capture without that named part
             throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
         }
@@ -48640,7 +49282,19 @@ struct NodeCountReport {
             // `::("MY")`, `::($caller)::($caller)::x`, `::($my)::('$l')`: a name
             // that STARTS with a pseudo-package chain is a pseudo-stash, or a
             // key in one
-            if ((sr->nameExpr || !sr->segs.empty()) && sr->pkg.empty()) {
+            // (…and `$CALLER::($unit)::x`: a literal pseudo HEAD before the
+            // computed part heads the same chain — pseudo-6*.t)
+            const bool settingIn = rawNm.find("SETTING::") != std::string::npos ||
+                                   rawNm.find("CORE::") != std::string::npos;
+            const bool pseudoHead = !sr->pkg.empty() && isPseudoChain(sr->pkg) &&
+                                    sr->nameExpr && sr->nameExpr->kind != NK::StrLit && !settingIn;
+            // an EVAL's SETTING before 6.e is the code that called it, shadows
+            // and all (pseudo-6d.t): `&::('SETTING')::not` there is the plain
+            // lexical lookup the literal `&SETTING::not` already is
+            const bool evalSetting = !sixE() && !g_evalUnits.empty() && sr->pkg.empty() &&
+                                     rawNm.size() > 10 && std::strchr("$@%&", rawNm[0]) &&
+                                     rawNm.compare(1, 9, "SETTING::") == 0;
+            if ((sr->nameExpr || !sr->segs.empty()) && (sr->pkg.empty() || pseudoHead) && !evalSetting) {
                 const std::string& nm = rawNm;
                 size_t b = 0;
                 std::string sig;
@@ -48688,6 +49342,24 @@ struct NodeCountReport {
                             throwTypedV("X::Caller::NotDynamic", {{"symbol", Value::str(nm)}},
                                         "Cannot access '" + nm + "' through CALLER, because it is not declared as dynamic");
                     }
+                    // …and CALLERS:: from 6.e: a Failure, X::Symbol::NotDynamic
+                    else if (sr->pkg == "CALLERS" && sixE() && nm.size() > 1 &&
+                             (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&
+                             nm[1] != '*' && nm[1] != '?' && nm[1] != '!' && nm[1] != '.' &&
+                             nm != "$_" && nm != "$/" && nm != "$!") {
+                        bool dyn = false;
+                        for (Env* en = tctx_.dynStack.back(); en; en = en->parent.get()) {
+                            if (en->xr().varDynamic.count(nm)) { dyn = true; break; }
+                            if (en->local(nm)) break;
+                        }
+                        if (!dyn) {
+                            const std::string msg = "Cannot access '" + nm + "' through CALLERS, because it is not declared as dynamic";
+                            Value f = rakuppNewFailure();
+                            (*f.hash())["exception"] = makeTypedEx("X::Symbol::NotDynamic", {{"symbol", Value::str(nm)}}, msg);
+                            (*f.hash())["message"] = Value::str(msg);
+                            return f;
+                        }
+                    }
                     return *p;
                 }
             // `CALLERS::<&x>` asks EVERY caller, innermost out — Red's
@@ -48695,7 +49367,27 @@ struct NodeCountReport {
             // learn whether the code calling it imported Red's operators
             if (callerHead && sr->pkg == "CALLERS")
                 for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
-                    if (*it) if (Value* p = dynInFrame(*it, nm)) return *p;
+                    if (*it) if (Value* p = dynInFrame(*it, nm)) {
+                        // from 6.e only a DYNAMIC may be reached so; a plain
+                        // `my $x` of a caller answers a Failure (pseudo-6e.t)
+                        if (sixE() && nm.size() > 1 && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&
+                            nm[1] != '*' && nm[1] != '?' && nm[1] != '!' && nm[1] != '.' &&
+                            nm != "$_" && nm != "$/" && nm != "$!") {
+                            bool dyn = false;
+                            for (Env* en = *it; en; en = en->parent.get()) {
+                                if (en->xr().varDynamic.count(nm)) { dyn = true; break; }
+                                if (en->local(nm)) break;
+                            }
+                            if (!dyn) {
+                                const std::string msg = "Cannot access '" + nm + "' through CALLERS, because it is not declared as dynamic";
+                                Value f = rakuppNewFailure();
+                                (*f.hash())["exception"] = makeTypedEx("X::Symbol::NotDynamic", {{"symbol", Value::str(nm)}}, msg);
+                                (*f.hash())["message"] = Value::str(msg);
+                                return f;
+                            }
+                        }
+                        return *p;
+                    }
             char c0 = nm[0];
             if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
                 // resolve exactly as if it were the variable/routine of that name
@@ -48809,6 +49501,11 @@ struct NodeCountReport {
                     if (v && v->t == VT::Type) return *v;
                     if (my && !v && tctx_.cur->find(rest))
                         throwTypedV("X::NoSuchSymbol", {{"symbol", Value::str(n)}}, "No such symbol '" + n + "'");
+                    // …and a name no scope in view declares at all — a `my class`
+                    // of some inner block — is no symbol of MY's either (pseudo-6e.t)
+                    if (my && !v && !isKnownTypeName(rest))
+                        throwTypedV("X::NoSuchSymbol", {{"symbol", Value::str("MY::<" + rest + ">")}},
+                                    "No such symbol 'MY::<" + rest + ">'");
                     NameTerm inner(rest); inner.line = e->line;
                     return eval(&inner);
                 }
@@ -49488,6 +50185,27 @@ Value Interpreter::eval(Expr* e) {
                 if (Value* p = tctx_.cur->find(q)) return *p;
                 if (global_) if (Value* p = global_->find(q)) return *p;
                 return Value::any();
+            }
+            // `DYNAMIC::<$*x>` resolves as Rakudo's dynamic lookup does: the
+            // call chain, then GLOBAL's `$x`, then PROCESS's (pseudo-6e.t)
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && !ve->declare &&
+                ve->name.size() > 2 && ve->name[1] == '*')
+                if (Value* p = findDynamicViaGlobal(ve->name)) return *p;
+            // …and DYNAMIC:: means what IT says: a plain lexical that is not
+            // `is dynamic` is refused, as a Failure, from 6.e (pseudo-6e.t)
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && sixE() && !ve->declare &&
+                ve->name.size() > 1 && std::strchr("$@%", ve->name[0]) &&
+                !std::strchr("*?!.^:", ve->name[1]) && ve->name != "$_" && ve->name != "$/") {
+                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                    if (en->xr().varDynamic.count(ve->name)) break;
+                    if (en->local(ve->name)) {
+                        const std::string msg = "Cannot access '" + ve->name + "' through DYNAMIC, because it is not declared as dynamic";
+                        Value f = rakuppNewFailure();
+                        (*f.hash())["exception"] = makeTypedEx("X::Symbol::NotDynamic", {{"symbol", Value::str(ve->name)}}, msg);
+                        (*f.hash())["message"] = Value::str(msg);
+                        return f;
+                    }
+                }
             }
             // From 6.e, LEXICAL:: means what it says. A `$*dyn` is not a lexical
             // — it is found by walking the caller chain — so asking for one
@@ -50296,6 +51014,10 @@ Value Interpreter::eval(Expr* e) {
                 "atomic-sub-fetch", "cas", "chown", "fc", "goto", "last", "next", "redo", "repl",
                 "return", "return-rw", "subbuf-rw", "undefine", "proceed", "succeed", "leave",
                 "emit", "done", "take", "take-rw", "callsame", "callwith", "nextsame", "nextwith"};
+            // an EVAL-born `our sub` is in the package only: `&OUR::name`
+            // (spelled `&name` by now) reaches it (S02-names/our.t)
+            if (sigil == '&' && global_ && ve->name.size() > 1)
+                if (Value* ou = global_->local("\x01OUR" + ve->name)) return *ou;
             if (sigil == '&' && ve->name.size() > 1 && !ve->declare && !ve->viaPseudoPkg &&
                 (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
                 ve->name.find(':') == std::string::npos && !noStrictHere() &&
@@ -50346,14 +51068,22 @@ Value Interpreter::eval(Expr* e) {
                 const bool infRange = src.t == VT::Range && !src.rNum() &&
                                       src.rTo() == 9223372036854775807LL && !rangeEnds(src);
                 const bool infLazy = src.t == VT::Array && src.arr() && src.ext() &&
-                                     std::static_pointer_cast<LazySeqState>(src.ext())->infinite;
+                                     (std::static_pointer_cast<LazySeqState>(src.ext())->infinite ||
+                                      // …or lazy by declaration: `1, |(lazy gather {…})`
+                                      // runs none of the gather (S02-types/array.t)
+                                      std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy);
                 return infRange || infLazy;
             };
             auto lazyTailList = [&](const Value& src) -> Value {
                 Value out = Value::array(); out.isList = true;
                 for (auto& x : items) out.arr()->push_back(x);
                 auto st = std::make_shared<LazySeqState>();
-                st->infinite = true;
+                const bool declLazy = src.t == VT::Array && src.ext() &&
+                                      std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy;
+                // a declared-lazy tail may still END: it is a gather-like
+                // unknown, which `.eager` finishes, not an endless source
+                if (declLazy) { st->gatherSeq = true; st->declaredLazy = true; }
+                else st->infinite = true;
                 auto idx = std::make_shared<long long>(0);
                 const bool infRange = src.t == VT::Range;
                 Value s2 = src;
@@ -51388,7 +52118,10 @@ Value Interpreter::eval(Expr* e) {
                 Value self = inv; ValueList margs = args;
                 std::string method = mc->meta ? "^" + mc->method : mc->method; // *.^name keeps its meta form
                 bool hyper = mc->hyper; // `*.attr».m` — the » belongs to the CURRIED call
-                code.code()->builtin = [self, method, margs, hyper](Interpreter& I, ValueList& a) -> Value {
+                // a curry written under `use fatal` carries it: its Failure throws
+                // wherever it is called from (`"a".map: *.Int`, S02-types/whatever.t)
+                const bool fatal = fatalHere();
+                code.code()->builtin = [self, method, margs, hyper, fatal](Interpreter& I, ValueList& a) -> Value {
                     Value arg = a.empty() ? Value::any() : a[0];
                     Value base = arg;
                     if (self.t != VT::Whatever) {
@@ -51397,7 +52130,9 @@ Value Interpreter::eval(Expr* e) {
                     }
                     ValueList ma = margs;
                     if (hyper) return I.hyperMethodEach(base, method, ma);
-                    return I.methodCall(base, method, ma);
+                    Value r = I.methodCall(base, method, ma);
+                    if (fatal && r.t == VT::Hash && r.hashKind == "Failure") failureDetonate(r);
+                    return r;
                 };
                 return code;
             }

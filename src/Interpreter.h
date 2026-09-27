@@ -1074,6 +1074,7 @@ struct LazySeqState {
     // first pull so it can answer. `exhausted` records what the pull found.
     bool gatherSeq = false;
     bool diedProbe = false; // a gather whose first run DIED: pulling (or sinking) re-raises it
+    bool declaredLazy = false; // `lazy gather {…}`: lazy by declaration, .is-lazy without a pull
     bool exhausted = false;
     bool forceProbed = false;   // forceLazy has already asked once whether it ends
     // `42 xx 2**62`: a repeat whose length is KNOWN but far too large to build.
@@ -1202,6 +1203,16 @@ public:
     // duration of its run (builtins have no env for the $_ copy-back) — the
     // `++*` WhateverCode writes the driver's aliased element through it.
     static thread_local Value* builtinTopicWB_;
+    // A WhateverCode builtin that steps or assigns its argument (`*++`,
+    // `* += 2`) writes argument i back through this: set from the call's
+    // argument EXPRESSIONS (`$c($x)` bumps $x), or handed down one-shot by a
+    // composed curry (`*++ + *--`) as pendingArgWriter_, re-indexed.
+    using ArgWriter = std::function<void(size_t, const Value&)>;
+    static thread_local const ArgWriter* builtinArgWriter_;
+    static thread_local const ArgWriter* pendingArgWriter_;
+    // one-shot: the next `gather` is the operand of `lazy` — it runs nothing
+    // until pulled (no probe)
+    static thread_local bool deferGather_;
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     static thread_local bool noAutothread_;
@@ -1415,6 +1426,7 @@ public:
     // resolvable before the ordering fix became unreachable. Reads AND writes
     // go through this one resolver.
     static Value* findDynamicLenient(const std::string& name);
+    Value* findDynamicViaGlobal(const std::string& name); // DYNAMIC:: order: callers, GLOBAL, PROCESS
     // A `*`-twigil name nothing declares is X::Dynamic::NotFound, not `Any`:
     // a read answers the armed Failure, a write (and `temp $*x = …`, which
     // assigns through lvalue) throws. isBuiltinDynamic exempts the names the
@@ -1783,6 +1795,7 @@ public:
     struct SubsetInfo { std::string base; const Expr* where = nullptr; int langRev = 1;
                         int defConstraint = 0;             // the base type's :D / :U smiley
                         bool coerce = false;               // `of Str()` — coerce, then check
+                        std::string coerceFrom;            // `of Num(Str)` — "Str" ("" = Any)
                         std::shared_ptr<Env> declEnv;      // the where-clause CLOSES over its declaration scope
                         // a literal `where { … }` block, evaluated ONCE: one closure,
                         // so a `state` inside it persists across checks, as in Rakudo
@@ -1845,6 +1858,9 @@ public:
     // for a method nothing else answers (S12 fallbacks; advent2013-day09 adds
     // one to the built-in Pair)
     std::map<std::string, std::vector<std::pair<Value, Value>>> addedFallbacks_;
+    // Types a `my ::foo $x` brought into being with nothing else behind them:
+    // bare, outside Mu, so even `.gist` is not there (S02-names-vars/names.t)
+    std::set<std::string> bareStubTypes_;
     bool typeMatchesResolved(const Value& v, const std::string& type); // type objects only: subset names resolve to their base chain, and UInt tolerates undefined (Rakudo's core UInt guards definedness in its where)
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam
@@ -1910,6 +1926,8 @@ public:
     // `is DEPRECATED` bookkeeping, read (and cleared) by `Deprecation.report`
     struct DeprecationRec { std::string kind, name, from, with; std::vector<int> lines; };
     std::vector<DeprecationRec> deprecations_;
+    void noteDeprecation(const std::string& kind, const std::string& name, const std::string& from,
+                         const std::string& with, int line);
     std::mutex deprecM_;
     std::shared_ptr<std::string> deprecationFor(SubDecl* sd);
     void noteDeprecatedCall(const Callable& c, int line);

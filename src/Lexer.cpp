@@ -1778,6 +1778,14 @@ Token Lexer::lexQuoted(char quote) {
                 if (e != std::string::npos) while (pos_ < e) raw += advance();
             }
             for (size_t end = interpChainEnd(src_, pos_); pos_ < end; ) raw += advance();
+            // `"@a<"` — an array/hash's angle subscript opens CODE, and one
+            // with no `>` anywhere after it swallows the string's own closer:
+            // Rakudo's runaway-quote compile error (S02-literals/quoting.t)
+            if ((c == '@' || c == '%') && !eof() && peek() == '<' && raw.size() > 1 &&
+                (ascii::isalnum((unsigned char)raw.back()) || raw.back() == '_') &&
+                src_.find('>', pos_) == std::string::npos)
+                throw ParseError(std::string("Unable to parse expression in double quotes; couldn't find final ") +
+                                 quote, line_, "X::Comp::AdHoc", {});
         } else if (c == '{' && quote != '\'') {
             // Interpolation code block: capture the balanced { … } as a unit so a
             // nested string ("…"/'…') inside it doesn't prematurely close the outer
@@ -2231,6 +2239,14 @@ bool Lexer::tryQuoteForm(Token& out) {
                 if (w == "m" || w == "mm" || w == "ms") out.ival = 1;
                 return true;
             }
+            // …and a SYMBOL delimiter (not punctuation, which might be an
+            // operator) that never closes is Rakudo's grouped compile error —
+            // the runaway regex plus whatever it tripped over on the way
+            // (`m☃.☄`, S02-literals/quoting-unicode.t)
+            if (cat[0] == 'S' && w == "m" && !explicitAdverbs)
+                throw ParseError("Couldn't find terminator " + D + " (corresponding " + D +
+                                 " was at line " + std::to_string(line_) + ")",
+                                 line_, "X::Comp::Group", {});
         }
     }
     // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes; no
@@ -2402,6 +2418,11 @@ bool Lexer::tryQuoteForm(Token& out) {
                 // swallowing Intl::LanguageTag's next 20 lines into a regex
                 d != '>' && d != ')' && d != ']' && d != '}') { close = d; bracket = false; break; }
             if (bareRxDelim(d)) { close = d; bracket = false; break; }
+            // the SHELL forms take any punctuation too: `qx=cmd=` (roast
+            // S02-literals/quoting.t) — `qx` is no name a term would carry
+            if (isExec && (unsigned char)d < 0x80 && ascii::ispunct((unsigned char)d) &&
+                d != ':' && d != '#' && d != '_' && d != '>' && d != ')' && d != ']' && d != '}' && d != ';' && d != ',')
+                { close = d; bracket = false; break; }
             return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
@@ -4638,6 +4659,17 @@ std::vector<Token> Lexer::tokenize() {
 
 void Lexer::processHeredocs(std::vector<Token>& out) {
     advance(); // consume the newline ending the marker line
+    // an interpolating heredoc whose marker line then closes blocks it was
+    // opened inside: its body belongs that many scopes out
+    for (auto& [marker, idx, interp] : pendingHeredocs_) {
+        if (!interp || idx >= out.size()) continue;
+        int depth = 0, minDepth = 0;
+        for (size_t k = idx + 1; k < out.size(); k++) {
+            if (out[k].kind == Tok::LBrace) depth++;
+            else if (out[k].kind == Tok::RBrace) { depth--; if (depth < minDepth) minDepth = depth; }
+        }
+        out[idx].outerScopes = -minDepth;
+    }
     for (auto& [marker, idx, interp] : pendingHeredocs_) {
         std::vector<std::string> lines;
         std::string closeIndent;

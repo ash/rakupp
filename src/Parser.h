@@ -161,6 +161,7 @@ private:
     // having been seen, so a bare `if(1) {…}` keeps the reading, and the
     // diagnostic, it always had. See kNeedsEndKeyword in Parser.cpp.
     std::set<std::string> kwNamedSubs_;
+    bool ctxOperandBare_ = false; // parsing `%(…)` as the operand of `@%(…)`: no postfixes
     // The end_keyword question in one place: is the identifier `n` a keyword
     // this unit declares a routine for, written TIGHT against the paren that
     // calls it? Then it is that call, and no keyword branch may claim it.
@@ -416,6 +417,15 @@ private:
     // per block: the `$*dynamic` names READ so far — a later `my $*x` in the
     // same block is X::Dynamic::Postdeclaration
     std::vector<std::set<std::string>> dynUsed_ = std::vector<std::set<std::string>>(1);
+    // …and the same for ORDINARY lexicals: per block, the names read before
+    // this block declared them (with the first read's token index), and the
+    // names it has declared. A later `my $x` after a read of the outer `$x` in
+    // the same block is X::Redeclaration::Outer (S02-names-vars/variables-and-packages.t)
+    std::vector<std::map<std::string, size_t>> lexUsed_ = std::vector<std::map<std::string, size_t>>(1);
+    std::vector<std::set<std::string>> lexDecl_ = std::vector<std::set<std::string>>(1);
+    std::vector<std::string> pendingParamNames_;   // the last signature's names, for its body block
+    void noteLexRead(const std::string& n, size_t at);
+    void noteLexDecl(const std::string& n, size_t at, int line);
     void noteScalarDecls(const Expr* e);
     bool monkeyActive() const {
         for (char f : monkeyScopes_) if (f) return true;

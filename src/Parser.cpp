@@ -3004,6 +3004,10 @@ ExprPtr Parser::parsePrefix(bool tight) {
         // (…unless the file declared that sigil as a circumfix opener: `@ 5 @`)
         if ((o == "$" || o == "@" || o == "%") && !userCircumfix_.count(o)) {
             advance();
+            // the OPERAND of an outer contextualizer (`@%(…)<a>`): its postfixes
+            // belong to the outer one — `(@%(…))<a>`, as Rakudo reads it
+            const bool bareOperand = ctxOperandBare_;
+            ctxOperandBare_ = false;
             auto u = std::make_unique<Unary>();
             u->op = "ctx" + o;
             // circumfix forms complete the term at the closing bracket — postfixes
@@ -3035,6 +3039,7 @@ ExprPtr Parser::parsePrefix(bool tight) {
                 }
                 if (u->operand->kind == NK::ListExpr) static_cast<ListExpr*>(u->operand.get())->parenned = true;
                 expectKind(Tok::RParen, ")");
+                if (bareOperand) return u;
                 return parsePostfix(std::move(u), tight);
             }
             if ((isKind(Tok::LBrace) || isKind(Tok::LBracket)) && !cur().spaceBefore) {
@@ -3067,6 +3072,12 @@ ExprPtr Parser::parsePrefix(bool tight) {
             }
             else if (cur().kind == Tok::Var)
                 u->operand = parsePrimary();
+            else if (cur().kind == Tok::Op && (cur().text == "$" || cur().text == "@" || cur().text == "%") &&
+                     peek().kind == Tok::LParen && !peek().spaceBefore && !userCircumfix_.count(cur().text)) {
+                ctxOperandBare_ = true;
+                u->operand = parsePrefix(tight);
+                ctxOperandBare_ = false;
+            }
             // …but a LEADING DOT right after the operator opens the OPERAND's own
             // term: `? .obj-num` is `?($_.obj-num)`, which is how Rakudo reads it.
             // Stopping at the space left the method attached to the PREFIX's
@@ -4479,6 +4490,21 @@ std::string Parser::readExtendedNameSuffix() {
                 haveWords = true;
             }
         }
+        // `$foo:bar«$i»` with `constant $i = 42` above: the constant's value
+        // is what names the variable, `$foo:bar<42>` (S02-names-vars/names.t)
+        for (auto& w : words) {
+            if (w.size() < 2 || w[0] != '$') continue;
+            for (size_t k = pos_; k-- > 3; ) {
+                if (toks_[k - 3].kind == Tok::Ident && toks_[k - 3].text == "constant" &&
+                    toks_[k - 2].kind == Tok::Var && toks_[k - 2].text == w &&
+                    toks_[k - 1].kind == Tok::Op && toks_[k - 1].text == "=" &&
+                    (toks_[k].kind == Tok::IntLit || toks_[k].kind == Tok::StrLit) &&
+                    k + 1 < toks_.size() && toks_[k + 1].kind == Tok::Semicolon) {
+                    w = toks_[k].kind == Tok::IntLit ? std::to_string(toks_[k].ival) : toks_[k].text;
+                    break;
+                }
+            }
+        }
         out += ":" + key;
         if (haveWords) {
             out += "<";
@@ -4596,7 +4622,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     ExprPtr typeExpr;               // a parameterized declared type, as `Type[args]`
     bool indirectType = false;
     // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
-    if (isOp("::") && peek().kind == Tok::Ident) { advance(); advance(); indirectType = true; }
+    std::string stubType;   // `my ::foo $x` names (and so makes) a bare type `foo`
+    if (isOp("::") && peek().kind == Tok::Ident) { advance(); stubType = advance().text; indirectType = true; }
     // compile-time enclosing type as the declared type: `my ::?CLASS:U $c = …`
     // (Font::AFM). Signatures already accepted `::?CLASS`; declarations did not,
     // and stopped at the `::` with "expected variable after declarator".
@@ -4900,6 +4927,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (!isKind(Tok::Var)) error("expected variable in declaration");
             std::string dnm = advance().text;
             if (dnm.size() == 1 && std::strchr("$@%&", dnm[0])) dnm += kAnonSlot; // `my ($, $b)`: unnameable, as above
+            if (scope == "my" || scope == "state") noteLexDecl(dnm, pos_ - 1, cur().line);
             auto ve = std::make_unique<VarExpr>(dnm);
             ve->declare = true; ve->declScope = scope;
             // `my ($x?) := ()` — the signature markers. A declaration list binds
@@ -5063,8 +5091,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             throw ParseError("Illegal post-declaration of dynamic variable '" + vname + "'. Earlier access must "
                              "be written as 'CALLERS::<" + vname + ">' if that's what you meant.",
                              cur().line, "X::Dynamic::Postdeclaration", {{"symbol", vname}});
+        if (scope == "my" || scope == "state") noteLexDecl(vname, pos_ > 0 ? pos_ - 1 : 0, cur().line);
         auto ve = std::make_unique<VarExpr>(vname);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
+        ve->declStubType = stubType;
         ve->declCoerceFrom = coerceFrom;
         ve->declTypeExpr = std::move(typeExpr);
         // the smiley: written on the type, else the `use variables` default
@@ -5798,7 +5828,8 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
     if (i < w.size() && (w[i] == 'e' || w[i] == 'E')) { // e-notation  <1e5> <4.5e-2>
         errno = 0; char* end = nullptr;
         double v = cnum::strtod(w.c_str(), &end);
-        if (end == w.c_str() + w.size() && errno != ERANGE)
+        // out of range is still a Num: `<1e400>` is NumStr(Inf), `<1e-400>` NumStr(0e0)
+        if (end == w.c_str() + w.size())
             return std::make_unique<NumLit>(v);
     }
     return nullptr;
@@ -5935,7 +5966,15 @@ ExprPtr Parser::parsePrimary() {
             u->operand = std::make_unique<StrLit>(symName);
             return u;
         }
-        return std::make_unique<VarExpr>(symName);
+        auto rv = std::make_unique<VarExpr>(symName);
+        // from 6.e the root also sees the OUR namespace, and asks rather than
+        // demands: `OUR::<$v> = 1; ::<$v>` (pseudo-6e.t) — no compile-time
+        // "not declared" for a name only the package holds
+        if (langRev_ >= 2 && symName.size() > 1 && std::strchr("$@%", symName[0])) {
+            rv->viaPseudoPkg = true;
+            rv->pseudoPkg = "ROOT";
+        }
+        return rv;
     }
     // trailing path segments after a symbolic ref: `::($a)::name`, `::($a)::('$x')`
     auto parseSymSegs = [&](SymbolicRef* sr) {
@@ -6255,7 +6294,20 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::StrInterp: {
             bool fmt = cur().flag; bool qx = cur().text2 == "qx";
+            const int outerScopes = cur().outerScopes;
             std::string raw = advance().text; auto e = parseInterpString(raw);
+            // a heredoc body parsed where its marker line ENDS: its variables
+            // must be declared that many scopes out (see VarExpr::heredocOuter)
+            if (outerScopes > 0 && e) {
+                std::function<void(Expr*)> mark = [&](Expr* x) {
+                    if (!x) return;
+                    if (x->kind == NK::VarExpr) static_cast<VarExpr*>(x)->heredocOuter = (unsigned char)std::min(outerScopes, 255);
+                    else if (x->kind == NK::InterpStr) for (auto& p : static_cast<InterpStr*>(x)->parts) mark(p.get());
+                    else if (x->kind == NK::MethodCall) mark(static_cast<MethodCall*>(x)->inv.get());
+                    else if (x->kind == NK::Index) mark(static_cast<Index*>(x)->base.get());
+                };
+                mark(e.get());
+            }
             if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
             if (fmt) {
                 // `q:o/…/` builds a Format, which 6.e introduced; before that the
@@ -6732,6 +6784,13 @@ ExprPtr Parser::parsePrimary() {
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
             if (raw.size() > 2 && raw[1] == '*' && raw == e->name && !dynUsed_.empty())
                 dynUsed_.back().insert(raw);
+            if (raw == e->name) noteLexRead(raw, pos_ > 0 ? pos_ - 1 : 0);
+            // a `my str $x` of this very block: its reads are NATIVE strings,
+            // which multi dispatch tells from boxed ones (S02-types/native.t)
+            if (raw == e->name && raw.size() > 1 && raw[0] == '$' && !scalarDeclTypes_.empty()) {
+                auto ft = scalarDeclTypes_.back().find(raw);
+                if (ft != scalarDeclTypes_.back().end() && ft->second == "str") e->nativeStrRead = true;
+            }
             // a PACKAGE-qualified variable autovivifies its packages:
             // `$A40::x = 41` makes `A40` a name (its `.WHO` holds `$x`)
             {
@@ -6769,8 +6828,13 @@ ExprPtr Parser::parsePrimary() {
             }
             // `$OUR::x` names the CURRENT package's `our $x` — which an inner
             // block may have declared, out of lexical reach (roast pseudo-6*.t)
-            if (raw.size() > 6 && raw[0] == '$' && raw.compare(1, 5, "OUR::") == 0 &&
-                raw.find("::", 6) == std::string::npos) {
+            // (…and `$OUR::OUR::x` is the same name: OUR's OUR is OUR — pseudo-6*.t
+            // spells it a hundred times over)
+            size_t ourEnd = 1;
+            while (raw.compare(ourEnd, 5, "OUR::") == 0) ourEnd += 5;
+            if (raw.size() > 6 && raw[0] == '$' && ourEnd > 1 &&
+                raw.find("::", ourEnd) == std::string::npos) {
+                if (ourEnd > 6) { e->name = "$" + raw.substr(ourEnd); e->syncAttrCache(); }
                 e->viaPseudoPkg = true;
                 e->pseudoPkg    = "OUR";
             }
@@ -7334,6 +7398,14 @@ ExprPtr Parser::parsePrimary() {
                                 if (curries(o.get(), depth + 1)) return true;
                             return false;
                         case NK::MethodCall: return curries(static_cast<const MethodCall*>(x)->inv.get(), depth + 1);
+                        // …and a SUBSCRIPT on `*` curries too: `{ *.{} }`, `{ *<a> }`
+                        case NK::Index: return curries(static_cast<const Index*>(x)->base.get(), depth + 1);
+                        // (the zen slice `*.{}` / `*.[]` and a prefix op on `*` curry as well)
+                        case NK::Unary: {
+                            auto* u = static_cast<const Unary*>(x);
+                            static const std::set<std::string> kCurryPrefix = {"decont", "-", "+", "~", "?", "!"};
+                            return kCurryPrefix.count(u->op) && curries(u->operand.get(), depth + 1);
+                        }
                         default: return false;
                     }
                 };
@@ -9045,6 +9117,33 @@ ExprPtr Parser::qqwwList(const std::vector<std::string>& words) {
 }
 
 // ---------------- string interpolation ----------------
+// A plain lexical (`$x`, `@x`, `%x` — no twigil, not a special) read in this
+// block before the block declared it: remembered with the token it was read at.
+void Parser::noteLexRead(const std::string& n, size_t at) {
+    if (lexUsed_.empty() || n.size() < 2 || !std::strchr("$@%", n[0])) return;
+    if (!(ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2))) return;
+    if (lexDecl_.back().count(n)) return;
+    lexUsed_.back().emplace(n, at);   // keeps the FIRST read
+}
+// `my $x` in a block that already read an OUTER `$x`: Rakudo's compile error
+// (the read was bound to the outer symbol). A read at or after the
+// declaration's own token is a speculative parse of that very token, not one.
+void Parser::noteLexDecl(const std::string& n, size_t at, int line) {
+    if (lexUsed_.empty() || n.size() < 2) return;
+    auto it = lexUsed_.back().find(n);
+    // …and only when an OUTER scope this parse can see declares it: with
+    // none, the early read was simply undeclared (X::Undeclared, reported
+    // elsewhere — my-6e.t asks for exactly that)
+    bool outerHas = false;
+    for (size_t k = 0; k + 1 < lexDecl_.size() && !outerHas; k++) outerHas = lexDecl_[k].count(n) > 0;
+    if (it != lexUsed_.back().end() && it->second < at && outerHas)
+        throw ParseError("Lexical symbol '" + n + "' is already bound to an outer symbol;\n"
+                         "the implicit outer binding must be rewritten as OUTER::<" + n + ">\n"
+                         "before you can unambiguously declare a new '" + n + "' in this scope",
+                         line, "X::Redeclaration::Outer", {{"symbol", n}});
+    lexDecl_.back().insert(n);
+}
+
 ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     Lexer lx(src);
     Parser p(lx.tokenize());
@@ -9658,6 +9757,22 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 i = k2 + 1;
                 continue;
             }
+            // `"@&code[]"` / `"%&code{}"` — a SIGIL contextualizer on the routine,
+            // subscripted: `@(&code)[]` (S02-literals/string-interpolation.t)
+            if (j < n && (raw[j] == '[' || raw[j] == '{') && !lit.empty() &&
+                (lit.back() == '@' || lit.back() == '%') && (lit.back() == '@' ? fA : fH)) {
+                char sig = lit.back();
+                std::string var = std::string(1, sig) + "(&" + fname + ")";
+                size_t k2 = j;
+                if (scanChain(k2, var)) {
+                    lit.pop_back();
+                    flush();
+                    try { result->parts.push_back(parseEmbeddedExpr(var)); }
+                    catch (...) { rethrowIfObsolete(); throw; }
+                    i = k2;
+                    continue;
+                }
+            }
             // bare &name without parens: stays literal text
         }
         // `"$( expr )"` — the item contextualizer interpolates its expression
@@ -9911,6 +10026,9 @@ std::unique_ptr<Block> Parser::parseBlock() {
     monkeyScopes_.push_back(0);
     scalarDeclTypes_.emplace_back();
     dynUsed_.emplace_back();
+    lexUsed_.emplace_back(); lexDecl_.emplace_back();
+    for (auto& pn : pendingParamNames_) lexDecl_.back().insert(pn);
+    pendingParamNames_.clear();
     const char savedVarsPragma = varsPragma_;   // `use variables` is block-scoped
     const std::string savedNewline = newlineSeq_;   // …and so is `use newline`
     constNamesScoped_.emplace_back();
@@ -9932,6 +10050,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     monkeyScopes_.pop_back();
     scalarDeclTypes_.pop_back();
     if (dynUsed_.size() > 1) dynUsed_.pop_back();
+    if (lexUsed_.size() > 1) { lexUsed_.pop_back(); lexDecl_.pop_back(); }
     varsPragma_ = savedVarsPragma;
     newlineSeq_ = savedNewline;
     if (constNamesScoped_.size() > 1) constNamesScoped_.pop_back();
@@ -10762,7 +10881,27 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 bool coercion = !cur().spaceBefore &&
                                 ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) || fromSmiley ||
                                  peek().kind == Tok::RParen); // `Foo()` — coerce from Any
-                if (coercion) {
+                // …or NESTED, a coercion type for the source itself:
+                // `Str(Rat(Source)) $p` (S02-types/nominalizables.t)
+                size_t nestedEnd = 0;
+                if (!coercion && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                    peek(2).kind == Tok::LParen && !peek(2).spaceBefore) {
+                    size_t j = pos_; int d = 0; bool ok = true;
+                    do {
+                        const Token& tk = toks_[j];
+                        if (tk.kind == Tok::LParen) d++;
+                        else if (tk.kind == Tok::RParen) d--;
+                        else if (tk.kind != Tok::Ident && !(tk.kind == Tok::Op && (tk.text == ":" || tk.text == "::"))) { ok = false; break; }
+                        j++;
+                    } while (d > 0 && j < toks_.size());
+                    if (ok && d == 0) nestedEnd = j;
+                }
+                if (nestedEnd) {
+                    p.coerce = true;
+                    for (size_t k = pos_ + 1; k + 1 < nestedEnd; k++) p.coerceFrom += toks_[k].text;
+                    pos_ = nestedEnd;
+                }
+                else if (coercion) {
                     p.coerce = true;
                     advance(); // (
                     if (isKind(Tok::Ident)) p.coerceFrom = advance().text; // the from-type; "" for `Foo()`
@@ -11175,6 +11314,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 claimedPodLines_.insert(cl.second);
             }
     }
+    // the parameters are declarations of the block that follows (a read of
+    // one there is no outer binding — see noteLexDecl)
+    pendingParamNames_.clear();
+    std::function<void(const std::vector<Param>&)> addNames = [&](const std::vector<Param>& ps) {
+        for (auto& p : ps) {
+            if (!p.name.empty()) pendingParamNames_.push_back(p.name);
+            if (p.subSig) addNames(*p.subSig);
+        }
+    };
+    addNames(params);
     return params;
 }
 
@@ -11913,7 +12062,12 @@ StmtPtr Parser::parseSubset() {
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 sd->coerceBase = true;
                 int d = 0;
-                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                do {
+                    if (isKind(Tok::LParen)) d++;
+                    else if (isKind(Tok::RParen)) d--;
+                    if (!(d == 1 && isKind(Tok::LParen)) && d > 0) sd->coerceFrom += cur().text;
+                    advance();
+                }
                 while (d > 0 && !isKind(Tok::End));
             }
             continue;
@@ -13312,6 +13466,18 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     }
                     if (tr == "is" && isIdent("required")) a.required = true;
                     if (tr == "is" && isIdent("readonly")) a.readonly = true;
+                    // `is DEPRECATED` / `is DEPRECATED("'bar'")` — the accessor reports its use
+                    if (tr == "is" && isIdent("DEPRECATED")) {
+                        a.deprecated = true;
+                        if (peek().kind == Tok::LParen && !peek().spaceBefore &&
+                            (peek(2).kind == Tok::StrLit || peek(2).kind == Tok::StrInterp) &&
+                            peek(3).kind == Tok::RParen) {
+                            advance(); advance();                   // DEPRECATED (
+                            a.deprecatedWith = advance().text;
+                            advance();                              // )
+                            continue;
+                        }
+                    }
                     // `is built` / `is built(:bind)` — a private attr the default
                     // constructor may set by name (JSON::Class's $!declarant); the
                     // generic skip below consumes any (:bind)-style argument
@@ -14243,6 +14409,24 @@ StmtPtr Parser::parseStatement() {
                                  (ve->declSmileyImplicit ? " (implicit :D by pragma)" : "") +
                                  " requires an initializer", line,
                                  "X::Syntax::Variable::MissingInitializer", at);
+            }
+        }
+    }
+    // `$x.return-rw;` as a statement in a routine is `return-rw $x`: it hands
+    // the CONTAINER out, so `sub rrw { my Mu $x; $x.return-rw }; rrw() = 42`
+    // assigns (S02-types/mu.t)
+    if (st && st->kind == NK::ExprStmt && routineDepth_ > 0) {
+        Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+        if (e && e->kind == NK::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(e);
+            if (mc->method == "return-rw" && mc->args.empty() && mc->inv && !mc->maybe &&
+                !mc->bang && !mc->mutate && !mc->hyper && !mc->meta && !mc->methodExpr) {
+                auto r = std::make_unique<ReturnStmt>();
+                r->isRw = true;
+                r->value = std::move(mc->inv);
+                r->line = st->line;
+                sawReturnRw_ = true;
+                st = std::move(r);
             }
         }
     }

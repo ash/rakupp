@@ -86,13 +86,22 @@ struct Checker {
         // all ANSWER about a name rather than demanding one — the interpreter
         // lets each of them through, so this must too.
         if (v->pkgSymbol || v->viaPseudoPkg || v->processScoped) return;
-        if (!checkable(v->name) || visible(v->name)) return;
+        if (!checkable(v->name)) return;
+        if (v->heredocOuter) {   // a heredoc body: visible from the scope its line ended in
+            bool seen = false;
+            size_t skip = v->heredocOuter;
+            for (size_t i = scopes.size(); i-- > 0 && !seen; )
+                if (scopes.size() - 1 - i >= skip && scopes[i].count(v->name)) seen = true;
+            if (seen) return;
+        }
+        else if (visible(v->name)) return;
         // Under the pragma the name is not a finding, it is an auto-vivification
         // — which the native backend has to be told about, because it emits a
         // C++ local for every variable and this one has no declaration to emit.
         if (noStrict) { lax.insert(v->name); return; }
         if (!reported.insert(v->name).second) return;
         UndeclaredVar u{v->name, lineOf(v), {}};
+        u.heredoc = v->heredocOuter != 0;
         for (auto it = scopes.rbegin(); it != scopes.rend() && u.inScope.size() < 256; ++it)
             for (auto& n : *it) u.inScope.push_back(n);
         out.push_back(std::move(u));
@@ -657,7 +666,7 @@ std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::st
     C.popScope();
     if (C.standDown || C.out.empty()) return {};
     C.out.erase(std::remove_if(C.out.begin(), C.out.end(),
-                               [&](const UndeclaredVar& c) { return textDeclares(src, c.name); }),
+                               [&](const UndeclaredVar& c) { return !c.heredoc && textDeclares(src, c.name); }),
                 C.out.end());
     if (C.out.empty()) return {};
     if (!C.imports.empty()) {

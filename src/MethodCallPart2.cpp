@@ -4846,6 +4846,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
         if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
             std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();
+            // (a MULTI-dimensional one takes its values as the assignment
+            // `my @a[2;2] = <a b>, <c d>` does: each value a ROW — S02-types/array-shapes.t)
+            if (dims.size() >= 2 && !seed.empty()) {
+                Value s = makeShapedContainer(dims, et, nullptr);
+                Value rows = Value::array(); rows.isList = true; *rows.arr() = seed;
+                rtShapedStore(s, rows, et);
+                s.isList = v.isList;
+                return s;
+            }
             Value s = makeShapedContainer(dims, et, seed.empty() ? nullptr : &seed);
             s.isList = v.isList;
             return s;
@@ -6844,6 +6853,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         const ClassAttr* at = ci->findAttr(m);
         if (at && at->pub) {
+            if (at->deprecated) {   // `has $.foo is DEPRECATED`: report the accessor's use
+                std::string from = ci->name;
+                for (ClassInfo* k = ci.get(); k; k = k->parent.get())
+                    for (auto& a2 : k->attrs) if (&a2 == at) from = k->name;
+                noteDeprecation("Method", std::string(m.c_str()), from, *at->deprecated, curLine_);
+            }
             // a generated accessor takes no positional arguments:
             // `A.new.x(42)` is "Too many positionals"
             {

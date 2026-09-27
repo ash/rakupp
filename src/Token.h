@@ -62,6 +62,9 @@ struct Token {
     size_t off = 0;
     bool spaceBefore = false; // whitespace/comment preceded this token
     bool flag = false;        // SubstLit: non-mutating S/// (returns new string, leaves $_ intact)
+    // a heredoc whose marker line closes blocks after its opener: how many
+    // (the body's names are declared that many scopes out — see VarExpr)
+    int outerScopes = 0;
 };
 
 // A pass over the token stream between the Lexer and the Parser. Its one user

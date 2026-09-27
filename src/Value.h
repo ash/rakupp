@@ -1193,6 +1193,7 @@ struct ClassAttr {
     const Expr* def = nullptr; // borrowed from AST
     const Expr* shape = nullptr; // `has @.a[3;3]` dimensions, borrowed from AST
     const Expr* defaultTrait = nullptr; // `is default(V)`, borrowed from AST
+    std::shared_ptr<std::string> deprecated; // `is DEPRECATED`: the advice for Deprecation.report
     const Expr* where = nullptr; // `where {…}` constraint, borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`

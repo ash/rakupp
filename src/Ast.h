@@ -199,7 +199,14 @@ struct VarExpr : Expr {
     // happened to be written. Rides the padding beside `declare`; sizeof is
     // unchanged.
     bool synthTopic = false;
+    // Read in a HEREDOC body whose marker line closed this many blocks after
+    // the opener (`sub f() { my $a; qq:to/END/ }` then `$a` on the next line):
+    // the body is parsed where the line ENDS, so the name must be declared
+    // that many scopes out (DeclCheck; S02-literals/heredocs.t).
+    unsigned char heredocOuter = 0;
+    bool nativeStrRead = false;  // a read of a `my str $x` of the same block: the value goes out marked native
     std::string declScope;       // my / our / state / constant
+    std::string declStubType;    // `my ::foo $x`: the type NAME it introduces (value: that bare type)
     std::string declType;        // optional type constraint (ignored at runtime for now)
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
     std::string declCoerceFrom;  // …and its SOURCE spec (`Str`, or a nested `Int(Cool)`)
@@ -806,6 +813,8 @@ struct AttrDecl {
     ExprPtr whereExpr;  // `has Numeric $.lat where {…}` — checked on construction and assignment
     ExprPtr def;        // optional default
     ExprPtr defaultTrait; // `is default(V)` — what `$!a.VAR.default` answers (and the value when there is no `= …`)
+    bool deprecated = false;      // `has $.foo is DEPRECATED` — its accessor is reported when used
+    std::string deprecatedWith;   // …`is DEPRECATED("'bar'")`: the advice, as written (a literal)
     ExprPtr shape;      // `has @.a[3;3]` — a SHAPED array attribute's dimensions
 };
 
@@ -1035,6 +1044,7 @@ struct SubsetDecl : Stmt {
     int defConstraint = 0; // the base type's smiley: 1 = :D, 2 = :U (0 = none)
     bool coerceBase = false; // `subset CC of Str() where …`: the base is a COERCION —
                              // a value is coerced to it before the where clause runs
+    std::string coerceFrom;  // …and what it coerces FROM (`of Num(Str)`: "Str"; "" = Any)
     ExprPtr where;         // may be null (pure alias)
     std::string pod, podTrail; // declarator pod (.WHY)
     SubsetDecl(): Stmt(NK::SubsetDecl) {}

@@ -735,6 +735,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // until it has been. This is the only question that asks without
             // consuming, so it does the first pull itself; a gather that turns
             // out to be finite answers False, as it did when the probe was eager.
+            if (lst->declaredLazy) return Value::boolean(true);
             if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
             return Value::boolean(true);
         }
