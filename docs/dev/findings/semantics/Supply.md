@@ -711,7 +711,13 @@ say do { my @o; (supply { whenever Supply.from-list(1,2) { emit $_ * 10; wheneve
 rakupp 4.0.2: matches. The activation carries a QUEUE: a `whenever` subscribes
 where it stands, and whatever its source delivers while a body is running waits
 there, tagged with the subscription it came from. That one mechanism is what
-S-54, S-55, S-58 and S-67 are built on.
+S-54, S-55, S-58 and S-67 are built on. It is also what keeps a supply block
+serial across threads: a `start` block emitting into a Supplier, a timer's
+`whenever Promise.in(…)` and a `whenever $channel` all deliver from threads of
+their own, and each value waits in the same queue while any body of the
+activation runs. The thread running a body gives the activation up only in the
+critical section that finds the queue empty, so nothing that queued behind it
+is left there (Roast `syntax.t` test 53 depends on it).
 
 ### S-54  done ends the supply at once  D:yes R:partial V:spec
 `done` in the body or in a whenever: the rest of that block does not run,

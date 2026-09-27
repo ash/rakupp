@@ -872,6 +872,15 @@ struct SupplyTapCtx {
     std::set<long long> closedSubs; // whenevers whose source is finished or `last`-ed
     long long subSeq = 0;           // ids for this activation's subscriptions
     int running = 0;
+    // `queue`, `running` and `closedSubs` are shared by every thread that
+    // delivers into this activation — a `start` block emitting into a
+    // Supplier runs the whenever on ITS thread — so they change under `m`
+    // only. Whoever holds the activation (running > 0) releases it only when
+    // it finds the queue empty, in the same critical section: a delivery that
+    // queued behind it cannot be left behind. Never held around Raku code.
+    std::mutex m;
+    void closeSub(long long id) { std::lock_guard<std::mutex> lk(m); closedSubs.insert(id); }
+    void clearQueue() { std::lock_guard<std::mutex> lk(m); queue.clear(); }
     // >0 while a value is being handed to the DOWNSTREAM tap. `done` called
     // from inside a tapper's own callback ends the supply without invoking that
     // tapper's done callback (S-64).

@@ -11599,28 +11599,41 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     closeTapHandle(ctx->tap);
 }
 
+// One delivery into a supply activation (S-53). It runs now if nothing is
+// running there, and otherwise joins the queue for whoever is running — this
+// thread's own body, or another thread's, since a `start` block emitting into
+// a Supplier delivers on its own thread. Deciding which, and queueing, happen
+// under ctx->m; see drainSupplyQueue for the other half.
 Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
                                   std::function<void(Interpreter&, ValueList&)> fn) {
     return ctxCallable(ctx, [ctx, sub, fn](Interpreter& I2, ValueList& args) -> Value {
-        if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
-        if (ctx->running > 0) {
-            Interpreter* ip = &I2;
+        // (queued, it runs on whichever thread drains the queue: that thread
+        // holds the activation, so the entry leaves `running` alone)
+        Interpreter* ip = &I2;
+        auto deferred = [&]() -> SupplyTapCtx::Deferred {
             auto saved = makePayload<ValueList>(args);
-            ctx->queue.push_back({sub, [ip, ctx, sub, fn, saved] {
-                if (ctx->done || (sub && ctx->closedSubs.count(sub))) return;
+            return {sub, [ip, ctx, fn, saved] {
+                if (ctx->done) return;
                 ip->tctx_.tapStack.push_back(ctx);
-                ctx->running++;
-                struct G {
-                    Interpreter* i; std::shared_ptr<SupplyTapCtx> c;
-                    ~G() { c->running--; i->tctx_.tapStack.pop_back(); }
-                } g{ip, ctx};
+                struct G { Interpreter* i; ~G() { i->tctx_.tapStack.pop_back(); } } g{ip};
                 fn(*ip, *saved);
-            }});
-            return Value::any();
+            }};
+        };
+        bool now;
+        {
+            std::lock_guard<std::mutex> lk(ctx->m);
+            if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
+            if (ctx->running > 0) { ctx->queue.push_back(deferred()); return Value::any(); }
+            ctx->running++;                  // the activation is this thread's now
+            // …but older deliveries still waiting go first: this one joins the
+            // back of the line (a holder that died on an exception left them)
+            now = ctx->queue.empty();
+            if (!now) ctx->queue.push_back(deferred());
         }
-        ctx->running++;
-        try { fn(I2, args); } catch (...) { ctx->running--; throw; }
-        ctx->running--;
+        if (now) {
+            try { fn(I2, args); }
+            catch (...) { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; throw; }
+        }
         I2.drainSupplyQueue(ctx);
         return Value::any();
     });
@@ -11665,18 +11678,33 @@ int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& 
     return consumed ? 0 : 1;
 }
 
-// S-53. Hand over what the whenevers' sources delivered while a body was
-// running, in arrival order, skipping anything whose subscription has since
-// been closed — by `last`, or by its own source completing. An explicit `done`
-// empties the queue: nothing follows it.
+// S-53. Called by the thread that holds the activation (its body has just
+// returned, `running` still counting it): hand over what the whenevers'
+// sources delivered while it ran, in arrival order, skipping anything whose
+// subscription has since been closed — by `last`, or by its own source
+// completing — then release the activation. The release happens in the same
+// critical section that finds the queue empty. It used to follow it: the
+// holder decremented `running` and then looked at the queue, so a delivery
+// from another thread that saw `running` still set and queued in between was
+// left there for ever (syntax.t test 53 waited on it), and the unlocked
+// vector tore under concurrent emits. An explicit `done` empties the queue:
+// nothing follows it.
 void Interpreter::drainSupplyQueue(const std::shared_ptr<SupplyTapCtx>& ctx) {
-    if (!ctx || ctx->running > 0) return;
-    while (!ctx->queue.empty()) {
-        if (ctx->done) { ctx->queue.clear(); break; }
-        auto d = std::move(ctx->queue.front());
-        ctx->queue.erase(ctx->queue.begin());
-        if (d.sub && ctx->closedSubs.count(d.sub)) continue;
-        d.run();
+    if (!ctx) return;
+    for (;;) {
+        std::function<void()> run;
+        {
+            std::lock_guard<std::mutex> lk(ctx->m);
+            if (ctx->done) ctx->queue.clear();
+            while (!run && !ctx->queue.empty()) {
+                auto d = std::move(ctx->queue.front());
+                ctx->queue.erase(ctx->queue.begin());
+                if (!(d.sub && ctx->closedSubs.count(d.sub))) run = std::move(d.run);
+            }
+            if (!run) { ctx->running--; return; }
+        }
+        try { run(); }
+        catch (...) { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; throw; }
     }
 }
 
@@ -11719,14 +11747,19 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     tctx_.tapStack.push_back(ctx);
     try {
         // S-53 holds here too: the body runs first, then what its whenevers'
-        // sources delivered while it ran.
-        ctx->running++; ctx->inBody = true;
-        if (blk.t == VT::Code) { ValueList na; try { callCallable(blk, na); } catch (...) { ctx->running--; ctx->inBody = false; throw; } }
-        ctx->running--; ctx->inBody = false;
+        // sources delivered while it ran (the drain releases the activation).
+        { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; }
+        ctx->inBody = true;
+        if (blk.t == VT::Code) {
+            ValueList na;
+            try { callCallable(blk, na); }
+            catch (...) { { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; } ctx->inBody = false; throw; }
+        }
+        ctx->inBody = false;
         drainSupplyQueue(ctx);
     }
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
-    catch (DoneEx&) { ctx->queue.clear(); } // `done` in the body: normal end of the stream
+    catch (DoneEx&) { ctx->clearQueue(); } // `done` in the body: normal end of the stream
     catch (...) { tctx_.tapStack.pop_back(); throw; }
     tctx_.tapStack.pop_back();
     // A whenever on a still-pending Promise holds the supply open (Cro's connector
@@ -11994,7 +12027,9 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
-    Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
+    // one body at a time (S-53): the timer's body waits its turn behind a
+    // whenever running on another thread, as every other delivery does
+    Value fireW = supplyDelivery(ctx, 0, [blk, ctx](Interpreter& I2, ValueList&) {
         // shutdown mid-delay: release the pending hold, but never run the block
         if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) {
             ValueList one{Value::boolean(true)};
@@ -12016,7 +12051,6 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         }
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
-        return Value::any();
     });
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
@@ -12145,8 +12179,10 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     Interpreter* self = this;
     ValueList lastP, quitP;
     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
-    Value fireW = ctxCallable(ctx, [blk, ctx, quitP](Interpreter& I2, ValueList& args) -> Value {
-        if (ctx->done || ctx->doneFired) return Value::any();
+    // one body at a time (S-53): each value waits its turn behind a whenever
+    // running on another thread, as every other delivery does
+    Value fireW = supplyDelivery(ctx, 0, [blk, ctx, quitP](Interpreter& I2, ValueList& args) {
+        if (ctx->done || ctx->doneFired) return;
         ValueList one = args;
         try { I2.callCallable(blk, one); }
         catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
@@ -12160,7 +12196,6 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
             ctx->done = true;
             if (ctx->tap) I2.closeTapHandle(ctx->tap);
         }
-        return Value::any();
     });
     throttleSpawn();
     addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope, readerDelta]() mutable {
@@ -12804,12 +12839,17 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         noCycleBreak_++;
         struct CBGuard { int& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
         try {
-            ctx->running++; ctx->inBody = true;
-            if (blk.t == VT::Code) { ValueList na; try { callCallable(blk, na); } catch (...) { ctx->running--; ctx->inBody = false; throw; } }
-            ctx->running--; ctx->inBody = false;
+            { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; }
+            ctx->inBody = true;
+            if (blk.t == VT::Code) {
+                ValueList na;
+                try { callCallable(blk, na); }
+                catch (...) { { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; } ctx->inBody = false; throw; }
+            }
+            ctx->inBody = false;
             tctx_.tapStack.pop_back();
             // S-53: the body has returned — now hand over what its whenevers'
-            // sources delivered while it ran.
+            // sources delivered while it ran, and release the activation.
             tctx_.tapStack.push_back(ctx);
             try { drainSupplyQueue(ctx); } catch (...) { tctx_.tapStack.pop_back(); throw; }
             tctx_.tapStack.pop_back();
@@ -12829,7 +12869,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         catch (DoneEx&) { // `done` in the supply body: normal end (its bookkeeping already ran)
             tctx_.tapStack.pop_back();
             ctx->blockDone = true;
-            ctx->queue.clear();   // nothing follows an explicit done (S-54)
+            ctx->clearQueue();    // nothing follows an explicit done (S-54)
         }
         catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
@@ -17760,7 +17800,7 @@ void Interpreter::registerBuiltins() {
                     // S-55: `last` closes THIS whenever — its LAST phasers run,
                     // its backlog is dropped, and when no whenever is left the
                     // supply is done.
-                    ctx->closedSubs.insert(subId);
+                    ctx->closeSub(subId);
                     I2.runLastPhasers(lastP, nullptr);
                     if (ctx->pending > 0) ctx->pending--;
                     I2.maybeFinishSupply(ctx);
@@ -17772,7 +17812,7 @@ void Interpreter::registerBuiltins() {
                     // supply block's — do not see it; it ends the supply and
                     // reaches the TAPPER's quit handler (Cro's frame parser
                     // dies per malformed frame and its test reads it there).
-                    ctx->closedSubs.insert(subId);
+                    ctx->closeSub(subId);
                     Value ex = I2.exceptionFor(e);
                     if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
                     ctx->done = true;
@@ -17783,7 +17823,7 @@ void Interpreter::registerBuiltins() {
             // done hook runs LAST phasers, then releases this activation's hold
             ctx->pending++;
             Value doneW = wrap([lastP, ctx, subId](Interpreter& I2, ValueList&) {
-                ctx->closedSubs.insert(subId);
+                ctx->closeSub(subId);
                 I2.runLastPhasers(lastP, nullptr);
                 if (ctx->pending > 0) ctx->pending--;
                 I2.maybeFinishSupply(ctx);
@@ -17794,7 +17834,7 @@ void Interpreter::registerBuiltins() {
             // on to the tapper once the phaser body has run, and ends the
             // supply, because nothing may follow a quit (S-06).
             Value quitW = wrap([quitP, ctx, subId](Interpreter& I2, ValueList& args) {
-                ctx->closedSubs.insert(subId);
+                ctx->closeSub(subId);
                 Value ex = args.empty() ? Value::nil() : args[0];
                 Value repl;
                 int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
@@ -18361,7 +18401,7 @@ void Interpreter::registerBuiltins() {
                               {{"illegal", Value::str("done")}, {"enclosing", Value::str("supply or react")}},
                               "done without supply or react");
             ctx->done = true;
-            ctx->queue.clear();   // S-54: nothing that was waiting still happens
+            ctx->clearQueue();    // S-54: nothing that was waiting still happens
             if (!ctx->collect) {
                 // S-64: `done` from inside the TAPPER's own callback ends the
                 // supply but does not call that tapper's done callback — it is
