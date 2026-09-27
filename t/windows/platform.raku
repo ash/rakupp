@@ -12,6 +12,7 @@
 #   CreateFontW (fourteen) could not be called at all, and any pointer that
 #   crossed lost its top half.
 #   `.resolve` answered `/D:\…`, which no file test finds.
+#   $*HOME was Nil without HOME, which Windows does not set.
 #
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -41,6 +42,16 @@ check($*VM.config<exe>,     '.exe',     '$*VM.config<exe>');
 my $resolved = $*PROGRAM.IO.resolve;
 check($resolved.e,                              True, "\$*PROGRAM.IO.resolve.e ($resolved)");
 check($resolved.parent.add('platform.raku').e,  True, ".resolve.parent.add(…).e ({$resolved.parent})");
+
+# ---- $*HOME with no HOME ----------------------------------------------------
+# Windows sets no HOME (the MSYS2 shell does, which hid this on the MinGW leg).
+# $*HOME read HOME alone from %*ENV and answered Nil, so a lone rakupp.exe
+# died in `rakupp install` looking for its store.
+{
+    my $saved = %*ENV<HOME>:delete;
+    check($*HOME.defined, True, "\$*HOME with no HOME (USERPROFILE: {%*ENV<USERPROFILE> // '<unset>'})");
+    %*ENV<HOME> = $saved with $saved;
+}
 
 # ---- the FFI, both ways it can be taken -------------------------------------
 # The same crossings twice: as the engine finds the FFI (libffi if some DLL on

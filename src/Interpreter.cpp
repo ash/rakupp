@@ -20691,10 +20691,26 @@ Value Interpreter::dynVar(const std::string& name) {
         Value* envp = tctx_.cur ? tctx_.cur->find("%*ENV") : nullptr;
         if (!envp && global_) { auto it = global_->vars.find("%*ENV"); if (it != global_->vars.end()) envp = &it->second; }
         if (envp && envp->t == VT::Hash && envp->hash()) {
-            auto it = envp->hash()->find("HOME");
-            if (it == envp->hash()->end() || it->second.t == VT::Any || it->second.t == VT::Nil ||
-                it->second.t == VT::Type) return Value::nil();
-            hs = it->second.toStr();
+            auto envStr = [&](const char* k, std::string& out) {
+                auto it = envp->hash()->find(k);
+                if (it == envp->hash()->end() || it->second.t == VT::Any || it->second.t == VT::Nil ||
+                    it->second.t == VT::Type) return false;
+                out = it->second.toStr();
+                return true;
+            };
+            bool found = envStr("HOME", hs);
+#ifdef _WIN32
+            // Windows sets no HOME: USERPROFILE, then HOMEDRIVE+HOMEPATH, as
+            // platHomeDir does. Without them `rakupp install` found no home.
+            if (!found || hs.empty()) {
+                std::string u, d, p;
+                if (envStr("USERPROFILE", u) && !u.empty()) { hs = u; found = true; }
+                else if (envStr("HOMEDRIVE", d) && envStr("HOMEPATH", p) && !d.empty() && !p.empty()) {
+                    hs = d + p; found = true;
+                }
+            }
+#endif
+            if (!found) return Value::nil();
         }
         else hs = platHomeDir();
         const char* h = hs.empty() ? nullptr : hs.c_str();
