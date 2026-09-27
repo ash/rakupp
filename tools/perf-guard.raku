@@ -213,7 +213,7 @@ my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
 # working gate (findings/GATES-3.22.md, Part C).
 {
     my @missing = %kernels.keys.grep({ $_ !(elem) @KERNELS }).sort;
-    my @unknown = @KERNELS.grep({ !%kernels{$_}:exists }).sort;
+    my @unknown = @KERNELS.grep({ %kernels{$_}:!exists }).sort;
     if @missing || @unknown {
         note "perf-guard: \@KERNELS and %kernels disagree — the gate would measure the wrong set.";
         note "  in %kernels but not gated: @missing.join(', ')" if @missing;
