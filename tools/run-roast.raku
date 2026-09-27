@@ -118,7 +118,8 @@ my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // (10 * $TIME-SCALE)).Int; # parallel-mode 
 my %SLOW-FILES =
     'S29-context/sleep.t'  => 30,  # mainline sleep 3 × asserted-real, 4 blocks
     'S17-supply/batch.t'   => 60,  # batch(:seconds(5)): aligns to 5 s periods, four
-                                   # times — ~36 s here, and ~38 s on Rakudo
+                                   # times — 35-40 s here, by where the first
+                                   # boundary falls, and ~38 s on Rakudo
     'S17-supply/throttle.t' => 30, # sleep 6 + sleep 3 of mainline, then a 10 × .5 s
                                    # paced stream: ~13 s on Rakudo here too
     'S17-supply/unique.t'  => 45,  # :expires(2) asserted against real sleeps, ×8
@@ -129,7 +130,10 @@ my %SLOW-FILES =
                                    # workers per round, 9 of them throwing
                                    # X::Seq::Consumed: ~9 s alone, more under load
     'S32-io/lock.t'        => 60,  # each blocking check runs a child that sleeps
-                                   # $SLEEP (1 s) while it waits on the lock: ~36 s
+                                   # $SLEEP (1 s) while it waits on the lock: 21 s
+                                   # here, 25 s on Rakudo (57 s while a worker
+                                   # waiting in .lock held its program's exit for
+                                   # drainWorkers' 2 s grace — eighteen children)
 ;
 
 # The I/O tests write RELATIVE paths, so they land in whatever directory the
@@ -208,13 +212,23 @@ END { rmtree($SCRATCH) }
 #
 # The child's promise is awaited exactly once: Promise.anyof leaves its losing
 # promise Broken, so a second wait on it returns at once.
+#
+# The tap blocks end in Nil. A block's value is its last statement's, and the
+# value of `$out ~= $chunk` is the whole capture so far, which rakupp hands back
+# as a fresh COPY on every chunk: quadratic in the output. Measured on
+# write-int.t's 5.9 MB of TAP (~724 chunks of up to 8 KB): 0.096 s and a 372 MB
+# peak footprint with the copy, 0.010 s and 31 MB without. The heap is what
+# every later fork copies — a spawn costs 1.2 ms from a small heap and 9 ms
+# from a 1.7 GB one. Over a whole run (this, the directive pre-check below and
+# a fresh roast.times together) the harness's own peak footprint went from
+# 651 MB to 300 MB and its own CPU from 14.3 s to 10.6 s.
 my $SPAWN = Lock.new;
 sub run-with-timeout($bin, $file, $timeout) {
     my $proc = Proc::Async.new($bin, $file, :w);
     my $out = '';
     my $err = '';
-    $proc.stdout.tap(-> $chunk { $out ~= $chunk });
-    $proc.stderr.tap(-> $chunk { $err ~= $chunk });
+    $proc.stdout.tap(-> $chunk { $out ~= $chunk; Nil });
+    $proc.stderr.tap(-> $chunk { $err ~= $chunk; Nil });
     my $done = $SPAWN.protect({
         my $d = $proc.start(:cwd($SCRATCH.absolute));
         $proc.close-stdin;
@@ -370,8 +384,15 @@ sub static-plan($file) {
 # covers no tests, so only its count means anything.
 sub fudge-directives($file, $out --> Hash) {
     my @d;   # [verb, reason]
-    my @lines = try { $file.IO.lines } // ();
-    for @lines -> $ln {
+    # Every file's source is read, on the worker and under the GIL, so the ~72%
+    # of files with no directive leave at one substring search, and a line
+    # reaches the regex only if it carries one: the whole suite's 287k lines
+    # took 0.84-1.04 s through the regex and take 0.15 s this way, to the same
+    # 1,116 directives.
+    my $src = try { $file.IO.slurp } // '';
+    return {} unless $src.contains('#?rakudo');
+    for $src.lines -> $ln {
+        next unless $ln.contains('#?rakudo');
         next unless $ln ~~ /^ \s* '#?rakudo' ['.' (\S+)]? \s+ [\d+ \s+]? (\w+) \s* (.*) /;
         next if $0.defined && ~$0 ne 'moar';
         my ($verb, $arg) = ~$1, (~$2).trim;   # before the match below resets $/
@@ -563,6 +584,7 @@ if $USE-LIST {
 my @files;
 my $UNLISTED = 0;      # candidates not in spectest.data at all, of those the patterns matched
 my $SKIPPED  = 0;      # candidates --skip-marker kept out, of those the patterns matched
+my %SKIPPED-BY;        # marker word -> how many of those it kept out, for the summary
 {
     my %present;
     for find-t($ROOT) -> $f {
@@ -574,7 +596,7 @@ my $SKIPPED  = 0;      # candidates --skip-marker kept out, of those the pattern
         %present{$rel} = True;
         next unless @patterns.elems == 0 || @patterns.first(-> $p { $rel.contains($p) }).defined;
         if $USE-LIST && !%LISTED{$rel} {
-            if %KEPT-OUT{$rel} { $SKIPPED += 1 } else { $UNLISTED += 1 }
+            if %KEPT-OUT{$rel} { $SKIPPED += 1; %SKIPPED-BY{%KEPT-OUT{$rel}} += 1 } else { $UNLISTED += 1 }
             next;
         }
         @files.push($f);
@@ -802,15 +824,24 @@ my @lost-files;
 #     queue, file order     142    75    41    32    27
 #     queue, longest first  141    71    35    24    19
 #
-# Measured, all of the below in place: 26-27 s for the whole suite on the
-# 8-core machine of record, verdicts identical to a one-file-at-a-time run.
+# Measured 2026-09-17, all of the below in place: 26-27 s for the whole suite
+# on the 8-core machine of record, verdicts identical to a one-file-at-a-time
+# run. The floor then was 18.6 s, batch.t's own wait, and 106 s of CPU over
+# this machine's cores came to about the same.
 #
-# The floor is 18.6 s, batch.t's own wait; 106 s of CPU over this machine's
-# cores comes to about the same. Within the queue the order protects the
-# files that need fidelity: a CPU-bound file that finishes inside the 10 s
-# timeout with room to spare — concat-stable.t needs 6.7 s of CPU,
-# hyperrace/basics.t 5.1 s — becomes a timeout if contention slows it 2×, so
-# the long finishers go first, onto the idle machine. A file that timed out
+# The floor has moved since, and not because of the scheduler: the engine now
+# finishes the spec-sleep files it used to die in. Measured 2026-09-27 one
+# file at a time over the 1,434 listed files: 92.7 s of CPU in all, and
+# batch.t alone waits 35-40 s — four waits for the next 5 s boundary plus a
+# 5 s sleep each, by spec (Rakudo: ~38 s). No run of the full list can end
+# before batch.t does: 36.2 s measured, 35.8 s of it batch.t's. The 1,396
+# files not marked `slow` take 15.5 s (--skip-marker=slow).
+#
+# Within the queue the order protects the files that need fidelity: a
+# CPU-bound file that finishes inside the 10 s timeout with room to spare —
+# on 2026-09-17 concat-stable.t needed 6.7 s of CPU, hyperrace/basics.t 5.1 s
+# — becomes a timeout if contention slows it 2×, so the long finishers go
+# first, onto the idle machine. A file that timed out
 # last run sorts as 1.99 s: it needs no fidelity, so the timeouts overlap with
 # the bulk afterwards (the sidecar reader below has the note). A file with no
 # recorded time, new in Roast, is assumed to take 1 s: ahead of the bulk,
@@ -1293,6 +1324,16 @@ say "Files: ", @files.elems, "   fully-pass: ", $pass,
         note "run-roast: ACCOUNTING CHECK FAILED — $seen files categorised of {@files.elems}. "
            ~ "The figures below cover {$seen} files, not the suite.";
     }
+}
+# The files --skip-marker kept out are in none of those buckets — they never
+# ran — and the provenance line that names them is ~1,400 lines up by now. So
+# the count goes here too, beside the figures it is missing from.
+if $SKIPPED {
+    my @by   = %SKIPPED-BY.sort(*.key).map({ "{.value} marked {.key}" });
+    my $flag = "--skip-marker={%SKIP-MARKER.keys.sort.join(',')}";
+    say "Files skipped:        "
+      ~ (@by == 1 ?? "{@by[0]} ($flag)" !! "$SKIPPED ({@by.join(' + ')}; $flag)")
+      ~ " — not run; the figures here cover the {@files.elems} that did";
 }
 say sprintf("Wall time:            %.1f s  (%d workers)", (now - $T0).Num, $WORKERS);
 say sprintf("Files fully passing:  %d / %d  (%.2f%%)", $pass, @files.elems, $fpct);
