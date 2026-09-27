@@ -386,6 +386,10 @@ struct EnvExtras {
     // an immutable (literal) — assigning it dies like Rakudo's X::Assignment::RO.
     std::map<std::string, Value*> rwDirect;
     std::set<std::string> rwDead;
+    // rw/raw parameters bound straight to the caller's CELL (Value::isCell):
+    // the parameter and the argument are one container, so there is no link to
+    // write through and nothing to copy out on return.
+    std::set<std::string> rwCelled;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
     std::vector<std::function<void()>> letRestores;  // `let $x` restorations, run ONLY on unsuccessful (exception) exit
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
@@ -536,8 +540,16 @@ struct Env {
         return nullptr;
     }
     // THIS scope only — map or live pad slot, no parent walk (the declare
-    // paths' "already exists in this scope" checks).
+    // paths' "already exists in this scope" checks). A shared container
+    // (Value::isCell) answers with the Value inside it, as find() does: a
+    // read or an assignment through either name reaches the one container.
     Value* local(const std::string& name) {
+        Value* p = localRaw(name);
+        return p ? p->deref() : nullptr;
+    }
+    // …and the STORAGE slot itself, cell holder and all: for the binders,
+    // which replace or share the container rather than write into it.
+    Value* localRaw(const std::string& name) {
         auto it = vars.find(name);
         if (it != vars.end()) return &it->second;
         return layout ? padFind(name) : nullptr;
@@ -561,9 +573,19 @@ struct Env {
         // lookup that walks THROUGH a layout frame from paying one.
         for (Env* e = this; e; e = e->parent.get()) {
             auto it = e->vars.find(name);
-            if (it != e->vars.end()) return &it->second;
+            if (it != e->vars.end()) return it->second.deref();
             if (e->layout)
-                if (Value* p = e->padFind(name)) return p;
+                if (Value* p = e->padFind(name)) return p->deref();
+        }
+        return nullptr;
+    }
+    // find() without the cell step (see localRaw), plus the frame that owns it.
+    Value* findRaw(const std::string& name, Env** owner = nullptr) {
+        for (Env* e = this; e; e = e->parent.get()) {
+            auto it = e->vars.find(name);
+            if (it != e->vars.end()) { if (owner) *owner = e; return &it->second; }
+            if (e->layout)
+                if (Value* p = e->padFind(name)) { if (owner) *owner = e; return p; }
         }
         return nullptr;
     }
@@ -610,11 +632,11 @@ struct Env {
     // (breakSelfClosures, replNames, the __stash__ dump).
     template <typename F>
     void forEachVar(F&& f) {
-        for (auto& kv : vars) f(kv.first, kv.second);
+        for (auto& kv : vars) f(kv.first, *kv.second.deref());
         if (layout) {
             uint64_t live = padLive.load(std::memory_order_acquire);
             for (size_t i = 0; i < pad.size(); i++)
-                if ((live >> i) & 1) f(layout->names[i], pad[i]);
+                if ((live >> i) & 1) f(layout->names[i], *pad[i].deref());
         }
     }
 };
@@ -1026,6 +1048,9 @@ struct ExecContext {
     // the value out rather than hand the pointer on.
     bool lvalueOutLocal = false;
     Value* lvalueOut = nullptr;
+    // …unless the local is a CELL (Value::isCell): then lvalueOut points into
+    // the shared Value, which this keeps alive until the caller has written.
+    std::shared_ptr<Value> lvalueOutCell;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
     // paying a second TLS wrapper call + init guard for the stack itself
@@ -1683,6 +1708,15 @@ public:
     // reason to try the next candidate.
     void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                       const std::vector<ExprPtr>* rwArgs, bool soleCandidate = false);
+    // …the plain-variable case of it: bind the parameter to the caller's cell
+    // (ROAST-TRACKS-PLAN track A). False = not that case; link as before.
+    bool bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env);
+    // The shared cell behind a variable owned by `owner`, promoting it on first
+    // use; null for a slot that holds some other Proxy.
+    std::shared_ptr<Value> varCell(Env* owner, const std::string& name);
+    Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
+    const void* containerId(const Value* slot); // what `=:=` compares (see Interpreter.cpp)
+    void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
     // shared hyper-operator core for every spelling (>>op<<, »op«, >>[&op]<<)
     Value hyperCore(Value& l, Value& r, bool strictL, bool strictR,
@@ -1757,7 +1791,7 @@ public:
             if (!pf->layout) continue;
             if ((const void*)pf->layout.get() == ve->padOwner &&
                 ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1))
-                return &pf->pad[ps];
+                return pf->pad[ps].deref();
             break; // nearest layout frame decides — never skip past it
         }
         return nullptr;

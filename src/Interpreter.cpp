@@ -3827,6 +3827,22 @@ static bool isNativeScalarName(const std::string& t) {
         "size_t", "ssize_t", "bool", "atomicint"};
     return k.count(t) > 0;
 }
+// A COPY's elements are values in fresh containers of its own, so the source's
+// container state stays behind: an element bound to a VALUE (`@a[1] := 42`, which
+// left it readonly) copies as a writable one, and an element bound to another
+// container (a Proxy onto a shared cell, or any Proxy) copies as what it holds —
+// `my %g = %h` after `%h<b> := $var` must not follow $var (S03-binding/hashes.t).
+// One test of two bytes per element on the fresh, cache-hot buffer.
+static void decontCopied(Value& e) {
+    if (e.readonly | (e.t == VT::Hash)) {
+        if (e.t == VT::Hash && e.hash() && g_deproxy && e.hashKind == "Proxy") e = g_deproxy(e);
+        e.readonly = e.immutableBind = false;
+    }
+}
+static void decontCopiedElems(ValueList& l) {
+    for (auto& e : l) decontCopied(e);
+}
+
 static Value coerceArray(const Value& v, bool nativeTarget = false) {
     // `@a = Nil` is ONE element reset to the container default ([Any] — and a
     // typed array's store turns it into the element type's type object), NOT
@@ -3866,7 +3882,7 @@ static Value coerceArray(const Value& v, bool nativeTarget = false) {
         // NOT alias the source (nested itemized arrays are containers, shared by value,
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
         Value r = Value::array(*v.arr()); r.isList = false;
-        if (v.s == "Seq") deproxyElems(r); // an eager gather's takes decontainerize
+        decontCopiedElems(*r.arr());   // …as does an eager gather's take-rw
         return r;
     }
     if (v.t == VT::Range) {
@@ -3968,7 +3984,10 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
                     (*h.hash())[k] = std::move(val);
                 }
             }
-            else *h.hash() = *v.hash();
+            else {
+                *h.hash() = *v.hash();
+                if (store) for (auto& kv : *h.hash()) decontCopied(kv.second);
+            }
         }
         return h;
     }
@@ -4037,6 +4056,7 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
         }
         else if (store) throwHashOddNumber((long long)items.size(), items[i]);
     }
+    if (store) for (auto& kv : *h.hash()) decontCopied(kv.second);
     return h;
 }
 
@@ -15059,7 +15079,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (vmode == 3) applyW(keys[i], pv.pairVal() ? *pv.pairVal() : w);
                             else {
                                 auto it = scope->vars.find(vmode == 2 ? fs->vars[1] : tvar);
-                                applyW(keys[i], it != scope->vars.end() ? it->second : w);
+                                applyW(keys[i], it != scope->vars.end() ? *it->second.deref() : w);
                             }
                             if (!cont) break;
                         }
@@ -15115,11 +15135,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + step >= total, col);
                         if (kvMode) {
                             auto it = scope->vars.find(fs->vars[1]);
-                            if (isRwVar(1) && it != scope->vars.end() && i < arr->size()) (*arr)[i] = it->second;
+                            if (isRwVar(1) && it != scope->vars.end() && i < arr->size()) (*arr)[i] = *it->second.deref();
                         }
                         else for (size_t k = 0; k < n && i + k < arr->size(); k++) {
                             auto it = scope->vars.find(fs->vars[k]);
-                            if (isRwVar(k) && it != scope->vars.end()) (*arr)[i + k] = it->second;
+                            if (isRwVar(k) && it != scope->vars.end()) (*arr)[i + k] = *it->second.deref();
                         }
                         if (!cont) break;
                     }
@@ -15145,7 +15165,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == keys.size(), col);
                         auto it = scope->vars.find(fs->vars[1]);
                         auto it1 = h->find(keys[i]);
-                        if (it != scope->vars.end() && it1 != h->end()) it1->second = it->second;
+                        if (it != scope->vars.end() && it1 != h->end()) it1->second = *it->second.deref();
                         if (!cont) break;
                     }
                     return forResult();
@@ -15469,6 +15489,24 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     v.readonly = v.immutableBind = true;
                 return v;
             };
+            // `for $a -> $v is rw` / `for ($a) -> $v is rw`: one item, and the
+            // loop variable IS $a's container — bound to its cell, so the body's
+            // writes land in $a with nothing to copy back.
+            if (scalarItem && fs->rwVars && loopVars.size() == 1 && !fs->destructure &&
+                fs->params.empty() && fs->list->kind == NK::VarExpr) {
+                const std::string& sn = static_cast<VarExpr*>(fs->list.get())->name;
+                Env* own = nullptr;
+                Value* raw = sn.size() > 1 && (ascii::isalpha((unsigned char)sn[1]) || sn[1] == '_')
+                           ? tctx_.cur->findRaw(sn, &own) : nullptr;
+                if (raw && !(own->ex && own->ex->rwLinks.count(sn)) &&
+                    (raw->isCell() || !(raw->t == VT::Hash && raw->hashKind == "Proxy"))) {
+                    auto scope = std::make_shared<Env>();
+                    scope->parent = tctx_.cur;
+                    scope->define(loopVars[0], Value::cellHolder(raw->promoteToCell()));
+                    runLoopBody(fs->body.get(), scope, fs->label, true, true, col);
+                    return forResult();
+                }
+            }
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
             if (!scalarItem && !fs->destructure && loopVars.size() <= 1 &&
@@ -15571,7 +15609,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
                                                     i + 1 == aliasSlots.size(), col);
                             auto it = scope->vars.find(var);
-                            if (aliasSlots[i] && it != scope->vars.end()) *aliasSlots[i] = it->second;
+                            if (aliasSlots[i] && it != scope->vars.end()) *aliasSlots[i] = *it->second.deref();
                             if (!cont) break;
                         }
                         return forResult();
@@ -15672,7 +15710,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         scope->define(var, kv.second);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == n, col);
                         auto it = scope->vars.find(var);
-                        if (it != scope->vars.end()) kv.second = it->second;
+                        if (it != scope->vars.end()) kv.second = *it->second.deref();
                         i++;
                         if (!cont) break;
                     }
@@ -15763,7 +15801,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (rw) {
                             auto it = scope->vars.find(var);
                             if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
-                                if (i < arr->size()) { (*arr)[i] = it->second;
+                                if (i < arr->size()) { (*arr)[i] = *it->second.deref();
                                     // the topic was itemized on the way IN (the element is a
                                     // container); don't stamp that flag onto the element itself
                                     if ((*arr)[i].t == VT::Array && arrayElemSrc) (*arr)[i].itemized = false; } }
@@ -21071,11 +21109,11 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     auto takeFrame = [&](Env* f) {
         if (!f) return;
         for (auto& kv : f->vars)
-            if (!snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = kv.second;
+            if (!snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = *kv.second.deref();
         if (f->layout)
             for (auto& nm : f->layout->names)
                 if (Value* p = f->padFind(nm))
-                    if (!snap.hash()->count(nm)) (*snap.hash())[nm] = *p;
+                    if (!snap.hash()->count(nm)) (*snap.hash())[nm] = *p->deref();
     };
     if (mode == 'L') for (Env* f = e; f; f = f->parent.get()) takeFrame(f);
     else if (mode == 'F' || mode == 'C') takeFrame(e);
@@ -21086,11 +21124,11 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
             for (; f; f = f->parent.get()) {
                 for (auto& kv : f->vars)
                     if (kv.first.size() > 2 && kv.first[1] == '*' && std::strchr("$@%&", kv.first[0]) &&
-                        !snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = kv.second;
+                        !snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = *kv.second.deref();
                 if (f->layout)
                     for (auto& nm : f->layout->names)
                         if (nm.size() > 2 && nm[1] == '*' && !snap.hash()->count(nm))
-                            if (Value* p = f->padFind(nm)) (*snap.hash())[nm] = *p;
+                            if (Value* p = f->padFind(nm)) (*snap.hash())[nm] = *p->deref();
             }
         };
         takeDyn(tctx_.cur.get());
@@ -25385,7 +25423,8 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
         // they copy back when mutated, same unchanged-guard as `is rw`
         if ((p.isRw || p.isRaw || p.sigil == '\\' ||
-             env->xr().rwSynced.count(p.name)) && pi < rwArgs->size()) {
+             env->xr().rwSynced.count(p.name)) && pi < rwArgs->size() &&
+            !env->xr().rwCelled.count(p.name)) {
             Value* pv = env->local(p.name);
             if (pv) {
                 auto sy = env->xr().rwSynced.find(p.name);
@@ -25443,6 +25482,29 @@ static bool argIsNeverContainer(const Expr* e) {
             return !static_cast<const Index*>(e)->adverb.empty();
         default: return false;
     }
+}
+
+// The right side of a bind that can only be a VALUE: a literal, an operator's
+// result, and `once`/`do` around one. (argIsNeverContainer's shapes, which a
+// ternary or a short-circuit operator passes only when both sides are values.)
+static bool bindsBareValue(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        if (u->op == "once") return true;
+        if (u->op == "do" && u->operand) {
+            const Expr* x = u->operand.get();
+            if (x->kind == NK::BlockExpr) {
+                auto* be = static_cast<const BlockExpr*>(x);
+                if (be->isSub || be->body.empty() || be->body.back()->kind != NK::ExprStmt) return false;
+                x = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
+            }
+            return bindsBareValue(x);
+        }
+        return false;
+    }
+    if (e->kind == NK::Index) return false;   // a subscript names an element container
+    return argIsNeverContainer(e);
 }
 
 // An `is rw` parameter is part of the SIGNATURE, so a candidate that wants one
@@ -25569,6 +25631,41 @@ bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
     return false;
 }
 
+// Did the binder hand the parameter exactly the argument's value? Identity of
+// the payload for the reference kinds, the scalar fields otherwise — cheap, and
+// false for anything a coercion, a native wrap or a misaligned argument changed.
+static bool sameBoundValue(const Value& a, const Value& b) {
+    if (a.t != b.t || a.pk_ != b.pk_ || a.x_ != b.x_) return false;
+    if (a.p_ || b.p_) return a.p_ == b.p_;
+    switch (a.t) {
+        case VT::Int:  return a.i == b.i;
+        case VT::Num:  return a.n == b.n || (a.n != a.n && b.n != b.n);
+        case VT::Bool: return a.b == b.b;
+        case VT::Str:  return a.s == b.s;
+        default:       return a.s == b.s;
+    }
+}
+
+bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env) {
+    if (!ae || ae->kind != NK::VarExpr || p.coerce || p.isCopy || p.name.size() < 2 ||
+        p.name == "$_" || !tctx_.cur)
+        return false;
+    const std::string& an = static_cast<VarExpr*>(ae)->name;
+    if (an.size() < 2 || an[0] != '$' || an == "$_" ||
+        !(ascii::isalpha((unsigned char)an[1]) || an[1] == '_'))
+        return false;
+    Env* own = nullptr;
+    Value* craw = tctx_.cur->findRaw(an, &own);
+    Value* praw = env->localRaw(p.name);
+    if (!craw || !praw || !own || praw->isCell()) return false;
+    if (own->ex && (own->ex->rwLinks.count(an) || own->ex->rwDirect.count(an))) return false;
+    if (!craw->isCell() && craw->t == VT::Hash && craw->hashKind == "Proxy") return false;
+    if (!sameBoundValue(*craw->deref(), *praw)) return false;
+    *praw = Value::cellHolder(craw->promoteToCell());
+    env->x().rwCelled.insert(p.name);
+    return true;
+}
+
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
@@ -25630,6 +25727,14 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
                 if (Value* vp = env->local(p.name))
                     if (vp->t == VT::Array && vp->isList && !vp->itemized) vp->readonly = true;
             }
+            // A plain `$` variable argument: the parameter IS the caller's
+            // container. The caller's storage slot is promoted to a cell (once)
+            // and the parameter's slot holds the same pointer, so reads, writes
+            // and `=:=` all reach one Value and nothing is copied back on return.
+            // Only when the binder handed the parameter the argument unchanged —
+            // a coercion made a new value, and a misaligned argument list (a
+            // named or flattened argument ahead of it) names another variable.
+            if (bindArgCell(p, ae, env)) { pi++; continue; }
             env->x().rwLinks[p.name] = { ae, tctx_.cur };
             // A CHAIN of `is rw` parameters must ALSO reach the ORIGINAL
             // container. `outer($x is rw)` handing $x on to `inner($y is rw)`
@@ -26784,6 +26889,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
     struct DepthG { int& d; ~DepthG() { --d; } };
     if (rwThroughDepth_ == 0) {
         tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0; tctx_.lvalueOutLocal = false;
+        tctx_.lvalueOutCell.reset();
     }
     ++rwThroughDepth_;
     DepthG dg{rwThroughDepth_};
@@ -26863,6 +26969,13 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
                 continue;
             }
             const bool linked = en->ex && en->ex->rwLinks.count(nm);
+            // a CELL outlives the frame for as long as something holds it —
+            // an `is rw` parameter's is the caller's own variable — so its
+            // address may leave; the hold covers a cell only this frame had
+            if (!linked) {
+                Value* raw = en->localRaw(nm);
+                if (raw && raw->isCell()) { tctx_.lvalueOutCell = raw->cellS(); break; }
+            }
             if (!linked &&
                 (ownScope || (slot->t == VT::Hash && slot->hashKind == "Proxy")))
                 tctx_.lvalueOutLocal = true;
@@ -26947,7 +27060,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // to make a fresh container as before — nothing can be watching it,
             // and a loop body's `my` must stay one variable per turn.
             if (ve->declScope == "my") {
-                Value* have = de->local(ve->name);
+                Value* have = de->localRaw(ve->name);
+                if (have && have->isCell()) return have->deref();
                 if (have && have->t == VT::Hash && have->hashKind == "Proxy") return have;
             }
             Value init = declInitial(ve, sigil);
@@ -28201,6 +28315,24 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             return &callRwHold;
         }
     }
+    // …and the same routine called as a bare TERM (`undefine def`, `def = 1`)
+    if (e->kind == NK::NameTerm && tcx.cur) {
+        Value* fp = tcx.cur->find("&" + static_cast<NameTerm*>(e)->name);
+        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->builtin && fp->code()->retRw) {
+            static thread_local Value termRwHold;
+            struct WantG { ExecContext& t; int w; Value* o;
+                ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
+            } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
+            tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
+            tcx.lvalueOut = nullptr;
+            termRwHold = eval(e);
+            if (Value* out = tcx.lvalueOut) {
+                if (tcx.lvalueOutLocal) { termRwHold = *out; return &termRwHold; }
+                return out;
+            }
+            return &termRwHold;
+        }
+    }
     // `(1,2,3).Array[0]++` — an element of a FRESH array a method handed back
     // is a real container: write into a held copy of that array
     if (e->kind == NK::Index) {
@@ -28899,6 +29031,85 @@ static std::shared_ptr<Value> cellOfProxy(const Value* slot) {
     return std::static_pointer_cast<Value>(c->second.ext());
 }
 
+// What `=:=` compares: the cell a Proxy-bound slot shares, the element a
+// compact slot alias (take-rw, `my $x := @a[1]`) names, else the slot itself.
+// A real cell (Value::isCell) arrives here already dereferenced, as the address
+// of the Value every bound name reaches.
+const void* Interpreter::containerId(const Value* slot) {
+    for (int hop = 0; slot && hop < 16; hop++) {
+        if (auto c = cellOfProxy(slot)) return c.get();
+        size_t ix = 0;
+        if (slot->t == VT::Hash && slot->hashKind == "Proxy" && slot->hash())
+            if (ValueList* arr = slotProxyTarget(*slot, ix))
+                if (ix < arr->size()) { slot = &(*arr)[ix]; continue; }
+        return slot;
+    }
+    return slot;
+}
+
+// The shared cell a VARIABLE's container lives in, from the scope that owns it:
+// its storage slot is promoted on first use (Value::promoteToCell), and a slot
+// an older bind already made a Proxy-cell answers with that cell. Null for a
+// slot holding any other Proxy — a user's, or an env-slot alias.
+std::shared_ptr<Value> Interpreter::varCell(Env* owner, const std::string& name) {
+    Value* raw = owner ? owner->localRaw(name) : nullptr;
+    if (!raw) return nullptr;
+    if (raw->isCell()) return raw->cellS();
+    if (auto c = cellOfProxy(raw)) return c;
+    if (raw->t == VT::Hash && raw->hashKind == "Proxy") return nullptr;
+    return raw->promoteToCell();
+}
+
+// A subscript chain whose every index is a literal or a variable (or plain
+// arithmetic over those): evaluating it again changes nothing.
+static bool pureSubscript(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::StrLit: case NK::NumLit: case NK::VarExpr: return true;
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return (b->op == "+" || b->op == "-" || b->op == "*") &&
+                   pureSubscript(b->lhs.get()) && pureSubscript(b->rhs.get());
+        }
+        case NK::Index: {
+            auto* ix = static_cast<const Index*>(e);
+            return ix->adverb.empty() && pureSubscript(ix->base.get()) &&
+                   (!ix->index || pureSubscript(ix->index.get()));
+        }
+        default: return false;
+    }
+}
+
+// The storage slot an element subscript names, WITHOUT autovivifying anything:
+// a plain `@a[i]` or `%h{k}` of a built-in Array or Hash, reached through a
+// variable or a chain of such subscripts. Null when the element does not exist
+// or the shape is anything else (a slice, an adverb, a user container, …).
+Value* Interpreter::peekElemSlot(Index* ix) {
+    if (!ix || ix->multiDim || !ix->index || !ix->adverb.empty() || !ix->base) return nullptr;
+    Value* bp = nullptr;
+    if (ix->base->kind == NK::VarExpr) {
+        try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { bp = nullptr; }
+    }
+    else if (ix->base->kind == NK::Index) bp = peekElemSlot(static_cast<Index*>(ix->base.get()));
+    if (!bp) return nullptr;
+    if (bp->t == VT::Hash && bp->hashKind == "Proxy") {
+        auto c = cellOfProxy(bp);
+        if (!c) return nullptr;
+        bp = c.get();
+    }
+    Value idx = eval(ix->index.get());
+    if (idx.t == VT::Array || idx.t == VT::Range || idx.t == VT::Whatever || idx.t == VT::Code) return nullptr;
+    if (!ix->isHash) {
+        if (bp->t != VT::Array || !bp->arr() || bp->ext() || idx.t != VT::Int) return nullptr;
+        long long k = idx.toInt();
+        if (k < 0 || k >= (long long)bp->arr()->size()) return nullptr;
+        return &(*bp->arr())[(size_t)k];
+    }
+    if (bp->t != VT::Hash || !bp->hash() || !bp->hashKind.empty()) return nullptr;
+    auto it = bp->hash()->find(hashSubKey(idx, bp));
+    return it == bp->hash()->end() ? nullptr : &it->second;
+}
+
 Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
@@ -29329,7 +29540,66 @@ static std::string ourPublishedName(const std::string& name, const std::string& 
     return name.substr(0, 1) + pkgPrefix + name.substr(1);
 }
 
+// The container-model arms every `:=` and every `f() = v` pass before the
+// assignment proper (ROAST-TRACKS-PLAN track A). OUT of evalAssign's frame on
+// purpose: every assignment runs through there, and the Values and exception
+// arguments these arms build would widen it for all of them.
+[[gnu::noinline]] void Interpreter::assignContainerPrologue(Assign* a, bool isBind) {
+    // A literal or an operator's result names no container, so there is
+    // nothing to bind: `0 := 1` is X::Bind, where `0 = 1` is X::Assignment::RO.
+    if (isBind) {
+        switch (a->target->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+            case NK::InterpStr: case NK::AllomorphLit: case NK::Binary: case NK::ChainExpr:
+                throwTypedV("X::Bind", {}, "Cannot use bind operator with this left-hand side");
+            default: break;
+        }
+    }
+    // `f() = v` where `f` is a USER routine that is not `is rw`: the call RUNS,
+    // and what it hands back is a value — a Proxy it returns is fetched on the
+    // way out — so the assignment is then refused.
+    if (a->target->kind == NK::Call && a->op.size() == 1 && a->op[0] == '=') {
+        auto* c = static_cast<Call*>(a->target.get());
+        Value* fp = c->name.empty() || c->callee ? nullptr : tctx_.cur->find(callAmpName(c));
+        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->builtin && !fp->code()->retRw) {
+            bool anyRw = false;
+            for (auto& cand : fp->code()->candidates)
+                if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { anyRw = true; break; }
+            if (!anyRw) {
+                Value got = evalCall(c);
+                if (got.t == VT::Hash && got.hashKind == "Proxy" && got.hash()) got = deproxy(got);
+                throwTypedV("X::Assignment::RO", {{"typename", Value::str(got.typeName())}, {"value", got}},
+                            "Cannot modify an immutable " + got.typeName() + " (" + got.gist() + ")");
+            }
+        }
+    }
+    // `$x := v` gives the NAME a new container. When $x shares a cell with
+    // other names (`my $y := $x`), the cell stays theirs, holding what it held:
+    // the name's storage slot is detached from it before any bind path runs, so
+    // the bind lands in the name's own slot and not in the shared Value
+    // (`my $x = 1; my $y := $x; $x := 3` leaves $y at 1).
+    if (isBind && a->target->kind == NK::VarExpr && !static_cast<VarExpr*>(a->target.get())->declare) {
+        Value* traw = tctx_.cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
+        if (traw && traw->isCell()) {
+            Value fresh = *traw->deref();
+            fresh.readonly = fresh.immutableBind = false;
+            *traw = std::move(fresh);
+        }
+        // …and a name bound to a bare VALUE (`my $r := $v +& $m`) is rebound
+        // just the same: the immutability was the value's, not the name's
+        else if (traw && traw->readonly && traw->immutableBind)
+            traw->readonly = traw->immutableBind = false;
+    }
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // Which of the container arms can apply is one length test on the operator
+    // and one kind test on the target — no string compares up front.
+    const bool isBind = a->op.size() == 2 && a->op[0] == ':' && a->op[1] == '=';
+    // (the thread-local context is looked at last: on some platforms reading
+    // it is a call, and every assignment runs through here)
+    if (a->target && (isBind || a->target->kind == NK::Call) && tctx_.cur)
+        assignContainerPrologue(a, isBind);
     // `(my @a) = [42, @a]` — a PARENTHESISED declaration is in scope for its
     // own right side (the bare `my @a = …, @a` is refused at parse time, so
     // this is the only way the right side can name the variable it fills).
@@ -29446,12 +29716,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                 if (en->local(sv->name)) { owner = en; break; }
             if (owner) {
-                Value* srcSlot = owner->local(sv->name);
-                std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
-                if (!cell && srcSlot && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                    cell = std::make_shared<Value>(*srcSlot);
-                    *srcSlot = makeSharedCellProxy(cell);
-                }
+                std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
                 Value* blv = nullptr;
                 try { blv = lvalue(a->target.get()); } catch (RakuError&) { blv = nullptr; }
                 if (blv) {
@@ -29494,15 +29759,20 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                             if (en->local(sv->name)) { owner = en; break; }
                         Value* srcSlot = owner ? owner->local(sv->name) : nullptr;
+                        Value* through = nullptr;
                         if (owner && owner->ex && owner->ex->rwLinks.count(sv->name))
-                            if (Value* through = lvalueThroughRw(a->value.get())) srcSlot = through;
+                            if ((through = lvalueThroughRw(a->value.get()))) srcSlot = through;
                         tctx_.rwMirror.clear();
                         tctx_.rwMirrorSigil = 0;
                         if (srcSlot) {
-                            std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
-                            if (!cell && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                                cell = std::make_shared<Value>(*srcSlot);
-                                *srcSlot = makeSharedCellProxy(cell);
+                            std::shared_ptr<Value> cell;
+                            if (!through) cell = varCell(owner.get(), sv->name);
+                            else {
+                                cell = cellOfProxy(srcSlot);
+                                if (!cell && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+                                    cell = std::make_shared<Value>(*srcSlot);
+                                    *srcSlot = makeSharedCellProxy(cell);
+                                }
                             }
                             VarExpr dv(key);
                             Value* dst = nullptr;
@@ -29775,6 +30045,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         "An exception " + tn + " occurred while evaluating a constant: " + e.message);
         }
     }
+    // `my $x := 42`, `my \z := once 42`: the name is bound to a VALUE, with no
+    // container behind it, so a later assignment is refused ("Cannot assign to
+    // an immutable value") — as for `-> \v` handed a literal.
+    if (isBind && a->target->kind == NK::VarExpr && bindsBareValue(a->value.get())) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        const std::string& n = ve->name;
+        const bool sigilless = !n.empty() && (ascii::isalpha((unsigned char)n[0]) || n[0] == '_');
+        if ((sigilless || (n.size() > 1 && n[0] == '$' &&
+                           (ascii::isalpha((unsigned char)n[1]) || n[1] == '_'))) && tctx_.cur)
+            if (Value* cur = tctx_.cur->find(n)) cur->readonly = cur->immutableBind = true;
+    }
     if (priorDisp.t == VT::Code) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         Value* now = tctx_.cur->find(ve->name);
@@ -30041,6 +30322,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
     // destructures the corresponding element.
     std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
         ValueList vals = spread(r);
+        if (!isBinding) decontCopiedElems(vals);   // assignment stores values
         size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
         for (size_t i = 0; i < L->items.size(); i++) {
             Expr* tgt = L->items[i].get();
@@ -31511,12 +31793,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         std::shared_ptr<Env> owner;
                         for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                             if (en->local(sv->name)) { owner = en; break; }
-                        Value* srcSlot = owner ? owner->local(sv->name) : nullptr;
-                        std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
-                        if (!cell && srcSlot && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                            cell = std::make_shared<Value>(*srcSlot);
-                            *srcSlot = makeSharedCellProxy(cell);
-                        }
+                        std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
                         if (!cell) return false;
                         out = makeSharedCellProxy(cell);
                         return true;
@@ -31551,6 +31828,43 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `@b[1] := @a[1]`, `$s[1]<k><sub>[1] := $s[1]<k>` — an ELEMENT bound to
+        // another element's CONTAINER. The source element is promoted to a cell
+        // (a Proxy-cell, the form element storage already reads through) and the
+        // target element shares it: a write through either lands in both, and
+        // `=:=` sees one container.
+        if (a->target->kind == NK::Index && a->value->kind == NK::Index && a->op == ":=") {
+            auto* tix = static_cast<Index*>(a->target.get());
+            auto* six = static_cast<Index*>(a->value.get());
+            auto simple = [](Index* x) {
+                return x->index && !x->multiDim && x->adverb.empty() && x->base &&
+                       (x->base->kind == NK::VarExpr || x->base->kind == NK::Index) &&
+                       x->index->kind != NK::ListExpr && x->index->kind != NK::Range;
+            };
+            auto plainBase = [](const Value& v, bool hash) {
+                return hash ? (v.t == VT::Hash && v.hash() && v.hashKind.empty())
+                            : (v.t == VT::Array && v.arr() && !v.isList && !v.ext() &&
+                               !(v.shape() && !v.shape()->empty()));
+            };
+            if (simple(tix) && simple(six) &&
+                plainBase(eval(tix->base.get()), tix->isHash) && plainBase(eval(six->base.get()), six->isHash)) {
+                Value* src = lvalue(six);
+                std::shared_ptr<Value> cell = src ? cellOfProxy(src) : nullptr;
+                if (src && !cell && !(src->t == VT::Hash && src->hashKind == "Proxy")) {
+                    cell = std::make_shared<Value>(*src);
+                    *src = makeSharedCellProxy(cell);
+                }
+                if (cell) {
+                    if (Value* dst = lvalue(tix)) {
+                        *dst = makeSharedCellProxy(cell);
+                        if (sink) return Value::any();
+                        Value out = *cell;
+                        out.readonly = out.immutableBind = false;
+                        return out;
+                    }
+                }
+            }
+        }
         if (a->op == ":=" && a->target->kind == NK::Index && a->value->kind == NK::VarExpr) {
             auto* ix = static_cast<Index*>(a->target.get());
             auto* sv = static_cast<VarExpr*>(a->value.get());
@@ -31560,12 +31874,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
-                Value* srcSlot = owner ? owner->local(sv->name) : nullptr;
-                std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
-                if (!cell && srcSlot && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                    cell = std::make_shared<Value>(*srcSlot);
-                    *srcSlot = makeSharedCellProxy(cell);
-                }
+                std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
                 if (cell) {
                     Value prox = makeSharedCellProxy(cell);
                     Value base = ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm
@@ -32008,6 +32317,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     owner = at;
                 }
                 if (owner) {
+                    // A source lexical shares a real CELL (Value::isCell): its
+                    // storage slot is promoted once, and a lexical target's
+                    // storage slot holds the same pointer. An attribute target
+                    // and `$_` — read by paths that take the slot's Value as it
+                    // stands — hold a Proxy over that same cell instead. `$_`
+                    // as the SOURCE, and a parameter still linked the old way,
+                    // take the path below.
+                    Value* srcRaw = owner->localRaw(sv->name);
+                    if (sv->name != "$_" && srcRaw && !(owner->ex && owner->ex->rwLinks.count(sv->name)) &&
+                        (srcRaw->isCell() || !(srcRaw->t == VT::Hash && srcRaw->hashKind == "Proxy"))) {
+                        tctx_.rwMirror.clear();
+                        tctx_.rwMirrorSigil = 0;
+                        std::shared_ptr<Value> cell = srcRaw->promoteToCell();
+                        Value* blv = lvalue(a->target.get());
+                        Value* traw = tv->name != "$_" && tv->name[1] != '!' ? tctx_.cur->findRaw(tv->name) : nullptr;
+                        if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
+                        else *blv = makeSharedCellProxy(cell);
+                        return sink ? Value::any() : eval(a->value.get());
+                    }
                     Value* srcSlot = owner->local(sv->name);
                     // …and when the source is an `is rw` PARAMETER, the container
                     // to share is the CALLER's, not the callee's copy of it. The
@@ -33125,14 +33453,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (tv->declare && tv->declScope == "constant") lv->readonly = true;
         }
 
-        // Binding a VALUE into a hash element puts it in the slot with no Scalar
-        // container around it, so that element is immutable afterwards —
-        // `%h<k> := 137` then `%h<k> = 666` is an error, as it is in Rakudo.
+        // Binding a VALUE into a hash or array element puts it in the slot with
+        // no Scalar container around it, so that element is immutable afterwards
+        // — `%h<k> := 137` then `%h<k> = 666` is an error, as it is in Rakudo,
+        // and so is `@a[0;1] := 42` then `@a[0;1] = 100`.
         // Binding something that NAMES a container (`%h<k> := $foo`, Getopt::Long's
         // `%hash{$name} := .value`) aliases that container instead, and writing
         // through the alias is the whole point of it.
-        if (a->op == ":=" && a->target->kind == NK::Index &&
-            static_cast<Index*>(a->target.get())->isHash) {
+        if (a->op == ":=" && a->target->kind == NK::Index) {
             NK rk = a->value->kind;
             if (rk != NK::VarExpr && rk != NK::Index && rk != NK::MethodCall &&
                 rk != NK::Call && rk != NK::SymbolicRef)
@@ -41663,11 +41991,24 @@ Value Interpreter::evalBinary(Binary* b) {
             // containers, and the copy is its own), and reading identity off
             // the payload there made it True.
             // two slots bound to one CONTAINER share its cell (`$b := $a`)
-            else if (lp && rp && cellOfProxy(lp) && cellOfProxy(lp) == cellOfProxy(rp)) same = true;
+            else if (lp && rp && containerId(lp) == containerId(rp)) same = true;
             else same = lp && rp && (lp == rp ||
                                      ((lp->t == VT::Array || lp->t == VT::Hash) && lp->t == rp->t &&
                                       lp->itemized == rp->itemized && lp->pk_ == rp->pk_ &&
                                       lp->p_ && lp->p_ == rp->p_));
+        }
+        // Two ELEMENTS are one container only when they are the same slot, or
+        // were bound to one cell (`@b[1] := @a[1]`); two elements that merely
+        // hold equal values are not (S03-operators/identity.t).
+        // (Only for subscripts with nothing to run twice: the value-identity
+        // fallback below evaluates both sides again.)
+        else if (b->lhs->kind == NK::Index && b->rhs->kind == NK::Index &&
+                 pureSubscript(b->lhs.get()) && pureSubscript(b->rhs.get()) &&
+                 peekElemSlot(static_cast<Index*>(b->lhs.get())) &&
+                 peekElemSlot(static_cast<Index*>(b->rhs.get()))) {
+            Value* lsl = peekElemSlot(static_cast<Index*>(b->lhs.get()));
+            Value* rsl = peekElemSlot(static_cast<Index*>(b->rhs.get()));
+            same = lsl && rsl && containerId(lsl) == containerId(rsl);
         }
         // An ELEMENT against a VARIABLE is container identity too: a slot of
         // an array LITERAL is a fresh container, never the variable that filled
@@ -41694,7 +42035,11 @@ Value Interpreter::evalBinary(Binary* b) {
                             Value* ep = &(*arr->arr())[(size_t)k];
                             const bool epProxy = ep->t == VT::Hash && ep->hashKind == "Proxy";
                             const bool vpProxy = vp->t == VT::Hash && vp->hashKind == "Proxy";
-                            if (cellOfProxy(ep) && cellOfProxy(vp)) { same = cellOfProxy(ep) == cellOfProxy(vp); decided = true; }
+                            // a bound cell on either side decides it (a real cell
+                            // arrives dereferenced, a Proxy-cell by its cell)
+                            if (containerId(ep) != ep || containerId(vp) != vp) {
+                                same = containerId(ep) == containerId(vp); decided = true;
+                            }
                             // two PLAIN slots are two containers; a binding (a proxy
                             // on either side) is judged the old way below
                             else if (!epProxy && !vpProxy) { same = ep == vp; decided = true; }
@@ -46234,7 +46579,18 @@ Value Interpreter::evalCall(Call* c) {
                         if (en->local(nm)) break;
                     }
                 }
-                *lv = (sig == '@') ? Value::array() : (sig == '%') ? Value::makeHash() : dv;
+                // An `@`/`%` variable is emptied IN PLACE: the Array or Hash it
+                // holds is one object, and `my $r = @a` refers to it — Rakudo's
+                // `undefine @a` leaves `+$r` at 0, not at the old count.
+                if (sig == '@' && lv->t == VT::Array && lv->arr() && !lv->ext() && !lv->isList) {
+                    ParStripe ps(*this, lv->arr());
+                    lv->arr()->clear();
+                }
+                else if (sig == '%' && lv->t == VT::Hash && lv->hash() && lv->hashKind.empty()) {
+                    ParStripe ps(*this, lv->hash());
+                    lv->hash()->clear();
+                }
+                else *lv = (sig == '@') ? Value::array() : (sig == '%') ? Value::makeHash() : dv;
             }
             return Value::any();
         }

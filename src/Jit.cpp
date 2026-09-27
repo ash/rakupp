@@ -1126,8 +1126,8 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         Env* owner = nullptr;
         for (Env* e = env; e; e = e->parent.get()) {
             auto it = e->vars.find(n);
-            if (it != e->vars.end()) { cell = &it->second; owner = e; break; }
-            if (e->layout) if (Value* p = e->padFind(n)) { cell = p; owner = e; break; }
+            if (it != e->vars.end()) { cell = it->second.deref(); owner = e; break; }
+            if (e->layout) if (Value* p = e->padFind(n)) { cell = p->deref(); owner = e; break; }
         }
         if (!cell) return refuse(s, "slot " + n + " is not in scope at kernel entry");
         // Only a slot the kernel STORES to has to be a plain container. Every

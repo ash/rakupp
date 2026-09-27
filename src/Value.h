@@ -559,7 +559,14 @@ struct MatchData {
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.
-enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match };
+// Cell: the slot is a SHARED CONTAINER (ROAST-TRACKS-PLAN track A). A variable
+// that a second name was bound to (`:=`, an `is rw`/`is raw`/`\x` parameter, a
+// `for $x -> $v is rw`) holds its Value behind a shared_ptr, and every name
+// bound to it holds the same pointer. Only an Env's storage holds one:
+// Env::find/local and padPtr hand out the Value inside, so a cell is never read
+// as a value of its own. (Array and hash ELEMENTS bound to a container still
+// hold a Proxy over such a shared Value — the form their readers deproxy.)
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell };
 
 struct Value {
     long long i = 0;
@@ -689,6 +696,26 @@ struct Value {
     }
     void setMatch(std::shared_ptr<MatchData> x) { p_ = std::move(x); pk_ = p_ ? PK::Match : PK::None; }
     void clearPayload() { p_.reset(); pk_ = PK::None; }
+    // A shared container (PK::Cell above). The holder itself is inert: the
+    // Value every bound name reads and writes is the one it points to.
+    bool isCell() const { return pk_ == PK::Cell; }
+    std::shared_ptr<Value> cellS() const {
+        return pk_ == PK::Cell ? std::static_pointer_cast<Value>(p_) : nullptr;
+    }
+    static Value cellHolder(std::shared_ptr<Value> c) {
+        Value v; v.p_ = std::move(c); v.pk_ = PK::Cell; return v;
+    }
+    // The container a storage slot stands for: the cell's Value, or the slot.
+    Value* deref() { return pk_ == PK::Cell ? static_cast<Value*>(p_.get()) : this; }
+    const Value* deref() const { return pk_ == PK::Cell ? static_cast<const Value*>(p_.get()) : this; }
+    // Promote this storage slot to a cell (a no-op when it already is one) and
+    // hand back the shared pointer, for a second name to hold.
+    std::shared_ptr<Value> promoteToCell() {
+        if (pk_ == PK::Cell) return std::static_pointer_cast<Value>(p_);
+        auto c = std::make_shared<Value>(std::move(*this));
+        *this = cellHolder(c);
+        return c;
+    }
     // The buffer-steal optimisation asks "am I the only owner?" — that is the
     // SLOT's count (for a List they share one control block, so the number is
     // the same one the old `arr.use_count()` gave).

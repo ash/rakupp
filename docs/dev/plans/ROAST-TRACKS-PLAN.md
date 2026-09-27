@@ -180,6 +180,72 @@ silently copy.
 **Risk:** the highest of the three. A1 changes every variable read. Land A1
 behind the perf gate before A2 grows the surface.
 
+### A1 status (2026-09-27, base `2970b6e5`, not yet committed)
+
+Built on branch `claude/roast-tracks-phase-a-ef6cce`:
+
+- **The cell.** `PK::Cell` in Value.h: an Env storage slot holding
+  `shared_ptr<Value>`. `Env::find`/`local` and `padPtr` dereference it, so no
+  reader sees a holder; `findRaw`/`localRaw` are for the binders. `forEachVar`,
+  the pseudo-stash snapshot, the JIT's slot resolver and the `for` write-backs
+  dereference too.
+- **`:=` between names** promotes the source slot and shares the pointer
+  (`varCell`); a rebind of either name detaches only that name. An attribute
+  or `$_` target holds a Proxy over the same cell. `my $x := 42` and
+  `my \z := once 42` are immutable, and still rebindable.
+- **`is rw` / `is raw` / `\x` parameters** given a plain `$` variable bind
+  its cell (`bindArgCell`): no `rwLinks`, no copy-out. Other arguments keep
+  the link path. `return-rw` of such a parameter hands out the cell.
+- **`for $a -> $v is rw`** binds `$a`'s cell.
+- **Elements.** `@b[1] := @a[1]` (and hash/array mixes) share a Proxy-cell;
+  `=:=` between elements compares slots (`peekElemSlot`, `containerId`, which
+  also sees through take-rw's compact slot aliases). List and hash assignment
+  store values (`decontCopied`): readonly flags and bound Proxies stay behind.
+- Also: `0 := 1` is X::Bind; `undefine @a` / `%h` empties the one aggregate
+  in place; `f() = v` on a non-rw user routine runs `f` before refusing.
+
+Flipped: `S03-binding/scalars.t`, `S03-binding/nested.t`,
+`S03-binding/hashes.t`, `S03-operators/identity.t`,
+`S04-statements/for_with_only_one_item.t`, `S04-statements/once.t`,
+`S09-multidim/indexing.t`, `S32-scalar/undef.t`; `S03-binding/arrays.t`
+45 → 46, `S06-routine-modifiers/proxy.t` 24 → 25.
+
+Gates: Roast 1,267 → 1,275 of 1,434 with no file worse per file and
+denominator (two runs; `pick.t` test 68 and `bug-coverage-stress.t` test 3
+are random on the base too); t/regression unchanged plus
+`cell-rebind-and-alias-identity.raku`; `t/run.raku` 1111/1111; perf-guard A/B
+(three interleaved rounds, best-of): `subcall` −15%, `junctionwide` −5%,
+`asg`/`attrread`/`rats`/`strpass`/`method` +1.7–2.4%, the rest within ±1%.
+An experiment build with the dereference compiled out brought `attrread`,
+`method`, `loopsum` and the multi kernels back to base, so the cell check on
+every variable read costs them ~2%. It did not bring back `asg` or `rats`: a
+thread-local read that evalAssign made ahead of its cheap tests did, and moving
+it behind them halved both.
+
+Left from the A1 list:
+
+- `S06-traits/is-rw.t` 6–7 (`%h.pairs[0].value = 42`) is a VIEW, so A2. Rakudo
+  aliases the hash's containers from every Pair a plain Hash hands out (also
+  through `my @a = %h`); Map and Set pairs are read-only. ValueHash keeps its
+  entries in a `std::deque`, so a Pair can hold an aliasing `shared_ptr` into
+  the entry (cheaper than today's copy). The one hazard is `clear()`/assignment
+  destroying entries a Pair still points into; a graveyard for hashes that
+  handed out aliases covers it.
+- `S06-traits/slurpy-is-rw.t` needs ELEMENT containers (A2).
+- `proxy.t` 26: a `class History is Proxy { has @.history }` needs a default
+  `.new` building a stamped Proxy, and accessor dispatch on it. That is
+  Proxy subclassing rather than containers.
+
+**The A2 decision: what an element holds.** Env slots have one read path;
+elements have hundreds (`for (auto& e : *arr())`). Today a bound element holds
+a Proxy-cell and a handful of readers deproxy it (gist, raku, eqv, deepEq,
+element fetch). Measured on `@b[1] := $x`: `sum`, `map`, `join`, `Str` are
+right; `sort`, `max` and `>>+>>` are wrong or die. A PK::Cell holder in an
+element would leak the same way, as an `Any`. A2 needs either a per-list
+"holds containers" mark checked at the list consumers' entry points
+(method dispatch, operators, assignment), or views that alias into stable
+storage the way the hash Pair above does.
+
 ### Files
 
 Harness counts are `b3119f71`'s. "Also" names failures in the file that belong
