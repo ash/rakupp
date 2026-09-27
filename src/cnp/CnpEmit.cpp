@@ -150,7 +150,11 @@ bool makeExecutable(const Mapping& m) {
     }
 #  if defined(__APPLE__)
     ::sys_icache_invalidate(m.p, m.n);
-#  else
+#  elif !defined(__wasm__)
+    // Never for WebAssembly: clang cannot lower the builtin there, and it
+    // failed the Raku.js build outright. Nothing is lost, since wasm cannot
+    // execute out of linear memory, and checkTable() has already answered
+    // "no patcher for this instruction set" before anything maps a buffer.
     __builtin___clear_cache((char*)m.p, (char*)m.p + m.n);
 #  endif
     return true;
