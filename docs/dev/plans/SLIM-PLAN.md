@@ -70,7 +70,10 @@ half of what it carried. `nm` finds no `emitJitKernel` or `transpileToCpp` in
 a compiled binary now, and 77 of them in the CLI. The gate comes back to
 ≤ 8.75 MB for `-all`, bare `--slim` ≤ 9.0 MB — not to the pre-JIT 8.0, which
 would clear the dev box's 8,254,168 by only 134 KB and the derived x86_64
-figure (≈8,766,000) not at all.*
+figure (≈8,766,000) not at all. The budgets are now 11.0 MB and 11.25 MB
+(2026-09-27): three days of Roast work took hello-all from 8,655,992 to
+10,342,488. It was reachable engine code with nothing to carve; the
+measurement is in `t/slim/run.raku`.*
 
 ---
 

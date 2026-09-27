@@ -115,6 +115,8 @@ fi
 
 # _GNU_SOURCE: the recursion guard uses pthread_getattr_np (a GNU/musl extension)
 #   inside a graceful `if (... == 0)`; exposing it keeps that path compiling.
+# RAKUPP_HAVE_ICONV: Emscripten's musl carries iconv in libc, so gb2312, gb18030
+#   and windows-932 go through it as on Linux (CMake decides this natively).
 # -fexceptions: JavaScript-based C++ exception handling. The interpreter uses C++
 #   exceptions heavily — both for errors (ParseError / RakuError) AND for control
 #   flow (`last` / `next` / `redo`, and `when`/`succeed`). We deliberately do NOT
@@ -146,6 +148,7 @@ fi
 em++ \
   -std=c++17 "$OPT" \
   -D_GNU_SOURCE \
+  -DRAKUPP_HAVE_ICONV \
   -DRAKUPP_VERSION="\"$VERSION\"" \
   -I"$SRC_DIR" \
   -I"$ROOT_DIR/include" \

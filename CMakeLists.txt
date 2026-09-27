@@ -378,10 +378,26 @@ target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 # runs in manylinux 2.28, whose glibc 2.28 still keeps libdl apart, and there
 # dlopen/dlsym/dlclose/dlerror went unresolved at the executable link.
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
-# the CJK encodings (gb2312, gb18030, windows-932) go through iconv, which glibc
-# carries in libc and macOS ships as a library of its own
+# the CJK encodings (gb2312, gb18030, windows-932) go through iconv where the
+# platform has it without a port: in libc (glibc, musl, FreeBSD, NetBSD) or, on
+# macOS, as a system library of its own. OpenBSD keeps iconv in a package under
+# /usr/local and Windows has none, so there RAKUPP_HAVE_ICONV stays unset and the
+# three encodings are simply absent. `--exe` links the same way (src/main.cpp).
+# Windows is ruled out by name: an MSYS2 libiconv header #defines iconv_open,
+# which check_symbol_exists accepts without linking anything.
+set(RAKUPP_HAVE_ICONV OFF)
 if(APPLE)
+  set(RAKUPP_HAVE_ICONV ON)
   target_link_libraries(rakupp_rt PUBLIC iconv)
+elseif(NOT WIN32)
+  include(CheckSymbolExists)
+  check_symbol_exists(iconv_open "iconv.h" RAKUPP_ICONV_IN_LIBC)
+  if(RAKUPP_ICONV_IN_LIBC)
+    set(RAKUPP_HAVE_ICONV ON)
+  endif()
+endif()
+if(RAKUPP_HAVE_ICONV)   # its one caller; any new one joins this list
+  set_property(SOURCE src/MethodCallPart3.cpp APPEND PROPERTY COMPILE_DEFINITIONS RAKUPP_HAVE_ICONV)
 endif()
 # On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
 # so the rk_* extension ABI lands in the export table of whatever links this
@@ -443,6 +459,9 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
                                                   "${CMAKE_CURRENT_SOURCE_DIR}/include"
                                                   "${CMAKE_CURRENT_SOURCE_DIR}/include/rakupp")
   target_link_libraries(rakupp_shared PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+  if(APPLE)
+    target_link_libraries(rakupp_shared PUBLIC iconv)   # as rakupp_rt, above
+  endif()
   target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)
   set_target_properties(rakupp_shared PROPERTIES
     OUTPUT_NAME rakupp

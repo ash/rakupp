@@ -8,10 +8,9 @@
 #include "BuiltinsShared.h"
 #include "Parser.h"
 #include <fcntl.h>
-#if !defined(_WIN32)
+#ifdef RAKUPP_HAVE_ICONV   // CMakeLists.txt: iconv in libc, or macOS's libiconv
 #include <iconv.h>
 #endif
-#include <unistd.h>
 #include <cerrno>
 #include <filesystem>
 #include <cstring>   // rakuppFindModuleSource: is `L10N::<lang>` installed at all?
@@ -2710,11 +2709,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return f;
             }
         }
-        // .lock/.unlock (flock): rakupp handles are buffered (no live OS fd), so
-        // there is nothing to flock; report success. Cross-PROCESS exclusion (zef's
-        // lock-file-protect guards concurrent zef runs) is thus not provided — fine
-        // for a single interpreter process, revisit if real fd-backed IO lands.
+        // .lock/.unlock: rakupp handles are buffered (no live OS fd), so the lock
+        // is taken on a descriptor of our own, below. Windows has no POSIX record
+        // locks: there .lock reports success and keeps no other process out.
         if (m == "lock" || m == "unlock") {
+#ifdef _WIN32
+            return Value::boolean(true);
+#else
             // An EXCLUSIVE lock needs a writable handle; the kernel refuses one
             // on a read-only descriptor, and a program that locks before writing
             // reads that refusal as "somebody else holds it". A shared lock is
@@ -2791,6 +2792,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             (*inv.hash())["lockfd"] = Value::integer(fd);
             return Value::boolean(true);
+#endif
         }
         // `.tell` — the handle's current offset. A STD handle asks the real fd
         // (so a redirected $*OUT reports the bytes written, which is how
@@ -3923,7 +3925,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // Shift-JIS (windows-932) — go through the platform's iconv, which has
         // their tables. Encoding runs a character at a time, so an unencodable
         // one can take the :replacement (itself encoded the same way).
-#if !defined(_WIN32)
+#ifdef RAKUPP_HAVE_ICONV
         static const std::map<std::string, const char*> kIconv = {
             {"gb2312", "GB2312"}, {"gb18030", "GB18030"},
             {"shiftjis", "CP932"}, {"windows932", "CP932"}, {"cp932", "CP932"}};

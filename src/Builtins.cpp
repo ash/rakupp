@@ -5697,6 +5697,11 @@ static std::string ctorParamStr(const Value& p, bool inSignature) {
     return out;
 }
 
+// (defined with makeAsyncSocket below). At namespace scope, not as a block-scope
+// `extern` inside methodCallInner: MSVC gives a block-scope declaration GLOBAL
+// linkage, so the call went unresolved against this rakupp:: definition.
+bool asyncSockAddrFwd(const std::string&, int, sockaddr_storage&, socklen_t&);
+
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
                                    bool skipOwn) {
     // The invocant arrives BY REFERENCE. It used to be by value, which cost a
@@ -8314,6 +8319,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 (a.pairVal()->enumName == "PF_UNIX" || a.pairVal()->enumName == "PF_LOCAL")) unixFam = true;
         if (unixFam) {
             const std::string path = listen ? localhost : host;
+#ifdef _WIN32
+            // Winsock has no <sys/un.h>; its AF_UNIX (afunix.h, Windows 10 1803+)
+            // is not wired up, so the family is refused rather than mis-dialled
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string(listen ? "Cannot listen on " : "Cannot connect to ") +
+                            path + ": UNIX-domain sockets are not supported on Windows"};
+#else
             int fd = socket(AF_UNIX, SOCK_STREAM, 0);
             if (fd < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot create a socket: " + std::string(std::strerror(errno))};
             sockaddr_un ua{}; ua.sun_family = AF_UNIX;
@@ -8330,6 +8341,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*s.hash())["unix"] = Value::boolean(true);
             (*s.hash())[listen ? "localhost" : "peerhost"] = Value::str(path);
             return s;
+#endif
         }
         if (listen) splitHostPort(localhost, localport);
         else        splitHostPort(host, port);
@@ -8997,8 +9009,6 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         if (m == "is-empty") return Value::boolean(buf.s.empty());
     }
-    // (defined with makeAsyncSocket below)
-    extern bool asyncSockAddrFwd(const std::string&, int, sockaddr_storage&, socklen_t&);
     // IO::Socket::Async — the async TCP surface Cro drives. listen() returns a
     // Supply that binds/accepts when tapped (see tapSupply); connect() returns a
     // kept Promise of a connected socket.

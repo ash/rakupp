@@ -39,10 +39,11 @@ my $rt = $BUILD.add('librakupp_rt.a');
 # The runtime is a SET of archives since the SLIM split (P2): the core plus the
 # four feature groups. rt and parse reference each other, so single-pass GNU ld
 # needs the group; ld64 iterates archives on its own and has no --start-group.
+# macOS keeps iconv (the CJK encodings) in a library of its own, as --exe knows.
 my @rtset = $rt.Str,
             |<ucd_names ucd_coll ucd_props parse>.map({ $BUILD.add("librakupp_$_.a").Str });
 my @rtlink = $*KERNEL.name eq 'darwin'
-    ?? @rtset
+    ?? (|@rtset, '-liconv')
     !! ('-Wl,--start-group', |@rtset, '-Wl,--end-group');
 if $rt.e {
     $checked++;

@@ -14014,14 +14014,19 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // type for the name (the stub matched too, and the later one
                 // won the slot); building it here, in place of the stub, is
                 // what makes the name usable in between.
+                bool builtNow = false;
                 if (!classes_.count(clsName)) {
                     auto pend = pendingTypes_.find(cd->name);
                     if (pend != pendingTypes_.end() && pend->second != cd && !pend->second->isStubDecl)
-                        materializePendingType(cd->name);
+                        builtNow = materializePendingType(cd->name);
                 }
                 auto ex = classes_.find(clsName);
                 stubOverCompleted = ex != classes_.end() && ex->second &&
                                     !(ex->second->decl && ex->second->decl->isStubDecl);
+                // …and the completion built here never passes through the
+                // stub, so the forward declaration's repr (below) would be lost
+                if (builtNow && stubOverCompleted && ex->second->repr.empty() && !ci->repr.empty())
+                    ex->second->repr = ci->repr;
             }
             // A FORWARD DECLARATION carries the REPRESENTATION, and the body
             // that follows does not repeat it: `class FT_Library is
