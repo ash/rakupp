@@ -1665,7 +1665,13 @@ static size_t interpChainEnd(const std::string& src, size_t p) {
         // `.'name'()` / `."name"()` — an indirect method name, parens required
         if (q + 2 < n && src[q] == '.' && (src[q + 1] == '\'' || src[q + 1] == '"')) {
             size_t qe = src.find(src[q + 1], q + 2);
-            if (qe != std::string::npos && qe + 1 < n && src[qe + 1] == '(') {
+            // (a name with WHITESPACE in it is no method name: `"|$x."f "()"`
+            // is a string, a word and another string — misc-interpolation.t)
+            bool spaced = false;
+            if (qe != std::string::npos)
+                for (size_t k = q + 2; k < qe; k++)
+                    if (src[k] == ' ' || src[k] == '\t' || src[k] == '\n') { spaced = true; break; }
+            if (qe != std::string::npos && !spaced && qe + 1 < n && src[qe + 1] == '(') {
                 size_t e = balancedGroupEnd(src, qe + 1);
                 if (e == std::string::npos) break;
                 q = e;
@@ -2913,6 +2919,14 @@ Token Lexer::lexIdentOrVar() {
             while (peek() == ':' && peek(1) == ':' && (isIdentStart(peek(2)) || (unsigned char)peek(2) >= 0x80)) {
                 name += advance(); name += advance();
                 consumeIdentChars(name);
+            }
+            // `my $foo::` — a TRAILING `::` is part of the name, and names a
+            // different variable from `$foo` (S02-names/symbolic-deref.t). Only
+            // a scalar ending there: `%Foo::` is the stash, read elsewhere.
+            if (sig == '$' && peek() == ':' && peek(1) == ':' &&
+                (peek(2) == ';' || peek(2) == ' ' || peek(2) == '\t' || peek(2) == '\n' ||
+                 peek(2) == ')' || peek(2) == ',' || peek(2) == '\0')) {
+                name += advance(); name += advance();
             }
             // `$a::::b` — an empty package segment is a null name component
             if (peek() == ':' && peek(1) == ':' && peek(2) == ':' && peek(3) == ':')

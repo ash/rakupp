@@ -115,6 +115,8 @@ static const std::unordered_set<std::string> kNeedsEndKeyword = {
     // …and the scope declarators, which took `my()` for a declaration of
     // nothing and warned about the useless `()` rather than calling the sub
     "my", "our", "state", "constant",
+    // …and `sub` itself: `sub sub($x) {…}; sub('x')` (S02-names/identifier.t)
+    "sub",
 };
 
 // every keyword that can follow a statement as a modifier — `with` and `without`
@@ -1350,6 +1352,10 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // reports "Calling withargs() will never work", i.e. no arguments).
             // parsePostfix owns the tight form, as it does for `foo[10]`.
             if (t.text == "<") return t.spaceBefore;
+            // a `\` TIGHT against the name is no capture argument: `b\n` is a
+            // term and then bogus code (ternary.t) — in EVAL'd snippets only,
+            // as for the tight quote above
+            if (t.text == "\\" && !t.spaceBefore && strictSep_) return false;
             return t.text == "!" || t.text == "~" || t.text == "\\" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `say +^$x`
@@ -1469,6 +1475,14 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // `say` took no arguments and `div` was the operator between them —
             // the reason a `<div>` tag builder could not be called.
             if (wordInfix.count(t.text) && wordInfixSubs_.count(t.text)) return true;
+            // After an output LISTOP, a loose word infix is its argument — a call
+            // of a routine by that name, which Rakudo then reports undeclared:
+            // `say and die 73266` never dies 73266 (S03-operators/precedence.t).
+            // In EVAL'd snippets only, as for the tight-quote rule above.
+            if (strictSep_ && (lhsName == "say" || lhsName == "print" || lhsName == "put" || lhsName == "note") &&
+                (t.text == "and" || t.text == "or" || t.text == "xor" || t.text == "andthen" ||
+                 t.text == "orelse" || t.text == "notandthen"))
+                return true;
             if (wordInfix.count(t.text)) return false;
             // …and a METAOP over one of them is just as much an infix: `rand Rxx 5`,
             // `@a Zcmp @b`, `$x RRxx 5`. Read as an argument instead, the metaop
@@ -7828,7 +7842,7 @@ ExprPtr Parser::parsePrimary() {
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 return u;
             }
-            if (name == "sub" || name == "method") {
+            if ((name == "sub" || name == "method") && !kwCallHere(name)) {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
                 be->pod = leadingPodFor(cur().line); be->podLine = cur().line;

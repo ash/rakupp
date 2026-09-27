@@ -391,6 +391,10 @@ struct EnvExtras {
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
+    // …of those, the ones whose default is a TYPE OBJECT given by `is default`
+    // on an UNTYPED variable: a reset value, not a constraint
+    // (`my $a is default(Int) = "foo"` lives — advent2013-day20.t)
+    std::set<std::string> varDefaultUntyped;
     // Variables declared with a COERCION type (`my Int() $x`). The declaration
     // site carries it on the VarExpr, but a later `$x = "7"` is a different
     // VarExpr with nothing on it, so the coercion has to live with the variable
@@ -987,6 +991,10 @@ struct ExecContext {
     // depth fills lvalueOut with lvalue(operand) — its target lives in the
     // object's shared containers, so the pointer survives the frame.
     const Value* leaveResult = nullptr; // the routine's return value while its LEAVE-time phasers run (POST's $_)
+    // a LEAVE that ran `return X` (`LEAVE return 1`): X replaces the value of a
+    // routine leaving NORMALLY — set by runLeavePhasers, read right after it
+    bool leaveReturned = false;
+    Value leaveReturnV;
     const RakuError* leaveError = nullptr; // the exception a block is being left by, while its LEAVEs run ($!)
     const std::string* arityCallName = nullptr; // the name a checked call was WRITTEN with (see the arity check)
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
@@ -1833,6 +1841,10 @@ public:
     // lookup must not run per dispatch.
     const std::string& typeAliasTarget(const std::string& name);
     std::unordered_map<std::string, std::string> typeAliasCache_;
+    // `.^add_fallback(&condition, &calculator)`, keyed by type name: consulted
+    // for a method nothing else answers (S12 fallbacks; advent2013-day09 adds
+    // one to the built-in Pair)
+    std::map<std::string, std::vector<std::pair<Value, Value>>> addedFallbacks_;
     bool typeMatchesResolved(const Value& v, const std::string& type); // type objects only: subset names resolve to their base chain, and UInt tolerates undefined (Rakudo's core UInt guards definedness in its where)
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam

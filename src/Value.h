@@ -340,6 +340,7 @@ struct Callable {
     std::shared_ptr<const PadLayout> padLayout;
     PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
     PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
+    PublishedOnce<signed char> protoTypedScan{-1}; // 1 = a multi group whose proto types a positional
     // The registered END phasers nested anywhere in this body (issue #70): every
     // call re-captures them, so they run at exit in the scope of the LAST call.
     // Decided at first call — the registry that knows them is shared, this
@@ -709,6 +710,14 @@ struct Value {
     const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
     const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
     const std::shared_ptr<Value>& pairKey() const { return xr().pairKey; }
+    // The ELEMENT a hash slot remembers on its stored value (a QuantHash's
+    // original element, an object hash's key object). A stored PAIR's pairKey
+    // is that Pair's own key, never the slot's: `%h<a> = 1 => 2` must list as
+    // `a`, and it listed as `1`.
+    const std::shared_ptr<Value>& elemKey() const {
+        static const std::shared_ptr<Value> none;
+        return t == VT::Pair ? none : xr().pairKey;
+    }
     const std::shared_ptr<Value>& elemDefault() const { return xr().elemDefault; }
     const std::shared_ptr<void>& ext() const { return xr().ext; }
     const std::shared_ptr<std::vector<long long>>& shape() const { return xr().shape; }

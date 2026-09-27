@@ -2102,7 +2102,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if ((m == "add" || m == "child") && inv.enumName == "Win32" && args.size() == 1 && args[0].t != VT::Pair) {
                 std::string b = inv.s, part = args[0].toStr();
                 std::string r;
-                if (!b.empty() && (b.back() == '\\' || b.back() == '/')) r = b + part;
+                if (b == ".") r = part;   // `.child` of the cwd is just the part (io-path-win.t)
+                else if (!b.empty() && (b.back() == '\\' || b.back() == '/')) r = b + part;
                 else r = b + "\\" + part;
                 return flav(r);
             }
@@ -4595,7 +4596,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // A Seq, not an Array — `Nil.ords` is `().Seq` (S02-types/nil.t). It said
     // Array until `eqv` learned to tell the two apart, at which point the test
     // stopped passing for the wrong reason.
-    if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr()->push_back(Value::integer(cp)); return out; }
+    // …and it warns on the way, as Nil does wherever it reaches string context.
+    if (m == "ords") { if (inv.t == VT::Nil) warnUninit("Use of Nil in string context"); Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr()->push_back(Value::integer(cp)); return out; }
     // `Any.nl-out` — documented on Any as returning the string "\n" (the output
     // line ending an IO::Handle would use). It is a plain constant there; the
     // per-handle value lives on IO::Handle.
@@ -5593,6 +5595,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::integer(c[0]);
     }
     if (m == "chr") {
+        if (inv.t == VT::Str && !inv.isAllomorph() && inv.hashKind.empty()) return rtBChr(*this, inv);
         long long cp = inv.big() ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
         if (cp < 0 || cp > 0x10FFFF)
             throw RakuError{Value::typeObj("X::AdHoc"),

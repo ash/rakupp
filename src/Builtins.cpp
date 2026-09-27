@@ -1767,7 +1767,7 @@ std::string objHashKeyType(const Value& h) {
 // Str. That is the pre-existing gap — Hash keys being plain strings — narrowed to
 // where it actually bites rather than papered over with a guess.
 Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
-    if (stored.pairKey()) return *stored.pairKey();
+    if (stored.elemKey()) return *stored.elemKey();
     // An object-keyed hash remembers what the subscript actually named (see
     // ValueHash::objKeys_) — the string is only how the payload indexes it.
     if (h.t == VT::Hash && h.hash())
@@ -2982,10 +2982,10 @@ ValueList toList(const Value& v) {
             // a plain Str key IS the index, and attaching it as a key object
             // made the pair render in the arrow form (`"a" => 42`) where
             // Rakudo writes `:a(42)`.
-            if (kv.second.pairKey()) {
-                const Value& pk2 = *kv.second.pairKey();
+            if (kv.second.elemKey()) {
+                const Value& pk2 = *kv.second.elemKey();
                 if (!(pk2.t == VT::Str && pk2.hashKind.empty() && pk2.enumName.empty() && pk2.s == kv.first))
-                    p.pairKeyM() = kv.second.pairKey();
+                    p.pairKeyM() = kv.second.elemKey();
             }
             else if (objHash) {
                 Value rk = hashEntryKey(v, kv.first, kv.second);
@@ -6953,7 +6953,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "dynamic") { // a $*twigil variable is dynamic
             auto it = inv.hash()->find("name");
             std::string n = it != inv.hash()->end() ? it->second.toStr() : "";
-            return Value::boolean(n.size() > 1 && n[1] == '*');
+            // …and so are the match and error variables (`$/.VAR.dynamic`)
+            return Value::boolean((n.size() > 1 && n[1] == '*') || n == "$/" || n == "$!");
         }
         if (m == "default") { auto it = inv.hash()->find("default"); return it != inv.hash()->end() ? it->second : Value::any(); }
         if (m == "of")      { auto it = inv.hash()->find("default"); return (it != inv.hash()->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
@@ -7269,7 +7270,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                          "lsb", "msb", "pred", "succ", "polymod", "sqrt-rem"}},
                 {"Num", {"Bool", "Int", "Num", "Rat", "Str", "Range", "pred", "succ", "rand"}},
                 {"Rat", {"Bool", "Int", "Num", "Rat", "Str", "nude", "numerator", "denominator",
-                         "norm", "base-repeating"}},
+                         "norm", "base-repeating", "round", "floor", "ceiling", "log", "succ", "pred",
+                         "isNaN", "raku", "FatRat"}},
                 {"Map", {"AT-KEY", "EXISTS-KEY", "keys", "values", "kv", "pairs", "antipairs",
                          "elems", "Bool", "Str", "gist", "raku", "Hash", "Map", "invert"}},
                 {"Hash", {"ASSIGN-KEY", "BIND-KEY", "DELETE-KEY", "STORE", "classify-list",
@@ -7322,7 +7324,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if ((mm == "methods" || mm == "method_names" || mm == "attributes") &&
             !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s))) &&
             !(mm == "attributes" && tobj.t == VT::Type &&
-              (tobj.s == "DateTime" || tobj.s == "Date" || tobj.s == "Attribute"))) {
+              (tobj.s == "DateTime" || tobj.s == "Date" || tobj.s == "Attribute" ||
+               tobj.s == "Rat" || tobj.s == "FatRat"))) {
             Value o = Value::array(); o.isList = true; return o;
         }
         // `T.^foo(…)` IS `T.HOW.foo(T, …)`, and nothing above answered — so ask
@@ -8037,6 +8040,40 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // `Pair.Pair` — a Pair type object coerces to itself
     if (inv.t == VT::Type && inv.s == "Pair" && m == "Pair") return inv;
+    // `T.^add_fallback(-> $obj, $name { … }, -> $obj, $name { method })`
+    if ((m == "^add_fallback" || m == "add_fallback") && inv.t == VT::Type && args.size() == 2 &&
+        args[0].t == VT::Code && args[1].t == VT::Code) {
+        addedFallbacks_[std::string(inv.s.c_str())].emplace_back(args[0], args[1]);
+        return Value::nil();
+    }
+    // `.^enum_value_list` / `.^enum_values` of a CORE enum, its members in
+    // declaration order (IO-Socket-INET.t picks an Int no ProtocolFamily
+    // member has with `(0...*).first(ProtocolFamily.^enum_value_list.none)`)
+    // (reached with the `^` already stripped on some routes, so both spellings)
+    if (inv.t == VT::Type && (m == "^enum_value_list" || m == "^enum_values" ||
+                              m == "enum_value_list" || m == "enum_values")) {
+        static const std::map<std::string, std::vector<const char*>> kCoreEnums = {
+            {"Bool", {"False", "True"}},
+            {"Order", {"Less", "Same", "More"}},
+            {"PromiseStatus", {"Planned", "Kept", "Broken"}},
+            {"Endian", {"NativeEndian", "LittleEndian", "BigEndian"}},
+            {"SeekType", {"SeekFromBeginning", "SeekFromCurrent", "SeekFromEnd"}},
+            {"ProtocolType", {"PROTO_TCP", "PROTO_UDP"}},
+            {"ProtocolFamily", {"PF_UNSPEC", "PF_INET", "PF_INET6", "PF_LOCAL", "PF_UNIX", "PF_MAX"}},
+        };
+        auto ce = kCoreEnums.find(std::string(inv.s.c_str()));
+        if (ce != kCoreEnums.end()) {
+            Value out = Value::array(); out.isList = true;
+            Value mp = Value::makeHash(); mp.hashKind = "Map";
+            for (const char* nm : ce->second) {
+                Value ev;
+                if (!coreEnumValue(nm, ev)) continue;
+                out.arr()->push_back(ev);
+                (*mp.hash())[nm] = Value::integer(ev.t == VT::Bool ? (ev.b ? 1 : 0) : ev.toInt());
+            }
+            return (m == "^enum_values" || m == "enum_values") ? mp : out;
+        }
+    }
     // `Bool.enums` — the built-in enum's Map
     if (inv.t == VT::Type && inv.s == "Bool" && m == "enums") {
         Value mp = Value::makeHash(); mp.hashKind = "Map";
@@ -9302,7 +9339,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (!coerceTarget.empty()) { if (out.hash()) out.ofTypeM() = inv.ofType(); return out; }
         if (!inv.ofType().empty() && out.hash()) { // Set[Str].new(...) enforces the key type
             for (auto& kv : *out.hash()) {
-                Value orig = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                Value orig = kv.second.elemKey() ? *kv.second.elemKey() : Value::str(kv.first);
                 if (!typeOrSubsetMatches(orig, inv.ofType()))
                     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                         "Type check failed for " + inv.s + " key; expected " +
@@ -10032,7 +10069,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
                   }
         }
-        if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
+        if (m == "close") {
+            { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); }
+            // A `whenever $c` / `$c.Supply` reader gets to see everything sent
+            // before the close returns: `$c.close; is-deeply @seen, …` right
+            // after the last send (S17-channel/basic.t) found the reader still
+            // parked between polls. Bounded, and never from the reader itself.
+            auto readers = [&]() {
+                std::lock_guard<std::recursive_mutex> lk(chm);
+                auto it = inv.hash()->find("supplyReaders");
+                return it != inv.hash()->end() ? it->second.toInt() : 0;
+            };
+            if (!t_isWorker && readers() > 0) {
+                auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                while (readers() > 0 && std::chrono::steady_clock::now() < until) {
+                    if (gilHeld_) yieldToWorkerFor(0.02);
+                    else std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            return Value::boolean(true);
+        }
         // a Channel has no element count: it is a stream (Rakudo refuses)
         if (m == "elems" && args.empty())
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot determine number of elements on a Channel"};
@@ -10118,7 +10174,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 (*s.hash())["supplier"] = (*inv.hash())["supplier"];
                 return s;
             }
-            Value o = Value::array(); *o.arr() = q; o.isList = true; return o;
+            // Any other channel is Rakudo's on-demand `supply { whenever $c {
+            // emit … } }`: each tap reads what is sent from then on and is done
+            // when the channel closes (rakudo#1974, S17-channel/basic.t). It
+            // answered a snapshot LIST, which nothing could tap.
+            auto env = std::make_shared<Env>();
+            env->parent = tctx_.cur ? tctx_.cur : global_;
+            env->define("$__rakupp_chan", inv);
+            auto saved = tctx_.cur;
+            tctx_.cur = env;
+            struct Restore { ExecContext& t; std::shared_ptr<Env> e; ~Restore() { t.cur = e; } } restore{tctx_, saved};
+            return evalString("supply { whenever $__rakupp_chan -> \\v { emit v } }");
         }
         if (m == "elems") { std::lock_guard<std::recursive_mutex> lk(chm); return Value::integer((long long)q.size()); }
     }
@@ -11172,6 +11238,30 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return invokeMethod(*fb, inv, fargs);
             }
     }
+    // …and the fallbacks `.^add_fallback` registered, for the invocant's type
+    // or any class it inherits from: the first whose condition takes the name
+    // computes the method, which is then called like any other
+    if (!addedFallbacks_.empty()) {
+        std::vector<std::string> names;
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls)
+            for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get()) names.push_back(c->name);
+        else names.push_back(inv.t == VT::Type ? std::string(inv.s.c_str()) : inv.typeName());
+        for (auto& tn : names) {
+            auto fit = addedFallbacks_.find(tn);
+            if (fit == addedFallbacks_.end()) continue;
+            auto fbs = fit->second;   // a copy: a fallback may add another
+            for (auto& fb : fbs) {
+                ValueList ca{inv, Value::str(m)};
+                if (!callCallable(fb.first, ca).truthy()) continue;
+                ValueList ka{inv, Value::str(m)};
+                Value meth = callCallable(fb.second, ka);
+                ValueList margs; margs.reserve(args.size() + 1);
+                margs.push_back(inv);
+                for (auto& a : args) margs.push_back(a);
+                return callCallable(meth, margs);
+            }
+        }
+    }
     // A grammar's RULE is also a method: `G.new.some-rule` is legal Raku. With no
     // string to match it starts on an empty cursor and fails, so Rakudo hands back
     // a falsy Cursor. Answer an undefined Match, which is falsy and matches
@@ -11994,6 +12084,14 @@ void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCt
 
 Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
+    // counted on the channel, so `.close` can let this reader drain first
+    auto readerDelta = [](Value& c, long long d) {
+        if (!c.hash()) return;
+        std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(c.hash()));
+        auto& n = (*c.hash())["supplyReaders"];
+        n = Value::integer((n.t == VT::Int ? n.toInt() : 0) + d);
+    };
+    readerDelta(chan, 1);
     ctx->pending++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
@@ -12019,7 +12117,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         return Value::any();
     });
     throttleSpawn();
-    addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope]() mutable {
+    addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope, readerDelta]() mutable {
         t_isWorker = true;
         // Parallel mode has no GIL discipline; under the GIL this holds the lock
         // and yieldToWorkerFor cycles it (see spawnChannelWhenever — taking it
@@ -12062,6 +12160,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         for (auto& ph : lastP) { ValueList na; try { self->callCallable(ph, na); } catch (...) {} }
         ctx->pending--;
         try { self->maybeFinishSupply(ctx); } catch (...) {}
+        readerDelta(chan, -1);
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
@@ -13559,7 +13658,11 @@ Value rtBAbsSlow(Interpreter& I, const Value& v) {
     ValueList none;
     return I.methodCall(v, "abs", none);   // full semantics: augment, objects, junctions, Rat/big/Num
 }
-Value rtBChr(Interpreter&, const Value& v) {
+Value rtBChr(Interpreter& I, const Value& vIn) {
+    // a STRING numifies as Raku reads numbers first: `"0x50".chr` is "P"
+    // (integration/advent2009-day08.t)
+    Value v = vIn;
+    if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty()) v = I.methodCall(v, "Int", ValueList{});
     long long cp = v.big() ? LLONG_MAX : v.toInt();
     if (cp < 0 || cp > 0x10FFFF)
         throw RakuError{Value::typeObj("X::AdHoc"),
@@ -15750,7 +15853,18 @@ void Interpreter::registerBuiltins() {
             ValueList rest(a.begin() + 1, a.end());
             return I.methodCall(a[0], "words", rest);
         }
-        else { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
+        // words() is $*ARGFILES.words — a $*ARGFILES the program set, else
+        // the files in @*ARGS, else standard input
+        {
+            Value* set = I.tctx_.cur ? I.tctx_.cur->find("$*ARGFILES") : nullptr;
+            Value argv = I.liveArgs();
+            if ((set && set->t == VT::Hash) || (argv.arr() && !argv.arr()->empty())) {
+                VarExpr af("$*ARGFILES");
+                Value h = I.eval(&af);
+                return I.methodCall(h, "words", ValueList(a.begin(), a.end()));
+            }
+        }
+        { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
         std::istringstream ws(all);
         while (ws >> w) out.arr()->push_back(Value::str(w));
         return out;
@@ -18382,6 +18496,9 @@ void Interpreter::registerBuiltins() {
         // …and the same for grep: the method form pulls lazily, this one did not
         if (a.size() == 2 && a[1].t == VT::Array && a[1].ext())
             return I.methodCall(a[1], "grep", ValueList{a[0]});
+        // …and over an ENDLESS range (`grep *.is-prime, ^∞` is lazy, grep.t)
+        if (a.size() == 2 && a[1].t == VT::Range && !a[1].itemized && a[1].rTo() >= 9000000000000000000LL)
+            return I.methodCall(a[1], "grep", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.empty()) return out;
         Value mt = a[0];
@@ -18713,7 +18830,7 @@ void Interpreter::registerBuiltins() {
                     auto it = into->hash()->find(kv.first);
                     Value nv = setty ? Value::boolean(true)
                              : Value::integer((it != into->hash()->end() ? it->second.toInt() : 0) + n);
-                    nv.pairKeyM() = kv.second.pairKey();
+                    nv.pairKeyM() = kv.second.elemKey();
                     (*into->hash())[kv.first] = nv;
                 }
                 return *into;
@@ -19210,7 +19327,7 @@ void Interpreter::registerBuiltins() {
                 // a plain Hash contributes its pairs (a quanthash stays ONE element)
                 for (auto& kv : *a.hash()) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKeyM() = kv.second.pairKey();
+                    p.pairKeyM() = kv.second.elemKey();
                     out.push_back(p);
                 }
             }

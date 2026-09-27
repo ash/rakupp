@@ -70,8 +70,11 @@ Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
 
 static void parseRotorSpecs(const ValueList& args, bool isBatch,
                             std::vector<RotorSpec>& specs, bool& partial) {
+    // A size of 0 is an empty sublist, which a rotor CYCLE may hold —
+    // `(0..5).rotor(0, 1, *)` is ((), (0,), (1..5)) — but never a lone one,
+    // and never a batch (S32-list/rotor.t)
     for (auto& a : args)
-        if (a.isNumeric() && a.toInt() <= 0) {
+        if (a.isNumeric() && (a.toInt() < 0 || (a.toInt() == 0 && (isBatch || args.size() == 1)))) {
             // a real INSTANCE, so `.got` / `.range` / `.what` answer — the suite
             // asks `throws-like …, X::OutOfRange, got => 0`
             const std::string msg = "batch size is out of range. Is: " +
@@ -117,7 +120,7 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
         }
         else if (a.t == VT::Whatever || (a.t == VT::Num && std::isinf(a.toNum()) && a.toNum() > 0))
             specs.push_back({kAll, kAll});
-        else if (a.isNumeric()) { long long n = a.toInt(); if (n < 1) n = 1; specs.push_back({n, n}); }
+        else if (a.isNumeric()) { long long n = a.toInt(); if (n < (isBatch ? 1 : 0)) n = isBatch ? 1 : 0; specs.push_back({n, n}); }
     }
     if (specs.empty()) specs.push_back({1, 1});
 }
@@ -1798,7 +1801,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return j;
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = items; (*s.hash())["values"] = v; return s; }
-        if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(nfcNormalize(std::move(r))); } // list of codepoints -> Str (NFC)
+        if (m == "chrs") { std::string r; for (auto& x : items) { if (x.t == VT::Nil) warnUninit("Use of Nil in numeric context"); r += cpToUtf8((uint32_t)x.toInt()); } return Value::str(nfcNormalize(std::move(r))); } // list of codepoints -> Str (NFC)
         if (m == "of") return Value::typeObj("Mu"); // element type of an untyped Array/List
         // the positional protocol, spelled out — a Range answers these as the
         // list it stands for, and an Array/List does too
@@ -2033,7 +2036,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             if (assoc) {
                 for (auto& kv : *inv.hash()) {
-                    Value key = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                    Value key = kv.second.elemKey() ? *kv.second.elemKey() : Value::str(kv.first);
                     if (ar >= 2) emit({key, kv.second}); else emit({key});
                 }
                 return Value::str(out);
@@ -2081,7 +2084,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 for (auto& kv : *inv.hash()) {
                     if (!first) out += sep;
                     first = false;
-                    Value key = kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+                    Value key = kv.second.elemKey() ? *kv.second.elemKey() : Value::str(kv.first);
                     out += keyOnly ? doSprintf(fmt, {key}) : doSprintf(fmt, {key, kv.second});
                 }
                 return Value::str(out);
@@ -2131,7 +2134,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& v : items) acc = applyArith("+", acc, v);
             return acc;
         }
-        if (m == "enums") { // enum type (a pair-list) -> Map of name => value
+        // `.^enum_value_list` — the members themselves, in declaration order —
+        // and `.^enum_values`, the same Map `.enums` is
+        // (the `^` is already stripped by the time an enum type gets here)
+        if ((m == "^enum_value_list" || m == "enum_value_list") && !inv.enumType.empty()) {
+            Value o = Value::array(); o.isList = true;
+            for (auto& v : items) {
+                if (v.t != VT::Pair) continue;
+                Value mv;
+                if (Value* f = tctx_.cur->find(std::string(inv.enumType.c_str()) + "::" + v.s.str())) mv = *f;
+                else if (Value* f2 = tctx_.cur->find(v.s.str())) mv = *f2;
+                else continue;
+                o.arr()->push_back(mv);
+            }
+            return o;
+        }
+        if (m == "enums" || ((m == "^enum_values" || m == "enum_values") && !inv.enumType.empty())) { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
             h.hashKind = "Map";
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();
@@ -2514,6 +2532,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // re-reads each window's start. A cycle that never advances is clamped.
             long long cycleStep = 0;
             for (auto& sp : specs) cycleStep += sp.step;
+            // a gap reaching back past its own sublist's start is refused up
+            // front (`<a b c>.rotor: 1 => -2`, S32-list/rotor.t)
+            for (auto& sp : specs)
+                if (sp.n < kAll && sp.step < 0 && !items.empty()) {
+                    const std::string msg = "Rotorizing gap is out of range. Is: " + std::to_string(sp.step - sp.n) +
+                                            ", should be in " + std::to_string(-sp.n) + "..^Inf; Ensure a negative gap is not larger than the length of the sublist";
+                    throw RakuError{g_makeTypedEx
+                        ? g_makeTypedEx("X::OutOfRange", {{"got", Value::integer(sp.step - sp.n)},
+                                                          {"what", Value::str("Rotorizing gap is")}}, msg)
+                        : Value::typeObj("X::OutOfRange"), msg};
+                }
             for (long long i = 0, k = 0; i < (long long)items.size(); k++) {
                 const RotorSpec& sp = specs[k % specs.size()];
                 const bool short_ = sp.n < kAll && i + sp.n > (long long)items.size();
@@ -3036,6 +3065,29 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (one) return out.arr()->empty() ? Value::nil() : (*out.arr())[0];
             return out;
         }
+        // `.pick(**)` — every element in a random order, then again, endlessly:
+        // a LAZY Seq of successive shuffles (S32-list/pick.t)
+        if (m == "pick" && args.size() == 1 && args[0].typeName() == "HyperWhatever" &&
+            inv.enumType.empty() && !(inv.t == VT::Hash)) {
+            ValueList pool = items;
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            if (pool.empty()) return out;
+            auto st = std::make_shared<LazySeqState>();
+            st->infinite = true;
+            st->appendNext = [pool](ValueList& cache) -> bool {
+                ValueList round = pool;
+                for (size_t k = round.size(); k > 1; k--) {
+                    size_t j = (size_t)(randDouble() * k);
+                    if (j >= k) j = k - 1;
+                    std::swap(round[k - 1], round[j]);
+                }
+                for (auto& v : round) cache.push_back(v);
+                return true;
+            };
+            out.extM() = st;
+            out.b = true;   // is-lazy
+            return out;
+        }
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
             // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs
             ValueList enumVals;
@@ -3061,7 +3113,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 for (auto& kv : *inv.hash()) {
                     double w = setty.count(inv.hashKind) ? 1.0 : kv.second.toNum();
                     if (w > 0) {
-                        pool.push_back({kv.second.pairKey() ? *kv.second.pairKey()
+                        pool.push_back({kv.second.elemKey() ? *kv.second.elemKey()
                                                             : Value::str(kv.first), w});
                         total += w;
                     }
@@ -4132,7 +4184,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList out;
                     for (auto& kv : *args[0].hash()) {
                         Value p = Value::pair(kv.first, kv.second);
-                        p.pairKeyM() = kv.second.pairKey();
+                        p.pairKeyM() = kv.second.elemKey();
                         out.push_back(p);
                     }
                     return out;

@@ -4303,6 +4303,41 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str(r);
         }
     }
+    // `CallFrame.new($level)` is `callframe($level)` spelled as a constructor
+    // (rakudo#2853 calls it from a multi, S06-advanced/callframe.t).
+    if (m == "new" && inv.t == VT::Type && inv.s == "CallFrame") {
+        ValueList la;
+        if (!args.empty()) la.push_back(args[0]);
+        return callBuiltin("callframe", la);
+    }
+    // `IO::ArgFiles.new(@files)` — the same one-handle-over-many-files that
+    // $*ARGFILES is built as from @*ARGS, over the files given (S16-io/words.t)
+    if (m == "new" && inv.t == VT::Type && inv.s == "IO::ArgFiles") {
+        Value h = Value::makeHash(); h.hashKind = "FileHandle";
+        std::string all, first;
+        ValueList files;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg) continue;
+            if (a.t == VT::Array && a.arr()) for (auto& e : *a.arr()) files.push_back(e);
+            else files.push_back(a);
+        }
+        for (auto& a : files) {
+            std::string fn = ioFsPath(a);
+            if (first.empty()) first = fn;
+            if (!all.empty() && all.back() != '\n') all += '\n';
+            std::ifstream in(fn, std::ios::binary);
+            if (!in) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                "Failed to open file " + fn + ": No such file or directory"};
+            std::ostringstream ss; ss << in.rdbuf();
+            all += ss.str();
+        }
+        (*h.hash())["captured"] = Value::boolean(true);
+        (*h.hash())["buffer"] = Value::str(all);
+        (*h.hash())["path"] = Value::str(first);
+        (*h.hash())["argfiles"] = Value::boolean(true);
+        (*h.hash())["mode"] = Value::str("r");
+        return h;
+    }
     // A CallFrame (from `callframe`): .file / .line / .code, and `<unit>` as the
     // code's name at mainline, where there is no enclosing routine.
     if (inv.t == VT::Hash && inv.hashKind == "CallFrame" && inv.hash()) {
@@ -4961,10 +4996,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return out;
         }
         if (m == "attributes" && !classes_.count(inv.s) &&
-            (inv.s == "DateTime" || inv.s == "Date")) {
+            (inv.s == "DateTime" || inv.s == "Date" || inv.s == "Rat" || inv.s == "FatRat")) {
             static const char* dtA[] = {"$!hour", "$!minute", "$!second", "$!timezone",
                                         "$!year", "$!month", "$!day", "$!daycount", "&!formatter"};
             static const char* dA[]  = {"$!year", "$!month", "$!day", "$!daycount", "&!formatter"};
+            // a Rational's two halves (advent2010-day22.t reads them off Rat.^attributes)
+            static const char* rA[]  = {"$!numerator", "$!denominator"};
             Value out = Value::array(); out.isList = true;
             auto one = [&](const char* nm) {
                 Value at = Value::makeHash(); at.hashKind = "Attribute";
@@ -4977,6 +5014,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 out.arr()->push_back(at);
             };
             if (inv.s == "DateTime") for (auto* n : dtA) one(n);
+            else if (inv.s == "Rat" || inv.s == "FatRat") for (auto* n : rA) one(n);
             else                     for (auto* n : dA)  one(n);
             return out;
         }
@@ -6653,6 +6691,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (c->name == "X::Control" || c->nativeParent == "X::Control" ||
                     c->doneRoles.count("X::Control")) control = true;
             if (control && runControlException(inv)) return Value::nil();
+        }
+        // A CX::Warn RETHROWN from a CONTROL block goes to the next CONTROL out
+        // and, when none takes it, to the default warning printer — which prints
+        // it and resumes the ORIGINAL `warn`, as a `.resume` would (Rakudo
+        // #2665, S04-exception-handlers/control.t). It died instead.
+        if (m == "rethrow" && catchDepth_ > 0 && inv.obj()->cls && inv.obj()->cls->name == "CX::Warn") {
+            if (!runControlException(inv)) {
+                std::string msg = excMessageOf(*this, inv);
+                if (quietDepth_ == 0) std::cerr << msg << "\n" << warnFrame();
+            }
+            throw ResumeEx{};
         }
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
@@ -8545,7 +8594,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value o = Value::array(); o.isList = true;
         // Set/Bag/Mix keep the element's original type in the count's pairKey.
         auto typedKey = [](const std::pair<const std::string, Value>& kv) {
-            return kv.second.pairKey() ? *kv.second.pairKey() : Value::str(kv.first);
+            return kv.second.elemKey() ? *kv.second.elemKey() : Value::str(kv.first);
         };
         if (m == "keys") {
             if (inv.arr()) for (size_t i = 0; i < inv.arr()->size(); i++) o.arr()->push_back(Value::integer((long long)i));
@@ -8577,7 +8626,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (inv.hash()) for (auto& kv : *inv.hash()) {
                 if (m == "kv") { o.arr()->push_back(typedKey(kv)); o.arr()->push_back(kv.second); }
-                else { Value p = Value::pair(kv.first, kv.second); p.pairKeyM() = kv.second.pairKey(); o.arr()->push_back(std::move(p)); }
+                else { Value p = Value::pair(kv.first, kv.second); p.pairKeyM() = kv.second.elemKey(); o.arr()->push_back(std::move(p)); }
             }
         }
         return o;
@@ -8732,7 +8781,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else *items.arr() = inv.flatten();
             lazy = inv.b || inv.rTo() >= 9000000000000000000LL; } // infinite / `lazy`-marked range
-        else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs
+        // (a `Mu.new` instance is no hash: it is the one-element case below)
+        else if (inv.t == VT::Hash && inv.typeName() != "Mu") { // plain hash and Set/Bag/Mix iterate their pairs
             ValueList none;
             Value ps = methodCall(inv, "pairs", none, nullptr);
             if (ps.t == VT::Array && ps.arr()) *items.arr() = *ps.arr();
@@ -9019,6 +9069,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return hci->howObj;
         }
+        // …and a CORE ROLE is made by ParametricRoleGroupHOW, as a user role is
+        // (S24-testing/1-basic.t: `isa-ok Numeric.HOW, Metamodel::ParametricRoleGroupHOW`)
+        if (inv.t == VT::Type) {
+            static const std::set<std::string> coreRoles = {
+                "Numeric", "Real", "Stringy", "Positional", "Associative", "Callable", "Iterable",
+                "Iterator", "Rational", "Dateish", "Setty", "Baggy", "Mixy", "QuantHash", "Sequence",
+                "PositionalBindFailover", "Blob", "Buf", "Scheduler", "Awaitable", "Enumeration",
+                "Encoding", "Systemic"};
+            if (coreRoles.count(std::string(inv.s.c_str())))
+                return Value::typeObj("Metamodel::ParametricRoleGroupHOW");
+        }
         return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     }
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
@@ -9236,7 +9297,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                      (x.hashKind.empty() || x.hashKind == "Map" || quantValueType(x.hashKind))) {
                 for (auto& kv : *x.hash()) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKeyM() = kv.second.pairKey();
+                    p.pairKeyM() = kv.second.elemKey();
                     items.push_back(p);
                 }
             }

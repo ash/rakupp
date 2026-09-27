@@ -647,7 +647,7 @@ std::string Value::toStr() const {
                 std::string out; bool first = true;
                 for (auto* kvp : ents) {
                     if (!first) out += " "; first = false;
-                    out += kvp->second.pairKey() ? kvp->second.pairKey()->toStr() : kvp->first;
+                    out += kvp->second.elemKey() ? kvp->second.elemKey()->toStr() : kvp->first;
                     if (!isSet && !(kvp->second.isNumeric() && kvp->second.toNum() == 1.0))
                         out += "(" + kvp->second.gist() + ")";
                 }
@@ -667,7 +667,7 @@ std::string Value::toStr() const {
                     if (!first) out += "\n"; first = false;
                     // an object hash indexes by identity; print the key itself
                     const Value* ok = hash()->objKey(kvp->first);
-                    if (!ok && kvp->second.pairKey()) ok = kvp->second.pairKey().get();
+                    if (!ok && kvp->second.elemKey()) ok = kvp->second.elemKey().get();
                     out += (ok ? ok->toStr() : kvp->first) + "\t" + kvp->second.toStr();
                 }
             }
@@ -973,7 +973,7 @@ std::string Value::gist() const {
                     // an OBJECT hash indexes by identity, so the printable key
                     // is the object it kept beside the entry, not the index
                     const Value* ok = hash()->objKey(ents[k]->first);
-                    if (!ok && ents[k]->second.pairKey()) ok = ents[k]->second.pairKey().get();
+                    if (!ok && ents[k]->second.elemKey()) ok = ents[k]->second.elemKey().get();
                     body += (ok ? ok->gist() : ents[k]->first) + " => " + ents[k]->second.gist();
                 }
                 if (hashKind == "Map") return "Map.new((" + body + "))";
@@ -996,7 +996,7 @@ std::string Value::gist() const {
                     if (!first) body += " "; first = false;
                     // the ELEMENT, not its lookup key — the original value rides in
                     // the count's pairKey for anything that is not a plain Str
-                    std::string el = kv.second.pairKey() ? kv.second.pairKey()->gist() : kv.first;
+                    std::string el = kv.second.elemKey() ? kv.second.elemKey()->gist() : kv.first;
                     body += el;
                     // Bag AND Mix: elem(weight), a weight of 1 omitted
                     if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
