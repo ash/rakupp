@@ -17144,8 +17144,10 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
 // attribute, so Nil resets it to the attribute's default the way `$x = Nil`
 // already did for an ordinary container. The value's own class says what that
 // default is: an untyped attribute goes back to Any, a typed one to its type.
+// Any other value is assigned too, so the PARAMETER's readonly mark (every
+// plain `$` parameter has one, and `method set($!x)` is one) stays behind.
 static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an) {
-    if (v.t != VT::Nil) return v;
+    if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
     if (self.t == VT::Object && self.obj() && self.obj()->cls)
         if (const ClassAttr* at = self.obj()->cls->findAttr(an))
             if (!at->type.empty() && ascii::isupper((unsigned char)at->type[0]))

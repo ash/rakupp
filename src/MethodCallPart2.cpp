@@ -478,8 +478,12 @@ int Interpreter::probeMethodExists(const Value& inv, const std::string& mn, cons
 // (which rakupp already did). `class C { has $.t }; C.new(t => Nil).t` is Any,
 // and a typed attribute takes its own type object. Storing the Nil itself made
 // a module's `.new(type => Nil)` sentinel render as `Nil` instead of `(Any)`.
+// Any other value is ASSIGNED too, into a container of the attribute's own: the
+// readonly mark of the name it was read through (a sigilless parameter, a
+// constant) stays with that name. Copying the mark left `C.new(x => v)` and
+// `.clone(x => v)` with an attribute that `$!x = …` could not write.
 static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
-    if (v.t != VT::Nil) return v;
+    if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
     if (a.sigil == '@') return Value::array();
     if (a.sigil == '%') return Value::makeHash();
     if (!a.type.empty() && ascii::isupper((unsigned char)a.type[0]))
@@ -832,6 +836,7 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                      : at.buildFn.t == VT::Code
                               ? (ensureEnv(), callCallable(at.buildFn, ValueList{selfEarly}))
                               : seed;   // `.set_build(&closure)`, added at runtime
+            dv.readonly = dv.immutableBind = false;   // `has $.x = CONST` (see nilResetForAttr)
             // the SIGIL is a container type: `has @.a = (1,2)` holds an
             // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
             // (Array)/(Hash) and the default renderer shows [1, 2] /

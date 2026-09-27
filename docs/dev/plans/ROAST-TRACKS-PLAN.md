@@ -209,7 +209,7 @@ of 1,434, no file worse. perf-guard A/B: `subcall` −15%, the cell check on
 every variable read ~2% on the variable-heavy kernels (measured with an
 experiment build that compiles the dereference out).
 
-### A2 status (2026-09-27, base `2251dc2e`)
+### A2 status (landed on main in `a77dd764`)
 
 What an element holds, as built:
 
@@ -222,7 +222,9 @@ What an element holds, as built:
 - **`$k => $v`, `:$v`, `k => my $x`** share the variable's cell
   (`exprVarCell`); `Value::pairLive` marks such a Pair, the only kind whose
   `.value` takes a write when it is not held in a variable. `.freeze` gives the
-  Pair a private copy. `for $pair.kv -> $k, $v is rw` binds the cell.
+  Pair a private copy. `for $pair.kv -> $k, $v is rw` binds the cell. A name
+  bound to a VALUE (a readonly parameter, `my $x := 42`) has no container: the
+  Pair holds the value, read-only, as Rakudo's does.
 - **Containers inside lists** are Proxy-cell elements, and the list carries
   `ValueExt::holdsCells`. `Interpreter::methodCall` hands every non-mutating
   built-in a decontainerized copy (`decontList`), a `|` slip passes values,
@@ -257,7 +259,22 @@ Gates: Roast 1,274 → 1,285 of 1,434, no file worse per file and denominator;
 t/regression unchanged plus `container-lists-and-pair-cells.raku`. The per-file
 join and t/regression caught six regressions on the way (Capture slips, `$y :=
 :$y`, Set pairs, `KEY => my $x` bound into an element, `Pair.freeze`, a
-Nil-reset element sliced), all fixed.
+Nil-reset element sliced), all fixed. perf-guard A/B against A1 (three
+interleaved rounds, best of each): most kernels within ±2%, `strscan` +3.4%,
+`mainnext` +3.0%, `attrread`/`method`/`rats` about +2.5%, `objnew` −4.5%;
+against pre-A1, `subcall` −14%, `rats` +4.9%, `multiwhere` +3.3%, the rest
+within ±2.5%.
+
+The module battery, which A2 had not been gated on, caught a seventh after it
+landed: the Pair over a readonly parameter shared that parameter's slot,
+readonly mark and all, so `C.new(q => $v)` left the attribute unassignable (URI,
+11 test files, and Trap). Fixed as described above; the battery is now part of
+a Track A batch's gates, run one dist at a time through `--only` so the
+committed record is not rewritten. The same probe found older routes that copy
+a readonly mark into an attribute — a sigilless parameter or a constant through
+the default constructor, an attribute's default, `.clone`, and attributive
+parameters (`method set($!x)`) — now all assigning
+(`attribute-init-drops-readonly.raku`).
 
 Left in A2:
 
@@ -272,6 +289,9 @@ Left in A2:
   passing raw containers (`reduce.t` 23); `substr-rw` through an `is raw`
   AT-POS (`xxPOS.t` 64); nested typed arrays (`arrays.t` 47); a Pair's typed
   container and its clone's identity (`pair.t` 171, 180).
+- A sigilless parameter bound to a container (`sub f(\v)` given `$m`) is not
+  one to `exprVarCell`: `(k => v)` holds a read-only copy, so a write through
+  the Pair dies where Rakudo writes `$m`. Older than A1.
 - Not A: `create.t` 10 (a clone sharing a lazy reifier, B), `S32-list/map.t`
   62 (a LAST phaser), `proxy.t` 26 (Proxy subclassing).
 
