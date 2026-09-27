@@ -11,8 +11,7 @@
 #   them as C `long`, which is 32 bits here: CreateWindowExW (twelve) and
 #   CreateFontW (fourteen) could not be called at all, and any pointer that
 #   crossed lost its top half.
-#   A resolved path (`D:\…`) was joined onto its own CWD of `/`, so no file
-#   test on it could succeed.
+#   `.resolve` answered `/D:\…`, which no file test finds.
 #
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -35,11 +34,13 @@ check($*VM.config<osname>,  'MSWin32',  '$*VM.config<osname>');
 check($*VM.config<exe>,     '.exe',     '$*VM.config<exe>');
 
 # ---- a resolved path is still a file ---------------------------------------
-# `.resolve` roots its result's CWD, and `D:\…` does not start with `/`: the two
-# were joined, so every file test on a resolved path answered False — which is
-# how `rakupp doc` lost its guides (tools/doc.raku walks from $*PROGRAM.IO.resolve).
-check($*PROGRAM.IO.resolve.e,                                True, '$*PROGRAM.IO.resolve.e');
-check($*PROGRAM.IO.resolve.parent.add('platform.raku').e,    True, '.resolve.parent.add(…).e');
+# `.resolve` split on `/` and rooted every prefix at `/`, so `D:\x` came out as
+# `/D:\x`, and a path beginning `D:` was also joined onto its CWD of `/`. Every
+# file test on a resolved path answered False — which is how `rakupp doc` lost
+# its guides (tools/doc.raku walks from $*PROGRAM.IO.resolve).
+my $resolved = $*PROGRAM.IO.resolve;
+check($resolved.e,                              True, "\$*PROGRAM.IO.resolve.e ($resolved)");
+check($resolved.parent.add('platform.raku').e,  True, ".resolve.parent.add(…).e ({$resolved.parent})");
 
 # ---- the FFI, both ways it can be taken -------------------------------------
 # The same crossings twice: as the engine finds the FFI (libffi if some DLL on

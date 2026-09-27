@@ -2361,6 +2361,34 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*f.hash())["path"] = asIO(s);
                 return f;
             };
+#ifdef _WIN32
+            // The walk below splits on `/` and roots every prefix at `/`, so
+            // `D:\x` came out as `/D:\x`. Here a path is absolute with a drive
+            // (`D:\`, `D:/`) or a leading slash either way, and anything else
+            // joins its CWD; _fullpath (the realpath shim) folds `.` and `..`
+            // but follows no link. The answer is spelled with `/`, which every
+            // path method here splits on (Rakudo spells it with `\`).
+            {
+                std::string w = inv.toStr();
+                if (!(!w.empty() && (w[0] == '/' || w[0] == '\\' || (w.size() >= 2 && w[1] == ':')))) {
+                    std::string base = inv.ofType().empty() ? cwdName() : inv.ofType();
+                    w = (base == "/" || base == "\\" ? base : base + "/") + w;   // not `//x`, a share
+                }
+                char fbuf[4096];
+                s = realpath(w.c_str(), fbuf) ? std::string(fbuf) : w;
+                for (char& c : s) if (c == '\\') c = '/';
+                if (completely) {   // everything but the last component must exist
+                    size_t sl = s.find_last_of('/');
+                    struct ::_stat64 st;
+                    if (sl != std::string::npos && ::_stat64(s.substr(0, sl == 2 ? 3 : sl).c_str(), &st) != 0)
+                        return resolveFailure();
+                }
+                Value rv = asIO(s);
+                rv.enumName = inv.enumName;
+                rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                return rv;
+            }
+#endif
             std::string tail;
             for (size_t take = segs.size() + 1; take-- > 0; ) {
                 std::string pre = "/";
