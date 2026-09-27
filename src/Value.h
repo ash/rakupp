@@ -529,6 +529,11 @@ struct ValueExt {
     // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
     bool rNum = false;
     bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
+    // A List/Array/Capture some of whose ELEMENTS are containers (Proxy-cells:
+    // `\($a)`, `List.new(…, my $ = 3)`, `@b[1] := $x`) rather than values. The
+    // readers that walk elements raw — every built-in method and operator —
+    // see a decontainerized copy instead (Interpreter::decontList).
+    bool holdsCells = false;
 };
 // The read path for a Value with no block: namespace scope, so access carries
 // no function-local-static guard (that guard, run 256× per byteset build, was
@@ -699,6 +704,14 @@ struct Value {
     // A shared container (PK::Cell above). The holder itself is inert: the
     // Value every bound name reads and writes is the one it points to.
     bool isCell() const { return pk_ == PK::Cell; }
+    bool holdsContainers() const { return x_ && x_->holdsCells; }
+    void markHoldsContainers() { xw().holdsCells = true; }
+    // A PAIR whose value slot IS a live container someone else holds too — a
+    // hash entry (hashEntryPair) or a variable's cell (`$k => $v`) — so writing
+    // `.value` through a Pair that is not itself in a variable still lands
+    // somewhere. `b` is otherwise unused on a Pair; this is its only meaning.
+    bool pairLive() const { return t == VT::Pair && b; }
+    void setPairLive() { b = true; }
     std::shared_ptr<Value> cellS() const {
         return pk_ == PK::Cell ? std::static_pointer_cast<Value>(p_) : nullptr;
     }
@@ -977,6 +990,28 @@ inline ValueMap& Value::hashRef() {
     ValueMap& r = *sp;
     setHash(std::move(sp));
     return r;
+}
+
+// The Pair a hash hands out for one of its entries (`.pairs`, iteration, `my @a
+// = %h`). A plain Hash's Pair holds the entry's own CONTAINER — `.value = 42`
+// writes the hash, and a later `%h<k> = 5` shows through the Pair, as Rakudo's
+// do (ValueHash::aliasOf keeps it valid across a delete, a clear or a refill).
+// A Map's (and a Set's, Bag's, Mix's) Pair is read-only; anything else (a
+// mutable QuantHash, a Stash, …) gets a copy of the value, as before.
+inline Value hashEntryPair(const Value& h, const std::string& key, Value& entry) {
+    Value p; p.t = VT::Pair; p.s = key;
+    if (h.t == VT::Hash && h.hashKind.empty() && h.hash()) {
+        p.setPairVal(h.hash()->aliasOf(entry));
+        p.setPairLive();
+    }
+    else {
+        p.setPairVal(std::make_shared<Value>(entry));
+        // a Map's and an immutable QuantHash's pairs refuse a write (Rakudo);
+        // the mutable QuantHashes keep the old copy-and-allow
+        if (h.hashKind == "Map" || h.hashKind == "Set" || h.hashKind == "Bag" || h.hashKind == "Mix")
+            p.pairValRO = true;
+    }
+    return p;
 }
 
 // Buf, Instant and Duration are REFERENCE types in Rakudo — two of them are the

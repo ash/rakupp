@@ -57,7 +57,19 @@ private:
     static constexpr int32_t EMPTY = -1;
     static constexpr int32_t TOMB  = -2;
 
-    std::deque<Entry> entries_;    // insertion order; holes stay (dead flag)
+    // Insertion order; holes stay (dead flag). The entries live in `own_`
+    // until something ALIASES one of them — a Pair that a plain Hash hands out
+    // holds the hash's own container, as Rakudo's do — and from then on in
+    // `gen_`, a generation the aliases co-own (aliasOf). A deque move keeps
+    // every element where it was, so taking the generation moves nothing. A
+    // clear or an assignment then starts an empty generation and lets the old
+    // one go when its last alias does: a Pair taken before `%h = ()` keeps its
+    // container, and nothing piles up for a hash that is refilled in a loop.
+    std::deque<Entry> own_;
+    std::shared_ptr<std::deque<Entry>> gen_;
+    std::deque<Entry>& E() { return gen_ ? *gen_ : own_; }
+    const std::deque<Entry>& E() const { return gen_ ? *gen_ : own_; }
+    void retireEntries() { if (gen_) gen_.reset(); own_.clear(); }
     std::vector<int32_t> index_;   // power-of-two probe table of entry numbers
     size_t live_ = 0;              // entries not dead
     size_t used_ = 0;              // index slots not EMPTY (live + tombstones)
@@ -92,9 +104,10 @@ private:
         while (cap < want * 2) cap <<= 1;
         index_.assign(cap, EMPTY);
         used_ = 0;
-        for (size_t i = 0; i < entries_.size(); i++) {
-            if (entries_[i].dead) continue;
-            size_t s = entries_[i].h & mask();
+        std::deque<Entry>& es = E();
+        for (size_t i = 0; i < es.size(); i++) {
+            if (es[i].dead) continue;
+            size_t s = es[i].h & mask();
             while (index_[s] != EMPTY) s = (s + 1) & mask();
             index_[s] = (int32_t)i;
             used_++;
@@ -116,7 +129,7 @@ private:
             if (e == TOMB) {
                 if (firstTomb == SIZE_MAX) firstTomb = s;
             }
-            else if (entries_[e].h == h && entries_[e].kv.first == key)
+            else if (E()[e].h == h && E()[e].kv.first == key)
                 return (int32_t)s;
             s = (s + 1) & mask();
         }
@@ -129,11 +142,12 @@ private:
             findSlot(key, h, &s2);
             slot = s2;
         }
-        entries_.emplace_back(key, std::move(v), h);
+        std::deque<Entry>& es = E();
+        es.emplace_back(key, std::move(v), h);
         if (index_[slot] == EMPTY) used_++;   // a tombstone reused does not grow `used_`
-        index_[slot] = (int32_t)(entries_.size() - 1);
+        index_[slot] = (int32_t)(es.size() - 1);
         live_++;
-        return entries_.back().kv.second;
+        return es.back().kv.second;
     }
 
 public:
@@ -141,8 +155,8 @@ public:
     ValueHash(const ValueHash& o) { *this = o; }
     ValueHash& operator=(const ValueHash& o) {
         if (this == &o) return *this;
-        entries_.clear(); index_.clear(); live_ = used_ = 0;
-        for (const auto& e : o.entries_)
+        retireEntries(); index_.clear(); live_ = used_ = 0;
+        for (const auto& e : o.E())
             if (!e.dead) (*this)[e.kv.first] = e.kv.second;
         return *this;
     }
@@ -159,7 +173,7 @@ public:
         using Owner = std::conditional_t<Const, const ValueHash, ValueHash>;
         Owner* m_ = nullptr;
         size_t i_ = 0;
-        void skip() { while (m_ && i_ < m_->entries_.size() && m_->entries_[i_].dead) i_++; }
+        void skip() { while (m_ && i_ < m_->E().size() && m_->E()[i_].dead) i_++; }
         friend class ValueHash;
     public:
         iter() = default;
@@ -179,8 +193,8 @@ public:
         using difference_type = std::ptrdiff_t;
         using pointer = ptr;
         using reference = ref;
-        ref operator*() const { return m_->entries_[i_].kv; }
-        ptr operator->() const { return &m_->entries_[i_].kv; }
+        ref operator*() const { return m_->E()[i_].kv; }
+        ptr operator->() const { return &m_->E()[i_].kv; }
         iter& operator++() { i_++; skip(); return *this; }
         iter operator++(int) { iter t = *this; ++*this; return t; }
         bool operator==(const iter& o) const { return m_ == o.m_ && i_ == o.i_; }
@@ -190,15 +204,23 @@ public:
     using const_iterator = iter<true>;
 
     iterator begin() { return iterator(this, 0); }
-    iterator end() { return iterator(this, entries_.size()); }
+    iterator end() { return iterator(this, E().size()); }
     const_iterator begin() const { return const_iterator(this, 0); }
-    const_iterator end() const { return const_iterator(this, entries_.size()); }
+    const_iterator end() const { return const_iterator(this, E().size()); }
     const_iterator cbegin() const { return begin(); }
     const_iterator cend() const { return end(); }
 
     size_t size() const { return live_; }
     bool empty() const { return live_ == 0; }
-    void clear() { entries_.clear(); index_.clear(); live_ = used_ = 0; }
+    void clear() { retireEntries(); index_.clear(); live_ = used_ = 0; }
+
+    // A shared_ptr to `v`, the Value of one of THIS hash's entries, that keeps
+    // the entry alive whatever later happens to the hash (see gen_). The first
+    // call moves the entries into their own generation; nothing is relocated.
+    std::shared_ptr<Value> aliasOf(Value& v) {
+        if (!gen_) { gen_ = std::make_shared<std::deque<Entry>>(std::move(own_)); own_.clear(); }
+        return std::shared_ptr<Value>(gen_, &v);
+    }
 
     iterator find(const std::string& key) {
         int32_t s = findSlot(key, hashKey(key));
@@ -214,32 +236,32 @@ public:
         uint64_t h = hashKey(key);
         size_t slot;
         int32_t s = findSlot(key, h, &slot);
-        if (s >= 0) return entries_[index_[s]].kv.second;
+        if (s >= 0) return E()[index_[s]].kv.second;
         return insertNew(key, h, Value{}, slot);
     }
 
     Value& at(const std::string& key) {
         int32_t s = findSlot(key, hashKey(key));
         if (s < 0) throw std::out_of_range("ValueHash::at: " + key);
-        return entries_[index_[s]].kv.second;
+        return E()[index_[s]].kv.second;
     }
     const Value& at(const std::string& key) const {
         int32_t s = findSlot(key, hashKey(key));
         if (s < 0) throw std::out_of_range("ValueHash::at: " + key);
-        return entries_[index_[s]].kv.second;
+        return E()[index_[s]].kv.second;
     }
 
     size_t erase(const std::string& key) {
         int32_t s = findSlot(key, hashKey(key));
         if (s < 0) return 0;
-        entries_[index_[s]].dead = true;
+        E()[index_[s]].dead = true;
         index_[s] = TOMB;   // stays `used_` — the probe path must not break
         live_--;
         return 1;
     }
     iterator erase(iterator it) {
         size_t i = it.i_;
-        if (i < entries_.size() && !entries_[i].dead) erase(entries_[i].kv.first);
+        if (i < E().size() && !E()[i].dead) erase(E()[i].kv.first);
         return iterator(this, i + 1);
     }
 
@@ -249,7 +271,7 @@ public:
         int32_t s = findSlot(kv.first, h, &slot);
         if (s >= 0) return {iterator(this, (size_t)index_[s]), false};
         insertNew(kv.first, h, kv.second, slot);
-        return {iterator(this, entries_.size() - 1), true};
+        return {iterator(this, E().size() - 1), true};
     }
     template <typename... A>
     std::pair<iterator, bool> emplace(const std::string& k, A&&... a) {

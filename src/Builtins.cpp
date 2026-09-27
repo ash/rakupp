@@ -2980,7 +2980,7 @@ ValueList toList(const Value& v) {
         // one shared_ptr copy, not a Value built and thrown away per entry.
         const bool objHash = !objHashKeyType(v).empty();
         for (auto& kv : *v.hash()) {
-            Value p = Value::pair(kv.first, kv.second);
+            Value p = hashEntryPair(v, kv.first, kv.second);
             // A key OBJECT rides along only when it is not already the index —
             // a plain Str key IS the index, and attaching it as a key object
             // made the pair render in the arrow form (`"a" => 42`) where
@@ -3800,6 +3800,16 @@ std::string whichOf(const Value& v) {
         // among the Arrays — so it identifies by its PARTS, each with its own
         // identity. Rendering them (the old "Capture|1 2") merged `\(1)` with
         // `\("1")` and `\(:a)` with a positional "a".
+        // A Hash — and a Map — is an OBJECT: it identifies by BEING itself, the
+        // payload every copy of the value shares. A refill (`%h = …`) and a
+        // write into a nested Hash both leave that payload where it is, so the
+        // WHICH holds still, as Rakudo's `Map|…`/`Hash|…` does (S32-hash/map.t).
+        case VT::Hash:    if (v.hash() && (v.hashKind.empty() || v.hashKind == "Hash" || v.hashKind == "Map")) {
+                              char buf[24];
+                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.hash());
+                              return v.typeName() + buf;
+                          }
+                          return v.typeName() + "|" + v.toStr();
         case VT::Array:   if (v.hashKind == "Capture") {
                               std::string pos;
                               std::vector<std::string> named; // named parts are unordered
@@ -5469,6 +5479,16 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // A list that holds CONTAINERS is read by its VALUES: every built-in method
+    // walks elements raw. The mutators are the exception — they change the
+    // list itself, and a copy would swallow the change.
+    if (inv.t == VT::Array && inv.holdsContainers() && inv.arr()) {
+        static const std::set<std::string> kMutators = {
+            "push", "pop", "shift", "unshift", "append", "prepend", "splice",
+            "ASSIGN-POS", "BIND-POS", "DELETE-POS", "STORE", "VAR", "WHERE", "WHICH"};
+        if (!kMutators.count(m))
+            return methodCall(decontList(inv), m, std::move(args), rwArgs, skipOwn);
+    }
     // `.^roles` of a CORE numeric or string type: the roles its class does
     // (`42.2.^roles.grep(Rational)`, Rakudo's lists, most specific first)
     if (m == "^roles" && args.empty()) {
@@ -18469,6 +18489,12 @@ void Interpreter::registerBuiltins() {
         // prefix already materialised, so `map &cis, (0, -tau/$n ... *)` came back
         // two elements long and the FFT's `Z*` twiddle silently ran short.
         if (a.size() == 2 && a[0].t == VT::Code && a[1].t == VT::Array && a[1].ext())
+            return I.methodCall(a[1], "map", ValueList{a[0]});
+        // …and so is ONE real Array: the method walks the array's own storage,
+        // so `map { s/a/A/ }, @a` changes @a as `@a.map({ s/a/A/ })` does — its
+        // topic is each ELEMENT, not a copy (S32-list/map.t)
+        if (a.size() == 2 && a[0].t == VT::Code && a[1].t == VT::Array && a[1].arr() &&
+            !a[1].isList && !a[1].itemized && !a[1].shape())
             return I.methodCall(a[1], "map", ValueList{a[0]});
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         auto emit = [&](const Value& v) {

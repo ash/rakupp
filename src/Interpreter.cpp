@@ -346,6 +346,23 @@ static void markPairValueRO(Value& pr, const Expr* valueExpr) {
     if (!exprNamesContainer(valueExpr)) pr.pairValRO = true;
 }
 
+// A parenthesised LIST LITERAL whose items sit at their own positions: no
+// `|slip` shifts them, so item k is element k.
+static bool plainListLiteral(const ListExpr* le) {
+    if (!le || le->items.empty()) return false;
+    for (auto& it : le->items)
+        if (!it || (it->kind == NK::Unary && static_cast<const Unary*>(it.get())->op == "|")) return false;
+    return true;
+}
+// An item that IS a scalar container: a `$` variable or an element.
+static bool itemIsContainer(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Index) return true;
+    if (e->kind != NK::VarExpr) return false;
+    const std::string& n = static_cast<const VarExpr*>(e)->name;
+    return n.size() > 1 && n[0] == '$';
+}
+
 // A hash-subscript key: on an OBJECT-KEYED hash (declared `has %!h{Mu:U}`) a
 // TYPE-OBJECT key keys by its parenthesised name so `%h{Str}` and `%h{Int}`
 // stay distinct (DBDish's TypeConverter reads `%!Conversions{$type}` directly
@@ -3533,7 +3550,7 @@ static Value hashToPairs(const Value& v) {
     if (!v.hash()) return out;
     bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
     for (auto& kv : *v.hash()) {
-        Value p = Value::pair(kv.first, setty ? Value::boolean(true) : kv.second);
+        Value p = setty ? Value::pair(kv.first, Value::boolean(true)) : hashEntryPair(v, kv.first, kv.second);
         p.pairKeyM() = kv.second.elemKey(); // Set/Bag/Mix: recover the element's original type
         out.arr()->push_back(std::move(p));
     }
@@ -3849,7 +3866,7 @@ static Value coerceArray(const Value& v, bool nativeTarget = false) {
     // an empty list: zef's Build assigns a promise's Nil result into
     // `my Bool @results` and then counts on `?@results` seeing one element
     // (Rakudo: Array[Bool].new(Bool)). `()` still empties. (issue #37)
-    if (v.t == VT::Nil) { Value a = Value::array(); a.arr()->push_back(Value::any()); return a; }
+    if (v.t == VT::Nil) { Value a = Value::array(); a.arr()->push_back(Value::typeObj("Any")); return a; }
     if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
     // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
     // builds the List form its other callers want, so untag it here (LA-04).
@@ -10626,6 +10643,35 @@ signed char loopPhaserMask(Block* body) {
     return body->loopPhasers;
 }
 
+// The variable a loop BODY's last statement hands back as its value, when it
+// names one declared OUTSIDE the body: `$s += $_`, `$s = …`, `$s`. (Declared
+// inside, each iteration has a fresh container and its value is all it holds.)
+static const Expr* forBodyTailVar(const Block* body) {
+    if (!body || body->stmts.empty()) return nullptr;
+    const Stmt* last = body->stmts.back().get();
+    if (!last || last->kind != NK::ExprStmt) return nullptr;
+    const Expr* e = static_cast<const ExprStmt*>(last)->e.get();
+    if (e && e->kind == NK::Assign) {
+        auto* as = static_cast<const Assign*>(e);
+        if (as->op == ":=") return nullptr;
+        e = as->target.get();
+    }
+    if (!e || e->kind != NK::VarExpr) return nullptr;
+    auto* ve = static_cast<const VarExpr*>(e);
+    const std::string& n = ve->name;
+    if (ve->declare || n.size() < 2 || n[0] != '$' || n == "$_" ||
+        !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return nullptr;
+    for (auto& st : body->stmts) {   // a `my $s` in the body itself: per-iteration
+        if (st && st->kind == NK::ExprStmt) {
+            const Expr* x = static_cast<const ExprStmt*>(st.get())->e.get();
+            if (x && x->kind == NK::Assign) x = static_cast<const Assign*>(x)->target.get();
+            if (x && x->kind == NK::VarExpr && static_cast<const VarExpr*>(x)->declare &&
+                static_cast<const VarExpr*>(x)->name == n) return nullptr;
+        }
+    }
+    return e;
+}
+
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
                              bool isFirst, bool isLast, ValueList* collect,
                              const std::function<void()>& rebind) {
@@ -10722,15 +10768,21 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                   if (hasLast) runLoopLast(body, scope);
                   suppressLoopFirst_ = savedSF; return false; // last
               }
+              bool whenValue = false;
               if (tctx_.givenCtl) { // cooperative when-match in this loop's body: the
                   // iteration is done — like `next`, but the when block's value is
                   // the iteration's value and NEXT/LAST still run (Rakudo; `do for
                   // 1..3 { when 2 { "two" }; "other" }` used to lose the "two")
-                  tctx_.givenCtl = 0; v = std::move(tctx_.givenV);
+                  tctx_.givenCtl = 0; v = std::move(tctx_.givenV); whenValue = true;
               }
               if (collect) {
+                  Value cont;
+                  // the body ends on an outer variable: the value IS its container
+                  if (tctx_.collectTail && tctx_.collectTailBody == body && !whenValue &&
+                      containerElemFor(tctx_.collectTail, cont))
+                      collect->push_back(std::move(cont));
                   // a Slip (`Empty` from `$x if False`, `slip(…)`) flattens into the loop's values
-                  if (v.t == VT::Array && v.s == "Slip" && !v.itemized && v.arr())
+                  else if (v.t == VT::Array && v.s == "Slip" && !v.itemized && v.arr())
                       for (auto& e : *v.arr()) collect->push_back(e);
                   else collect->push_back(v);
               }
@@ -15002,7 +15054,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (fs->hasStateCache < 0)
                 fs->hasStateCache = (mayHaveStateDecl(fs->list.get()) || mayHaveStateDecl(fs->body.get())) ? 1 : 0;
             LoopStateFrame lsf{tctx_, !fs->modifier && fs->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
-            auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::nil(); }; // Nil as in WhileStmt
+            // (see ExecContext::collectTail)
+            struct TailG {
+                ExecContext& t; const void* b; const Expr* e;
+                ~TailG() { t.collectTailBody = b; t.collectTail = e; }
+            } tailG{tctx_, tctx_.collectTailBody, tctx_.collectTail};
+            const Expr* tailVar = fs->asExpr ? forBodyTailVar(fs->body.get()) : nullptr;
+            tctx_.collectTailBody = tailVar ? fs->body.get() : nullptr;
+            tctx_.collectTail = tailVar;
+            auto forResult = [&]() {
+                if (!fs->asExpr) return Value::nil();   // Nil as in WhileStmt
+                Value r = Value::list(std::move(collected));
+                if (tailVar)
+                    for (auto& e : *r.arr()) if (isContainerElem(e)) { r.markHoldsContainers(); break; }
+                return r;
+            };
             // `for @l -> { … }` — a signature of NO parameters takes no element:
             // any iteration at all is one positional too many
             if (fs->emptyPointy) {
@@ -15108,6 +15174,23 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     const std::string& vn = static_cast<VarExpr*>(le)->name;
                     if (!vn.empty() && (vn[0] == '@' || (kvMode && vn[0] == '%')))
                         try { src = lvalue(le); } catch (RakuError&) {}
+                    // `for $pair.kv -> $k, $v is rw`: ONE key and the pair's own
+                    // value container, which `$k => $v` shares with $v
+                    else if (kvMode && vn.size() > 1 && vn[0] == '$') {
+                        Value pv = eval(le);
+                        if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
+                            auto scope = std::make_shared<Env>();
+                            scope->parent = tctx_.cur;
+                            Value k = pv.pairKey() ? *pv.pairKey() : Value::str(pv.s);
+                            if (!(fs->varTraits.size() > 0 && (fs->varTraits[0] & ForStmt::VT_RW))) k.readonly = true;
+                            scope->define(fs->vars[0], std::move(k));
+                            if (fs->varTraits.size() > 1 && (fs->varTraits[1] & ForStmt::VT_RW))
+                                scope->define(fs->vars[1], Value::cellHolder(pv.pairValS()));
+                            else { Value v = *pv.pairVal(); v.readonly = true; scope->define(fs->vars[1], std::move(v)); }
+                            runLoopBody(fs->body.get(), scope, fs->label, true, true, col);
+                            return forResult();
+                        }
+                    }
                 }
                 if (src && src->t == VT::Array && src->arr() && !src->isList && !src->ext()) {
                     auto arr = src->arrS();
@@ -15218,6 +15301,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                           static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                 auto derefArr = rw ? nullptr : derefArrayAlias(fs->list.get());
                 if (!rw && !derefArr) derefArr = valuesArrayAlias(fs->list.get());
+                // `$_ = … for @a.reverse`: the array's own elements, last first
+                bool reversed = false;
+                if (!rw && !derefArr) { derefArr = reverseArrayAlias(fs->list.get()); reversed = derefArr != nullptr; }
+                // `$_ = 0 for @a.grep(PRED)`: only the positions grep keeps
+                std::vector<size_t> pick;
+                bool picked = false;
+                if (!rw && !derefArr)
+                    if (auto gv = grepArrayView(fs->list.get())) {
+                        derefArr = gv->first; pick = std::move(gv->second); picked = true;
+                    }
                 if (derefArr) { lv.setArr(derefArr); rw = true; }
                 std::vector<Value*> aliasSlots;
                 if (!rw && scalarListAlias(fs->list.get(), aliasSlots)) {
@@ -15268,7 +15361,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 else if (rw) {
                     auto arr = lv.arrS();
-                    for (size_t i = 0; i < arr->size(); i++) {
+                    const size_t n0 = picked ? pick.size() : arr->size();
+                    for (size_t i = 0; (reversed || picked) ? i < n0 : i < arr->size(); i++) {
+                        const size_t pi = picked ? pick[i] : reversed ? n0 - 1 - i : i;
                         {   // P3 no-crash contract: the element COPY takes the
                             // container's stripe (same key as the push/mutator
                             // stripe) — copying unstriped raced a sibling
@@ -15278,12 +15373,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             // allocator forgives). Under the GIL this is one
                             // predicted branch.
                             ParStripe es(*this, arr.get());
-                            if (i >= arr->size()) break;
-                            env->vars["$_"] = (*arr)[i];
+                            if (pi >= arr->size()) break;
+                            env->vars["$_"] = (*arr)[pi];
                         }
-                        bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == arr->size(), col);
+                        bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0,
+                                                (reversed || picked) ? i + 1 == n0 : i + 1 == arr->size(), col);
                         {   ParStripe es(*this, arr.get());
-                            if (i < arr->size()) (*arr)[i] = env->vars["$_"];
+                            if (pi < arr->size()) (*arr)[pi] = env->vars["$_"];
                         }
                         if (!cont) break;
                     }
@@ -15731,6 +15827,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     bool rw = (fs->vars.empty() || fs->rwVars) && fs->list->kind == NK::VarExpr &&
                               !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
+                    // `for @a.reverse { $_ = … }` — the reversed view hands out the
+                    // array's own elements, holes too, last first: walk the real
+                    // storage from the end (reverse.t)
+                    bool reversed = false;
+                    // `for @a.grep(PRED) { $_ = … }` — the positions grep keeps,
+                    // walked in the real storage (grep hands out the containers)
+                    std::vector<size_t> pick;
+                    bool picked = false;
                     if (!rw && (fs->vars.empty() || fs->rwVars)) {
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
                         // `@a.values` / `@a.list` — the view IS the array, so walk
@@ -15738,6 +15842,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         // this path walks every element, and a filtered view would
                         // write back the wrong ones.
                         else if (auto d = valuesArrayAlias(fs->list.get())) { arr = d; rw = true; }
+                        else if (auto d = reverseArrayAlias(fs->list.get())) { arr = d; rw = true; reversed = true; }
+                        else if (auto gv = grepArrayView(fs->list.get())) {
+                            arr = gv->first; rw = true; pick = std::move(gv->second); picked = true;
+                        }
                     }
                     // An ENDLESS lazy source (`1 xx *`, an infinite `...` seq, a
                     // .map view over one — drainIfFiniteLazy above materialised
@@ -15778,33 +15886,38 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     };
                     Value* topic = nullptr;
                     size_t i = 0;
+                    // the element iteration i walks: i itself, or from the end
+                    const size_t n0 = picked ? pick.size() : arr->size();
+                    auto P = [&](size_t k) -> size_t { return picked ? pick[k] : reversed ? n0 - 1 - k : k; };
+                    const bool fixedWalk = reversed || picked;   // a count known up front
                     std::function<void()> rb = [&] { // redo re-copies (aliases keep writes)
-                        if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) {
-                            if (topic) *topic = asTopic((*arr)[i], var, 0);
-                            else scope->define(var, asTopic((*arr)[i], var, 0)); } }
+                        if (!rw) { ParStripe es2(*this, arr.get()); if (P(i) < arr->size()) {
+                            if (topic) *topic = asTopic((*arr)[P(i)], var, 0);
+                            else scope->define(var, asTopic((*arr)[P(i)], var, 0)); } }
                     };
                     TopicAliasFrame taf(tctx_, rw, var, arr); // take-rw's view of the aliasing
-                    for (i = 0; growTo(i); i++) {
+                    for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
+                        const size_t pi = P(i);
                         if (flat && topic && scope.use_count() == 1) {
                             ParStripe es(*this, arr.get());
-                            if (i >= arr->size()) break;
-                            *topic = asTopic((*arr)[i], var, 0);
+                            if (pi >= arr->size()) break;
+                            *topic = asTopic((*arr)[pi], var, 0);
                         } else {
                             freshScope();
                             ParStripe es(*this, arr.get());
-                            if (i >= arr->size()) break;
-                            topic = &scope->define(var, asTopic((*arr)[i], var, 0));
+                            if (pi >= arr->size()) break;
+                            topic = &scope->define(var, asTopic((*arr)[pi], var, 0));
                         }
-                        taf.at(scope.get(), i);
+                        taf.at(scope.get(), pi);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                                                atEnd(i + 1), col, rb);
+                                                fixedWalk ? i + 1 == n0 : atEnd(i + 1), col, rb);
                         if (rw) {
                             auto it = scope->vars.find(var);
                             if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
-                                if (i < arr->size()) { (*arr)[i] = *it->second.deref();
+                                if (pi < arr->size()) { (*arr)[pi] = *it->second.deref();
                                     // the topic was itemized on the way IN (the element is a
                                     // container); don't stamp that flag onto the element itself
-                                    if ((*arr)[i].t == VT::Array && arrayElemSrc) (*arr)[i].itemized = false; } }
+                                    if ((*arr)[pi].t == VT::Array && arrayElemSrc) (*arr)[pi].itemized = false; } }
                         }
                         if (!cont) break;
                     }
@@ -21635,11 +21748,14 @@ static Value typedElemDefault(const Value& base) {
 // `@a[0] = Nil` leaves (Any), `my Int @a` leaves (Int), `is default(9)` leaves 9.
 // Applied wherever a value enters an Array/Hash element: assignment, slice
 // assignment, list initialisation, push/unshift/append/prepend.
+// (The untyped reset is the `Any` TYPE OBJECT, not the bare undefined value:
+// that one is a HOLE — a deleted or never-written slot — and `.List`, `:exists`
+// and the typed renderings tell the two apart, as Rakudo does.)
 static Value nilElemDefault(const Value& v, const Value& container) {
     if (v.t != VT::Nil) return v;
     if (container.elemDefault()) return *container.elemDefault();
     if (!container.ofType().empty()) return typedElemDefault(container);
-    return Value::any();
+    return Value::typeObj("Any");
 }
 static Value arrayMissingDefault(const Value& base);
 Value arrayMissingDefaultPublic(const Value& base) { return arrayMissingDefault(base); }
@@ -25403,6 +25519,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         // plain scalar variable — then element k is exactly argument k.
         if (p.slurpy && (p.isRaw || p.isRw) && p.sigil == '@' && !p.name.empty()) {
             Value* pv = env->local(p.name);
+            if (pv && pv->holdsContainers()) break;   // its elements ARE the containers
             size_t n = rwArgs->size() > pi ? rwArgs->size() - pi : 0;
             bool plain = n > 0 && pv && pv->t == VT::Array && pv->arr() && pv->arr()->size() == n;
             for (size_t k = 0; plain && k < n; k++) {
@@ -25666,6 +25783,54 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     return true;
 }
 
+// A raw/rw SLURPY's elements, re-made as the arguments' containers: a `$x`
+// argument gives $x's cell, an `@a` argument its elements' slots, in order.
+// Only when every remaining argument is one of those (or a plain value that
+// stays one element): anything that could flatten to an unknown count leaves
+// the slurpy holding values, as before.
+void Interpreter::bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env,
+                                       const std::vector<ExprPtr>* rwArgs, size_t from) {
+    Value* sv = env->local(p.name);
+    if (!sv || sv->t != VT::Array || !sv->arr()) return;
+    ValueList els = *sv->arr();
+    size_t k = 0;
+    bool any = false;
+    for (size_t i = from; i < rwArgs->size(); i++) {
+        const Expr* ae = (*rwArgs)[i].get();
+        if (!ae) return;
+        if (ae->kind == NK::Pair) continue;                     // a named argument
+        if (ae->kind == NK::Unary && static_cast<const Unary*>(ae)->op == "|") return;
+        if (ae->kind == NK::VarExpr) {
+            const std::string& n = static_cast<const VarExpr*>(ae)->name;
+            if (n.size() > 1 && n[0] == '@') {
+                Value* av = tctx_.cur->find(n);
+                if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return;
+                auto arr = av->arrS();
+                for (size_t j = 0; j < arr->size(); j++, k++) {
+                    if (k >= els.size()) return;
+                    els[k] = makeArraySlotProxy(arr, j);
+                }
+                any = any || !arr->empty();
+                continue;
+            }
+            if (n.size() > 1 && n[0] == '$') {
+                if (k >= els.size()) return;
+                Value c;
+                if (containerElemFor(ae, c)) { els[k] = std::move(c); any = true; }
+                k++;
+                continue;
+            }
+            return;                                             // `%h` and the rest spread
+        }
+        if (ae->kind == NK::IntLit || ae->kind == NK::StrLit || ae->kind == NK::NumLit ||
+            ae->kind == NK::InterpStr || ae->kind == NK::Index) { k++; continue; }
+        return;                                                 // a call, a range: unknown count
+    }
+    if (!any || k != els.size()) return;
+    *sv->arr() = std::move(els);
+    sv->markHoldsContainers();
+}
+
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
@@ -25691,7 +25856,14 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             }
             continue;
         }
-        if (p.slurpy) break;
+        if (p.slurpy) {
+            // `*@list is raw` holds the arguments' own CONTAINERS: `@list[0] =
+            // "hi"` writes @test[0] and `@list[*-1] = "ho"` writes $test
+            // (slurpy-is-rw.t)
+            if ((p.isRaw || p.isRw) && p.sigil == '@' && !p.name.empty() && pi < rwArgs->size())
+                bindSlurpyContainers(p, env, rwArgs, pi);
+            break;
+        }
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
             Expr* ae = (*rwArgs)[pi].get();
             // `is rw` REQUIRES a writable container. Only worth saying so when
@@ -27290,6 +27462,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     }
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
+        // `($foo, 42)[0] = 23` — an element of a LIST LITERAL is its ITEM: a
+        // scalar variable or an element is that container (the write lands in
+        // $foo), and anything else is a value, which refuses it (lists.t)
+        if (idx->base && idx->base->kind == NK::ListExpr)
+            if (Expr* item = listLiteralItem(idx)) {
+                if (itemIsContainer(item)) return lvalue(item);
+                throwImmutable(eval(item));
+            }
         // `(@a[0]:kv)[1] = …` — the VALUE half of a `:kv` pair of one element is
         // that element's container: the lvalue is the plain subscript's
         if (!idx->isHash && idx->adverb.empty() && idx->index && idx->index->kind == NK::IntLit &&
@@ -27314,6 +27494,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             static thread_local Value callBaseHold;
             callBaseHold = eval(idx->base.get());
             base = &callBaseHold;
+        }
+        // `(1,2,3).Array[0]++` — a method that hands back a fresh ARRAY: its
+        // elements are containers (create.t), written in the held result. A
+        // method answering a List or a Seq still refuses, as before.
+        else if (idx->base->kind == NK::MethodCall) {
+            try { base = lvalue(idx->base.get(), /*asInvocant=*/true); }
+            catch (RakuError&) {
+                static thread_local Value mcBaseHold;
+                Value got = eval(idx->base.get());
+                if (!((got.t == VT::Array && got.arr() && !got.isList) ||
+                      (got.t == VT::Hash && got.hash() && got.hashKind.empty()))) throw;
+                mcBaseHold = std::move(got);
+                base = &mcBaseHold;
+            }
         }
         else base = lvalue(idx->base.get(), /*asInvocant=*/true); // subscript base: reaching in, not overwriting
         // A published `our @a` / `our %h` is a VIEW onto the package's own slot
@@ -27383,6 +27577,19 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             return node;
         }
         if (idx->isHash) {
+            // A CAPTURE's named part is its Pair's value — a container when the
+            // part was `:$b` (the Pair shares $b's), a value otherwise. Writing
+            // through `$c<b>` reaches it; it does not turn the Capture into a Hash.
+            if (base->t == VT::Array && base->hashKind == "Capture" && base->arr() && idx->index) {
+                const std::string key = eval(idx->index.get()).toStr();
+                for (auto it = base->arr()->rbegin(); it != base->arr()->rend(); ++it)
+                    if (it->t == VT::Pair && it->namedArg && it->s == key && it->pairVal()) {
+                        if (it->pairValRO) throwImmutable(*it->pairVal());
+                        return it->pairVal();
+                    }
+                throw RakuError{Value::typeObj("X::Assignment::RO"),
+                    "Cannot modify an immutable Capture (" + base->gist() + ")"};
+            }
             // autovivifying an undefined Set/Bag/Mix through a subscript dies too
             if (base->t == VT::Type &&
                 (base->s == "Set" || base->s == "Bag" || base->s == "Mix"))
@@ -27665,13 +27872,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 return &rangeElem;
             }
             if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty()) {
-                tcx.lvalueImmutable = "List";
-                tcx.lvalueImmutableGist = base->gist();
-                tcx.lvalueImmutableVal = *base;
                 Value kv0 = eval(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->isWhateverCode)
                     kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
                 long long li = kv0.toInt();
+                // …except an element that IS a container — `List.new(1, 2, my $ = 3)`,
+                // `\($a)` keep the one they were handed — which takes the write
+                if (base->arr() && li >= 0 && li < (long long)base->arr()->size() &&
+                    isContainerElem((*base->arr())[li]))
+                    return &(*base->arr())[li];
+                tcx.lvalueImmutable = "List";
+                tcx.lvalueImmutableGist = base->gist();
+                tcx.lvalueImmutableVal = *base;
                 if (base->arr() && li >= 0 && li < (long long)base->arr()->size())
                     return &(*base->arr())[li];
                 static thread_local Value listMiss;
@@ -27767,7 +27979,21 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // pairVal is shared between pair copies so mutation is visible everywhere
         if (mcName == "value" && mc->args.empty() && !mc->meta && !mc->hyper) {
             Value* base = nullptr;
-            try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            // A Pair that is not held in a variable — `%h.pairs[0]`,
+            // `%h.pairs.first(…)` — carries its container in itself (a hash's
+            // Pair aliases the entry), so the Pair VALUE is enough: evaluated
+            // once, held, and written through. A variable or a subscript of one
+            // still resolves as a place, as before.
+            const Expr* root = mc->inv.get();
+            while (root && root->kind == NK::Index) root = static_cast<const Index*>(root)->base.get();
+            if (root && (root->kind == NK::VarExpr || root->kind == NK::SelfTerm)) {
+                try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            }
+            else {
+                static thread_local Value pairHold;
+                pairHold = eval(mc->inv.get());
+                if (pairHold.pairLive() || (pairHold.t == VT::Pair && pairHold.pairValRO)) base = &pairHold;
+            }
             if (base && base->t == VT::Pair && base->pairVal()) {
                 // …unless the pair binds a VALUE rather than a container, which
                 // is what `a => 1` does and `a => $x` does not (sheet HM-18)
@@ -28704,6 +28930,20 @@ std::shared_ptr<ValueList> Interpreter::valuesArrayAlias(Expr* listExpr) {
 // tuple in place with `clip-to 0, $_, 255 for @$rgb`. The list-context operator
 // itself copies (`@(…)` decontainerises), so the loop has to reach the container.
 std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
+    // `for @b[*] { $_ = 9 }`: the whole slice names every slot of THAT array,
+    // holes included, so the topic aliases each one as `for @b` does
+    if (listExpr && listExpr->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(listExpr);
+        if (!ix->isHash && !ix->multiDim && ix->adverb.empty() && ix->index &&
+            ix->index->kind == NK::Whatever && !static_cast<WhateverExpr*>(ix->index.get())->hyper &&
+            ix->base && ix->base->kind == NK::VarExpr) {
+            auto* sv = static_cast<VarExpr*>(ix->base.get());
+            if (sv->name.size() > 1 && sv->name[0] == '@' && !sv->declare)
+                if (Value* av = tctx_.cur->find(sv->name))
+                    if (av->t == VT::Array && av->arr() && !av->isList && !av->ext()) return av->arrS();
+        }
+        return nullptr;
+    }
     if (!listExpr || listExpr->kind != NK::Unary) return nullptr;
     auto* u = static_cast<Unary*>(listExpr);
     // `for |@a { … }`: slipping an array in is still iterating THAT array, so
@@ -28724,6 +28964,42 @@ std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
     Value* v = tctx_.cur->find(ve->name);
     if (!v || v->t != VT::Array || !v->arr() || v->isList) return nullptr; // a List is immutable
     return v->arrS();
+}
+
+// `for @a.reverse` — the reversed view of an Array hands out the array's own
+// elements (Rakudo's reverse returns the containers, holes included), so the
+// loop walks the real storage backwards. Only the plain no-argument call on
+// an `@`-variable.
+std::shared_ptr<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
+    if (!listExpr || listExpr->kind != NK::MethodCall) return nullptr;
+    auto* mc = static_cast<MethodCall*>(listExpr);
+    if (mc->method != "reverse" || !mc->args.empty() || mc->hyper || mc->meta || mc->methodExpr ||
+        !mc->inv || mc->inv->kind != NK::VarExpr) return nullptr;
+    auto* sv = static_cast<VarExpr*>(mc->inv.get());
+    if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
+    Value* av = tctx_.cur->find(sv->name);
+    if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return nullptr;
+    return av->arrS();
+}
+
+// `@a.grep(PRED)` over a real Array: the array's storage and the positions of
+// the elements the predicate keeps, in order — the containers grep hands back.
+// The predicate is evaluated ONCE and called per element, as grep does.
+std::shared_ptr<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>>
+Interpreter::grepArrayView(Expr* e) {
+    Expr* pred = nullptr;
+    Expr* src = peelGrepFilter(e, pred);
+    if (!pred || !src || src->kind != NK::VarExpr) return nullptr;
+    auto* sv = static_cast<VarExpr*>(src);
+    if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
+    Value* av = tctx_.cur->find(sv->name);
+    if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return nullptr;
+    auto view = std::make_shared<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>>();
+    view->first = av->arrS();
+    Value pv = eval(pred);
+    for (size_t i = 0; i < view->first->size(); i++)
+        if (matcherAccepts(*this, (*view->first)[i], pv)) view->second.push_back(i);
+    return view;
 }
 
 // `for $c, $m, $y, $k { … }` — every item is a CONTAINER, so the topic aliases it
@@ -29060,6 +29336,29 @@ std::shared_ptr<Value> Interpreter::varCell(Env* owner, const std::string& name)
     return raw->promoteToCell();
 }
 
+// The shared cell behind the VARIABLE an already-evaluated expression names —
+// `$v`, or the one `my $v = 42` / `my $ = 42` just declared — promoted on first
+// use, so a Pair built from it (`a => $v`) holds that very container, as
+// Rakudo's does. Null for anything else: a value, an element, `$_`, a
+// parameter still linked the old way.
+std::shared_ptr<Value> Interpreter::exprVarCell(const Expr* e) {
+    if (e && e->kind == NK::Assign) {
+        auto* as = static_cast<const Assign*>(e);
+        if (as->op != "=" || !as->target || as->target->kind != NK::VarExpr ||
+            !static_cast<const VarExpr*>(as->target.get())->declare) return nullptr;
+        e = as->target.get();
+    }
+    if (!e || e->kind != NK::VarExpr || !tctx_.cur) return nullptr;
+    const std::string& n = static_cast<const VarExpr*>(e)->name;
+    // (an anonymous `my $` is named `$` + "\x01anonN" by the parser)
+    if (n.size() < 2 || n[0] != '$' || n == "$_" ||
+        !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_' || n[1] == '\x01')) return nullptr;
+    Env* own = nullptr;
+    if (!tctx_.cur->findRaw(n, &own) || !own) return nullptr;
+    if (own->ex && (own->ex->rwLinks.count(n) || own->ex->rwDirect.count(n))) return nullptr;
+    return varCell(own, n);
+}
+
 // A subscript chain whose every index is a literal or a variable (or plain
 // arithmetic over those): evaluating it again changes nothing.
 static bool pureSubscript(const Expr* e) {
@@ -29078,6 +29377,50 @@ static bool pureSubscript(const Expr* e) {
         }
         default: return false;
     }
+}
+
+// `($a, 42)[k]` with a single, in-range Int subscript: the literal's item k.
+Expr* Interpreter::listLiteralItem(Index* ix) {
+    if (!ix || ix->isHash || !ix->index || !ix->adverb.empty() || ix->multiDim || !ix->base ||
+        ix->base->kind != NK::ListExpr) return nullptr;
+    auto* le = static_cast<ListExpr*>(ix->base.get());
+    if (!plainListLiteral(le) || ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+        ix->index->kind == NK::Whatever) return nullptr;
+    Value k = eval(ix->index.get());
+    if (k.t != VT::Int) { pendingSubscripts_.emplace_back(ix->index.get(), k); return nullptr; }
+    long long n = k.toInt();
+    if (n < 0 || n >= (long long)le->items.size()) { pendingSubscripts_.emplace_back(ix->index.get(), k); return nullptr; }
+    return le->items[(size_t)n].get();
+}
+
+// A list that holds CONTAINERS (Value::holdsContainers) read as a VALUE: a
+// fresh buffer in which each container gives what it holds. Everything that
+// walks elements raw — the built-in methods, the operators — gets this.
+Value Interpreter::decontList(const Value& v) {
+    if (!v.arr()) return v;
+    Value out = v;
+    out.setArr(makePayload<ValueList>(*v.arr()));
+    out.xw().holdsCells = false;
+    for (auto& e : *out.arr()) {
+        if (e.t == VT::Hash && e.hashKind == "Proxy" && e.hash()) e = deproxy(e);
+        else if (e.isCell()) e = *e.cellS();
+        e.readonly = e.immutableBind = false;
+    }
+    return out;
+}
+
+// A LIST ELEMENT that is the container a variable expression names (`$a`,
+// `my $ = 3`): a Proxy over the variable's cell, the form element storage
+// reads through. False when `e` names no variable.
+bool Interpreter::containerElemFor(const Expr* e, Value& out) {
+    auto c = exprVarCell(e);
+    if (!c) return false;
+    out = makeSharedCellProxy(std::move(c));
+    return true;
+}
+// …and is this element such a container (or a real cell)?
+bool Interpreter::isContainerElem(const Value& v) {
+    return v.isCell() || cellOfProxy(&v) != nullptr;
 }
 
 // The storage slot an element subscript names, WITHOUT autovivifying anything:
@@ -31885,6 +32228,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value r = methodCall(base, ix->isHash ? "BIND-KEY" : "BIND-POS", ba);
                         return sink ? Value::any() : r;
                     }
+                    // a TYPED container takes only a container of its element type:
+                    // `my Int @a; my Str $x = "foo"; @a[0] := $x` dies (arrays.t)
+                    if ((base.t == VT::Array || base.t == VT::Hash) && !base.ofType().empty() &&
+                        ascii::isupper((unsigned char)base.ofType()[0]) &&
+                        base.ofType().find(',') == std::string::npos && base.ofType() != "Mu" &&
+                        base.ofType() != "Any" && !typeOrSubsetMatches(*cell, base.ofType()))
+                        throwTypedV("X::TypeCheck::Binding",
+                            {{"got", *cell}, {"expected", Value::typeObj(base.ofType())}},
+                            "Type check failed in binding; expected " + base.ofType() + " but got " +
+                                cell->typeName() + " (" + typeCheckRepr(*cell) + ")");
                     if (Value* el = lvalue(a->target.get())) {
                         *el = prox;
                         return sink ? Value::any() : eval(a->value.get());
@@ -32120,6 +32473,33 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // Range (^$n), or an @-var — a scalar subscript keeps the ordinary path.
         if (a->op == "=" && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
+            // `($foo, 42, $bar, 19)[0, 2] = (23, 24)` — a slice of a LIST
+            // LITERAL assigns each picked item's own container, in order
+            if (ix->base && ix->base->kind == NK::ListExpr && !ix->isHash && sliceSubscript(ix) &&
+                ix->index->kind != NK::Whatever && plainListLiteral(static_cast<ListExpr*>(ix->base.get()))) {
+                auto* le = static_cast<ListExpr*>(ix->base.get());
+                Value keys = eval(ix->index.get());
+                if (keys.t == VT::Array || keys.t == VT::Range) {
+                    ValueList ks = keys.flatten();
+                    Value rv = evalValueOf(a->value.get());
+                    ValueList vs = rv.t == VT::Array && rv.arr() ? *rv.arr()
+                                 : rv.t == VT::Range ? rv.flatten() : ValueList{rv};
+                    for (size_t i = 0; i < ks.size(); i++) {
+                        long long k = ks[i].toInt();
+                        if (k < 0 || k >= (long long)le->items.size()) continue;
+                        Expr* item = le->items[(size_t)k].get();
+                        if (!itemIsContainer(item)) throwImmutable(eval(item));
+                        Value v = i < vs.size() ? vs[i] : Value::any();
+                        v.readonly = v.immutableBind = false;
+                        Value* lv = lvalue(item);
+                        if (lv->readonly) throwNotWritable(*lv);
+                        if (item->kind == NK::VarExpr) enforceTypedAssign(static_cast<VarExpr*>(item)->name, v);
+                        *lv = std::move(v);
+                    }
+                    return sink ? Value::any() : rv;
+                }
+                pendingSubscripts_.emplace_back(ix->index.get(), keys);
+            }
             // A call is included: `%orig{ %new.keys } = %new.values`. A non-list
             // result falls through to the ordinary path below, which is what keeps
             // `%h{ $obj.name } = …` a single-key assignment.
@@ -32577,6 +32957,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // …and an ELEMENT bound to it (`%h<foo> := $pair.value`) holds the same
+        // container, so assigning the element writes the Pair's value — and,
+        // for `'foo' => my $out`, $out (Getopt::Long's out-parameter idiom)
+        if (a->op == ":=" && a->target->kind == NK::Index && a->value->kind == NK::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(a->value.get());
+            if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper && !mc->methodExpr) {
+                Value pv = eval(mc->inv.get());
+                if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
+                    std::shared_ptr<Value> cell = pv.pairValS();
+                    if (Value* el = lvalue(a->target.get())) {
+                        *el = makeSharedCellProxy(cell);
+                        if (sink) return Value::any();
+                        Value out = *cell;
+                        out.readonly = out.immutableBind = false;
+                        return out;
+                    }
+                }
+            }
+        }
         // `$node := parent`, where `parent` is a sigilless term ALREADY bound to
         // a slot: a bind copies the ALIAS, so it reads the raw slot instead of
         // the value the NameTerm eval fetches for rvalue use. This is how
@@ -32635,6 +33034,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
         tctx_.lastLvalueAttrDefault = nullptr;
+        // `$y := :$y` — the right side can itself make $y a cell (the Pair
+        // holds $y's container), so the name is detached again NOW, after it
+        // ran: the bind replaces the name's slot and never writes into the
+        // container the right side just captured (evalAssign detaches before).
+        if (a->op.size() == 2 && a->op[0] == ':' && a->target->kind == NK::VarExpr &&
+            !static_cast<VarExpr*>(a->target.get())->declare) {
+            Value* traw = tctx_.cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
+            if (traw && traw->isCell()) {
+                Value fresh = *traw->deref();
+                fresh.readonly = fresh.immutableBind = false;
+                *traw = std::move(fresh);
+            }
+        }
         Value* lv = lvalue(a->target.get());
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
@@ -33232,7 +33644,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else if (plainAccessor) { try { bp = lvalue(ix->base.get()); } catch (RakuError&) {} }
             if (bp && bp->elemDefault()) *lv = *bp->elemDefault();          // `is default(…)`
             else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
-            else *lv = Value::any();
+            else *lv = Value::typeObj("Any");   // a reset, not a hole (see nilElemDefault)
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
@@ -44299,6 +44711,26 @@ Value Interpreter::evalUnary(Unary* u) {
             ValueList got = evalArgs(one.v);
             for (auto& g : got) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
         }
+        // A positional part that is a VARIABLE is that variable's container:
+        // `my $c = \($a); $c[0]++` steps $a (capture.t). Only where each item
+        // is one part — a slip would move the positions. (A named `:$a` part
+        // already holds $a's container: the Pair shares it.)
+        {
+            std::vector<Expr*> parts;
+            if (u->operand->kind == NK::ListExpr && !static_cast<ListExpr*>(u->operand.get())->parenned) {
+                for (auto& it : static_cast<ListExpr*>(u->operand.get())->items) parts.push_back(it.get());
+            }
+            else parts.push_back(u->operand.get());
+            bool plain = parts.size() == v.arr()->size();
+            for (Expr* p : parts)
+                if (!p || (p->kind == NK::Unary && static_cast<Unary*>(p)->op == "|")) plain = false;
+            bool holds = false;
+            if (plain)
+                for (size_t i = 0; i < parts.size(); i++)
+                    if (parts[i]->kind == NK::VarExpr && (*v.arr())[i].t != VT::Pair)
+                        if (auto c = exprVarCell(parts[i])) { (*v.arr())[i] = makeSharedCellProxy(c); holds = true; }
+            if (holds) v.markHoldsContainers();
+        }
         // a named part given twice keeps the LAST one: `\(:a(41), :a(42))` is \(:a(42))
         {
             auto& va = *v.arr();
@@ -45362,7 +45794,9 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // them back exactly as they arrived: `min |\(1,7,3, by => {1/$_})` keeps
             // its :by named, `f(|\(('a' => 1)))` keeps its Pair positional.
             if (v.t == VT::Array && v.arr()) {
-                for (auto& x : *v.arr()) args.push_back(x);
+                // (a part that is a CONTAINER — `\($x)` — passes what it holds)
+                if (v.holdsContainers()) { for (auto& x : *decontList(v).arr()) args.push_back(x); }
+                else for (auto& x : *v.arr()) args.push_back(x);
             }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
             // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
@@ -46727,8 +47161,21 @@ Value Interpreter::evalCall(Call* c) {
     // `@a»++` / `%h»--` / `@a»!` (user postfix) / `(2,3)»i` — hyper postfix:
     // descends nested arrays, keeps hash keys; ++/-- mutate the elements in
     // place (through the shared containers) and yield the OLD values (postfix).
-    if (c->name.rfind("hyper-postfix:<", 0) == 0 && c->name.back() == '>' && !args.empty())
+    if (c->name.rfind("hyper-postfix:<", 0) == 0 && c->name.back() == '>' && !args.empty()) {
+        // `@a.grep(* %% 2).>>++` — grep hands back @a's own CONTAINERS, so the
+        // postfix lands in @a: apply it to the kept elements and write each back
+        // into its slot (S32-list/grep.t)
+        if (c->args.size() == 1)
+            if (auto kept = grepArrayView(c->args[0].get())) {
+                Value tmp = Value::array();
+                for (size_t k : kept->second) tmp.arr()->push_back((*kept->first)[k]);
+                Value r = hyperPostfixApply(c->name.substr(15, c->name.size() - 16), tmp);
+                for (size_t j = 0; j < kept->second.size() && j < tmp.arr()->size(); j++)
+                    if (kept->second[j] < kept->first->size()) (*kept->first)[kept->second[j]] = (*tmp.arr())[j];
+                return r;
+            }
         return hyperPostfixApply(c->name.substr(15, c->name.size() - 16), args[0]);
+    }
     // `$a >>[&op]<< $b` (parser-desugared, markers in the name): apply a callable
     // element-wise. A `>>` on the left / `<<` on the right marks that side STRICT
     // — it dictates the shape; a dwimmy side may only be EXTENDED (cycled), never
@@ -48883,8 +49330,10 @@ Value Interpreter::evalIndex(Index* idx) {
         // `@a[*]` / `%h{*}` — and the zen slice `@a[]`, which parses to `[*]` —
         // with an adverb select EVERY element.
         bool allElems = iv.t == VT::Whatever;
+        // (an ITEMIZED list is one index, its count: `@a[$(7,8,9)]:exists`
+        // asks about @a[3], as the plain read and write already do)
         bool slice = allElems || (idx->isHash ? keySubscriptIsSlice(idx->index.get(), iv)
-                                              : (iv.t == VT::Array || iv.t == VT::Range));
+                                              : ((iv.t == VT::Array && !iv.itemized) || iv.t == VT::Range));
         // a JUNCTION key AUTOTHREADS the whole subscript, adverbs included:
         // `%response{all(<r s i>)}:exists` is all(:exists of each eigenstate)
         // — Auth::SCRAM::Async gates its field check on exactly this
@@ -49482,6 +49931,9 @@ Value Interpreter::evalIndex(Index* idx) {
         // scalar — a hard death there took 201 further assertions with it.
         std::string sadv = idx->adverb;
         if (!sadv.empty() && sadv[0] == '!') sadv = sadv.substr(1);
+        const bool undefInContainer = sadv.empty() && idx->base &&
+            (idx->base->kind == NK::VarExpr || idx->base->kind == NK::Index) &&
+            (base.t == VT::Any || (base.t == VT::Type && base.enumName.empty()));
         auto one = [&](const Value& ixv) -> Value {
             // `*-1` resolves against the one element this stands for
             long long i = (ixv.t == VT::Code && ixv.code() && ixv.code()->isWhateverCode)
@@ -49491,6 +49943,11 @@ Value Interpreter::evalIndex(Index* idx) {
             if (sadv == "delete")
                 return armedFailure("X::AdHoc",
                     "Can not remove elements from a " + base.typeName());
+            // …but an undefined value held in a CONTAINER — `my $x = Any; $x[1]`,
+            // an element reset to its default — reads as an EMPTY container:
+            // every index is (Any). A bare type object is still the one-item
+            // list above: `(Any)[1]` is the Failure (sheet NA-35; Rakudo both)
+            if (undefInContainer) return Value::any();
             if (i == 0 || i == -1) return base;
             // The Failure carries the exception's OWN attributes — `.what`,
             // `.got`, `.range` — not just a message, because that is what a
@@ -49531,6 +49988,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 long long i = e.toInt();
                 // (the whole slice is then that Failure — soft, like the
                 // single index above, for the reason given there)
+                if (undefInContainer) { out.arr()->push_back(Value::any()); continue; }
                 if (i != 0) return one(e);
                 out.arr()->push_back(base);
             }
@@ -50447,6 +50905,8 @@ struct NodeCountReport {
                 }
                 Value pr = Value::pair(kv.toStr(), vv0);
                 markPairValueRO(pr, p->value.get());
+                // `$k => $v` holds $v's CONTAINER: `$pair.value = 5` writes $v
+                if (auto c = exprVarCell(p->value.get())) { pr.setPairVal(std::move(c)); pr.setPairLive(); }
                 // a non-string key (number, object, match, array, hash, code) is preserved
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
@@ -50465,6 +50925,7 @@ struct NodeCountReport {
             {   // `:err(/pat/)` → Regex value
                 Value pr = Value::pair(p->key, pairValueOf(p->value.get()));
                 markPairValueRO(pr, p->value.get());
+                if (auto c = exprVarCell(p->value.get())) { pr.setPairVal(std::move(c)); pr.setPairLive(); }   // `:$v`
                 return pr;
             }
         }
@@ -52136,6 +52597,25 @@ Value Interpreter::eval(Expr* e) {
                         t->setPairVal(std::make_shared<Value>(v));
                 }
                 return v;
+            }
+            // `$p.freeze` — a Pair holding a CONTAINER (`a => $v`) lets go of it:
+            // the Pair where it is kept takes a private, read-only copy of the
+            // value, so a later `$v = …` no longer shows through, and the answer
+            // is that value (Rakudo's Pair.freeze)
+            if (inv.t == VT::Pair && mc->method == "freeze" && mc->args.empty() && !mc->meta && !mc->hyper) {
+                auto freezeOne = [](Value& p) {
+                    Value v = p.pairVal() ? *p.pairVal() : Value::any();
+                    v.readonly = v.immutableBind = false;
+                    p.setPairVal(std::make_shared<Value>(v));
+                    p.pairValRO = true;
+                    p.b = false;                       // no longer pairLive
+                    return v;
+                };
+                Value* lv = nullptr;
+                try { lv = lvalue(mc->inv.get()); } catch (RakuError&) { lv = nullptr; }
+                if (lv && lv->t == VT::Pair) return freezeOne(*lv);
+                Value tmp = inv;
+                return freezeOne(tmp);
             }
             // Buf.append/.push/.prepend/.unshift/.pop/.shift mutate the byte string
             // through the invocant's container

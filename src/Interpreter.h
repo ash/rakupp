@@ -1051,6 +1051,12 @@ struct ExecContext {
     // …unless the local is a CELL (Value::isCell): then lvalueOut points into
     // the shared Value, which this keeps alive until the caller has written.
     std::shared_ptr<Value> lvalueOutCell;
+    // A `for` in VALUE context whose body ENDS on a variable declared outside
+    // it (`(for 1..3 { $s += $_ })`): each iteration's value is that variable's
+    // CONTAINER, so the loop collects the container (Rakudo's (6 6 6)). Keyed
+    // to the body block, so a loop nested in it collects its own way.
+    const void* collectTailBody = nullptr;
+    const struct Expr* collectTail = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
     // paying a second TLS wrapper call + init guard for the stack itself
@@ -1675,6 +1681,9 @@ public:
     Value* pairsAliasSource(Expr* listExpr);   // `%h.pairs` over a plain hash variable: the hash
     // The array behind `for @$x` — likewise; the topic aliases its elements.
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
+    std::shared_ptr<ValueList> reverseArrayAlias(Expr* listExpr); // `for @a.reverse`'s storage
+    // `@a.grep(PRED)`: @a's storage and the positions grep keeps (its containers)
+    std::shared_ptr<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
     std::shared_ptr<ValueList> valuesArrayAlias(Expr* listExpr);
@@ -1711,10 +1720,17 @@ public:
     // …the plain-variable case of it: bind the parameter to the caller's cell
     // (ROAST-TRACKS-PLAN track A). False = not that case; link as before.
     bool bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env);
+    void bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env,
+                              const std::vector<ExprPtr>* rwArgs, size_t from); // `*@l is raw`
     // The shared cell behind a variable owned by `owner`, promoting it on first
     // use; null for a slot that holds some other Proxy.
     std::shared_ptr<Value> varCell(Env* owner, const std::string& name);
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
+    Value decontList(const Value& v);        // a container-holding list's values, fresh
+    bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
+    bool isContainerElem(const Value& v);    // …is this element one?
+    struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
+    std::shared_ptr<Value> exprVarCell(const struct Expr* e); // the cell of the variable `e` names
     const void* containerId(const Value* slot); // what `=:=` compares (see Interpreter.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);

@@ -60,6 +60,7 @@ static long long supplyByArity(const rakupp::Value& c) {
 namespace rakupp {
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
+Value arrayMissingDefaultPublic(const Value& base);   // Interpreter.cpp
 
 // The per-class step alone, least-derived first down the primary parent chain
 // — what the construction protocol reduces to when no class in the ancestry
@@ -4866,6 +4867,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return lz;
         }
         *v.arr() = seed;
+        // `List.new(1, 2, my $ = 3)` keeps a CONTAINER it is handed: element 2
+        // is that `my $`, assignable through the List, while 1 and 2 are values
+        // (list.t). Only when every argument is one element.
+        if (inv.s == "List" && rwArgs && posCount == seed.size()) {
+            // (the colon form, `List.new: 1, 2, my $ = 3`, arrives as ONE list)
+            std::vector<const Expr*> argEs;
+            if (rwArgs->size() == 1 && (*rwArgs)[0] && (*rwArgs)[0]->kind == NK::ListExpr &&
+                !static_cast<const ListExpr*>((*rwArgs)[0].get())->parenned)
+                for (auto& it : static_cast<const ListExpr*>((*rwArgs)[0].get())->items) argEs.push_back(it.get());
+            else for (auto& it : *rwArgs) argEs.push_back(it.get());
+            if (argEs.size() == seed.size()) {
+                bool holds = false;
+                for (size_t i = 0; i < seed.size(); i++) {
+                    Value c;
+                    if (containerElemFor(argEs[i], c)) { (*v.arr())[i] = std::move(c); holds = true; }
+                }
+                if (holds) v.markHoldsContainers();
+            }
+        }
         return v;
     }
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "Map")
@@ -8294,7 +8314,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Array) {
             Value r = inv; r.isList = true; r.s = "Slip";
             // a snapshot: pushing onto the Array afterwards leaves the Slip as it was
-            if (!inv.ext() && inv.arr()) r.setArr(makePayload<ValueList>(*inv.arr()));
+            if (!inv.ext() && inv.arr()) {
+                r.setArr(makePayload<ValueList>(*inv.arr()));
+                // …and an ARRAY's holes read as its element default: Any, the
+                // element type, or `is default` (delete.t)
+                if (!inv.isList) {
+                    Value d = arrayMissingDefaultPublic(inv);
+                    if (d.t == VT::Nil) d = Value::typeObj("Any");   // an untyped Array's is Any
+                    for (auto& e : *r.arr()) if (e.t == VT::Any) e = d;
+                }
+            }
             return r;
         }
         // Everything else slips the list it STANDS for, which for a non-Iterable
@@ -8641,7 +8670,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (inv.hash()) for (auto& kv : *inv.hash()) {
                 if (m == "kv") { o.arr()->push_back(typedKey(kv)); o.arr()->push_back(kv.second); }
-                else { Value p = Value::pair(kv.first, kv.second); p.pairKeyM() = kv.second.elemKey(); o.arr()->push_back(std::move(p)); }
+                else { Value p = hashEntryPair(inv, kv.first, kv.second); p.pairKeyM() = kv.second.elemKey(); o.arr()->push_back(std::move(p)); }
             }
         }
         return o;

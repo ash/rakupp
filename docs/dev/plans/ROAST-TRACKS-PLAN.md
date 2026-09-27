@@ -180,9 +180,7 @@ silently copy.
 **Risk:** the highest of the three. A1 changes every variable read. Land A1
 behind the perf gate before A2 grows the surface.
 
-### A1 status (2026-09-27, base `2970b6e5`, not yet committed)
-
-Built on branch `claude/roast-tracks-phase-a-ef6cce`:
+### A1 status (landed on main in `2251dc2e`)
 
 - **The cell.** `PK::Cell` in Value.h: an Env storage slot holding
   `shared_ptr<Value>`. `Env::find`/`local` and `padPtr` dereference it, so no
@@ -204,47 +202,78 @@ Built on branch `claude/roast-tracks-phase-a-ef6cce`:
 - Also: `0 := 1` is X::Bind; `undefine @a` / `%h` empties the one aggregate
   in place; `f() = v` on a non-rw user routine runs `f` before refusing.
 
-Flipped: `S03-binding/scalars.t`, `S03-binding/nested.t`,
-`S03-binding/hashes.t`, `S03-operators/identity.t`,
-`S04-statements/for_with_only_one_item.t`, `S04-statements/once.t`,
-`S09-multidim/indexing.t`, `S32-scalar/undef.t`; `S03-binding/arrays.t`
-45 → 46, `S06-routine-modifiers/proxy.t` 24 → 25.
+Flipped `S03-binding/scalars.t`, `nested.t`, `hashes.t`,
+`S03-operators/identity.t`, `S04-statements/for_with_only_one_item.t`,
+`once.t`, `S09-multidim/indexing.t`, `S32-scalar/undef.t`: Roast 1,267 → 1,275
+of 1,434, no file worse. perf-guard A/B: `subcall` −15%, the cell check on
+every variable read ~2% on the variable-heavy kernels (measured with an
+experiment build that compiles the dereference out).
 
-Gates: Roast 1,267 → 1,275 of 1,434 with no file worse per file and
-denominator (two runs; `pick.t` test 68 and `bug-coverage-stress.t` test 3
-are random on the base too); t/regression unchanged plus
-`cell-rebind-and-alias-identity.raku`; `t/run.raku` 1111/1111; perf-guard A/B
-(three interleaved rounds, best-of): `subcall` −15%, `junctionwide` −5%,
-`asg`/`attrread`/`rats`/`strpass`/`method` +1.7–2.4%, the rest within ±1%.
-An experiment build with the dereference compiled out brought `attrread`,
-`method`, `loopsum` and the multi kernels back to base, so the cell check on
-every variable read costs them ~2%. It did not bring back `asg` or `rats`: a
-thread-local read that evalAssign made ahead of its cheap tests did, and moving
-it behind them halved both.
+### A2 status (2026-09-27, base `2251dc2e`)
 
-Left from the A1 list:
+What an element holds, as built:
 
-- `S06-traits/is-rw.t` 6–7 (`%h.pairs[0].value = 42`) is a VIEW, so A2. Rakudo
-  aliases the hash's containers from every Pair a plain Hash hands out (also
-  through `my @a = %h`); Map and Set pairs are read-only. ValueHash keeps its
-  entries in a `std::deque`, so a Pair can hold an aliasing `shared_ptr` into
-  the entry (cheaper than today's copy). The one hazard is `clear()`/assignment
-  destroying entries a Pair still points into; a graveyard for hashes that
-  handed out aliases covers it.
-- `S06-traits/slurpy-is-rw.t` needs ELEMENT containers (A2).
-- `proxy.t` 26: a `class History is Proxy { has @.history }` needs a default
-  `.new` building a stamped Proxy, and accessor dispatch on it. That is
-  Proxy subclassing rather than containers.
+- **Views into a plain Hash alias its entries.** A Pair a Hash hands out
+  (`.pairs`, iteration, `my @a = %h`, `.list`, `.flat`, `append`) holds the
+  entry's own Value (`hashEntryPair`). ValueHash moves its entries into a
+  shared generation on the first alias (a deque move relocates nothing); a
+  clear or a refill starts a new one, and the old one lives exactly as long as
+  its last Pair. Map, Set, Bag and Mix pairs are read-only.
+- **`$k => $v`, `:$v`, `k => my $x`** share the variable's cell
+  (`exprVarCell`); `Value::pairLive` marks such a Pair, the only kind whose
+  `.value` takes a write when it is not held in a variable. `.freeze` gives the
+  Pair a private copy. `for $pair.kv -> $k, $v is rw` binds the cell.
+- **Containers inside lists** are Proxy-cell elements, and the list carries
+  `ValueExt::holdsCells`. `Interpreter::methodCall` hands every non-mutating
+  built-in a decontainerized copy (`decontList`), a `|` slip passes values,
+  and element read/write, gist, raku and eqv read through the Proxy. Built by
+  `\($a)` (a named part is a Pair sharing the cell), `List.new(…, my $ = 3)`,
+  a `for` in value context whose body ends on an outer variable (`(for 1..3
+  { $s += $_ })` is (6 6 6)), and a raw/rw slurpy (`*@l is raw` holds `$x`'s
+  cell and `@a`'s element slots, `bindSlurpyContainers`).
+- **Literal lists as lvalues:** `($foo, 42)[0] = 23` and `(…)[0, 2] = …`
+  assign the items' own containers (`listLiteralItem`).
+- **Array views** in the consumers that write: `for @a.reverse`, `for @a[*]`,
+  `for @a.grep(P)` (both `for` forms), `@a.grep(P).>>++` (`grepArrayView`),
+  and the sub form `map {…}, @a` goes through the method, which aliases.
+- **Holes.** An element reset by `= Nil` holds its default's TYPE OBJECT
+  (`Any` when untyped), so a hole — deleted or never written — is the only
+  bare undefined element: `.List` gives Nil there, `.Slip` the default, and a
+  typed or defaulted Array gists and `.map`s its default. An undefined value
+  held in a container indexes as an empty container (`$x[1]` is (Any); a bare
+  `(Any)[1]` stays the Failure).
+- Also: `$(7,8,9)` is one index under `:exists`/`:delete`; `(1,2,3).Array[0]++`
+  writes the fresh array; `$capture<k> = …` writes a named part; an element
+  bind into a typed container type-checks; Hash and Map `.WHICH` is identity.
 
-**The A2 decision: what an element holds.** Env slots have one read path;
-elements have hundreds (`for (auto& e : *arr())`). Today a bound element holds
-a Proxy-cell and a handful of readers deproxy it (gist, raku, eqv, deepEq,
-element fetch). Measured on `@b[1] := $x`: `sum`, `map`, `join`, `Str` are
-right; `sort`, `max` and `>>+>>` are wrong or die. A PK::Cell holder in an
-element would leak the same way, as an `Any`. A2 needs either a per-list
-"holds containers" mark checked at the list consumers' entry points
-(method dispatch, operators, assignment), or views that alias into stable
-storage the way the hash Pair above does.
+Flipped: `S02-types/capture.t`, `list.t`, `lists.t`, `S04-statements/for.t`,
+`S04-statement-modifiers/for.t`, `S06-traits/is-rw.t`, `slurpy-is-rw.t`,
+`S32-array/adverbs.t`, `S32-array/delete.t`, `S32-hash/kv.t`,
+`S32-list/grep.t`, `S32-list/reverse.t`. Improved: `S02-types/pair.t` 179 →
+180, `S09-typed-arrays/arrays.t` 80 → 83, `S32-array/create.t` 10 → 11,
+`S32-list/map.t` 60 → 61, `S32-hash/map.t` 22 → 23.
+
+Gates: Roast 1,274 → 1,285 of 1,434, no file worse per file and denominator;
+t/regression unchanged plus `container-lists-and-pair-cells.raku`. The per-file
+join and t/regression caught six regressions on the way (Capture slips, `$y :=
+:$y`, Set pairs, `KEY => my $x` bound into an element, `Pair.freeze`, a
+Nil-reset element sliced), all fixed.
+
+Left in A2:
+
+- Hash values in Scalar containers: reading `%h<a>` must itemize (`for %h<a>`
+  runs once, `my @x = %h<a>` has one element) — `S32-hash/map.t` 19,
+  `S12-attributes/instance.t` 142. Correct, but it changes every program that
+  iterates a hash value, so it wants the ecosystem battery as its gate.
+- A mutable QuantHash's `.values.map({ $_ = 0 })` deletes keys
+  (`quanthash.t`): its values are write-through Proxies, and the `.map`
+  driver's topic write-back would have to STORE into them.
+- `when`/`default` handing back a container (`when.t` 21, 24); `reduce`
+  passing raw containers (`reduce.t` 23); `substr-rw` through an `is raw`
+  AT-POS (`xxPOS.t` 64); nested typed arrays (`arrays.t` 47); a Pair's typed
+  container and its clone's identity (`pair.t` 171, 180).
+- Not A: `create.t` 10 (a clone sharing a lazy reifier, B), `S32-list/map.t`
+  62 (a LAST phaser), `proxy.t` 26 (Proxy subclassing).
 
 ### Files
 

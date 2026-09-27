@@ -16,7 +16,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
     if (hammer) {
         if (x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) flatOneInto(e, false, true, out); return; }
         if (x.t == VT::Hash && x.hash() && x.hashKind.empty()) {
-            for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
+            for (auto& kv : *x.hash()) out.push_back(hashEntryPair(x, kv.first, kv.second));
             return;
         }
         if (x.t == VT::Range) { for (auto& e : x.flatten()) out.push_back(e); return; }
@@ -26,7 +26,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
     if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
         for (auto& e : *x.arr()) flatOneInto(e, !x.isList, false, out);
     else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
-        for (auto& kv : *x.hash()) out.push_back(Value::pair(kv.first, kv.second));
+        for (auto& kv : *x.hash()) out.push_back(hashEntryPair(x, kv.first, kv.second));
     else if (!ofArray && x.t == VT::Range)
         for (auto& e : x.flatten()) out.push_back(e);
     else {
@@ -1693,7 +1693,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (inv.t == VT::Hash) {
             Value o = Value::array(); o.isList = true;
-            for (auto& kv : *inv.hash()) o.arr()->push_back(Value::pair(kv.first, kv.second));
+            for (auto& kv : *inv.hash()) o.arr()->push_back(hashEntryPair(inv, kv.first, kv.second));
             if (*seqKind) o.s = seqKind;
             return o;
         }
@@ -1921,6 +1921,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
             Value out = Value::list(items);
+            // an ARRAY's holes become Nil in its List — a deleted or never-written
+            // slot, not the `is default` value the Array would read (delete.t)
+            if (m == "List" && inv.t == VT::Array && !inv.isList && out.arr())
+                for (auto& e : *out.arr()) if (e.t == VT::Any) e = Value::nil();
             if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
             // `.eager` answers a LIST — `(1..*).list.head(3).eager` is `(1, 2, 3)`,
             // not a Seq (sheet LA-10). `.cache` keeps the invocant's own type.
@@ -3603,9 +3607,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
                     if (req <= ar) required = req;
                 }
+                // a HOLE of a typed or defaulted Array reads as its default here
+                // too: `my Int @a; @a[1]:delete; @a.map(*.^name)` is Int Int Int
+                // (the `$_` write-back below still reaches the slot itself)
+                const bool holesRead = inv.t == VT::Array && !inv.isList &&
+                                       (!inv.ofType().empty() || inv.elemDefault());
                 for (size_t i = 0; i < items.size(); i += ar) {
                     ValueList ca;
-                    for (size_t k = 0; k < ar && i + k < items.size(); k++) ca.push_back(items[i + k]);
+                    for (size_t k = 0; k < ar && i + k < items.size(); k++)
+                        ca.push_back(holesRead && items[i + k].t == VT::Any ? arrayMissingDefaultPublic(inv)
+                                                                             : items[i + k]);
                     if (ca.size() < required)
                         throw RakuError{Value::typeObj("X::AdHoc"),
                             "Too few positionals passed; expected " + std::to_string(required) +
@@ -4019,7 +4030,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     Value key = hashEntryKey(inv, kv.first, kv.second);
                     if (m == "kv") { out.arr()->push_back(key); out.arr()->push_back(kv.second); }
                     // (Hash antipairs answered by its own arm above)
-                    else { Value p = Value::pair(kv.first, kv.second);
+                    else { Value p = hashEntryPair(inv, kv.first, kv.second);
                            // …and a STR key of an object hash needs recovering
                            // too: the payload indexes by identity (`Str|a`)
                            if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(key));
@@ -4184,7 +4195,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     (args[0].hashKind.empty() || args[0].hashKind == "Map")) {
                     ValueList out;
                     for (auto& kv : *args[0].hash()) {
-                        Value p = Value::pair(kv.first, kv.second);
+                        Value p = hashEntryPair(args[0], kv.first, kv.second);
                         p.pairKeyM() = kv.second.elemKey();
                         out.push_back(p);
                     }

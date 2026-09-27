@@ -806,12 +806,22 @@ std::string Value::gist() const {
                 return s + ":0x<" + body + ">";
             }
             std::string out = isList ? "(" : "[";
+            // a HOLE in an Array reads as the element default — `my Int @a;
+            // @a[4]++` gists `[(Int) (Int) (Int) (Int) 1]`, and `is default(42)`
+            // shows 42 — where a bare hole in an untyped one is (Any) as ever
+            std::string holeGist;
+            if (!isList && arr()) {
+                if (elemDefault()) holeGist = elemDefault()->gist();
+                else if (!ofType().empty() && ofType()[0] >= 'A' && ofType()[0] <= 'Z')
+                    holeGist = "(" + ofType().substr(0, ofType().find(',')) + ")";
+            }
             if (arr()) for (size_t k = 0; k < arr()->size(); k++) {
                 // Rakudo caps a list's gist at 100 elements and marks the rest
                 // with an ellipsis (`.Str`/`.raku` stay complete)
                 if (k == 100) { out += " ..."; break; }
                 if (k) out += " ";
-                out += (*arr())[k].gist();
+                const Value& e = (*arr())[k];
+                out += (!holeGist.empty() && e.t == VT::Any) ? holeGist : e.gist();
             }
             return out + (isList ? ")" : "]");
         }
