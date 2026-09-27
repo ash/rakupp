@@ -13957,6 +13957,58 @@ static Value promptImpl(ValueList& a, bool hidden) {
     return Value::str(line);
 }
 
+// The error `die` raises for these arguments — built here, not thrown, so a
+// block that hands its errors on (execStmtHanding) can take a statement-level
+// `die` without the C++ throw. The backtrace is captured as it is made.
+RakuError Interpreter::dieError(ValueList& a) {
+    Value payload = a.empty() ? Value::str("Died") : a[0];
+    // die with no argument reuses the current $! ("Died" only if $! is undefined)
+    // (…the ROUTINE's own $!: a sub's `die()` does not see its caller's error)
+    if (a.empty()) {
+        Value* be = nullptr;
+        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+            if ((be = en->local("$!"))) break;
+            if (en->routineFrame) break;
+        }
+        if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be;
+    }
+    std::string msg = payload.toStr();
+    // `die($p, 42)` — several values: the message is their concatenation
+    // and the X::AdHoc's payload the whole list
+    if (a.size() > 1) {
+        msg.clear();
+        for (auto& x : a) msg += x.t == VT::Object ? methodCall(x, "Str", ValueList{}).toStr() : x.toStr();
+        Value lst = Value::array(); lst.isList = true; *lst.arr() = a;
+        payload = lst;
+    }
+    // an object that is not an Exception is thrown as an X::AdHoc CARRYING it
+    bool isException = false;
+    if (payload.t == VT::Object && payload.obj())
+        for (ClassInfo* c = payload.obj()->cls.get(); c && !isException; c = c->parent.get())
+            if (c->name == "Exception" || c->nativeParent == "Exception" ||
+                c->name.rfind("X::", 0) == 0 || c->name.rfind("CX::", 0) == 0) isException = true;
+    // exception objects: prefer a readable .message / .Str accessor
+    if (payload.t == VT::Object && payload.obj() && isException) {
+        for (const char* acc : {"message", "Str"}) {
+            try { ValueList none; Value m = methodCall(payload, acc, none);
+                  if (m.t == VT::Str && !m.s.empty()) { msg = m.s; break; } } catch (...) {}
+        }
+    } else {
+        if (payload.t == VT::Object && payload.obj() && a.size() == 1)   // its .Str is the message
+            try { msg = methodCall(payload, "Str", ValueList{}).toStr(); } catch (...) {}
+        // wrap a plain string/number into an X::AdHoc exception (so .message/.^name work in CATCH)
+        auto it = classes_.find("X::AdHoc");
+        if (it != classes_.end()) {
+            Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
+            ex.obj()->cls = it->second;
+            ex.obj()->attrs["message"] = Value::str(msg);
+            ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a.size() > 1 ? payload : a[0]; // .payload is what was thrown
+            payload = ex;
+        }
+    }
+    return RakuError{payload, msg};
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -14204,54 +14256,7 @@ void Interpreter::registerBuiltins() {
         // go look at, not the whole chain. RAKUPP_BACKTRACE=full gives the rest.
         return I.ioEmit(msg + "\n" + I.warnFrame(), "$*ERR", true);
     };
-    B["die"] = [](Interpreter& I, ValueList& a) -> Value {
-        Value payload = a.empty() ? Value::str("Died") : a[0];
-        // die with no argument reuses the current $! ("Died" only if $! is undefined)
-        // (…the ROUTINE's own $!: a sub's `die()` does not see its caller's error)
-        if (a.empty()) {
-            Value* be = nullptr;
-            for (Env* en = I.tctx_.cur.get(); en; en = en->parent.get()) {
-                if ((be = en->local("$!"))) break;
-                if (en->routineFrame) break;
-            }
-            if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be;
-        }
-        std::string msg = payload.toStr();
-        // `die($p, 42)` — several values: the message is their concatenation
-        // and the X::AdHoc's payload the whole list
-        if (a.size() > 1) {
-            msg.clear();
-            for (auto& x : a) msg += x.t == VT::Object ? I.methodCall(x, "Str", ValueList{}).toStr() : x.toStr();
-            Value lst = Value::array(); lst.isList = true; *lst.arr() = a;
-            payload = lst;
-        }
-        // an object that is not an Exception is thrown as an X::AdHoc CARRYING it
-        bool isException = false;
-        if (payload.t == VT::Object && payload.obj())
-            for (ClassInfo* c = payload.obj()->cls.get(); c && !isException; c = c->parent.get())
-                if (c->name == "Exception" || c->nativeParent == "Exception" ||
-                    c->name.rfind("X::", 0) == 0 || c->name.rfind("CX::", 0) == 0) isException = true;
-        // exception objects: prefer a readable .message / .Str accessor
-        if (payload.t == VT::Object && payload.obj() && isException) {
-            for (const char* acc : {"message", "Str"}) {
-                try { ValueList none; Value m = I.methodCall(payload, acc, none);
-                      if (m.t == VT::Str && !m.s.empty()) { msg = m.s; break; } } catch (...) {}
-            }
-        } else {
-            if (payload.t == VT::Object && payload.obj() && a.size() == 1)   // its .Str is the message
-                try { msg = I.methodCall(payload, "Str", ValueList{}).toStr(); } catch (...) {}
-            // wrap a plain string/number into an X::AdHoc exception (so .message/.^name work in CATCH)
-            auto it = I.classes_.find("X::AdHoc");
-            if (it != I.classes_.end()) {
-                Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
-                ex.obj()->cls = it->second;
-                ex.obj()->attrs["message"] = Value::str(msg);
-                ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a.size() > 1 ? payload : a[0]; // .payload is what was thrown
-                payload = ex;
-            }
-        }
-        throw RakuError{payload, msg};
-    };
+    B["die"] = [](Interpreter& I, ValueList& a) -> Value { throw I.dieError(a); };
     // Re-dispatch to the next candidate (currently: a built-in shadowed by a user method).
     // callsame/callwith return its result; nextsame/nextwith return it FROM the current routine.
     // `lastcall` marks the current candidate as the final one: a subsequent

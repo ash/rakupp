@@ -9,6 +9,7 @@
 #include <complex>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <functional>
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -778,6 +779,14 @@ struct GrammarCursor {
 // can rethrow exactly this and keep swallowing ordinary errors: "this binary
 // lacks the feature" must never degrade into a silent no-op or no-match.
 struct FeatureNotBuilt : RakuError {};
+// An exception on its way out of a block, handed to the block that ran it
+// rather than raised (see execBlock's `handOff`). `raised` is the C++
+// exception it arrived as, when it was one: propagating it further rethrows
+// that very object, so a FeatureNotBuilt stays one.
+struct HandedError {
+    RakuError err;
+    std::exception_ptr raised;
+};
 // Thrown at an interpreter safe point to unwind a background worker thread whose
 // result is no longer wanted (the mainline has finished). NOT a Raku-visible
 // exception — user CATCH handles RakuError, never this.
@@ -1198,7 +1207,22 @@ public:
     // The same for eval's construction and lookup shapes — and eval is entered
     // twice per Raku call, so its frame counts double against recursion depth.
     [[gnu::noinline]] Value evalRareExpr(Expr* e);
-    Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
+    // `handOff`: an exception that leaves the block (after its CATCH, LEAVE
+    // and the rest) is put there instead of raised — the caller, a block's
+    // statement loop, takes it as though caught. See execStmtHanding.
+    Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false,
+                    std::unique_ptr<HandedError>* handOff = nullptr);
+    // A bare block written as a statement (exec's NK::Block); the rare
+    // shapes — a phaser, an END, `{}`, `{*}` — out of its frame.
+    [[gnu::noinline]] Value execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff = nullptr);
+    [[gnu::noinline]] Value execBareBlockRare(Block* b, bool sink);
+    // One statement of a block that takes its errors by hand: the error
+    // lands in `err` rather than being raised, where that can be done.
+    [[gnu::noinline]] Value execStmtHanding(Stmt* s, bool sink, std::unique_ptr<HandedError>& err);
+    // A block's CATCH, run for one error (see the definition).
+    [[gnu::noinline]] int runBlockCatch(Block* b, Block* catchBlk, RakuError& e);
+    // What the built-in `die` throws for these arguments.
+    RakuError dieError(ValueList& a);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
                      bool isFirst = true, bool isLast = true,
                      ValueList* collect = nullptr,

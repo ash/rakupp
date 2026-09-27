@@ -10432,7 +10432,109 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     if (leaveDied) throw *leaveDied;
 }
 
-Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
+// A block's CATCH, run for the error `e` in the block's own scope. 0 = handled,
+// 1 = `.resume` (carry on at the next statement), 2 = matched nothing (the
+// error goes on). Out of line — execBlock's frame is paid at every level of a
+// Raku recursion, and this one's temporaries are needed only when a CATCH runs.
+[[gnu::noinline]] int Interpreter::runBlockCatch(Block* b, Block* catchBlk, RakuError& e) {
+    ExecContext& tcx = tctx_;
+    declareSkippedLexicals(b->stmts, tcx.cur.get());
+    tcx.cur->define("$_", exceptionFor(e));
+    tcx.cur->define("$!", exceptionFor(e));
+    bool matched = false;
+    // A when/default here matches COOPERATIVELY: it sets givenCtl, and the
+    // loops below take that as the match. (It used to throw BreakGivenEx
+    // for them to catch — a second C++ throw for every exception a CATCH
+    // handled, and a throw is tens of µs on macOS; see ExecContext::givenCtl.
+    // One behind a callable boundary still throws, and is still caught.)
+    uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = tcx.frameTop;
+    struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; t.givenCtl = 0; } } gfr{tcx, savedGF};
+    auto whenMatched = [&tcx]() {
+        if (!tcx.givenCtl) return false;
+        tcx.givenCtl = 0; tcx.givenV = Value();
+        return true;
+    };
+    // a CATCH directly inside this CATCH handles what the handler throws
+    Block* innerCatch = nullptr;
+    for (auto& s : catchBlk->stmts)
+        if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
+            static_cast<Block*>(s.get())->phaser != "CONTROL")
+            innerCatch = static_cast<Block*>(s.get());
+    try {
+        struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
+        for (auto& s : catchBlk->stmts) {
+            if (s.get() == innerCatch) continue;
+            exec(s.get());
+            if (whenMatched()) { matched = true; break; }
+            // a `next`/`last`/`return` leaves the handler where it stands
+            if (tcx.loopCtl || tcx.returning) break;
+        }
+    }
+    catch (BreakGivenEx&) { matched = true; /* when/default matched */ }
+    catch (ResumeEx&) { return 1; }
+    catch (RakuError& e2) {
+        if (!innerCatch) throw;
+        tcx.cur->define("$_", exceptionFor(e2));
+        tcx.cur->define("$!", exceptionFor(e2));
+        bool innerMatched = false;
+        try {
+            for (auto& s : innerCatch->stmts) {
+                exec(s.get());
+                if (whenMatched()) { innerMatched = true; break; }
+            }
+        }
+        catch (BreakGivenEx&) { innerMatched = true; }
+        if (!innerMatched) throw;
+        matched = true;
+    }
+    // only a matching when/default HANDLES the exception — a CATCH body
+    // without one runs (it can read $_/.message) but the exception rethrows
+    // (Rakudo dies even under try in that shape)… unless the handler LEFT
+    // with a loop control or a return: `CATCH { next }` goes on to the next
+    // iteration, the exception done with (cooperative next/last/return set
+    // these flags rather than throwing)
+    if (!matched && (tcx.loopCtl || tcx.returning)) return 0;
+    return matched ? 0 : 2;
+}
+
+// A statement of a block that takes its errors by hand (execBlock's statement
+// loop, for a block with a CATCH or one whose caller takes them): what can
+// arrive without a C++ throw does. A nested bare block hands back the error it
+// is left by; a statement that is only a call of the built-in `die` has its
+// error made, not thrown. Everything else runs through exec — and an error it
+// raises is caught by the loop as before. The `die` is the built-in's when the
+// program has no `&die` of its own in scope and the built-in is not wrapped —
+// evalCall's own test — and the statement does what exec and evalCall would:
+// the line and --trace, the arguments, the Seqs in them read.
+[[gnu::noinline]] Value Interpreter::execStmtHanding(Stmt* s, bool sink, std::unique_ptr<HandedError>& err) {
+    if (s->kind == NK::Block) {
+        if (s->line > 0) curLine_ = s->line;
+        if (g_traceStmts) traceStmt(s);
+        return execBareBlock(static_cast<Block*>(s), sink, &err);
+    }
+    if (s->kind == NK::ExprStmt) {
+        Expr* e = static_cast<ExprStmt*>(s)->e.get();
+        if (e && e->kind == NK::Call) {
+            auto* c = static_cast<Call*>(e);
+            if (!c->callee && c->name == "die" && !tctx_.cur->find(callAmpName(c))) {
+                auto rit = builtinRefs_.find(c->name);
+                if (rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->wrappers.empty()) {
+                    if (s->line > 0) curLine_ = s->line;
+                    if (g_traceStmts) traceStmt(s);
+                    tctx_.curStmtExpr = e;
+                    if (e->line > 0) curLine_ = e->line;
+                    ValueList args = evalArgs(c->args);
+                    for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
+                    err.reset(new HandedError{dieError(args), nullptr});
+                    return Value::nil();
+                }
+            }
+        }
+    }
+    return exec(s, sink);
+}
+
+Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, std::unique_ptr<HandedError>* handOff) {
     // ONE thread-local resolution for the whole block. `tctx_` is a non-trivial
     // static thread_local, so on macOS every mention of it is a _tlv_get_addr call
     // plus an init guard — the top line of every profile taken for
@@ -10513,82 +10615,12 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
     for (Block* e : b->endsWithin) captureEndScope(e);
     runEnterPhasers(b->stmts);
-    // Run the block's CATCH handler; returns true if `.resume` was called (so the
-    // block should carry on after the throwing statement).
-    // 0 = handled, 1 = .resume (carry on at the next statement), 2 = unmatched → rethrow
-    auto runCatch = [&](RakuError& e) -> int {
-        declareSkippedLexicals(b->stmts, tcx.cur.get());
-        tcx.cur->define("$_", exceptionFor(e));
-        tcx.cur->define("$!", exceptionFor(e));
-        bool matched = false;
-        uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = ExecContext::kNoFrame; // when here must THROW (the loop below detects it by catch)
-        struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; } } gfr{tcx, savedGF};
-        // a CATCH directly inside this CATCH handles what the handler throws
-        Block* innerCatch = nullptr;
-        for (auto& s : catchBlk->stmts)
-            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
-                static_cast<Block*>(s.get())->phaser != "CONTROL")
-                innerCatch = static_cast<Block*>(s.get());
-        try {
-            struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
-            for (auto& s : catchBlk->stmts) {
-                if (s.get() == innerCatch) continue;
-                exec(s.get());
-            }
-        }
-        catch (BreakGivenEx&) { matched = true; /* when/default matched */ }
-        catch (ResumeEx&) { return 1; }
-        catch (RakuError& e2) {
-            if (!innerCatch) throw;
-            tcx.cur->define("$_", exceptionFor(e2));
-            tcx.cur->define("$!", exceptionFor(e2));
-            bool innerMatched = false;
-            try { for (auto& s : innerCatch->stmts) exec(s.get()); }
-            catch (BreakGivenEx&) { innerMatched = true; }
-            if (!innerMatched) throw;
-            matched = true;
-        }
-        // only a matching when/default HANDLES the exception — a CATCH body
-        // without one runs (it can read $_/.message) but the exception rethrows
-        // (Rakudo dies even under try in that shape)… unless the handler LEFT
-        // with a loop control or a return: `CATCH { next }` goes on to the next
-        // iteration, the exception done with (cooperative next/last/return set
-        // these flags rather than throwing)
-        if (!matched && (tcx.loopCtl || tcx.returning)) return 0;
-        return matched ? 0 : 2;
-    };
-    try {
-        for (size_t i = 0; i < b->stmts.size(); i++) {
-            auto& s = b->stmts[i];
-            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) continue;
-            if (isBlockPhaser(s.get())) continue; // ENTER/LEAVE handled at entry/exit
-            if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s.get())->name.empty() &&
-                !static_cast<SubDecl*>(s.get())->isMethod &&
-                !static_cast<SubDecl*>(s.get())->immediateCall) { applySubTraits(static_cast<SubDecl*>(s.get())); continue; } // hoisted
-            // sink every statement whose value is discarded: all but the block's
-            // final statement, and even that one when the whole block is sink.
-            if (catchBlk) {
-                // per-statement, so `.resume` can continue at the next statement
-                try { last = exec(s.get(), sink || i != lastIdx); }
-                catch (RakuError& e) {
-                    int r = runCatch(e);
-                    if (r == 1) continue;                // .resume → next statement
-                    runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
-                    if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
-                        for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
-                        tcx.cur->ex->letRestores.clear();
-                    }
-                    if (hasNestedSub) breakSelfClosures(tcx.cur);
-                    tcx.cur = saved;
-                    if (r == 2) throw;                   // R1: unmatched → rethrow
-                    return Value::nil();                 // handled
-                }
-            } else {
-                last = exec(s.get(), sink || i != lastIdx);
-            }
-            if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
-        }
-    } catch (RakuError& e) {
+    // The unsuccessful exit: an exception leaves the block. A `take`/`emit`/
+    // `done` outside its construct goes to this block's CONTROL first — true
+    // when that handled it, and the block then returns Nil having left
+    // normally. Otherwise LEAVE/UNDO run with the error as `$!`, the `let`s
+    // restore, the scope closes, and the caller propagates the error.
+    auto leaveByError = [&](const RakuError& e) -> bool {
         // `take` outside a gather is CX::Take (and `emit`/`done` outside a
         // supply CX::Emit/CX::Done), which a CONTROL here may handle
         const char* cxt = !controlBlk ? nullptr
@@ -10603,7 +10635,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
                 if (hasNestedSub) breakSelfClosures(tcx.cur);
                 tcx.cur = saved;
-                return Value::nil();
+                return true;
             }
         }
         {
@@ -10618,8 +10650,74 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         }
         if (hasNestedSub) breakSelfClosures(tcx.cur);
         tcx.cur = saved;
+        return false;
+    };
+    // A block with a CATCH — or one whose caller takes its errors by hand —
+    // meets a statement's error in the statement loop, and takes it by hand
+    // itself where it can (execStmtHanding): a statement-level `die`, or a
+    // nested bare block's error, arrives without a C++ throw, which on macOS
+    // costs tens of µs a time (S04-exception-handlers/catch.t dies 500,000
+    // times). Once the exit is under way (`exiting`), whatever the exit itself
+    // throws — a LEAVE that dies — goes straight out, not into the handlers
+    // below, which would run the exit a second time. An error the block is
+    // left by is raised once that exit is done (`leaving`), or handed to the
+    // caller. (A CATCH that matched nothing used to rethrow inside the
+    // handler, into the catch below: LEAVE and UNDO ran twice, and the second
+    // time — the scope already closed — drained the ENCLOSING block's `temp`s
+    // and `let`s, so an outer CATCH saw them restored.)
+    bool exiting = false;
+    std::unique_ptr<HandedError> leaving;
+    try {
+        for (size_t i = 0; i < b->stmts.size(); i++) {
+            auto& s = b->stmts[i];
+            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) continue;
+            if (isBlockPhaser(s.get())) continue; // ENTER/LEAVE handled at entry/exit
+            if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s.get())->name.empty() &&
+                !static_cast<SubDecl*>(s.get())->isMethod &&
+                !static_cast<SubDecl*>(s.get())->immediateCall) { applySubTraits(static_cast<SubDecl*>(s.get())); continue; } // hoisted
+            // sink every statement whose value is discarded: all but the block's
+            // final statement, and even that one when the whole block is sink.
+            if (!catchBlk && !handOff) {
+                last = exec(s.get(), sink || i != lastIdx);
+            } else {
+                // per-statement, so `.resume` can continue at the next statement
+                std::unique_ptr<HandedError> err;
+                try { last = execStmtHanding(s.get(), sink || i != lastIdx, err); }
+                catch (RakuError& e) { err.reset(new HandedError{e, std::current_exception()}); }
+                if (err) {
+                    if (catchBlk) {
+                        int r = runBlockCatch(b, catchBlk, err->err);
+                        if (r == 1) continue;            // .resume → next statement
+                        if (r == 0) {                    // handled
+                            exiting = true;
+                            runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
+                            if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+                                for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+                                tcx.cur->ex->letRestores.clear();
+                            }
+                            if (hasNestedSub) breakSelfClosures(tcx.cur);
+                            tcx.cur = saved;
+                            return Value::nil();
+                        }
+                    }
+                    // R1: a CATCH that matched nothing, or none here — the
+                    // error leaves the block
+                    exiting = true;
+                    if (leaveByError(err->err)) return Value::nil();
+                    if (handOff) { *handOff = std::move(err); return Value::nil(); }
+                    leaving = std::move(err);
+                    break;
+                }
+            }
+            if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
+        }
+    } catch (RakuError& e) {
+        if (exiting) throw;
+        if (leaveByError(e)) return Value::nil();
+        if (handOff) { handOff->reset(new HandedError{e, std::current_exception()}); return Value::nil(); }
         throw;
     } catch (ControlHandledEx& che) {
+        if (exiting) throw;
         // THIS block's CONTROL handled a warning without .resume: the block is
         // left, and normally — like a CATCH that handled its exception. Another
         // block's CONTROL: unwind through, as any other exception does.
@@ -10638,6 +10736,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tcx.cur = saved;
         throw;
     } catch (...) {
+        if (exiting) throw;
         // `next` / `last` / `redo` are CONTROL exceptions (CX::Next, …): a
         // CONTROL block of THIS block sees them first, and one that handles it
         // leaves the block normally. Unhandled, they go on to their loop.
@@ -10673,6 +10772,10 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         if (hasNestedSub) breakSelfClosures(tcx.cur);
         tcx.cur = saved;
         throw;
+    }
+    if (leaving) {   // (the exit is done: see `exiting`)
+        if (leaving->raised) std::rethrow_exception(leaving->raised);
+        throw std::move(leaving->err);   // a `die` taken by hand, never raised
     }
     // KEEP runs on a SUCCESSFUL exit, UNDO otherwise — and success is the
     // block's outgoing value being defined (Nil, a Failure, the undefined
@@ -15028,6 +15131,67 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
     return Value::any();   // unreachable: exec dispatches only the six above
 }
 
+// A bare block written as a statement — exec's NK::Block, out of exec's frame:
+// the scope it makes is destroyed HERE, so an exception passing through a
+// nested block does not stop in exec (one of the widest functions there is)
+// to run a cleanup and then resume from its far end. A plain block — no
+// phaser, not an END, not `{}` — is all this frame does; the others go to
+// execBareBlockRare, whose temporaries are no charge on this one.
+[[gnu::noinline]] Value Interpreter::execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff) {
+    if (b->endSlot >= 0 || !b->phaser.empty() || b->stmts.empty() || tctx_.protoDepth > 0)
+        return execBareBlockRare(b, sink);
+    auto scope = std::make_shared<Env>();
+    scope->parent = tctx_.cur;
+    return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
+}
+
+[[gnu::noinline]] Value Interpreter::execBareBlockRare(Block* b, bool sink) {
+    // A registered END belongs to program exit. The statement runners
+    // skip it (isBlockPhaser), so this is the UNIT-level path — a
+    // module's or an EVAL's mainline, which walks its statements
+    // itself — and all that happens here is the scope capture.
+    if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
+    // a nested BEGIN/CHECK/INIT already ran before the code around it
+    if (!staticPhaserVal_.empty() && !b->phaser.empty()) {
+        auto sv = staticPhaserVal_.find(b);
+        if (sv != staticPhaserVal_.end()) return sv->second;
+    }
+    // a BEGIN reached in place (an EVAL's unit): what dies in it is a
+    // compile-time failure, as at the top level
+    struct BeginDepth { int& d; bool on; BeginDepth(int& x, bool o) : d(x), on(o) { if (on) d++; } ~BeginDepth() { if (on) d--; } }
+        beginDepthGuard{beginDepth_, b->phaser == "BEGIN"};
+    if (b->phaser == "BEGIN" && !b->stmtForm) {   // (`BEGIN my $x = …` declares out here: left alone)
+        b->phaser.clear();
+        struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
+        try { return exec(b, sink); }
+        catch (RakuError& e) {
+            if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
+            Value inner = exceptionFor(e);
+            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
+                        "An exception occurred while evaluating a BEGIN: " + e.message);
+        }
+    }
+    // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
+    // own arguments to the best candidate (S06). Outside a proto it is just a
+    // block evaluating to `*`, which is what it stays.
+    if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
+        b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
+        static_cast<ExprStmt*>(b->stmts[0].get())->e &&
+        static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
+        return protoRedispatch();
+    // a statement-level `{}` with no statements is Rakudo's empty-hash
+    // composer, not a block (EVAL('{}') is {}, not Any)
+    if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
+        return Value::makeHash();
+    // statement-form phaser (`INIT my $x = …`): the declaration belongs
+    // to the ENCLOSING scope — run without a child env
+    if (b->stmtForm && !b->phaser.empty())
+        return execBlock(b, tctx_.cur, sink);
+    auto scope = std::make_shared<Env>();
+    scope->parent = tctx_.cur;
+    return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
+}
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -15147,53 +15311,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::EnumDecl:
         case NK::ClassDecl:
             return execDeclStmt(s);
-        case NK::Block: {
-            auto* b = static_cast<Block*>(s);
-            // A registered END belongs to program exit. The statement runners
-            // skip it (isBlockPhaser), so this is the UNIT-level path — a
-            // module's or an EVAL's mainline, which walks its statements
-            // itself — and all that happens here is the scope capture.
-            if (b->endSlot >= 0) { captureEndScope(b); return Value::nil(); }
-            // a nested BEGIN/CHECK/INIT already ran before the code around it
-            if (!staticPhaserVal_.empty() && !b->phaser.empty()) {
-                auto sv = staticPhaserVal_.find(b);
-                if (sv != staticPhaserVal_.end()) return sv->second;
-            }
-            // a BEGIN reached in place (an EVAL's unit): what dies in it is a
-            // compile-time failure, as at the top level
-            struct BeginDepth { int& d; bool on; BeginDepth(int& x, bool o) : d(x), on(o) { if (on) d++; } ~BeginDepth() { if (on) d--; } }
-                beginDepthGuard{beginDepth_, b->phaser == "BEGIN"};
-            if (b->phaser == "BEGIN" && !b->stmtForm) {   // (`BEGIN my $x = …` declares out here: left alone)
-                b->phaser.clear();
-                struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
-                try { return exec(s, sink); }
-                catch (RakuError& e) {
-                    if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-                    Value inner = exceptionFor(e);
-                    throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                                "An exception occurred while evaluating a BEGIN: " + e.message);
-                }
-            }
-            // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
-            // own arguments to the best candidate (S06). Outside a proto it is just a
-            // block evaluating to `*`, which is what it stays.
-            if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
-                b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
-                static_cast<ExprStmt*>(b->stmts[0].get())->e &&
-                static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
-                return protoRedispatch();
-            // a statement-level `{}` with no statements is Rakudo's empty-hash
-            // composer, not a block (EVAL('{}') is {}, not Any)
-            if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
-                return Value::makeHash();
-            // statement-form phaser (`INIT my $x = …`): the declaration belongs
-            // to the ENCLOSING scope — run without a child env
-            if (b->stmtForm && !b->phaser.empty())
-                return execBlock(b, tctx_.cur, sink);
-            auto scope = std::make_shared<Env>();
-            scope->parent = tctx_.cur;
-            return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
-        }
+        case NK::Block:
+            return execBareBlock(static_cast<Block*>(s), sink);
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
             // `return-rw EXPR` under an lvalue-mode invocation (this frame is
