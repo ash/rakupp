@@ -831,6 +831,7 @@ struct ClassDecl : Stmt {
     std::vector<std::string> roles; // additional `does Role` (methods composed in)
     std::vector<std::string> hidesNames; // `hides Parent` — an unknown one is X::InvalidType
     bool isHidden = false;       // `is hidden`
+    bool isExport = false;       // `is export` — `import` of its package binds the short name
     std::vector<std::string> trustsNames; // `trusts Foo` — an unknown one is X::Undeclared
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;

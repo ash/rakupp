@@ -373,6 +373,12 @@ struct Callable {
     // whole case the namespace exists to serve. Swapped in beside langRev, on
     // the same guard, so a process where neither feature appears pays nothing.
     bool rakuAst = false;
+    // A parametric role's method as ONE parameterization has it (`R[Int]`'s
+    // copy of `method foo(T $t)`): `closure` binds the role's parameters, so
+    // the body and the signature read them from there, and the per-call
+    // injection of the invocant class's bindings (which cannot tell R[Int]
+    // from R[Str]) is skipped. Shares the padding after langRev.
+    bool roleConcrete = false;
     std::shared_ptr<Env> closure;
     // `state` storage and the flag that publishes it, held together so that a
     // COPY of a routine starts with neither. `&f.clone` is a new routine and
@@ -488,6 +494,15 @@ struct ClassInfo;
 // the ext() of a role-group CANDIDATE's type object (see Interpreter::roleCandidates)
 struct RoleCandidateRef { std::shared_ptr<ClassInfo> ci; };
 
+// A Seq is read ONCE unless it is cached (ROAST-TRACKS-PLAN B3): a second
+// iteration is X::Seq::Consumed. The state lives in a token every copy of the
+// Seq shares — it hangs off the cold block, whose copies share the pointer — so
+// `.elems` in a routine it was passed to caches the caller's Seq as well.
+// Interpreter::seqUse is the language's side of it; the value helpers only
+// ever mark an unread Seq cached (seqTouch), which can make nothing throw.
+enum : unsigned char { kSeqUnread = 0, kSeqConsumed = 1, kSeqCached = 2 };
+struct SeqToken { std::atomic<unsigned char> state{kSeqUnread}; };
+
 // The COLD BLOCK — REPRESENTATION-PLAN phase 1, batch 2 (revised). The pointer
 // census (tools/ptr-census.md) says these fields are absent on the overwhelming
 // majority of live Values (25.6M of 30M destructions carried none of them), so
@@ -534,6 +549,7 @@ struct ValueExt {
     // readers that walk elements raw — every built-in method and operator —
     // see a decontainerized copy instead (Interpreter::decontList).
     bool holdsCells = false;
+    std::shared_ptr<SeqToken> seqTok;   // a Seq's read-once state (see SeqToken); null = not tracked
 };
 // The read path for a Value with no block: namespace scope, so access carries
 // no function-local-static guard (that guard, run 256× per byteset build, was
@@ -776,6 +792,16 @@ struct Value {
     std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
     std::shared_ptr<Value>& elemDefaultM() { return xw().elemDefault; }
     std::shared_ptr<void>& extM() { return xw().ext; }
+    // A Seq's read-once token (SeqToken), when it has one
+    SeqToken* seqTok() const { return x_ ? x_->seqTok.get() : nullptr; }
+    void setSeqTok(std::shared_ptr<SeqToken> t) { xw().seqTok = std::move(t); }
+    // A value helper READ this Seq (its truth, its string, its size): an unread
+    // one is cached from here on, as Rakudo's `.Bool`/`.Str`/`.elems` cache it
+    void seqTouch() const {
+        if (!x_ || !x_->seqTok) return;
+        unsigned char u = kSeqUnread;
+        x_->seqTok->state.compare_exchange_strong(u, kSeqCached);
+    }
     std::shared_ptr<std::vector<long long>>& shapeM() { return xw().shape; }
     long long& rFromM() { return xw().rFrom; }
     long long& rToM() { return xw().rTo; }

@@ -1,5 +1,6 @@
 #include "CNumeric.h"
 #include "AsciiCtype.h"
+#include "Coro.h" // RAKUPP_HAVE_CORO: which form a Seq over a user iterator takes
 #include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
 #include "RakuAstClasses.h"
 #include "MethodCallSegment.h"
@@ -134,6 +135,83 @@ std::vector<ClassInfo*> c3ClassMro(ClassInfo* c) {
     visit(c);
     for (size_t i = 0; i < lin.size(); i++)
         if (std::find(lin.begin() + i + 1, lin.end(), lin[i]) == lin.end()) out.push_back(lin[i]);
+    return out;
+}
+
+// The MRO as `.^mro` REPORTS it, which is c3ClassMro plus one thing: a role a
+// class INHERITS (`is R`, `hides R`) is inherited as its pun, a class of its
+// own — `class C3 is R3a is R3b`, with `role R3a is C2`, is C3 R3a C2 C1 R3b
+// (Rakudo). A role a class DOES is composed and never an ancestor: it is
+// looked through for the classes it inherits, as classParentsInto does.
+// Construction keeps c3ClassMro, which has no pun to build.
+struct MroNode {
+    ClassInfo* c; bool pun;
+    bool operator==(const MroNode& o) const { return c == o.c && pun == o.pun; }
+};
+static void mroNodeParents(const MroNode& n, std::vector<MroNode>& out, int depth);
+static void mroLookThrough(ClassInfo* r, std::vector<MroNode>& out, int depth) {
+    if (!r || depth > 16) return;
+    mroNodeParents(MroNode{r, true}, out, depth + 1);
+}
+static void mroNodeParents(const MroNode& n, std::vector<MroNode>& out, int depth) {
+    auto add = [&](const MroNode& m) {
+        if (std::find(out.begin(), out.end(), m) == out.end()) out.push_back(m);
+    };
+    ClassInfo* c = n.c;
+    if (ClassInfo* p = c->parent.get()) {
+        if (!p->isRole) add(MroNode{p, false});
+        // a CLASS's parent slot says how the role got there: `is`/`hides` make
+        // it a parent (its pun), the first `does` put it there for composing
+        else if (!n.pun && c->decl && !c->decl->parentIsDoes) add(MroNode{p, true});
+        else mroLookThrough(p, out, depth);
+    }
+    for (auto& ep : c->extraParents) {
+        ClassInfo* p = ep.get();
+        if (!p) continue;
+        if (!p->isRole) add(MroNode{p, false});
+        else if (!n.pun) add(MroNode{p, true});   // a class's extra parents are `is`/`hides` ones
+        else mroLookThrough(p, out, depth);
+    }
+}
+static bool mroNodeMerge(const MroNode& n, std::vector<MroNode>& out, int depth) {
+    if (depth > 64) return false;
+    std::vector<MroNode> ps;
+    mroNodeParents(n, ps, 0);
+    std::vector<std::vector<MroNode>> seqs;
+    for (auto& p : ps) {
+        std::vector<MroNode> l;
+        if (!mroNodeMerge(p, l, depth + 1)) return false;
+        seqs.push_back(std::move(l));
+    }
+    seqs.push_back(ps);
+    out.push_back(n);
+    for (;;) {
+        const MroNode* pick = nullptr;
+        bool left = false;
+        for (auto& sq : seqs) {
+            if (sq.empty()) continue;
+            left = true;
+            const MroNode& h = sq.front();
+            bool inTail = false;
+            for (auto& t : seqs)
+                if (t.size() > 1 && std::find(t.begin() + 1, t.end(), h) != t.end()) { inTail = true; break; }
+            if (!inTail) { pick = &h; break; }
+        }
+        if (!left) return true;
+        if (!pick) return false;
+        MroNode got = *pick;
+        out.push_back(got);
+        for (auto& sq : seqs) if (!sq.empty() && sq.front() == got) sq.erase(sq.begin());
+    }
+}
+// The reported MRO's user part — class and pun nodes, most derived first. An
+// order C3 cannot make falls back to c3ClassMro's, puns left out.
+static std::vector<MroNode> reportedMro(ClassInfo* c) {
+    std::vector<MroNode> out;
+    if (!c) return out;
+    if (mroNodeMerge(MroNode{c, false}, out, 0)) return out;
+    out.clear();
+    for (ClassInfo* k : c3ClassMro(c)) out.push_back(MroNode{k, false});
     return out;
 }
 
@@ -4766,6 +4844,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.s == "array" && inv.ofType().empty()) // native arrays need a type parameter
             throw RakuError{Value::typeObj("X::MustBeParametric"),
                             "Must first parameterize the vector type, e.g.: array[int32]"};
+        // `Seq.new` with no iterator is a Seq read already: `.raku` of a consumed
+        // Seq is `Seq.new()`, and this is what EVALing that gives back (SeqToken)
+        if (inv.s == "Seq" && args.empty()) {
+            Value v = Value::array(); v.isList = true; v.s = "Seq";
+            auto tok = makePayload<SeqToken>();
+            tok->state = kSeqConsumed;
+            v.setSeqTok(std::move(tok));
+            return v;
+        }
         // Seq.new(one of OUR iterators) — `Seq.new(Rakudo::Iterator.OneValue($path))`
         // is paths' answer for a lone file — drains it by pull-one as well; it
         // used to be read as a plain hash of its `items`/`pos` slots
@@ -4783,6 +4870,40 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Seq.new(iterator-object): a user object doing Iterator drains by pull-one
         if (inv.s == "Seq" && args.size() == 1 && args[0].t == VT::Object && args[0].obj() &&
             args[0].obj()->cls && args[0].obj()->cls->findMethod("pull-one")) {
+#if RAKUPP_HAVE_CORO
+            // …as the Seq is READ, not when it is made: nothing is pulled until
+            // something asks, so `.elems` and `.tail` can ask a
+            // PredictiveIterator's `.count-only` instead (seq.t, tail.t). Flagged
+            // the way an unpulled gather is — not lazy, only not reified — and
+            // lazy when the iterator says it is.
+            {
+                Value iter = args[0];
+                Value v = Value::array(); v.isList = true; v.s = "Seq";
+                auto st = std::make_shared<LazySeqState>();
+                st->gatherSeq = true;
+                st->iterObj = iter;
+                if (Value* il = iter.obj()->cls->findMethod("is-lazy")) {
+                    ValueList none;
+                    if (invokeMethod(*il, iter, none).truthy()) st->declaredLazy = true;
+                }
+                Interpreter* self = this;
+                // An iterator that has said IterationEnd is not asked again: the
+                // protocol does not promise it can be (tail.t's dies if it is)
+                auto ended = std::make_shared<bool>(false);
+                st->appendNext = [self, iter, ended](ValueList& buf) -> bool {
+                    if (*ended) return false;
+                    Value* po = iter.obj()->cls->findMethod("pull-one");
+                    if (!po) return false;
+                    ValueList none;
+                    Value x = self->invokeMethod(*po, iter, none);
+                    if (x.t == VT::Type && x.s == "IterationEnd") { *ended = true; return false; }
+                    buf.push_back(std::move(x));
+                    return true;
+                };
+                v.extM() = st;
+                return v;
+            }
+#endif
             Value* po = args[0].obj()->cls->findMethod("pull-one");
             Value v = Value::array(); v.isList = true; v.s = "Seq";
             for (;;) {
@@ -5413,7 +5534,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             // The storage is shared, so a write through the
                             // stripped view still lands in the object.
                             if (in2.t == VT::Object && in2.obj() && in2.obj()->hasBoxed)
-                                in2 = in2.obj()->boxed;
+                                { Value unboxed = in2.obj()->boxed; in2 = std::move(unboxed); }
                             if (in2.t == VT::Hash || in2.t == VT::Array) {
                                 Value plain = in2;
                                 plain.hashKind = nativeBase;   // "" = the plain built-in
@@ -6003,17 +6124,43 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (out.arr()->empty() && !ci->isRole) out.arr()->push_back(Value::typeObj("Any"));
                 return out;
             }
-            if (m == "mro") { // method resolution order: self, ancestors, then Any, Mu
+            if (m == "mro" || m == "mro_unhidden") { // method resolution order: self, ancestors, then Any, Mu
                 Value out = Value::array(); out.isList = true;
-                // Depth-first over the primary + additional (multiple-inheritance) parents,
-                // then dedup keeping the LAST occurrence — the C3 order for simple diamonds
-                // (D is B is C, B/C is A → D, B, C, A).
-                // A composed ROLE is not an ancestor: Rakudo answers `A,Any,Mu`
-                // for `class A does R`, and a module walking the MRO to find
-                // ancestors must not meet R there. (`does` records the role in
-                // the parent slot here, which is why it showed up at all.)
-                if (!ci->isRole)
-                    for (ClassInfo* c : c3ClassMro(ci.get())) out.arr()->push_back(Value::typeObj(c->name));
+                // The C3 order (D is B is C, B/C is A → D, B, C, A), with a role
+                // a class inherits (`is R`) standing in it as its pun
+                // (reportedMro). A COMPOSED role is not an ancestor: Rakudo
+                // answers `A,Any,Mu` for `class A does R`, and a module walking
+                // the MRO to find ancestors must not meet R there. (`does`
+                // records the role in the parent slot here, which is why it
+                // would show up at all.)
+                // `.^mro_unhidden` leaves out a class or role declared `is
+                // hidden`, and whatever a class in the MRO `hides` — itself or
+                // through a role it composes (`role R hides C2`).
+                if (!ci->isRole) {
+                    std::vector<MroNode> nodes = reportedMro(ci.get());
+                    std::set<std::string> hidden;
+                    if (m == "mro_unhidden") {
+                        std::set<ClassInfo*> seenR;
+                        std::function<void(ClassInfo*)> roleHides = [&](ClassInfo* r) {
+                            if (!r || !r->isRole || !seenR.insert(r).second) return;
+                            for (auto& h : r->hides) hidden.insert(h);
+                            roleHides(r->parent.get());
+                            for (auto& e : r->extraParents) roleHides(e.get());
+                            for (auto& cr : r->composedRoles) roleHides(cr.get());
+                        };
+                        for (auto& n : nodes) {
+                            for (auto& h : n.c->hides) hidden.insert(h);
+                            if (n.pun) continue;
+                            if (n.c->parent && n.c->parent->isRole && n.c->decl && n.c->decl->parentIsDoes)
+                                roleHides(n.c->parent.get());
+                            for (auto& cr : n.c->composedRoles) roleHides(cr.get());
+                        }
+                    }
+                    for (auto& n : nodes) {
+                        if (m == "mro_unhidden" && (n.c->hidden || hidden.count(n.c->name))) continue;
+                        out.arr()->push_back(Value::typeObj(n.c->name));
+                    }
+                }
                 // a built-in parent anywhere up the primary chain contributes
                 // its class-only ancestry: G,Grammar,Match,Capture,Cool,Any,Mu
                 // for a grammar, F,DateTime,Any,Mu for `class F is DateTime`
@@ -8407,6 +8554,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value o = Value::array(); o.isList = true; o.arr()->push_back(inv);
         return methodCall(o, "toggle", args, rwArgs);
     }
+    // A Seq not produced yet — a gather, `Seq.new($iterator)` — is produced to
+    // its end by sinking it: `(gather { … }).sink` runs the block, as Rakudo's
+    // `sink-all` does (a cached one never gets here; see seqMethodUse)
+    if (m == "sink" && inv.t == VT::Array && inv.ext() && inv.arr() && inv.s == "Seq") {
+        forceLazy(inv);
+        return Value::nil();
+    }
     if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
     // an ITEMIZED value sits in a Scalar: `$[1,2].VAR` / `<a b>.Set.item.VAR`
     if (m == "VAR" && inv.itemized && (inv.t == VT::Array || inv.t == VT::Hash)) {
@@ -8837,6 +8991,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (ps.t == VT::Array && ps.arr()) *items.arr() = *ps.arr();
             // a hash has no promised order, so neither has its iterator
             (*it.hash())["nondeterministic"] = Value::boolean(true);
+        }
+        // A Blob/Buf iterates its ELEMENTS, not itself: `Buf.new(1, 2,
+        // 3).iterator.count-only` is 3 (6.c/MISC/bug-coverage.t)
+        else if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+            ValueList none;
+            Value l = methodCall(inv, "list", none, nullptr);
+            if (l.t == VT::Array && l.arr()) *items.arr() = *l.arr();
         }
         // An undefined value is not an EMPTY sequence — it is a one-element one
         // holding itself: `Nil.iterator.pull-one` is Nil and only the SECOND

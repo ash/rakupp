@@ -883,6 +883,7 @@ struct SupplyTapCtx {
 // the parked thread's stash. Because only one thread runs interpreter code at a
 // time (guarded by the GIL), the live members always reflect the running thread.
 // This is the Stage-1 foundation for real concurrency; nothing swaps yet.
+struct GatherCoro;   // a gather's block running as a coroutine (Interpreter.cpp)
 struct ExecContext {
     std::shared_ptr<Env> cur;
     int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
@@ -1078,6 +1079,11 @@ struct ExecContext {
     // Keyed by the MethodCall node so a stale value can never be picked up.
     const void* dynMethodNode = nullptr;
     std::string dynMethodName;
+    // The gather whose block is running on this context, as a coroutine
+    // (GatherCoro in Interpreter.cpp): a `take` into its collector hands control
+    // back to the consumer once it has what the consumer asked for. Null on the
+    // mainline and on every context that is not a gather's block.
+    GatherCoro* curGather = nullptr;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -1107,6 +1113,11 @@ struct LazySeqState {
     bool diedProbe = false; // a gather whose first run DIED: pulling (or sinking) re-raises it
     bool declaredLazy = false; // `lazy gather {…}`: lazy by declaration, .is-lazy without a pull
     bool exhausted = false;
+    // How many elements the NEXT appendNext call is wanted for, when the caller
+    // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
+    // it has taken that many before it hands control back, so filling a buffer
+    // costs one switch, not one per element. appendNext resets it.
+    size_t pullHint = 0;
     bool forceProbed = false;   // forceLazy has already asked once whether it ends
     // `42 xx 2**62`: a repeat whose length is KNOWN but far too large to build.
     // It generates on demand like an endless source (and is flagged `infinite`
@@ -1114,6 +1125,10 @@ struct LazySeqState {
     // answer `.count-only` exactly, and sinking it costs nothing.
     bool hasCount = false;
     Value countVal;
+    // `Seq.new($iterator)` over a user's Iterator object: pulled from on
+    // demand, and asked `.count-only` / `.skip-one` directly when it has them
+    // (a PredictiveIterator), which is how `.elems` and `.tail` avoid pulling.
+    Value iterObj;
 };
 
 // Shared state behind a real (thread-backed) Promise. Copies of the Promise
@@ -1392,6 +1407,29 @@ public:
     // see them; `argv` may be empty — a bare `does R`/`but R` still binds the DEFAULTS
     void bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList& argv,
                             const std::shared_ptr<Env>& scope);
+    // One parameterization of a parametric role (`does R[Int]`): a copy whose
+    // methods close over the parameters' values. Answers `role` itself when
+    // there is nothing to bind.
+    std::shared_ptr<ClassInfo> concretizeRole(const std::shared_ptr<ClassInfo>& role, ValueList& argv,
+                                              const std::shared_ptr<Env>& scope);
+    void recloseRoleMethods(ClassInfo* conc);
+    // `inv.R::m` for a parametric R: the parameterization of R the invocant's
+    // type composed (null when it composed none that can be told apart)
+    ClassInfo* qualifiedConcretization(const Value& inv, const std::string& roleName);
+    // A Seq is read once (SeqToken, Value.h). How the language uses one:
+    // ITERATE reads it (a second time is X::Seq::Consumed), SINK reads it and
+    // never complains, CACHE keeps its values (and complains if it was read
+    // already), PEEK only asks whether it was read.
+    enum class SeqUse { Iterate, Sink, Cache, Peek };
+    void seqUse(const Value& v, SeqUse how);
+    // A method call's result that is a Seq gets a token of its own (unless it
+    // already has one that is not the invocant's)
+    // (inline: every method call's result comes through here, and only a list
+    // leaves the first test)
+    static void seqMint(Value& r, const Value& inv) {
+        if (r.t == VT::Array && r.isList) seqMintList(r, inv);
+    }
+    static void seqMintList(Value& r, const Value& inv);
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.
@@ -1674,6 +1712,14 @@ public:
     // Run one program-init-hoisted INIT phaser. See the definition in Interpreter.cpp.
     void runHoistedInit(Block* b);
     Value gatherTake(const ValueList& items, const Value& ret);
+    // After a take landed in the collector of the gather whose block is running
+    // as a coroutine: hand control back to its consumer once it has what it
+    // asked for (and unwind, if the consumer let go of the sequence meanwhile).
+    void gatherTakeYield(ValueList& coll);
+    // `gather BLOCK` as a Seq whose block runs as a coroutine: nothing runs
+    // until something pulls, and each pull runs it only as far as the takes
+    // it asked for. See GatherCoro in Interpreter.cpp.
+    Value makeGatherSeq(Unary* gu, bool declaredLazy);
     Value evalTakeRw(Call* c); // `take-rw EXPR` — take the STORAGE, not a copy
     Value takeRwSlotProxy(Expr* arg); // its arg → slot Proxy (or non-Proxy Any)
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.

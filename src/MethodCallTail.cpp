@@ -1,5 +1,6 @@
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
+#include "Coro.h"
 
 namespace rakupp {
 Value arrayMissingDefaultPublic(const Value& base);
@@ -13,6 +14,7 @@ Value arrayMissingDefaultPublic(const Value& base);
 // a List, while `((1,2),(3,4)).flat` is four. `.item` opts out either way,
 // and `:hammer` (6.e) flattens containers regardless.
 static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& out) {
+    forceLazy(x);   // an unpulled gather flattens into its ELEMENTS
     if (hammer) {
         if (x.t == VT::Array && x.arr()) { for (auto& e : *x.arr()) flatOneInto(e, false, true, out); return; }
         if (x.t == VT::Hash && x.hash() && x.hashKind.empty()) {
@@ -722,6 +724,43 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (m == "Bool") return Value::boolean(applyArith(">", lst->countVal, Value::integer(0)).truthy());
             return lst->countVal;
         }
+        // …and a Seq over a PredictiveIterator (`Seq.new($iter)`) asks the
+        // iterator: `.elems` is what was pulled plus its `.count-only`, and
+        // `.tail` steps over the rest with `.skip-one`, pulling only what it
+        // answers with (seq.t, tail.t)
+        if (lst->iterObj.t == VT::Object && lst->iterObj.obj() && lst->iterObj.obj()->cls && !lst->exhausted) {
+            ClassInfo* ic = lst->iterObj.obj()->cls.get();
+            Value* co = ic->findMethod("count-only");
+            if (co && (m == "elems" || m == "Numeric" || m == "Int")) {
+                ValueList none;
+                Value c = invokeMethod(*co, lst->iterObj, none);
+                if (inv.arr()->empty()) return c;
+                return applyArith("+", Value::integer((long long)inv.arr()->size()), c);
+            }
+            Value* po = ic->findMethod("pull-one");
+            if (co && po && m == "tail" && inv.arr()->empty() &&
+                (args.empty() || (args.size() == 1 && args[0].t == VT::Int && !args[0].big()))) {
+                ValueList none;
+                long long cnt = invokeMethod(*co, lst->iterObj, none).toInt();
+                long long want = args.empty() ? 1 : std::max(0LL, args[0].i);
+                Value* so = ic->findMethod("skip-one");
+                for (long long k = cnt - want; k > 0; k--) {
+                    Value r = invokeMethod(so ? *so : *po, lst->iterObj, none);
+                    if (so ? !r.truthy() : (r.t == VT::Type && r.s == "IterationEnd")) break;
+                }
+                ValueList got;
+                for (long long k = std::min(cnt, want); k > 0; k--) {
+                    Value x = invokeMethod(*po, lst->iterObj, none);
+                    if (x.t == VT::Type && x.s == "IterationEnd") break;
+                    got.push_back(std::move(x));
+                }
+                lst->exhausted = true;
+                if (args.empty()) return got.empty() ? Value::nil() : got.back();
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                *out.arr() = std::move(got);
+                return out;
+            }
+        }
         // `.cache` of a STREAMING Seq (one whose end is not known yet) keeps it
         // lazy: it remembers what gets pulled, it does not pull everything now
         if (m == "cache" && lst->streaming && !lst->finiteSource) {
@@ -731,14 +770,50 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // a HyperSeq/RaceSeq is never lazy: it is evaluated eagerly in batches
         if (m == "is-lazy" && (inv.s == "HyperSeq" || inv.s == "RaceSeq")) return Value::boolean(false);
         if (m == "is-lazy") {
+            if (lst->declaredLazy) return Value::boolean(true);
+#if RAKUPP_HAVE_CORO
+            // a plain gather is not lazy, endless or not — Rakudo asks the
+            // iterator, and a gather's says no — and asking pulls nothing
+            if (lst->gatherSeq) return Value::boolean(false);
+#else
             // A gather has not been run yet, so whether it is lazy is not known
             // until it has been. This is the only question that asks without
             // consuming, so it does the first pull itself; a gather that turns
             // out to be finite answers False, as it did when the probe was eager.
-            if (lst->declaredLazy) return Value::boolean(true);
             if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
+#endif
             return Value::boolean(true);
         }
+#if RAKUPP_HAVE_CORO
+        // A gather still producing answers its list VIEWS without pulling —
+        // `gather {…}.values`, `.List`, `.list`, `.Seq`, `.cache` run its block
+        // only as far as the view is read, as in Rakudo. They share its buffer
+        // and its state. `.lazy` is a view of its own that says it is lazy, so
+        // that list assignment leaves it alone.
+        if (lst->gatherSeq && !lst->exhausted && !infinite && args.empty() &&
+            (m == "values" || m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy")) {
+            Value out = inv; out.isList = true; out.itemized = false;
+            if (m == "List" || m == "list" || m == "cache") out.s.clear();
+            else out.s = "Seq";
+            if (m == "lazy" && !lst->declaredLazy) {
+                out.b = true;
+                auto st = std::make_shared<LazySeqState>();
+                st->gatherSeq = true;
+                st->declaredLazy = true;
+                LazySeqState* stp = st.get();
+                std::shared_ptr<LazySeqState> src = lst;
+                // the same buffer grows through the source's own pull
+                st->appendNext = [src, stp](ValueList& buf) -> bool {
+                    src->pullHint = stp->pullHint; stp->pullHint = 0;
+                    bool more = src->appendNext(buf);
+                    stp->exhausted = src->exhausted;
+                    return more;
+                };
+                out.extM() = st;
+            }
+            return out;
+        }
+#endif
         if (infinite) {
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
@@ -806,13 +881,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 "classify", "categorize", "Set", "Bag", "Mix", "SetHash", "BagHash",
                 "MixHash", "Hash", "hash", "antipairs", "pairs", "kv", "keys", "values",
                 "rotate", "pick", "roll", "combinations", "permutations", "splice"};
-            if (forceAll.count(m)) materializeLazy(inv, 1000000);
+            // …except the index views of a gather still producing: `.kv`,
+            // `.pairs` and `.antipairs` pull nothing up front in Rakudo, and
+            // are answered lazily below, as for an endless source
+            const bool gatherIndexView = lst->gatherSeq && !lst->exhausted &&
+                                         (m == "kv" || m == "pairs" || m == "antipairs");
+            if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, 1000000);
         }
+        // a gather still producing: lazy like an endless source, but it ends
+        const bool gatherLive = !infinite && lst->gatherSeq && !lst->exhausted;
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
             Value out = Value::array(); out.isList = true; // 1:1 map → cache index == source index
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
+            // …and one over a gather is what a gather is: not reified yet, and
+            // not lazy unless it was declared so (`.is-lazy`, list assignment)
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;
             Interpreter* self = this;
             st->appendNext = [self, src, fn](ValueList& cache) -> bool {
                 size_t si = cache.size();
@@ -831,6 +916,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value pred = args[0], src = inv;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>();
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.
@@ -907,6 +993,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
             Interpreter* self = this;
             st->appendNext = [self, src, n](ValueList& cache) -> bool {
                 size_t si = cache.size() + (size_t)n;
@@ -953,10 +1040,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             out.extM() = st;
             return out;
         }
-        if (infinite && m == "kv") { // index, value, index, value, …
+        if ((infinite || gatherLive) && m == "kv") { // index, value, index, value, …
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
+            st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
             st->appendNext = [self, src](ValueList& cache) -> bool {
                 size_t k = cache.size() / 2; // two cache entries per source element
                 self->materializeLazy(src, k + 1);
@@ -968,11 +1056,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             out.extM() = st;
             return out;
         }
-        if (infinite && (m == "pairs" || m == "antipairs")) {
+        if ((infinite || gatherLive) && (m == "pairs" || m == "antipairs")) {
             bool anti = m == "antipairs";
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
+            st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
             st->appendNext = [self, src, anti](ValueList& cache) -> bool {
                 size_t k = cache.size();
                 self->materializeLazy(src, k + 1);
@@ -2487,6 +2576,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 else if (mapper.t == VT::Hash && mapper.hash()) { auto it = mapper.hash()->find(v.toStr()); k = it != mapper.hash()->end() ? it->second : Value::any(); }
                 else if (mapper.t == VT::Array && mapper.arr()) { long long i = v.toInt(); k = (i >= 0 && i < (long long)mapper.arr()->size()) ? (*mapper.arr())[i] : Value::any(); }
                 else k = v;
+                forceLazy(k);   // a mapper that answers a gather: its categories
                 // An UNDEFINED key keeps its gist — Nil, (Any), (Int) — instead of
                 // collapsing to the empty string. Rakudo shows `Bag(Nil(6))` where
                 // rakupp showed `Bag((6))` for lines a classifier could not key
@@ -3302,6 +3392,37 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "squish") { // collapse adjacent duplicates (:as maps keys, :with compares them)
             Value asF, withF;
             for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && a.pairVal()->t == VT::Code) { if (a.s == "as") asF = *a.pairVal(); else if (a.s == "with") withF = *a.pairVal(); }
+#if RAKUPP_HAVE_CORO
+            // With callbacks, the result is produced as it is read, one kept
+            // element per pull: `:as` runs once per element as the reader gets
+            // to it and `:with` once per adjacent pair, which squish.t counts
+            // through `.iterator.pull-one`. The view is flagged the way an
+            // unpulled gather is — not lazy, only not reified yet — so every
+            // reader that drains one drains this.
+            if (asF.t == VT::Code || withF.t == VT::Code) {
+                struct SquishState { ValueList src; size_t i = 0; bool first = true; Value prevKey; };
+                auto ss = std::make_shared<SquishState>();
+                ss->src = std::move(items);
+                Value out = Value::array(); out.isList = true;
+                auto st = std::make_shared<LazySeqState>();
+                st->gatherSeq = true;
+                Interpreter* self = this;
+                st->appendNext = [self, ss, asF, withF](ValueList& cache) -> bool {
+                    while (ss->i < ss->src.size()) {
+                        Value v = ss->src[ss->i++];
+                        Value k = asF.t == VT::Code ? self->callCallable(asF, ValueList{v}) : v;
+                        bool keep = ss->first ||
+                            !(withF.t == VT::Code ? self->callCallable(withF, ValueList{ss->prevKey, k}).truthy()
+                                                  : applyArith("===", k, ss->prevKey).truthy());
+                        ss->prevKey = std::move(k); ss->first = false;
+                        if (keep) { cache.push_back(std::move(v)); return true; }
+                    }
+                    return false;
+                };
+                out.extM() = st;
+                return out;
+            }
+#endif
             auto keyOf = [&](const Value& v) { return asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v; };
             Value out = Value::array(); out.isList = true;
             bool first = true; Value prevKey;
@@ -4434,6 +4555,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
         auto& coll = *tctx_.gatherStack.back();
         coll.push_back(inv);
+        if (tctx_.curGather && tctx_.gatherStack.size() == 1) { gatherTakeYield(coll); return inv; }   // see gatherTake
         size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
         if (lim && coll.size() >= lim) throw StopGatherEx{};
         return inv;

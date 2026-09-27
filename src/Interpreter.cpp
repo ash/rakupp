@@ -35,6 +35,7 @@ static char** rakupp_environ() { return environ; }
 #include "Unicode.h"
 #include "BuiltinsShared.h"
 #include "RakuAstClasses.h"
+#include "Coro.h"
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -67,6 +68,7 @@ static char** rakupp_environ() { return environ; }
 namespace rakupp {
 std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok);
 static bool hasMultipleInheritance(ClassInfo* c);
+bool seqIsLazy(const Value& v);   // lazy as Rakudo means it, not merely unpulled
 
 // A `{ ... }` / `{ !!! }` body: the routine is a STUB. Was a lambda local to the
 // class-declaration case and so was only ever asked about methods — `.yada` on a
@@ -1343,6 +1345,38 @@ Value rtTypedDefault(const char* type, char sigil) {
 // queues — named no registered class and every method on `$h` fell through to a
 // built-in. Running the expression yields the real parameterized type object,
 // which is what `$h.push` then dispatches on.
+// A type NAME that is really a type CAPTURE bound in scope — `sub f(::T $x) {
+// my T $y; … }`, `sub g(::T \t --> T)` — stands for the type the capture bound
+// for THIS call, smiley and all (`f(Int:D)` binds Int:D). Not a name any type
+// is declared under: a real type of that name wins.
+// A type name the LEXICAL scope binds to a registered type under another
+// registry name — an `import`ed `Bar` that means `Foo::Bar`, a `constant`
+// naming a type — is that type, before the global registry's own `Bar`:
+// Raku looks a name up lexically first (S11-modules/export.t).
+static std::string lexicalTypeName(Interpreter& I, const std::string& n) {
+    if (n.empty() || !Interpreter::tctx_.cur) return n;
+    Value* tv = Interpreter::tctx_.cur->find(n);
+    if (tv && tv->t == VT::Type && !tv->s.empty() && tv->s != n && I.classes_.count(tv->s))
+        return tv->s;
+    return n;
+}
+
+bool isKnownTypeName(const std::string& n);   // below
+static bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out) {
+    if (!scope || name.empty() || !ascii::isupper((unsigned char)name[0])) return false;
+    if (I.classes_.count(name) || I.subsets_.count(name) || isKnownTypeName(name)) return false;
+    Value* tv = scope->find(name);
+    if (!tv || tv->t != VT::Type || tv->s.empty() || tv->s == name) return false;
+    // a `constant` naming a NATIVE type (`constant MyTime = int64`) keeps the
+    // native-container path it always had
+    if (isNativeTypeName(tv->s)) return false;
+    // the TYPE, not the binding: a constant's value carries its readonly flag
+    out = Value::typeObj(tv->s);
+    out.i = tv->i;
+    if (!tv->ofType().empty()) out.ofTypeM() = tv->ofType();
+    return true;
+}
+
 Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // `my ::foo $x` with no `foo` anywhere: $x holds a BARE type of that name
     if (ve && !ve->declStubType.empty() && sigil == '$' && ve->declType.empty()) {
@@ -1376,6 +1410,10 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
             Value t = eval(ve->declTypeExpr.get());
             if (t.t == VT::Type) return t;
         } catch (RakuError&) {}   // unresolvable: fall back to the textual type
+    }
+    if (ve && sigil == '$' && !ve->declType.empty()) {
+        Value cap;
+        if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) { cap.i = 0; return cap; }
     }
     return typedDefault(ve ? ve->declType : std::string(), sigil);
 }
@@ -1934,9 +1972,16 @@ void Interpreter::sinkValue(const Value& r) {
     // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
     // (…but an ITEM is a container, and sinking a container reads nothing:
     // `lives-ok { my $s = (gather die)[] }` lives — S02-types/array.t)
+    // …and so does a sunk gather — its block runs to the end, `lazy` or not,
+    // which is how `gather { … };` as a statement does its work (sink-all).
+    // A LIST view of one (`.list`, `.cache`) is not a Seq, and sinking a List
+    // reads nothing: `(gather { … }).cache;` runs none of the block.
     if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
         (std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource ||
-         std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe)) { forceLazy(r); return; }
+         std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe ||
+         (RAKUPP_HAVE_CORO && std::static_pointer_cast<LazySeqState>(r.ext())->gatherSeq && r.s == "Seq"))) {
+        forceLazy(r); return;
+    }
     if (r.t != VT::Hash) return;
     if (r.hashKind == "Failure") { failureDetonate(r); return; }
     if (r.hashKind == "Proc") {
@@ -2002,8 +2047,20 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
             if (i->elseBlock) collectPHStmt(i->elseBlock.get(), out); break; }
         case NK::WhileStmt: collectPHExpr(static_cast<const WhileStmt*>(s)->cond.get(), out);
                             collectPHStmt(static_cast<const WhileStmt*>(s)->body.get(), out); break;
-        case NK::ForStmt: collectPHExpr(static_cast<const ForStmt*>(s)->list.get(), out);
-                          collectPHStmt(static_cast<const ForStmt*>(s)->body.get(), out); break;
+        case NK::ForStmt: { auto* fs = static_cast<const ForStmt*>(s);
+            collectPHExpr(fs->list.get(), out);
+            // A block-form loop's placeholders are ITS parameters: `gather { for
+            // <a b> { take $^v } }` hands $^v to the loop block, not to the gather's
+            // (which then demanded an argument nobody passes). Only the modifier
+            // form, which has no block of its own, shares them. Attribute
+            // references are the class's wherever they sit, so they still count.
+            if (fs->modifier) collectPHStmt(fs->body.get(), out);
+            else {
+                std::set<std::string> inner;
+                collectPHStmt(fs->body.get(), inner);
+                for (auto& n : inner) if (n.size() > 1 && n[1] == '!') out.insert(n);
+            }
+            break; }
         // `EXPR given $^n % 64` — a statement-modifier given/with: BOTH sides may
         // carry placeholders (Digest::SHA3's ROL64 is written exactly this way).
         // Only the MODIFIER form: a block given owns its own scope.
@@ -2355,7 +2412,12 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere, I
 // gather { … } for native codegen: same probe-and-double laziness as the
 // interpreter's gather — run the block collecting takes up to a cap; if the cap
 // is hit the result is lazy and extends by re-running with a doubled cap.
+Value gatherSeqForNative(Interpreter& I, Value blockClosure);
 Value Interpreter::rtGather(Value blockClosure) {
+#if RAKUPP_HAVE_CORO
+    // compiled code's gather is the interpreter's: a coroutine (see GatherCoro)
+    return gatherSeqForNative(*this, std::move(blockClosure));
+#endif
     auto runGather = [this, blockClosure](size_t limit, long long budgetUs, ValueList& out) -> bool {
         auto collector = makePayload<ValueList>();
         pushGatherFrame(collector, limit, budgetUs ? nowMicros() + budgetUs : 0);
@@ -2627,6 +2689,20 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 for (auto& sv : seed) if (bigI(sv)) anyBig = true;
                 exactStep = ((stepV.t == VT::Rat) && !allInt) || (allInt && anyBig);
             }
+        }
+        // A lone RAT seed steps by .succ/.pred, which keep it a Rat: `1.0 ... 3`
+        // is (1.0, 2.0, 3.0), where the double walk made it (1.0, 2e0, 3e0)
+        if (!hasGen && !geometric && seed.size() == 1 && seed[0].t == VT::Rat && !exactStep) {
+            stepV = Value::integer(step < 0 ? -1 : 1);
+            exactStep = true;
+        }
+        // …and a Rat STEP makes the seed it was deduced up to a Rat too: an
+        // element is the one before it plus the step, so `0.1, 2 ... 3` is
+        // (0.1, 2.0) (both 6.c/MISC/bug-coverage.t)
+        if (exactStep && stepV.t == VT::Rat && seed.size() >= 2 && seed.back().t == VT::Int &&
+            out.arr() && out.arr()->size() == seed.size()) {
+            seed.back() = applyArith("+", seed[seed.size() - 2], stepV);
+            out.arr()->back() = seed.back();
         }
         Value ratioV; bool exactRatio = false;
         if (geometric) {
@@ -3648,6 +3724,25 @@ static Value reifyIfFinite(const Value& v) {
     // `lazy gather {…}` (or a list ending in one) stays lazy: assignment runs
     // none of it (S02-types/array.t)
     if (st->declaredLazy) { Value r = v; r.isList = false; r.s.clear(); return r; }
+#if RAKUPP_HAVE_CORO
+    // A coroutine gather is read in growing batches, each one switch into its
+    // block, for as long as that stays cheap — list assignment is eager, so a
+    // finite block arrives whole. One still producing after that is taken to
+    // be unbounded (Rakudo would hang) and the Array stays lazy over it.
+    if (!st->exhausted && g_revInterp && st->appendNext) {
+        // (the clock is read only once the first batch has not finished it —
+        // the common small gather never pays for it)
+        g_revInterp->materializeLazy(v, 1024);
+        const long long until = st->exhausted ? 0 : nowMicros() + 100000;
+        size_t batch = 2048;
+        while (!st->exhausted && v.arr()->size() < 50000000 && nowMicros() < until) {
+            const size_t before = v.arr()->size();
+            g_revInterp->materializeLazy(v, before + batch);
+            if (v.arr()->size() == before) break;
+            if (batch < (size_t(1) << 20)) batch *= 2;
+        }
+    }
+#else
     forceLazy(v);
     // …and past the first growth step, too: list assignment is EAGER in Rakudo
     // (a plain gather is not lazy), so a finite gather of a few hundred takes
@@ -3662,6 +3757,7 @@ static Value reifyIfFinite(const Value& v) {
             if (v.arr()->size() == before) break;
         }
     }
+#endif
     if (!st->exhausted) return v;
     Value r = Value::array(*v.arr()); r.isList = false; return r;
 }
@@ -3861,6 +3957,7 @@ static void decontCopiedElems(ValueList& l) {
 }
 
 static Value coerceArray(const Value& v, bool nativeTarget = false) {
+    v.seqTouch();   // an Array made of a Seq has its values: the Seq is cached (SeqToken)
     // `@a = Nil` is ONE element reset to the container default ([Any] — and a
     // typed array's store turns it into the element type's type object), NOT
     // an empty list: zef's Build assigns a promise's Nil result into
@@ -3969,6 +4066,7 @@ std::function<bool(const Value&, ValueList&)> g_objListItems;
         "- using '$_' or any placeholder variable, as they imply a block scope"};
 }
 static Value coerceHash(const Value& v, bool store = false, bool objKeyed = false) {
+    forceLazy(v);   // `my %h = gather { take … }`: the gather's pairs
     // a CAPTURE's hash is its NAMED part only: `%(\( (:a(2)) ))` is empty
     if (v.t == VT::Array && v.hashKind == "Capture" && v.arr()) {
         Value h = Value::makeHash();
@@ -10224,6 +10322,7 @@ static void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::s
     }
 }
 
+bool gatherCancelling();
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
@@ -10234,6 +10333,10 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     tctx_.leaveReturned = false;
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LEAVE" || (ok ? b->phaser == "KEEP" : b->phaser == "UNDO")) leaves.push_back(b); }
+    // A gather dropped while suspended is unwound, not left: its block's
+    // LEAVE phasers stay silent, as they do when Rakudo drops the continuation.
+    // (Asked only once there IS a phaser: this runs at every block exit.)
+    if (!leaves.empty() && tctx_.curGather && gatherCancelling()) leaves.clear();
     // A LEAVE/KEEP/UNDO phaser body runs to completion even though the block is
     // leaving via a cooperative return/next/last — those flags belong to the
     // OUTER control flow. Save and clear them around each phaser so execBlock's
@@ -10887,7 +10990,7 @@ const std::set<std::string>& coreTypeNames() {
         "Str", "Stringy", "Uni", "Blob", "Buf", "Stringy",
         "blob8", "buf8", "blob16", "buf16", "blob32", "buf32", "blob64", "buf64",
         "utf8", "utf16", "utf32", "Collation",
-        "Array", "List", "Seq", "Slip", "Range", "Positional", "Iterable", "Iterator",
+        "Array", "List", "Seq", "Slip", "Range", "Positional", "Iterable", "Iterator", "PredictiveIterator",
         "Hash", "Map", "Associative", "Pair", "Enum", "Bag", "Set", "Mix",
         "BagHash", "SetHash", "MixHash", "Baggy", "Setty", "Mixy", "QuantHash",
         "Code", "Sub", "Method", "Submethod", "Routine", "Block", "Callable",
@@ -11416,6 +11519,7 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
     applyRoleTypeParamsToAttrs(pun.get());
+    recloseRoleMethods(pun.get());
     // The roles this parameterization DOES through its parameters: `role
     // RR[::T] does T` (RR[Foo] does Foo) and `role PR1[::T1] does PR00[T1]`
     // (PR1[Int] does PR00[Int]) — evaluated with the parameters bound
@@ -11575,6 +11679,165 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
             break;
         }
     }
+}
+
+// Re-close a parametric role's methods over the parameters in
+// `conc->roleParamBindings`: each method (each multi candidate) becomes a copy
+// whose closure is a scope binding them, one scope per original closure. That
+// is what makes R[Int] and R[Str] two roles rather than one role told its
+// parameters at call time by whichever class called — `does R[Str] does R[Int]`
+// gave both its multis T = Str, and a `multi method foo(T $t)` matched nothing
+// at all, since the dispatcher resolved T from the CALLER's scope.
+void Interpreter::recloseRoleMethods(ClassInfo* conc) {
+    if (!conc || conc->roleParamBindings.empty()) return;
+    std::unordered_map<Env*, std::shared_ptr<Env>> scopes;
+    auto reclose = [&](Value& m) {
+        const Callable* c = m.code();
+        if (!c || !c->body || c->builtin) return;
+        auto& scope = scopes[c->closure.get()];
+        if (!scope) {
+            scope = std::make_shared<Env>();
+            scope->parent = c->closure ? c->closure : global_;
+            for (auto& b : conc->roleParamBindings)
+                if (!b.first.empty() && !scope->local(b.first)) scope->define(b.first, b.second);
+        }
+        auto copy = std::make_shared<Callable>(*c);
+        copy->closure = scope;
+        copy->roleConcrete = true;
+        m.setCode(std::move(copy));
+    };
+    for (auto& kv : conc->methods) {
+        Value& m = kv.second;
+        if (m.t != VT::Code || !m.code()) continue;
+        if (m.code()->isMultiDispatcher) {
+            auto disp = std::make_shared<Callable>(*m.code());
+            for (auto& cand : disp->candidates)
+                if (cand.t == VT::Code && cand.code()) reclose(cand);
+            m.setCode(std::move(disp));
+        }
+        else reclose(m);
+    }
+}
+
+std::shared_ptr<ClassInfo> Interpreter::concretizeRole(const std::shared_ptr<ClassInfo>& role, ValueList& argv,
+                                                       const std::shared_ptr<Env>& scope) {
+    if (!role || !role->isRole || !role->decl || role->decl->roleParams.empty()) return role;
+    auto conc = std::make_shared<ClassInfo>(*role);
+    conc->roleParamBindings.clear();
+    bindRoleParamsInto(conc.get(), role.get(), argv, scope);
+    if (conc->roleParamBindings.empty()) return role;
+    applyRoleTypeParamsToAttrs(conc.get());
+    recloseRoleMethods(conc.get());
+    return conc;
+}
+
+// `inv.R::m` where R is parametric names the parameterization of R that the
+// invocant's type composed. Classes are searched nearest first (C3 order); at
+// each, the roles it composes directly, then the roles THOSE compose, a level
+// at a time. One match answers; two different parameterizations at one level
+// are ambiguous, the message Rakudo gives; none leaves the caller with R.
+ClassInfo* Interpreter::qualifiedConcretization(const Value& inv, const std::string& roleName) {
+    ClassInfo* start = nullptr;
+    if (inv.t == VT::Object && inv.obj()) start = inv.obj()->cls.get();
+    else if (inv.t == VT::Type) {
+        auto it = classes_.find(inv.s);
+        if (it != classes_.end()) start = it->second.get();
+    }
+    if (!start) return nullptr;
+    auto directRoles = [](ClassInfo* c, std::vector<ClassInfo*>& out) {
+        if (c->parent && c->parent->isRole) out.push_back(c->parent.get());
+        for (auto& p : c->extraParents) if (p && p->isRole) out.push_back(p.get());
+        for (auto& r : c->composedRoles) if (r && r->isRole) out.push_back(r.get());
+    };
+    std::vector<ClassInfo*> classes;
+    if (start->isRole) classes.push_back(start);
+    else classes = c3ClassMro(start);
+    for (ClassInfo* c : classes) {
+        if (!c) continue;
+        std::vector<ClassInfo*> level;
+        directRoles(c, level);
+        std::set<ClassInfo*> seen;
+        for (int depth = 0; !level.empty() && depth < 32; depth++) {
+            std::vector<ClassInfo*> found, next;
+            for (ClassInfo* r : level) {
+                if (!seen.insert(r).second) continue;
+                if (r->name == roleName) found.push_back(r);
+                directRoles(r, next);
+            }
+            if (found.size() == 1) return found[0];
+            if (found.size() > 1)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Ambiguous concretization lookup for " + roleName};
+            level.swap(next);
+        }
+    }
+    return nullptr;
+}
+
+// A Seq is read once (SeqToken, Value.h). Only the language's own uses of one
+// come here — a `for`, a method called on it, `@$s`, `$s[0]` — never the
+// engine's internal reads, so nothing the engine does on its own behalf can
+// make a Seq throw. Marking one CACHED is always safe: it can only take a
+// later complaint away.
+void Interpreter::seqUse(const Value& v, SeqUse how) {
+    SeqToken* tok = v.seqTok();
+    if (!tok || v.t != VT::Array || !v.isList || !(v.s == "Seq")) return;
+    unsigned char st = tok->state.load(std::memory_order_relaxed);
+    if (st == kSeqCached) return;
+    if (st == kSeqConsumed) {
+        if (how == SeqUse::Sink) return;
+        throwTypedV("X::Seq::Consumed", {},
+                    "The iterator of this Seq is already in use/consumed by another Seq\n"
+                    "(you might solve this by adding .cache on usages of the Seq, or\n"
+                    "by assigning the Seq into an array)");
+    }
+    if (how == SeqUse::Peek) return;
+    unsigned char u = kSeqUnread;
+    tok->state.compare_exchange_strong(u, how == SeqUse::Cache ? kSeqCached : kSeqConsumed);
+}
+
+void Interpreter::seqMintList(Value& r, const Value& inv) {
+    if (!(r.s == "Seq")) return;
+    SeqToken* have = r.seqTok();
+    if (have && have != inv.seqTok()) return;   // a Seq handed back as it is keeps its state
+    r.setSeqTok(makePayload<SeqToken>());
+}
+
+// What calling method `m` on a Seq does to it, as Rakudo 2026.08 answers it
+// (probed one method at a time: call it, then iterate the Seq twice). The
+// ones that read it are an Iterate; the ones that keep its values a Cache;
+// any other method leaves an unread Seq cached, which can make nothing throw.
+// A consumed Seq's `.raku` is `Seq.new()`, the one answer it still gives.
+static bool seqMethodUse(Interpreter& I, const Value& inv, const std::string& m, Value& early) {
+    static const std::unordered_set<std::string> kIterate = {
+        "iterator", "list", "List", "eager", "Array", "Slip", "join", "Seq", "Capture",
+        "map", "grep", "first", "head", "tail", "skip", "sort", "reverse", "unique", "squish",
+        "flat", "kv", "pairs", "keys", "values", "antipairs", "sum", "min", "max", "minmax",
+        "reduce", "produce", "rotor", "batch", "classify", "categorize", "Set", "Bag", "Mix",
+        "hash", "Hash", "pick", "roll", "combinations", "permutations"};
+    static const std::unordered_set<std::string> kCache = {
+        "cache", "elems", "end", "Bool", "Numeric", "Int", "Str", "gist", "AT-POS", "EXISTS-POS"};
+    if (m == "sink") {
+        // a cached Seq keeps its values and pulls nothing more; a consumed one
+        // was pulled already: sinking either does nothing
+        if (inv.seqTok()->state.load(std::memory_order_relaxed) != kSeqUnread) {
+            early = Value::nil();
+            return true;
+        }
+        I.seqUse(inv, Interpreter::SeqUse::Sink);
+    }
+    else if (m == "is-lazy") I.seqUse(inv, Interpreter::SeqUse::Peek);
+    else if (m == "raku" || m == "perl") {
+        SeqToken* tok = inv.seqTok();
+        if (tok && tok->state.load(std::memory_order_relaxed) == kSeqConsumed) {
+            early = Value::str(inv.itemized ? "$(Seq.new())" : "Seq.new()");
+            return true;
+        }
+        inv.seqTouch();
+    }
+    else if (kIterate.count(m)) I.seqUse(inv, Interpreter::SeqUse::Iterate);
+    else if (kCache.count(m)) I.seqUse(inv, Interpreter::SeqUse::Cache);
+    else if (m != "WHAT" && m != "defined" && m != "WHICH" && m != "WHERE") inv.seqTouch();
+    return false;
 }
 
 // Does this subtree contain a `state` declaration the enclosing loop's state
@@ -12041,6 +12304,24 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         }
                     }
                     const std::string pfx = u->module + "::";
+                    // …and the package's `is export` TYPES, bound LEXICALLY under
+                    // their short names: an imported role group `Bar` shadows a
+                    // `class Bar` declared elsewhere in the file for this scope
+                    // (S11-modules/export.t). A group is exported when any of its
+                    // candidates says so.
+                    for (auto& kv : classes_) {
+                        if (!kv.second || kv.first.size() <= pfx.size() ||
+                            kv.first.compare(0, pfx.size(), pfx) != 0) continue;
+                        std::string shortName = kv.first.substr(pfx.size());
+                        if (shortName.find("::") != std::string::npos ||
+                            shortName.find('\x01') != std::string::npos) continue;
+                        ClassInfo* ci = kv.second.get();
+                        bool exported = ci->decl && ci->decl->isExport;
+                        for (auto& v : ci->roleVariants)
+                            if (v && v->decl && v->decl->isExport) exported = true;
+                        if (exported && !tctx_.cur->local(shortName))
+                            tctx_.cur->define(shortName, Value::typeObj(kv.first));
+                    }
                     for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
                         for (auto& kv : e->vars) {
                             if (kv.first.size() <= pfx.size() + 1) continue;
@@ -13036,6 +13317,51 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     ? tctx_.pkgPrefix + declName : declName);
             ci->name = clsName;
             ci->pod = cd->pod; ci->podTrail = cd->podTrail;
+            // A type composing a parametric role gets its own parameterization
+            // of it, one per `does` (concretizeRole): the arguments of the k-th
+            // `does` naming the role, evaluated here and kept for the type's
+            // own bindings further down. A PARAMETRIC role composing one keeps
+            // sharing it: its arguments may name its own parameters, which
+            // nothing has bound yet. An argument that does not evaluate leaves
+            // the role shared, and the binding further down reports it as it
+            // always did.
+            // The SAME parameterization written twice is one role (`does R[Int]
+            // does R[Int]` composes it once, as in Rakudo), keyed as the pun
+            // cache keys one; an argument without a stable identity is not.
+            std::map<const ClassInfo*, ValueList> concArgv;
+            std::map<std::string, std::shared_ptr<ClassInfo>> concSeen;
+            auto concretizeOccurrence = [&](const std::shared_ptr<ClassInfo>& role, const std::string& written,
+                                            size_t k) -> std::shared_ptr<ClassInfo> {
+                if ((cd->isRole && !cd->roleParams.empty()) || !role || !role->isRole || !role->decl ||
+                    role->decl->roleParams.empty())
+                    return role;
+                ValueList argv;
+                size_t seen = 0;
+                try {
+                    for (auto& ra : cd->roleArgs) {
+                        if (ra.first != written || seen++ != k) continue;
+                        for (auto& e : ra.second) {
+                            Value v = eval(e.get());
+                            if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]`
+                            argv.push_back(std::move(v));
+                        }
+                        break;
+                    }
+                } catch (RakuError&) { return role; }
+                std::string key = std::to_string(reinterpret_cast<uintptr_t>(role.get()));
+                for (auto& a : argv) {
+                    if (a.t == VT::Code || a.t == VT::Object) { key.clear(); break; }
+                    key += "\x01" + whichOf(a);
+                }
+                if (!key.empty()) {
+                    auto hit = concSeen.find(key);
+                    if (hit != concSeen.end()) return hit->second;
+                }
+                auto conc = concretizeRole(role, argv, role->declEnv);
+                if (conc != role) concArgv[conc.get()] = std::move(argv);
+                if (!key.empty()) concSeen[key] = conc;
+                return conc;
+            };
             if (!cd->parent.empty()) {
                 // `is CORE::Exception` — the CORE:: qualifier names the SETTING's
                 // symbol, which is exactly what a bare name resolves to for us;
@@ -13055,7 +13381,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         {{"name", cd->name}},
                         cd->isRole ? "Role '" + cd->name + "' cannot inherit from / compose itself"
                                    : "'" + cd->name + "' cannot inherit from itself.");   // Rakudo's wording
-                auto it = classes_.find(parentName);
+                auto it = classes_.find(lexicalTypeName(*this, parentName));
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + parentName); // sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(parentName));
@@ -13098,6 +13424,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         for (auto& ra : cd->roleArgs) if (ra.first == cd->parent) { n = ra.second.size(); rargs = &ra.second; break; }
                         ci->parent = rargs ? pickRoleVariantArgs(it->second, *rargs) : pickRoleVariant(it->second, n);
                     }
+                    if (cd->parentIsDoes) ci->parent = concretizeOccurrence(ci->parent, cd->parent, 0);
                 }
                 else if (rakuAstParent) ci->parent = *rakuAstParent;
                 else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
@@ -13121,7 +13448,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (pn == cd->name)
                     throw RakuError{Value::typeObj("X::Inheritance::SelfInherit"),
                         "Class '" + cd->name + "' cannot inherit from itself"};
-                auto it = classes_.find(pn);
+                auto it = classes_.find(lexicalTypeName(*this, pn));
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + pn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
@@ -13151,10 +13478,19 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // -------- role composition helpers --------
             // a stub body is a bare `...` / `!!!` — in a role it declares a
             // requirement the composing class must fulfil
-            auto sigKeyParams = [](const std::vector<Param>* ps) {
+            // (`owner`, when given, is the routine the parameters belong to: one
+            // parameterization of a role keys its `T $x` as the type it bound, so
+            // R[Str]'s and R[Int]'s `multi method m(T $x)` are two signatures)
+            auto sigKeyParams = [](const std::vector<Param>* ps, const Callable* owner = nullptr) {
                 std::string k;
                 if (ps) for (auto& p : *ps) {
                     if (p.named || p.slurpy) continue;
+                    if (owner && owner->roleConcrete && owner->closure && !p.type.empty())
+                        if (Value* tv = owner->closure->local(p.type))
+                            if (tv->t == VT::Type && !tv->s.empty()) {
+                                k += std::string(tv->s.c_str()) + ",";
+                                continue;
+                            }
                     k += (p.type.empty() ? "Any" : p.type) + ",";
                 }
                 return k;
@@ -13190,19 +13526,31 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             std::vector<ClassInfo*> composedRoles;
             if (ci->parent && ci->parent->isRole) composedRoles.push_back(ci->parent.get());
             for (auto& p : ci->extraParents) if (p && p->isRole) composedRoles.push_back(p.get());
-            for (auto& rn : cd->roles) {
-                auto it = classes_.find(rn);
+            // …each `does` of cd->roles as the variant and parameterization ITS
+            // arguments pick: the k-th `does R` takes the k-th `R[...]` (the
+            // parent slot, when it is an R, took the first)
+            std::vector<std::shared_ptr<ClassInfo>> rolesConc(cd->roles.size());
+            for (size_t j = 0; j < cd->roles.size(); j++) {
+                const std::string& rn = cd->roles[j];
+                auto it = classes_.find(lexicalTypeName(*this, rn));
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                 if (it != classes_.end() && it->second->isRole) {
-                    ClassInfo* r = it->second.get();
-                    if (!r->roleVariants.empty()) {
-                        size_t n = 0; const std::vector<ExprPtr>* rargs = nullptr;
-                        for (auto& ra : cd->roleArgs) if (ra.first == rn) { n = ra.second.size(); rargs = &ra.second; break; }
-                        r = (rargs ? pickRoleVariantArgs(it->second, *rargs) : pickRoleVariant(it->second, n)).get();
+                    size_t k = cd->parentIsDoes && cd->parent == rn ? 1 : 0;
+                    for (size_t q = 0; q < j; q++) if (cd->roles[q] == rn) k++;
+                    const std::vector<ExprPtr>* rargs = nullptr;
+                    {
+                        size_t seen = 0;
+                        for (auto& ra : cd->roleArgs)
+                            if (ra.first == rn && seen++ == k) { rargs = &ra.second; break; }
                     }
-                    composedRoles.push_back(r);
+                    std::shared_ptr<ClassInfo> r = it->second;
+                    if (!r->roleVariants.empty())
+                        r = rargs ? pickRoleVariantArgs(it->second, *rargs) : pickRoleVariant(it->second, 0);
+                    r = concretizeOccurrence(r, rn, k);
+                    rolesConc[j] = r;
+                    composedRoles.push_back(r.get());
                 }
             }
             // …and the roles a parameterized role DOES through its type
@@ -13257,7 +13605,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // pointer identity exempts them)
             std::map<std::string, std::map<std::string, std::set<const Callable*>>> provided;
             std::map<std::string, std::set<std::string>> providerRoles;
-            for (ClassInfo* role : composedRoles)
+            for (ClassInfo* role : composedRoles) {
+                // (two parameterizations of one role are two providers: R[Str], R[Int])
+                auto ca = concArgv.find(role);
+                const std::string provider = ca != concArgv.end() && !ca->second.empty()
+                                           ? roleArgsDisplay(role->name, ca->second) : role->name;
                 for (auto& kv : role->methods) {
                     if (kv.second.t != VT::Code || !kv.second.code()) continue;
                     // since 6.e a role's SUBMETHODS are not composed into the class
@@ -13265,10 +13617,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (langRev_ >= 2 && kv.second.code()->isSubmethod) continue;
                     if (kv.second.code()->isMultiDispatcher) {
                         for (auto& c : kv.second.code()->candidates)
-                            if (c.code() && !c.code()->isStub) { provided[kv.first][sigKeyParams(c.code()->params)].insert(c.code()); providerRoles[kv.first].insert(role->name); }
+                            if (c.code() && !c.code()->isStub) { provided[kv.first][sigKeyParams(c.code()->params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
                     }
-                    else if (!kv.second.code()->isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(role->name); }
+                    else if (!kv.second.code()->isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
                 }
+            }
             // `state` in a role method is per-COMPOSITION: two classes doing one
             // role each get their own slot, as they do in Rakudo where each
             // composition is a distinct closure. Sharing made one class's memo
@@ -13317,8 +13670,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             for (auto& vr : viaParamRoles)
                 if (std::find(composeNames.begin(), composeNames.end(), vr) == composeNames.end())
                     composeNames.push_back(vr);
-            for (auto& rn : composeNames) {
-                auto it = classes_.find(rn);
+            for (size_t cj = 0; cj < composeNames.size(); cj++) {
+                const std::string& rn = composeNames[cj];
+                auto it = classes_.find(lexicalTypeName(*this, rn));
                 // resolve the SAME way as the conflict-detection scan above: an
                 // imported short name (`does Pluggable` where the role is really
                 // `Mod::Pluggable`) needs the pkg-prefix / alias fallback, else its
@@ -13376,6 +13730,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     }
                     continue;
                 }
+                // the variant and parameterization this `does` picked (above)
+                std::shared_ptr<ClassInfo> rinfo =
+                    cj < rolesConc.size() && rolesConc[cj] ? rolesConc[cj] : it->second;
                 // …and everything the role composes THROUGH ITS OWN PARENT SLOT:
                 // `role B does A` puts A there rather than in B's own tables, so a
                 // class that takes B as its parent walks the chain and finds A's
@@ -13384,8 +13741,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // and attributes were lost. PDF::COS::Tie::Hash does PDF::COS::Tie
                 // and a PDF dictionary is Hash-backed, so the whole tie API
                 // (`.lvalue`, `.of-att`) went missing exactly there.
-                if (std::find(ci->composedRoles.begin(), ci->composedRoles.end(), it->second) == ci->composedRoles.end())
-                    ci->composedRoles.push_back(it->second);
+                if (std::find(ci->composedRoles.begin(), ci->composedRoles.end(), rinfo) == ci->composedRoles.end())
+                    ci->composedRoles.push_back(rinfo);
                 std::vector<ClassInfo*> roleChain;
                 {
                     std::set<ClassInfo*> seenRC;
@@ -13395,7 +13752,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         walkRole(rc->parent.get());
                         for (auto& p2 : rc->extraParents) walkRole(p2.get());
                     };
-                    walkRole(it->second.get());
+                    walkRole(rinfo.get());
                 }
                 for (ClassInfo* rcM : roleChain)
                 for (auto& kv : rcM->methods) {
@@ -13417,11 +13774,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     bool exDisp = e.t == VT::Code && e.code() && e.code()->isMultiDispatcher;
                     if (exDisp && newDisp) {
                         for (auto& c : kv.second.code()->candidates) {
-                            std::string sk = sigKeyParams(c.code() ? c.code()->params : nullptr);
+                            std::string sk = sigKeyParams(c.code() ? c.code()->params : nullptr, c.code());
                             bool cStub = c.code() && c.code()->isStub;
                             bool placed = false;
                             for (auto& e2 : e.code()->candidates) {
-                                if (sigKeyParams(e2.code() ? e2.code()->params : nullptr) != sk) continue;
+                                if (sigKeyParams(e2.code() ? e2.code()->params : nullptr, e2.code()) != sk) continue;
                                 bool eStub = e2.code() && e2.code()->isStub;
                                 if (eStub && !cStub) e2 = c; // implementation replaces stub
                                 placed = true; break;
@@ -13451,7 +13808,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         }
                     if (!dup) ci->attrs.push_back(a);
                 }
-                for (auto& sub : it->second->doneRoles) ci->doneRoles.insert(sub); // role-of-role
+                for (auto& sub : rinfo->doneRoles) ci->doneRoles.insert(sub); // role-of-role
                 // …and the role's GRAMMAR RULES. Only the first `does` becomes the
                 // parent (whose rules the grammar walk finds); every further role
                 // lands here, and its tokens were simply dropped — a grammar
@@ -13486,7 +13843,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         mergeRules(rc->parent.get());
                         for (auto& p2 : rc->extraParents) mergeRules(p2.get());
                     };
-                    mergeRules(it->second.get());
+                    mergeRules(rinfo.get());
                 }
             }
             // a role used as a parent (`class C does R` where R lands as parent) also counts
@@ -13594,14 +13951,18 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // role method that mentions it dies "not declared" (the
                     // Test::META chain, 11 dists' meta tests).
                     ValueList argv;
-                    if (rargs) for (auto& e : *rargs) {
+                    // (a parameterization made above already has ITS `does`'s
+                    // arguments — the name alone finds the first `does R[...]`)
+                    auto ca = concArgv.find(role);
+                    if (ca != concArgv.end()) argv = ca->second;
+                    else if (rargs) for (auto& e : *rargs) {
                         Value v = eval(e.get());
                         if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]` → named arg
                         argv.push_back(std::move(v));
                     }
                     bindRoleParamsInto(ci.get(), role, argv, ci->declEnv);
                     // `does R[Int]`: the class does R[Int] — and not R[Str]
-                    if (rargs && !argv.empty()) {
+                    if (!argv.empty()) {
                         const std::string rn = role->dispName.empty() ? role->name : role->dispName;
                         std::string disp = roleArgsDisplay(rn, argv);
                         if (disp != rn) ci->doneRoles.insert(disp);
@@ -13807,7 +14168,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         std::string sk = sigKeyParams(code.code()->params);
                         cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Value& c){
                             return c.code() && !ownParams.count(c.code()->params) &&
-                                   sigKeyParams(c.code()->params) == sk; }), cands.end());
+                                   sigKeyParams(c.code()->params, c.code()) == sk; }), cands.end());
                         cands.push_back(code);
                     } else {
                         Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
@@ -13859,11 +14220,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         auto& cands = it->second.code()->candidates;
                         for (auto& rc : rv.code()->candidates) {
                             if (!rc.code() || rc.code()->isStub || rc.code()->isProto) continue;
-                            std::string sk = sigKeyParams(rc.code()->params);
+                            std::string sk = sigKeyParams(rc.code()->params, rc.code());
                             bool have = false;
                             for (auto& c : cands)
                                 if (c.code() == rc.code() ||
-                                    (c.code() && sigKeyParams(c.code()->params) == sk)) { have = true; break; }
+                                    (c.code() && sigKeyParams(c.code()->params, c.code()) == sk)) { have = true; break; }
                             if (!have) cands.push_back(rc);
                         }
                     }
@@ -13913,7 +14274,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         if (mit->second.code()->isMultiDispatcher) {
                             for (auto& cand : mit->second.code()->candidates)
                                 if (cand.code() && !cand.code()->isStub &&
-                                    (!sig || sigKeyParams(cand.code()->params) == *sig)) return true;
+                                    (!sig || sigKeyParams(cand.code()->params, cand.code()) == *sig)) return true;
                         }
                         else if (!mit->second.code()->isStub) return true; // a plain method covers any signature
                     }
@@ -13934,14 +14295,24 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 };
                 for (const std::string& rq : ci->requiredMethods) {
                     bool ok;
+                    bool multiReq = false;
                     auto sigsIt = ci->requiredMultiSigs.find(rq);
                     if (sigsIt != ci->requiredMultiSigs.end() && !sigsIt->second.empty()) {
                         ok = true;
+                        multiReq = true;
                         for (auto& s : sigsIt->second) if (!hasImpl(ci.get(), rq, &s)) { ok = false; break; }
                     }
                     else ok = hasImpl(ci.get(), rq, nullptr) ||
                               classOwn.count(rq); // an own stub is a deliberate promise
                     if (!ok && attrCovers(ci.get(), rq)) ok = true;
+                    // a stubbed MULTI candidate left unimplemented has its own
+                    // exception type (parameterized-basic.t: a `multi method`
+                    // stub whose invocant is typed `::?CLASS:D`)
+                    if (!ok && multiReq)
+                        throwTypedV("X::Role::Unimplemented::Multi",
+                                    {{"method", Value::str(rq)}, {"target", Value::typeObj(clsName)}},
+                                    "Multi method '" + rq + "' has a candidate required by a role that " +
+                                    clsName + " does not implement");
                     if (!ok) {
                         std::string rl; for (auto& r : reqFrom[rq]) { if (!rl.empty()) rl += ", "; rl += r; }
                         throw RakuError{Value::typeObj("X::Comp::AdHoc"),
@@ -15259,6 +15630,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // with $_ topicalized per iteration and restored afterward.
             if (fs->modifier && fs->vars.empty() && !fs->destructure) {
                 Value lvRaw = eval(fs->list.get());
+                if (!lvRaw.itemized) seqUse(lvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
                 Value lv = iterationSourceOf(lvRaw);
                 drainIfFiniteLazy(lv);
                 // …and a user object doing the Iterator role is DRAINED by
@@ -15459,6 +15831,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return forResult();
             }
             Value listvRaw = eval(fs->list.get());
+            if (!listvRaw.itemized) seqUse(listvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
             Value listv = iterationSourceOf(listvRaw);
             drainIfFiniteLazy(listv);
             bool viaIterator = listvRaw.t == VT::Object && listv.t != VT::Object && !boxedIteration(listvRaw);
@@ -16163,7 +16536,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // rewrites $str
             Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
             TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
-            scope->define("$_", topic);
+            // A POINTY block binds its own parameter and leaves `$_` alone:
+            // `with 1 -> $a { .flip }` flips the OUTER topic, and `$_ = 7` in it
+            // assigns there — for whichever branch runs, the `else -> $e { }`
+            // as much as the main one (a plain `else { }` gets the topic)
+            const bool mainPointy = !g->params.empty() || (!g->var.empty() && g->var != "$_");
+            const bool elsePointy = !g->elseParams.empty() || (!g->elseVar.empty() && g->elseVar != "$_");
+            if (skip ? !elsePointy : !mainPointy) scope->define("$_", topic);
             // (only when the block will RUN: `with Hash -> % (:$times!)` on an
             // undefined topic skips — binding it first died on the missing
             // named, which is Red's Mock driver on every unexpected query)
@@ -17404,6 +17783,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 size_t piStart = pi;
                 bool capture = p.sigil == '\\' && p.slurpyKind == 0;
                 size_t remaining = positional.size() - pi;
+                // an `@` slurpy holds the values of a Seq it is handed, so the
+                // Seq is cached; a sigilless `+a` passes one on unread (SeqToken)
+                if (p.sigil == '@')
+                    for (size_t k = pi; k < positional.size(); k++) positional[k].seqTouch();
                 // A SLIP flattens into every slurpy, itemization notwithstanding —
                 // that is the whole of what a Slip is for, and assigning one to a
                 // scalar itemizes it. Shared by all three branches below.
@@ -17421,7 +17804,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // the slurpy really is collecting them.
                     if (remaining == 1 && !capture) {
                         const Value& only = positional[pi];
-                        if (only.t == VT::Array && only.ext() && !only.itemized) {
+                        if (only.t == VT::Array && seqIsLazy(only) && !only.itemized) {
                             env->define(slotName(p, pidx), only);
                             pi = positional.size();
                             continue;
@@ -17450,6 +17833,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                                  (e.t == VT::Array && e.arr() && e.isList)));
                     };
                     std::function<void(const Value&)> spread = [&](const Value& v) {
+                        forceLazy(v);                                // a gather: its elements
                         if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
                             for (auto& e : v.flatten()) a.arr()->push_back(e);
                             return;
@@ -17502,22 +17886,30 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // hands the Seq straight back
                     if (remaining == 1 && !capture && positional[pi].t == VT::Array &&
                         !positional[pi].itemized &&
-                        (positional[pi].ext() ||
+                        (seqIsLazy(positional[pi]) ||
                          (p.sigil == '\\' && p.slurpyKind == '1' && positional[pi].s == "Seq"))) {
                         env->define(slotName(p, pidx), positional[pi]);
                         pi = positional.size();
                         continue;
                     }
-                    if (remaining == 1 && (isSlip(positional[pi]) ||
+                    // …and `+@a` handed one SEQ binds the List of its values, in a
+                    // `$` container or not: a Seq reaches an `@` parameter as its
+                    // cache, which is a List (`sub f(+@a) { @a }; f(@x.grep(…))`
+                    // is `(1, 2, 3)`, and pushing onto it is X::Immutable)
+                    const bool loneSeq = remaining == 1 && !capture && positional[pi].t == VT::Array &&
+                                         positional[pi].isList && positional[pi].s == "Seq";
+                    if (remaining == 1 && (isSlip(positional[pi]) || loneSeq ||
                                            (!positional[pi].itemized &&
                                             (positional[pi].t == VT::Array || positional[pi].t == VT::Range)))) {
                         // the lone Iterable's ELEMENTS, one level: `f((1, (2, 3)))`
                         // binds 1 and (2, 3) — iterating is not flattening
                         const Value& only = positional[pi];
+                        forceLazy(only);   // a gather: its elements
                         if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
                             for (auto& x : *only.arr()) a.arr()->push_back(x);
                         else
                             for (auto& x : only.flatten()) a.arr()->push_back(x);
+                        if (loneSeq) a.isList = true;
                         pi++;
                     } else {
                         for (; pi < positional.size(); pi++) {
@@ -17527,6 +17919,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         }
                     }
                 }
+                // a sigilless `+a` is a List, whatever it was handed (a lone
+                // Seq excepted, bound as it came above)
+                if (p.sigil == '\\' && p.slurpyKind == '1') a.isList = true;
                 // a `|c` capture also carries the UNCLAIMED named args (as
                 // namedArg pairs), so `samewith(|c)` re-passes them — Base64's
                 // adverb multis peel one named per round and forward the rest
@@ -17704,6 +18099,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // visible outside. Only `is copy` (and a List/itemized/lazy source,
             // which has to be materialised) makes a fresh buffer.
             if (p.sigil == '@') {
+                // a Seq bound to an `@` parameter is its cache (Rakudo's
+                // PositionalBindFailover): an unread one is cached (SeqToken)
+                if (v.t == VT::Array) v.seqTouch();
                 if (v.t == VT::Type && (v.s == "Positional" || v.s == "Array" || v.s == "List")) {
                     /* a Positional TYPE OBJECT binds raw: `multi f($j, @x)` called
                        with Positional[License] must answer @x.of == License, not
@@ -18261,9 +18659,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
             auto ri = g_matchClasses->find(rn);
             if (ri != g_matchClasses->end() && ri->second) rdisp = ri->second->dispName;
         }
-        auto itc = g_matchClasses->find(ln);
-        if (itc != g_matchClasses->end())
-            for (ClassInfo* c = itc->second.get(); c; c = c->parent.get()) {
+        auto conformsFrom = [&](ClassInfo* start) -> bool {
+            for (ClassInfo* c = start; c; c = c->parent.get()) {
                 if (c->name == rn || c->doneRoles.count(rn)) return true;
                 if (!rdisp.empty() && c->doneRoles.count(rdisp)) return true;
                 if (!rdisp.empty())
@@ -18276,6 +18673,37 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
                 for (auto& p : c->extraParents)
                     if (p && (p->name == rn || p->doneRoles.count(rn))) return true;
             }
+            return false;
+        };
+        // A parametric role's bare name is its GROUP, and a group conforms to
+        // what its NON-parameterized member inherits and does — never to a
+        // parameterized member's parent: with `role R is A {}` and `role R[::T]
+        // is B {}`, R ~~ A and R !~~ B, and a group of parameterized members
+        // alone conforms to nothing it inherits. A curried `R[Int]` (a pun)
+        // conforms through its own variant AND through its group
+        // (S14-roles/typecheck.t, checked against Rakudo).
+        auto groupConforms = [&](const std::string& group) -> bool {
+            auto git = g_matchClasses->find(group);
+            if (git == g_matchClasses->end() || !git->second) return false;
+            ClassInfo* g = git->second.get();
+            auto plain = [](ClassInfo* v) {
+                return v && v->decl && v->decl->roleParams.empty() && !v->decl->parameterized;
+            };
+            if (plain(g)) return conformsFrom(g);
+            for (auto& v : g->roleVariants) if (plain(v.get())) return conformsFrom(v.get());
+            return false;
+        };
+        auto itc = g_matchClasses->find(ln);
+        if (itc != g_matchClasses->end() && itc->second) {
+            ClassInfo* ci = itc->second.get();
+            if (ci->isRole && ci->decl) {
+                size_t px = ci->name.find('\x01');
+                if (px != std::string::npos)   // a curried pun
+                    return conformsFrom(ci) || groupConforms(ci->name.substr(0, px));
+                return groupConforms(ln);
+            }
+            return conformsFrom(ci);
+        }
     }
     return false;
 }
@@ -19334,6 +19762,20 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 if (!p->whereExpr && !p->subSig) { score += 1; continue; } // it accepts anything
             }
         }
+        // `multi method foo(T $t)` in `role R[::T]`, as one parameterization of
+        // the role has it: T is what that parameterization bound, and its
+        // closure holds the binding (recloseRoleMethods). Ranked as the nominal
+        // type it stands for.
+        if (cand.code()->roleConcrete && p->sigil == '$' && !p->type.empty() && !p->coerce &&
+            !p->subSig && !p->litVal && !p->whereExpr && cand.code()->closure)
+            if (Value* tv = cand.code()->closure->local(p->type))
+                if (tv->t == VT::Type && !tv->s.empty() && tv->s != p->type) {
+                    if (!typeOrSubsetMatches(pos[i], tv->s)) return -1;
+                    if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
+                    if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
+                    score += 8 + (p->defConstraint ? 2 : 0) + (tv->s == pos[i].typeName() ? 2 : 0);
+                    continue;
+                }
         // A JUNCTION is Mu but NOT Any, so it does not bind to an `Any` — or
         // unconstrained, which means the same — parameter at all: in Rakudo no
         // such candidate matches and the call AUTOTHREADS instead. Scoring it as
@@ -19974,14 +20416,29 @@ static size_t currentThreadStackSize() {
     return sz ? sz : (size_t(8) << 20);
 #endif
 }
+// Where this frame sits on the stack. AddressSanitizer's use-after-return mode
+// moves locals onto heap-allocated "fake" frames, so a local's address says
+// nothing about stack depth there; the frame address still does.
+#if defined(__SANITIZE_ADDRESS__)
+#  define RAKUPP_STACK_HERE() static_cast<char*>(__builtin_frame_address(0))
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define RAKUPP_STACK_HERE() static_cast<char*>(__builtin_frame_address(0))
+#  endif
+#endif
 struct DepthGuard {
     int& d;
     explicit DepthGuard(int& dd) : d(dd) {
         ++d;
+#ifdef RAKUPP_STACK_HERE
+        char* here = RAKUPP_STACK_HERE();
+#else
         char probe;
-        if (!t_stackTop) { t_stackTop = &probe; t_stackLimit = currentThreadStackSize(); }
+        char* here = &probe;
+#endif
+        if (!t_stackTop) { t_stackTop = here; t_stackLimit = currentThreadStackSize(); }
         // used stack grows downward from the recorded top
-        size_t used = (size_t)(t_stackTop - &probe);
+        size_t used = (size_t)(t_stackTop - here);
         // Stop with ~2 MiB to spare — but on a SMALL stack (a foreign thread,
         // or a native-compiled main before the linker flag existed) a fixed
         // reserve would fire immediately; scale it down to a quarter of the
@@ -20506,20 +20963,33 @@ void Interpreter::gatherProbeCheck() {
     throw StopGatherEx{};
 }
 
+// Is this sequence LAZY in Rakudo's sense — endless, or lazy by declaration —
+// rather than merely not reified yet? A gather, and a map/grep/skip view of
+// one, is the second kind: `.is-lazy` says False, and whatever binds or
+// assigns it reads it whole.
+bool seqIsLazy(const Value& v) {
+    if (!(v.t == VT::Array && v.ext())) return false;
+    auto* st = static_cast<LazySeqState*>(v.ext().get());
+    return !st->gatherSeq || st->declaredLazy;
+}
+
 static void forceLazyImpl(const Value& v) {
     if (!v.ext() || !v.arr()) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (st->infinite || !g_cbInterp) return;
+#if !RAKUPP_HAVE_CORO
     // A gather that outgrew its probe may be finite or unbounded, and the only
     // way to find out is to ask for more. Ask ONCE per sequence: an unbounded
     // one would otherwise pay a whole re-run of its block every time a value
-    // that holds it is printed.
+    // that holds it is printed. (A gather running as a coroutine resumes where
+    // it stopped instead, so there is nothing to re-run: it is drained below.)
     if (st->gatherSeq && !st->exhausted) {
         if (st->forceProbed) return;
         st->forceProbed = true;
         g_cbInterp->materializeLazy(v, v.arr()->size() + 1);  // one growth step
         if (!st->exhausted) return;                         // unbounded: no "all of it"
     }
+#endif
     g_cbInterp->materializeLazy(v, 1000000);
 }
 // The display name of a registry key — see ClassInfo::dispName. Reads the live
@@ -20532,6 +21002,9 @@ static std::string typeDispNameImpl(const std::string& key) {
 }
 static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);
+extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
+static void pullLazyImpl(const Value& v, size_t n) { if (g_cbInterp) g_cbInterp->materializeLazy(v, n); }
+static const bool g_pullLazyInstalled = ((g_pullLazy = &pullLazyImpl), true);
 
 // The g_makeTypedEx hook (Value.h): the free runtime helpers that raise a typed
 // exception build it through the running interpreter's class registry, so the
@@ -20574,8 +21047,10 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (!st->appendNext) return;
     const size_t CAP = 1000000;
-    while (v.arr()->size() < n && v.arr()->size() < CAP)
-        if (!st->appendNext(*v.arr())) break;
+    while (v.arr()->size() < n && v.arr()->size() < CAP) {
+        st->pullHint = std::min(n, CAP) - v.arr()->size();   // one switch fills a gather's share
+        if (!st->appendNext(*v.arr())) { st->exhausted = true; break; }
+    }
 }
 
 // Rakudo words the two refusals differently, and the wording is the whole
@@ -21043,6 +21518,10 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
         }
     } else {
         ai = keyIn.toInt();
+        // a LAZY array reifies up to the index first (see the evaluator's
+        // adverb arm): `@a[2]:delete` deletes what is there
+        if (ai >= 0 && base.t == VT::Array && base.ext() && base.arr() && g_cbInterp)
+            g_cbInterp->materializeLazy(base, (size_t)ai + (wantDelete ? 2 : 1));
         if (base.t == VT::Array && base.arr()) {
             if (ai < 0) ai += (long long)base.arr()->size();
             if (ai >= 0 && ai < (long long)base.arr()->size()) {
@@ -21069,7 +21548,9 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
         if (isHash) base.hash()->erase(key);
         else {
             (*base.arr())[ai] = Value::any();
-            if (ai == (long long)base.arr()->size() - 1) { // a trailing delete SHORTENS the array
+            // a trailing delete SHORTENS the array — unless it is LAZY, whose
+            // reified prefix is not its end (see evalIndex's adverb arm)
+            if (ai == (long long)base.arr()->size() - 1 && !base.ext()) {
                 base.arr()->pop_back();
                 while (!base.arr()->empty() &&
                        (base.arr()->back().t == VT::Nil || base.arr()->back().t == VT::Any))
@@ -21121,13 +21602,20 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
 // the frame's own `my $*x` declarations — never the scopes it merely closes
 // over, which is what full find() would leak in. A chain with no routine
 // mark (mainline, top-level blocks) walks through to global.
-static Value* dynInFrame(Env* e, const std::string& name) {
-    for (; e; e = e->parent.get()) {
+// `stop`: a scope the walk must not enter — the one a gather's block was
+// written in, when the block runs as a coroutine. Its dynamic variables are
+// found through whoever is PULLING (the dynamic chain), not through the scope
+// that happened to write the gather: Rakudo resolves a `$*x` in the block
+// through the reifier, and the block may be read long after that scope left.
+static Value* dynInFrame(Env* e, const std::string& name, const Env* stop = nullptr) {
+    for (; e && e != stop; e = e->parent.get()) {
         if (Value* p = e->local(name)) return p;
         if (e->routineFrame) return nullptr;
     }
     return nullptr;
 }
+Env* gatherDynBoundary(GatherCoro* g);
+size_t gatherDynBase(GatherCoro* g);
 
 // ---- PseudoStash ----------------------------------------------------------
 // A pseudo-package chain names a SCOPE and a way of looking in it:
@@ -21400,9 +21888,16 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
 // `my $*X` beats its caller's — then each CALLER frame innermost-out; a
 // caller's declaration beats anything the callee merely closes over.
 Value* Interpreter::findDynamicSlot(const std::string& name) {
-    if (tctx_.cur) if (Value* p = dynInFrame(tctx_.cur.get(), name)) return p;
-    for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
-        if (*it) if (Value* p = dynInFrame(*it, name)) return p;
+    ExecContext& t = tctx_;   // one thread-local resolution (see execBlock)
+    // inside a gather's block, its own frames stop at the scope that wrote the
+    // gather (see dynInFrame); the consumer's frames below them do not
+    const Env* stop = nullptr;
+    size_t ownFrom = 0;
+    if (t.curGather) { stop = gatherDynBoundary(t.curGather); ownFrom = gatherDynBase(t.curGather); }
+    if (t.cur) if (Value* p = dynInFrame(t.cur.get(), name, stop)) return p;
+    for (size_t i = t.dynStack.size(); i-- > 0;)
+        if (Env* e = t.dynStack[i])
+            if (Value* p = dynInFrame(e, name, i >= ownFrom ? stop : nullptr)) return p;
     return nullptr;
 }
 
@@ -22433,6 +22928,69 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         out.extM() = st;
         return out;
     }
+    // A side that has not been pulled yet — a gather, or a map/grep/skip view
+    // of one — is read only as far as the result is: Z takes one position from
+    // each side per element, X walks its LEFT side lazily against a right side
+    // it has to read whole anyway. The result is a gather-like Seq, lazy only
+    // if a side was declared so (lazy-lists.t: `(g Z @b)[^3]` runs g three takes
+    // deep).
+    auto unpulled = [](const Value& v) {
+        if (!(v.t == VT::Array && v.ext() && v.arr() && !v.itemized)) return false;
+        auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+        return st->gatherSeq && !st->exhausted;
+    };
+    auto declLazy = [](const Value& v) {
+        return v.t == VT::Array && v.ext() &&
+               std::static_pointer_cast<LazySeqState>(v.ext())->declaredLazy;
+    };
+    if ((op[0] == 'Z' && (unpulled(l) || unpulled(r))) || (op[0] == 'X' && unpulled(l))) {
+        const bool zip = op[0] == 'Z';
+        if (!zip) forceLazy(r);
+        // a side read in place (lazy) or as its one-level elements, once
+        struct Side { Value src; bool lazy; ValueList items; };
+        auto side = [&](const Value& v) {
+            Side s{v, unpulled(v), {}};
+            if (!s.lazy) s.items = oneLevel(v);
+            return std::make_shared<Side>(std::move(s));
+        };
+        auto ls = side(l), rs = side(r);
+        if (!zip && rs->items.empty()) { Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; }
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        auto st = std::make_shared<LazySeqState>();
+        st->gatherSeq = true;
+        st->declaredLazy = declLazy(l) || declLazy(r);
+        auto idx = std::make_shared<size_t>(0);
+        std::string inner = sub;
+        st->appendNext = [this, ls, rs, idx, inner, zip](ValueList& cache) -> bool {
+            auto nth = [this](Side& s, size_t i, Value& out) -> bool {
+                if (!s.lazy) { if (i >= s.items.size()) return false; out = s.items[i]; return true; }
+                materializeLazy(s.src, i + 1);
+                if (i >= s.src.arr()->size()) return false;
+                out = (*s.src.arr())[i];
+                return true;
+            };
+            size_t i = *idx;
+            Value x, y;
+            if (zip) { if (!nth(*ls, i, x) || !nth(*rs, i, y)) return false; }
+            else {
+                const size_t n = rs->items.size();
+                if (!nth(*ls, i / n, x)) return false;
+                y = rs->items[i % n];
+            }
+            ++*idx;
+            if (inner == "=>") {
+                Value p = Value::pair(x.toStr(), y);
+                if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+                cache.push_back(p);
+            }
+            else if (inner.empty() || inner == ",") cache.push_back(Value::list(ValueList{x, y}));
+            else cache.push_back(applyBinOp(inner, x, y));
+            return true;
+        };
+        out.extM() = st;
+        return out;
+    }
+    if (op[0] == 'X') forceLazy(r);   // read many times over: all of it
     if (op[0] == 'Z') {
         if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
         else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
@@ -22654,6 +23212,21 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
         taLine{testAssertLine_, false};
     if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->testAssertion && testAssertLine_ == 0) {
         testAssertLine_ = curLine_; taLine.set = true;
+    }
+    // A role mixed into the ROUTINE itself that brings a CALL-ME — `$r does role
+    // { method CALL-ME { … } }`, typically from a trait — is what calling the
+    // routine runs: invoking a Callable is calling its CALL-ME
+    // (S12-methods/fallback.t). Only routines that carry a mixin pay the look.
+    if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->mixins.p &&
+        !codeVal.code()->mixins.p->roles.empty()) {
+        for (auto& rn : codeVal.code()->mixins.p->roles) {
+            auto it = classes_.find(rn);
+            if (it == classes_.end() || !it->second) continue;
+            if (Value* cm = it->second->findMethod("CALL-ME")) {
+                Value callMe = *cm;
+                return invokeMethod(callMe, codeVal, std::move(args));
+            }
+        }
     }
     // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
     // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
@@ -23646,7 +24219,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             v.obj()->boxed.t == VT::Str &&
             (v.obj()->boxed.hashKind == "Buf" || v.obj()->boxed.hashKind == "Blob" ||
              v.obj()->boxed.hashKind == "utf8"))
-            v = v.obj()->boxed;
+            { Value unboxed = v.obj()->boxed; v = std::move(unboxed); }
         NcSlot& s = slots[i];
         const Param* p = (prm && i >= pOff && i - pOff < prm->size()) ? &(*prm)[i - pOff] : nullptr;
         std::string pt = p ? p->type : "";
@@ -25283,6 +25856,28 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.retType.empty()) return v;
+    // `--> T` where T is a type capture of the signature is the type it bound
+    // for this call (the routine's own scope is still curRoutineEnv here):
+    // `ret_T(Rat:D, Rat)` fails the definedness, `--> T:D()` coerces into it
+    // (S06-signature/type-capture.t)
+    {
+        const std::string base = retTypeName(c.retType);
+        Value cap;
+        if (c.retType.compare(0, base.size(), base) == 0 &&
+            capturedType(*this, tctx_.curRoutineEnv, base, cap)) {
+            std::string rest = c.retType.substr(base.size());
+            std::string cs = cap.s;
+            const bool restSmiley = rest.size() >= 2 && rest[0] == '\x01';
+            const bool restCoerces = !rest.empty() && rest.back() == ')';
+            if (restSmiley || restCoerces) { size_t lp = cs.find('('); if (lp != std::string::npos) cs.resize(lp); }
+            // (the smiley suffix is the byte \x01 then D or U — spelled as two
+            // parts: "\x01D" in C++ is ONE hex escape, 0x1D)
+            if (!restSmiley && cap.i) { cs += '\x01'; cs += cap.i == 1 ? 'D' : 'U'; }
+            Callable bound = c;
+            bound.retType = cs + rest;
+            return checkRetType(bound, std::move(v));
+        }
+    }
     // `--> Str(Numeric:D)` / `--> Foo:D()` CONVERTS: a value already the target
     // passes, one the SOURCE type refuses is a return type-check failure, and
     // a conversion that does not land on the target is X::Coerce::Impossible.
@@ -26245,7 +26840,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
             else if (name == "new" || name == "bless" || name == "CREATE")
                 binv = Value::typeObj(nb);
             else if (binv.t == VT::Object && binv.obj() && binv.obj()->hasBoxed)
-                binv = binv.obj()->boxed;                        // instance → its builtin box
+                { Value unboxed = binv.obj()->boxed; binv = std::move(unboxed); }                        // instance → its builtin box
             // A user object with no builtin box is redispatched ON ITSELF, so the
             // invocant's OWN methods have to be stepped over or the redispatch
             // lands back on the method that asked for it. `class E is Exception {
@@ -26634,7 +27229,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // them from the invocant's class MRO (child wins), skipping names the frame will
     // bind itself (an actual param of the same name shadows). Cheap: the vector is
     // empty for the overwhelming majority of classes.
-    {
+    // …except for a method of one role PARAMETERIZATION (recloseRoleMethods): its
+    // closure already binds exactly its own parameters, and the class's list,
+    // which holds every `does` of it at once, could only shadow them.
+    if (!c.roleConcrete) {
         ClassInfo* rk = nullptr;
         if (self.t == VT::Object && self.obj()) rk = self.obj()->cls.get();
         else if (self.t == VT::Type) { // type-object invocant sees them too
@@ -27279,8 +27877,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     if (dv.t == VT::Type && ve->declType.empty()) de->x().varDefaultUntyped.insert(ve->name);
                 }
             }
-            else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
-                de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint")) {
+                // `$x = Nil` resets to (Type) — the CAPTURED type for `my T $x`
+                // in a routine with `::T` in its signature (see capturedType)
+                Value cap;
+                if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) { cap.i = 0; init = cap; }
+                else cap = Value::typeObj(ve->declType);
+                de->x().varDefault[ve->name] = cap;
+            }
             if (!ve->declCoerce.empty())   // `my Int() $x` / `my Rat(Str) @a` coerce every later assignment
                 de->x().varCoerce[ve->name] = ve->declCoerce;
                 if (!ve->declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = ve->declCoerceFrom;
@@ -28691,6 +29295,14 @@ Value Interpreter::iterationSourceOf(Value v) {
             long long pos = 0;
             auto p = it.hash()->find("pos");
             if (p != it.hash()->end()) pos = p->second.toInt();
+            // An iterator over a sequence that is not produced yet — a gather,
+            // `self.dir.iterator` in IO::Glob — has no items in its buffer until
+            // something pulls: an untouched one is walked as the Seq it is, on
+            // demand; a started one is produced first
+            if (items->second.ext()) {
+                if (pos <= 0) return items->second;
+                forceLazy(items->second);
+            }
             Value out = Value::array(); out.isList = true;
             for (size_t k = (size_t)std::max(0LL, pos); k < items->second.arr()->size(); k++)
                 out.arr()->push_back((*items->second.arr())[k]);
@@ -29741,6 +30353,8 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
             for (auto& e : *x.arr()) coll.push_back(e);
         else coll.push_back(x);
     }
+    // a gather running as a coroutine hands control back to its consumer here
+    if (tctx_.curGather && tctx_.gatherStack.size() == 1) { gatherTakeYield(coll); return ret; }
     // a lazy gather stops the block once it has produced enough elements
     size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
     if (lim && coll.size() >= lim) throw StopGatherEx{};
@@ -29870,6 +30484,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
             long long pos = 0;
             auto p = r.hash()->find("pos");
             if (p != r.hash()->end()) pos = p->second.toInt();
+            forceLazy(items->second);   // a gather behind it: produce it first
             for (size_t k = (size_t)std::max(0LL, pos); k < items->second.arr()->size(); k++)
                 out.push_back((*items->second.arr())[k]);
             return true;
@@ -30648,6 +31263,7 @@ std::vector<ValueList> Interpreter::expandDimTuples(const Value& root, const Val
 // strings that way, and the generic lvalue path could only say "Target is
 // not assignable"). Nested list targets destructure recursively.
 void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBinding) {
+    forceLazy(rhs);   // `my ($a, $b) = gather { … }`: the gather's elements
     // one-level list flattening (Raku): a List/Range spreads, but an itemized
     // `[...]` Array stays one element — so `my ($a,$b) = M, [7,8]` gives $b = [7,8].
     auto spread = [](const Value& r) -> ValueList {
@@ -34981,6 +35597,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // An operator reads the values of a Seq it is given (`$s == 3`, `$s cmp
+    // …`, `$s - 1`): an unread one is cached, as Rakudo's is (SeqToken)
+    if (l.t == VT::Array) l.seqTouch();
+    if (r.t == VT::Array) r.seqTouch();
     // A NUMERIC TYPE OBJECT in an order comparison (`Int < 0`) has no value
     // to compare: Rakudo dies X::Numeric::Uninitialized (an undefined Any
     // only warns). The two-type-object form (`Int < Int`) stays a type test.
@@ -36586,6 +37206,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
     if (op == "eqv") {
+        // Two Seqs are compared by their values, which a consumed one no
+        // longer has (SeqToken); a Seq against anything else is False unread
+        if (l.t == VT::Array && r.t == VT::Array && l.s == "Seq" && r.s == "Seq" && g_cbInterp) {
+            g_cbInterp->seqUse(l, Interpreter::SeqUse::Cache);
+            g_cbInterp->seqUse(r, Interpreter::SeqUse::Cache);
+        }
         // Two LAZY iterables of the same type cannot be compared: the answer
         // would need both iterated to the end. (Different types answer False
         // without looking, and one lazy side is decided by the other's length,
@@ -36758,6 +37384,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
         if (r.t == VT::Whatever) return Value::boolean(op == "~~");
+        // against a LIST the elements are compared, so an unpulled gather on
+        // either side is read first (against a type or a regex, nothing is)
+        if (r.t == VT::Array && r.arr() && !isJunction(r)) { forceLazy(l); forceLazy(r); }
         // `$datetime ~~ $date`: does the moment fall on that civil day (and a
         // Date against a Date: the same day)
         if (r.t == VT::Hash && r.hashKind == "Date" && r.hash() &&
@@ -36813,8 +37442,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if ((l.t == VT::Array || l.t == VT::Range) && r.t == VT::Array && r.arr() &&
             l.enumName.empty() && r.enumName.empty()) {
             // a LAZY side never matches — its end is not known — unless both
-            // sides are the very same sequence
-            auto lazyOne = [](const Value& v) { return v.t == VT::Array && (v.b || v.ext()); };
+            // sides are the very same sequence. (A gather is not lazy: it has
+            // been read to its end above.)
+            auto lazyOne = [](const Value& v) { return v.t == VT::Array && (v.b || seqIsLazy(v)); };
             if (lazyOne(l) || lazyOne(r)) {
                 res = l.t == VT::Array && l.arr() == r.arr();
                 return Value::boolean(op == "~~" ? res : !res);
@@ -40974,9 +41604,10 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     // elements it boxes
     auto unboxList = [](Value& v) {
         if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed.t == VT::Array)
-            v = v.obj()->boxed;
+            { Value unboxed = v.obj()->boxed; v = std::move(unboxed); }
     };
     unboxList(l); unboxList(r);
+    forceLazy(l); forceLazy(r);   // a gather operand: its elements
     bool lIter = l.t == VT::Array || l.t == VT::Range;
     bool rIter = r.t == VT::Array || r.t == VT::Range;
     auto isInf = [](const Value& v) {
@@ -41270,6 +41901,7 @@ bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
 }
 
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {
+    if (l.t == VT::Array) l.seqTouch();   // `$s ~~ …` caches a Seq (SeqToken)
     if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)))
         return applyBinOp(op, l, r);
     struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;
@@ -43048,6 +43680,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // because a Proxy is a Hash and the hook wants an Object.
         if (r.hashKind == "Proxy") r = deproxy(r);
         if (lTopic.hashKind == "Proxy") lTopic = deproxy(lTopic);
+        // against a LIST the elements are compared, so an unpulled gather on
+        // either side is read first (against a type or a regex, nothing is)
+        if (r.t == VT::Array && r.arr() && !isJunction(r)) { forceLazy(lTopic); forceLazy(r); }
         // a bare Mu.new / Any.new matcher is Mu.ACCEPTS, not a Hash key lookup
         if (r.t == VT::Hash && (r.hashKind == "Mu" || r.hashKind == "Any") && !isJunction(lTopic))
             return applyBinOp(op, lTopic, r);
@@ -43870,6 +44505,7 @@ Value Interpreter::prefixStringify(const Value& v) {
                     "    (Mu:U \\v: *%_)"};
 }
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
+    if (v.t == VT::Array) v.seqTouch();   // `+$s` is its count: a Seq is cached (SeqToken)
     if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->isWhateverCode &&
         !v.code()->isBlock)
         throwCodeNumeric(v);
@@ -44344,6 +44980,445 @@ uint64_t Interpreter::lexicalRoutineFrame() {
     return 0;
 }
 
+// ---- gather as a coroutine -------------------------------------------------
+// `gather BLOCK` runs nothing when it is evaluated. It is a Seq whose block
+// runs on a stack of its own (Coro.h) the first time something pulls from it,
+// and only as far as that pull needs: a `take` that brings the collected
+// count up to what the consumer asked for switches straight back to the
+// consumer, leaving the block suspended where it is — inside whatever loops,
+// calls and scopes it was in — until the next pull resumes it. Rakudo's gather
+// is the same shape (a continuation per take), which is what lets
+//     my $g := gather { for 1..5 { $n++; take $_ } };  $g[0];   # $n == 1
+// and `for gather { … } { last }` pull exactly one element.
+//
+// This replaced a probe that ran the block up to 64 takes when the gather was
+// WRITTEN, and a block that outgrew the probe was re-run from the start, with a
+// snapshot of the variables it wrote, every time more was wanted. That code is
+// still here for targets that have no context switch (RAKUPP_HAVE_CORO).
+//
+// What a switch has to carry. The interpreter keeps the state of the code it is
+// running in thread-local "registers" — tctx_ (an ExecContext) and a set of
+// statics set around a region and restored after it. A suspended block is in
+// the middle of such regions, and so is the consumer, so every switch swaps
+// the whole set: the block runs with its own, the consumer gets its own back.
+// Three kinds of state are not simply swapped:
+//  · the DYNAMIC chains — dynamic variables, CONTROL handlers, callframes —
+//    are the consumer's, with the block's own frames on top. Rakudo resolves
+//    `$*X` in a gather's block through whoever is reifying it, and `quietly`
+//    around the consumer mutes the block's warnings;
+//  · the counted scopes the block inherits the same way (`quietly`, CATCH
+//    depth) keep the block's own net change;
+//  · the recursion guard measures the stack that is actually running.
+//
+// A block that dies, or a `last`/`next` in it aimed at a loop outside, ends
+// its gather: the exception is carried to the consumer and raised where the
+// pull happened — the dynamic scope Rakudo raises it in. A `return` has no
+// routine to return from and is X::ControlFlow::Return, as before.
+//
+// A gather dropped while its block is suspended still has C++ frames on its
+// stack that own things (and may hold locks). It goes to a graveyard, and at
+// the next gather operation on its thread it is resumed once more with
+// `cancel` set: its `take` throws StopGatherEx, the frames unwind, and LEAVE
+// phasers stay silent on the way out (Rakudo never runs them for a gather that
+// is simply dropped). A suspended block is thread-affine (Coro.h); one dropped
+// on another thread, or resumed from one, cannot be.
+#if RAKUPP_HAVE_CORO
+struct GatherRegs {
+    ExecContext ctx;
+    Value* topicWriteback = nullptr;
+    Value* builtinTopicWB = nullptr;
+    const Interpreter::ArgWriter* builtinArgWriter = nullptr;
+    const Interpreter::ArgWriter* pendingArgWriter = nullptr;
+    bool deferGather = false, noAutothread = false, valueSmartmatch = false,
+         matchVarSuppressed = false, forceRoutineFrame = false, hoistingSubs = false,
+         suppressLoopFirst = false, fatalTry = false;
+    std::string declaringType;
+    int loopPhaserCtl = 0;
+    const std::vector<Value*>* pendingRwSlots = nullptr;
+    std::vector<Interpreter::RedispatchCtx> redispatchStack;
+    std::vector<Interpreter::ProtoCtx> protoStack;
+    std::vector<std::shared_ptr<ReactCtx>> reactStack;
+    const Value* rxRoutine = nullptr;
+    const std::string* hyperOpName = nullptr;
+    std::vector<RxTempSave> rxTemps;
+    std::vector<std::shared_ptr<Env>> evalUnits;
+    std::vector<std::string> classBodies;
+    char* stackTop = nullptr;
+    size_t stackLimit = 0;
+    long long gatherDeadline = 0;
+    unsigned gatherTickCtr = 0;
+    int stmtLine = 0;
+    // the block's own net change to the counted scopes it inherits
+    int quietDelta = 0, catchDelta = 0;
+    // while the block runs: where the consumer's part of each chain ends, and
+    // the consumer's counts
+    size_t dynBase = 0, ctlBase = 0, framesBase = 0;
+    int quietBase = 0, catchBase = 0;
+};
+
+struct GatherCoro {
+    Interpreter* I = nullptr;
+    Unary* gu = nullptr;          // the `gather` node
+    Value block;                  // its closure, for a block operand
+    std::shared_ptr<Env> env;     // the scope a statement operand runs in
+    std::string pkgPrefix;        // the package the gather was written in
+    std::vector<int> endUnitKey;  // …and where it stands in the END order
+    const Stmt* endCurTopStmt = nullptr;
+    // What the block has taken since the last hand-over: the collector of the
+    // gather frame the block runs under. Emptied into the Seq at each pull.
+    std::shared_ptr<ValueList> buf = makePayload<ValueList>();
+    size_t want = 1;              // hand back once buf holds this many
+    bool cancel = false;          // resumed only to unwind (see above)
+    std::exception_ptr err;       // what ended the block, raised at the pull
+    GatherRegs regs;              // the block's registers while it is suspended
+    Coro co{&GatherCoro::entry, this};
+    static void entry(void* p);
+};
+
+static void setCurrentStmtLine(int l) {
+    if (g_stmtLineThreaded.load(std::memory_order_relaxed)) t_stmtLine = l;
+    else g_stmtLine.store(l, std::memory_order_relaxed);
+}
+
+// Swap two execution contexts member by member. std::swap on the whole struct
+// builds and destroys a 1.4 KB temporary and move-ASSIGNS its containers — a
+// deque that clears and shrinks, a hash map that rebuilds — and profiling a
+// `for` over a gather put 40% of the loop in exactly that. Member by member,
+// every container swap is O(1).
+//
+// EVERY member of ExecContext must be listed here: one left out would leak
+// between a gather's block and its consumer. The size check below trips on the
+// machine of record when the struct grows, so a new register cannot be missed
+// silently; update the list and the number together.
+static void swapExecContext(ExecContext& a, ExecContext& b) {
+    using std::swap;
+    swap(a.cur, b.cur); swap(a.subSigBind, b.subSigBind); swap(a.rwInvocantExpr, b.rwInvocantExpr); swap(a.endUnitKey, b.endUnitKey);
+    swap(a.endsBeforeStmt, b.endsBeforeStmt); swap(a.endCurTopStmt, b.endCurTopStmt); swap(a.dynStack, b.dynStack); swap(a.callDepth, b.callDepth);
+    swap(a.nqpArgs, b.nqpArgs); swap(a.nqpDepth, b.nqpDepth); swap(a.curStateEnv, b.curStateEnv); swap(a.gatherStack, b.gatherStack);
+    swap(a.gatherLimits, b.gatherLimits); swap(a.gatherDeadlines, b.gatherDeadlines); swap(a.topicAliases, b.topicAliases); swap(a.supplyStack, b.supplyStack);
+    swap(a.tapStack, b.tapStack); swap(a.makeTargets, b.makeTargets); swap(a.controlHandlers, b.controlHandlers); swap(a.pkgPrefix, b.pkgPrefix);
+    swap(a.returning, b.returning); swap(a.returnV, b.returnV); swap(a.frameTop, b.frameTop); swap(a.redispatchFloor, b.redispatchFloor);
+    swap(a.curRoutineFrame, b.curRoutineFrame); swap(a.curRoutineEnv, b.curRoutineEnv); swap(a.builtinFallback, b.builtinFallback); swap(a.loopCtl, b.loopCtl);
+    swap(a.curStmtExpr, b.curStmtExpr); swap(a.valContained, b.valContained); swap(a.metaForwarding, b.metaForwarding); swap(a.curLoopFrame, b.curLoopFrame);
+    swap(a.givenCtl, b.givenCtl); swap(a.givenV, b.givenV); swap(a.curGivenFrame, b.curGivenFrame); swap(a.curBlockVal, b.curBlockVal);
+    swap(a.curRoutineVal, b.curRoutineVal); swap(a.callFrames, b.callFrames); swap(a.leaveResult, b.leaveResult); swap(a.leaveReturned, b.leaveReturned);
+    swap(a.leaveReturnV, b.leaveReturnV); swap(a.leaveError, b.leaveError); swap(a.arityCallName, b.arityCallName); swap(a.wantLvalue, b.wantLvalue);
+    swap(a.bindRawTails, b.bindRawTails); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
+    swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
+    swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
+    swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueElemType, b.lastLvalueElemType);
+    swap(a.dynMethodNode, b.dynMethodNode); swap(a.dynMethodName, b.dynMethodName); swap(a.curGather, b.curGather);
+}
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION)
+static_assert(sizeof(ExecContext) == 1400,
+              "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
+              "then update this size");
+#endif
+
+// The addresses of every thread-local register a switch swaps, resolved ONCE
+// per thread. Each mention of a thread_local is a _tlv_get_addr call on macOS
+// (and an init guard for the non-trivial ones); a switch touching thirty of
+// them four times over spent more in those calls than in the swap itself.
+struct GatherTls {
+    ExecContext* ctx;
+    Value** topicWriteback; Value** builtinTopicWB;
+    const Interpreter::ArgWriter** builtinArgWriter; const Interpreter::ArgWriter** pendingArgWriter;
+    bool *deferGather, *noAutothread, *valueSmartmatch, *matchVarSuppressed, *forceRoutineFrame,
+         *hoistingSubs, *suppressLoopFirst, *fatalTry;
+    std::string* declaringType;
+    int* loopPhaserCtl;
+    const std::vector<Value*>** pendingRwSlots;
+    std::vector<Interpreter::RedispatchCtx>* redispatchStack;
+    std::vector<Interpreter::ProtoCtx>* protoStack;
+    std::vector<std::shared_ptr<ReactCtx>>* reactStack;
+    const Value** rxRoutine;
+    const std::string** hyperOpName;
+    std::vector<RxTempSave>* rxTemps;
+    std::vector<std::shared_ptr<Env>>* evalUnits;
+    std::vector<std::string>* classBodies;
+    char** stackTop; size_t* stackLimit;
+    long long* gatherDeadline; unsigned* gatherTickCtr;
+};
+static thread_local GatherTls* t_gatherTls = nullptr;   // trivial: no init guard
+static GatherTls& gatherTls() {
+    if (GatherTls* p = t_gatherTls) return *p;
+    auto* p = new GatherTls{   // one per thread that runs a gather, deliberately never freed
+        &Interpreter::tctx_,
+        &Interpreter::topicWriteback_, &Interpreter::builtinTopicWB_,
+        &Interpreter::builtinArgWriter_, &Interpreter::pendingArgWriter_,
+        &Interpreter::deferGather_, &Interpreter::noAutothread_, &Interpreter::valueSmartmatch_,
+        &Interpreter::matchVarSuppressed_, &Interpreter::forceRoutineFrame_,
+        &Interpreter::hoistingSubs_, &Interpreter::suppressLoopFirst_, &t_fatalTry,
+        &Interpreter::declaringType_, &Interpreter::loopPhaserCtl_, &Interpreter::pendingRwSlots_,
+        &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
+        &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,
+        &t_stackTop, &t_stackLimit, &t_gatherDeadline, &t_gatherTickCtr};
+    t_gatherTls = p;
+    return *p;
+}
+
+// Swap every register but the ExecContext (identical going in and out).
+static void gatherSwapStatics(const GatherTls& T, GatherRegs& r) {
+    std::swap(*T.topicWriteback, r.topicWriteback);
+    std::swap(*T.builtinTopicWB, r.builtinTopicWB);
+    std::swap(*T.builtinArgWriter, r.builtinArgWriter);
+    std::swap(*T.pendingArgWriter, r.pendingArgWriter);
+    std::swap(*T.deferGather, r.deferGather);
+    std::swap(*T.noAutothread, r.noAutothread);
+    std::swap(*T.valueSmartmatch, r.valueSmartmatch);
+    std::swap(*T.matchVarSuppressed, r.matchVarSuppressed);
+    std::swap(*T.forceRoutineFrame, r.forceRoutineFrame);
+    std::swap(*T.hoistingSubs, r.hoistingSubs);
+    std::swap(*T.suppressLoopFirst, r.suppressLoopFirst);
+    std::swap(*T.fatalTry, r.fatalTry);
+    T.declaringType->swap(r.declaringType);
+    std::swap(*T.loopPhaserCtl, r.loopPhaserCtl);
+    std::swap(*T.pendingRwSlots, r.pendingRwSlots);
+    T.redispatchStack->swap(r.redispatchStack);
+    T.protoStack->swap(r.protoStack);
+    T.reactStack->swap(r.reactStack);
+    std::swap(*T.rxRoutine, r.rxRoutine);
+    std::swap(*T.hyperOpName, r.hyperOpName);
+    T.rxTemps->swap(r.rxTemps);
+    T.evalUnits->swap(r.evalUnits);
+    T.classBodies->swap(r.classBodies);
+    std::swap(*T.stackTop, r.stackTop);
+    std::swap(*T.stackLimit, r.stackLimit);
+    std::swap(*T.gatherDeadline, r.gatherDeadline);
+    std::swap(*T.gatherTickCtr, r.gatherTickCtr);
+    { int line = currentStmtLine(); setCurrentStmtLine(r.stmtLine); r.stmtLine = line; }
+}
+
+// The consumer's registers out, the block's in. The resumer calls this right
+// before Coro::resume and gatherSwapOut right after it returns, so the block
+// itself never has to.
+static void gatherSwapIn(Interpreter& I, GatherRegs& r) {
+    const GatherTls& T = gatherTls();
+    swapExecContext(*T.ctx, r.ctx);
+    ExecContext& live = *T.ctx;
+    const ExecContext& cons = r.ctx;
+    // …the consumer's callers, then the consumer's own frame, exactly what a
+    // call from the pull site would have stacked
+    r.dynBase = cons.dynStack.size() + 1;
+    live.dynStack.insert(live.dynStack.begin(), cons.dynStack.begin(), cons.dynStack.end());
+    live.dynStack.insert(live.dynStack.begin() + cons.dynStack.size(),
+                         cons.cur ? cons.cur.get() : nullptr);
+    r.ctlBase = cons.controlHandlers.size();
+    live.controlHandlers.insert(live.controlHandlers.begin(), cons.controlHandlers.begin(),
+                                cons.controlHandlers.end());
+    r.framesBase = cons.callFrames.size();
+    live.callFrames.insert(live.callFrames.begin(), cons.callFrames.begin(), cons.callFrames.end());
+    gatherSwapStatics(T, r);
+    r.quietBase = I.quietDepth_; I.quietDepth_ += r.quietDelta;
+    r.catchBase = I.catchDepth_; I.catchDepth_ += r.catchDelta;
+}
+
+static void gatherSwapOut(Interpreter& I, GatherRegs& r) {
+    const GatherTls& T = gatherTls();
+    ExecContext& live = *T.ctx;
+    auto dropPrefix = [](auto& v, size_t n) { v.erase(v.begin(), v.begin() + std::min(n, v.size())); };
+    dropPrefix(live.dynStack, r.dynBase);
+    dropPrefix(live.controlHandlers, r.ctlBase);
+    dropPrefix(live.callFrames, r.framesBase);
+    swapExecContext(*T.ctx, r.ctx);
+    gatherSwapStatics(T, r);
+    r.quietDelta = I.quietDepth_ - r.quietBase; I.quietDepth_ = r.quietBase;
+    r.catchDelta = I.catchDepth_ - r.catchBase; I.catchDepth_ = r.catchBase;
+}
+
+// Runs on the coroutine's own stack, with the block's registers already live.
+void GatherCoro::entry(void* p) {
+    auto* g = static_cast<GatherCoro*>(p);
+    Interpreter& I = *g->I;
+    ExecContext& t = Interpreter::tctx_;
+    // the recursion guard measures THIS stack from here on (on Windows a fresh
+    // fiber's top is not known yet, and the guard notes it at its first frame)
+    t_stackTop = g->co.stackTop();
+    t_stackLimit = g->co.stackUsable();
+    t.curGather = g;
+    t.cur = g->env;
+    t.pkgPrefix = g->pkgPrefix;
+    t.endUnitKey = g->endUnitKey;
+    t.endCurTopStmt = g->endCurTopStmt;
+    I.pushGatherFrame(g->buf, 0, 0);
+    try {
+        if (g->block.t == VT::Code) { ValueList none; I.callCallable(g->block, none); }
+        else I.eval(g->gu->operand.get());
+        // a `return` in the block has no routine to return from: the gather
+        // runs lazily, after (or apart from) whatever routine wrote it
+        if (t.returning) {
+            t.returning = false;
+            throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                            "Attempt to return outside of any Routine"};
+        }
+    }
+    catch (StopGatherEx&) {}   // cancelled: the consumer let go
+    // a plain `last` — in the block itself or in a routine it calls — ends the
+    // gather, as it does in Rakudo; one aimed at a LABEL flies on to its loop
+    catch (LastEx& e) { if (!e.label.empty()) g->err = std::current_exception(); }
+    catch (ReturnEx&) {
+        t.returning = false;
+        g->err = std::make_exception_ptr(RakuError{Value::typeObj("X::ControlFlow::Return"),
+                                                   "Attempt to return outside of any Routine"});
+    }
+    catch (...) { g->err = std::current_exception(); }
+    I.popGatherFrame();
+    t.curGather = nullptr;
+}
+
+// Dropped while suspended, waiting to be unwound on their thread (see above).
+// Deliberately a leaked pointer: it must survive this thread's TLS teardown,
+// during which the last Values can still be released.
+static thread_local std::vector<GatherCoro*>* t_gatherGraveyard = nullptr;
+
+static void gatherRun(Interpreter& I, GatherCoro* g) {
+    gatherSwapIn(I, g->regs);
+    g->co.resume();
+    gatherSwapOut(I, g->regs);
+}
+
+static void reapGatherGraveyard(Interpreter& I) {
+    auto* gy = t_gatherGraveyard;
+    if (!gy || gy->empty()) return;
+    static thread_local bool reaping = false;
+    if (reaping) return;
+    reaping = true;
+    while (!gy->empty()) {
+        GatherCoro* g = gy->back();
+        gy->pop_back();
+        g->cancel = true;
+        gatherRun(I, g);
+        delete g;
+    }
+    reaping = false;
+}
+
+// The deleter of the GatherCoro a gather's Seq owns.
+static void gatherRelease(GatherCoro* g) {
+    if (g->co.started() && !g->co.finished() && !g->co.running() &&
+        g->co.ownerThread() == std::this_thread::get_id()) {
+        if (!t_gatherGraveyard) t_gatherGraveyard = new std::vector<GatherCoro*>;
+        t_gatherGraveyard->push_back(g);
+        return;
+    }
+    delete g;   // not started, finished — or suspended on another thread: abandoned
+}
+
+// One pull: run the block until it has taken `pullHint` more (at least one),
+// or ends, and move what it took into `out`. False once it has ended.
+static bool gatherPull(Interpreter& I, GatherCoro* g, LazySeqState* st, ValueList& out) {
+    const size_t want = st->pullHint ? st->pullHint : 1;
+    st->pullHint = 0;
+    if (g->co.finished()) { st->exhausted = true; return false; }
+    if (g->co.running())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Cannot pull from a gather while its own block is producing it"};
+    if (g->co.started() && g->co.ownerThread() != std::this_thread::get_id())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "A gather that has started producing can only be read on the thread that "
+                        "started it"};
+    reapGatherGraveyard(I);
+    g->want = want;
+    gatherRun(I, g);
+    // (no reserve(): growing by the exact amount on every one-element pull
+    // would defeat the vector's doubling and make a `for` over a gather
+    // quadratic)
+    if (!g->buf->empty()) {
+        for (auto& x : *g->buf) out.push_back(std::move(x));
+        g->buf->clear();
+    }
+    if (!g->co.finished()) return true;
+    st->exhausted = true;
+    if (g->err) { std::exception_ptr e = g->err; g->err = nullptr; std::rethrow_exception(e); }
+    return false;
+}
+
+// The Seq over a gather whose block is `block` (a closure) or, when that is
+// empty, `gu`'s statement operand run in the current scope.
+static Value gatherSeqOver(Interpreter& I, Value block, Unary* gu, bool declaredLazy);
+Value Interpreter::makeGatherSeq(Unary* gu, bool declaredLazy) {
+    Value block;
+    if (gu->operand->kind == NK::BlockExpr)
+        block = makeClosure(static_cast<BlockExpr*>(gu->operand.get()));
+    return gatherSeqOver(*this, std::move(block), gu, declaredLazy);
+}
+static Value gatherSeqOver(Interpreter& I, Value block, Unary* gu, bool declaredLazy) {
+    ExecContext& tctx_ = Interpreter::tctx_;
+    reapGatherGraveyard(I);
+    std::shared_ptr<GatherCoro> g(new GatherCoro, &gatherRelease);
+    g->I = &I;
+    g->gu = gu;
+    g->block = std::move(block);
+    g->env = tctx_.cur;
+    g->pkgPrefix = tctx_.pkgPrefix;
+    g->endUnitKey = tctx_.endUnitKey;
+    g->endCurTopStmt = tctx_.endCurTopStmt;
+    g->regs.stmtLine = currentStmtLine();
+    // The block is lexically inside the routine that WROTE the gather, and its
+    // `samewith`/`callsame` mean that routine's dispatch however late it runs:
+    // Digest's SHA-3 is `multi Keccak(…) { gather for samewith … { … } }`.
+    // (The redispatch stack is a region-scoped static, so the block would
+    // otherwise start with an empty one — see gatherSwapStatics.)
+    // The block may run after that routine has returned, so only what outlives
+    // it is kept: `restart` (samewith) holds its dispatcher by value, while a
+    // WRAPPER frame's closures and every `next` (callsame, nextsame) point into
+    // the dispatching call's own locals. Without `next` the frame reads as the
+    // last candidate, which is what those then answer.
+    for (const auto& rc : Interpreter::redispatchStack_) {
+        if (rc.wrapperFrame) continue;
+        Interpreter::RedispatchCtx kept = rc;
+        kept.next = nullptr;
+        kept.lastcall = true;
+        g->regs.redispatchStack.push_back(std::move(kept));
+    }
+    Value arr = Value::array(); arr.isList = true; arr.s = "Seq";
+    if (declaredLazy) arr.b = true;   // .is-lazy
+    auto st = std::make_shared<LazySeqState>();
+    st->gatherSeq = true;
+    st->declaredLazy = declaredLazy;
+    LazySeqState* stp = st.get();
+    Interpreter* self = &I;
+    st->appendNext = [self, g, stp](ValueList& out) -> bool { return gatherPull(*self, g.get(), stp, out); };
+    arr.extM() = st;
+    arr.setSeqTok(makePayload<SeqToken>());   // read once (SeqToken)
+    return arr;
+}
+
+void Interpreter::gatherTakeYield(ValueList& coll) {
+    GatherCoro* g = tctx_.curGather;
+    if (!g || &coll != g->buf.get()) return;
+    if (g->cancel) {
+        // keep unwinding: a take the block reaches after swallowing the first
+        // StopGatherEx is thrown out of too — but never from a destructor
+        if (std::uncaught_exceptions() == 0) throw StopGatherEx{};
+        return;
+    }
+    if (coll.size() < g->want) return;
+    g->co.yield();
+    if (g->cancel) throw StopGatherEx{};
+}
+
+bool gatherCancelling() {
+    GatherCoro* g = Interpreter::tctx_.curGather;
+    return g && g->cancel;
+}
+Env* gatherDynBoundary(GatherCoro* g) {
+    if (g->block.t == VT::Code && g->block.code()) return g->block.code()->closure.get();
+    return g->env.get();
+}
+size_t gatherDynBase(GatherCoro* g) { return g->regs.dynBase; }
+Value gatherSeqForNative(Interpreter& I, Value blockClosure) {
+    return gatherSeqOver(I, std::move(blockClosure), nullptr, false);
+}
+#else
+Value gatherSeqForNative(Interpreter&, Value) { return Value::any(); }
+Env* gatherDynBoundary(GatherCoro*) { return nullptr; }
+size_t gatherDynBase(GatherCoro*) { return 0; }
+void Interpreter::gatherTakeYield(ValueList&) {}
+Value Interpreter::makeGatherSeq(Unary*, bool) { return Value::any(); }
+bool gatherCancelling() { return false; }
+#endif
+
 Value Interpreter::evalUnary(Unary* u) {
     // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
     // nested arrays and hash values (keys kept); ++/-- mutate the elements in
@@ -44766,6 +45841,7 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%" || u->op == "ctx%{}") {
         Value v = eval(u->operand.get());
         if (u->op == "ctx@") {
+            seqUse(v, SeqUse::Cache);   // `@$s` keeps a Seq's values — unless it was read (SeqToken)
             // A Match in list context is its POSITIONAL CAPTURES — `.list` — and
             // that is the same question however the match was reached: `@$/`
             // reads $0 $1 $2 at once, and `@<x>` reads the captures of `$<x>`
@@ -45135,6 +46211,9 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "gather") {
         const bool deferGather = deferGather_; deferGather_ = false;
+#if RAKUPP_HAVE_CORO
+        return makeGatherSeq(u, deferGather);
+#endif
         Unary* gu = u;
         Value blockClosure;
         if (u->operand->kind == NK::BlockExpr)
@@ -45544,8 +46623,13 @@ Value Interpreter::evalUnary(Unary* u) {
         // (`my $x; $x++` is 0, and $x becomes 1) — the Bool arm above already
         // does this for its own type
         // …and an explicit `Mu`/`Any` type object is as undefined as a bare `my $x`
+        // …and so is any other type object the step turned into an Int: a
+        // `my Int $x`, a `has Int $!a`, a `my UInt $u` or a Numeric/Real/Cool
+        // container all answer 0 (Num answered 0e0 above; a Str or Rat
+        // container refuses the Int the step made, before this point)
         if (u->postfix && (oldv.t == VT::Any || oldv.t == VT::Nil ||
-                           (oldv.t == VT::Type && (oldv.s == "Mu" || oldv.s == "Any"))))
+                           (oldv.t == VT::Type && (oldv.s == "Mu" || oldv.s == "Any" ||
+                                                   newv.t == VT::Int))))
             return Value::integer(0);
         return u->postfix ? oldv : newv;
     }
@@ -47122,6 +48206,10 @@ Value Interpreter::evalCall(Call* c) {
         auto it = builtins_.find(c->name);
         if (it != builtins_.end() && !builtinVisible(c->name)) it = builtins_.end(); // 6.e-only sub, and this is not 6.e
         if (it != builtins_.end()) {
+            // a built-in sub reads the Seqs it is given, so an unread one is
+            // cached (SeqToken) — `eager` excepted, which reads one for good
+            if (c->name != "eager")
+                for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
             // a WRAPPED builtin goes the long way so its wrapper stack runs
             if (!builtinRefs_.empty()) {
                 auto rit = builtinRefs_.find(c->name);
@@ -48326,6 +49414,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 // containers that are not plain Arrays. Anything else, including
                 // out of range, falls through to the general path.
                 if (have && i >= 0 && i < (long long)bp->arr()->size()) {
+                    // `$s[0]` keeps a Seq's values — unless it was read (SeqToken)
+                    if (bp->seqTok()) seqUse(*bp, SeqUse::Cache);
                     // P3 torn-copy contract, the ELEMENT half: the copy-out
                     // happens under the slot's own stripe, the same one
                     // evalAssignInner's store and `cas` take. Without it a
@@ -48507,6 +49597,9 @@ Value Interpreter::evalIndex(Index* idx) {
         }
     }
     Value base = eval(idx->base.get());
+    // `$s[0]` keeps a Seq's values — unless it was read already; a ZEN slice
+    // (`$s[]`) does neither (SeqToken)
+    if (!idx->isHash && idx->index && base.t == VT::Array) seqUse(base, SeqUse::Cache);
     // Mu is not Associative: `Mu.{'a'}` has no candidate at all
     if (idx->isHash && base.t == VT::Type && base.s == "Mu" && idx->adverb.empty())
         throwTypedV("X::Multi::NoMatch", {},
@@ -48785,7 +49878,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // and skipped the class's own AT-KEY: `class Tied is Hash { method AT-KEY …}`
     // answered from the empty box, and PDF's dictionaries — which resolve
     // indirect references in AT-KEY — read nothing at all through `self<Key>`.
-    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) base = base.obj()->boxed;
+    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) { Value unboxed = base.obj()->boxed; base = std::move(unboxed); }
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
     //
@@ -49338,6 +50431,19 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         Value iv = eval(idx->index.get());
+        // A LAZY array reifies up to the index before an adverb looks at it:
+        // `my @a = 1...*; @a[2]:delete` must delete the 3 that is there, not a
+        // slot nothing has pulled yet — a later read would pull it back fresh
+        // (S32-array/delete-adverb.t, `:delete on lazy Arrays`)
+        if (!idx->isHash && base.t == VT::Array && base.ext() && base.arr()) {
+            long long mx = -1;
+            if (iv.isNumeric()) mx = iv.toInt();
+            else if ((iv.t == VT::Array && !iv.itemized) || (iv.t == VT::Range && !iv.rNum() && iv.rTo() < 1000000000LL))
+                for (auto& e : iv.flatten()) if (e.isNumeric()) mx = std::max(mx, e.toInt());
+            // (…one PAST it for a delete: a generator continues from the last
+            // element it made, and must not find a hole there)
+            if (mx >= 0) materializeLazy(base, (size_t)mx + (wantDelete ? 2 : 1));
+        }
         // `@a[*]` / `%h{*}` — and the zen slice `@a[]`, which parses to `[*]` —
         // with an adverb select EVERY element.
         bool allElems = iv.t == VT::Whatever;
@@ -49506,8 +50612,10 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         // trailing holes shrink the array after deletes (plain subscripts only —
         // a multidim form that fell through indexes NESTED arrays, not this one)
+        // …but not on a LAZY array: its reified prefix is not its end, and a
+        // hole popped off it would be pulled back fresh by the next read
         if (wantDelete && !idx->isHash && !idx->multiDim && !idx->semicolonSub &&
-            base.t == VT::Array && base.arr())
+            base.t == VT::Array && base.arr() && !base.ext())
             while (!base.arr()->empty() && !rtSlotExists(base.arr()->back())) base.arr()->pop_back();
         // `:p` keeps the real key type — an array index is an Int (`1 => "b"`),
         // not the stringified key a plain Pair would carry.
@@ -50385,7 +51493,7 @@ struct NodeCountReport {
                 // is X::NotParametric — unless it says what `[…]` means with a
                 // `^parameterize` of its own, or inherits a built-in that does
                 {
-                    auto cit = classes_.find(n);
+                    auto cit = classes_.find(lexicalTypeName(*this, n));
                     if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(n));
                     if (cit != classes_.end() && cit->second && !cit->second->isRole) {
                         ClassInfo* ci0 = cit->second.get();
@@ -50405,7 +51513,7 @@ struct NodeCountReport {
                 // with the type argument(s) bound (the composed-into-class path
                 // handles `does Q[Int]` separately; this is direct use)
                 {
-                    auto rit = classes_.find(n);
+                    auto rit = classes_.find(lexicalTypeName(*this, n));
                     if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(n));
                     if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
                         !rit->second->decl->roleParams.empty()) {
@@ -51541,8 +52649,15 @@ Value Interpreter::eval(Expr* e) {
                 }
                 if (!ve->declType.empty()) checkDeclTypeSane(ve);
                 if (!ve->declType.empty() || !de->local(ve->name)) {
-                    if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
-                        de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+                    if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0])) {
+                        // `$x = Nil` resets to (Type) — a captured `my T $x`, to
+                        // the type T bound for this call, which is also what the
+                        // assignments are then checked against
+                        Value cap;
+                        if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) cap.i = 0;
+                        else cap = Value::typeObj(ve->declType);
+                        de->x().varDefault[ve->name] = cap;
+                    }
                     if (!ve->declCoerce.empty())
                         de->x().varCoerce[ve->name] = ve->declCoerce;
                 if (!ve->declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = ve->declCoerceFrom;
@@ -52107,7 +53222,10 @@ Value Interpreter::eval(Expr* e) {
                                (!isHyper &&
                                ((bareAtVar && l->items.size() == 1 && !l->fromCommaList) ||
                                 (v.t == VT::Array && v.isList && !l->fromCommaList)));
-                if (flatten && v.t == VT::Array) { for (auto& x : *v.arr()) a.arr()->push_back(x); }
+                if (flatten && v.t == VT::Array) {
+                    forceLazy(v);   // `[gather { … }]` is the gather's elements
+                    for (auto& x : *v.arr()) a.arr()->push_back(x);
+                }
                 // A finite Range spreads under the ONE-ARG rule and only there:
                 // `[1..10]` is ten elements, `[1..3, 5..6]` is two RANGES, and
                 // `[<a b>, "0".."9"]` is a list and a range — which is how a
@@ -52547,6 +53665,13 @@ Value Interpreter::eval(Expr* e) {
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
                 if (mc->bang) requirePrivateCallScope(mc->method); // `self!"$name"()`
             }
+            // A Seq is read once (SeqToken): what this call does to it, decided
+            // here, where the program calls it — after an indirect `."$name"()`
+            // has been resolved, before any of the dispatch below
+            if (inv.t == VT::Array && inv.isList && inv.seqTok() && !mc->meta && !mc->hyper && !mc->allMode) {
+                Value early;
+                if (seqMethodUse(*this, inv, mc->method, early)) return early;
+            }
             // qualified `$obj.Class::method` — dispatch to Class's method directly,
             // reaching past the invocant's own override (e.g. `self.Parent::meth`
             // called from within an override, as in zef's `self.Zef::Distribution::meta`).
@@ -52573,7 +53698,16 @@ Value Interpreter::eval(Expr* e) {
                             "Cannot dispatch to method " + mc->method + " on " + cit->second->name +
                             " because it is not inherited or done by " + inv.typeName());
                     ValueList ma = evalArgs(mc->args);
-                    return invokeMethodChain(mc->method, cit->second.get(), inv, ma, &mc->args);
+                    ClassInfo* qual = cit->second.get();
+                    // A PARAMETRIC role qualifier names whichever parameterization
+                    // of it the invocant's type composed (`self.R::m` in a class
+                    // that does R[Str]) — the nearest class first, its own roles
+                    // before the roles they do. Two parameterizations at one level
+                    // are Rakudo's "Ambiguous concretization lookup".
+                    if (qual->isRole && qual->decl &&
+                        (!qual->decl->roleParams.empty() || !qual->roleVariants.empty()))
+                        if (ClassInfo* conc = qualifiedConcretization(inv, qual->name)) qual = conc;
+                    return invokeMethodChain(mc->method, qual, inv, ma, &mc->args);
                 }
                 // A BUILT-IN qualifier (`self.Mu::Str`, `self.Any::gist`) names a
                 // type above every user class, so it means the built-in behaviour —
@@ -53093,6 +54227,7 @@ Value Interpreter::eval(Expr* e) {
                     // the exception and the invocant — so it moves rather than
                     // copying the vector and every Value in it.
                     Value res = methodCall(inv, mname, std::move(args), &mc->args);
+                    seqMint(res, inv);
                     if (mc->mutate) return assignChecked(mc->inv.get(), res); // `.=` is its STORED value
                     return res;
                 }
@@ -53125,6 +54260,8 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             Value res = methodCall(inv, mname, std::move(args), &mc->args);
+            // …and a Seq it answers with is a Seq of its own (SeqToken)
+            seqMint(res, inv);
             if (mc->mutate) return assignChecked(mc->inv.get(), res, &inv); // `.=` is its STORED value
             return res;
         }

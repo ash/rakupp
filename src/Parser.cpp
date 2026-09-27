@@ -12981,6 +12981,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         if (!isDoes && isIdent("export")) { // trait, not a parent class
             advance();
+            cd->isExport = true;
             // `is export(:TAG)` — consume the tag list too. Leaving it in the
             // stream desynced the parse by one statement: JSON::Class::Types'
             // `class NOT-SET is Nil is export(:NOT-SET) {…}` silently ate the

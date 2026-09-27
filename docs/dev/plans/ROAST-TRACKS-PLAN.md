@@ -411,6 +411,188 @@ gather tests under ASan once, and under TSan for the `start`/`hyper` files.
 **Perf:** expected to help gather-heavy code (no probe, no re-runs). Measure
 it.
 
+### B1 status (2026-09-27)
+
+- **The coroutine.** src/Coro.{h,cpp}: a stack per coroutine (256 MiB
+  reserved with `mmap`, a guard at the bottom, committed as touched), pooled
+  per thread, 16 kept. The switch is 25 lines of assembly for arm64 (AAPCS64)
+  and x86-64 (System V); Windows uses Fibers. A pooled stack parks inside a
+  run loop, so reusing it is one switch. Measured: 42 ns per resume+yield,
+  87 ns to start one. `RAKUPP_HAVE_CORO` is 0 for any other target (and for
+  WebAssembly, so Raku.js keeps the old probe); `-DRAKUPP_HAVE_CORO=0` forces
+  that form anywhere. AddressSanitizer is told about every switch.
+- **`gather` is a `GatherCoro`** (Interpreter.cpp, above `evalUnary`): its Seq
+  starts UNPULLED — an empty buffer and a `LazySeqState` — and each pull runs
+  the block until it has taken `pullHint` more (what `materializeLazy` asks
+  for), so filling a buffer is one switch, and `$g[0]` or a `for` runs it one
+  take at a time. The `--exe` codegen's `rtGather` builds the same thing.
+- **What a switch carries.** Every register the interpreter keeps in thread
+  locals: the whole `ExecContext`, swapped member by member
+  (`swapExecContext`; `std::swap` of the struct cost 40% of a for-over-gather
+  loop — a `static_assert` on its size makes a new member impossible to miss),
+  and the region-scoped statics (`gatherSwapStatics`: `builtinTopicWB_`,
+  `protoStack_`, `redispatchStack_`, the recursion guard's stack bounds, …),
+  whose addresses are resolved once per thread. The dynamic chains —
+  `dynStack`, CONTROL handlers, callframes — are the consumer's with the
+  block's own frames on top, and `quietly`/CATCH depth are inherited as a
+  delta: Rakudo resolves `$*X` in a gather's block through whoever reifies it.
+- **Control.** A block that dies raises at the pull. A plain `last` (also
+  from a routine the block calls) ends the gather, as in Rakudo; a labelled
+  one flies on. `return` is X::ControlFlow::Return, as before.
+- **Dropping a suspended gather** puts it in a per-thread graveyard; the next
+  gather operation on the thread resumes it with `cancel` set, its `take`
+  throws StopGatherEx, the frames unwind, and LEAVE phasers stay silent (Rakudo
+  never runs them for a dropped continuation). A gather that has started is
+  thread-affine: reading it from another thread is an X::AdHoc.
+- **Unpulled is not lazy.** `.is-lazy` of a plain gather is False without a
+  pull (it used to probe, and said True for an endless one — Rakudo says
+  False); `lazy gather` and `.lazy` are True. `seqIsLazy` is that question in
+  C++: slurpies keep a truly lazy Seq and read a gather whole. List views
+  (`.values/.list/.List/.Seq/.cache/.lazy`) of a gather still producing share
+  its state and pull nothing; map/grep/skip views inherit its gather-ness.
+- **Readers of the buffer.** An unpulled gather has an empty buffer, so every
+  reader that took a gather to be filled already now reifies first: `toList`,
+  `Value::flatten`, `flatOneInto`, Bool (pulls one), the `[…]` literal, slurpy
+  binding, list smartmatch (both evaluator arms), hash coercion, destructuring
+  assignment, hyper operators, a categorize mapper's answer. A sunk gather
+  statement runs to the end. Found by a probe of 40 consumers against Rakudo
+  and by the Roast join; each regressed file pointed at one of them.
+- **B2, early:** `Z` and `X` read an unpulled operand lazily (X walks its left
+  side); `.kv/.pairs/.antipairs` of a producing gather are lazy views. A
+  subscript adverb on a lazy Array reifies up to its index first (one past it
+  for `:delete`, so the generator never continues from a hole), and a delete
+  there no longer pops trailing holes — the reified prefix is not the end.
+  Flips `S32-array/delete-adverb.t`.
+- Also: `take 1, 2` takes ONE item, the List (gather.t 15, 27); postfix `++`
+  on an undefined `Int` (or any type object the step makes an Int) answers 0
+  (integration/role-composition-vs-attribute.t); `v = v.obj()->boxed` at five
+  sites copied out of the object the assignment freed — `(gather {} but role
+  {})[0]` crashed on it.
+
+Flipped `S02-types/lazy-lists.t` (14 → 27/27), `S03-metaops/eager-hyper.t`,
+`S04-statements/gather.t`, `integration/role-composition-vs-attribute.t`.
+Gates on the rebased tree: Roast 1,289 of 1,434 against A2's 1,285, no file
+worse (catch.t times out under load on both); t/regression identical on all
+714 files plus `gather-coroutine-laziness.raku`; `t/run.raku` 1113/1113
+(`--slim` needs `rakupp_stubs` built — `--target rakupp` alone leaves it out).
+perf-guard A/B against `2251dc2e` (six interleaved rounds): every kernel within
+±3.5%, mixed signs (loopsum +1.9%, mainwhen +2–3%, strpass −2.6%, objnew
+−1.7%). Gather work, ms: list-assigning 300k takes 230 → 84; `for` over 300k
+takes 350 → 200; `.map` over one 310 → 180; an endless gather into an array
+355 → 194; nested recursive gathers depth 100: over 60 s → 0.02 s. What got
+slower: 60k two-take gathers 100 → 120 (the per-gather start), and shallow
+nesting (depth 40: 12 → 35), where every element crosses every level.
+
+Left: x86-64 and Windows are compile-checked here, not run (no Rosetta, no
+Wine); CI's linux-x86_64 and windows legs are the first execution. A full
+ASan run of the gather files and a TSan run of `start`/`hyper` are owed.
+
+Three B1 bugs found later, all fixed. Two by the module battery's own `t/`
+suites (B3 status): a gather's block starts with the redispatch stack of the
+routine that WROTE it, so a `samewith` inside it still reaches that routine's
+dispatch however late the block runs (Digest's SHA-3 is `multi Keccak(…) {
+gather for samewith … }`, and died "samewith is not in the dynamic scope of a
+dispatcher"; a late `callsame` finds no next candidate and answers Nil, as in
+Rakudo, since the dispatch that had one has returned); and an object whose
+`.iterator` hands out a gather's iterator iterated as nothing, because `for`
+and the list readers copied the iterator's still-empty buffer (IO::Glob). The
+third by seq.t: `.sink` of an unpulled gather ran none of it.
+
+### B3 status (2026-09-27)
+
+The parts that do not need a Seq to be consumed:
+
+- **`Seq.new($iterator)`** over a user's Iterator object is pulled as it is
+  read, not drained when it is made; an iterator that has said IterationEnd is
+  not asked again. The object rides on the Seq's `LazySeqState::iterObj`, so a
+  **PredictiveIterator** (now a known role) answers `.elems`/`.Numeric` with
+  its `.count-only` and `.tail` steps to the end with `.skip-one`, pulling only
+  what it returns. The Seq is flagged the way an unpulled gather is.
+- **`.squish(:as, :with)`** is produced as it is read: `:as` runs once per
+  element when the reader gets there, `:with` once per adjacent pair.
+- **`+@a` handed one Seq** binds the List of its values (in a `$` container or
+  not); a sigilless **`+a`** is always a List, a lone Seq excepted.
+- **`Buf.iterator`** iterates the elements.
+
+The first two are coroutine builds only (`RAKUPP_HAVE_CORO`), where the
+unpulled-Seq flag means what it says; the fallback keeps the eager forms
+(checked: the three files compile with `-DRAKUPP_HAVE_CORO=0`).
+
+Then **consumption**: a Seq is read once unless it is cached.
+
+- The state is a `SeqToken` (Value.h) in the cold block, so every copy of one
+  Seq shares it — `.elems` inside a routine the Seq was passed to caches the
+  caller's. A Seq gets one where it reaches the program: a method call's Seq
+  result (`seqMint`, at the method-call arm's exit, fresh unless the result
+  already carries a token of its own), a gather, and `Seq.new()` (which is a
+  Seq read already, the one `.raku` of a consumed Seq prints).
+- **Only the language's own uses consume or complain** (`seqUse`): a `for`
+  over it, `eager`, and the methods Rakudo reads a Seq with — `iterator`,
+  `list`, `List`, `eager`, `Array`, `Slip`, `join`, `Seq`, `Capture`,
+  `sink`, `map`, `grep`, `first`, `head`, `tail`, `skip`, `sort`, … (the
+  table in `seqMethodUse`, probed method by method against Rakudo: call it,
+  then iterate twice). The engine's internal reads never do.
+- **Everything else that reads a Seq caches it** — and caching can only take
+  a complaint away, so this side is deliberately broad: the methods that keep
+  its values (`cache`, `elems`, `Bool`, `Str`, `gist`, `raku`, `AT-POS`, …,
+  and any method not in the table), `$s[0]`, `@$s`, an `@`/`*@`/`+@`
+  parameter, `coerceArray` (list assignment), any operator (`applyArith`,
+  smartmatch, prefix `+`), any built-in sub, and the value helpers
+  (`truthy`, `toInt`, `toStr`, `gist`). The oracle script checked 45 uses
+  against Rakudo; every use Rakudo caches, rakupp caches.
+- Where rakupp is more lenient than Rakudo it is on purpose: list assignment
+  caches rather than consumes, hyper and reduction operators do not consume,
+  and a consumed Seq's `.Bool`/`.Str` answer rather than throw.
+- `.sink` of an unread lazy Seq runs it to the end (`(gather { … }).sink`
+  had run nothing since gathers became lazy), and of a cached one does
+  nothing; a sunk LIST view of a gather (`.list`, `.cache`) runs nothing.
+
+bug-coverage.t's three MISC subtests, each its own bug:
+
+- **Placeholders of a `for` block** belong to that block. `collectPHStmt`
+  walked into a block-form loop's body, so the enclosing block claimed its
+  `$^v` too — `gather { for <a b> { take $^v } }` made the gather's block
+  want an argument, and a routine taking nothing refused one inside it. Only
+  the modifier form, which has no block, shares them now (attribute
+  references still count for the enclosing class).
+- **A pointy `with`/`given`/`without` block leaves `$_` alone**: `with 1 ->
+  $a { .flip }` flips the outer topic, and `$_ = 7` in it assigns there. A
+  plain `else { }` still gets the tested value; a pointy `else -> $e { }`
+  does not.
+- **The sequence operator keeps Rats**: a lone Rat seed steps by
+  `.succ`/`.pred` (`1.0 ... 3` is `(1.0, 2.0, 3.0)`, not `2e0, 3e0`), and a
+  Rat step makes the Int seed it was deduced up to a Rat (`0.1, 2 ... 3` is
+  `(0.1, 2.0)`).
+
+Flipped `S32-list/squish.t`, `S32-list/seq.t` (34 of 36 → 50 of 50),
+`S06-signature/slurpy-params.t` and `6.c/MISC/bug-coverage.t`;
+`S32-list/skip.t` 53 → 54. The two tests left are Track A's, not this
+track's: tail.t 53 and skip.t 53 build an iterator with `method
+!SET-SELF(\n) { $!n := n }` and count through `$!n++`, and an attribute bound
+to the caller's container does not write through yet (`$p` stays 0).
+
+**The module battery's own test suites** were the gate that caught what Roast
+did not: the `t/` of the 40 pure-Raku dists of the tier-3 list (274 files,
+sandboxed, every battery dist on the path), base against branch. It found
+the two B1 bugs above (Digest's SHA-3, IO::Glob's `iterator.t` — an object
+whose `.iterator` hands out a gather's iterator iterated as nothing, because
+`for` and the list readers copied the iterator's still-empty buffer). With
+those fixed the branch and `dadebb7a` agree on every file. (Against A1's
+binary, URI's suite and Trap's also differed: that is A2's, and the same at
+`dadebb7a` — an attribute initialised from a readonly parameter stays
+readonly. Reported to the Track A session.)
+
+Cost: a token is two small pooled allocations per Seq a method call returns.
+A loop doing `my $s = @a.map(* + 1)` 300k times is ~4% slower for it (grep
+~3%). perf-guard on the whole branch against a build of `dadebb7a`, three
+interleaved rounds, best of each: every kernel within ±3.1% (`strscan` +3.1%,
+`multimeth` and `strpass` +2.4%, `subcall` +2.2%, `method` +1.3%; `regexloop`
+−1.4%, `loopsum` and `objnew` −1.1%), the band B1 alone was gated at. The
+check at the method-call arm's exit is inline (`seqMint`, only a list result
+goes further): with it out of line `strscan` (two method calls per iteration)
+measured 4–5% slower, though the rebuild that inlined it also moved the code,
+and this box shows ±3% from layout alone.
+
 ### Files
 
 | File | Now | Failing now | Phase |
@@ -479,6 +661,101 @@ choosing among a role's variants and `roleGroupDefault()` standing in for
 
 **Risk:** medium-high for the ecosystem, since roles are everywhere. Gate on
 the battery scan, or the stand-in listed under the rules above.
+
+### C status (2026-09-27)
+
+The smaller items first, before the concretization machinery:
+
+- **Group type checks** (`typeNameConforms`): a group's bare name conforms to
+  what its NON-parameterized member inherits and does, never to a
+  parameterized member's parent; a group of parameterized members alone
+  conforms to nothing it inherits; a curried `R[Int]` (a pun) conforms through
+  its own variant AND its group. Eight probes identical to Rakudo.
+- **Type captures** (`capturedType`): a declared type or a return type that
+  names a capture bound in scope is the type bound for this call, smiley and
+  coercion included — `my T $y`, `--> T`, `--> T:D()`. (A `"\x01D"` literal in
+  C++ is ONE hex escape; the smiley suffix is written in two parts.)
+- **`X::Role::Unimplemented::Multi`** for a stubbed multi candidate a class
+  leaves unimplemented (a plain method stub stays X::Comp::AdHoc, as in Rakudo).
+- **One `.WHY` per type:** a type's declarator Pod object is cached, so the
+  group's `.WHY` is its default candidate's (`=:=`).
+- **`is export` on a type** is recorded (`ClassDecl::isExport`), and `import`
+  binds the package's exported types LEXICALLY under their short names; class
+  composition and `R[…]` punning resolve a name through the lexical scope
+  first (`lexicalTypeName`), so an imported role group shadows a `class` of
+  the same name declared elsewhere in the file.
+- **A CALL-ME mixed into a routine** (`$r does role { method CALL-ME … }`,
+  from a trait) is what calling the routine runs.
+
+Then the first piece of the machinery, **a concretization per `does`**:
+
+- `concretizeRole` (Interpreter.cpp, beside `bindRoleParamsInto`) copies the
+  role variant and `recloseRoleMethods` re-closes each of its methods and
+  multi candidates over a scope binding that parameterization's arguments. The
+  copy is marked `Callable::roleConcrete`, and three places read it: the
+  invocation skips the per-call injection of the class's
+  `roleParamBindings` (which holds every `does` of a role at once, first one
+  winning); `scoreCandidate` checks a `T $t` parameter against the type the
+  candidate's closure binds, ranked as that nominal type; and composition keys
+  a candidate's signature by the bound type, so R[Str]'s and R[Int]'s
+  `multi method foo(T $t)` are two candidates rather than one.
+- A class gets one per `does`: the k-th `does R` takes the k-th `R[…]`, in the
+  parent slot and among the other roles alike (the variant is picked by that
+  occurrence's own arguments too). The same parameterization twice is one
+  copy. A non-parametric role concretizes what it composes; a PARAMETRIC role
+  still shares, since its arguments may name its own unbound parameters. Puns
+  (`R[Int].new`) re-close their methods the same way.
+- Two parameterizations providing the same plain method are a conflict the
+  class must resolve (`X::Role::Unresolved::Method`, providers named
+  `R[Int], R[Str]`); multis merge.
+- A qualified call `self.R::m` on a parametric R finds the parameterization
+  the invocant's type composed (`qualifiedConcretization`): nearest class
+  first, its own roles before the roles they do; two at one level throw
+  "Ambiguous concretization lookup for R", the message qualified.t asserts.
+
+Before this, even ONE `does R[Int]` could not dispatch `multi method foo(T $t)`
+(the dispatcher resolved T in the caller's scope and cached it by name).
+
+Flipped `S06-signature/type-capture.t`, `S14-roles/parameterized-basic.t`,
+`S14-roles/typecheck.t`, `S26-documentation/why-both.t`,
+`S11-modules/export.t`, `S12-methods/fallback.t`,
+`S14-roles/parameterized-type.t` (and
+`integration/role-composition-vs-attribute.t`, which was a postfix `++` on an
+undefined Int, not a role at all); `S12-methods/qualified.t` 5 → 6 of 7.
+
+Gates on the whole branch (B1, B3 and C), against a build of `dadebb7a`
+itself (not an older binary — see below): Roast 1,301 of 1,434 against 1,286
+(the MRO work below flipped `mro-6c.t` too: the run after it counted 1,303,
+of which one is `S17-channel/basic.t` passing its race),
+assertions without skip/todo 99.88% against 99.82%. No file is worse but
+`S17-channel/basic.t` 29 → 28, whose `.Supply.throttle: 3, { $c.send: $_ }`
+sends in whatever order three concurrent blocks finish: measured alone, 40
+rounds, the base loses the order 3–5 times and the branch 0–1, so it is the
+race and not the branch. (`S17-supply/syntax.t` timed out in the base's run;
+alone, both builds stop at the same test 80.) `S06-multi/type-based.t` 65 → 66
+on the way. t/regression identical on every file but the eight new ones
+(`gather-coroutine-laziness`, `gather-late-block`, `mro-puns-and-hidden`,
+`role-concretization`, `seq-pulled-on-demand`, `seq-read-once`,
+`sequence-rat-seeds`, `with-pointy-topic`, each failing at the base); `t/run.raku` 1120/1120.
+Gate 6's stand-in: `use` of the 46 battery module files that declare a
+parametric role, sandboxed, every battery dist on the path — 21 load against
+19 at the base, none lost — and the battery dists' own suites (B3 status).
+
+The `build/base/rakupp` this worktree started with turned out to be A1's
+(`2251dc2e`), not the rebased base; every figure above was re-taken against a
+fresh build of `dadebb7a` from `git archive`.
+
+**The reported MRO** (`reportedMro`, MethodCallPart2.cpp): a role a class
+INHERITS — `is R`, `hides R` — stands in `.^mro` as its pun, followed by the
+classes the role inherits (`class C3 is R3a is R3b` with `role R3a is C2` is
+C3 R3a C2 C1 R3b), while a role the class DOES stays composed and out of it.
+`.^mro_unhidden` leaves out a class or role declared `is hidden` and whatever
+a class in the MRO `hides`, itself or through a role it composes. Only these
+two answers use it: construction keeps `c3ClassMro`, which has no pun to
+build. Flipped `6.c/S12-class/mro-6c.t`.
+
+Found on the way, not fixed: a role NAMED `Q` loses `Q[Int]` to the `Q[…]`
+quote form (Rakudo lets the declared type win).
 
 ### Files
 

@@ -2960,6 +2960,7 @@ static Value slurpyValues(const ValueList& vs) {
 }
 
 ValueList toList(const Value& v) {
+    forceLazy(v);   // an unpulled gather lists its ELEMENTS
     if (v.t == VT::Array && v.arr()) return *v.arr();
     if (v.t == VT::Range) return v.flatten();
     // a Blob/Buf lists as its ELEMENTS (`$blob.rotor(3, :partial)` in Base64;
@@ -6470,18 +6471,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return w;
         }
         if (inv.t == VT::Type) {
+            // A type's declarator is ONE object, however it is reached: the
+            // group's `.WHY` is its default candidate's (`Boxer.WHY =:=
+            // Boxer.^candidates[0].WHY`, S26-documentation/why-both.t), and
+            // asking twice gives the same thing twice. Kept per ClassInfo, and
+            // only while that type's doc is the one it was built from.
+            static std::mutex whyMu;
+            static std::unordered_map<const ClassInfo*, std::pair<std::string, Value>> whyOfType;
+            auto typeWhy = [&](ClassInfo* ci) -> Value {
+                std::lock_guard<std::mutex> lk(whyMu);
+                auto hit = whyOfType.find(ci);
+                if (hit != whyOfType.end() && hit->second.first == ci->pod) return hit->second.second;
+                Value d = declarator(ci->pod, ci->podTrail, ci->decl ? ci->decl->line : 0);
+                whyOfType[ci] = {ci->pod, d};
+                return d;
+            };
             // a role-group CANDIDATE is documented by its own declaration, and
             // the group by its default candidate's
             if (inv.ext()) {
                 auto rc = std::static_pointer_cast<RoleCandidateRef>(inv.ext());
-                if (rc->ci && !rc->ci->pod.empty())
-                    return declarator(rc->ci->pod, rc->ci->podTrail, rc->ci->decl ? rc->ci->decl->line : 0);
+                if (rc->ci && !rc->ci->pod.empty()) return typeWhy(rc->ci.get());
             }
             auto it = classes_.find(inv.s);
             ClassInfo* dc = it != classes_.end() && it->second && it->second->isRole ? it->second->roleGroupDefault()
                           : it != classes_.end() ? it->second.get() : nullptr;
-            if (dc && !dc->pod.empty())
-                return declarator(dc->pod, dc->podTrail, dc->decl ? dc->decl->line : 0);
+            if (dc && !dc->pod.empty()) return typeWhy(dc);
             auto pi = pkgPod_.find(inv.s); // a module/package keeps its own
             if (pi != pkgPod_.end()) {
                 auto pt = pkgPodTrail_.find(inv.s);
@@ -15653,6 +15667,15 @@ void Interpreter::registerBuiltins() {
         return v;
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() > 1) {
+            // `take 1, 2, 3` takes ONE item, the List of its arguments —
+            // `(gather { take 1, 2; take 3, 4 }).elems` is 2. Only a lone Slip
+            // argument splices (see gatherTake); a slip written among other
+            // arguments has already been flattened into the List.
+            Value v = Value::array(a); v.isList = true;
+            ValueList one{v};
+            return I.gatherTake(one, v);
+        }
         Value v = a.size() == 1 ? a[0] : Value::array(a);
         return I.gatherTake(a, v);
     };
@@ -18738,6 +18761,8 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a) out.arr()->push_back(v); return out;
     };
     B["eager"] = [](Interpreter& I, ValueList& a) -> Value {
+        // `eager` reads a Seq (SeqToken)
+        if (a.size() == 1 && !a[0].itemized) I.seqUse(a[0], Interpreter::SeqUse::Iterate);
         // `eager $x` is `$x.eager`: it REIFIES, so a Range comes back as its
         // elements and a lazy Seq as a list. Handing the argument straight back
         // left `eager (^10+5)/2` as the Range `2.5..^7.5` where Rakudo gives

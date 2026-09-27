@@ -54,6 +54,10 @@ ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.
 ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
 MakeTypedExFn g_makeTypedEx = nullptr; // installed by Interpreter.cpp (see Value.h)
 EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
+// Pull a lazy sequence up to n elements (materializeLazy), for the one reader
+// here that needs a bounded number: Bool, which asks for a first element.
+// Installed by Interpreter.cpp beside g_forceLazy.
+void (*g_pullLazy)(const Value&, size_t) = nullptr;
 DateFormatFn g_dateFormat = nullptr; // installed by Interpreter.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
@@ -120,6 +124,7 @@ bool Value::truthy() const {
         case VT::Rat:  return ratN() && !ratN()->isZero();
         case VT::Str:  return !s.empty(); // Raku: any non-empty string is true (incl. "0")
         case VT::Array:
+            seqTouch();   // a Seq's Bool caches it (SeqToken)
             // a Junction collapses by its kind — since comparisons autothread
             // into PRESERVED junctions, every truthiness site must collapse
             if (arr() && (enumName == "any" || enumName == "all" ||
@@ -134,6 +139,8 @@ bool Value::truthy() const {
             // asks whether there is a first element and an endless source always
             // has one (sheet LA-27). Ordering it this way keeps `if @a` free.
             if (arr() && !arr()->empty()) return true;
+            // …and an unpulled one (a gather) is asked for that first element
+            if (arr() && ext() && g_pullLazy) { g_pullLazy(*this, 1); if (!arr()->empty()) return true; }
             return endlessLazy(*this);
         case VT::Hash:
             // A Proc / Proc::Async is true iff it exited successfully: exit code 0
@@ -263,7 +270,7 @@ long long Value::toInt() const {
             long long v = std::strtoll(p0, &end, 10);
             return (end == p0 || errno == ERANGE) ? 0 : v;
         }
-        case VT::Array: return arr() ? (long long)arr()->size() : 0;
+        case VT::Array: seqTouch(); return arr() ? (long long)arr()->size() : 0;
         case VT::Hash:
             // A tr/// StrDistance numifies to the substitution count.
             if (hash() && hashKind == "StrDistance") {
@@ -574,6 +581,7 @@ std::string Value::toStr() const {
             return out2;
         }
         case VT::Array: {
+            seqTouch();   // …as does its Str (SeqToken)
             ReprDepthGuard g; if (g.tooDeep()) return "...";
             ReprCycleGuard cg(arr()); if (cg.cyc) return "...";
             // a Uni / NFC / NFD / NFKC / NFKD stringifies back to its TEXT, not to
@@ -785,6 +793,7 @@ std::string Value::gist() const {
         // pattern text (which is what .Str answers, and what the engine consumes)
         case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;
         case VT::Array: {
+            seqTouch();   // …and its gist (SeqToken)
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
             ReprCycleGuard cg(arr()); if (cg.cyc) return isList ? "(...)" : "[...]";
             // a Capture gists as the literal that makes it, `\(1, :a(2))`
@@ -1181,6 +1190,7 @@ StrRangeElemsFn g_strRangeElems = nullptr;
 
 ValueList Value::flatten() const {
     ValueList out;
+    forceLazy(*this);   // an unpulled gather flattens into its ELEMENTS
     if (t == VT::Array && arr()) {
         for (auto& v : *arr()) {
             if (v.t == VT::Array || v.t == VT::Range) {
