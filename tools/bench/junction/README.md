@@ -18,7 +18,7 @@ alone:
 git worktree add /tmp/jbefore <commit>
 cmake -S /tmp/jbefore -B /tmp/jbefore/build -DCMAKE_BUILD_TYPE=Release
 make -C /tmp/jbefore/build -j6 rakupp
-raku tools/bench/junction/drive.raku before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=rakudo
+rakupp tools/bench/junction/drive.raku before=/tmp/jbefore/build/rakupp after=./build/rakupp rakudo=rakudo
 git worktree remove --force /tmp/jbefore
 ```
 
