@@ -2785,15 +2785,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     int pfd = ::open(pt0->second.toStr().c_str(), O_RDONLY);
                     if (pfd >= 0) {
                         bool parked = gilPark();
+                        bool aborted = false;
                         for (;;) {
                             struct flock q{};
                             q.l_type = shared ? F_RDLCK : F_WRLCK;
                             q.l_whence = SEEK_SET; q.l_start = 0; q.l_len = 0;
                             if (::fcntl(pfd, F_GETLK, &q) != 0 || q.l_type == F_UNLCK) break;
+                            // a worker whose program has ended stops waiting (see below)
+                            if (t_isWorker && workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
                             ::usleep(50000);
                         }
                         gilUnpark(parked);
                         ::close(pfd);
+                        if (aborted) throw WorkerAbortEx{};
                     }
                 }
                 return lockFail("Bad file descriptor");
@@ -2808,10 +2812,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             fl.l_whence = SEEK_SET; fl.l_start = 0; fl.l_len = 0;
             int rc;
             if (nonBlocking) rc = ::fcntl(fd, F_SETLK, &fl);
-            else {
+            else if (!t_isWorker) {
                 bool parked = gilPark();
                 do { rc = ::fcntl(fd, F_SETLKW, &fl); } while (rc != 0 && errno == EINTR);
                 gilUnpark(parked);
+            }
+            else {
+                // A WORKER polls instead, in 10 ms slices, so it notices shutdown
+                // the way a sliced sleep does (sleepYield). Parked in F_SETLKW it
+                // could not see workerAbort_, and a program whose mainline ended
+                // while a `start` waited on a lock sat out drainWorkers' whole 2 s
+                // grace, where Rakudo exits at once: S32-io/lock.t ends eighteen
+                // children that way, and took 57 s for it — 21 s without, 25 s
+                // on Rakudo. The mainline keeps F_SETLKW — nothing aborts it —
+                // and with it the kernel's queue of waiters and its EDEADLK; a
+                // polling worker has neither.
+                bool parked = gilPark();
+                bool aborted = false;
+                int err = 0;
+                for (;;) {
+                    rc = ::fcntl(fd, F_SETLK, &fl);
+                    if (rc == 0) break;
+                    err = errno;
+                    if (err != EACCES && err != EAGAIN && err != EINTR) break;
+                    if (workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
+                    ::usleep(10000);
+                }
+                gilUnpark(parked);
+                if (aborted) { ::close(fd); throw WorkerAbortEx{}; }
+                errno = err;
             }
             if (rc != 0) {
                 std::string why = std::strerror(errno);
