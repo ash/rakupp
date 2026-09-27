@@ -569,9 +569,17 @@ function feed(text, cls) {
 let worker = null, ready = false, running = false, pendingRun = false, spinTimer = null;
 let loadTimer = null, loadTries = 0;
 const LOAD_TIMEOUT = 12000, MAX_LOAD_TRIES = 2;
-const RECURSION_MSG = "Recursion too deep for the browser (a few hundred levels). This is a"
-  + " WebAssembly stack limit, not a Raku one — the same code runs natively."
+// Shown when even the main thread's stack runs out (see "the deeper stack" below).
+const RECURSION_MSG = "Recursion too deep for the browser, even on the page's main thread."
+  + " This is a WebAssembly stack limit, not a Raku one — the same code runs natively."
   + " Rewrite it iteratively, or run it with native rakupp.";
+// The main-thread fallback ("the deeper stack", below the run/stop functions):
+let lastSrc = '', lastStdin = '';      // what the last run ran
+const needsMain = new Set();           // src + stdin of programs that overflowed the worker
+let mainEngine = null;                 // Promise of the main-thread module
+let mainSink = null;                   // where its output goes during a run
+let mainToken = 0;                     // Stop and restart bump it to cancel a pending run
+const isDeep = e => /call stack|too much recursion/i.test(String(e));   // as worker.js
 
 // The single Run button doubles as Stop while a program runs. After 300 ms a
 // spinner joins the "Stop" label so long runs visibly show progress (quick runs
@@ -633,8 +641,9 @@ function createWorker() {
         setRunning(false);
         break;
       case 'runerror':
-        pushText("\n" + (m.deep ? RECURSION_MSG : "[host error] " + m.message) + "\n", "err");
-        statusEl.textContent = m.deep ? "recursion limit" : "host error";
+        if (m.deep) { runOnMain(lastSrc, lastStdin); break; }   // the deeper stack
+        pushText("\n[host error] " + m.message + "\n", "err");
+        statusEl.textContent = "host error";
         setRunning(false);
         break;
       case 'loaderror':
@@ -668,15 +677,18 @@ function killAndRecreate() {
   createWorker();
 }
 function startRun() {
+  lastSrc = codeEl.value; lastStdin = stdinEl.value;
   clearScreen();
   statusEl.textContent = "running…";
   setRunning(true);
-  worker.postMessage({ type: 'run', src: codeEl.value, stdin: stdinEl.value });
+  if (needsMain.has(lastSrc + '\0' + lastStdin)) { runOnMain(lastSrc, lastStdin); return; }
+  worker.postMessage({ type: 'run', src: lastSrc, stdin: lastStdin });
 }
 
 function run() {
   if (running) {                 // Run during a run = restart with the current source
     pendingRun = true;
+    mainToken++;                 // …including one still waiting to start on the main thread
     killAndRecreate();
     setRunning(false);
     statusEl.textContent = "restarting…";
@@ -690,10 +702,85 @@ function run() {
 function stop() {
   if (!running) return;
   pendingRun = false;
+  mainToken++;                   // a main-thread run can only be stopped before it starts
   killAndRecreate();
   setRunning(false);
   pushText("\n— stopped —", "meta");
   statusEl.textContent = "stopped";
+}
+
+// ---- the deeper stack: the page's main thread ----
+// A Web Worker gets a far smaller stack than the page's own main thread, and in
+// Safari the gap decides whether a program runs at all: a WebKit worker thread
+// has 512 KB, its main thread about 8 MB, and JavaScriptCore's baseline
+// WebAssembly tiers spend around a kilobyte on every frame. Each level of Raku
+// recursion, and each nested rule of a grammar, is several frames — measured in
+// WebKit, a worker holds 32 levels of plain Raku recursion and the main thread
+// 419. The language showcases parse their program with a Raku grammar, and in a
+// Safari worker that overflowed before they printed a line.
+//
+// So a run that dies of stack overflow in the worker is run again here, from the
+// top. The page is frozen while it runs — no spinner, no streaming, nothing to
+// press Stop with — which is why only a run that has already overflowed the
+// worker comes here. A program that needed it once comes straight here the next
+// time. (Its state is declared up with the worker's.)
+function loadMainEngine() {
+  if (!mainEngine) {
+    mainEngine = new Promise((resolve, reject) => {
+      const make = () => RakuJS({
+        print:    t => mainSink ? mainSink(t + '\n', '')    : console.log(t),
+        printErr: t => mainSink ? mainSink(t + '\n', 'err') : console.warn(t),
+      }).then(resolve, reject);
+      if (window.RakuJS) { make(); return; }
+      const s = document.createElement('script');
+      s.src = 'rakujs.js';
+      s.onload = make;
+      s.onerror = () => reject(new Error("could not load rakujs.js"));
+      document.head.appendChild(s);
+    });
+    mainEngine.catch(() => { mainEngine = null; });   // a later run may try again
+  }
+  return mainEngine;
+}
+
+async function runOnMain(src, stdin) {
+  const token = ++mainToken;
+  needsMain.add(src + '\0' + stdin);
+  clearScreen();                       // what the worker printed before it overflowed
+  statusEl.textContent = "running on the main thread…";
+  let m;
+  try { m = await loadMainEngine(); }
+  catch (e) {
+    if (token !== mainToken) return;
+    pushText("Could not load the interpreter on the main thread — " + e.message + "\n", "err");
+    statusEl.textContent = "load failed";
+    setRunning(false);
+    return;
+  }
+  // Let the status paint before the page freezes. A timer, not rAF, for the
+  // reason scheduleRender gives.
+  await new Promise(r => setTimeout(r, 40));
+  if (token !== mainToken) return;     // stopped or restarted meanwhile
+  const out = [];
+  let outChars = 0;
+  mainSink = (t, c) => { if (outChars <= OUT_CAP) { outChars += t.length; out.push([t, c]); } };
+  const t0 = performance.now();
+  let rc, err = null;
+  try { rc = m.ccall('rakupp_run', 'number', ['string', 'string'], [src, stdin]); }
+  catch (e) { err = e; mainEngine = null; }   // the instance is in an unknown state
+  finally { mainSink = null; }
+  const ms = Math.round(performance.now() - t0);
+  clearScreen();
+  for (const [t, c] of out) feed(t, c);
+  if (err) {
+    pushText("\n" + (isDeep(err) ? RECURSION_MSG : "[host error] " + err) + "\n", "err");
+    statusEl.textContent = isDeep(err) ? "recursion limit" : "host error";
+  } else {
+    if (!screen.length) pushText(" (no output)\n", "meta");
+    pushText(`\n— exit ${rc} · ${ms} ms · main thread —`, "meta");
+    statusEl.textContent = `exit code ${rc} · ${ms} ms · main thread`;
+  }
+  setRunning(false);
 }
 
 // Click the button to run; while running it shows Stop and clicking halts.

@@ -71,7 +71,9 @@ It exists because of a real escape: the grammar memo reaper started a
   treated as a redraw, so `life` animates frame by frame), and **Stop** a
   runaway program by terminating the worker. Rendering is coalesced on a timer,
   not `requestAnimationFrame` — which pauses in background tabs and would drop
-  output there.
+  output there. A run that overflows the worker's stack is run again on the
+  page's main thread, whose stack is deeper (see the recursion note under
+  limitations).
 - **No big-stack thread.** The native CLI runs on a 1 GiB pthread stack via
   `rakuppRunBigStack()`. WASM is single-threaded, so we call `rakuppRun()`
   directly. See the recursion note under limitations.
@@ -162,18 +164,46 @@ download (cached thereafter).
 
 ## Known limitations (single-threaded browser build)
 
-- **Deep recursion (a few hundred Raku levels, ~200) hits a hard browser
-  limit.** Under `-fexceptions`, C++ recursion is routed through JS exception
-  trampolines and so consumes the *JS engine* stack, which a page cannot grow
-  (unlike the native build's 1 GiB thread stack). The tree-walker nests many
-  calls per Raku level, so recursion caps around ~200 levels — beyond that the
-  browser raises a `RangeError`, which the playground catches, reports as a
-  recursion-limit message, and recovers from. This is a browser constraint, not
-  a Raku one: the same program runs natively
+- **Recursion depth is set by the browser's stack, and a worker's is the
+  shallow one.** Each Raku call is several C++ frames (`exec` → `eval` →
+  `evalCall` → `callCallable` → `callCallableRaw`), each rule a grammar descends
+  into adds a handful more in the matcher, and all of them live on the
+  browser's own stack, which a page cannot grow (unlike the native build's
+  1 GiB thread stack). `-sSTACK_SIZE` is linear memory, holding only what C++
+  takes the address of, so it does **not** help — verified. How deep a program
+  gets depends on the browser and the thread. For
+  `sub f($n) { $n == 0 ?? 0 !! 1 + f($n - 1) }` on the v4.0.1 engine:
+
+  | | Web Worker | Page's main thread |
+  |---|---|---|
+  | Chrome 152 | 59 | 115 |
+  | Safari 27 (WebKit) | 32 | 419 |
+
+  Safari's worker is the shallow extreme because two costs multiply. WebKit
+  gives a worker thread a sixteenth of its main thread's stack (a trivial
+  JavaScript function recurses 4,195 deep in a worker, 66,696 on the main
+  thread). And JavaScriptCore's baseline wasm tier sizes every frame at about a
+  kilobyte whatever the function, because it reserves a 16-byte spill slot for
+  every allocatable register: `exec` takes 1,472 bytes, `eval` 1,296. Its
+  optimizing tier, with frames a third that size, never compiles a function
+  whose body exceeds 100,000 bytes, and under `-fexceptions` `eval` (272 KB),
+  `exec` (180 KB) and `methodCallPart2` (540 KB) all do. In V8 the larger share
+  is the `-fexceptions` trampolines: every throwing call leaves wasm through a
+  JavaScript `invoke_*` function and comes back.
+
+  So the playground and the embed catch the overflow (a `RangeError` in Chrome
+  and Safari, `InternalError: too much recursion` in Firefox) and **run the
+  program again, from the start, on the page's main thread**, on an instance of
+  its own. Only when that overflows too does the page show the recursion-limit
+  message. The page is frozen for that run — no spinner, no streaming, and Stop
+  cannot interrupt it — so only an explicit run that has already overflowed the
+  worker takes that path, never a live one, and a program that needed it once
+  goes straight there the next time. In Safari the language showcases take it:
+  each parses its program with a Raku grammar, which overflows a Safari worker
+  before the program prints a line. This is a browser constraint, not a Raku
+  one: the same program runs natively
   ([docs/guide/MEMORY.md](../docs/guide/MEMORY.md) compares the measured
-  recursion budgets of all three modes). Raising it would require rewriting the
-  interpreter onto an explicit heap stack (a `src/` change, out of scope here).
-  `-sSTACK_SIZE` does **not** help — verified. Iterative/loop-based programs are
+  recursion budgets of all three modes). Iterative/loop-based programs are
   unaffected.
 - **`start` / `Promise` concurrency** relies on real threads; it isn't available
   in this single-threaded build (a threaded build needs cross-origin-isolation

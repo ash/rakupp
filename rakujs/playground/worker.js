@@ -48,13 +48,16 @@ self.onmessage = async (e) => {
   try {
     rc = Module.ccall('rakupp_run', 'number', ['string', 'string'], [e.data.src, e.data.stdin || '']);
   } catch (err) {
-    // A deep-recursion overflow (RangeError) or abort leaves the instance in an
-    // unknown state — drop it and rebuild a clean one for the next run.
+    // A deep-recursion overflow or abort leaves the instance in an unknown
+    // state — drop it and rebuild a clean one for the next run. `deep` is the
+    // stack overflow in every browser's words: Chrome and Safari throw a
+    // RangeError ("Maximum call stack size exceeded"), Firefox an InternalError
+    // ("too much recursion"). The page re-runs a deep one on its main thread.
     Module = null;
     ready = makeModule();
     post('runerror', {
       message: String(err),
-      deep: err instanceof RangeError || /call stack/i.test(String(err)),
+      deep: /call stack|too much recursion/i.test(String(err)),
     });
     return;
   } finally {

@@ -23,7 +23,7 @@ near the recursion limit actually occupies the full reservation.
 |---|---|---|---|
 | interpreter | 1 GiB main + 256 MiB per worker | 2.7 MB | ~950 MB |
 | `--exe` native | 1 GiB main + 256 MiB per worker | 5 MB | ~1.07 GB |
-| wasm (raku.online) | 16 MiB stack + 32 MiB heap, heap growable | n/a (per-tab) | bounded by the JS engine, not the wasm stack |
+| wasm (raku.online) | 16 MiB stack + 32 MiB heap, heap growable | n/a (per-tab) | bounded by the browser's stack, not the wasm stack |
 
 So: you do not *need* a gigabyte of RAM to run rakupp — you need a gigabyte
 of *address space* (a non-issue on 64-bit hosts), and as much RAM as your
@@ -43,13 +43,18 @@ macOS, 256 MiB `/STACK` on Windows — as belt-and-suspenders; execution does
 not rely on them anymore.) Workers are the same 256 MiB threads, provided by
 the linked runtime.
 
-**Wasm.** The Emscripten build ships `-fexceptions`, which routes every
-throwing call through a JavaScript `invoke_*` trampoline — so recursion
-consumes the *JS engine's* stack, which a page cannot grow. The wasm-side
-`STACK_SIZE` (16 MiB) and `INITIAL_MEMORY` (32 MiB, growable) are kept small
-deliberately: raising them buys no recursion depth, only a fatter per-tab
-footprint. See rakujs/build.sh for why `-fwasm-exceptions` is not usable yet
-(Wasm-EH mismatches the interpreter's by-value control-flow catches).
+**Wasm.** Every C++ frame of the interpreter lives on the *browser's* stack,
+which a page cannot grow, and the Emscripten build ships `-fexceptions`,
+which adds a JavaScript `invoke_*` trampoline to every throwing call. How
+deep that goes depends on the browser and on the thread: a Web Worker gets
+a fraction of what the page's main thread gets, and Safari's JavaScriptCore
+spends about a kilobyte on each wasm frame in its baseline tier. The
+playground and the embed run a program that overflows the worker again on
+the main thread (rakujs/INTERNALS.md). The wasm-side `STACK_SIZE` (16 MiB)
+and `INITIAL_MEMORY` (32 MiB, growable) are kept small deliberately: raising
+them buys no recursion depth, only a fatter per-tab footprint. See
+rakujs/build.sh for why `-fwasm-exceptions` is not usable yet (Wasm-EH
+mismatches the interpreter's by-value control-flow catches).
 
 ## Recursion depth in practice
 
@@ -59,7 +64,8 @@ footprint. See rakujs/build.sh for why `-fwasm-exceptions` is not usable yet
 | interpreter, inside `start` | ~12,700 levels | ~20 KB | catchable `X::Recursion` |
 | `--exe`, interpreter-dispatched calls | as interpreter | ~21 KB | catchable `X::Recursion` |
 | `--exe`, direct native sub calls | ~1,270,000 levels | ~0.83 KB | **process death (SIGBUS), not catchable** |
-| wasm | ~200 levels | JS-engine frames | host `RangeError`, caught by the playground |
+| wasm, Web Worker | 58 (Chrome 152), 32 (Safari 27) | browser-engine frames | host `RangeError`; the playground re-runs the program on the main thread |
+| wasm, page's main thread | 115 (Chrome 152), 419 (Safari 27) | browser-engine frames | host `RangeError`, reported by the playground |
 
 The interpreter's guard (`DepthGuard`, src/Interpreter.cpp) fires while
 about **2 MiB of headroom** remains on the current thread's stack, so the
@@ -123,7 +129,7 @@ runtime, so it stays flat as the program grows.
   thousands of levels (but overflow there is fatal, not catchable).
 - Recursion inside `start` blocks has about a quarter of the mainline
   budget (256 MiB vs 1 GiB).
-- On the wasm playground, treat recursion beyond ~150 levels as
-  non-portable.
+- On the wasm playground, treat recursion beyond ~100 levels as
+  non-portable, and beyond ~30 as a main-thread run in Safari.
 - 32-bit hosts are not supported: the address-space reservations alone
   exceed a 32-bit process.

@@ -94,8 +94,10 @@ instead. The interpreter's own recursion guard measures the real stack and
 throws `X::Recursion` before it overflows, so this is safe rather than merely
 lucky.
 
-The honest consequence is a much lower ceiling — **a few hundred Raku levels,
-around 200** — and the reason is the next section.
+The honest consequence is a much lower ceiling, and the browser sets it rather
+than the build. A plain recursive sub reaches **58 levels in a Chrome Web Worker
+and 115 on Chrome's main thread; in Safari, 32 and 419**. The next section is
+most of the reason in Chrome; the worker section below is the reason in Safari.
 
 ## Exceptions: `-fexceptions`, not `-fwasm-exceptions`
 
@@ -111,9 +113,10 @@ catch, so `last`, `next`, `given` and `when` escape to `std::terminate` and the
 module traps with `RuntimeError: unreachable`. That was verified, not assumed.
 
 So the build ships `-fexceptions`: JavaScript-based exception handling, which
-handles them correctly. The cost is exactly the recursion ceiling above — under
-`-fexceptions` every throwing call is routed through a JavaScript trampoline and
-consumes the **JavaScript engine's** stack, which a page cannot grow.
+handles them correctly. The cost is recursion depth — under `-fexceptions` every
+throwing call is routed through a JavaScript trampoline and consumes the
+**JavaScript engine's** stack, which a page cannot grow. In V8 those trampolines
+are most of what a Raku level costs.
 
 `-sSTACK_SIZE` does not help, and that was verified too. So was something less
 obvious: `-Oz` beats `-O2` here on *both* axes — smaller **and** deeper, 206
@@ -156,9 +159,11 @@ end. How that actually reaches the page is the next section.
 **A runaway program can be stopped**, by terminating the worker. There is no
 other way to interrupt a synchronous call.
 
-**A failure is recoverable.** A `RangeError` from deep recursion, or an `exit`
+**A failure is recoverable.** A stack overflow from deep recursion, or an `exit`
 in user code, leaves the module instance in an unknown state, so the worker
-throws it away and builds a clean one for the next run:
+throws it away and builds a clean one for the next run. The overflow has a name
+in every browser — a `RangeError` in Chrome and Safari, an `InternalError: too
+much recursion` in Firefox — and the worker tells the page which it was:
 
 ```js
 // rakujs/playground/worker.js
@@ -166,10 +171,23 @@ catch (err) {
   Module = null;
   ready = makeModule();
   post('runerror', { message: String(err),
-                     deep: err instanceof RangeError
-                           || /call stack/i.test(String(err)) });
+                     deep: /call stack|too much recursion/i.test(String(err)) });
 }
 ```
+
+**A stack overflow gets a second try, on the main thread.** A worker's stack is
+a fraction of the page's, and in Safari the fraction decides whether a program
+runs at all. WebKit gives a worker thread a sixteenth of its main thread's
+stack, and JavaScriptCore's baseline WebAssembly tier spends about a kilobyte on
+every frame, whatever the function: it reserves a 16-byte spill slot for every
+register it may allocate. A grammar parse descends a handful of frames for every
+rule, so the language showcases, which parse their program with a Raku grammar,
+overflow a Safari worker before they print a line. The page therefore runs an
+overflowed program again, from the start, on its own main thread, on an engine
+instance of its own. It is frozen for that run — no spinner, no streaming, no
+Stop — which is why only an explicit run that has already overflowed the worker
+takes that path. Only when the main thread overflows too does the page say the
+recursion is too deep.
 
 The `inRun` flag is a small thing worth noticing: outside a run, `print` is
 Emscripten's own load-time diagnostics, which belong in the devtools console
@@ -507,15 +525,16 @@ Nothing is sent anywhere. The program runs in the visitor's browser.
 
 | | |
 |---|---|
-| **deep recursion** | around 200 Raku levels, then a `RangeError` the page reports as a recursion-limit message and recovers from |
+| **deep recursion** | 58 Raku levels in a Chrome worker, 32 in a Safari one; an overflowed run goes again on the page's main thread (115 in Chrome, 419 in Safari), and past that the page reports a recursion-limit message and recovers |
 | **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 38) |
 | **sockets** | not available in the browser sandbox |
 | **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 36) |
 | **`--exe` and the code generator** | irrelevant: this ships the interpreter, not the transpiler |
 | **`exit`** | aborts the module instance; the worker rebuilds a fresh one |
 
-The recursion limit is the one users actually meet, and the message says what it
-is: a WebAssembly stack limit, not a Raku one. The same program runs natively.
+The recursion limit is the one users actually meet — in Safari even the
+language showcases meet the worker's — and the message says what it is: a
+WebAssembly stack limit, not a Raku one. The same program runs natively.
 Lifting it would mean rewriting the tree walker onto an explicit heap stack —
 a change to `src/`, and a large one.
 

@@ -114,15 +114,19 @@ Run those with native `rakupp`. See
 [INTERNALS.md](INTERNALS.md#known-limitations-single-threaded-browser-build).
 
 To regenerate after adding an example, re-run `build.sh` (or just `rakupp
-gen-examples.raku`). Deep-recursion examples are unaffected by the ~200
-recursion cap; all shipped examples stay well under it.
+gen-examples.raku`). The plain examples fit a Web Worker's stack in Chrome and
+in Safari.
 
 The dropdown also carries **language showcases** — whole interpreters (Lisp,
 Forth, JS/TS, Perl, Python) from [`../showcase/`](../showcase), each running a
 sample program in the browser. A Python program interpreted by a Raku program
 interpreted by a C++ interpreter compiled to WebAssembly, in a fraction of a
 second: [**Interpreters all the way down**](STACKED-INTERPRETERS.md) explains
-how that stack works and why it's fast.
+how that stack works and why it's fast. Most of them are too deep for a Safari
+worker's stack, so in Safari they overflow the worker and run again on the
+page's main thread — the status line then ends in "main thread", and the page
+does not respond until the run is over
+([INTERNALS.md](INTERNALS.md#known-limitations-single-threaded-browser-build)).
 
 ## Files
 
@@ -157,8 +161,10 @@ reaches IndexedDB, the network or the server that served the page.
 instance and reuses it, so a file written by one **Run** is still there for the
 next **Run** in the same tab. It is gone whenever the instance is replaced: a
 page reload, **Stop**, pressing **Run** during a run, `exit` in the program, a
-deep-recursion `RangeError`, or the load-stuck retry. This is scratch space for
-a program that wants to write a file and read it back — not storage.
+deep-recursion `RangeError`, or the load-stuck retry. A program the page runs on
+its main thread (above) has an instance, and so a tree, of its own. This is
+scratch space for a program that wants to write a file and read it back — not
+storage.
 
 ## How the page is put together
 

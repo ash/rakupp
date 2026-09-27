@@ -89,9 +89,13 @@ Nothing in the stack is unusual, and that is rather the point:
 Two constraints fall directly out of the layering:
 
 - **Recursion depth.** Each level of recursion in the guest language costs many
-  C++ stack frames inside Raku++, and a browser caps the WebAssembly call stack
-  at a few hundred frames. So a naive recursive `fib` in the guest language can
-  overflow even at shallow depth — which is why the recursion-heavy samples
+  C++ stack frames inside Raku++, and so does each rule the Raku grammar
+  descends into while it parses the guest program. They all live on the
+  browser's own stack, which is shallowest in a Web Worker: in Safari, most of
+  the showcases overflow the worker before their program prints a line, and the
+  playground runs them again on the page's main thread, which has about sixteen
+  times the stack. A naive recursive `fib` in the guest language can overflow
+  even there, at shallow depth — which is why the recursion-heavy samples
   (e.g. Python's `fib.py`) are left out, while loop-based programs run fine.
 - **No threads or sockets.** The single-threaded WASM build has neither, so an
   interpreter can't offer guest programs that would need them.

@@ -142,9 +142,12 @@ it's the same interpreter. Two things to keep in mind:
   stdout is *line-buffered*: a final line printed without a trailing `\n` sits in
   the buffer until the next run, so it looks lost (or shows up glued to the next
   run's output). `say` adds the newline; `print "…\n"` works too.
-- **Recursion is capped at a few hundred levels** in the browser (a WebAssembly
-  stack limit, not a Raku one — see the README). `fib(10)` is fine; a deeply
-  recursive `fib(35)` will hit it. Loops are unaffected.
+- **Recursion depth is set by the browser's stack** (a WebAssembly stack limit,
+  not a Raku one — see [INTERNALS.md](INTERNALS.md#known-limitations-single-threaded-browser-build)):
+  a few dozen levels in a Web Worker (32 in Safari, 58 in Chrome), a few hundred
+  on the page's main thread (419 in Safari, 115 in Chrome). `fib(10)` is fine
+  anywhere; a grammar parse or a sub that recurses a few dozen levels deep can
+  overflow a worker. Loops are unaffected.
 
 ## 3. Giving the program input
 
@@ -307,7 +310,7 @@ Raku code runs in the terminal and in the browser.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Last line missing / glued to next run | WASM stdout is line-buffered | end output with `say` (or `print "…\n"`) |
-| `RangeError` / "recursion limit" | ~200-level browser stack cap | rewrite iteratively; run deep recursion natively |
+| `RangeError` (Firefox: `InternalError: too much recursion`) / "recursion limit" | the browser's stack: a few dozen levels in a worker, a few hundred on the main thread | run it again on the page's main thread, as the playground does; rewrite iteratively; run deep recursion natively |
 | Program hangs the tab | `start`/threads or sockets | not available in the sandbox — use native `rakupp` |
 | `sub MAIN` never runs | no argv in the browser | call your subs directly, or strip `MAIN` and drive it |
 | Second run behaves oddly | leftover state / partial output | reuse `say` (see row 1); or recreate the worker per run |
