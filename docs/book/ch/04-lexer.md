@@ -228,12 +228,18 @@ need:
 | `podData()` | rendered `=begin pod` content, for `--doc` |
 | `declPod_` / `leadPod_` | `#=` and `#|` declarator documentation, keyed by line |
 
-Declarator pod is keyed by line because that is how it attaches: a `#|` run
-immediately above a declaration documents it, a `#=` run immediately below or
-beside it does. The parser resolves that association with `leadingPodFor(line)`
-and `trailingPodFor(line)`, and records which lines a *parameter* has already
-claimed — otherwise the parameter documentation of a multi-line `sub MAIN`
-signature would be picked up a second time as the routine's own usage text.
+Declarator pod is keyed by line, and the parser attaches it by where the lines
+fall among the tokens. A `#|` documents the next declaration below it, however
+far: blank lines and code that declares nothing leave it waiting, and the
+first declarator keyword or block after it takes it. `leadingPodAt(tok)` walks
+the tokens up from a declaration to that boundary, and remembers which
+declaration took each line, because a parameter has no keyword to stop the
+walk of the one after it. A `#=` documents the declaration beside it (the last
+one, when several share the line) or the one just above when it stands alone;
+that is `trailingPodAt(tok)`. The parser also records which lines a
+*parameter* has already claimed — otherwise the parameter documentation of a
+multi-line `sub MAIN` signature would be picked up a second time as the
+routine's own usage text.
 
 ## Errors
 

@@ -7372,6 +7372,7 @@ ExprPtr Parser::parsePrimary() {
                 return h;
             }
             // anonymous block / closure
+            const size_t braceTok = pos_;
             const std::string openTrail = trailingPodFor(t.line);
             auto blk = parseBlock();
             // `{ * + 1 }` — a block whose one statement is itself a WhateverCode
@@ -7417,7 +7418,7 @@ ExprPtr Parser::parsePrimary() {
             }
             auto be = std::make_unique<BlockExpr>();
             be->body = std::move(blk->stmts);
-            be->pod = leadingPodFor(t.line); be->podLine = t.line;
+            be->pod = leadingPodAt(braceTok); be->podLine = toks_[braceTok].line;
             attachTrailingPod(*be);
             // …or the `#=` just inside its opening brace (`{;` / `#= doc` / `}`)
             if (be->podTrail.empty() && !openTrail.empty()) {
@@ -7917,7 +7918,7 @@ ExprPtr Parser::parsePrimary() {
             if ((name == "sub" || name == "method") && !kwCallHere(name)) {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
-                be->pod = leadingPodFor(cur().line); be->podLine = cur().line;
+                be->pod = leadingPodAt(pos_ - 1); be->podLine = cur().line;
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
                 be->isMethodTerm = name == "method"; // …and a method binds `self`
                 if (isKind(Tok::Ident)) {   // optional name (anon use)
@@ -7942,13 +7943,21 @@ ExprPtr Parser::parsePrimary() {
                         be->retRw = true;
                     advance();
                 }
+                // the `#=` just inside its opening brace, as a bare block's
+                // (`sub {` / `#= doc` / `}`) — its parameters took theirs
+                std::string openTrail;
                 if (isKind(Tok::LBrace)) {
+                    openTrail = trailingPodFor(cur().line);
                     routineDepth_++; // &?ROUTINE is legal inside an anon sub too
                     auto blk = parseBlock();
                     routineDepth_--;
                     be->body = std::move(blk->stmts);
                 }
                 attachTrailingPod(*be);
+                if (be->podTrail.empty() && !openTrail.empty()) {
+                    be->podTrail = openTrail;
+                    be->pod = be->pod.empty() ? openTrail : be->pod + "\n" + openTrail;
+                }
                 return be;
             }
             // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`,
@@ -10388,6 +10397,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         Param p;
         p.pastDoubleSemi = pastDoubleSemi;
         const int paramLine = cur().line; // where THIS parameter starts — its `#|` sits above it
+        const size_t paramTok = pos_;
         // return-type constraint `--> Type` — always last; discarded. Skip to the
         // end of the signature so smileys (IO::Path:D) and parametrised types
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
@@ -11147,7 +11157,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 throw ParseError("Can only use : as invocant marker in a signature after the first parameter",
                                  cur().line, "X::Syntax::Signature::InvocantMarker", {});
             advance(); p.invocant = true;
-            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodAt(paramTok);
             claimPod(params.size());                          // …and its `#=`
             params.push_back(std::move(p)); continue;
         }
@@ -11167,7 +11177,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // this spelling used to die "expected ) (got ':')".
         if (isOp(":")) {
             advance(); p.invocant = true;
-            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodAt(paramTok);
             claimPod(params.size());                          // …and its `#=`
             params.push_back(std::move(p)); continue;
         }
@@ -11200,7 +11210,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // Asked of the parameter's OWN line, not of wherever the parse has
             // reached: after the LAST parameter that is the closing `)`, a line
             // below its doc, so the last one never found its `#|`.
-            if (paramLine > sigOwnerLine_) p.pod = leadingPodFor(paramLine);
+            if (paramLine > sigOwnerLine_) p.pod = leadingPodAt(paramTok);
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
@@ -11342,8 +11352,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     struct KwShadowMark { std::vector<std::string>& v; size_t n; ~KwShadowMark() { v.resize(n); } }
         kwShadowMark{kwShadow_, kwShadow_.size()};
     auto s = std::make_unique<SubDecl>();
-    int subDeclLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-    s->pod = leadingPodFor(subDeclLine); // `#|` above the decl
+    const size_t subDeclTok = pos_ > 0 ? pos_ - 1 : pos_;
+    s->pod = leadingPodAt(subDeclTok); // `#|` above the decl
     s->isMulti = isMulti;
     s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
@@ -11635,7 +11645,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // routine's (parseSignature marked them claimed; issue #17)
     {   // …the same for a routine: leading and trailing docs are joined, not
         // one-or-the-other (a parameter's own `#=` was claimed in the signature)
-        std::string trail = trailingPodFor(subDeclLine);
+        std::string trail = trailingPodAt(subDeclTok);
         s->podTrail = trail;
         if (!trail.empty()) s->pod = s->pod.empty() ? trail : s->pod + "\n" + trail;
     }
@@ -12034,7 +12044,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
 StmtPtr Parser::parseSubset() {
     // 'subset' already consumed:  subset NAME [of TYPE] [where EXPR] ;
     auto sd = std::make_unique<SubsetDecl>();
-    const int subsetLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+    const size_t subsetTok = pos_ > 0 ? pos_ - 1 : pos_;
     if (isKind(Tok::Ident)) sd->name = advance().text;
     if (!sd->name.empty()) declTypeNames_.insert(sd->name);
     // `of` and traits come in EITHER order — Cro writes `of Str is export`,
@@ -12096,8 +12106,8 @@ StmtPtr Parser::parseSubset() {
         break;
     }
     if (isIdent("where")) { advance(); sd->where = parseExpr(BP_ASSIGN); }
-    sd->pod = leadingPodFor(subsetLine);
-    sd->podTrail = trailingPodFor(subsetLine);
+    sd->pod = leadingPodAt(subsetTok);
+    sd->podTrail = trailingPodAt(subsetTok);
     if (!sd->podTrail.empty()) sd->pod = sd->pod.empty() ? sd->podTrail : sd->pod + "\n" + sd->podTrail;
     return sd;
 }
@@ -12105,8 +12115,8 @@ StmtPtr Parser::parseSubset() {
 StmtPtr Parser::parseEnum() {
     // 'enum' already consumed:  enum [NAME] [of TYPE] ( <words> | (pairs) | «words» )
     auto ed = std::make_unique<EnumDecl>();
-    const int enumLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-    ed->pod = leadingPodFor(enumLine);
+    const size_t enumTok = pos_ > 0 ? pos_ - 1 : pos_;
+    ed->pod = leadingPodAt(enumTok);
     if (isKind(Tok::Ident)) ed->name = advance().text;
     else if (isOp("::")) advance();   // `enum :: <un>` — anonymous, spelled out
     if (!pendingEnumType_.empty()) { ed->ofType = pendingEnumType_; pendingEnumType_.clear(); }
@@ -12181,7 +12191,7 @@ StmtPtr Parser::parseEnum() {
     }
     else if (ed->values)
         declTypesOpaque_ = true;
-    ed->podTrail = trailingPodFor(enumLine);
+    ed->podTrail = trailingPodAt(enumTok);
     if (!ed->podTrail.empty()) ed->pod = ed->pod.empty() ? ed->podTrail : ed->pod + "\n" + ed->podTrail;
     return ed;
 }
@@ -12812,9 +12822,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     struct ClassStackPop { std::vector<ClassDecl*>& v; ~ClassStackPop() { v.pop_back(); } } classStackPop{classDeclStack_};
     {   // `#|` above the decl and `#=` below it are BOTH the declaration's doc,
         // and a declaration carrying the two answers them joined by a newline.
-        int dl = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-        cd->pod = leadingPodFor(dl);
-        std::string trail = trailingPodFor(dl);
+        const size_t dt = pos_ > 0 ? pos_ - 1 : pos_;
+        cd->pod = leadingPodAt(dt);
+        std::string trail = trailingPodAt(dt);
         cd->podTrail = trail;
         if (!trail.empty()) cd->pod = cd->pod.empty() ? trail : cd->pod + "\n" + trail;
     }
@@ -13185,10 +13195,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         if (isIdent("has") || isIdent("HAS")) {
             const int hasLine = cur().line;
+            const size_t hasTok = pos_;
             auto attrPod = [&](AttrDecl& a) {
                 a.declLine = hasLine;
-                a.pod = leadingPodFor(hasLine);
-                a.podTrail = trailingPodFor(hasLine);
+                a.pod = leadingPodAt(hasTok);
+                a.podTrail = trailingPodAt(hasTok);
                 if (!a.podTrail.empty()) a.pod = a.pod.empty() ? a.podTrail : a.pod + "\n" + a.podTrail;
             };
             if (isPackage)
@@ -13728,6 +13739,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 if (wasProtoMulti) advance(); // proto/multi
                 if (isIdent("token") || isIdent("rule") || isIdent("regex")) {
                     const int ruleLine = cur().line;
+                    const size_t ruleTok = pos_;
                     std::string kind = advance().text;
                     std::string nm = isKind(Tok::Ident) ? advance().text : "";
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
@@ -13828,8 +13840,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         cd->rules.push_back({nm, pat, kind, params, lits});
                         auto& rd = cd->rules.back();
                         rd.declLine = ruleLine;
-                        rd.pod = leadingPodFor(ruleLine);
-                        rd.podTrail = trailingPodFor(ruleLine);
+                        rd.pod = leadingPodAt(ruleTok);
+                        rd.podTrail = trailingPodAt(ruleTok);
                         if (!rd.podTrail.empty()) rd.pod = rd.pod.empty() ? rd.podTrail : rd.pod + "\n" + rd.podTrail;
                     }
                     continue;

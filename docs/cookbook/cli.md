@@ -332,10 +332,12 @@ not match, and the reader sees the usage text. The type constraint is the
 validation, and the usage text is the error message, so `#=` comments are worth
 writing for that reason alone.
 
-**`#|` has to touch the routine.** A declarator block comment documents the
-declaration that follows it *immediately*. At the top of a file, above a `my`
-or a blank line, it attaches to nothing and the usage message silently loses
-the description. Put it on the line above `sub MAIN`.
+**`#|` goes to the first declaration after it.** A declarator block comment
+waits for the next thing that declares something, so blank lines, a `use` or a
+`my` between it and `sub MAIN` do not matter. A helper `sub` does: the
+description documents the helper instead. So does any block, even an `if`'s,
+and either way the usage message silently loses the description. Put it on the
+line above `sub MAIN`.
 
 ## What to reach for next
 

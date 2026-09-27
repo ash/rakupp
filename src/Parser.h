@@ -134,17 +134,92 @@ public:
         be.podTrail = trail;
         be.pod = be.pod.empty() ? trail : be.pod + "\n" + trail;
     }
-    // join the run of #| lines ENDING just above `line` (blank-free), "" if none
-    std::string leadingPodFor(int line) const {
+    // the `#=` doc of the declaration whose keyword is token `declTok` — none
+    // when another declaration starts later on its line: a trailing doc is
+    // the LAST declaration's, so `has $.a; has $.b; #= x` documents $.b
+    // alone. (Legacy Rakudo gives it to the FIRST of several routines on a
+    // line; RakuAST, and roast's todo'd "trailing attaches to last", to the
+    // last.)
+    std::string trailingPodAt(size_t declTok) const {
+        const int line = toks_[declTok].line;
+        for (size_t k = declTok + 1; k < toks_.size() && toks_[k].line == line; k++) {
+            if (!isDeclWordAt(k)) continue;
+            const size_t s = declStartTok(k); // …starting a statement of its own
+            if (s <= declTok) continue;       // (`multi` of `multi sub` is its own)
+            if (toks_[s - 1].kind == Tok::Semicolon || toks_[s - 1].kind == Tok::LBrace ||
+                toks_[s - 1].kind == Tok::RBrace)
+                return std::string();
+        }
+        return trailingPodFor(line);
+    }
+    // A `#|` doc waits for the NEXT declaration, however far below: blank
+    // lines, plain comments and code that declares nothing (`say 1;`,
+    // `my $x = 1;`) leave it pending, and the first declaration or block
+    // after it takes it. These are the doc lines already taken, and by
+    // which declaration (its keyword's token) — a parameter is no keyword,
+    // so the `#|` above the first of two stops the second's search here.
+    std::map<int, size_t> leadPodOwner_;
+    // the `#|` docs of the declaration whose keyword (or first token) is
+    // token `declTok`, joined by a space: every one since the declaration
+    // or block before it
+    std::string leadingPodAt(size_t declTok) {
         std::string out;
-        int l = line - 1;
-        while (true) {
-            auto it = leadPod_.find(l);
-            if (it == leadPod_.end()) break;
-            out = out.empty() ? it->second : it->second + " " + out;
-            l--;
+        if (leadPod_.empty() || declTok >= toks_.size()) return out;
+        size_t k = declStartTok(declTok);
+        auto it = leadPod_.lower_bound(toks_[k].line); // the docs on lines above it
+        while (it != leadPod_.begin()) {
+            --it;
+            const int p = it->first;
+            for (; k > 0 && toks_[k - 1].line > p; k--)
+                if (takesLeadingDoc(k - 1)) return out;
+            auto own = leadPodOwner_.find(p);
+            if (own != leadPodOwner_.end() && own->second != declTok) return out;
+            leadPodOwner_[p] = declTok;
+            if (!it->second.empty()) // (a bare `#|` line adds nothing)
+                out = out.empty() ? it->second : it->second + " " + out;
+            // code on the doc's own line is BEFORE it: `sub f( #| doc`
+            for (; k > 0 && toks_[k - 1].line == p; k--)
+                if (takesLeadingDoc(k - 1)) return out;
         }
         return out;
+    }
+    // a declarator keyword — not the word used as a name: `.has`, `!rule`,
+    // `&sub`, `:token`, `sub => 1`
+    bool isDeclWordAt(size_t k) const {
+        static const std::set<std::string> kWords = {
+            "sub", "method", "submethod", "macro", "class", "role", "grammar", "module",
+            "package", "knowhow", "has", "HAS", "regex", "token", "rule", "enum", "subset",
+            "multi", "proto", "only"};
+        const Token& t = toks_[k];
+        if (t.kind != Tok::Ident || !kWords.count(t.text)) return false;
+        if (k > 0 && toks_[k - 1].kind == Tok::Op) {
+            const std::string& o = toks_[k - 1].text;
+            if (o == "." || o == ".^" || o == ".?" || o == "!" || o == ":" || o == "&") return false;
+        }
+        return !(k + 1 < toks_.size() && toks_[k + 1].kind == Tok::FatArrow);
+    }
+    // the first token of the declaration whose keyword is token `k`: its
+    // `my`/`our`/`multi`/… are its own, not a declaration before it
+    size_t declStartTok(size_t k) const {
+        static const std::set<std::string> kPrefix = {
+            "my", "our", "multi", "proto", "only", "anon", "unit", "augment", "supersede", "state"};
+        while (k > 0 && toks_[k - 1].kind == Tok::Ident && kPrefix.count(toks_[k - 1].text)) k--;
+        return k;
+    }
+    // does token `k` take the pending `#|` docs? A declarator keyword, a
+    // pointy `->`, or a block — every `{…}` to RakuAST (legacy Rakudo
+    // exempts `do`/`try`/`gather`/`BEGIN`/`loop` blocks), but not a
+    // subscript: `%h{…}`, `.{…}` have no space before the brace
+    bool takesLeadingDoc(size_t k) const {
+        const Token& t = toks_[k];
+        if (t.kind == Tok::LBrace) {
+            if (t.spaceBefore || k == 0) return true;
+            const Token& b = toks_[k - 1];
+            return !(b.kind == Tok::Var || b.kind == Tok::RParen || b.kind == Tok::RBracket ||
+                     b.kind == Tok::RBrace || (b.kind == Tok::Op && b.text == "."));
+        }
+        if (t.kind == Tok::Op) return t.text == "->" || t.text == "<->";
+        return isDeclWordAt(k);
     }
 private:
     size_t pos_ = 0;
