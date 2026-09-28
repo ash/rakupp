@@ -411,7 +411,8 @@ senses:
 - time to compile and load
 - how much of Raku the native compiler handles without falling back
 
-The plan is [V6-PLAN.md](V6-PLAN.md).
+Beside them, one feature: `use` in the web editions (issue #83). The plan is
+[V6-PLAN.md](V6-PLAN.md).
 
 **The numbers:**
 
@@ -424,6 +425,9 @@ The plan is [V6-PLAN.md](V6-PLAN.md).
 - `--exe` compiling ≥ 90% of the fully passing `spectest.data` files
   natively. It is 65% today.
 - An `--exe` hello's compile time halved, and a warm module load's time halved.
+- Issue #83 closed: `use` works in the playground, in embeds and under
+  `--target=js`, and the raku.online module collection lists only
+  distributions whose tests pass on Raku.js.
 
 ---
 

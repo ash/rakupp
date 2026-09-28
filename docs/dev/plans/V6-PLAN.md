@@ -3,8 +3,9 @@
 *Written 2026-09-26, before any code, alongside [V5-PLAN.md](V5-PLAN.md): v5 is
 about errors, v6 is about speed. "Speed" here has four parts: time on the
 workloads where Rakudo still leads, memory per value, time to compile and load,
-and how much of Raku the native compiler handles without falling back. Work
-starts after v5.0.0 is tagged.*
+and how much of Raku the native compiler handles without falling back. Beside
+the four, one feature: `use` in the web editions (issue #83, P7). Work starts
+after v5.0.0 is tagged.*
 
 *Every figure below comes from the 2026-09-26 survey
 ([../findings/survey-2026-09-26/](../findings/survey-2026-09-26/)). The box was
@@ -34,6 +35,9 @@ machine before any batch is judged against them.*
    - an `--exe` hello's translation unit: 0.93 s
    - a warm `use Cro::HTTP::Router`: about 58 ms
    - `-c` on large sources: 76–190k lines/s
+6. **Issue #83 closed.** `use` works in the playground, in embeds and under
+   `--target=js`. The raku.online module collection lists every distribution
+   whose tests pass on Raku.js, and nothing it lists fails there.
 
 ---
 
@@ -327,10 +331,135 @@ In order of evidence per cost:
   Taken last because the real workloads spend their time inside calls. It
   moves numeric kernels, not them.
 - **`--target=js` refusals.** Port `Test` to the JS runtime (44 refusals), then
-  `LtmNfa`, `:nth`/`:x`/`:P5`/`:m`, `sleep` in a Worker, and `use`d modules
-  (issue #83). The gate `t/js/run.raku` is also blind to `MAIN` arguments.
+  `LtmNfa`, `:nth`/`:x`/`:P5`/`:m`, and `sleep` in a Worker. `use`d modules
+  are P7's. The gate `t/js/run.raku` is also blind to `MAIN` arguments.
 - **The worker tax.** A worker's loop runs ~15% slower than the main thread's,
   and the P4 thread pool is deferred ([PARALLEL-PLAN.md](PARALLEL-PLAN.md)).
+
+### P7 — modules in the web editions (issue #83)
+
+A feature rather than a speed item, planned here so that it ships with v6.
+
+**What was probed on 2026-09-28:**
+
+- **Raku.js already loads modules. The files just have to be there.**
+  - The engine runs on Emscripten's in-memory filesystem, with `/` as the
+    working directory, and `lib`, `.` and `rakulib` are on its search path.
+  - One run wrote `lib/Greet/Hi.rakumod` with `spurt`, and `use Greet::Hi`
+    in the next run loaded it.
+  - Probed on the Node build of Raku.js from 2026-07-22.
+- **A host page cannot write a file.** `Module.FS` is `undefined`:
+  [build.sh](../../../rakujs/build.sh) does not export it.
+- **A page cannot read zef.** 360.zef.pm sends no CORS header, so neither its
+  index nor its tarballs are readable. raku.online (GitHub Pages) and
+  raw.githubusercontent.com send `Access-Control-Allow-Origin: *`.
+- **Threads do not run.** `start { 42 }; await $p` spins at 100% CPU on the
+  July build, so a module that starts threads cannot work there. Re-check
+  this at HEAD.
+- **`--target=js` refuses a `use`d module** and exits 5
+  ([main.cpp](../../../src/main.cpp), `compileJs`). The `--fallback=wasm`
+  wrapper carries only the main program's source, so the module is missing
+  there as well.
+
+**The engine surface.** Every item is small.
+
+- **Export `FS`,** or a C function that writes a file.
+- **`rakupp_missing_modules(src)`:** the names a program would load that are
+  not on the search path.
+  - [collectModuleGraph](../../../src/Interpreter.cpp) already reports
+    "not found on the module search path". It also knows the pragmas, the
+    modules the compiler answers (JSON::Native and the rest of Data::Native)
+    and `use lib`, so the page does not keep a second list.
+  - The first round must be a token-level `use` scan, not a parse. A program
+    using an operator a module exports does not parse until that module is
+    present.
+- **`rk_add_lib(rk, dir)` in [rakupp.h](../../../include/rakupp/rakupp.h):**
+  one search-path entry per distribution.
+  - [rakupp_web.cpp](../../../rakujs/rakupp_web.cpp) holds that anything the
+    API cannot express is a hole in the API. Native embedders shipping
+    scripts in an asset pack need the same call.
+  - It is an ABI addition, so [ABI-PLAN.md](ABI-PLAN.md)'s rules apply.
+
+**The page side** (the playground, `raku.js` embeds):
+
+- **The page owns the file set, not the engine.** Each filesystem belongs to
+  one engine instance, and instances are replaced: the worker after Stop or a
+  recursion overflow, and Safari's main-thread fallback, which is a separate
+  instance with its own filesystem. The page writes the set into every
+  instance it makes.
+- **Fetch, then run.** `rakupp_run` is synchronous, so modules are fetched
+  first:
+  1. ask for the missing names;
+  2. fetch them;
+  3. ask again, until nothing new is missing.
+
+  While this runs, the status line names the module being fetched.
+- **`require ::($name)` escapes the scan.** The later option is a synchronous
+  XHR from the worker behind a missing-module hook (workers allow one).
+
+**Where modules come from:**
+
+1. **The user's own modules.** No hosting is needed.
+   - The playground gets file tabs: `main.raku` plus `lib/…`.
+   - Share links carry the file map, in the same deflate encoding as `#code=`.
+   - `?gist=` loads every file in the gist and places each `.rakumod` by its
+     `unit module`/`unit class` name.
+   - Embeds get `<pre data-raku-module="Name">` blocks: a book or course page
+     defines a module once and uses it from its other editors.
+2. **A module collection on raku.online.** It is static, like the rest of the
+   site.
+   - `mods/index.json` maps each module to its distribution, version and
+     auth. Each distribution has one bundle (META6.json, `lib/`,
+     `resources/`).
+   - A bundle is unpacked into `/dists/<id>/`, so `%?RESOURCES` finds the
+     distribution root by walking up to META6.json, as it does on disk.
+   - Selection:
+     1. start from the distributions that pass on native rakupp;
+     2. drop NativeCall, `run`/`shell`, sockets and threads;
+     3. run each remaining distribution's tests on the Node build of Raku.js.
+
+     Only what passes is published.
+   - A Raku script builds the collection from the release's own engine and
+     stamps it with the engine's `?v=` tag.
+   - Its size is not measured yet. A GitHub Pages site is limited to 1 GB.
+3. **Not planned: a proxy in front of zef.** It would need a server, and
+   raku.online has none by design.
+
+**`--target=js`:**
+
+- **`--fallback=wasm`:** the wrapper embeds the module sources
+  `collectModuleGraph` already finds (`compileJs` calls it) and writes them
+  into the filesystem before `rakupp_run`.
+- **In-core:** each `use`d module is transpiled with the program, and its
+  imports resolve through the `moduleExports` set that `compileJs` already
+  collects. `--standalone` inlines the modules.
+
+**Load time** (the v6 part):
+
+- Pre-parsed ASTs go through the embedded-module registry
+  (`rakuppRegisterModule`). A blob belongs to one engine build, so the blobs
+  are served beside the engine under the same `?v=` tag.
+- Within one instance, the precomp cache already lands in the in-memory
+  `$HOME`, so a repeat run skips the parse.
+
+**Order:**
+
+1. the engine surface, and the user's own modules;
+2. the fetch loop and the collection;
+3. `--target=js`;
+4. pre-parsed ASTs, and `require ::($name)`.
+
+**Gates:**
+
+- [smoke.cjs](../../../rakujs/smoke.cjs) gains four cases:
+  - a module the host wrote;
+  - a module exporting an operator;
+  - a module reading `%?RESOURCES`;
+  - a distribution from the collection.
+- The collection build is its own gate: every distribution it publishes
+  passes its tests on Raku.js.
+- `t/js/run.raku` gains programs that `use` a module, both in-core and under
+  `--fallback=wasm`.
 
 ---
 

@@ -94,7 +94,8 @@ a planted exfiltration in a test file fails closed, gated.
   Termux build is the cheap probe; an NDK cross-compile with the same floor gate
   as Linux is the real one. iOS follows the same shape.
 - **A fresh WebAssembly build.** The engine behind `--fallback=wasm` is a July
-  build; the playground cannot load a module. WASI would make one artifact run
+  build; the playground cannot load a module (planned in
+  [V6-PLAN.md](V6-PLAN.md), P7). WASI would make one artifact run
   in every runtime rather than only a browser. Raku Koans
   ([live/ADOPTIONS.md](../../../live/ADOPTIONS.md)) builds on the released
   Raku.js and works around three things it lacks: the release is
