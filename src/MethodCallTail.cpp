@@ -884,12 +884,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …except the index views of a gather still producing: `.kv`,
             // `.pairs` and `.antipairs` pull nothing up front in Rakudo, and
             // are answered lazily below, as for an endless source
-            const bool gatherIndexView = lst->gatherSeq && !lst->exhausted &&
+            // (…and so are those of a file handle's `.lines`, read as the loop goes:
+            // `for $fh.lines.kv -> \k, \v { last }` leaves the rest on the handle)
+            const bool gatherIndexView = (lst->gatherSeq || lst->finiteSource || lst->streaming) &&
+                                         !lst->exhausted &&
                                          (m == "kv" || m == "pairs" || m == "antipairs");
             if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, 1000000);
         }
         // a gather still producing: lazy like an endless source, but it ends
         const bool gatherLive = !infinite && lst->gatherSeq && !lst->exhausted;
+        // a handle's lines, pulled one per iteration (finiteSource / streaming)
+        const bool streamLive = !infinite && (lst->finiteSource || lst->streaming) && !lst->exhausted;
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
             Value out = Value::array(); out.isList = true; // 1:1 map → cache index == source index
@@ -1040,11 +1045,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             out.extM() = st;
             return out;
         }
-        if ((infinite || gatherLive) && m == "kv") { // index, value, index, value, …
+        if ((infinite || gatherLive || streamLive) && m == "kv") { // index, value, index, value, …
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
+            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
             st->appendNext = [self, src](ValueList& cache) -> bool {
                 size_t k = cache.size() / 2; // two cache entries per source element
                 self->materializeLazy(src, k + 1);
@@ -1056,12 +1062,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             out.extM() = st;
             return out;
         }
-        if ((infinite || gatherLive) && (m == "pairs" || m == "antipairs")) {
+        if ((infinite || gatherLive || streamLive) && (m == "pairs" || m == "antipairs")) {
             bool anti = m == "antipairs";
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
+            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
             st->appendNext = [self, src, anti](ValueList& cache) -> bool {
                 size_t k = cache.size();
                 self->materializeLazy(src, k + 1);
@@ -1239,11 +1246,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 std::string ks = p.pairKey() ? (p.pairKey()->t == VT::Str ? p.pairKey()->toStr()
                                                 : methodCall(*p.pairKey(), "Str", ValueList{}).toStr())
                                              : p.s.str();
-                c.arr()->push_back(Value::pair(ks, p.pairVal() ? *p.pairVal() : Value::any()));
+                Value np = Value::pair(ks, p.pairVal() ? *p.pairVal() : Value::any()); np.namedArg = true;
+                c.arr()->push_back(std::move(np));
             }
             return c;
         }
-        if (inv.hash()) for (auto& kv : *inv.hash()) c.arr()->push_back(Value::pair(kv.first, kv.second));
+        if (inv.hash()) for (auto& kv : *inv.hash()) { Value np = Value::pair(kv.first, kv.second); np.namedArg = true; c.arr()->push_back(std::move(np)); }
         return c;
     }
     // $obj.Capture — the object's public attributes as NAMED arguments, each
@@ -1261,7 +1269,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (it == inv.obj()->attrs.end()) continue;
                     v = it->second;
                 }
-                c.arr()->push_back(Value::pair(at.name, v));
+                Value np = Value::pair(at.name, v); np.namedArg = true;
+                c.arr()->push_back(std::move(np));
             }
         std::sort(c.arr()->begin(), c.arr()->end(),
                   [](const Value& a, const Value& b) { return a.s < b.s; });
@@ -2583,7 +2592,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // (issue #14's file: lines with fewer words than the index).
                 auto pathOf = [&](const Value& kv) {
                     ValueList p;
-                    if (kv.t == VT::Array && kv.arr() && !kv.itemized && !kv.arr()->empty())
+                    if (kv.t == VT::Array && kv.arr() && !kv.itemized && !kv.arr()->empty() &&
+                        !isJunction(kv))   // a Junction is ONE key (classify.t)
                         for (auto& e : *kv.arr()) p.push_back(e);
                     else p.push_back(kv);
                     return p;
@@ -3584,6 +3594,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         std::to_string(codeArity(fn))};
             // A SLIP result splices into the level it was produced at, and Empty
             // — the empty Slip — vanishes (NA-32). Anything else is one element.
+            auto isEmptySlip = [](const Value& r) {
+                return r.t == VT::Array && r.isList && r.s == "Slip" && (!r.arr() || r.arr()->empty());
+            };
             auto pushResult = [](Value& o, Value r) {
                 if (r.t == VT::Array && r.isList && r.s == "Slip") {
                     if (r.arr()) for (auto& y : *r.arr()) o.arr()->push_back(y);
@@ -3621,7 +3634,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 if (e.t == VT::Hash && e.hash() && e.hashKind.empty()) {
                     Value o = Value::makeHash();
-                    for (auto& kv : *e.hash()) (*o.hash())[kv.first] = deepEl(kv.second);
+                    for (auto& kv : *e.hash()) {
+                        Value r = deepEl(kv.second);
+                        if (isEmptySlip(r)) continue;   // a value mapped to Empty drops its key
+                        (*o.hash())[kv.first] = std::move(r);
+                    }
                     return o;
                 }
                 return leaf(e);
@@ -3649,7 +3666,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) {
                 Value o = Value::makeHash();
-                for (auto& kv : *inv.hash()) (*o.hash())[kv.first] = applyEl(kv.second);
+                for (auto& kv : *inv.hash()) {
+                    Value r = applyEl(kv.second);
+                    if (isEmptySlip(r)) continue;   // `{ … if … }` answering Empty drops the key
+                    (*o.hash())[kv.first] = std::move(r);
+                }
                 return o;
             }
             // deepmap/duckmap answer in the invocant's own container (Array in,
@@ -3660,6 +3681,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 for (auto& e : *inv.arr()) if (!pushEl(out, e, applyEl)) break;
             }
             else { Value tmp = inv; return applyEl(tmp); }
+            // a TYPED array keeps its type while the results fit it (`my Str @a;
+            // @a.deepmap("x" ~ *)` is a Str @), and is a List when they do not
+            // (`@a.deepmap(*.chars)` is (1, 2, 4))
+            if (m == "deepmap" && !out.isList && inv.t == VT::Array && !inv.ofType().empty() &&
+                inv.ofType() != "Mu" && inv.ofType() != "Any") {
+                bool fits = true;
+                for (auto& x : *out.arr()) if (!typeOrSubsetMatches(x, inv.ofType())) { fits = false; break; }
+                if (fits) out.ofTypeM() = inv.ofType();
+                else out.isList = true;
+            }
             return out;
         }
         if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
@@ -3873,6 +3904,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.hashKind == "Map") return inv; // a Map's .Map is the Map ITSELF, not a copy
             Value h = Value::makeHash();
             if (inv.hash()) *h.hash() = *inv.hash();
+            // …and a Map's values are BARE: the Hash's Scalar containers do not come
+            // along (`Foo.new(|%args.Map)` fills `has @.a` from the Array; S32-hash/map.t)
+            if (h.hash()) for (auto& kv : *h.hash()) kv.second.itemized = false;
             h.hashKind = "Map";
             return h;
         }
@@ -4701,8 +4735,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             "Cannot unpack or Capture `" + inv.gist() + "`."};
         if (inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) return c;
         if (inv.t == VT::Complex) {
-            c.arr()->push_back(Value::pair("im", Value::number(inv.im())));
-            c.arr()->push_back(Value::pair("re", Value::number(inv.n)));
+            Value im = Value::pair("im", Value::number(inv.im())); im.namedArg = true;
+            Value re = Value::pair("re", Value::number(inv.n)); re.namedArg = true;
+            c.arr()->push_back(im); c.arr()->push_back(re);
             return c;
         }
         if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
@@ -4721,7 +4756,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             std::vector<std::string> names;
             for (auto& kv : inv.obj()->attrs) names.push_back(kv.first);
             std::sort(names.begin(), names.end());
-            for (auto& n : names) c.arr()->push_back(Value::pair(n, inv.obj()->attrs[n]));
+            for (auto& n : names) { Value np = Value::pair(n, inv.obj()->attrs[n]); np.namedArg = true; c.arr()->push_back(std::move(np)); }
             return c;
         }
         // the builtin classes unpack like any object, into their public

@@ -270,7 +270,10 @@ long long Value::toInt() const {
             long long v = std::strtoll(p0, &end, 10);
             return (end == p0 || errno == ERANGE) ? 0 : v;
         }
-        case VT::Array: seqTouch(); return arr() ? (long long)arr()->size() : 0;
+        // A gather nothing has pulled from yet has an empty buffer: its number
+        // is its length once read (`2 * gather { take 1; take 2 }` is 4), so
+        // fill it first — forceLazy leaves an endless source alone.
+        case VT::Array: forceLazy(*this); seqTouch(); return arr() ? (long long)arr()->size() : 0;
         case VT::Hash:
             // A tr/// StrDistance numifies to the substitution count.
             if (hash() && hashKind == "StrDistance") {
@@ -684,9 +687,11 @@ std::string Value::toStr() const {
         // a NAMED routine gists as its `&`-reference; an anonymous block keeps
         // the generic form (Rakudo prints an address there, which is not
         // reproducible and not worth reproducing)
+        // …and a METHOD as its bare name: `C.^methods` says (foo bar)
         case VT::Code: return code() && !code()->name.empty() &&
                               code()->name.rfind("anon", 0) != 0
-                            ? "&" + code()->name : "sub { ... }";
+                            ? (code()->isMethod ? std::string() : std::string("&")) + code()->name
+                            : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
             if (obj() && obj()->hasBoxed) return obj()->boxed.toStr(); // but/does mixin over a value

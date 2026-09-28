@@ -2970,8 +2970,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 // `.encoding("bin")` switches the handle to binary: no
                 // encoding at all from here, and Nil is what it answers.
+                // …and so does `.encoding(Nil)` (Rakudo: `$*ARGFILES.encoding: Nil`)
                 bool knownEnc = true;
-                std::string canon = canonEncodingName(args[0].toStr(), &knownEnc);
+                std::string canon = args[0].t == VT::Nil ? std::string()
+                                  : canonEncodingName(args[0].toStr(), &knownEnc);
                 if (!knownEnc)
                     throwTyped("X::Encoding::Unknown", {{"name", args[0].toStr()}},
                                "Unknown string encoding '" + args[0].toStr() + "'");
@@ -3251,7 +3253,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "slurp") {
             auto cap = inv.hash()->find("captured"); // in-memory handle (e.g. Proc.out)
-            if (cap != inv.hash()->end() && cap->second.truthy()) return (*inv.hash())["buffer"];
+            if (cap != inv.hash()->end() && cap->second.truthy()) {
+                // $*ARGFILES keeps the files' bytes as they are for a slurp
+                // ("foo" "bar" "ber" is "foobarber"; the line reader's buffer
+                // ends each file's last line), and a binary one answers a Buf
+                auto raw = inv.hash()->find("rawbuffer");
+                const Value& text = raw != inv.hash()->end() ? raw->second : (*inv.hash())["buffer"];
+                bool capBin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy();
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.namedArg && a.s == "bin") capBin = !a.pairVal() || a.pairVal()->truthy();
+                if (capBin) {
+                    Value b = Value::str(text.toStr()); b.hashKind = "Buf";
+                    return b;
+                }
+                return text;
+            }
             // a :bin handle slurps a Buf unless told otherwise
             bool sBin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy(), sClose = false;
             for (auto& a : args)
@@ -3289,6 +3305,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (sClose) methodCall(inv, "close", ValueList{});
                     if (sBin) return binBuf(rest);
                     return Value::str(rest);
+                }
+                // …and so do the BYTES a `.read` has taken: `$fh.read: 6;
+                // $fh.slurp(:bin)` answers what follows them
+                {
+                    auto bit = inv.hash()->find("bytes");
+                    auto bp = inv.hash()->find("bpos");
+                    if (sBin && bit != inv.hash()->end() && bp != inv.hash()->end() && bp->second.toInt() > 0) {
+                        const std::string all = bit->second.s.str();
+                        size_t p = (size_t)std::min<long long>(bp->second.toInt(), (long long)all.size());
+                        (*inv.hash())["bpos"] = Value::integer((long long)all.size());
+                        if (sClose) methodCall(inv, "close", ValueList{});
+                        return binBuf(all.substr(p));
+                    }
                 }
                 if (sBin || sClose) {
                     std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
@@ -5190,6 +5219,32 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if ((int)i != rxIdx && args[i].t != VT::Pair)
                     { limit = combLimit(*this, args[i], true, none); break; }
             if (none) return out;
+            // A BARE code block (`/. { take $/.Str } <!> /`) runs with `$/` the
+            // match so far — the whole `~~` machinery, not the assertion hooks
+            // above: the matches are those of `m:g/…/`, and the caller's `$/`
+            // is left as it was
+            {
+                bool bareCode = false;
+                for (size_t k = 0; k < pat.size() && !bareCode; k++) {
+                    if (pat[k] == '\\') { k++; continue; }
+                    if (pat[k] == '{' && (k == 0 || (pat[k - 1] != '?' && pat[k - 1] != '!' &&
+                                                    pat[k - 1] != '<' && pat[k - 1] != '*')))
+                        bareCode = true;
+                }
+                if (bareCode) {
+                    Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+                    Value savedSlash = slash ? *slash : Value::nil();
+                    Value ms = regexMatch(subj, ":g " + pat);
+                    if (Value* s2 = tctx_.cur ? tctx_.cur->find("$/") : nullptr) *s2 = savedSlash;
+                    auto addOne = [&](const Value& m) {
+                        if (limit >= 0 && (long long)out.arr()->size() >= limit) return;
+                        if (m.t == VT::Match && m.truthy()) out.arr()->push_back(Value::str(m.s.str()));
+                    };
+                    if (ms.t == VT::Array && ms.arr()) for (auto& m : *ms.arr()) addOne(m);
+                    else addOne(ms);
+                    return out;
+                }
+            }
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                 if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 out.arr()->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));

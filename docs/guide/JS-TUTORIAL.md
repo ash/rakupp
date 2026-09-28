@@ -158,10 +158,10 @@ sub MAIN(
 
 ```
 Usage:
-  prog.js [--times=<Int>] [--sep=<Str>] [-v] <word>
+  prog.js [--times[=Int]] [--sep=<Str>] [-v] <word>
   
     <word>           the word to repeat
-    --times=<Int>    how many times [default: 3]
+    --times[=Int]    how many times [default: 3]
     --sep=<Str>      what to put between [default: ', ']
     -v               shout it
 ```

@@ -341,6 +341,7 @@ struct Callable {
     PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
     PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
     PublishedOnce<signed char> protoTypedScan{-1}; // 1 = a multi group whose proto types a positional
+    PublishedOnce<signed char> protoShapeScan{-1}; // 1 = a multi SUB group whose proto bounds the positionals (arity or |c(…))
     // The registered END phasers nested anywhere in this body (issue #70): every
     // call re-captures them, so they run at exit in the scope of the LAST call.
     // Decided at first call — the registry that knows them is shared, this
@@ -1267,6 +1268,7 @@ inline void setRangeEnds(Value& r, const Value& from, const Value& to) {
 
 struct ClassAttr {
     std::string name;
+    std::vector<std::string> doesRoles; // `has $.x does R` (AttrDecl::doesRoles)
     std::string pod, podTrail; // declarator pod (.WHY), as AttrDecl carries it
     int declLine = 0;
     char sigil = '$';
@@ -1314,6 +1316,9 @@ struct ClassAttr {
     // object every time or the trait's work is invisible (META6's `is customary`).
     // Empty until the class body declares an attribute carrying a user trait.
     Value metaObj;
+    // The container a trait mixed a role into (`$a.container.VAR does doc($arg)`),
+    // which every instance's slot then starts from. Empty when no trait did.
+    Value containerProto;
 };
 
 // The Attribute meta-object for one declared attribute, built once and cached on
@@ -1328,9 +1333,14 @@ struct ParamMetaBox { Value v; };
 // keeps it out of the way of any real key: role attributes live in the same map
 // under their plain names, which is what makes `$a.where` work afterwards.
 inline constexpr const char* ATTR_ROLES_KEY = "\x01roles";
+// …and where `$attr.container` keeps the one placeholder container it hands out
+inline constexpr const char* ATTR_CONTAINER_KEY = "\x01container";
 
 struct ClassInfo {
     std::string name;
+    // A ROLE composing a role that declares the same attribute: the conflict
+    // its pun, or a class composing it, reports (S14-roles/conflicts.t)
+    std::string roleAttrConflict;
     // What this type should be CALLED in output, when that differs from the
     // registry key in `name`. Only a role pun has one: its key carries a serial
     // (`Foo\x01pun3`) so that two identical parameterizations stay one type,
@@ -1340,6 +1350,7 @@ struct ClassInfo {
     std::shared_ptr<ClassInfo> parent;
     std::set<std::string> trusts; // `trusts Foo` — packages allowed to call its private methods
     std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo
+    std::string nativeOf;     // …and its element type, `is Array[Str]` (Str)
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
     ValueMap methods; // Code values (closures)

@@ -279,6 +279,9 @@ struct NameTerm : Expr {
     // name must throw X::NoSuchSymbol there, never mint a stub type object.
     // Parsed and serialized nodes keep the default.
     bool symbolicStrict = false;
+    // `$?PACKAGE` / `$?MODULE`: the enclosing package ITSELF — a lexical `my package`
+    // that no global lookup finds still answers as its type (S10-packages/scope.t)
+    bool pkgSelf = false;
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 
@@ -589,6 +592,8 @@ struct Param {
     std::string name;   // includes sigil; empty for anon
     char sigil = '$';
     std::string type;   // type constraint name (for multi-dispatch); "" = unconstrained
+    std::string typeShown; // how .raku writes the type when `type` stands in for it:
+                           // `::?CLASS $c` in a ROLE binds as Mu but reads `::?CLASS`
     ExprPtr whereExpr;  // `where` constraint (checked in multi-dispatch)
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
@@ -612,7 +617,8 @@ struct Param {
     bool required = false; // explicit `!` on a named param
     bool invocant = false; // declared before ':' in signature
     bool pastDoubleSemi = false; // after `;;` — not a multi-invocant
-    std::vector<long long> shapeDims; // `@a[3]` / `@a[4,*]`: required shape (-1 = any size, -2 = unchecked)
+    std::vector<long long> shapeDims; // `@a[3]` / `@a[4,*]`: required shape (-1 = any size, -2 = an expression)
+    std::vector<ExprPtr> shapeDimExprs; // `($n, @a[$n])`: the -2 dimensions, evaluated at bind time (null elsewhere)
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
     std::string coerceFrom; // the FROM type inside the parens ("" for `Foo()` = Any) — it is the
@@ -776,6 +782,7 @@ struct SubDecl : Stmt {
 
 struct AttrDecl {
     std::string name;   // bare name, no sigil/twigil
+    std::vector<std::string> doesRoles; // `has $.x does R` — roles mixed into its initial value
     std::string pod, podTrail; // `#|` / `#=` declarator pod (.WHY); pod holds both
     int declLine = 0;
     char sigil = '$';
@@ -791,6 +798,7 @@ struct AttrDecl {
     std::string requiredWhy; // `is required("reason")` — carried into the exception message
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
     bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
+    std::string coerceFrom; // …its SOURCE type, `has Int(Rat) $.x`: "Rat" ("" = Any)
     std::vector<std::string> handles; // `handles <m1 m2>` — delegate these methods to the attr
     std::vector<std::string> handlesTo; // parallel to `handles`: the name to call ON the
                                         // attribute when the delegation RENAMES
@@ -1051,6 +1059,7 @@ struct SubsetDecl : Stmt {
     std::string coerceFrom;  // …and what it coerces FROM (`of Num(Str)`: "Str"; "" = Any)
     ExprPtr where;         // may be null (pure alias)
     std::string pod, podTrail; // declarator pod (.WHY)
+    bool isMy = false;     // `my subset F` — lexical: not registered under the package-qualified name
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 

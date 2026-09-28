@@ -24,24 +24,26 @@
 // `return` inside a nested lambda still means what it always did. nullopt =
 // "not handled here".
 
-// A submethod's DISCARDED result is in SINK context: an unhandled FAILURE
-// returned from BUILD/TWEAK detonates, throwing its own exception. That is
-// how `submethod TWEAK { $!Etype = self.etype($!Etype) }` surfaces
-// EType(300)'s X::Enum::NoValue under Rakudo — the Failure sails through the
-// assignment and the return typecheck, and dies only here.
-static void sinkBuildResult(const rakupp::Value& r) {
+// An unhandled FAILURE returned from BUILD/TWEAK ends the construction, and
+// `.new` answers that Failure (Rakudo: `submethod BUILD { fail "noway" }` makes
+// `Foo.new` a Failure whose .defined is False). Sunk, or used, it detonates —
+// which is how `submethod TWEAK { $!Etype = self.etype($!Etype) }` still
+// surfaces EType(300)'s X::Enum::NoValue. methodCall catches this.
+static void sinkBuildResult(const rakupp::Value& r, bool catchArmed) {
     using namespace rakupp;
-    if (r.t == VT::Hash && r.hashKind == "Failure") {
-        Value ex = Value::typeObj("X::AdHoc");
-        std::string msg = "Failed";
-        if (r.hash()) {
-            auto eit = r.hash()->find("exception");
-            if (eit != r.hash()->end()) ex = eit->second;
-            auto mit = r.hash()->find("message");
-            if (mit != r.hash()->end()) msg = mit->second.toStr();
-        }
-        throw RakuError{ex, msg};
+    if (!(r.t == VT::Hash && r.hashKind == "Failure")) return;
+    if (catchArmed) throw BuildFailureEx{r};
+    // no `.new` up the stack to answer it (a construction reached some other
+    // way): detonate, as the sunk Failure it then is
+    Value ex = Value::typeObj("X::AdHoc");
+    std::string msg = "Failed";
+    if (r.hash()) {
+        auto eit = r.hash()->find("exception");
+        if (eit != r.hash()->end()) ex = eit->second;
+        auto mit = r.hash()->find("message");
+        if (mit != r.hash()->end()) msg = mit->second.toStr();
     }
+    throw RakuError{ex, msg};
 }
 
 // S-43/S-35/S-36: several Supply combinators take a `&by` that means one thing
@@ -348,7 +350,7 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
         rc.sameArgs = args;
         rc.next = [](ValueList) { return Value::nil(); };
         redispatchStack_.push_back(std::move(rc));
-        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true)); }
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx_.ctorCatchDepth > 0); }
         catch (...) { redispatchStack_.pop_back(); throw; }
         redispatchStack_.pop_back();
     };
@@ -410,7 +412,7 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
         rc.sameArgs = args;
         rc.next = [](ValueList) { return Value::nil(); };
         redispatchStack_.push_back(std::move(rc));
-        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true)); }
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx_.ctorCatchDepth > 0); }
         catch (...) { redispatchStack_.pop_back(); throw; }
         redispatchStack_.pop_back();
     };
@@ -915,6 +917,16 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                               ? (ensureEnv(), callCallable(at.buildFn, ValueList{selfEarly}))
                               : seed;   // `.set_build(&closure)`, added at runtime
             dv.readonly = dv.immutableBind = false;   // `has $.x = CONST` (see nilResetForAttr)
+            // …and what a `.set_build` closure answers is ASSIGNED to the
+            // attribute, so the declared type is checked at run time
+            // (S12-attributes/defaults.t)
+            if (at.sigil == '$' && !at.hasDefVal && !at.def && at.buildFn.t == VT::Code && !at.coerce &&
+                !at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
+                at.type.find('[') == std::string::npos && dv.t != VT::Nil &&
+                !typeOrSubsetMatches(dv, resolveRoleType(at.type)))
+                throwTypedV("X::TypeCheck::Assignment", {{"got", dv}, {"expected", Value::typeObj(at.type)}},
+                            "Type check failed in assignment to $!" + at.name + "; expected " + at.type +
+                            " but got " + dv.typeName() + " (" + typeCheckRepr(dv) + ")");
             // the SIGIL is a container type: `has @.a = (1,2)` holds an
             // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
             // (Array)/(Hash) and the default renderer shows [1, 2] /
@@ -930,6 +942,25 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
                 (dv.t == VT::Array || dv.t == VT::Hash)) {
                 ensureEnv();
                 dv.elemDefaultM() = std::make_shared<Value>(eval(const_cast<Expr*>(at.defaultTrait)));
+            }
+            // `has $.x does Foo` — the role goes into the initial value
+            for (auto& rn : at.doesRoles) dv = mixinValue(std::move(dv), Value::typeObj(rn), /*copy=*/true);
+            // …and the container a trait mixed a role into. A mixed-in Scalar
+            // is no container any more, so a `$` attribute holds that one
+            // object, shared, as in Rakudo; an `@`/`%` one gets a fresh
+            // container of the mixed type
+            if (at.containerProto.t == VT::Object && at.containerProto.obj()) {
+                if (at.sigil == '$') {
+                    if (!at.def && !at.hasDefVal && at.buildFn.t != VT::Code) dv = at.containerProto;
+                }
+                else if (dv.t == VT::Array || dv.t == VT::Hash) {
+                    auto mixed = makePayload<ObjectData>();
+                    mixed->cls = at.containerProto.obj()->cls;
+                    mixed->attrs = at.containerProto.obj()->attrs;
+                    mixed->boxed = dv;
+                    mixed->hasBoxed = true;
+                    dv = Value(); dv.t = VT::Object; dv.setObj(mixed);
+                }
             }
             od->attrs[slot] = dv;
         }
@@ -1041,8 +1072,37 @@ void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
     }
 }
 
+// The one placeholder container a meta-object hands out for what it describes —
+// `$attr.container`, `$var.var` — kept in the meta-object's own map, so what a
+// trait mixes into it (`.VAR does Doc($arg)`) is still there afterwards. A
+// Scalar, Array or Hash by the sigil; the last two answer as that container.
+static Value containerPlaceholder(ValueMap& h) {
+    auto ci = h.find(ATTR_CONTAINER_KEY);
+    if (ci != h.end()) return ci->second;
+    const std::string an = h.count("name") ? h["name"].toStr() : "";
+    const char* kind = an.empty() ? "Scalar" : an[0] == '@' ? "Array" : an[0] == '%' ? "Hash" : "Scalar";
+    auto bc = std::make_shared<ClassInfo>();
+    bc->name = kind;
+    bc->nativeParent = kind;
+    auto od = makePayload<ObjectData>();
+    od->cls = bc;
+    if (kind[0] != 'S') { od->boxed = kind[0] == 'A' ? Value::array() : Value::makeHash(); od->hasBoxed = true; }
+    Value c; c.t = VT::Object; c.setObj(od);
+    h[ATTR_CONTAINER_KEY] = c;
+    return c;
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
+    // The Variable a variable's user trait is handed (`trait_mod:<is>(Variable:D
+    // $v, :$noted!)`, see applyVarTrait): its `.name`, sigil and all, and in
+    // `.var` the placeholder for its container
+    if (inv.t == VT::Hash && inv.hashKind == "Variable" && inv.hash()) {
+        auto& h = *inv.hash();
+        if (m == "name") return h.count("name") ? h["name"] : Value::str("");
+        if (m == "var") return containerPlaceholder(h);
+        if (m == "VAR") return inv;
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
         // This arm REWRITES the invocant (drainSupplyBlock) and then reads it for
         // the rest of the block. The parameter is a const reference — the dispatch
@@ -2423,7 +2483,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `.set_build(&closure)` — the code that produces this attribute's initial
         // value, which a metaclass adding an attribute at runtime uses in place
         // of the `= default` a declaration would have written.
-        if (m == "set_build" && !args.empty()) { h["build"] = args[0]; return args[0]; }
+        if (m == "set_build" && !args.empty()) {
+            h["build"] = args[0];
+            // …and it is the CLASS's attribute that construction reads, so the
+            // code goes on that record too (S12-attributes/defaults.t)
+            if (h.count("package") && h.count("name")) {
+                auto cit = classes_.find(h["package"].s);
+                std::string an = h["name"].toStr();
+                if (an.size() > 2 && an[1] == '!') an = an.substr(2);
+                if (cit != classes_.end() && cit->second)
+                    for (auto& a : cit->second->attrs) if (a.name == an) { a.buildFn = args[0]; break; }
+            }
+            return args[0];
+        }
         // an Attribute is an object: `.raku` is its class and `.new`, not its slots
         // (the bootstrap ones Attribute itself has are BOOTSTRAPATTRs)
         if ((m == "raku" || m == "perl") && args.empty())
@@ -2552,7 +2624,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "hash")
             throw RakuError{Value::typeObj("X::Method::NotFound"),
                 "No such method 'hash' for invocant of type 'Attribute'"};
-        if (m == "container_descriptor" || m == "container") return inv; // enough for `.of`/rw queries
+        if (m == "container_descriptor") return inv; // enough for `.of`/rw queries
+        // `$attr.container` — the container each instance's slot starts as: ONE
+        // per attribute, kept in the meta-object's own map, so what a trait
+        // mixes into it (`$a.container.VAR does doc($arg)`) is still there when
+        // the class constructs (S14-traits/attributes.t)
+        if (m == "container") return containerPlaceholder(h);
         if (m == "package" || m == "declaring_package") return h.count("package") ? h["package"] : Value::typeObj("Mu");
         // An accessor of a role a trait mixed in (`$a does R` put R's attributes
         // into this same map): `$a.where` after META6's `is customary`. Last,
@@ -4325,6 +4402,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "full") { st.full = true; st.collapse = false; }
             return Value::str(renderBacktraceValue(inv, st));
         }
+        // `.is-runtime`: whether the frames come from RUNNING code rather than
+        // from compiling it. Every backtrace here is recorded by running code (a
+        // BEGIN-time failure is reported as X::Comp::BeginTime instead), so it
+        // is (integration/error-reporting.t: a broken promise's exception)
+        if (m == "is-runtime") return Value::boolean(true);
         if (m == "summary") {  // Rakudo: the frames a reader cares about
             BtStyle st; st.excerpt = st.typeLine = st.colour = false;
             return Value::str(renderBacktraceValue(inv, st));
@@ -6569,6 +6651,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return self;
                     }
                 }
+                // `class History is Proxy { has @.history }; History.new(:FETCH, :STORE)`
+                // — the default constructor of a Proxy SUBCLASS builds the Proxy
+                // container itself, stamped with the class (its methods dispatch
+                // with the proxy as self) and holding the class's attributes as
+                // prefixed keys, as the AttrProxy form does (S06-routine-modifiers/proxy.t)
+                // a role's pun composes it for real: a conflict its own composition
+                // let through is reported now (S14-roles/conflicts.t)
+                if (ci->isRole && !ci->roleAttrConflict.empty())
+                    throw RakuError{Value::typeObj("X::Role::Attribute::Conflicts"), ci->roleAttrConflict};
+                if (nb == "Proxy") {
+                    Value p = methodCall(Value::typeObj("Proxy"), "new", args);
+                    if (p.t == VT::Hash && p.hash()) {
+                        (*p.hash())["\x01cls"] = Value::str(ci->name);
+                        auto aod = makePayload<ObjectData>();
+                        aod->cls = ci;
+                        runAttrDefaults(aod, ci, args);   // the attributes' own defaults
+                        for (auto& kv : aod->attrs) {
+                            const ClassAttr* at = ci->findAttr(kv.first);
+                            (*p.hash())[std::string("\x01" "a") + (at ? at->sigil : '$') + "!" + kv.first] = kv.second;
+                        }
+                    }
+                    return p;
+                }
                 auto od = makePayload<ObjectData>();
                 od->cls = ci;
                 runAttrDefaults(od, ci, args);
@@ -6641,7 +6746,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& arg : args)
                     if (arg.t != VT::Pair) { anyPositional = true; break; }
                 // (a BUILD does not change that: Mu.new passes it NAMED arguments only)
-                if (anyPositional && !nativeBased && !ci->findMethod("new"))
+                // …and neither does a user `multi method new` none of whose
+                // candidates took these arguments: the call falls through to
+                // Mu.new, which refuses the positionals (workout.t's Vector)
+                if (anyPositional && !nativeBased)
                     for (auto& arg : args)
                         if (arg.t != VT::Pair)
                             throwTypedV("X::Constructor::Positional",
@@ -7247,6 +7355,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                     "Type check failed in binding " + p.name + "; expected " + want +
                                     " but got " + av.typeName());
                         }
+                        // a COERCION parameter takes its target or its source
+                        // type (`Int(Str)` binds an Int or a Str, not 1.1), and
+                        // the error names the coercion type itself
+                        else if (!p.type.empty() && p.coerce && p.sigil == '$' && !p.coerceFrom.empty() &&
+                                 checkBind && bindErr.t == VT::Nil &&
+                                 !typeOrSubsetMatches(av, p.type) && !typeOrSubsetMatches(av, p.coerceFrom)) {
+                            const std::string want = p.type + "(" + p.coerceFrom + ")";
+                            bindErr = makeTypedEx("X::TypeCheck::Binding::Parameter",
+                                {{"expected", Value::typeObj(want)}, {"got", Value::typeObj(av.typeName())},
+                                 {"symbol", Value::str(p.name)}},
+                                "Type check failed in binding " + p.name + "; expected " + want +
+                                " but got " + av.typeName());
+                        }
                     }
                     else keep();
                 }
@@ -7396,9 +7517,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             code.code()->isBlock = true;
             return code;
         }
-        if (m == "returns" || m == "of")
-            return inv.code()->retType.empty() ? Value::typeObj("Mu")
-                                              : Value::typeObj(retTypeName(inv.code()->retType));
+        if (m == "returns" || m == "of") {
+            const std::string& rt = inv.code()->retType;
+            if (rt.empty()) return Value::typeObj("Mu");
+            // a COERCION answers its coercion type, `--> Str()` being Str(Any)
+            if (retTypeCoerces(rt)) {
+                std::string from = retTypeCoerceFrom(rt);
+                for (size_t q; (q = from.find('\x01')) != std::string::npos; ) from.replace(q, 1, ":");
+                return Value::typeObj(retTypeName(rt) + "(" + (from.empty() ? std::string("Any") : from) + ")");
+            }
+            return Value::typeObj(retTypeName(rt));
+        }
         if (m == "signature") return makeSignature(inv.code());
         if (m == "yada") return Value::boolean(inv.code()->isStub);   // a `{ ... }` / `{ !!! }` body
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->isMultiDispatcher);
@@ -7438,6 +7567,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "candidates") {
             Value out = Value::array(); out.isList = true;
             if (inv.code()->isMultiDispatcher) {
+                // A METHOD group derives from its parents' groups of the same
+                // name: their multis come first, farthest ancestor first, then
+                // the class's own — so `C2.^find_method('bar').candidates[0]` is
+                // C1's (S06-advanced/wrap.t). Ours holds only its own.
+                if (inv.code()->isMethod && !inv.code()->name.empty() && !inv.code()->pkg.empty()) {
+                    auto ci = classes_.find(inv.code()->pkg);
+                    if (ci != classes_.end() && ci->second) {
+                        std::vector<ClassInfo*> chain;
+                        for (ClassInfo* p = ci->second->parent.get(); p; p = p->parent.get()) chain.push_back(p);
+                        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                            auto mit = (*it)->methods.find(inv.code()->name);
+                            if (mit == (*it)->methods.end() || mit->second.t != VT::Code || !mit->second.code() ||
+                                !mit->second.code()->isMultiDispatcher || mit->second.code() == inv.code())
+                                continue;
+                            for (auto& c : mit->second.code()->candidates)
+                                if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody)))
+                                    out.arr()->push_back(c);
+                        }
+                    }
+                }
                 for (auto& c : inv.code()->candidates)
                     // the group's own `proto … {*}` is the dispatcher, not a
                     // candidate: Rakudo lists the multis only
@@ -8703,6 +8852,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Match && (m == "pos")) return graphemeOff(inv, inv.rTo());
     // `.target` is `.orig` under its Cursor-era name
     if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
+        // a match against a non-Str topic answers that topic as .orig (keepMatchOrig);
+        // .target is always the string that was matched
+        if (m == "orig" && inv.pairKey()) return *inv.pairKey();
         std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
         if (m == "orig" || m == "target") return Value::str(orig);
         if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom(), orig.size())));
@@ -9000,6 +9152,38 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return methodCall(Value::typeObj(inv.hashKind), "new", na);
     }
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
+        // A LAZY array's clone shares its REIFIER: what either one pulls next is
+        // what the other sees at that index, while each keeps storage of its own
+        // (`my @b = @a.clone` over `1, {rand} … *`; S32-array/create.t). The
+        // generator moves into a shared history both read from, each at its own
+        // position, so a shift or unshift on one does not skew the other.
+        if (inv.t == VT::Array && inv.arr() && inv.ext()) {
+            auto st = std::static_pointer_cast<LazySeqState>(inv.ext());
+            if (st && st->appendNext && !st->exhausted) {
+                struct SharedGen { ValueList history; std::function<bool(ValueList&)> next; bool done = false; };
+                auto sg = std::make_shared<SharedGen>();
+                sg->history = *inv.arr();
+                sg->next = st->appendNext;
+                auto reader = [sg](size_t from) {
+                    auto pos = std::make_shared<size_t>(from);
+                    return [sg, pos](ValueList& cache) -> bool {
+                        while (sg->history.size() <= *pos) {
+                            if (sg->done || !sg->next(sg->history)) { sg->done = true; return false; }
+                        }
+                        cache.push_back(sg->history[(*pos)++]);
+                        return true;
+                    };
+                };
+                const size_t have = inv.arr()->size();
+                auto cst = std::make_shared<LazySeqState>(*st);
+                st->appendNext = reader(have);
+                cst->appendNext = reader(have);
+                Value nv = inv;
+                nv.setArr(makePayload<ValueList>(*inv.arr()));
+                nv.extM() = cst;
+                return nv;
+            }
+        }
         if (inv.t == VT::Array) { Value nv = inv; nv.setArr(makePayload<ValueList>(*inv.arr())); return nv; }
         if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(makePayload<ValueMap>(*inv.hash())); return nv; }
         // A PAIR is mutable through `.value` (Rakudo declares it `is rw`), and

@@ -366,6 +366,9 @@ std::vector<PrecompEntry> precompCacheList();
 std::pair<size_t, unsigned long long> precompCacheClear();
 
 struct EnvExtras {
+    // `given @a` / `with @a`: `$_` IS the Array, not a Scalar holding it, so
+    // assigning the topic list-assigns @a (`with @a { .=uc }`, inplace.t)
+    bool topicBindsArray = false;
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
     // (so the caller sees it mid-call); rwSynced records the last value pushed
@@ -710,6 +713,9 @@ struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the t
 // Thrown by runControlWarn; the block executor whose CONTROL this is returns.
 struct ControlHandledEx { Block* handler; };
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
+// A BUILD or TWEAK answered a Failure: the construction ends and `.new` / `.bless`
+// answers that Failure (Rakudo) — thrown from the hook runner, caught in methodCall
+struct BuildFailureEx { Value failure; };
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 // ONE frame of a throw-time call chain: the routine that was running and the
 // line executing in that activation (the innermost's current line; an outer
@@ -859,6 +865,7 @@ struct SupplyTapCtx {
     int pending = 0;                // inner taps not yet done
     bool blockDone = false;         // the supply block returned
     bool doneFired = false;         // downstream done already delivered
+    bool closeRebound = false;      // CLOSE phasers now close over the running body (see emit)
     ValueList closers;              // Supply.on-close callbacks for THIS activation
     // S-53: a `whenever` subscribes the instant its statement runs, but the
     // events its source delivers WHILE the block body — or an enclosing
@@ -998,6 +1005,8 @@ struct ExecContext {
     // the SAME callable frame as the innermost native loop (no closure between);
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
+    bool ctorCatchSkip = false;   // methodCall's BuildFailureEx catch is already armed for this `.new`
+    short ctorCatchDepth = 0;     // how many such catches are armed on this thread (0: none — throw as before)
     const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — a bare `next`/`last`/`redo` may go cooperative only when it IS this
     // Did the value that just came out of a routine or block arrive in a
     // CONTAINER? Rakudo's sink does not descend a Scalar to sink its contents,
@@ -1130,6 +1139,9 @@ struct LazySeqState {
     bool gatherSeq = false;
     bool diedProbe = false; // a gather whose first run DIED: pulling (or sinking) re-raises it
     bool declaredLazy = false; // `lazy gather {…}`: lazy by declaration, .is-lazy without a pull
+    // `1, { …; last } ... *` — an endless SEQUENCE whose generator is user code:
+    // it may yet end (a `last` in the generator), so sinking it runs it
+    bool seqUserGen = false;
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
@@ -1325,6 +1337,11 @@ public:
     // caller's own match inside its own block, and suppressing that would break
     // a `$/` read the program is entitled to. Guard the regexMatch call, not the
     // loop that may also invoke a Callable.
+    // The names a `constant` declaration has bound. A constant's value is known
+    // when the regex that interpolates it is compiled, so it takes part in the
+    // longest-token match; an ordinary variable's does not (`/ a | b | $y /`
+    // with `my $y = 'ab'` matches `a`, with `constant $y` it matches `ab`).
+    std::unordered_set<std::string> constantNames_;
     static thread_local bool matchVarSuppressed_;
     struct MatchVarGuard {                 // nests and unwinds correctly
         bool saved;
@@ -1691,6 +1708,8 @@ public:
     // representation test with no interpreter to call a method from, so the
     // override is honoured here instead.
     bool topicDefined(const Value& v);
+    bool exprIsArrayContainer(Expr* e, char attrSigil = 0);
+    Value* proxyAttrSlot(MethodCall* mc, char* sigilOut = nullptr);
     // Rewrite a PUN's attributes declared with a role's TYPE-CAPTURE parameter
     // to the type actually bound (`role R[::TYPE] { has TYPE @!a }`).
     void applyRoleTypeParamsToAttrs(ClassInfo* dest);
@@ -1729,6 +1748,7 @@ public:
     Value deproxy(Value v);
     // `T($v)` coercion — see the definition in Interpreter.cpp.
     Value coerceToType(const Value& v, const std::string& type);
+    Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param
     bool isCoercionSubset(const std::string& type) const;
@@ -1859,8 +1879,15 @@ public:
     // ordinary eval+boolify), else 0/1.
     int tryCondBool(Expr* e);
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
+    // A match against a NON-Str topic (`12345 ~~ /2../`) keeps that topic as its
+    // .orig — on the Match handed back and on the `$/` the match just set
+    void keepMatchOrig(Value& m, const Value& topic);
     void preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts); // `{ our sub f {…} }` → &OUR::f at compile time
     void callRoutineTrait(const Value& tm, const Value& code, const struct SubTraitSpec& st);
+    Value applyVarTrait(const std::string& var, const std::string& trait, const Value* arg);   // `my $a is noted`
+    bool routineTraitsCertain();
+    bool routineTraitKnown(const std::string& n);
+    void unknownRoutineTrait(const std::string& name, const Value& code);
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
@@ -1951,6 +1978,9 @@ public:
     void checkPrivatePermission(const std::string& qualified);
     const std::string& attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf);
     bool multiTie(const Value& a, const Value& b);
+    // Does this method's implicit `*%_` take the call's unclaimed named arguments?
+    // Every method's does — but one declared in an `is hidden` class has none (Rakudo)
+    bool methodTakesAnyNamed(const Callable& c, const ValueList& args);
     void throwIfAmbiguous(const Callable& c, const Value* best, const Value* const* matched, int n, const ValueList& as);
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
@@ -1966,7 +1996,9 @@ public:
     void seedStaticScope(const void* key, Env* env);
     std::string subsetTypeOfVar(const std::string& nm); // the SUBSET a `my Even $x` was declared with, or ""
     void subsetMutationCheck(const Expr* target, const Value& nv); // `$x++` / `$x += 1` on a subset-typed $x
-    void coerceParam(const struct Param& p, Value& v, const std::string* typeOverride = nullptr);   // bind a `T(F) $x` parameter
+    void coerceParam(const struct Param& p, Value& v, const std::string* typeOverride = nullptr,   // bind a `T(F) $x` parameter
+                     const std::string* fromOverride = nullptr, int defOverride = -1);
+    bool coerceViaTypeVar(const struct Param& p, Value& v, Env* env);   // `T $x` with T a coercion type
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -2158,6 +2190,9 @@ public:
     std::set<std::string> slangModules_;
     std::vector<std::string> libPaths_{"lib", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
+    // …and the ones whose body is running right now: a `use` of one of THESE is
+    // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading
+    std::set<std::string> modulesLoading_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)
     std::map<std::string, Value> moduleExportSubs_;
@@ -2169,6 +2204,10 @@ public:
     // publish them (Prompt: plain `use Prompt` then `use Prompt :prompt`).
     struct SelectiveExport { std::string key; Value value; std::vector<std::string> tags; };
     std::map<std::string, std::vector<SelectiveExport>> moduleSelectiveExports_;
+    // every export tag a loaded module has (scanExportTags), for X::Import::NoSuchTag
+    // on a later `use Mod :tag`; absent when the module builds its own EXPORT
+    std::map<std::string, std::set<std::string>> moduleExportTags_;
+    void checkImportTags(const std::string& name, const std::vector<std::string>& importArgs);
     // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:
     // code blocks/assertions run for real, in the regex's closed-over scope
     // What a `for` walks: an object with its own `.iterator` decides for itself.
@@ -2356,6 +2395,31 @@ public:
     // imported something whose exports are not modelled here.
     bool declTypeIsKnown(const std::string& t) {   // not const: unitCurrent() locks
         if (t.empty()) return true;
+        // `M::F` where M is a module or package this program declared and
+        // nothing of that name exists — a `my subset F` inside it stays lexical
+        // there (Rakudo: "Type 'M::F' is not declared"). Only a plain qualified
+        // name, and only in a unit that imports nothing that could supply it.
+        {
+            size_t dc = t.rfind("::");
+            if (dc != std::string::npos && dc > 0 && dc + 2 < t.size() &&
+                t.find_first_of("[(<:?") == dc &&
+                !classes_.count(t) && !subsets_.count(t) && !isKnownTypeName(t) &&
+                !(global_ && global_->find(t))) {
+                const Program* unit = unitCurrent();
+                if (unit && !unit->typeNamesOpaque && !unit->importsModules && !unit->declaredTypeNames.count(t)) {
+                    const std::string pre = t.substr(0, dc);
+                    bool pkgHere = pkgKind_.count(pre) != 0;
+                    // …or a namespace the unit's own declarations open: `role
+                    // A::B` makes `A` a package, and `A::C` names nothing in it
+                    // (S14-roles/basic.t)
+                    if (!pkgHere)
+                        for (auto& n : unit->declaredTypeNames)
+                            if (n.size() > pre.size() + 2 && n.compare(0, pre.size(), pre) == 0 &&
+                                n.compare(pre.size(), 2, "::") == 0) { pkgHere = true; break; }
+                    if (pkgHere) return false;
+                }
+            }
+        }
         // `::T` is a type CAPTURE, not a reference; `Foo::Bar`, `Array[Int]`,
         // `Int()` and anything non-alphanumeric are shapes this check does not
         // model, so they pass.

@@ -162,7 +162,7 @@ template <class IO> void F(IO& io, NqpOpc& x)      { if constexpr (IO::reading) 
 // ---- Param and the other plain records ----
 
 template <class IO> void ioParam(IO& io, Param& p) {
-    F(io, p.name); F(io, p.sigil); F(io, p.type);
+    F(io, p.name); F(io, p.sigil); F(io, p.type); F(io, p.typeShown);
     ioExpr(io, p.whereExpr); ioExpr(io, p.litVal); ioExpr(io, p.defaultVal);
     F(io, p.defaultRaku); F(io, p.hadWhere); F(io, p.typeCapture); F(io, p.captureName);
     F(io, p.namedKey); F(io, p.aliasBoth); ioVec(io, p.aliasKeys);
@@ -195,6 +195,8 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
     F(io, a.required); F(io, a.built); F(io, a.requiredWhy); F(io, a.type);
     F(io, a.coerce); ioVec(io, a.handles); ioVec(io, a.handlesTo); F(io, a.defConstraint);
     F(io, a.objKeyed); F(io, a.inlined); F(io, a.twigilWritten);
+    ioVec(io, a.doesRoles);
+    F(io, a.coerceFrom);
     if constexpr (IO::reading) {
         size_t n = io.count();
         a.userTraits.clear(); a.userTraits.resize(n);
@@ -249,7 +251,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       F(io, n.viaPseudoPkg); F(io, n.pseudoPkg);
                                                       ioExpr(io, n.declTypeExpr);
                                                       n.syncAttrCache(); }  // derived from `name`, not stored
-template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); }
+template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); F(io, n.pkgSelf); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);
                                                          F(io, n.pkg); F(io, n.sigil); }
@@ -322,6 +324,9 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     F(io, n.retRw);
     // `method loader handles <load-delegate>` — also a parser-consumed trait
     ioVec(io, n.handles);
+    // …and `is DEPRECATED(…)`, which a cached module otherwise forgot:
+    // its calls went unreported on every run after the first (precompilation.t)
+    F(io, n.deprecated); ioExpr(io, n.deprecatedWith);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);
@@ -404,7 +409,7 @@ template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.a
                                                                          // cache made run 2 load ANY version
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
-template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); }
+template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
                                                       ioBlock(io, n.elseBody); F(io, n.elseVar);

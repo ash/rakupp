@@ -350,6 +350,9 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         // to go and look at; showing it here saves the trip (issue #67).
         std::string sl = interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
         if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
+        // …and where, as FILE:LINE — the spelling editors and Rakudo's own
+        // "at FILE:LINE" both jump to (integration/error-reporting.t)
+        std::cerr << "  at " << fileName << ":" << e.line << "\n";
         return 1; // a compile-time (syntax) error exits 1, like Rakudo
     } catch (const RakuError& e) {
         // the same diagnostic the mainline handler prints — this is the path a

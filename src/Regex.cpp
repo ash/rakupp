@@ -1656,10 +1656,17 @@ Regex::NodePtr Regex::parseAtom() {
         // `<` signals the quoted-word-list form) matches any of the literal words, longest first.
         if (peek() == ' ' || peek() == '\t') {
             std::vector<std::string> words;
+            // a backslash escapes the next character, so `< == \< \> >` holds the
+            // words `==`, `<` and `>` — only an unescaped `>` ends the list
+            auto sep = [&](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
             while (!eof() && peek() != '>') {
-                while (peek() == ' ' || peek() == '\t') pos_++;
+                while (!eof() && sep(peek())) pos_++;
                 if (eof() || peek() == '>') break;
-                std::string w; while (!eof() && peek() != ' ' && peek() != '\t' && peek() != '>') w += pat_[pos_++];
+                std::string w;
+                while (!eof() && !sep(peek()) && peek() != '>') {
+                    if (peek() == '\\' && pos_ + 1 < pat_.size()) { pos_++; w += pat_[pos_++]; continue; }
+                    w += pat_[pos_++];
+                }
                 if (!w.empty()) words.push_back(w);
             }
             if (peek() == '>') pos_++;
@@ -3646,6 +3653,8 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (n->runOnly) { // execute for side effects, zero-width, always pass
                 if (n->ltmStop && st.firstCode < 0) st.firstCode = pos; // a bare code block ends the LTM declarative prefix
                 if (st.probing) return k(pos); // ranking measures; it does not run the program
+                // an EMPTY `{}` does nothing but end the prefix: nothing to run
+                if (n->lit.find_first_not_of(" \t\n\r") == std::string::npos) return k(pos);
                 // Hand the block the cursor's OCCURRENCE LISTS as well as the flat
                 // spans, so a repeated name reads inside `{…}` with the same shape
                 // it will have when the match finishes rather than collapsing to

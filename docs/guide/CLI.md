@@ -1112,12 +1112,13 @@ in order — ask for it before asking anything else.
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
 byte-identical on a 46-case oracle matrix
 (`t/regression/main-args-conventions.raku`, which passes under both
-engines). The generated **usage text** follows Rakudo's with two known
-differences: named parameters are listed in declaration order where Rakudo
-hoists the required ones to the front, and a named parameter whose type is not
-`Str` renders as `-n=<Int>` where Rakudo writes `-n[=Int]`. Do not diff a usage
-line against Rakudo's in a golden-file test. The conventions, which are also
-the ordinary Unix ones:
+engines). The generated **usage text** follows Rakudo's with one known
+difference: named parameters are listed in declaration order where Rakudo
+hoists the required ones to the front. (An option whose type would take the
+bare flag — `Int`, `Cool`, `Any` and their subsets — prints its value as
+optional, `-n[=Int]`, and a `Str` or `Num` one as required, `--name=<Str>`,
+as in Rakudo.) Do not diff a usage line against Rakudo's in a golden-file
+test. The conventions, which are also the ordinary Unix ones:
 
 - **`--key=value` and `--key value` both work — the space form for
   `Str`-typed named parameters.** `sub MAIN(Str :$foo, Bool :$verbose)`

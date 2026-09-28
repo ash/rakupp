@@ -85,11 +85,11 @@ rakupp wordfreq.raku --help
 
 ```output
 Usage:
-  wordfreq.raku [--top=<Int>] [--min-length=<Int>] [--json] [<file>] -- Count the commonest words in a text.
+  wordfreq.raku [--top[=Int]] [--min-length[=Int]] [--json] [<file>] -- Count the commonest words in a text.
   
     [<file>]              file to read, or "-" for standard input [default: '-']
-    --top=<Int>           how many words to show [default: 10]
-    --min-length=<Int>    ignore words shorter than this [default: 1]
+    --top[=Int]           how many words to show [default: 10]
+    --min-length[=Int]    ignore words shorter than this [default: 1]
     --json                print JSON instead of a table [default: False]
 ```
 
@@ -297,7 +297,7 @@ description:
 
 ```output
 Usage:
-  /path/to/wordfreq.raku [--top=<Int>] [--min-length=<Int>] [--json] [<file>]
+  /path/to/wordfreq.raku [--top[=Int]] [--min-length[=Int]] [--json] [<file>]
 ```
 
 If the usage text matters in the shipped tool — and for a tool it does — write

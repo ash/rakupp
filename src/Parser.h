@@ -261,6 +261,10 @@ private:
     std::set<std::string> userInfixList_, userInfixChain_; // `is assoc<list>` / `is assoc<chain>`
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     std::map<std::string, int> userPrefixBp_; // a user prefix declared `is looser(…)`: its operand's binding power
+    // a user POSTFIX declared `is looser(&prefix:<p>)`: p's operand stops before it, so
+    // `p 3 q` is q(p(3)) — and the prefixes whose operand is being parsed right now
+    std::map<std::string, std::set<std::string>> postfixLooserThanPrefix_;
+    std::set<std::string> stopPostfix_;
     // Package DECLARATORS a used module supplies through EXPORTHOW::DECLARE:
     // the keyword → the name of the HOW that declaration's type gets. Red
     // exports `model` this way, so `model Foo { … }` is a class declaration
@@ -281,6 +285,11 @@ private:
     // recorded as parseClass/parseSubset/parseEnum see them, handed to the
     // Program at the end of parseProgram.
     std::set<std::string> declTypeNames_;
+    std::set<std::string> typeCaptureNames_;   // `::T` in a signature: a type VARIABLE, no class
+    // a class declared `is T` where T is only a capture so far — checked once the
+    // unit's own classes are all known (a real class of that name makes it fine)
+    struct CaptureParent { std::string parent, child; int line; };
+    std::vector<CaptureParent> captureParents_;
     std::map<std::string, const ClassDecl*> declClassDecls_; // class/package/module decls by name (for `T of U` checks)
     std::map<std::string, int> earlyTypeUse_;
     std::vector<std::string> exportPkgStack_; // braced module/package bodies being parsed
@@ -291,6 +300,11 @@ private:
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
     std::vector<std::string> lastDoesRoles_;
+    // `my $a is noted` / `my $dog is doc('barks')` — a variable's USER traits,
+    // emitted as trait calls after the declaration (collected only while
+    // collectUserTraits_ says the declaration will emit them)
+    std::vector<std::pair<std::string, ExprPtr>> lastUserTraits_;
+    bool collectUserTraits_ = false;
     std::vector<struct ClassDecl*> classDeclStack_; // classes whose bodies are being parsed
     // keyword-named sigilless params in scope (`sub f(\return)`), innermost routine
     std::vector<std::string> kwShadow_;
@@ -456,6 +470,10 @@ private:
     void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets
+    bool evalSelfInScope_ = false;   // set by EVAL: `self` is in scope where the code runs
+    // …and the `self!name` calls such an EVAL makes, checked against the invocant's
+    // class once parsed — a compile-time error in Rakudo (advent2011-day11.t)
+    std::vector<std::pair<std::string, int>> evalPrivCalls_;
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
 public:
@@ -468,6 +486,7 @@ private:
     ExprPtr applyExprModifiers(ExprPtr e); // trailing stmt modifiers inside (…)/@(…)/…
     std::unique_ptr<Block> parseBlock();
     void checkPlaceholderOrder(size_t openAt);
+    std::string placeholderIn(size_t openAt);   // the first `$^x` directly in a block, as `$x`
     void checkNativeParamAssign(const std::vector<Param>& params, size_t bodyAt);
     void resolveConstWords(std::vector<std::string>& w);
     void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
@@ -477,6 +496,11 @@ private:
     StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false,
                        const std::string& kindKw = "");
     int classDepth_ = 0; // >0 while parsing inside a class/role/grammar body
+    // the enclosing package bodies, innermost last: can each hold ATTRIBUTES
+    // (class/role/grammar yes, module/package no) — a `method` outside all of
+    // them has no `$!x` to read
+    std::vector<bool> attrPkgStack_;
+    void refuseFreeMethodAttrs(size_t bodyAt);
     bool dynScopeAll_ = false;               // `use dynamic-scope` in force (block-scoped)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
     std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these

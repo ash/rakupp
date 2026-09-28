@@ -84,20 +84,22 @@ $usage-src.spurt(q:to/END/);
     END
 @made.push($usage-src.Str);
 
+# (a UInt option takes its value optionally, `--top[=UInt]`: a bare `--top` is
+# True, which an Int — and so a UInt — accepts; Rakudo writes it that way)
 # the interpreter's own answer, which is what the binaries have to match
 my $interp = usage-of($*EXECUTABLE, $usage-src.Str);
 my $options = "  \n    <input>         input file"
-            ~ "\n    --top=<UInt>    longest waiter to list [default: 5]";
+            ~ "\n    --top[=UInt]    longest waiter to list [default: 5]";
 check('the interpreter documents each parameter', $interp.lines[2..*].join("\n"), $options);
 check('the interpreter names the script it was given',
-      $interp.lines[1], "  {$usage-src.Str} [--top=<UInt>] <input>");
+      $interp.lines[1], "  {$usage-src.Str} [--top[=UInt]] <input>");
 
 for <exe bundle aot> -> $mode {
     my $bin = compile($mode, $usage-src, "usage86-$mode") or next;
     my $u = usage-of($bin);
     check("--$mode: the option list survives the compile", $u.lines[2..*].join("\n"), $options);
     check("--$mode: the usage names the binary, not the source",
-          $u.lines[1], "  $bin [--top=<UInt>] <input>");
+          $u.lines[1], "  $bin [--top[=UInt]] <input>");
 }
 
 # ---- and the variables the usage line is built from ------------------------

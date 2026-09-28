@@ -2185,7 +2185,13 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 bool first = true;
                 if (v.arr()) for (auto& e : *v.arr()) {
                     if (!first) o += ", "; first = false;
-                    if (e.t == VT::Pair) o += ":" + e.s + "(" + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen) + ")";
+                    // a NAMED part is a colonpair; a Pair that went in as a
+                    // POSITIONAL stays a Pair: `\(1, "a" => 3)` round-trips
+                    if (e.t == VT::Pair && e.namedArg)
+                        o += ":" + e.s + "(" + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen) + ")";
+                    else if (e.t == VT::Pair)
+                        o += (e.pairKey() ? rakuRepr(*e.pairKey(), depth + 1, seen) : rakuStrLit(e.s.str())) +
+                             " => " + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen);
                     else o += rakuRepr(e, depth + 1, seen);
                 }
                 return o + ")";
@@ -2271,6 +2277,15 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // a bare `Mu.new` / `Any.new` instance: no attributes, no container
             if ((v.hashKind == "Mu" || v.hashKind == "Any") && (!v.hash() || v.hash()->empty()))
                 return v.hashKind + ".new";
+            // a Signature inside a list renders as its literal, as it does alone
+            // (`(:(Int $), "x").raku` is `(:(Int $), "x")`, not the record behind it)
+            if (v.hashKind == "Signature" && v.hash()) {
+                auto rs = v.hash()->find("rakustr");
+                auto st = v.hash()->find("str");
+                std::string body = rs != v.hash()->end() ? rs->second.toStr()
+                                 : st != v.hash()->end() ? st->second.toStr() : std::string("()");
+                return ":" + body;
+            }
             if (v.hash() && !seen.insert(v.hash()).second) return reprSelfName(v.hash(), true); // cycle
             std::vector<std::string> keys;
             if (v.hash()) for (auto& kv : *v.hash()) keys.push_back(kv.first);
@@ -3720,7 +3735,8 @@ static bool userWhichIsValue(const Value& v) {
 }
 bool whichIsObjAt(const Value& v) {
     if (v.t == VT::Pair)
-        return (v.pairKey() && whichIsObjAt(*v.pairKey())) ||
+        return v.pairLive() ||   // a live container inside: the Pair is an object (pair.t)
+               (v.pairKey() && whichIsObjAt(*v.pairKey())) ||
                (v.pairVal() && whichIsObjAt(*v.pairVal()));
     return (v.t == VT::Array && v.hashKind != "Capture" && v.enumName.empty()) ||
            (v.t == VT::Hash && v.hashKind.empty()) ||
@@ -3823,6 +3839,15 @@ std::string whichOf(const Value& v) {
                               std::sort(named.begin(), named.end());
                               for (auto& nm : named) pos += nm;
                               return "Capture|" + pos;
+                          }
+                          // a JUNCTION is a value too: its kind and its eigenstates, so
+                          // two `any(True, True)` are one key of a Mu-keyed hash and
+                          // `any(True, False)` another (classify.t)
+                          if (v.arr() && (v.enumName == "any" || v.enumName == "all" ||
+                                          v.enumName == "one" || v.enumName == "none")) {
+                              std::string s = "Junction|" + v.enumName.str() + "(";
+                              for (auto& e : *v.arr()) s += whichOf(e) + ";";
+                              return s + ")";
                           }
                           return v.typeName() + "|" + v.toStr();
         default:          return v.typeName() + "|" + v.toStr();
@@ -4022,7 +4047,7 @@ static std::string renderDefault(const Param& p) {
 static std::string renderParam(const Param& p, bool inSignature = false) {
     std::string o;
     if (!p.type.empty()) {
-        o += p.type;
+        o += p.typeShown.empty() ? p.type : p.typeShown;
         // A COERCION renders both halves — `Int(Cool) $a`, and `Int()` as
         // `Int(Any)`, which is what it means. Only the target was printed, so
         // `:(Int(Cool) $a).raku` came back `:(Int $a)` and read as an ordinary
@@ -4101,6 +4126,17 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
 // its names are a subset, and a sub-signature narrows in turn.
 static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std::string& sRet,
                           const std::vector<Param>& T, const std::string& tRet);
+// The literal a LITERAL parameter (`:("foo")`, `:(1e0)`) stands for, and the
+// type it constrains to (an angle literal is its number, not the allomorph)
+static bool sigLiteral(Interpreter& I, const Param& p, Value& out, std::string& type) {
+    if (!p.litVal) return false;
+    out = I.eval(p.litVal.get());
+    type = out.typeName();
+    if (out.isAllomorph())
+        type = out.t == VT::Int ? "Int" : out.t == VT::Rat ? "Rat" : out.t == VT::Num ? "Num"
+             : out.t == VT::Complex ? "Complex" : type;
+    return true;
+}
 static std::string sigParamType(const Param& p) {
     if (!p.type.empty()) return p.type;
     return "Any";
@@ -4119,7 +4155,18 @@ static bool sigParamOptional(const Param& p) {
 }
 static bool sigParamAccepts(Interpreter& I, const Param& s, const Param& t) {
     if (s.named != t.named) return false;
-    const std::string st = sigParamType(s), tt = sigParamType(t);
+    // a LITERAL parameter binds exactly one value: it accepts the same literal
+    // and nothing wider (`:(Str) ~~ :("foo")` is False, `:("foo") ~~ :(Str)` True)
+    Value sLit, tLit;
+    std::string sLitT, tLitT;
+    const bool sIsLit = sigLiteral(I, s, sLit, sLitT), tIsLit = sigLiteral(I, t, tLit, tLitT);
+    if (sIsLit) {
+        if (!tIsLit || sLitT != tLitT) return false;
+        const bool nan = sLit.t == VT::Num && std::isnan(sLit.toNum());
+        if (nan ? !(tLit.t == VT::Num && std::isnan(tLit.toNum())) : sLit.toStr() != tLit.toStr())
+            return false;
+    }
+    const std::string st = sigParamType(s), tt = tIsLit && t.type.empty() ? tLitT : sigParamType(t);
     if (st != "Mu" && st != tt && !(tt != "Mu" && st == "Any") &&
         !I.typeOrSubsetMatches(Value::typeObj(tt), st))
         return false;
@@ -4192,16 +4239,21 @@ static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std
     return sRet == tRet;
 }
 
+// Is the class named `pkg` declared `is hidden`? Installed by Interpreter.cpp,
+// which owns the class registry (a method of a hidden class has no implicit *%_)
+bool (*g_pkgIsHidden)(const std::string&) = nullptr;
+
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
     // answers `(Mu $path)`, not the empty signature a synthesized dispatcher
     // carries. `^lookup` hands back the dispatcher, so that is what introspection
     // sees — Path::Finder reads `.signature.count` off it to decide how to call
     // the matcher, and an empty one made every proto-declared matcher unusable.
+    bool protoLess = c && c->isMultiDispatcher && !c->params;
     if (c && c->isMultiDispatcher && !c->params)
         for (auto& cand : c->candidates)
             if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody) &&
-                cand.code()->params) { c = cand.code(); break; }
+                cand.code()->params) { c = cand.code(); protoLess = false; break; }
     // a .assuming wrapper carries its residual params; everything else renders
     // its declared params
     std::vector<const Param*> ps;
@@ -4226,6 +4278,13 @@ Value makeSignature(const Callable* c) {
         if (c->implicitArgs & 1) { Param p; p.sigil = '@'; p.name = "@_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
         if (c->implicitArgs & 2) { Param p; p.sigil = '%'; p.name = "%_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
         for (auto& p : synth) ps.push_back(&p);
+    }
+    // A multi with no proto answers the proto Rakudo generates for it,
+    // `(;; Mu |)`: any capture at all (S06-other/introspection.t)
+    if (ps.empty() && protoLess) {
+        Param p; p.sigil = '|'; p.type = "Mu"; p.slurpy = true; p.pastDoubleSemi = true;
+        synth.push_back(std::move(p));
+        ps.push_back(&synth.back());
     }
     // A bare `{ … }` block with no written signature carries an IMPLICIT `$_`:
     // `{;}.signature` is `(;; $_? is raw = OUTER::<$_>)`, arity 0 but count 1.
@@ -4270,6 +4329,7 @@ Value makeSignature(const Callable* c) {
         // in, so `Mu $:` would be a worse answer than leaving it out.
         if (p.invocant) { count++; arity++; continue; }
         if (!first) { std::string sep = p.pastDoubleSemi && !prevPastSemi ? ";; " : ", "; sig += sep; rsig += sep; }
+        else if (p.pastDoubleSemi) { sig += ";; "; rsig += ";; "; }   // `(;; $x)`: nothing before the `;;`
         first = false;
         prevPastSemi = p.pastDoubleSemi;
         sig += renderParam(p, /*inSignature=*/true);
@@ -4282,6 +4342,18 @@ Value makeSignature(const Callable* c) {
         // many-arguments branch, wrapping the pattern in a Seq.
         if (!p.named && !(p.slurpy && p.sigil == '%'))
         { if (p.slurpy) slurpy = true; else { count++; if (!p.optional && !p.defaultVal && p.defaultRaku.empty()) arity++; } }
+    }
+    // A METHOD carries an implicit `*%_`, and its signature says so (Rakudo:
+    // `method m1($a)` is `(Foo $: $a, *%_)`) — unless it wrote a named slurpy
+    // of its own, or its class is `is hidden`, which gives it none
+    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->hasPrimed) {
+        bool ownSlurpy = false;
+        for (const Param* pp : ps)
+            if (pp->slurpy && (pp->sigil == '%' || pp->sigil == '|' || pp->sigil == '\\')) ownSlurpy = true;
+        if (!ownSlurpy && !(g_pkgIsHidden && !c->pkg.empty() && g_pkgIsHidden(c->pkg))) {
+            const char* sep = first ? "" : ", ";
+            sig += std::string(sep) + "*%_"; rsig += std::string(sep) + "*%_";
+        }
     }
     // a declared return type is part of the signature's rendering: `($x --> Int)`
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
@@ -5480,6 +5552,46 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // A construction whose BUILD/TWEAK answered a Failure answers that Failure
+    // (BuildFailureEx, from the hook runner). The catch is armed once per
+    // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
+    // and every other method pays one short string compare, no TLS access.
+    if (m.size() >= 3 && m.size() <= 5 && (m == "new" || m == "bless")) {
+        ExecContext& t = tctx_;
+        if (!t.ctorCatchSkip) {
+            t.ctorCatchSkip = true;
+            t.ctorCatchDepth++;
+            struct G { ExecContext& t; ~G() { t.ctorCatchSkip = false; t.ctorCatchDepth--; } } g{t};
+            try { return methodCall(inv, m, std::move(args), rwArgs, skipOwn); }
+            catch (BuildFailureEx& bf) { return bf.failure; }
+        }
+        t.ctorCatchSkip = false;
+    }
+    // An ENUM's type object is its tagged pair list here, but it renders as the
+    // TYPE it is: `day.gist` is (day), `.raku` day, and `.Str` the empty string
+    // with the uninitialized warning any type object gives (Rakudo)
+    if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty() &&
+        (m == "gist" || m == "raku" || m == "perl" || m == "Str") && args.empty() && isEnumTypeObject(inv)) {
+        const std::string tn = inv.enumType.str();
+        if (m == "gist") return Value::str("(" + tn + ")");
+        if (m == "raku" || m == "perl") return Value::str(tn);
+        warnUninit("Use of uninitialized value of type " + tn + " in string context.\n"
+                   "Methods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.");
+        return Value::str("");
+    }
+    // `$cool.printf` / `.sprintf` on a user class that `is Cool`: the object's
+    // OWN .Str is the format, as Cool's methods are written (`self.Str`)
+    if ((m == "printf" || m == "sprintf") && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        !inv.obj()->cls->findMethodForCall(m)) {
+        bool cool = false;
+        for (ClassInfo* c = inv.obj()->cls.get(); c && !cool; c = c->parent.get()) cool = c->nativeParent == "Cool";
+        auto bit = builtins_.find(m);
+        if (cool && bit != builtins_.end()) {
+            ValueList a2; a2.push_back(Value::str(strOf(inv)));
+            for (auto& x : args) a2.push_back(x);
+            return bit->second(*this, a2);
+        }
+    }
     // A list that holds CONTAINERS is read by its VALUES: every built-in method
     // walks elements raw. The mutators are the exception — they change the
     // list itself, and a copy would swallow the change.
@@ -5605,8 +5717,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                             "Default constructor for 'Mu' only takes named arguments");
     // A handle's lazy `.lines` is read in full before a list method works on
     // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
+    // (…but not for its INDEX views: `.kv`/`.pairs`/`.antipairs` pull as they
+    // are read, so `for $fh.lines.kv -> \k, \v { last }` leaves the rest unread)
     if (inv.t == VT::Array && inv.ext() && inv.arr() &&
-        std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource)
+        std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource &&
+        m != "kv" && m != "pairs" && m != "antipairs")
         forceLazy(inv);
     // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
     // the per-eigenstate answers, which collapses later. This used to live only in
@@ -5748,6 +5863,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto it = invIn.obj()->attrs.find("snap");
         if (it != invIn.obj()->attrs.end()) return methodCall(it->second, mName, std::move(args));
     }
+    // …and a path is a NUMBER by its basename: `$dir.add('3.5').Numeric` is 3.5
+    // (S32-io/io-path.t; IO::Path.Numeric numifies .basename)
+    if ((mName == "Numeric" || mName == "Rat" || mName == "Num" || mName == "Int" || mName == "FatRat" ||
+         mName == "Real") && args.empty() && invIn.t == VT::Str && invIn.hashKind == "IO") {
+        ValueList none;
+        Value base = methodCall(invIn, "basename", none);
+        return methodCall(Value::str(base.toStr()), mName, none);
+    }
     // .succ / .pred step the BASENAME only (`foo/()`.succ is still `foo/()`)
     if ((mName == "succ" || mName == "pred") && invIn.t == VT::Str && invIn.hashKind == "IO") {
         std::string full = invIn.toStr();
@@ -5782,9 +5905,18 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ki = invIn.hash()->find("\x01cls");
         if (ki != invIn.hash()->end()) {
             auto cit = classes_.find(ki->second.s);
-            if (cit != classes_.end())
+            if (cit != classes_.end()) {
                 if (Value* um = cit->second->findMethod(mName))
                     return invokeMethod(*um, invIn, args, rwArgs);
+                // …and a public attribute's accessor reads the key it lives under
+                if (args.empty())
+                    for (ClassInfo* c = cit->second.get(); c; c = c->parent.get())
+                        for (auto& at : c->attrs)
+                            if (at.pub && at.name == mName) {
+                                auto ai = invIn.hash()->find(std::string("\x01" "a") + at.sigil + "!" + at.name);
+                                if (ai != invIn.hash()->end()) return ai->second;
+                            }
+            }
         }
     }
     // A method called ON a Proxy is a READ of what it stands for: FETCH first.
@@ -6120,8 +6252,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*cu.hash())["from"] = Value::str("Raku");
             (*cu.hash())["short-name"] = Value::str(want);
             (*cu.hash())["repo"] = inv;
-            // `no precompilation;` in the module keeps it out of the cache
-            (*cu.hash())["precompiled"] = Value::boolean(unitPrecompilable(want, {prefix}));
+            // A repository made on the spot — not one on the `$*REPO` chain —
+            // loads its unit from SOURCE: Rakudo answers False here whatever the
+            // module says (S22-package-format/local.t), where `$*REPO.need`
+            // below precompiles it
+            (*cu.hash())["precompiled"] = Value::boolean(false);
             inv.obj()->attrs["\x01cu:" + want] = cu;
             return cu;
         }
@@ -6683,23 +6818,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (auto& e : *inv.arr()) collect(e);
         return methodCall(flat, m, args, rwArgs);
     }
-    // Junction invocant: the Str-using routines operate on the WHOLE junction
-    // (no autothreading — `$j.print` prints the junction's string form, calling
-    // each eigenstate's .Str; `$j.printf` treats that form as the format).
-    // enumName.empty() first: it rejects everything but junctions/enums in one load.
-    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr() &&
-        (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none") &&
-        (m == "printf" || m == "sprintf")) { // format verbs use the joined eigenstates as the FORMAT
-        std::string s;
-        for (size_t i = 0; i < inv.arr()->size(); i++) {
-            if (i) s += " ";
-            s += methodCall((*inv.arr())[i], "Str", ValueList{}).toStr();
-        }
-        if (m == "sprintf") return Value::str(doSprintf(s, args, langRev_));
-        // `.printf` — through ioEmit for the output lock and a rebound $*OUT,
-        // exactly like the printf builtin.
-        return ioEmit(doSprintf(s, args, langRev_), "$*OUT", false);
-    }
+    // (`$j.printf` / `$j.sprintf` AUTOTHREAD like the other methods below: the
+    // format is a Cool, and a Junction is not one — each eigenstate is a format)
     // any other method on a junction AUTOTHREADS: call it on each eigenstate,
     // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
     // (a METAMODEL call `.^name`/`.^WHAT`/… answers for the Junction ITSELF and is
@@ -7033,7 +7153,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (uc == classes_.end() || !uc->second->findMethod("COERCE"))
                         return coerceToType(args[0], target);
                 }
-                return methodCall(Value::typeObj(target), "COERCE", ValueList{args[0]});
+                return coerceThroughType(args[0], target, inv.s);
             }
         }
         if (mm == "name") {
@@ -8203,7 +8323,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (a.s == "hash") {
                 const Value& hv = *a.pairVal();
                 if (hv.t == VT::Hash && hv.hash())
-                    for (auto& kv : *hv.hash()) c.arr()->push_back(Value::pair(kv.first, kv.second));
+                    for (auto& kv : *hv.hash()) { Value np = Value::pair(kv.first, kv.second); np.namedArg = true; c.arr()->push_back(std::move(np)); }
             }
         }
         return c;
@@ -8288,7 +8408,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         static const std::set<std::string> keepOnObj = {
             // `.can` must see the MIXIN's methods — forwarding it to the boxed
             // value hides them (`(Any but $failure).can('Failure')`)
-            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE", "can"};
+            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE", "can",
+            // …and `.VAR` of a mixin is the mixin itself: `(5 but R).VAR` is an Int+{R}
+            "VAR"};
         if (!keepOnObj.count(m)) return methodCall(inv.obj()->boxed, m, args, rwArgs);
     }
 
@@ -9053,6 +9175,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*s.hash())["kind"] = Value::str("async-listen");
             (*s.hash())["host"] = args.size() > 0 ? Value::str(args[0].toStr()) : Value::str("localhost");
             (*s.hash())["port"] = args.size() > 1 ? Value::integer(args[1].toInt()) : Value::integer(0);
+            // `:enc` is the encoding every socket it accepts reads and writes in
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "enc" && a.pairVal()) (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
             return s;
         }
         if (m == "connect") {
@@ -9080,6 +9205,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return p;
             }
             ps->done = true; ps->result = makeAsyncSocket(fd);
+            for (auto& a : args)   // `:enc`: the socket reads and writes in it
+                if (a.t == VT::Pair && a.s == "enc" && a.pairVal())
+                    (*ps->result.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
             (*p.hash())["status"] = Value::str("Kept");
             (*p.hash())["result"] = ps->result;
             return p;
@@ -9100,11 +9228,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             bool bin = false;
             for (auto& a : args) if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal() || a.pairVal()->truthy();
             (*s.hash())["bin"] = Value::boolean(bin);
+            // the characters are decoded in the socket's encoding, or in the
+            // one this Supply names (`$c.Supply(:enc<latin-1>)`)
+            if (inv.hash()->count("enc")) (*s.hash())["enc"] = (*inv.hash())["enc"];
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "enc" && a.pairVal())
+                    (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
             return s;
         }
         if (m == "write" || m == "print" || m == "put" || m == "say") {
             std::string data = args.empty() ? "" : args[0].toStr();
             if (m == "put" || m == "say") data += "\n";
+            // text goes out in the socket's encoding (a `.write` Blob is bytes already)
+            if (m != "write" && inv.hash()->count("enc")) {
+                const std::string enc = (*inv.hash())["enc"].toStr();
+                if (!enc.empty() && enc != "utf8" && enc != "utf-8") data = encodeTextEnc(data, enc);
+            }
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             ssize_t off = 0; bool ok = fd >= 0;
@@ -9515,10 +9654,27 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         static const std::set<std::string> kPathFlavors = {"Unix", "Win32", "Cygwin", "QNX"};
         std::string fl = inv.s.substr(10);
         if (kPathFlavors.count(fl)) {
-            if (args.empty() || args[0].t == VT::Pair || args[0].toStr().empty())
+            // the parts constructor, as IO::Path's: `.new(:volume<C:>, :$basename)`
+            // joins the pieces with the flavor's separator (a `.` dirname adds none)
+            std::string path;
+            bool haveParts = false;
+            if (!args.empty() && args[0].t == VT::Pair) {
+                std::string vol, dir, base;
+                for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "volume") vol = a.pairVal()->toStr();
+                    else if (a.s == "dirname") dir = a.pairVal()->toStr();
+                    else if (a.s == "basename") base = a.pairVal()->toStr();
+                }
+                if (!base.empty()) {
+                    const std::string sep = fl == "Win32" ? "\\" : "/";
+                    path = vol + (dir.empty() || dir == "." ? "" : dir + sep) + base;
+                    haveParts = true;
+                }
+            }
+            if (!haveParts && (args.empty() || args[0].t == VT::Pair || args[0].toStr().empty()))
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Must specify a non-empty string as a path"};
-            std::string path = args[0].toStr();
+            if (!haveParts) path = args[0].toStr();
             rejectNulPath(path);
             Value p = Value::str(path); p.hashKind = "IO"; p.enumName = fl;
             p.ofTypeM() = cwdName();
@@ -9861,8 +10017,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `Pair.new` BINDS its value exactly as `=>` does (sheet HM-18): a
         // literal is read-only, a variable would carry its container. The
         // argument EXPRESSION is what says which, so ask it.
-        if (pos.size() >= 2 && rwArgs && rwArgs->size() > 1)
+        if (pos.size() >= 2 && rwArgs && rwArgs->size() > 1) {
             p.pairValRO = !exprNamesContainer((*rwArgs)[1].get());
+            // `Pair.new("foo", my Int $)` — a TYPED container: an assignment
+            // through `.value` is checked against the type (see lvalue())
+            if (const Expr* ae = (*rwArgs)[1].get(); ae && ae->kind == NK::VarExpr) {
+                auto* ve = static_cast<const VarExpr*>(ae);
+                if (ve->declare && !ve->declType.empty() && !ve->name.empty() && ve->name[0] == '$')
+                    p.ofTypeM() = ve->declType;
+            }
+        }
         return p;
     }
 
@@ -12460,7 +12624,10 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
             if (ctx) self->reactStack_.push_back(ctx);
             if (!closedNow()) {
                 ValueList one{Value::integer(tick++)};
-                try { self->callCallable(blk, one); }
+                // the tick is passed as an ARGUMENT, and a block that takes none
+                // refuses it (`Supply.interval(1).tap(-> { … })` dies "Too many
+                // positionals", as in Rakudo); a bare block's implicit `$_` takes it
+                try { self->callCallable(blk, one, nullptr, /*ownFrame=*/false, /*arityCheck=*/true); }
                 catch (NextEx&) {}
                 catch (LastEx&) { lastEx = true; } // `last` ends THIS subscription
                 catch (DoneEx&) {} // `done` closed the ctx in its bookkeeping
@@ -13493,8 +13660,9 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         Interpreter* self = this;
+        const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
-        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope]() mutable {
+        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc]() mutable {
             t_isWorker = true;
             for (;;) {
                 int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
@@ -13504,6 +13672,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 tctx_.cur = spawnScope;
                 tctx_.dynStack.push_back(spawnScope.get());
                 Value sock = makeAsyncSocket(cfd);
+                if (!listenEnc.empty()) (*sock.hash())["enc"] = Value::str(listenEnc);   // `listen(…, :enc)`
                 if (emitCb.t == VT::Code) {
                     ValueList one{sock};
                     try { self->callCallable(emitCb, one); }
@@ -13546,6 +13715,9 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         bool bin = h.count("bin") && h.at("bin").truthy();
         Interpreter* self = this;
+        // a single-byte encoding decodes chunk by chunk; UTF-8 keeps the carry below
+        std::string readEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
+        if (readEnc == "utf8" || readEnc == "utf-8") readEnc.clear();
         // The enclosing `react`, carried to the worker: reactStack_ is
         // THREAD-LOCAL, so a `done` inside `whenever $conn.Supply {…}` ran on
         // this worker with an empty stack, found no react to close, and simply
@@ -13555,7 +13727,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // from inside its own handler.
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
-        addWorker(BigStackThread([self, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0]() mutable {
+        addWorker(BigStackThread([self, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0, readEnc]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
             bool malformed = false;   // bytes that are no UTF-8 at all: the supply QUITs
@@ -13597,6 +13769,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 tctx_.dynStack.push_back(spawnScope.get());
                 Value chunk;
                 if (bin) { chunk = Value::str(std::string(buf.data(), (size_t)n)); chunk.hashKind = "Blob"; }
+                else if (!readEnc.empty()) chunk = Value::str(self->decodeTextEnc(std::string(buf.data(), (size_t)n), readEnc));
                 else {
                     carry.append(buf.data(), (size_t)n);
                     size_t take = utf8TextPrefixLen(carry);
@@ -14050,6 +14223,14 @@ RakuError Interpreter::dieError(ValueList& a) {
 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
+
+    // A variable's USER trait, called by the parser's desugaring right after the
+    // declaration (`my $a is noted` — see Interpreter::applyVarTrait). The name
+    // starts with \x01, so no program can spell it.
+    B["\x01var-trait"] = [](Interpreter& I, ValueList& a) -> Value {
+        return a.size() >= 2 ? I.applyVarTrait(a[0].toStr(), a[1].toStr(), a.size() > 2 ? &a[2] : nullptr)
+                             : Value::nil();
+    };
 
     // Native extension loading (include/rakupp/rakupp_ext.h). A BUILTIN rather than
     // something `use Rakupp::Ext` installs, because a module that wants a
@@ -17657,7 +17838,8 @@ void Interpreter::registerBuiltins() {
         // topic. That is what made a `my $tap = do whenever $conn {…$tap…}`
         // report `$tap` undeclared: the body ran while the declaration it
         // belongs to was still being evaluated.
-        static const char* supplyish[] = {"Supplier", "AsyncSocket"};
+        // (`whenever $proc` taps a Proc::Async's merged output, `$proc.Supply`)
+        static const char* supplyish[] = {"Supplier", "AsyncSocket", "Proc::Async"};
         if (!a.empty() && a[0].t == VT::Hash)
             for (auto* k : supplyish)
                 if (a[0].hashKind == k) {
@@ -18452,6 +18634,16 @@ void Interpreter::registerBuiltins() {
             // block is unwound. (The on-demand producer of S-15 keeps running:
             // its Supplier has its own emit route, not this one.)
             if (ctx->done) throw DoneEx{};
+            // The body is running now, so its lexicals exist: a CLOSE phaser reads
+            // and writes THEM (`until my $done { emit … }; CLOSE { $done = True }`
+            // ends the loop when the consumer says done; S17-supply/syntax.t), not
+            // the definition scope it was collected against
+            if (ctx->inBody && !ctx->closeRebound && ctx->tap && I.tctx_.cur) {
+                ctx->closeRebound = true;
+                for (auto& cp : ctx->tap->closePhasers)
+                    if (cp.t == VT::Code && cp.code() && !cp.code()->builtin && cp.code()->body)
+                        cp.code()->closure = I.tctx_.cur;
+            }
             if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
             if (ctx->emitCb.t == VT::Code) {
                 ValueList one{v};
@@ -18488,8 +18680,21 @@ void Interpreter::registerBuiltins() {
     };
     B["sprintf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
+        // a JUNCTION format autothreads (the format is a Cool parameter):
+        // `sprintf ($o, ($o,).any).all` is a junction of formatted strings
+        if (a[0].t == VT::Array && a[0].arr() &&
+            (a[0].enumName == "any" || a[0].enumName == "all" ||
+             a[0].enumName == "one" || a[0].enumName == "none")) {
+            Value out = Value::array(); out.enumName = a[0].enumName;
+            auto self = I.builtins_.find("sprintf");
+            for (auto& e : *a[0].arr()) {
+                ValueList sub = a; sub[0] = e;
+                out.arr()->push_back(self->second(I, sub));
+            }
+            return out;
+        }
         ValueList rest = sprintfArgs(a);
-        return Value::str(doSprintf(a[0].toStr(), rest, I.langRev_));
+        return Value::str(doSprintf(a[0].t == VT::Object ? I.strOf(a[0]) : a[0].toStr(), rest, I.langRev_));
     };
     // Format object (6.e `q:o/…/` / `q:format/…/`): a callable sprintf template that
     // stringifies to its format string. Built by the parser from a flagged literal.
@@ -18500,6 +18705,18 @@ void Interpreter::registerBuiltins() {
     };
     B["printf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(true);
+        // a JUNCTION format autothreads: one printf per eigenstate, nested
+        // junctions included (`printf ($o, ($o,).any).all` prints twice)
+        if (a[0].t == VT::Array && a[0].arr() &&
+            (a[0].enumName == "any" || a[0].enumName == "all" ||
+             a[0].enumName == "one" || a[0].enumName == "none")) {
+            auto self = I.builtins_.find("printf");
+            for (auto& e : *a[0].arr()) {
+                ValueList sub = a; sub[0] = e;
+                self->second(I, sub);
+            }
+            return Value::boolean(true);
+        }
         // `printf($fmt, $junction)` PRINTS ONCE PER EIGENSTATE, in order — Rakudo has
         // a dedicated printf(Str(Cool), Junction:D) candidate. (sprintf does not:
         // there the junction stays one value.)
@@ -18508,7 +18725,7 @@ void Interpreter::registerBuiltins() {
              a[1].enumName == "one" || a[1].enumName == "none")) {
             for (auto& e : *a[1].arr()) {
                 ValueList one{e};
-                I.ioEmit(doSprintf(a[0].toStr(), one, I.langRev_), "$*OUT", false);
+                I.ioEmit(doSprintf(a[0].t == VT::Object ? I.strOf(a[0]) : a[0].toStr(), one, I.langRev_), "$*OUT", false);
             }
             return Value::boolean(true);
         }
@@ -18517,7 +18734,7 @@ void Interpreter::registerBuiltins() {
         // rebound `$*OUT`. Writing the stream directly meant
         // `my $*OUT = open(…); printf(…)` printed to the terminal while `say`
         // on the next line went to the file.
-        return I.ioEmit(doSprintf(a[0].toStr(), rest, I.langRev_), "$*OUT", false);
+        return I.ioEmit(doSprintf(a[0].t == VT::Object ? I.strOf(a[0]) : a[0].toStr(), rest, I.langRev_), "$*OUT", false);
     };
     // 6.e sub form: snip(PRED(s), *@list) — first arg is the predicate or a (p1,p2)
     // list of predicates; the rest is the list. Delegates to the .snip method.
