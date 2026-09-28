@@ -15,6 +15,13 @@ logs and the reviews. This page is the complete list.
 
 ## Divergence logs — a corpus run under both engines
 
+- **[BEHIND-THE-DOCS.md](BEHIND-THE-DOCS.md)** *(living; started 2026-09-28,
+  Rakudo v2026.08)* — what writing the book *Raku Behind the Docs*
+  (raku.online/deep/) found by re-probing every semantics-sheet item as a
+  short program: prose in the sheets that Rakudo, or the sheet's own output,
+  contradicts; Rakudo behaviours the sheets do not record; and every book
+  example on which Raku++ differs from Rakudo, generated into
+  [`behind-the-docs/`](behind-the-docs/).
 - **[CORPUS-DIFF.md](CORPUS-DIFF.md)** *(living; rounds 1–4, 2026-07-18 →
   2026-07-22)* — byte-for-byte differential of the raku-corpus programs against
   committed Rakudo v2026.06 references, round by round: 1,443 of 1,789 exact
