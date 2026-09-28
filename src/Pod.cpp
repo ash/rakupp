@@ -3,6 +3,7 @@
 #include "Pod.h"
 #include "Interpreter.h"  // numifyStr — the literal numeric ladder
 #include <cctype>
+#include <cstring>
 #include <sstream>
 #include <cstdlib>
 #include <cerrno>
@@ -1150,7 +1151,121 @@ ValueList parsePod(const std::string& src, bool strict) {
         size_t a = t.find_first_not_of(" \t"); if (a == std::string::npos) return std::string();
         size_t b = t.find_last_not_of(" \t\r"); return t.substr(a, b - a + 1);
     };
+    // Where a line's COMMENT starts: the first `#` outside a '…' / "…" string
+    // (a `'` between a word character and a letter is an identifier's
+    // apostrophe, `isn't`), not escaped (`\#`), and not an embedded comment
+    // closed on the same line (`#`(…)`). Per line: a string opened on an
+    // earlier line is not tracked — a miss only records less, as before.
+    auto commentAt = [](const std::string& L) -> size_t {
+        char q = 0;
+        for (size_t i = 0; i < L.size(); i++) {
+            const char c = L[i];
+            if (q) {
+                if (c == '\\') i++;
+                else if (c == q) q = 0;
+                continue;
+            }
+            if (c == '\\') { i++; continue; }
+            if (c == '\'') {
+                if (i > 0 && (std::isalnum((unsigned char)L[i - 1]) || L[i - 1] == '_') && i + 1 < L.size() &&
+                    std::isalpha((unsigned char)L[i + 1]))
+                    continue;
+                q = c;
+                continue;
+            }
+            if (c == '"') { q = c; continue; }
+            if (c != '#') continue;
+            if (i + 2 < L.size() && L[i + 1] == '`') {
+                const char o = L[i + 2];
+                const char cl = o == '(' ? ')' : o == '[' ? ']' : o == '{' ? '}' : o == '<' ? '>' : 0;
+                if (cl) {
+                    size_t e = L.find(cl, i + 3);
+                    if (e != std::string::npos) { i = e; continue; }
+                }
+            }
+            return i;
+        }
+        return std::string::npos;
+    };
+    // `#|` at mh opens a declarator doc only when a space (or the end of the
+    // line) or a bracket follows: `#|nospace` is an ordinary comment (Rakudo).
+    // 1 = a plain doc, 2 = a bracketed one, 0 = neither.
+    auto isDocOpen = [](const std::string& t, size_t mh) -> int {
+        if (mh + 2 >= t.size() || t[mh + 2] == ' ' || t[mh + 2] == '\t') return 1;
+        const char o = t[mh + 2];
+        return (o == '{' || o == '(' || o == '[' || o == '<') ? 2 : 0;
+    };
+    // Does this code declare something a pending leading doc belongs to?
+    // (Parser::takesLeadingDoc's rule, read off the text: a declarator
+    // keyword, a block, a pointy signature — and, inside a routine's
+    // signature, a parameter.)
+    auto isWordCh = [](char c) { return std::isalnum((unsigned char)c) || c == '_' || c == '-'; };
+    auto hasWord = [&](const std::string& code, const char* w) {
+        const size_t n = std::strlen(w);
+        for (size_t p = code.find(w); p != std::string::npos; p = code.find(w, p + 1)) {
+            if (p > 0 && (isWordCh(code[p - 1]) || std::strchr(".!&:$@%", code[p - 1]))) continue;
+            if (p + n < code.size() && isWordCh(code[p + n])) continue;
+            size_t r = code.find_first_not_of(" \t", p + n);
+            if (r != std::string::npos && code.compare(r, 2, "=>") == 0) continue;   // a pair key
+            return true;
+        }
+        return false;
+    };
+    auto codeTakesDoc = [&](const std::string& code, bool inSig) {
+        static const char* kws[] = {"sub", "method", "submethod", "macro", "class", "role", "grammar",
+                                    "module", "package", "knowhow", "has", "HAS", "regex", "token",
+                                    "rule", "enum", "subset", "multi", "proto", "only"};
+        for (auto* w : kws) if (hasWord(code, w)) return true;
+        for (size_t p = 0; p < code.size(); p++)
+            if (code[p] == '{' && (p == 0 || code[p - 1] == ' ' || code[p - 1] == '\t')) return true;
+        if (code.find("->") != std::string::npos) return true;
+        if (inSig)
+            for (size_t p = 0; p + 1 < code.size(); p++)
+                if (std::strchr("$@%&", code[p]) &&
+                    (std::isalpha((unsigned char)code[p + 1]) || std::strchr("_*!.", code[p + 1])))
+                    return true;
+        return false;
+    };
+    // Open parens of a routine's SIGNATURE still pending across lines: a
+    // `#|` after `Int $a,` there documents a parameter (a new entry), where
+    // one after a call's argument joins the doc above it.
+    int sigDepth = 0;
+    auto updateSig = [&](const std::string& code) {
+        size_t start = 0;
+        if (sigDepth == 0) {
+            static const char* rk[] = {"sub", "method", "submethod", "multi", "proto", "only", "macro",
+                                       "regex", "token", "rule"};
+            start = std::string::npos;
+            for (auto* w : rk) {
+                if (!hasWord(code, w)) continue;
+                size_t par = code.find('(', code.find(w));
+                if (par != std::string::npos) { start = par; break; }
+            }
+            if (start == std::string::npos) return;
+        }
+        for (size_t i = start; i < code.size(); i++) {
+            if (code[i] == '(') sigDepth++;
+            else if (code[i] == ')' && --sigDepth <= 0) { sigDepth = 0; return; }
+        }
+    };
+    auto firstWord = [&](const std::string& r) {
+        std::string w = trim(r);
+        size_t e = w.find_first_of(" \t");
+        return e == std::string::npos ? w : w.substr(0, e);
+    };
     std::string leading;
+    // a pending leading doc becomes the entry of the declaration on `declLine`
+    // (1-based): `.WHY` links the entry back to its declarand through it
+    auto flushLeading = [&](long long declLine) {
+        if (leading == " ") { leading.clear(); return; }
+        if (leading.empty()) return;
+        Value d = mkPod("Pod::Block::Declarator");
+        Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
+        (*d.hash())["contents"] = pc;
+        (*d.hash())["declLine"] = Value::integer(declLine);
+        top.push_back(d);
+        leading.clear();
+    };
     std::vector<std::string> heredocs; // terminators of heredocs opened on the current line
     for (size_t k = 0; k < lines.size(); k++) {
         std::string t = trim(lines[k]);
@@ -1158,6 +1273,39 @@ ValueList parsePod(const std::string& src, bool strict) {
         if (!heredocs.empty()) {
             if (t == heredocs.front()) heredocs.erase(heredocs.begin());
             continue;
+        }
+        // …and neither is POD: a `#|` in a `=begin code` example is text. The
+        // regions are the ones parseSeq reads — `=begin X` … `=end X` (nested),
+        // a `=for X` / abbreviated `=X` paragraph up to a blank line or the
+        // next directive, and everything after `=finish`. A pending leading
+        // doc waits across them.
+        {
+            std::string kw, rest;
+            if (matchDirective(lines[k], kw, rest)) {
+                if (kw == "finish") break;
+                if (kw == "begin") {
+                    const std::string name = firstWord(rest);
+                    int depth = 1;
+                    size_t j = k + 1;
+                    for (; j < lines.size(); j++) {
+                        std::string k2, r2;
+                        if (!matchDirective(lines[j], k2, r2)) continue;
+                        const std::string n2 = firstWord(r2);
+                        if (k2 == "begin" && n2 == name) depth++;
+                        else if (k2 == "end" && n2 == name && --depth == 0) break;
+                    }
+                    k = j;
+                    continue;
+                }
+                if (kw == "end" || kw == "cut") continue;
+                size_t j = k + 1;
+                for (; j < lines.size(); j++) {
+                    std::string k2, r2;
+                    if (trim(lines[j]).empty() || matchDirective(lines[j], k2, r2)) break;
+                }
+                k = j - 1;
+                continue;
+            }
         }
         for (size_t at = 0; (at = lines[k].find("to", at)) != std::string::npos; at += 2) {
             const std::string& L = lines[k];
@@ -1235,8 +1383,9 @@ ValueList parsePod(const std::string& src, bool strict) {
             k = j;
             continue;
         }
-        // (a BLANK `#|` line adds nothing: the parts join with ONE space)
-        if (t.rfind("#|", 0) == 0) {
+        // (a BLANK `#|` line adds nothing: the parts join with ONE space; and a
+        // `#|nospace` is no doc at all — see isDocOpen)
+        if (t.rfind("#|", 0) == 0 && isDocOpen(t, 0) == 1) {
             std::string part = trim(t.substr(2));
             if (!part.empty()) {
                 if (leading == " ") leading.clear();
@@ -1246,17 +1395,60 @@ ValueList parsePod(const std::string& src, bool strict) {
             else if (leading.empty()) leading = " ";   // keeps the block open; trimmed below
             continue;
         }
-        if (leading == " ") leading.clear();
-        if (!leading.empty()) {
-            Value d = mkPod("Pod::Block::Declarator");
-            Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
-            (*d.hash())["contents"] = pc;
-            // the declaration it documents is on this line (1-based): `.WHY`
-            // links the entry back to its declarand through it
-            (*d.hash())["declLine"] = Value::integer((long long)k + 1);
-            top.push_back(d);
-            leading.clear();
+        // A `#|` AFTER code on its line — `my $anon = #| Anonymous`, the
+        // declarand on the line below — is a leading doc like any other
+        // (roast dd85d3c99 moved S26's anonymous-sub and block docs there).
+        // Docs pending from above belong to THIS line when its code declares
+        // something (a keyword, a block, a parameter of an open signature);
+        // otherwise they join the new one: `#| a` then `my $x = #| b` is "a b".
+        {
+            const size_t mh = commentAt(t);
+            if (mh != std::string::npos && mh > 0 && mh + 1 < t.size() && t[mh + 1] == '|') {
+                const int kind = isDocOpen(t, mh);
+                if (kind) {
+                    const std::string prefix = t.substr(0, mh);
+                    if (codeTakesDoc(prefix, sigDepth > 0)) flushLeading((long long)k + 1);
+                    if (leading == " ") leading.clear();
+                    updateSig(prefix);
+                    if (kind == 2) {   // `#|{ … }`, possibly over several lines
+                        const char open = t[mh + 2];
+                        const char close = open == '{' ? '}' : open == '(' ? ')' : open == '[' ? ']' : '>';
+                        std::string body; int d = 1; size_t j = k; size_t pos = mh + 3;
+                        std::string cur = t;
+                        while (true) {
+                            for (; pos < cur.size(); pos++) {
+                                if (cur[pos] == open) d++;
+                                else if (cur[pos] == close && --d == 0) break;
+                                body += cur[pos];
+                            }
+                            if (d == 0 || j + 1 >= lines.size()) break;
+                            body += '\n'; cur = lines[++j]; pos = 0;
+                        }
+                        const std::string rest = pos + 1 < cur.size() ? trim(cur.substr(pos + 1)) : std::string();
+                        size_t a = body.find_first_not_of(" \t\r\n"), b = body.find_last_not_of(" \t\r\n");
+                        body = a == std::string::npos ? std::string() : body.substr(a, b - a + 1);
+                        if (!leading.empty()) { body = leading + " " + body; leading.clear(); }
+                        Value d2 = mkPod("Pod::Block::Declarator");
+                        Value pc = Value::array(); pc.arr()->push_back(Value::str(body));
+                        (*d2.hash())["contents"] = pc;
+                        // the declarand follows on the line after, or on this one
+                        (*d2.hash())["declLine"] = Value::integer((long long)(rest.empty() ? j + 2 : j + 1));
+                        top.push_back(d2);
+                        k = j;
+                        continue;
+                    }
+                    const std::string part = trim(t.substr(mh + 2));
+                    if (!part.empty()) {
+                        if (!leading.empty()) leading += ' ';
+                        leading += part;
+                    }
+                    else if (leading.empty()) leading = " ";
+                    continue;
+                }
+            }
+            updateSig(mh == std::string::npos ? t : t.substr(0, mh));
         }
+        flushLeading((long long)k + 1);
         // `#={yellow}` after code on the same line: the brackets delimit the
         // block, they are not its text
         auto unbracket = [&](std::string x) {
@@ -1270,7 +1462,7 @@ ValueList parsePod(const std::string& src, bool strict) {
             return x;
         };
         size_t h = t.find("#=");
-        if (h != std::string::npos && (h == 0 || t[h - 1] == ' ' || t[h - 1] == '\t')) {
+        if (h != std::string::npos && (h == 0 || t[h - 1] == ' ' || t[h - 1] == '\t') && isDocOpen(t, h)) {
             // not inside a string literal: no quote opened before it on the line
             bool quoted = false;
             for (size_t q = 0; q < h; q++) if (t[q] == '\'' || t[q] == '"') quoted = !quoted;

@@ -39,24 +39,15 @@ int LtmNfa::addPred(Pred p) {
 // codepoint ranges, d/w/s-style flags with uppercase negation, difference
 // members, whole-class negation, ASCII :i. (uprop/cluster/imark classes are
 // never built into predicates: the builder terminates the prefix on them.)
+bool charClassMatch(char flag, uint32_t cp);   // Regex.cpp — the matcher's own class test
+
+// The SAME class test the matcher applies (Unicode-aware: `\w` takes þ, `\d`
+// takes ٣, `<+alpha>` takes `_`, `\s` takes NBSP). The prefix automaton must
+// agree with the engine: it drops every branch whose prefix it thinks cannot
+// match, and an ASCII-only reading dropped `<+alnum> .+` over "þ," and left
+// no branch at all (S05-metasyntax/longest-alternative.t).
 static bool flagHit(char f, uint32_t c) {
-    switch (f) {
-        case 'd': return c < 128 && ascii::isdigit((int)c);
-        case 'w': return c < 128 && (ascii::isalnum((int)c) || c == '_');
-        case 's': return c < 128 && ascii::isspace((int)c);
-        case 'a': return c < 128 && ascii::isalpha((int)c);
-        case 'u': return c < 128 && ascii::isupper((int)c);
-        case 'l': return c < 128 && ascii::islower((int)c);
-        case 'x': return c < 128 && ascii::isxdigit((int)c);
-        case 'b': return c == ' ' || c == '\t';
-        // the LOGICAL newline, as `\n` is everywhere else — LF, VT, FF, CR, NEL,
-        // LS, PS. As LF alone, LTM ruled a carriage return out of the first
-        // alternative of PDF::Grammar's `token ws-char { <[… \n]> | <.comment> }`
-        // and the token matched nothing at all there.
-        case 'n': return c == 0x0A || c == 0x0B || c == 0x0C || c == 0x0D ||
-                         c == 0x85 || c == 0x2028 || c == 0x2029;
-        default:  return false;
-    }
+    return charClassMatch(f, c);
 }
 bool LtmNfa::classMatch(const void* nodeV, uint32_t c) {
     auto* n = static_cast<const Regex::Node*>(nodeV);

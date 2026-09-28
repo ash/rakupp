@@ -96,6 +96,13 @@ struct GrammarHooks {
     // Preferred over `assertPass` when set.
     std::function<bool(const std::string&, long, long, const NamedMap&,
                        const std::vector<std::pair<long, long>>&, const ParamMap&)> assertPassCaps;
+    // …and with the cursor's OCCURRENCE LISTS too, as `runCursor` below gives a
+    // block: a quantified capture reads as its list (`(\w)+ <?{ $0.tail eq "b" }>`,
+    // S05-capture/caps.t), not as the last occurrence's flat span. Preferred
+    // over `assertPassCaps` when set.
+    std::function<bool(const std::string&, long, long, const NamedMap&,
+                       const std::vector<std::pair<long, long>>&,
+                       const RxCursorCaps&, const ParamMap&)> assertPassCursor;
     std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
     // Same as `run`, but carrying the POSITIONAL captures too so the block's `$/`
     // can offer `$0`. Set by the plain-regex path; preferred over `run` when set.

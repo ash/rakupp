@@ -413,6 +413,13 @@ struct EnvExtras {
     std::map<std::string, char> varSmiley; // `my Int:D $x` — 'D' / 'U': what assignments must satisfy
     std::map<std::string, const struct Expr*> varWhere; // `my $x where Int|Num` — checked on every assignment
     std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
+    // the type whose body this scope is: a class body, or the scope a role's
+    // methods were re-closed in for one parameterization (weak: the type's
+    // methods close over this scope)
+    std::weak_ptr<ClassInfo> pkgType;
+    // `$x := <value>`: these `$` names hold a VALUE bound straight in, not a
+    // container of their own — `=:=` between two of them compares the values
+    std::set<std::string> varValueBound;
 };
 
 // The pad slot table for one pad OWNER — the main program's mainline, or a
@@ -1439,6 +1446,12 @@ public:
                        bool doImport, const std::string& verReq);
     std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
     std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
+    std::shared_ptr<ClassInfo> howCurriedClsInfo_, howConcreteClsInfo_;   // …CurriedRoleHOW (R[Int]), …ConcreteRoleHOW
+    std::unordered_map<std::string, Value> typeHowCache_;   // a pun's / a concretization handle's .HOW, by type name
+    std::unordered_map<std::string, ValueList> punArgs_;     // R[Int]'s arguments, by pun name (.^role_arguments)
+    // `.^concretization` / `.^mro(:concretizations)`: one handle per (consumer, role as composed)
+    std::map<std::pair<const ClassInfo*, const ClassInfo*>, std::shared_ptr<ClassInfo>> concHandles_;
+    Value concretizationHandle(ClassInfo* consumer, ClassInfo* role);
     std::string resolveAttrTypeAlias(const std::string& t, const std::string& pkg = ""); // `has GType $.x` with `constant GType = uint64`
     std::shared_ptr<ClassInfo> ncInlineClass(const std::string& type); // the struct a `HAS` member inlines
     // True once any class has declared a `HAS` member. The assignment path
@@ -1503,10 +1516,13 @@ public:
     // there is nothing to bind.
     std::shared_ptr<ClassInfo> concretizeRole(const std::shared_ptr<ClassInfo>& role, ValueList& argv,
                                               const std::shared_ptr<Env>& scope);
-    void recloseRoleMethods(ClassInfo* conc);
+    void recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc);
+    void concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role);
     // `inv.R::m` for a parametric R: the parameterization of R the invocant's
     // type composed (null when it composed none that can be told apart)
     ClassInfo* qualifiedConcretization(const Value& inv, const std::string& roleName);
+    ClassInfo* qualifiedConcretizationFrom(ClassInfo* start, const std::string& roleName);
+    bool valueBoundVar(const std::string& name);   // `$x := <value>` last bound it (see evalAssign)
     // A Seq is read once (SeqToken, Value.h). How the language uses one:
     // ITERATE reads it (a second time is X::Seq::Consumed), SINK reads it and
     // never complains, CACHE keeps its values (and complains if it was read
@@ -2138,6 +2154,7 @@ public:
     Value withDimslipAsMultiDim(Index* ix, const std::function<Value()>& f); // `@a[|| @dims]` as `@a[d0;d1;…]`
     std::shared_ptr<ClassInfo> pickRoleVariantArgs(const std::shared_ptr<ClassInfo>& group, const std::vector<ExprPtr>& exprs);
     std::shared_ptr<ClassInfo> pickRoleVariant(const std::shared_ptr<ClassInfo>& group, size_t n); // `does R[a,b]` → its arity's candidate
+    std::shared_ptr<ClassInfo> pickRoleVariantValues(const std::shared_ptr<ClassInfo>& group, const ValueList& vals);
     // `is DEPRECATED` bookkeeping, read (and cleared) by `Deprecation.report`
     struct DeprecationRec { std::string kind, name, from, with; std::vector<int> lines; };
     std::vector<DeprecationRec> deprecations_;
@@ -2153,8 +2170,11 @@ public:
     // class/grammar/role declarations already created by a hoist pass, counted so
     // a recursive re-entry of the same statement list stays balanced
     std::unordered_map<const ClassDecl*, int> hoistedTypes_;
-    // class/grammar/role declarations seen ahead in a scope but not yet created
-    std::unordered_map<std::string, ClassDecl*> pendingTypes_;
+    // class/grammar/role declarations seen ahead in a scope but not yet created,
+    // per name in textual order (a role group, a stub and its completion)
+    std::unordered_map<std::string, std::vector<ClassDecl*>> pendingTypes_;
+    bool typeDeclBuilt(const ClassDecl* cd);   // this very declaration already made its type
+    void notePendingType(ClassDecl* cd);
     bool materializePendingType(const std::string& name); // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(const std::shared_ptr<Env>& env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed (a frame something else still holds keeps them)
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
@@ -2249,6 +2269,7 @@ public:
     // …and the ones whose body is running right now: a `use` of one of THESE is
     // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading
     std::set<std::string> modulesLoading_;
+    int runtimeLoadDepth_ = 0;   // inside a `$repo.need(…)`: the load is a RUN-time one (see loadParsed)
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)
     std::map<std::string, Value> moduleExportSubs_;

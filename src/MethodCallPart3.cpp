@@ -5338,6 +5338,45 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 anyAdverb = true;
                 if (!substSelectKnowsAdverb(a.s)) allKnown = false;
             }
+            // `:ex` / `:exhaustive` — every match at every position, as m:ex//
+            // gives it. `:x(N)` rides along in the pattern; `:nth` picks ONE
+            // of them (1-based), and `:c(N)` drops those that start before N.
+            bool ex = false; long exX = -1, exNth = 0, exFrom = -1;
+            for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
+                const Value pv = a.pairVal() ? *a.pairVal() : Value::boolean(true);
+                const std::string& k = a.s;
+                long lead = 0; size_t d = 0;
+                while (d < k.size() && ascii::isdigit((unsigned char)k[d])) lead = lead * 10 + (k[d++] - '0');
+                const std::string suf = k.substr(d);
+                if (k == "ex" || k == "exhaustive") ex = pv.truthy();
+                else if (k == "x") exX = pv.toInt();
+                else if (d && suf == "x") exX = lead;
+                else if (k == "nth" || (d && (suf == "st" || suf == "nd" || suf == "rd" || suf == "th"))) exNth = d ? lead : pv.toInt();
+                else if (k == "c" || k == "continue") {
+                    exFrom = 0;
+                    if (pv.t != VT::Bool) exFrom = pv.toInt();
+                    else if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr)
+                        if (mv->t == VT::Match) exFrom = methodCall(*mv, "to", {}).toInt();
+                }
+            }
+            if (ex) {
+                std::string pre = ":ex ";
+                if (exX >= 0) pre += ":x(" + std::to_string(exX) + ") ";
+                Value all = regexMatch(subj, pre + pat);
+                if ((exFrom > 0 || exNth) && all.arr()) {
+                    ValueList kept;
+                    for (auto& el : *all.arr())
+                        if (exFrom <= 0 || methodCall(el, "from", {}).toInt() >= exFrom) kept.push_back(el);
+                    if (exNth) {
+                        Value one = exNth >= 1 && exNth <= (long)kept.size() ? kept[exNth - 1] : Value::nil();
+                        setMatchVar(one);
+                        return one;
+                    }
+                    all = Value::list(std::move(kept));
+                    setMatchVar(all);
+                }
+                return all;
+            }
             if (anyAdverb && allKnown) {
                 long nsub = 0; Value mres;
                 std::string keep = subj;                 // replace each match with itself

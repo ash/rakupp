@@ -217,6 +217,130 @@ static std::vector<MroNode> reportedMro(ClassInfo* c) {
     return out;
 }
 
+// ---- the MRO with its ROLES: `.^mro(:roles)` / `.^mro(:concretizations)` ----
+// Each class (or pun) is followed by the roles it composes: its own `does`
+// roles in REVERSE declaration order, each followed by the roles IT does in
+// declaration order (Rakudo's C3 over the role lists). A role an entry
+// composes belongs to that entry — the same role under two classes is two
+// entries — so an entry is keyed by (type, consumer, kind).
+struct RMroEntry {
+    ClassInfo* c; ClassInfo* consumer; int kind;   // 0 class, 1 pun, 2 role
+    bool operator==(const RMroEntry& o) const { return c == o.c && consumer == o.consumer && kind == o.kind; }
+};
+static bool rmroMerge(std::vector<std::vector<RMroEntry>> seqs, std::vector<RMroEntry>& out) {
+    for (;;) {
+        const RMroEntry* pick = nullptr;
+        bool left = false;
+        for (auto& sq : seqs) {
+            if (sq.empty()) continue;
+            left = true;
+            const RMroEntry& h = sq.front();
+            bool inTail = false;
+            for (auto& t : seqs)
+                if (t.size() > 1 && std::find(t.begin() + 1, t.end(), h) != t.end()) { inTail = true; break; }
+            if (!inTail) { pick = &h; break; }
+        }
+        if (!left) return true;
+        if (!pick) return false;
+        RMroEntry got = *pick;
+        out.push_back(got);
+        for (auto& sq : seqs) if (!sq.empty() && sq.front() == got) sq.erase(sq.begin());
+    }
+}
+static std::vector<ClassInfo*> roleOwnRoles(ClassInfo* r) {
+    std::vector<ClassInfo*> out;
+    auto add = [&](ClassInfo* x) {
+        if (x && x->isRole && std::find(out.begin(), out.end(), x) == out.end()) out.push_back(x);
+    };
+    add(r->parent.get());
+    for (auto& e : r->extraParents) add(e.get());
+    for (auto& e : r->composedRoles) add(e.get());
+    return out;
+}
+static bool roleWithItsRoles(ClassInfo* r, ClassInfo* consumer, std::vector<RMroEntry>& out, int depth) {
+    if (depth > 32) return false;
+    std::vector<std::vector<RMroEntry>> seqs;
+    for (ClassInfo* s : roleOwnRoles(r)) {
+        std::vector<RMroEntry> l;
+        if (!roleWithItsRoles(s, consumer, l, depth + 1)) return false;
+        seqs.push_back(std::move(l));
+    }
+    out.push_back(RMroEntry{r, consumer, 2});
+    return rmroMerge(std::move(seqs), out);
+}
+static bool roleEntriesOf(const MroNode& n, std::vector<RMroEntry>& out) {
+    std::vector<ClassInfo*> direct;
+    if (n.pun) direct.push_back(n.c);
+    else {
+        ClassInfo* c = n.c;
+        if (c->parent && c->parent->isRole && c->decl && c->decl->parentIsDoes) direct.push_back(c->parent.get());
+        for (auto& r : c->composedRoles)
+            if (r && r->isRole && std::find(direct.begin(), direct.end(), r.get()) == direct.end())
+                direct.push_back(r.get());
+        std::reverse(direct.begin(), direct.end());
+    }
+    std::vector<std::vector<RMroEntry>> seqs;
+    for (ClassInfo* r : direct) {
+        std::vector<RMroEntry> l;
+        if (!roleWithItsRoles(r, n.c, l, 0)) return false;
+        seqs.push_back(std::move(l));
+    }
+    std::vector<RMroEntry> m;
+    if (!rmroMerge(std::move(seqs), m)) return false;
+    std::set<ClassInfo*> seen;
+    for (auto& e : m) if (seen.insert(e.c).second) out.push_back(e);
+    return true;
+}
+static bool rolifiedMro(const MroNode& n, std::vector<RMroEntry>& out, int depth) {
+    if (depth > 64) return false;
+    std::vector<MroNode> ps;
+    mroNodeParents(n, ps, 0);
+    std::vector<std::vector<RMroEntry>> seqs;
+    std::vector<RMroEntry> re;
+    if (!roleEntriesOf(n, re)) return false;
+    seqs.push_back(std::move(re));
+    std::vector<RMroEntry> pl;
+    for (auto& p : ps) {
+        std::vector<RMroEntry> l;
+        if (!rolifiedMro(p, l, depth + 1)) return false;
+        seqs.push_back(std::move(l));
+        pl.push_back(RMroEntry{p.c, p.c, p.pun ? 1 : 0});
+    }
+    seqs.push_back(std::move(pl));
+    out.push_back(RMroEntry{n.c, n.c, n.pun ? 1 : 0});
+    return rmroMerge(std::move(seqs), out);
+}
+
+// A concretization handle: the role as ONE consumer composed it — `.^name`
+// is the role's, it does the role (and what the role does) but not any one
+// parameterization of it, and its HOW is a ConcreteRoleHOW. Made on demand,
+// one per (consumer, role), so two lookups answer the same type.
+Value Interpreter::concretizationHandle(ClassInfo* consumer, ClassInfo* role) {
+    auto key = std::make_pair((const ClassInfo*)consumer, (const ClassInfo*)role);
+    auto hit = concHandles_.find(key);
+    if (hit != concHandles_.end() && classes_.count(hit->second->name)) return Value::typeObj(hit->second->name);
+    static int concSerial = 0;
+    auto h = std::make_shared<ClassInfo>(*role);
+    h->name = role->name + "\x01conc" + std::to_string(++concSerial);
+    h->dispName = role->name;
+    h->roleVariants.clear();
+    std::set<std::string> done{role->name};
+    for (auto& d : role->doneRoles) if (d.find('[') == std::string::npos) done.insert(d);
+    h->doneRoles.clear();
+    for (auto& d : done) h->doneRoles.insert(d);
+    if (!howConcreteClsInfo_) {
+        howConcreteClsInfo_ = std::make_shared<ClassInfo>();
+        howConcreteClsInfo_->name = "Metamodel::ConcreteRoleHOW";
+    }
+    Value how; how.t = VT::Object; how.setObj(makePayload<ObjectData>());
+    how.obj()->cls = howConcreteClsInfo_;
+    how.obj()->attrs["__type"] = Value::typeObj(h->name);
+    h->howObj = std::move(how);
+    classes_[h->name] = h;
+    concHandles_[key] = h;
+    return Value::typeObj(h->name);
+}
+
 // Depth-first over the primary and the additional (multiple-inheritance)
 // parents, most-derived first, into a stack buffer that spills past eight.
 // A plain recursive function and not a recursive std::function: this runs on
@@ -237,14 +361,17 @@ static void collectMroChain(ClassInfo* c, ClassInfo** buf,
 // never to a turn of the role's own. The first `does` arrives as the parent
 // and the rest as extra parents, so both have to be looked through — and only
 // through ROLES: a real ancestor class runs its own hook on its own turn.
-static Value* composedHook(ClassInfo* c, const char* which) {
+// (`skipE6Roles`: a 6.e role's hook is its own constructor, run on its own
+// turn, and never a composed one — see runHook)
+static Value* composedHook(ClassInfo* c, const char* which, bool skipE6Roles = false) {
     auto it = c->methods.find(which);
     if (it != c->methods.end()) return it->second.t == VT::Code ? &it->second : nullptr;
-    if (c->parent && c->parent->isRole)
-        if (Value* r = composedHook(c->parent.get(), which)) return r;
+    auto into = [&](ClassInfo* r) { return r && r->isRole && !(skipE6Roles && r->langRev >= 2); };
+    if (into(c->parent.get()))
+        if (Value* r = composedHook(c->parent.get(), which, skipE6Roles)) return r;
     for (auto& p : c->extraParents)
-        if (p && p->isRole)
-            if (Value* r = composedHook(p.get(), which)) return r;
+        if (into(p.get()))
+            if (Value* r = composedHook(p.get(), which, skipE6Roles)) return r;
     return nullptr;
 }
 
@@ -317,7 +444,7 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
     // chain the way it did before this walk existed, and the MRO collection
     // below — which every single constructed object would otherwise pay for —
     // never happens. Skipping it here is worth ~4% of `K.new`.
-    if (!ci->findMethod("BUILD") && !ci->findMethod("TWEAK")) {
+    if (!ci->roleCtorHooks && !ci->findMethod("BUILD") && !ci->findMethod("TWEAK")) {
         if (afterBuild.fn) stepDownChain(ci, afterBuild);
         return;
     }
@@ -387,8 +514,15 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
     };
     auto runHook = [&](ClassInfo* c, const char* which) {
         std::vector<ClassInfo*> croles;
-        if (!c->isRole && c->langRev >= 2 && !(croles = classRoles(c)).empty()) {
-            for (ClassInfo* r : croles) runRoleHooks(r, which, 0);
+        if (!c->isRole && (c->langRev >= 2 || c->roleCtorHooks) && !(croles = classRoles(c)).empty()) {
+            // (a class before 6.e runs only its 6.e roles' hooks this way; its
+            // other roles' hooks were composed, and are its own)
+            for (ClassInfo* r : croles)
+                if (c->langRev >= 2 || r->langRev >= 2) runRoleHooks(r, which, 0);
+            if (c->langRev < 2) {
+                if (Value* hook = composedHook(c, which, /*skipE6Roles=*/true)) invokeHook(hook);
+                return;
+            }
             // the class's own, unless what it holds is a role's (not composed)
             if (c->roleSubmethods.count(which) && c->roleSubmethodsHidden.count(which)) return;
             auto it = c->methods.find(which);
@@ -1254,7 +1388,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // silently return an empty Tap and never start the worker).
         if ((m == "tap" || m == "act") && inv.hash()->count("kind")) {
             std::string k = inv.hash()->at("kind").toStr();
-            if (k == "async-read" || k == "async-listen" || k == "signal" ||
+            if (k == "async-read" || k == "async-listen" || k == "udp-read" || k == "signal" ||
                 k == "interval" || k == "watch" || k == "throttle" || k == "throttle-run" ||
                 k == "combine" || k == "flatten" || k == "migrate") {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
@@ -5419,7 +5553,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `.^language-revision` — the revision the type was declared under
         if (m == "language-revision" && args.empty()) {
             auto cit = classes_.find(inv.s);
-            int r = cit != classes_.end() && cit->second && cit->second->langRev >= 0 ? cit->second->langRev : langRev_;
+            ClassInfo* ti = cit != classes_.end() ? cit->second.get() : nullptr;
+            // a role GROUP answers for one candidate: the one a `.^candidates`
+            // entry names, else its default (the unparameterized one)
+            if (ti && ti->isRole && !ti->roleVariants.empty()) {
+                if (inv.ext()) {
+                    auto rc = std::static_pointer_cast<RoleCandidateRef>(inv.ext());
+                    if (rc->ci) ti = rc->ci.get();
+                }
+                else ti = ti->roleGroupDefault();
+            }
+            int r = ti && ti->langRev >= 0 ? ti->langRev : langRev_;
             return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
         }
         // `.^ver` / `.^auth` / `.^api` on a PACKAGE (`module Zef:ver(…):auth(…)`) —
@@ -5486,6 +5630,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             cit == classes_.end() && isRakuAstName(inv.s) ? rakuAstClass(inv.s) : nullptr;
         if (cit != classes_.end() || astCi) {
             auto ci = cit != classes_.end() ? cit->second : *astCi;
+            // `R.new` on a role GROUP puns its default candidate (the one a
+            // `.^candidates` entry names, when that is the invocant)
+            // …and so does an ordinary method of that candidate (`R.who`)
+            if (ci->isRole && !ci->roleVariants.empty()) {
+                auto pick = inv.ext() ? std::static_pointer_cast<RoleCandidateRef>(inv.ext())->ci
+                                      : pickRoleVariant(ci, 0);
+                if (pick && (m == "new" || m == "bless" || m == "CREATE" || pick->findMethod(m))) ci = pick;
+            }
             // A user-declared META-METHOD — `method ^parameterize(Mu:U \obj, **@pos)`
             // — answers the `.^name(…)` call on its type. Rakudo hands the type in
             // as the first positional (the invocant is the HOW), which is the
@@ -6173,11 +6325,40 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& rn : d->roles) add(rn);
                     return r;
                 };
+                // A parameterization the type composed (`does R2[Num]`) is its
+                // own role object, which knows what IT does (R1[Num]); the
+                // generic R2 under the bare name only knows `does R1[::T]`.
+                std::map<std::string, ClassInfo*> composedConc;
+                {
+                    std::set<ClassInfo*> walked;
+                    std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+                        if (!c || !walked.insert(c).second) return;
+                        auto note = [&](ClassInfo* r) {
+                            if (!r || !r->isRole || !r->decl || r->decl->roleParams.empty() || r->roleParamBindings.empty()) return;
+                            ValueList vals;
+                            for (auto& p : r->decl->roleParams) {
+                                if (p.named || p.slurpy) continue;
+                                const std::string& key = p.typeCapture ? p.type : p.name;
+                                for (auto& b : r->roleParamBindings)
+                                    if (b.first == key) { vals.push_back(b.second); break; }
+                            }
+                            if (!vals.empty()) composedConc.emplace(roleArgsDisplay(r->name, vals), r);
+                        };
+                        if (c->parent) { note(c->parent.get()); walk(c->parent.get()); }
+                        for (auto& r : c->composedRoles) { note(r.get()); walk(r.get()); }
+                    };
+                    walk(ci.get());
+                }
                 std::vector<std::string> out; std::set<std::string> seen;
                 std::function<void(const std::string&)> addRole = [&](const std::string& rn) {
                     if (!seen.insert(rn).second) return;
                     out.push_back(rn);
                     if (!transitive) return;
+                    auto cc = composedConc.find(rn);
+                    if (cc != composedConc.end()) {
+                        for (auto& sub : directRoles(cc->second)) addRole(sub);
+                        return;
+                    }
                     auto rit = classes_.find(baseOf(rn));
                     if (rit != classes_.end() && rit->second)
                         for (auto& sub : directRoles(rit->second.get())) addRole(sub);
@@ -6294,8 +6475,108 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (out.arr()->empty() && !ci->isRole) out.arr()->push_back(Value::typeObj("Any"));
                 return out;
             }
+            // `R[Int].^curried_role` is R; `.^role_arguments` what it was given
+            if ((m == "curried_role" || m == "role_arguments") && ci->name.find("\x01pun") != std::string::npos) {
+                if (m == "curried_role") return Value::typeObj(ci->name.substr(0, ci->name.find("\x01pun")));
+                Value out = Value::array(); out.isList = true;
+                auto pa = punArgs_.find(ci->name);
+                if (pa != punArgs_.end()) for (auto& a : pa->second) if (!a.namedArg) out.arr()->push_back(a);
+                return out;
+            }
+            // `C.^concretization(R)` — the role R as C (or, without :local, the
+            // nearest class that does) composed it: R[Int] finds the
+            // composition written with those arguments, a bare R one written
+            // bare. Among C's own roles and the roles those do.
+            if (m == "concretization" && !ci->isRole && !args.empty()) {
+                const Value* want = nullptr;
+                bool local = false;
+                for (auto& a : args) {
+                    if (a.t == VT::Pair && a.namedArg) { if (a.s == "local") local = !a.pairVal() || a.pairVal()->truthy(); }
+                    else if (!want) want = &a;
+                }
+                if (want && want->t == VT::Type) {
+                    const std::string wn = want->s;
+                    const size_t pk = wn.find("\x01pun");
+                    const std::string group = pk == std::string::npos ? wn : wn.substr(0, pk);
+                    ClassInfo* pun = nullptr;
+                    if (pk != std::string::npos) { auto pit = classes_.find(wn); if (pit != classes_.end()) pun = pit->second.get(); }
+                    auto sameBindings = [&](const ClassInfo* a, const ClassInfo* b) {
+                        if (a->roleParamBindings.size() != b->roleParamBindings.size()) return false;
+                        for (size_t i = 0; i < a->roleParamBindings.size(); i++)
+                            if (a->roleParamBindings[i].first != b->roleParamBindings[i].first ||
+                                whichOf(a->roleParamBindings[i].second) != whichOf(b->roleParamBindings[i].second))
+                                return false;
+                        return true;
+                    };
+                    auto matches = [&](ClassInfo* r) {
+                        if (r->name != group) return false;
+                        if (pun) return r->decl == pun->decl && sameBindings(r, pun);
+                        return r->roleParamBindings.empty();
+                    };
+                    std::vector<MroNode> classes = reportedMro(ci.get());
+                    for (auto& n : classes) {
+                        if (n.pun) continue;
+                        std::vector<RMroEntry> re;
+                        if (!roleEntriesOf(n, re)) continue;
+                        const RMroEntry* found = nullptr;
+                        for (auto& e : re) {
+                            if (!matches(e.c)) continue;
+                            if (found && found->c != e.c)
+                                throwTyped("X::AdHoc", {}, "Ambiguous concretization lookup for " + methodCall(*want, "^name", {}).toStr());
+                            found = &e;
+                        }
+                        if (found) return concretizationHandle(found->consumer, found->c);
+                        if (local) break;
+                    }
+                    throwTyped("X::AdHoc", {}, "No concretization found for " + methodCall(*want, "^name", {}).toStr());
+                }
+            }
             if (m == "mro" || m == "mro_unhidden") { // method resolution order: self, ancestors, then Any, Mu
                 Value out = Value::array(); out.isList = true;
+                // `:roles` lists each type's roles after it; `:concretizations`
+                // lists them as the handles `.^concretization` answers
+                bool withRoles = false, withConc = false;
+                for (auto& a : args)
+                    if (a.t == VT::Pair) {
+                        const bool on = !a.pairVal() || a.pairVal()->truthy();
+                        if (a.s == "roles") withRoles = on;
+                        else if (a.s == "concretizations") withConc = on;
+                    }
+                std::vector<RMroEntry> ents;
+                if ((withRoles || withConc) && !ci->isRole && rolifiedMro(MroNode{ci.get(), false}, ents, 0)) {
+                    // hiding, in order: a hidden type drops out with the roles
+                    // right after it, and what an entry `hides` hides later ones
+                    std::set<std::string> hides;
+                    bool skip = false;
+                    std::set<std::string> classNames;
+                    for (auto& e : ents) {
+                        if (m == "mro_unhidden") {
+                            if (skip && e.kind == 2) continue;
+                            skip = false;
+                            const bool hid = e.c->hidden || hides.count(e.c->name);
+                            for (auto& h : e.c->hides) hides.insert(h);
+                            if (hid) { skip = true; continue; }
+                        }
+                        if (e.kind == 2 && withConc) out.arr()->push_back(concretizationHandle(e.consumer, e.c));
+                        else out.arr()->push_back(Value::typeObj(e.c->name));
+                        if (e.kind != 2) classNames.insert(e.c->name);
+                    }
+                    for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                        if (!c->nativeParent.empty()) {
+                            const auto& anc = typeAncestry(c->nativeParent);
+                            if (anc.empty() || anc[0] != c->nativeParent) {
+                                if (classNames.insert(c->nativeParent).second)
+                                    out.arr()->push_back(Value::typeObj(c->nativeParent));
+                            }
+                            else for (auto& a : anc)
+                                if (a != "Any" && a != "Mu" && !isBuiltinRole(a) && classNames.insert(a).second)
+                                    out.arr()->push_back(Value::typeObj(a));
+                            break;
+                        }
+                    out.arr()->push_back(Value::typeObj("Any"));
+                    out.arr()->push_back(Value::typeObj("Mu"));
+                    return out;
+                }
                 // The C3 order (D is B is C, B/C is A → D, B, C, A), with a role
                 // a class inherits (`is R`) standing in it as its pun
                 // (reportedMro). A COMPOSED role is not an ancestor: Rakudo
@@ -8471,10 +8752,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // Hash+{JSON::Class} instead of the typed object (the License::SPDX /
     // Test::META chain).
     {
-        bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) ||
-                      (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-                       (inv.obj()->cls->name == "Metamodel::ClassHOW" ||
-                        inv.obj()->cls->name == "Metamodel::ParametricRoleGroupHOW"));
+        const std::string* howObjName = inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            (inv.obj()->cls->name == "Metamodel::ClassHOW" ||
+             inv.obj()->cls->name == "Metamodel::ParametricRoleGroupHOW" ||
+             inv.obj()->cls->name == "Metamodel::CurriedRoleHOW" ||
+             inv.obj()->cls->name == "Metamodel::ConcreteRoleHOW") ? &inv.obj()->cls->name : nullptr;
+        bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) || howObjName;
         if (howInv) {
             // the meta-object protocol's two-argument forms: `T.HOW.isa(T, U)` is `T.isa(U)`
             if ((m == "isa" || m == "does" || m == "can") && args.size() == 2)
@@ -8485,6 +8768,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (ci != classes_.end() && ci->second) return roleCandidates(ci->second.get());
                 Value out = Value::array(); out.isList = true;
                 return out;
+            }
+            if (m == "archetypes" && howObjName) {
+                // a type's own metaobject: a class is nominal, inheritable
+                // and augmentable; a role is composable, and parametric until
+                // it is a concretization
+                Value a = Value::makeHash(); a.hashKind = "Archetypes";
+                const bool role = howObjName->find("Role") != std::string::npos;
+                const bool concrete = *howObjName == "Metamodel::ConcreteRoleHOW";
+                (*a.hash())["nominal"]         = Value::boolean(true);
+                (*a.hash())["inheritable"]     = Value::boolean(!role);
+                (*a.hash())["composable"]      = Value::boolean(role);
+                (*a.hash())["parametric"]      = Value::boolean(role && !concrete);
+                (*a.hash())["inheritalizable"] = Value::boolean(role && !concrete);
+                (*a.hash())["augmentable"]     = Value::boolean(!role);
+                return a;
             }
             if (m == "archetypes") {
                 Value a = Value::makeHash(); a.hashKind = "Archetypes";
@@ -9541,6 +9839,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();
+        // `R[Int]` — the TYPE a parameterization names — is made by
+        // CurriedRoleHOW (an instance's class keeps the HOW below)
+        if (hci && inv.t == VT::Type && hci->isRole && hci->name.find("\x01pun") != std::string::npos) {
+            auto hc = typeHowCache_.find(hci->name);
+            if (hc != typeHowCache_.end()) return hc->second;
+            if (!howCurriedClsInfo_) {
+                howCurriedClsInfo_ = std::make_shared<ClassInfo>();
+                howCurriedClsInfo_->name = "Metamodel::CurriedRoleHOW";
+            }
+            Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
+            h.obj()->cls = howCurriedClsInfo_;
+            h.obj()->attrs["__type"] = Value::typeObj(hci->name);
+            return typeHowCache_[hci->name] = h;
+        }
         if (hci) {
             if (hci->howObj.t != VT::Object) {
                 if (!howClsInfo_) { howClsInfo_ = std::make_shared<ClassInfo>(); howClsInfo_->name = "Metamodel::ClassHOW"; }

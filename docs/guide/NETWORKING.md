@@ -1,7 +1,7 @@
 # Networking with Raku++
 
-Raku++ speaks TCP over the network using the same asynchronous socket API as
-Rakudo: `IO::Socket::Async` for clients and servers, `signal()` for graceful
+Raku++ speaks TCP and UDP over the network using the same asynchronous socket
+API as Rakudo: `IO::Socket::Async` for clients and servers, `signal()` for graceful
 shutdown, and — with a matching system OpenSSL — `IO::Socket::Async::SSL` for
 TLS. Every example below was run against `rakupp` and its output is shown as
 produced.
@@ -75,6 +75,42 @@ react {
 
 Connecting to it with any client (`nc 127.0.0.1 15480`, another Raku++ program,
 a browser…) and sending `hello` gets back `echo: hello`.
+
+---
+
+## UDP
+
+`IO::Socket::Async.bind-udp($host, $port)` binds a socket that receives
+datagrams; `IO::Socket::Async.udp` makes one that sends them. `print-to` and
+`write-to` (a Blob) each send one datagram and keep their Promise with the byte
+count. The socket's Supply emits one value per datagram, decoded on its own;
+`:bin` gives the bytes as `Buf[uint8]`, and `:datagram` gives an
+`IO::Socket::Async::Datagram` with `.data`, `.hostname` and `.port`.
+
+```raku
+my $server = IO::Socket::Async.bind-udp('127.0.0.1', 15490);
+my $client = IO::Socket::Async.udp;
+
+say 'sent ', await($client.print-to('127.0.0.1', 15490, 'ping')), ' bytes';
+
+react {
+    whenever $server.Supply(:datagram) -> $d {
+        say "{$d.data} from {$d.hostname}";
+        done;
+    }
+}
+$client.close;
+$server.close;
+```
+
+```
+sent 4 bytes
+ping from 127.0.0.1
+```
+
+Binding a port that is already bound dies. Closing a socket frees its port at
+once and sends `done` to its taps. `:broadcast` enables sending to a broadcast
+address, and `:enc` sets the encoding `print-to` and the Supply use.
 
 ---
 
@@ -171,6 +207,7 @@ Notes and current limits:
 |---|---|
 | `IO::Socket::Async.connect` / `.listen` | works (client + server) |
 | `$sock.Supply(:bin)` reads, `.write` / `.print` | works |
+| `IO::Socket::Async.bind-udp` / `.udp`, `print-to` / `write-to`, `Supply(:bin, :datagram)` | works |
 | `signal(SIGINT, …)` for shutdown | works |
 | `IO::Socket::INET` (synchronous client and server) | works; the constructor **throws** `X::AdHoc` on a refused connect or a failed bind, where it used to answer `Nil` |
 | IPv6 | **not supported** — every socket path is IPv4-only |

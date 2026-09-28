@@ -3581,10 +3581,7 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
         return;
     }
     if (module.size() >= 2 && module[0] == 'v' && ascii::isdigit((unsigned char)module[1])) {
-        if (module.find("6.c") != std::string::npos) langRev_ = 0;
-        else if (module.find("6.d") != std::string::npos) langRev_ = 1;
-        else if (module.find('.') == std::string::npos) langRev_ = 1; // bare `v6` is the default revision
-        else langRev_ = 2;
+        langRev_ = langRevOfPragma(module);   // (bare `v6` is the default revision, 6.d)
         return;
     }
     if (module == "lib") {
@@ -4646,6 +4643,8 @@ Interpreter::Interpreter() {
         mkShim("CompUnit::PrecompilationDependency::File", {"src", "id", "spec"});
         mkShim("CompUnit::PrecompilationId", {"id"});
         mkShim("CompUnit::Handle", {"unit"});
+        // one UDP datagram, from `$udp.Supply(:datagram)`: its payload and sender
+        mkShim("IO::Socket::Async::Datagram", {"data", "hostname", "port"});
         // $*REPO is the head of the repo chain — an Installation over ~/.raku, which is
         // exactly the prefix rakupp resolves `use` from. Methods handled in methodCall.
         auto od = makePayload<ObjectData>(); od->cls = inst;
@@ -5246,23 +5245,54 @@ static bool hoistableTypeDecl(const Stmt* s) {
 
 // Create a type whose declaration is further down the file, the moment its name
 // is actually used. Answers false when there is no such pending declaration.
+// A declaration counts as built when the type it made is the one registered
+// under its name (or one of that role group's candidates), or when a hoist
+// pass made it and normal flow has not reached it yet. A same-named type from
+// a SIBLING scope is another declaration, and does not count.
+bool Interpreter::typeDeclBuilt(const ClassDecl* cd) {
+    if (hoistedTypes_.count(cd)) return true;
+    auto it = classes_.find(cd->name);
+    if (it == classes_.end() || !it->second) return false;
+    if (it->second->decl == cd) return true;
+    for (auto& v : it->second->roleVariants)
+        if (v && v->decl == cd) return true;
+    return false;
+}
+
+void Interpreter::notePendingType(ClassDecl* cd) {
+    if (typeDeclBuilt(cd)) return;
+    auto& v = pendingTypes_[cd->name];
+    if (std::find(v.begin(), v.end(), cd) == v.end()) v.push_back(cd);
+}
+
 bool Interpreter::materializePendingType(const std::string& name) {
     auto it = pendingTypes_.find(name);
     if (it == pendingTypes_.end()) return false;
-    ClassDecl* cd = it->second;
+    std::vector<ClassDecl*> decls = std::move(it->second);
     pendingTypes_.erase(it);
-    // The class already exists: normal flow built it and the pending record is
-    // stale (the erase above retires it). Executing the declaration AGAIN would
-    // re-run the body's statements — nothing new can come of it, so report
-    // "nothing materialized" and let the caller's miss stand.
-    if (classes_.count(name)) return false;
-    // its own parents and roles may be pending too (`class D does R` with both
-    // declared below the code that uses D) — build those first
-    if (!cd->parent.empty()) materializePendingType(cd->parent);
-    for (auto& p : cd->extraParents) materializePendingType(p);
-    for (auto& r : cd->roles) materializePendingType(r);
-    exec(cd);
-    hoistedTypes_[cd]++;      // …so reaching it in normal flow does not rebuild it
+    // (a record normal flow has built since is stale: executing that
+    // declaration AGAIN would re-run the body's statements)
+    decls.erase(std::remove_if(decls.begin(), decls.end(),
+                               [&](ClassDecl* d) { return typeDeclBuilt(d); }), decls.end());
+    std::vector<ClassDecl*> real;
+    for (ClassDecl* d : decls) if (!d->isStubDecl) real.push_back(d);
+    if (real.empty()) return false;
+    // their own parents and roles may be pending too (`class D does R` with
+    // both declared below the code that uses D) — build those first
+    for (ClassDecl* d : real) {
+        if (!d->parent.empty()) materializePendingType(d->parent);
+        for (auto& p : d->extraParents) materializePendingType(p);
+        for (auto& r : d->roles) materializePendingType(r);
+    }
+    // A ROLE group is every declaration of the name, built in textual order
+    // so each joins the one before it (`role R[::T] {…}; role R {…}`);
+    // anything else is its last declaration, the completion of any stub.
+    auto build = [&](ClassDecl* d) {
+        exec(d);
+        hoistedTypes_[d]++;   // …so reaching it in normal flow does not rebuild it
+    };
+    if (real.back()->isRole) { for (ClassDecl* d : real) build(d); }
+    else build(real.back());
     return classes_.count(name) > 0;
 }
 
@@ -5477,7 +5507,7 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
         for (auto& s : stmts)
             if (hoistableTypeDecl(s.get())) {
                 auto* cd = static_cast<ClassDecl*>(s.get());
-                if (!classes_.count(cd->name)) pendingTypes_[cd->name] = cd;
+                notePendingType(cd);
             }
         return false;
     }
@@ -5505,7 +5535,7 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts)
         if (hoistableTypeDecl(s.get())) {
             auto* cd = static_cast<ClassDecl*>(s.get());
-            if (!classes_.count(cd->name)) pendingTypes_[cd->name] = cd;
+            notePendingType(cd);
         }
     return any;
 }
@@ -9308,6 +9338,15 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             return true; // every tag is selective and none was requested
         };
         tctx_.cur = moduleEnv;
+        // A module loaded at RUN time (`require`, `$repo.need`) runs its
+        // mainline inside the caller's dynamic scope: a `my $*x` around the
+        // require is visible there, and in whatever that module loads in
+        // turn. A compile-time `use` gets no such frame.
+        struct DynFrameG {
+            std::vector<Env*>& st; Env* e;
+            ~DynFrameG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
+        } dynFrameG{tctx_.dynStack, (requireForm || runtimeLoadDepth_ > 0) && saved ? saved.get() : nullptr};
+        if (dynFrameG.e) tctx_.dynStack.push_back(dynFrameG.e);
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         // A `unit module Foo;` sets pkgPrefix for the rest of the file so its
         // `our sub`s publish qualified (Foo::name); save/restore so it can't leak
@@ -9976,6 +10015,13 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         PkgPrefixRestore(ExecContext& cx) : c(cx), saved(cx.pkgPrefix) {}
         ~PkgPrefixRestore() { c.pkgPrefix = saved; }
     } pkgPrefixRestore(tctx_);
+    // the EVAL'd source counts its own lines from 1; the caller's statement
+    // line comes back when it returns (a regex's `{ … }` and `** { … }` run
+    // through here, and a failing `is` after one reported "line 1")
+    struct LineRestore {
+        Interpreter* self; int line;
+        ~LineRestore() { self->curLine_ = line; }
+    } lineRestore{this, curLine_};
     // `$=pod` inside the EVAL is the EVAL's own compilation unit's pod, as in
     // Rakudo — Pod::Load's whole method is `EVAL "module M { $source }\n$=pod"`.
     // The main program's DOM is put back on every exit path.
@@ -12193,9 +12239,23 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariant(const std::shared_ptr<Cl
 // pick 1, 3, 2, 4 for "hi", B, A, Pair.
 std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantArgs(const std::shared_ptr<ClassInfo>& group,
                                                             const std::vector<ExprPtr>& exprs) {
-    ValueList av;
-    try { for (auto& e : exprs) av.push_back(eval(e.get())); }
+    ValueList vals;
+    try {
+        for (auto& e : exprs) {
+            vals.push_back(eval(e.get()));
+            if (e->kind == NK::Pair) vals.back().namedArg = true;
+        }
+    }
     catch (RakuError&) { return pickRoleVariant(group, exprs.size()); }
+    return pickRoleVariantValues(group, vals);
+}
+
+// …the same choice over arguments already evaluated (`R[Str]` punned at run
+// time). Named arguments are not positionals: `R[42, :opt]` has one.
+std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_ptr<ClassInfo>& group,
+                                                              const ValueList& vals) {
+    ValueList av;
+    for (auto& v : vals) if (!v.namedArg) av.push_back(v);
     std::vector<std::shared_ptr<ClassInfo>> all = group->roleVariants;
     all.push_back(group);
     auto positionals = [](ClassInfo* v) {
@@ -12323,6 +12383,7 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
             return Value::typeObj(hit->second);
     }
     auto pun = std::make_shared<ClassInfo>(*role);
+    pun->roleVariants.clear();   // a parameterization is one candidate, not a group
     static int punSerial = 0;
     pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
     // …and what to CALL it: `Foo[Int]`, the way it was written, the way Rakudo
@@ -12339,7 +12400,8 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
     applyRoleTypeParamsToAttrs(pun.get());
-    recloseRoleMethods(pun.get());
+    recloseRoleMethods(pun);
+    concretizeInnerRoles(pun, role);
     // The roles this parameterization DOES through its parameters: `role
     // RR[::T] does T` (RR[Foo] does Foo) and `role PR1[::T1] does PR00[T1]`
     // (PR1[Int] does PR00[Int]) — evaluated with the parameters bound
@@ -12388,6 +12450,7 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
         }
     }
     classes_[pun->name] = pun;
+    punArgs_[pun->name] = argv;
     return Value::typeObj(pun->name);
 }
 
@@ -12508,7 +12571,7 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
 // parameters at call time by whichever class called — `does R[Str] does R[Int]`
 // gave both its multis T = Str, and a `multi method foo(T $t)` matched nothing
 // at all, since the dispatcher resolved T from the CALLER's scope.
-void Interpreter::recloseRoleMethods(ClassInfo* conc) {
+void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc) {
     if (!conc || conc->roleParamBindings.empty()) return;
     std::unordered_map<Env*, std::shared_ptr<Env>> scopes;
     auto reclose = [&](Value& m) {
@@ -12518,6 +12581,7 @@ void Interpreter::recloseRoleMethods(ClassInfo* conc) {
         if (!scope) {
             scope = std::make_shared<Env>();
             scope->parent = c->closure ? c->closure : global_;
+            scope->x().pkgType = conc;   // `self.R::m` in here resolves from THIS parameterization
             for (auto& b : conc->roleParamBindings)
                 if (!b.first.empty() && !scope->local(b.first)) scope->define(b.first, b.second);
         }
@@ -12547,8 +12611,56 @@ std::shared_ptr<ClassInfo> Interpreter::concretizeRole(const std::shared_ptr<Cla
     bindRoleParamsInto(conc.get(), role.get(), argv, scope);
     if (conc->roleParamBindings.empty()) return role;
     applyRoleTypeParamsToAttrs(conc.get());
-    recloseRoleMethods(conc.get());
+    recloseRoleMethods(conc);
+    concretizeInnerRoles(conc, role.get());
     return conc;
+}
+
+// The roles a parametric role does THROUGH its parameters are concretized
+// with it: `role R2[::T] does R1[::T]` makes R2[Num] do R1[Num], not the
+// generic R1 every parameterization of R2 would otherwise share.
+void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role) {
+    if (!conc || !role || !role->decl || role->decl->roleArgs.empty()) return;
+    auto penv = std::make_shared<Env>();
+    penv->parent = role->declEnv ? role->declEnv : global_;
+    for (auto& b : conc->roleParamBindings)
+        if (!b.first.empty() && !penv->local(b.first)) penv->define(b.first, b.second);
+    std::map<std::string, size_t> seenName;
+    std::map<ClassInfo*, std::shared_ptr<ClassInfo>> done;   // parent and composedRoles stay one object
+    auto redo = [&](std::shared_ptr<ClassInfo>& slot) {
+        if (!slot || !slot->isRole || !slot->decl || slot->decl->roleParams.empty()) return;
+        auto hit = done.find(slot.get());
+        if (hit != done.end()) { slot = hit->second; return; }
+        const size_t k = seenName[slot->name]++;
+        const std::vector<ExprPtr>* rargs = nullptr;
+        size_t seen = 0;
+        for (auto& ra : role->decl->roleArgs) {
+            const bool named = ra.first == slot->name ||
+                (slot->name.size() > ra.first.size() + 2 &&
+                 slot->name.compare(slot->name.size() - ra.first.size(), ra.first.size(), ra.first) == 0 &&
+                 slot->name[slot->name.size() - ra.first.size() - 1] == ':');
+            if (named && seen++ == k) { rargs = &ra.second; break; }
+        }
+        if (!rargs || rargs->empty()) return;
+        ValueList argv;
+        auto saved = tctx_.cur; tctx_.cur = penv;
+        try {
+            for (auto& e : *rargs) {
+                Value v = eval(e.get());
+                if (e->kind == NK::Pair) v.namedArg = true;
+                argv.push_back(std::move(v));
+            }
+        } catch (RakuError&) { tctx_.cur = saved; return; }
+        tctx_.cur = saved;
+        auto inner = concretizeRole(slot, argv, penv);
+        if (inner == slot) return;
+        const std::string disp = roleArgsDisplay(slot->name, argv);
+        done[slot.get()] = inner;
+        slot = inner;
+        if (disp != slot->name) conc->doneRoles.insert(disp);
+    };
+    redo(conc->parent);
+    for (auto& r : conc->composedRoles) redo(r);
 }
 
 // `inv.R::m` where R is parametric names the parameterization of R that the
@@ -12563,6 +12675,16 @@ ClassInfo* Interpreter::qualifiedConcretization(const Value& inv, const std::str
         auto it = classes_.find(inv.s);
         if (it != classes_.end()) start = it->second.get();
     }
+    return qualifiedConcretizationFrom(start, roleName);
+}
+
+bool Interpreter::valueBoundVar(const std::string& name) {
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        if (e->local(name)) return e->xr().varValueBound.count(name) > 0;
+    return false;
+}
+
+ClassInfo* Interpreter::qualifiedConcretizationFrom(ClassInfo* start, const std::string& roleName) {
     if (!start) return nullptr;
     auto directRoles = [](ClassInfo* c, std::vector<ClassInfo*>& out) {
         if (c->parent && c->parent->isRole) out.push_back(c->parent.get());
@@ -13048,10 +13170,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // how to be. Reading it as 6.e silently changed semantics under
                 // the most common pragma in real code (`sqrt(-1)` answered
                 // 0+1i rather than NaN). Only an explicit 6.e (or later) opts in.
-                if (u->module.find("6.c") != std::string::npos) langRev_ = 0;
-                else if (u->module.find("6.d") != std::string::npos) langRev_ = 1;
-                else if (u->module.find('.') == std::string::npos) langRev_ = 1; // bare `v6`
-                else langRev_ = 2; // v6.e and later -> latest semantics
+                langRev_ = langRevOfPragma(u->module);   // v6c/v6.c, v6d, v6e… (see Parser.h)
             }
             else if (u->module == "lib") {
                 // `use lib` takes ONE path or a list of them (`use lib <lib t/lib>`);
@@ -14527,7 +14646,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (kv.second.t != VT::Code || !kv.second.code()) continue;
                     // since 6.e a role's SUBMETHODS are not composed into the class
                     // at all, so two roles carrying the same one do not conflict
-                    if (langRev_ >= 2 && kv.second.code()->isSubmethod) continue;
+                    if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->isSubmethod) continue;
                     if (kv.second.code()->isMultiDispatcher) {
                         for (auto& c : kv.second.code()->candidates)
                             if (c.code() && !c.code()->isStub) { provided[kv.first][sigKeyParams(c.code()->params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
@@ -14670,6 +14789,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
                 for (ClassInfo* rcM : roleChain)
                 for (auto& kv : rcM->methods) {
+                    // a 6.e role's submethod is not composed into a class of
+                    // an earlier revision either: its BUILD/TWEAK run as the
+                    // ROLE's constructors (roleCtorHooks, runBuildChain)
+                    if (!cd->isRole && langRev_ < 2 && rcM->langRev >= 2 && kv.second.t == VT::Code &&
+                        kv.second.code() && kv.second.code()->isSubmethod)
+                        continue;
                     bool newDisp = kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isMultiDispatcher;
                     // remember which composed names are SUBMETHODS: 6.e hides them
                     // from ordinary dispatch while still running role BUILD/TWEAK
@@ -14829,6 +14954,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             bodyEnv->parent = tctx_.cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
+            bodyEnv->x().pkgType = ci;
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
             // `role ABCD[EFGH] { }` — a role parameter typed with nothing declared
             if (cd->isRole)
@@ -14854,17 +14980,43 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
             }
             ci->langRev = (signed char)langRev_;
+            if (!cd->isRole && langRev_ < 2) {
+                auto e6Hooks = [](ClassInfo* r) {
+                    if (!r || !r->isRole || r->langRev < 2) return false;
+                    for (const char* h : {"BUILD", "TWEAK"}) {
+                        auto it = r->methods.find(h);
+                        if (it != r->methods.end() && it->second.t == VT::Code && it->second.code() &&
+                            it->second.code()->isSubmethod) return true;
+                    }
+                    return false;
+                };
+                std::set<ClassInfo*> seenR;
+                std::function<void(ClassInfo*)> walk = [&](ClassInfo* k) {
+                    if (!k || ci->roleCtorHooks) return;
+                    if (!k->isRole) { if (k->roleCtorHooks) ci->roleCtorHooks = true; return; }
+                    if (!seenR.insert(k).second) return;
+                    if (e6Hooks(k)) { ci->roleCtorHooks = true; return; }
+                    walk(k->parent.get());
+                    for (auto& p : k->extraParents) walk(p.get());
+                };
+                walk(ci->parent.get());
+                for (auto& p : ci->extraParents) walk(p.get());
+                for (auto& r : ci->composedRoles) walk(r.get());
+            }
             // Normal flow reached the declaration: retire the forward-reference
             // record hoistSubs parked. A stale entry made the method-not-found
             // fallback re-EXECUTE this body — statements, is()-calls and all —
             // on the first missed method call against the class.
-            {   // (a STUB leaves the entry when it holds the stub's own
-                // completion, further down the scope: the completion is built
-                // from it where the stub is registered — see stubOverCompleted)
+            {   // (only THIS declaration: the rest of its group, or a stub's
+                // completion further down the scope, stay pending — the
+                // completion is built from there where the stub is registered,
+                // see stubOverCompleted)
                 auto pend = pendingTypes_.find(cd->name);
-                if (pend != pendingTypes_.end() &&
-                    !(cd->isStubDecl && pend->second != cd && !pend->second->isStubDecl))
-                    pendingTypes_.erase(pend);
+                if (pend != pendingTypes_.end()) {
+                    auto& v = pend->second;
+                    v.erase(std::remove(v.begin(), v.end(), cd), v.end());
+                    if (v.empty()) pendingTypes_.erase(pend);
+                }
             }
             // Parameterized-role value params: bind each composed role's `[...]`
             // params to this class's `does R[args]` arguments, so the role body
@@ -14901,7 +15053,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     }
                     bindRoleParamsInto(ci.get(), role, argv, ci->declEnv);
                     // `does R[Int]`: the class does R[Int] — and not R[Str]
-                    if (!argv.empty()) {
+                    // (a PARAMETRIC role's `does R1[::T]` names no type yet:
+                    // each of its parameterizations records its own R1[…])
+                    bool unbound = false;
+                    for (auto& a : argv) if (a.t == VT::Hash && a.hashKind == "Failure") unbound = true;
+                    if (!argv.empty() && !unbound) {
                         const std::string rn = role->dispName.empty() ? role->name : role->dispName;
                         std::string disp = roleArgsDisplay(rn, argv);
                         if (disp != rn) ci->doneRoles.insert(disp);
@@ -15430,11 +15586,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // type for the name (the stub matched too, and the later one
                 // won the slot); building it here, in place of the stub, is
                 // what makes the name usable in between.
+                // (a same-named type from a sibling scope is no reason not
+                // to: the pending record holds only what THIS scope has yet
+                // to build)
                 bool builtNow = false;
-                if (!classes_.count(clsName)) {
+                {
                     auto pend = pendingTypes_.find(cd->name);
-                    if (pend != pendingTypes_.end() && pend->second != cd && !pend->second->isStubDecl)
-                        builtNow = materializePendingType(cd->name);
+                    bool completionAhead = false;
+                    if (pend != pendingTypes_.end())
+                        for (ClassDecl* d : pend->second)
+                            if (d != cd && !d->isStubDecl) completionAhead = true;
+                    if (completionAhead) builtNow = materializePendingType(cd->name);
                 }
                 auto ex = classes_.find(clsName);
                 stubOverCompleted = ex != classes_.end() && ex->second &&
@@ -15467,10 +15629,20 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // are two roles), and with a parameter list somewhere among them
                 bool sameScope = prev != classes_.end() && prev->second && prev->second->declEnv &&
                                  ci->declEnv && prev->second->declEnv->parent == ci->declEnv->parent;
+                // …or each at the top of its own compilation unit: a module
+                // declaring `role R[::T]` beside the `role R` it imported adds
+                // a candidate to that group (roast S14-roles/versioning.t, one
+                // candidate per language revision). Rakudo refuses the case
+                // where the second unit never imported the first ("Merging
+                // GLOBAL symbols failed"); this is lenient there.
+                auto unitTop = [&](Env* e) { return e && (e == global_.get() || e->unitFrame); };
+                bool acrossUnits = !sameScope && prev != classes_.end() && prev->second && prev->second->declEnv &&
+                                   ci->declEnv && prev->second->declEnv->parent != ci->declEnv->parent &&
+                                   unitTop(prev->second->declEnv->parent.get()) && unitTop(ci->declEnv->parent.get());
                 bool parametric = cd->parameterized || !cd->roleParams.empty() ||
                                   (prev != classes_.end() && prev->second && prev->second->decl &&
                                    !prev->second->decl->roleParams.empty());
-                if (sameScope && parametric && prev->second->isRole &&
+                if ((sameScope || acrossUnits) && parametric && prev->second->isRole &&
                     prev->second.get() != ci.get() && prev->second->decl &&
                     !prev->second->decl->isStubDecl) {
                     ci->roleVariants = prev->second->roleVariants;
@@ -27402,6 +27574,10 @@ resumeBody:
         if (c.body) runLeavePhasers(*c.body);
         restore();
         copyOutRw(c.params, env, rwArgs);
+        // …unless the when's block RETURNED: `when Int { return "R" }` at
+        // routine level leaves the routine with that value, and the pending
+        // return must end here, not in the caller too
+        if (isRoutine && tcx.returning) { tcx.returning = false; return checkRetType(c, std::move(tcx.returnV)); }
         return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
         if (catchBlk) {
@@ -29244,6 +29420,7 @@ resumeMethodBody:
         runLeaves(true);
         tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
+        if (tcx.returning) { tcx.returning = false; return checkRetType(c, std::move(tcx.returnV)); }   // (as in callCallable)
         return checkRetType(c, b.hasVal ? std::move(b.v) : std::move(last));
     }
     catch (RakuError& e) {
@@ -29833,9 +30010,39 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     }
     if (e->kind == NK::SymbolicRef) {
         auto* sr = static_cast<SymbolicRef*>(e);
-        std::string nm = symRefName(sr);
+        bool callerHead = false;
+        std::string nm = symRefName(sr, &callerHead);
         if (nm.empty())
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+        // `$CALLER::_++` / `CALLER::<$x> = …` write the CALLER's variable, in
+        // the frame the read finds it in (the innermost of the dynamic chain;
+        // CALLERS:: every caller, innermost out). The lexical lookup below
+        // would have written this routine's OWN `$_` (6.c 01-misc.t). A plain
+        // `my` of the caller is refused as the read refuses it.
+        if (callerHead && (sr->pkg == "CALLER" || sr->pkg == "CALLERS") && !tcx.dynStack.empty()) {
+            auto writable = [&](Env* frame) {
+                if (nm.size() < 2 || !std::strchr("$@%", nm[0]) || std::strchr("*?!.", nm[1]) ||
+                    (nm == "$_" && langRev_ == 0) || nm == "$/" || nm == "$!")   // `$_`: 6.c only
+                    return true;
+                for (Env* en = frame; en; en = en->parent.get()) {
+                    if (en->xr().varDynamic.count(nm)) return true;
+                    if (en->local(nm)) break;
+                }
+                return false;
+            };
+            const size_t n = tcx.dynStack.size();
+            for (size_t k = n; k-- > 0; ) {
+                Env* frame = tcx.dynStack[k];
+                if (!frame) { if (sr->pkg == "CALLER") break; continue; }
+                if (Value* p = dynInFrame(frame, nm)) {
+                    if (!writable(frame))
+                        throwTypedV("X::Caller::NotDynamic", {{"symbol", Value::str(nm)}},
+                                    "Cannot access '" + nm + "' through CALLER, because it is not declared as dynamic");
+                    return p;
+                }
+                if (sr->pkg == "CALLER") break;
+            }
+        }
         VarExpr tmp(nm); tmp.line = e->line;
         return lvalue(&tmp);
     }
@@ -32692,6 +32899,34 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // it is a call, and every assignment runs through here)
     if (a->target && (isBind || a->target->kind == NK::Call) && tctx_.cur)
         assignContainerPrologue(a, isBind);
+    // `$x := <value>` binds the value itself (no container), and `$x := $y`
+    // a container: noted on the variable's own scope once the bind is done,
+    // for `=:=` (below, in the Binary arm)
+    struct ValueBindNote {
+        Interpreter* I; const std::string* name = nullptr; bool value = false; int unc = 0;
+        ~ValueBindNote() {
+            if (!name || std::uncaught_exceptions() != unc || !I->tctx_.cur) return;
+            for (Env* e = I->tctx_.cur.get(); e; e = e->parent.get())
+                if (e->local(*name)) {
+                    if (value) e->x().varValueBound.insert(*name);
+                    else if (e->xr().varValueBound.count(*name)) e->x().varValueBound.erase(*name);
+                    return;
+                }
+        }
+    } valueBindNote{this};
+    if (isBind && a->target && a->target->kind == NK::VarExpr && a->value) {
+        const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
+        if (tn.size() > 1 && tn[0] == '$' && tn[1] != '!' && tn[1] != '.' && tn[1] != '*') {
+            const NK vk = a->value->kind;
+            valueBindNote.name = &tn;
+            // (a bare NAME is a value — a type — unless it is a sigilless
+            // variable holding a container)
+            Value* sr = vk == NK::NameTerm ? tctx_.cur->findRaw(static_cast<NameTerm*>(a->value.get())->name) : nullptr;
+            const bool sigilless = sr && sr->isCell();
+            valueBindNote.value = !(vk == NK::VarExpr || sigilless || vk == NK::Index || vk == NK::SymbolicRef);
+            valueBindNote.unc = std::uncaught_exceptions();
+        }
+    }
     // `(my @a) = [42, @a]` — a PARENTHESISED declaration is in scope for its
     // own right side (the bare `my @a = …, @a` is refused at parse time, so
     // this is the only way the right side can name the variable it fills).
@@ -41646,9 +41881,17 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // the answer. A quiet error answers Nil.
     auto evalInCursor = [this, &build](const std::string& code, long from, long to,
                                        const GrammarHooks::NamedMap& named,
-                                       const std::vector<std::pair<long, long>>& caps) -> Value {
+                                       const std::vector<std::pair<long, long>>& caps,
+                                       const RxCursorCaps* cc = nullptr) -> Value {
         RxMatch cur; cur.matched = true; cur.from = from; cur.to = to;
         cur.caps = caps; cur.named = named;
+        // the occurrence lists, when the engine offers them (see runBlock)
+        if (cc) {
+            if (cc->children) cur.children = *cc->children;
+            if (cc->capReps) cur.capReps = *cc->capReps;
+            if (cc->listCaps) cur.listCaps = *cc->listCaps;
+            cur.listNames = cc->listNames;
+        }
         Value cursor = build(cur);
         bool hadSlash = tctx_.cur->find("$/") != nullptr;
         Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
@@ -41660,6 +41903,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         };
         if (cursor.arr()) for (size_t k = 0; k < cursor.arr()->size(); k++)
             bindCap("$" + std::to_string(k), (*cursor.arr())[k]);
+        // …and a `$N` the cursor does NOT have is Nil here, not a slot a
+        // PREVIOUS match left standing (the finished match clears them the same way)
+        for (size_t k = cursor.arr() ? cursor.arr()->size() : 0; ; k++) {
+            const std::string nm = "$" + std::to_string(k);
+            if (!tctx_.cur->find(nm)) break;
+            bindCap(nm, Value::nil());
+        }
         if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
         setMatchVar(cursor);
         Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
@@ -41679,6 +41929,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                                      const std::vector<std::pair<long, long>>& caps,
                                      const GrammarHooks::ParamMap&) -> bool {
         return evalInCursor(code, from, to, named, caps).truthy();
+    };
+    auto assertCursor = [evalInCursor](const std::string& code, long from, long to,
+                                       const GrammarHooks::NamedMap& named,
+                                       const std::vector<std::pair<long, long>>& caps,
+                                       const RxCursorCaps& cc, const GrammarHooks::ParamMap&) -> bool {
+        return evalInCursor(code, from, to, named, caps, &cc).truthy();
     };
     // The hook gates scan the pattern TEXT — but a `my regex` body referenced as
     // a subrule carries its own `{…}`/`**{…}`, so the visible bodies scan too
@@ -41727,6 +41983,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             };
             if (cursor.arr()) for (size_t k = 0; k < cursor.arr()->size(); k++)
                 bindCap("$" + std::to_string(k), (*cursor.arr())[k]);
+            // (a `$N` this cursor lacks is Nil in the block — S05-capture/caps.t)
+            for (size_t k = cursor.arr() ? cursor.arr()->size() : 0; ; k++) {
+                const std::string nm = "$" + std::to_string(k);
+                if (!tctx_.cur->find(nm)) break;
+                bindCap(nm, Value::nil());
+            }
             if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
             setMatchVar(cursor);
             tctx_.cur->define("$\xC2\xA2", cursor);
@@ -41789,7 +42051,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (hookScan.find("?{") != std::string::npos || hookScan.find("!{") != std::string::npos ||
         // …and so must `<:Prop(arg)>`, which the engine reads as one (see Regex.cpp)
         (hookScan.find("<:") != std::string::npos && hookScan.find('(') != std::string::npos)) {
-        rmHooks.assertPassCaps = assertCaps;
+        rmHooks.assertPassCaps = assertCaps; rmHooks.assertPassCursor = assertCursor;
         wantHooks = true;
     }
     // `\w**{$n}` / `**{ 1..3 }` — a runtime-bounded quantifier in a plain `~~`
@@ -41828,7 +42090,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 catch (...) {}
             }
         };
-        rmHooks.assertPassCaps = assertCaps;
+        rmHooks.assertPassCaps = assertCaps; rmHooks.assertPassCursor = assertCursor;
         if (!rmHooks.range) rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
                                                    const GrammarHooks::ParamMap&) -> std::pair<long, long> {
             Value v;
@@ -42306,8 +42568,14 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     bool icase = false, sigspace = false, ignoremark = false, p5 = false;
     bool haveX = false, haveNth = false, haveStart = false, posAnchored = false;
     bool haveAs = false, overlap = false;
+    // The REPLACEMENT's case/mark transfer goes word by word under :s and
+    // :ss — a different question from whether the MATCH is sigspace. The
+    // method form's `:ss` (`.subst-mutate(/c \s+ x/, 'Z P', :ss)`) matches the
+    // Regex as it was compiled and only shapes the replacement; ss/// and
+    // s:ss/// carry it in the pattern, where it makes the match sigspace too.
+    bool wordByWord = false;
     Value xVal, nthVal, asVal; long startPos = 0;
-    auto setAdverb = [&](const std::string& k, const Value& pv) {
+    auto setAdverb = [&](const std::string& k, const Value& pv, bool inPattern) {
         // ordinal / count adverbs written as one token: :1st :2nd :3rd :5th, :2x
         if (k.size() >= 2 && ascii::isdigit((unsigned char)k[0])) {
             size_t d = 0; while (d < k.size() && ascii::isdigit((unsigned char)k[d])) d++;
@@ -42333,8 +42601,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "i" || k == "ignorecase") icase = true;
         else if (k == "samecase") samecase = true; // implies :i for regex only (applied below)
         else if (k == "ii") { samecase = true; icase = true; } // :ii always implies :i
-        else if (k == "s" || k == "sigspace") sigspace = true;
-        else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
+        else if (k == "s" || k == "sigspace") { sigspace = true; wordByWord = true; }
+        else if (k == "samespace" || k == "ss") { samespace = true; wordByWord = true; if (inPattern) sigspace = true; }
         else if (k == "samemark" || k == "mm") { samemark = true; ignoremark = true; } // :mm implies :m
         else if (k == "m" || k == "ignoremark") ignoremark = true;
         else if (k == "P5" || k == "Perl5") p5 = true; // s:P5/// — Perl 5 pattern syntax
@@ -42359,7 +42627,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
-        if (a.t == VT::Pair) setAdverb(a.s, a.pairVal() ? *a.pairVal() : Value::boolean(true));
+        if (a.t == VT::Pair) setAdverb(a.s, a.pairVal() ? *a.pairVal() : Value::boolean(true), false);
     // leading `:name` / `:name(arg)` adverbs baked into the pattern (s///, ss///)
     //
     // A LITERAL needle has none: `.subst(':ver<1.2>')` is asking for that text,
@@ -42384,7 +42652,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
               try { argv = evalString(arg); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
           }
           while (j < realPat.size() && realPat[j] == ' ') j++;
-          setAdverb(name, argv);
+          setAdverb(name, argv, true);
           i = j;
       }
       realPat = realPat.substr(i);
@@ -42487,6 +42755,18 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         std::string hay = subj;
         if (icase) for (auto& c : hay) c = ascii::tolower((unsigned char)c);
         long pos = haveStart ? startPos : 0;
+        // an EMPTY needle matches, zero-width, at every grapheme boundary —
+        // the start and the end included (`"abc".match('', :g)` has four)
+        if (needle.empty()) {
+            const long n = (long)subj.size();
+            for (long p = pos; p <= n; ) {
+                RxMatch mm; mm.matched = true; mm.from = mm.to = p;
+                matches.push_back(mm);
+                if (p >= n) break;
+                const long e = (long)uniClusterEndUtf8(subj, (size_t)p, (size_t)n);
+                p = e > p ? e : p + 1;
+            }
+        }
         while (needle.size() && pos <= (long)hay.size()) {
             size_t f = graphemeFind(hay, needle, (size_t)pos);
             if (f == std::string::npos) break;
@@ -42569,12 +42849,36 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     };
     std::set<long> sel;
     if (haveNth) {
-        // an ENDLESS index list (`:nth(2, 4 ... *)`) is read only as far as it can
-        // matter: the indices rise, so no more than `total` of them can select
-        Value nthList = endlessLazy(nthVal) ? methodCall(nthVal, "head", ValueList{Value::integer(total + 1)})
-                                            : nthVal;
-        forceLazy(nthList);
-        ValueList l = (nthList.t == VT::Array && nthList.arr()) ? *nthList.arr() : nthList.flatten();
+        ValueList l;
+        // The scalar forms name ONE match: `*` / Inf the last; a WhateverCode
+        // counts from the end (`*-1` is the one before the last — the tail
+        // index is |code(-1)|); any other Callable is CALLED, with no
+        // arguments, for the index (`:st{1;}`), a value below 1 taking the
+        // first. Each becomes a one-index list, so :x applies as it does to
+        // an Int.
+        const bool infNth = nthVal.isNumeric() && std::isinf(nthVal.toNum()) && nthVal.toNum() > 0;
+        if (nthVal.t == VT::Whatever || infNth) {
+            if (total >= 1) l.push_back(Value::integer(total));
+        }
+        else if (nthVal.t == VT::Code && nthVal.code()) {
+            long idx;
+            if (nthVal.code()->isWhateverCode) {
+                const long tail = std::labs((long)callCallable(nthVal, ValueList{Value::integer(-1)}).toInt());
+                idx = tail >= 1 ? total - tail + 1 : 0;
+            } else {
+                idx = (long)callCallable(nthVal, ValueList{}).toInt();
+                if (idx < 1) idx = 1;
+            }
+            if (idx >= 1 && idx <= total) l.push_back(Value::integer(idx));
+        }
+        else {
+            // an ENDLESS index list (`:nth(2, 4 ... *)`) is read only as far as it can
+            // matter: the indices rise, so no more than `total` of them can select
+            Value nthList = endlessLazy(nthVal) ? methodCall(nthVal, "head", ValueList{Value::integer(total + 1)})
+                                                : nthVal;
+            forceLazy(nthList);
+            l = (nthList.t == VT::Array && nthList.arr()) ? *nthList.arr() : nthList.flatten();
+        }
         long xcap = total;
         if (haveX) { long lo, hi; bounds(xVal, lo, hi); xcap = hi; if ((long)l.size() < lo) l.clear(); }
         long cnt = 0, prev = 0;
@@ -42895,9 +43199,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             r = a;
         }
-        if (ignoremark) r = sigspace ? applyCaseMarkWords(orig, r, samecase, true)
+        if (ignoremark) r = wordByWord ? applyCaseMarkWords(orig, r, samecase, true)
                                      : applyCaseMark(orig, r, samecase, true); // :m/:mm transfer marks (and case if :ii)
-        else if (samecase) r = sigspace ? applySamecaseWords(orig, r) : applySamecase(orig, r);
+        else if (samecase) r = wordByWord ? applySamecaseWords(orig, r) : applySamecase(orig, r);
         return r;
     };
     std::string out; long last = 0, occ = 0;
@@ -45440,6 +45744,15 @@ Value Interpreter::evalBinary(Binary* b) {
             // `my $held = &f; $held =:= &f` must stay False (it compares
             // containers, and the copy is its own), and reading identity off
             // the payload there made it True.
+            // two variables each BOUND to a value (`my $a := Int; my $b :=
+            // Int`) have no containers: they are =:= when the values are
+            else if (lp && rp && valueBoundVar(static_cast<VarExpr*>(b->lhs.get())->name) &&
+                     valueBoundVar(static_cast<VarExpr*>(b->rhs.get())->name)) {
+                Value l = *lp, r = *rp;
+                if (l.t == VT::Type && r.t == VT::Type) same = l.s == r.s && l.ofType() == r.ofType();
+                else if (l.t == VT::Object && r.t == VT::Object) same = l.obj() && l.obj() == r.obj();
+                else same = false;
+            }
             // two slots bound to one CONTAINER share its cell (`$b := $a`)
             else if (lp && rp && containerId(lp) == containerId(rp)) same = true;
             else same = lp && rp && (lp == rp ||
@@ -52323,7 +52636,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // never saw `T` bound at all (NativeHelpers::CStruct's LinearArray[T]).
         if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(base.s));
         if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
-            !rit->second->decl->roleParams.empty()) {
+            (!rit->second->decl->roleParams.empty() || !rit->second->roleVariants.empty())) {
             ClassInfo* role = rit->second.get();
             ValueList argv;
             // A Pair WRITTEN in the `[...]` list is a NAMED argument — `R[:opt-in]`
@@ -52350,6 +52663,8 @@ Value Interpreter::evalIndex(Index* idx) {
             if (argExprs.size() == argv.size())
                 for (size_t i = 0; i < argv.size(); i++)
                     if (argExprs[i]->kind == NK::Pair) argv[i].namedArg = true;
+            // a role GROUP puns the candidate these arguments fit
+            if (!rit->second->roleVariants.empty()) role = pickRoleVariantValues(rit->second, argv).get();
             return makeRolePun(role, base.s, argv);
         }
     }
@@ -53928,9 +54243,10 @@ struct NodeCountReport {
                 if (Value* p = dynInFrame(tctx_.dynStack.back(), nm)) {
                     // …and only a DYNAMIC one may be read so: a plain `my $x`
                     // of the caller is X::Caller::NotDynamic
+                    // (`$_` was dynamic in 6.c only: from 6.d it is refused too)
                     if (sr->pkg != "CALLERS" && nm.size() > 1 && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&
                         nm[1] != '*' && nm[1] != '?' && nm[1] != '!' && nm[1] != '.' &&
-                        nm != "$_" && nm != "$/" && nm != "$!" && nm != "$¢") {
+                        (nm != "$_" || langRev_ >= 1) && nm != "$/" && nm != "$!" && nm != "$¢") {
                         bool dyn = false;
                         for (Env* en = tctx_.dynStack.back(); en; en = en->parent.get()) {
                             if (en->xr().varDynamic.count(nm)) { dyn = true; break; }
@@ -54168,7 +54484,7 @@ struct NodeCountReport {
                     auto rit = classes_.find(lexicalTypeName(*this, n));
                     if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(n));
                     if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
-                        !rit->second->decl->roleParams.empty()) {
+                        (!rit->second->decl->roleParams.empty() || !rit->second->roleVariants.empty())) {
                         ValueList argv;
                         std::string rest = nt->ofType;
                         size_t pos = 0;
@@ -54216,7 +54532,10 @@ struct NodeCountReport {
                             if (c == std::string::npos) break;
                             pos = c + 1;
                         }
-                        return makeRolePun(rit->second.get(), n, argv);
+                        // a role GROUP puns the candidate these arguments fit
+                        ClassInfo* role = rit->second->roleVariants.empty()
+                                        ? rit->second.get() : pickRoleVariantValues(rit->second, argv).get();
+                        return makeRolePun(role, n, argv);
                     }
                 }
                 Value ty = Value::typeObj(n);
@@ -56534,9 +56853,22 @@ Value Interpreter::eval(Expr* e) {
                     // that does R[Str]) — the nearest class first, its own roles
                     // before the roles they do. Two parameterizations at one level
                     // are Rakudo's "Ambiguous concretization lookup".
+                    // The lookup starts from the CALLER's type — the class or
+                    // the role parameterization whose code says `self.R::m`
+                    // — and falls back to the invocant's when the caller has
+                    // no such role, or its one lacks the method.
                     if (qual->isRole && qual->decl &&
-                        (!qual->decl->roleParams.empty() || !qual->roleVariants.empty()))
-                        if (ClassInfo* conc = qualifiedConcretization(inv, qual->name)) qual = conc;
+                        (!qual->decl->roleParams.empty() || !qual->roleVariants.empty())) {
+                        ClassInfo* conc = nullptr;
+                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get())
+                            if (auto t = en->xr().pkgType.lock()) {
+                                ClassInfo* c = qualifiedConcretizationFrom(t.get(), qual->name);
+                                if (c && c->findMethod(mc->method)) conc = c;
+                                break;
+                            }
+                        if (!conc) conc = qualifiedConcretization(inv, qual->name);
+                        if (conc) qual = conc;
+                    }
                     return invokeMethodChain(mc->method, qual, inv, ma, &mc->args);
                 }
                 // A BUILT-IN qualifier (`self.Mu::Str`, `self.Any::gist`) names a
@@ -56797,6 +57129,10 @@ Value Interpreter::eval(Expr* e) {
                 try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
                 if (lv) {
                     ValueList sargs = evalArgs(mc->args);
+                    // the adverbs are NAMED, wherever they are written: `:g` or a
+                    // slipped `|(nth => 1..3)` may come before the pattern
+                    ValueList posArgs, adv;
+                    for (auto& a : sargs) ((a.t == VT::Pair && a.namedArg) ? adv : posArgs).push_back(a);
                     std::string pat; bool literal = false;
                     // interpRegexPattern FIRST: a regex argument arrives as its raw
                     // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
@@ -56804,15 +57140,15 @@ Value Interpreter::eval(Expr* e) {
                     // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
                     // matched the literal characters "$q" and changed nothing —
                     // Text::CSV escapes its quotes exactly that way.
-                    if (!sargs.empty() && sargs[0].t == VT::Regex)
-                        pat = rxInterpArrays(interpRegexPattern(sargs[0].s));
-                    else if (!sargs.empty()) { pat = sargs[0].toStr(); literal = true; }
-                    Value replArg = sargs.size() > 1 ? sargs[1] : Value::str("");
-                    ValueList adv;
-                    for (size_t i = 2; i < sargs.size(); i++) adv.push_back(sargs[i]);
+                    if (!posArgs.empty() && posArgs[0].t == VT::Regex)
+                        pat = rxInterpArrays(interpRegexPattern(posArgs[0].s));
+                    else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
+                    Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
                     long nsub = 0; Value mres;
                     std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
-                    *lv = Value::str(out);
+                    // nothing matched, nothing changed: the container keeps what
+                    // it held (an Int stays an Int, as in Rakudo)
+                    if (nsub) *lv = Value::str(out);
                     return mres;
                 }
             }

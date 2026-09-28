@@ -4931,6 +4931,38 @@ const char* quantValueType(const std::string& kind) {
 }
 
 static Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
+// `$repo.precomp-repository`: a precompilation repository over a store at
+// `dir` — the shape Test::Compile hands straight back to `.need`. Raku++
+// compiles on demand, so nothing reads the store; the objects are the API.
+static Value precompRepoObj(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes, const std::string& dir) {
+    auto so = makePayload<ObjectData>(); so->cls = classes["CompUnit::PrecompilationStore::FileSystem"];
+    Value pfx = Value::str(dir); pfx.hashKind = "IO";
+    so->attrs["prefix"] = pfx;
+    auto ro = makePayload<ObjectData>(); ro->cls = classes["CompUnit::PrecompilationRepository::Default"];
+    ro->attrs["store"] = Value::object(so);
+    return Value::object(ro);
+}
+// A UDP IO::Socket::Async (bind-udp / udp): the descriptor and the read
+// workers polling it, shared by the socket value and every worker. A worker
+// never touches the socket hash, only this; and the fd is released under `m`
+// once no reader can still be polling it, so close() frees the port at once.
+struct UdpSockState {
+    std::mutex m; std::condition_variable cv;
+    int fd = -1;
+    bool closed = false, broadcast = false;
+    int readers = 0;
+    std::vector<std::thread::id> readerTids;   // a close from inside a tap must not wait on itself
+};
+static std::shared_ptr<UdpSockState> udpState(const Value& s) {
+    return std::static_pointer_cast<UdpSockState>(s.ext());
+}
+static int udpOpen(int family, bool broadcast) {
+    // no SO_REUSEADDR: on Linux it lets two sockets bind one port, and a
+    // second bind-udp of a taken port has to die
+    int fd = ::socket(family, SOCK_DGRAM, 0);
+    if (fd >= 0 && broadcast) { int one = 1; ::setsockopt(fd, SOL_SOCKET, SO_BROADCAST, (const char*)&one, sizeof one); }
+    return fd;
+}
 
 // ---- JSON parser (internal readers + Rakudo::Internals::JSON) -----------------
 // ONE recursive-descent parser, ours and original, serves the internal readers
@@ -6175,6 +6207,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             if (m == "short-id") return Value::str("file");
             if (m == "can-install") return Value::boolean(false);
+            if (m == "precomp-repository") {
+                auto it = at.find("\x01precomp");
+                if (it != at.end()) return it->second;
+                const std::string pfx = at.count("prefix") ? at["prefix"].toStr() : std::string(".");
+                return at["\x01precomp"] = precompRepoObj(classes_, pfx + "/.precomp");
+            }
             if (m == "install")
                 throwTyped("X::AdHoc", {}, "Cannot install on CompUnit::Repository::FileSystem");
         }
@@ -6246,6 +6284,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "need") {
                 // the repository's OWN tree is where the module is: search it first
                 libPaths_.insert(libPaths_.begin(), prefix);
+                struct RtLoad { int& d; RtLoad(int& x) : d(x) { d++; } ~RtLoad() { d--; } } rtLoad{runtimeLoadDepth_};
                 try { loadModule(want, {}, /*doImport=*/false); }
                 catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
                 libPaths_.erase(libPaths_.begin());
@@ -6278,6 +6317,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "Str" || m == "gist" || m == "raku") return Value::str("inst#" + prefix);
             if (m == "path-spec") return Value::str("inst#" + prefix);
             if (m == "can-install") return Value::boolean(true);
+            if (m == "precomp-repository") {
+                auto it = at.find("\x01precomp");
+                if (it != at.end()) return it->second;
+                return at["\x01precomp"] = precompRepoObj(classes_, prefix + "/precomp");
+            }
             if (m == "repo-chain") {
                 // The whole chain the loader searches — home, then every site and
                 // vendor prefix — not just this one link. A program that walks the
@@ -6371,7 +6415,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     }
                 }
                 if (want.empty()) return Value::nil();
-                if (m == "need") loadModule(want);            // throws if it cannot load
+                if (m == "need") {                            // throws if it cannot load
+                    struct RtLoad { int& d; RtLoad(int& x) : d(x) { d++; } ~RtLoad() { d--; } } rtLoad{runtimeLoadDepth_};
+                    loadModule(want);
+                }
                 Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
                 (*cu.hash())["short-name"] = Value::str(want);
                 (*cu.hash())["repo"] = inv;
@@ -7285,6 +7332,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj() && inv.obj()->cls) ? Value::typeObj(inv.obj()->cls->name) : inv;
+        // (an object of one candidate of a role group answers for THAT
+        // candidate, which the group's name alone does not say)
+        if (mm == "language-revision" && args.empty() && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->langRev >= 0) {
+            const int r = inv.obj()->cls->langRev;
+            return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
+        }
         // an instance of a ROLE is its pun, and the pun DOES the role:
         // `B.new.^roles` is (B, A…) where `B.^roles` is only what B does
         if (mm == "roles" && inv.t == VT::Object && inv.obj() && inv.obj()->cls && inv.obj()->cls->isRole) {
@@ -7293,8 +7347,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             out.arr()->push_back(tobj);
             bool transitive = true;
             for (auto& a : args) if (a.t == VT::Pair && a.s == "transitive") transitive = !a.pairVal() || a.pairVal()->truthy();
+            // (a pun's own roles already name the pun: `VR[Int].new.^roles`
+            // is VR[Int] once)
+            const auto& own = inv.obj()->cls;
             if (transitive && rest.t == VT::Array && rest.arr())
-                for (auto& r : *rest.arr()) out.arr()->push_back(r);
+                for (auto& r : *rest.arr())
+                    if (!(r.t == VT::Type && (r.s == own->name || (!own->dispName.empty() && r.s == own->dispName))))
+                        out.arr()->push_back(r);
             return out;
         }
         // …and the LINEARISATION questions resolve against the type object for a
@@ -9185,6 +9244,36 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Supply that binds/accepts when tapped (see tapSupply); connect() returns a
     // kept Promise of a connected socket.
     if (inv.t == VT::Type && inv.s == "IO::Socket::Async") {
+        // UDP: bind-udp binds now, so a taken port dies here; a `udp` client
+        // gets its descriptor with the first datagram it sends (or its first tap)
+        if (m == "bind-udp" || m == "udp") {
+            auto st = std::make_shared<UdpSockState>();
+            Value s = Value::makeHash(); s.hashKind = "AsyncSocket"; s.extM() = st;
+            (*s.hash())["udp"] = Value::boolean(true);
+            ValueList pos;
+            for (auto& a : args) {
+                if (a.t != VT::Pair) { pos.push_back(a); continue; }
+                if (a.s == "broadcast") st->broadcast = !a.pairVal() || a.pairVal()->truthy();
+                else if (a.s == "enc" && a.pairVal()) (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
+            }
+            if (m == "udp") return s;
+            const std::string host = pos.size() > 0 ? pos[0].toStr() : std::string("0.0.0.0");
+            const long long port = pos.size() > 1 ? pos[1].toInt() : 0;
+            if (port < 0 || port > 65535)
+                throwTyped("X::AdHoc", {}, "UDP port " + std::to_string(port) + " is outside 0..65535");
+            sockaddr_storage addr{}; socklen_t addrLen = 0;
+            if (!asyncSockAddrFwd(host, (int)port, addr, addrLen))
+                throwTyped("X::AdHoc", {}, "Cannot resolve UDP host '" + host + "'");
+            int fd = udpOpen(addr.ss_family, st->broadcast);
+            if (fd < 0) throwTyped("X::AdHoc", {}, "Cannot create a UDP socket");
+            if (::bind(fd, (sockaddr*)&addr, addrLen) < 0) {
+                const std::string why = std::strerror(errno);
+                ::close(fd);
+                throwTyped("X::AdHoc", {}, "Cannot bind UDP " + host + ":" + std::to_string(port) + ": " + why);
+            }
+            st->fd = fd;
+            return s;
+        }
         if (m == "listen") {
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["kind"] = Value::str("async-listen");
@@ -9227,6 +9316,116 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*p.hash())["result"] = ps->result;
             return p;
         }
+    }
+    // A received datagram: .decode / .encode hand back a NEW datagram with the
+    // payload converted (the original keeps its own)
+    if ((m == "decode" || m == "encode") && inv.t == VT::Object && inv.obj()->cls &&
+        inv.obj()->cls->name == "IO::Socket::Async::Datagram") {
+        const Value data = inv.obj()->attrs.count("data") ? inv.obj()->attrs.at("data") : Value::any();
+        const bool isStr = data.t == VT::Str && data.hashKind.empty();
+        if (m == "decode" && isStr) throwTyped("X::AdHoc", {}, "This datagram holds a Str already; there is nothing to decode");
+        if (m == "encode" && !isStr) throwTyped("X::AdHoc", {}, "This datagram holds bytes already; there is nothing to encode");
+        Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
+        o.obj()->cls = inv.obj()->cls;
+        o.obj()->attrs = inv.obj()->attrs;
+        o.obj()->attrs["data"] = methodCall(data, m, args);
+        return o;
+    }
+    // A UDP socket: each print-to / write-to is one datagram, sent at once and
+    // answered with a kept Promise of its byte count; .Supply emits one value
+    // per datagram received (decoded whole — a datagram is never joined to the
+    // next, not even a lone combining mark).
+    if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket" && inv.hash()->count("udp")) {
+        auto st = udpState(inv);
+        if (st && (m == "print-to" || m == "write-to")) {
+            ValueList pos;
+            for (auto& a : args) if (a.t != VT::Pair) pos.push_back(a);
+            if (pos.size() < 3) throwTyped("X::AdHoc", {}, m + " takes a host, a port and the data to send");
+            const std::string host = pos[0].toStr();
+            const long long port = pos[1].toInt();
+            std::string data;
+            if (m == "write-to") {
+                const Value& b = pos[2];
+                const bool blob = b.t == VT::Str && (b.hashKind == "Buf" || b.hashKind == "Blob" || b.hashKind == "blob8" ||
+                                                     b.hashKind == "buf8" || b.hashKind == "utf8");
+                if (!blob)
+                    throwTyped("X::TypeCheck::Binding::Parameter", {},
+                               "write-to sends a Blob, not a " + methodCall(b, "^name", {}).toStr());
+                data = b.s;
+            }
+            else {
+                data = pos[2].toStr();
+                if (inv.hash()->count("enc")) {
+                    const std::string enc = (*inv.hash())["enc"].toStr();
+                    if (!enc.empty() && enc != "utf8" && enc != "utf-8") data = encodeTextEnc(data, enc);
+                }
+            }
+            sockaddr_storage addr{}; socklen_t addrLen = 0;
+            if (port < 0 || port > 65535 || !asyncSockAddrFwd(host, (int)port, addr, addrLen))
+                throwTyped("X::AdHoc", {}, "Cannot send a UDP datagram to " + host + ":" + std::to_string(port));
+            long long sent = -1; bool closed;
+            {   std::lock_guard<std::mutex> lk(st->m);
+                closed = st->closed;
+                if (!closed && st->fd < 0) st->fd = udpOpen(addr.ss_family, st->broadcast);
+                if (!closed && st->fd >= 0)
+                    sent = (long long)::sendto(st->fd, (const char*)data.data(), data.size(), 0, (sockaddr*)&addr, addrLen);
+            }
+            auto ps = std::make_shared<PromiseState>();
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+            ps->done = true;
+            if (sent >= 0) { ps->result = Value::integer(sent); (*p.hash())["status"] = Value::str("Kept"); (*p.hash())["result"] = ps->result; }
+            else {
+                ps->broken = true; ps->cause = Value::typeObj("X::IO");
+                ps->causeMsg = closed ? "The UDP socket is closed" : "UDP send failed";
+                (*p.hash())["status"] = Value::str("Broken");
+            }
+            return p;
+        }
+        if (st && m == "Supply") {
+            if (st->closed) return methodCall(Value::typeObj("Supply"), "from-list", ValueList{});
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash())["kind"] = Value::str("udp-read");
+            (*s.hash())["socket"] = inv;
+            bool bin = false, datagram = false;
+            for (auto& a : args) if (a.t == VT::Pair) {
+                const bool on = !a.pairVal() || a.pairVal()->truthy();
+                if (a.s == "bin") bin = on;
+                else if (a.s == "datagram") datagram = on;
+            }
+            (*s.hash())["bin"] = Value::boolean(bin);
+            (*s.hash())["datagram"] = Value::boolean(datagram);
+            if (inv.hash()->count("enc")) (*s.hash())["enc"] = (*inv.hash())["enc"];
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "enc" && a.pairVal())
+                    (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
+            return s;
+        }
+        if (st && m == "close") {
+            (*inv.hash())["closed"] = Value::boolean(true);
+            std::unique_lock<std::mutex> lk(st->m);
+            if (st->closed) return Value::boolean(true);
+            st->closed = true;
+            if (st->readers == 0) {
+                if (st->fd >= 0) ::close(st->fd);
+                st->fd = -1;
+                return Value::boolean(true);
+            }
+            // A reader may still be polling the descriptor; it lets go within
+            // one poll tick, and the port is free once it has. Closing from
+            // inside the tap itself cannot wait for that: its worker lets go
+            // when the handler returns.
+            if (std::find(st->readerTids.begin(), st->readerTids.end(), std::this_thread::get_id()) != st->readerTids.end())
+                return Value::boolean(true);
+            bool parked = gilPark();
+            st->cv.wait_for(lk, std::chrono::milliseconds(250), [&] { return st->readers == 0; });
+            lk.unlock();
+            gilUnpark(parked);
+            return Value::boolean(true);
+        }
+        if (m == "enc") return inv.hash()->count("enc") ? (*inv.hash())["enc"] : Value::str("utf-8");
+        if (st && m == "native-descriptor") { std::lock_guard<std::mutex> lk(st->m); return Value::integer(st->fd); }
+        if (m == "socket-host" || m == "peer-host") return Value::typeObj("Str");
+        if (m == "socket-port" || m == "peer-port") return Value::typeObj("Int");
     }
     // A connected async socket: .Supply taps a read worker; write/print are
     // synchronous sends answered with a kept Promise (Cro awaits them via
@@ -13920,6 +14119,156 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         (*t.hash())["wired"] = Value::boolean(true);
         return t;
     }
+    // A UDP socket's Supply: one emit per datagram, decoded on its own (Rakudo
+    // decodes each datagram whole, so nothing is held back for the next one).
+    // An empty datagram is an empty Str, not the end. The tap ends when the
+    // SOCKET is closed (then `done`), or when the tap itself is closed.
+    if (h.count("kind") && h.at("kind").toStr() == "udp-read") {
+        Value sock = h.at("socket");
+        auto st = udpState(sock);
+        auto handle = std::make_shared<TapHandle>();
+        auto inertTap = [&] {
+            Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+            return t;
+        };
+        if (!st) return inertTap();
+        bool closedNow = false;
+        {   std::lock_guard<std::mutex> lk(st->m);
+            closedNow = st->closed;
+            if (!closedNow) {
+                if (st->fd < 0) {   // a `udp` client listens on an ephemeral port
+                    int fd = udpOpen(AF_INET, st->broadcast);
+                    sockaddr_in any{}; any.sin_family = AF_INET; any.sin_addr.s_addr = INADDR_ANY; any.sin_port = 0;
+                    if (fd >= 0 && ::bind(fd, (sockaddr*)&any, sizeof any) < 0) { ::close(fd); fd = -1; }
+                    st->fd = fd;
+                }
+                if (st->fd >= 0) st->readers++;
+                else closedNow = true;
+            }
+        }
+        if (closedNow) {
+            if (doneCb.t == VT::Code) { ValueList na; callCallable(doneCb, na); }
+            return inertTap();
+        }
+        const int fd = st->fd;
+        engageGil();
+        liveWorkers_++;
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        const bool bin = h.count("bin") && h.at("bin").truthy();
+        const bool datagram = h.count("datagram") && h.at("datagram").truthy();
+        std::string readEnc = h.count("enc") ? h.at("enc").toStr() : std::string("utf-8");
+        Interpreter* self = this;
+        auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
+        throttleSpawn();
+        addWorker(BigStackThread([self, st, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, datagram, readEnc, rctx0]() mutable {
+            t_isWorker = true;
+            { std::lock_guard<std::mutex> lk(st->m); st->readerTids.push_back(std::this_thread::get_id()); }
+            std::vector<char> buf(65536);
+            bool sockClosed = false, tapClosed = false;
+            auto stop = [&] {
+                {   std::lock_guard<std::mutex> lk(handle->m);
+                    if (handle->closed) { tapClosed = true; return true; }
+                }
+                {   std::lock_guard<std::mutex> lk(st->m);
+                    if (st->closed) { sockClosed = true; return true; }
+                }
+                if (self->workerAbort_.load(std::memory_order_relaxed)) { tapClosed = true; return true; }
+                return false;
+            };
+            for (;;) {
+                if (stop()) break;
+                struct pollfd pfd { fd, POLLIN, 0 };
+                int pr = ::poll(&pfd, 1, 20);                        // GIL not held
+                if (pr == 0) continue;
+                if (pr < 0) { if (errno == EINTR) continue; break; }
+                if (stop()) break;                                   // a closed tap must not consume
+                sockaddr_storage from{}; socklen_t fromLen = sizeof from;
+                ssize_t n = ::recvfrom(fd, buf.data(), buf.size(), 0, (sockaddr*)&from, &fromLen);
+                if (n < 0) {
+                    // an ICMP port-unreachable from an earlier send surfaces
+                    // here on some systems; the socket is still good
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNRESET || errno == ECONNREFUSED) continue;
+                    break;
+                }
+                self->gilLock();
+                ExecContext wctx; self->loadCtx(wctx);
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                const std::string bytes(buf.data(), (size_t)n);
+                bool quit = false;
+                Value payload;
+                if (bin) { payload = Value::str(bytes); payload.hashKind = "Buf"; payload.ofTypeM() = "uint8"; identify(payload); }
+                else {
+                    try {
+                        Value blob = Value::str(bytes); blob.hashKind = "Buf"; blob.ofTypeM() = "uint8";
+                        payload = self->methodCall(blob, "decode", ValueList{Value::str(readEnc)});
+                    }
+                    catch (RakuError& e) {
+                        quit = true;
+                        if (quitCb.t == VT::Code) {
+                            ValueList one{e.payload.t == VT::Nil ? self->makeTypedEx("X::AdHoc", {}, e.message) : e.payload};
+                            try { self->callCallable(quitCb, one); } catch (...) {}
+                        }
+                        else fprintf(stderr, "===WARNING=== UDP datagram decode failed: %s\n", e.message.c_str());
+                    }
+                }
+                if (!quit && datagram) {
+                    std::string host; long long port = 0;
+                    asyncSockName(from, host, port);
+                    Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
+                    o.obj()->cls = self->classes_["IO::Socket::Async::Datagram"];
+                    o.obj()->attrs["data"] = payload;
+                    o.obj()->attrs["hostname"] = Value::str(host);
+                    o.obj()->attrs["port"] = Value::integer(port);
+                    payload = o;
+                }
+                if (!quit && emitCb.t == VT::Code) {
+                    ValueList one{payload};
+                    if (rctx0) self->reactStack_.push_back(rctx0);
+                    auto pop = [&] { if (rctx0 && !self->reactStack_.empty()) self->reactStack_.pop_back(); };
+                    try { self->callCallable(emitCb, one); pop(); }
+                    catch (NextEx&) { pop(); }
+                    catch (LastEx&) { pop(); tapClosed = true; }
+                    catch (DoneEx&) { pop(); tapClosed = true; }
+                    catch (RakuError& e) { pop(); fprintf(stderr, "===WARNING=== UDP read handler died: %s\n", e.message.c_str()); }
+                    catch (...) { pop(); }
+                }
+                self->gilYieldNotify();
+                if (quit) { tapClosed = true; break; }
+                if (tapClosed) break;
+            }
+            // Let go of the descriptor BEFORE taking the GIL for `done`: a
+            // close() on another thread waits for exactly this, GIL parked.
+            {   std::lock_guard<std::mutex> lk(st->m);
+                st->readers--;
+                auto me = std::find(st->readerTids.begin(), st->readerTids.end(), std::this_thread::get_id());
+                if (me != st->readerTids.end()) st->readerTids.erase(me);
+                if (st->closed) sockClosed = true;
+                if (st->closed && st->readers == 0 && st->fd >= 0) { ::close(st->fd); st->fd = -1; }
+                st->cv.notify_all();
+            }
+            if (sockClosed && !tapClosed && doneCb.t == VT::Code) {
+                self->gilLock();
+                ExecContext wctx; self->loadCtx(wctx);
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                ValueList na;
+                try { self->callCallable(doneCb, na); } catch (...) {}
+                self->gilYieldNotify();
+            }
+            self->liveWorkers_--;
+            fin->store(true, std::memory_order_release);
+        }), fin);
+        if (!reactStack_.empty()) {
+            auto rctx = reactStack_.back();
+            std::lock_guard<std::mutex> lk(rctx->m);
+            rctx->extTaps.push_back(handle);
+        }
+        Value t = inertTap();
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
     // 5) values-backed: eager push-through, then done (or quit)
     if (h.count("values")) {
         if (emitCb.t == VT::Code) for (auto& v : *h.at("values").arr()) {
@@ -18210,7 +18559,7 @@ void Interpreter::registerBuiltins() {
             // decrement when the stream ends (connection close) so the react exits.
             if (s.t == VT::Hash && s.hashKind == "Supply" && s.hash()->count("kind")) {
                 std::string k = (*s.hash())["kind"].toStr();
-                if (k == "async-read" || k == "async-listen") {
+                if (k == "async-read" || k == "async-listen" || k == "udp-read") {
                     std::shared_ptr<ReactCtx> ctx;
                     if (!I.reactStack_.empty()) {
                         ctx = I.reactStack_.back();

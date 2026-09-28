@@ -1246,7 +1246,12 @@ void Lexer::skipWhitespaceAndComments() {
                 throw ParseError("Opening bracket required for #` comment", line_,
                                  "X::Syntax::Comment::Embedded",
                                  {{"line", std::to_string(line_)}, {"filename", "EVAL_0"}});
-            if (peek(1) == '|') { // leading declarator pod `#| text` — record by line
+            // A declarator comment needs whitespace (or a bracket, above) after
+            // its `#|` / `#=`: `#|nospace` and `#=nospace` are ordinary
+            // comments in Rakudo, documenting nothing.
+            const bool docGap = peek(2) == ' ' || peek(2) == '\t' || peek(2) == '\n' || peek(2) == '\r' ||
+                                pos_ + 2 >= src_.size();
+            if (peek(1) == '|' && docGap) { // leading declarator pod `#| text` — record by line
                 advance(); advance(); // # |
                 while (peek() == ' ' || peek() == '\t') advance();
                 std::string txt;
@@ -1255,7 +1260,7 @@ void Lexer::skipWhitespaceAndComments() {
                 leadPod_[line_] = txt;
                 continue;
             }
-            if (peek(1) == '=') { // trailing declarator pod `#= text` — record by line
+            if (peek(1) == '=' && docGap) { // trailing declarator pod `#= text` — record by line
                 // …and whether CODE precedes it on the line: such a `#=` documents
                 // that line's own declaration and never continues the one above
                 // (`has $.a; #= x` / `has $.b; #= y` are two docs, not one). Kept
@@ -1436,6 +1441,65 @@ Token Lexer::lexNumber() {
         }
         return false;
     };
+    // C99 hexadecimal floats (roast S02-literals/numeric.t): `0x1.8p+1` is 3e0,
+    // `0x.8p0` 0.5e0, `0xABC.dp1` 5497.625e0 — hex digits, an optional hex
+    // fraction, a binary exponent in decimal after `p`, correctly rounded to a
+    // Num (Inf/0 past the range). A pure lookahead first: anything short of
+    // the whole shape (`0x0F75.chr`, `0x1.say`) falls through to the radix
+    // literals below, unchanged. (`:0x1p1` is the pair x1p1 => 0.)
+    if (peek() == '0' && peek(1) == 'x' && !(pos_ > 0 && src_[pos_ - 1] == ':')) {
+        auto hexv = [](char c) {
+            return ascii::isdigit((unsigned char)c) ? c - '0'
+                 : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        };
+        size_t k = 2;
+        std::string ints, fracs, expDigits;
+        // hex digits with single `_` between them (and one before the first)
+        auto hexRun = [&](std::string& out, bool leadUnderscore) {
+            if (leadUnderscore && peek(k) == '_' && hexv(peek(k + 1)) >= 0) k++;
+            while (hexv(peek(k)) >= 0) {
+                out += peek(k++);
+                if (peek(k) == '_' && hexv(peek(k + 1)) >= 0) k++;
+            }
+        };
+        hexRun(ints, true);
+        bool ok = true;
+        if (peek(k) == '.') {
+            size_t save = k;
+            k++;
+            hexRun(fracs, false);
+            if (fracs.empty()) { k = save; ok = false; }   // `0x1.say` — a method call
+        }
+        bool expNeg = false;
+        if (ok && (ints.size() + fracs.size()) > 0 && (peek(k) == 'p' || peek(k) == 'P')) {
+            size_t e = k + 1;
+            if (peek(e) == '+' || peek(e) == '-') { expNeg = peek(e) == '-'; e++; }
+            while (ascii::isdigit((unsigned char)peek(e))) {
+                expDigits += peek(e++);
+                if (peek(e) == '_' && ascii::isdigit((unsigned char)peek(e + 1))) e++;
+            }
+            // …and no identifier character right after (`0x1p1e1` is no hexfloat),
+            // bar the imaginary suffix `i`
+            const bool imag = peek(e) == 'i' && !isIdentCont(peek(e + 1));
+            if (!expDigits.empty() && (imag || !isIdentCont(peek(e)))) {
+                std::string spelling;
+                for (size_t q = 0; q < e; q++) spelling += advance();
+                long long ex = 0;
+                for (char c : expDigits) { ex = ex * 10 + (c - '0'); if (ex > (1LL << 30)) { ex = 1LL << 30; break; } }
+                if (expNeg) ex = -ex;
+                ex -= 4LL * (long long)fracs.size();       // the fraction's digits, as integer ones
+                // no decimal point in what strtod reads: nothing locale-shaped
+                const std::string cform = "0x" + (ints.empty() && fracs.empty() ? std::string("0") : ints + fracs) +
+                                          "p" + std::to_string(ex);
+                const double v = cnum::strtod(cform.c_str(), nullptr);
+                if (imag) { advance(); spelling += 'i'; }
+                Token t = make(Tok::NumLit, spelling);
+                t.nval = v;
+                t.flag = false;   // a Num, never a Rat
+                return t;
+            }
+        }
+    }
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd') &&
         // `0x` with no digit at all is not a radix literal: `:0x` is the pair
         // shorthand x => 0, and `0x` followed by punctuation lexes as 0 then x

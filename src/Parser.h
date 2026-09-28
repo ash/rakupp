@@ -61,6 +61,20 @@ std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
                                                 const std::vector<std::string>& libPaths,
                                                 std::string& err);
 
+// The language revision a version pragma names (`use v6.c`, `use v6d`,
+// `use v6.e.PREVIEW`, `use v6e.PREVIEW`): 0 = 6.c, 1 = 6.d, 2 = 6.e and later.
+// The dot is optional, as in Rakudo. A BARE `use v6` asks for "some Raku 6",
+// which is the current default revision — 6.d — not the newest one known.
+inline int langRevOfPragma(const std::string& module) {
+    size_t k = module.find('6');
+    if (k == std::string::npos || k + 1 >= module.size()) return 1;
+    size_t j = k + 1;
+    if (module[j] == '.') j++;
+    if (j >= module.size()) return 1;
+    const char letter = module[j];
+    return letter == 'c' ? 0 : letter == 'd' ? 1 : 2;
+}
+
 // The width of the `use M; ` text main.cpp puts at the front of a program's
 // first line for each -M/-m module (0 when none). A version pragma must be the
 // unit's very first statement, and those injected statements do not count.

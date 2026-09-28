@@ -15361,10 +15361,7 @@ StmtPtr Parser::parseStatementImpl() {
                   while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
                   u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; // exec() reads langRev from this
                   // …and the parser reads it now, for syntax that is 6.e-only.
-                  if (u->module.find("6.c") != std::string::npos) langRev_ = 0;
-                  else if (u->module.find("6.d") != std::string::npos) langRev_ = 1;
-                  else if (u->module.find('.') == std::string::npos) langRev_ = 1; // bare `v6`
-                  else langRev_ = 2; }
+                  langRev_ = langRevOfPragma(u->module); }
                 matchKind(Tok::Semicolon);
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }

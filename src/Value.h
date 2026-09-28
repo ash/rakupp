@@ -1395,6 +1395,10 @@ struct ClassInfo {
     // the roles a class composed, in `does` order (a role's own roles are in
     // its parent slots) — the 6.e BUILD/TWEAK walk runs their submethods
     std::vector<std::shared_ptr<ClassInfo>> composedRoles;
+    // a class before 6.e with a 6.e role's BUILD/TWEAK somewhere in its
+    // composition (or its ancestry): that role's hooks run as ROLE
+    // constructors, not composed (construction checks this before walking)
+    bool roleCtorHooks = false;
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
     // so the construction protocol's explicit BUILD/TWEAK walks still find them
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides

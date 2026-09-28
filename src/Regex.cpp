@@ -1210,6 +1210,7 @@ Regex::NodePtr Regex::parseQuant() {
     else if (c == '+') { pos_++; mn = 1; mx = -1; markListCap(); }
     else if (c == '?') { pos_++; mn = 0; mx = 1; }
     bool ngMod = false; // `**?` / `**:?` — non-greedy bounds ( `!` / `:!` = explicit greed, the default)
+    std::string blockBounds; bool haveBlockBounds = false; // `** { … }`
     if (mn == -2 && peek() == '*' && peek(1) == '*') {
         markListCap();
         pos_ += 2; skipWs();
@@ -1223,48 +1224,46 @@ Regex::NodePtr Regex::parseQuant() {
         }
         if (peek() == '{') { // `** { … }` — runtime bounds evaluated at match time
             int depth = 1; pos_++;
-            std::string code;
-            while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } code += d; }
-            auto rep = std::make_unique<Node>();
-            rep->k = K::Rep; rep->min = 0; rep->max = -1; rep->greedy = !ngMod; rep->repCode = code;
-            rep->kids.push_back(wsBeforeQuant ? wsWrap(std::move(atom)) : std::move(atom));
-            return rep;
+            while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } blockBounds += d; }
+            haveBlockBounds = true; mn = 0; mx = -1;
         }
-        // a bound may be written in any script's decimal digits (`a**۳`)
-        auto digitHere = [&]() -> int {
-            unsigned char b0 = (unsigned char)peek();
-            if (ascii::isdigit(b0)) { pos_++; return b0 - '0'; }
-            if (b0 < 0xC0 || pos_ + 1 >= pat_.size()) return -1;
-            uint32_t cp; size_t len;
-            if (b0 < 0xE0) { cp = b0 & 0x1F; len = 2; }
-            else if (b0 < 0xF0) { cp = b0 & 0x0F; len = 3; }
-            else { cp = b0 & 0x07; len = 4; }
-            if (pos_ + len > pat_.size()) return -1;
-            for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)pat_[pos_ + k] & 0x3F);
-            int d = uniDigitValue(cp);
-            if (d >= 0) pos_ += len;
-            return d;
-        };
-        // `**^5` is 0..4, and either end of a range may be exclusive:
-        // `**2..^5`, `**1^..4`, `**1^..^5`, `**1^..*`
-        bool upToExcl = false;
-        if (peek() == '^' && ascii::isdigit((unsigned char)peek(1))) { pos_++; upToExcl = true; }
-        long lo = 0; bool haveLo = false;
-        for (int d; (d = digitHere()) >= 0; ) { lo = lo * 10 + d; haveLo = true; }
-        mn = haveLo ? lo : 0;
-        if (upToExcl) { mx = lo - 1; mn = 0; }
         else {
-            bool exLo = false;
-            if (peek() == '^' && peek(1) == '.' && peek(2) == '.') { pos_++; exLo = true; }
-            if (peek() == '.' && peek(1) == '.') {
-                pos_ += 2;
-                bool exHi = false;
-                if (peek() == '^') { pos_++; exHi = true; }
-                if (peek() == '*' || peek() == 'I') { pos_++; mx = -1; }
-                else { long hi = 0; for (int d; (d = digitHere()) >= 0; ) hi = hi * 10 + d; mx = exHi ? hi - 1 : hi; }
-                if (exLo) mn++;
-            } else {
-                mx = mn;
+            // a bound may be written in any script's decimal digits (`a**۳`)
+            auto digitHere = [&]() -> int {
+                unsigned char b0 = (unsigned char)peek();
+                if (ascii::isdigit(b0)) { pos_++; return b0 - '0'; }
+                if (b0 < 0xC0 || pos_ + 1 >= pat_.size()) return -1;
+                uint32_t cp; size_t len;
+                if (b0 < 0xE0) { cp = b0 & 0x1F; len = 2; }
+                else if (b0 < 0xF0) { cp = b0 & 0x0F; len = 3; }
+                else { cp = b0 & 0x07; len = 4; }
+                if (pos_ + len > pat_.size()) return -1;
+                for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)pat_[pos_ + k] & 0x3F);
+                int d = uniDigitValue(cp);
+                if (d >= 0) pos_ += len;
+                return d;
+            };
+            // `**^5` is 0..4, and either end of a range may be exclusive:
+            // `**2..^5`, `**1^..4`, `**1^..^5`, `**1^..*`
+            bool upToExcl = false;
+            if (peek() == '^' && ascii::isdigit((unsigned char)peek(1))) { pos_++; upToExcl = true; }
+            long lo = 0; bool haveLo = false;
+            for (int d; (d = digitHere()) >= 0; ) { lo = lo * 10 + d; haveLo = true; }
+            mn = haveLo ? lo : 0;
+            if (upToExcl) { mx = lo - 1; mn = 0; }
+            else {
+                bool exLo = false;
+                if (peek() == '^' && peek(1) == '.' && peek(2) == '.') { pos_++; exLo = true; }
+                if (peek() == '.' && peek(1) == '.') {
+                    pos_ += 2;
+                    bool exHi = false;
+                    if (peek() == '^') { pos_++; exHi = true; }
+                    if (peek() == '*' || peek() == 'I') { pos_++; mx = -1; }
+                    else { long hi = 0; for (int d; (d = digitHere()) >= 0; ) hi = hi * 10 + d; mx = exHi ? hi - 1 : hi; }
+                    if (exLo) mn++;
+                } else {
+                    mx = mn;
+                }
             }
         }
     }
@@ -1304,17 +1303,21 @@ Regex::NodePtr Regex::parseQuant() {
     }
     auto rep = std::make_unique<Node>();
     rep->k = K::Rep; rep->min = mn; rep->max = mx; rep->greedy = !ngMod;
+    if (haveBlockBounds) rep->repCode = blockBounds;
     // Quantifier modifier: `?` frugal, `!` greedy, `:` ratchet (possessive). Each may
     // also be spelled with a leading colon — `a*:?` is frugal, `a*:!` greedy, and a
     // bare `a*:` is the ratchet. Consuming the `:` without looking at what follows
     // turned `xa*:!` into a possessive `a*` followed by a literal `!`.
-    if (peek() == '?') { rep->greedy = false; pos_++; }
-    else if (peek() == '+' || peek() == '!') { pos_++; rep->forceBack = true; }   // explicit greedy
-    else if (peek() == ':') {
-        pos_++;
+    // After `** { … }` there is none: its modifier goes before the braces.
+    if (!haveBlockBounds) {
         if (peek() == '?') { rep->greedy = false; pos_++; }
-        else if (peek() == '!') { pos_++; rep->forceBack = true; }
-        else rep->possessive = true;                       // `a*:` — no backtracking into it
+        else if (peek() == '+' || peek() == '!') { pos_++; rep->forceBack = true; }   // explicit greedy
+        else if (peek() == ':') {
+            pos_++;
+            if (peek() == '?') { rep->greedy = false; pos_++; }
+            else if (peek() == '!') { pos_++; rep->forceBack = true; }
+            else rep->possessive = true;                   // `a*:` — no backtracking into it
+        }
     }
     // Sigspace with whitespace before the quantifier: <.ws> joins each iteration —
     // `rule { <num> + }` matches "1 2" (Rakudo: the space distributes into the repetition).
@@ -1724,8 +1727,13 @@ Regex::NodePtr Regex::parseAtom() {
             return q < pat_.size() && (ascii::isalpha((unsigned char)pat_[q]) || pat_[q] == '_' ||
                                        pat_[q] == '.' || pat_[q] == ':');
         };
-        if (peek() == '[' || signThenBracket() || plusThenName() ||
-            negFlagComposes()) {
+        // A composed class — `[..]`, `-[..]`, `+[..]`, `+name`, `-name` members —
+        // up to and including its closing `>`. Also what `<?[a] - [b]>` and
+        // `<![\w] - [\d _]>` assert on (S05-metasyntax/charset.t): a lookaround
+        // over a composed class, not over its first bracket alone.
+        auto parseComposedClass = [&]() -> NodePtr {
+            auto node = std::make_unique<Node>();
+            node->k = K::Class; node->icase = curIcase_;
             node->negate = false;
             bool first = true;
             // USER-token parts (`<[\-+.] +uri-alpha +digit>` in the RFC 3986 grammar)
@@ -1831,7 +1839,8 @@ Regex::NodePtr Regex::parseAtom() {
             for (auto& ms : minusSubs) seq->kids.push_back(mkNegLook(mkSub(ms)));
             for (auto& mp : minusProps) seq->kids.push_back(mkNegLook(mkProp(mp)));
             if (negBracket) seq->kids.push_back(mkNegLook(std::move(negBracket)));
-            bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
+            bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty() ||
+                            !node->clusterMembers.empty();
             // a subtracted built-in (`- lower`) with no base class to carry it
             if (!haveBase && !node->negClassFlags.empty()) {
                 auto nc = std::make_unique<Node>();
@@ -1848,7 +1857,10 @@ Regex::NodePtr Regex::parseAtom() {
                 seq->kids.push_back(std::move(altN));
             }
             return seq;
-        }
+        };
+        if (peek() == '[' || signThenBracket() || plusThenName() ||
+            negFlagComposes())
+            return parseComposedClass();
         else if (peek() == '-' && [&]{
                      // Whitespace is insignificant in a regex, so a blank may sit
                      // between the sign and the name: `<- print>` is `<-print>`.
@@ -1980,14 +1992,8 @@ Regex::NodePtr Regex::parseAtom() {
             // not a group (a quote member like <!["]> must not open a string literal).
             // Only the keyword-less form is a class: after an explicit `before`/`after`
             // the bracket is an ordinary non-capturing group (`<?before [ 'a' ]* 'b'>`).
-            if (!behind && !lookKw && (peek() == '[' || ((peek() == '-' || peek() == '+') && peek(1) == '['))) {
-                auto cls = std::make_unique<Node>();
-                cls->k = K::Class; cls->icase = curIcase_;
-                if (peek() == '-') { pos_++; cls->negate = true; }
-                else if (peek() == '+') pos_++;
-                pos_++; // '['
-                parseClassBodyMember(cls.get());
-                if (peek() == '>') pos_++;
+            if (!behind && !lookKw && (peek() == '[' || signThenBracket())) {
+                auto cls = parseComposedClass();   // (its `>` included)
                 auto look = std::make_unique<Node>();
                 look->k = K::Look; look->negate = neg; look->behind = false;
                 look->kids.push_back(std::move(cls));
@@ -2621,7 +2627,16 @@ Regex::NodePtr Regex::parseAtom() {
 }
 
 // member: parse "<[ ... ]>" inner content (after the '[') into ranges/flags
+std::string mapCase(const std::string& s, int kind, int tcMode);   // Builtins.cpp
+
 void Regex::parseClassBodyMember(Node* node) {
+    // The ENUMERATED members of this bracket, in order, each with where it
+    // would go on its own (0 = the byteset `ranges`, 1 = `cpRanges`). Adjacent
+    // ones that form ONE grapheme are one member (NFG: `<[ a \x[308] ]>` holds
+    // "ä", not an a and a combining mark; `<[\x0D\x0A]>` holds "\r\n"), which
+    // only the whole sequence can tell — so they are collected and flushed at
+    // the `]`. Ranges and flag escapes go straight in and do not interrupt it.
+    std::vector<std::pair<uint32_t, uint8_t>> ent;
     while (!eof() && peek() != ']') {
         if (ascii::isspace((unsigned char)peek())) { pos_++; continue; }
         if (peek() == '\\') {
@@ -2641,8 +2656,8 @@ void Regex::parseClassBodyMember(Node* node) {
             // plain LF it left CR out, and PDF::Grammar's whitespace token
             // `<[ \x20 \x0A \x0 \t \f \n ]>` stopped at every carriage return.
             else if (e == 'n') node->classFlags += 'n';
-            else if (e == 't') node->ranges.push_back({'\t', '\t'});
-            else if (e == 'r') node->ranges.push_back({'\r', '\r'});
+            else if (e == 't') ent.push_back({'\t', 0});
+            else if (e == 'r') ent.push_back({'\r', 0});
             // the other single-letter escapes (they used to fall to the "escaped
             // punctuation" arm and match the LETTER: `<-[\h\v]>` admitted a space)
             else if (e == 'h') { // horizontal whitespace: \t, space, and Unicode Zs
@@ -2656,15 +2671,15 @@ void Regex::parseClassBodyMember(Node* node) {
                 node->ranges.push_back({'\f', '\f'}); node->ranges.push_back({'\v', '\v'});
                 node->cpRanges.push_back({0x85, 0x85}); node->cpRanges.push_back({0x2028, 0x2029});
             }
-            else if (e == 'e') node->ranges.push_back({0x1B, 0x1B});
-            else if (e == 'f') node->ranges.push_back({'\f', '\f'});
-            else if (e == 'a') node->ranges.push_back({0x07, 0x07});
-            else if (e == 'b') node->ranges.push_back({0x08, 0x08});
+            else if (e == 'e') ent.push_back({0x1B, 0});
+            else if (e == 'f') ent.push_back({'\f', 0});
+            else if (e == 'a') ent.push_back({0x07, 0});
+            else if (e == 'b') ent.push_back({0x08, 0});
             else if (e == 'B') { // anything but backspace
                 node->ranges.push_back({0x00, 0x07}); node->ranges.push_back({0x09, 0x7F});
                 node->cpRanges.push_back({0x80, 0x10FFFF});
             }
-            else if (e == '0') node->ranges.push_back({0, 0});
+            else if (e == '0') ent.push_back({0, 0});
             else if (e == 'x' || e == 'X' || e == 'o' || e == 'O' || e == 'c' || e == 'C') {
                 // codepoint escapes in a class: \x[HH]/\xHH, \o[OO], \c[NAME,…]; uppercase
                 // (\X/\O/\C) negate the whole class. Codepoints go to cpRanges (any size).
@@ -2728,20 +2743,10 @@ void Regex::parseClassBodyMember(Node* node) {
                                : le == 'o' ? (int32_t)std::strtol(t.c_str(), nullptr, 8) : namedCp(t);
                     if (cp >= 0) cps.push_back((uint32_t)cp);
                 }
-                auto enc1 = [](uint32_t cp) -> std::string {
-                    std::string o;
-                    if (cp < 0x80) o += (char)cp;
-                    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
-                    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-                    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-                    return o;
-                };
-                auto starts = cps.empty() ? std::vector<size_t>{} : uniGraphemeStarts(cps);
-                for (size_t gi = 0; gi < starts.size(); gi++) {
-                    size_t gb = starts[gi], ge = (gi + 1 < starts.size()) ? starts[gi + 1] : cps.size();
-                    if (ge - gb == 1) node->cpRanges.push_back({cps[gb], cps[gb]}); // single-cp grapheme
-                    else { std::string mem; for (size_t j = gb; j < ge; j++) mem += enc1(cps[j]); node->clusterMembers.push_back(mem); }
-                }
+                // (a `\c[A, COMBINING…]` naming one multi-codepoint grapheme is
+                // one member, `\c[FF, LF]` two: the flush below decides, over
+                // the whole bracket)
+                for (uint32_t cp : cps) ent.push_back({cp, 1});
                 if (neg) node->negate = !node->negate;
             }
             else {
@@ -2772,7 +2777,7 @@ void Regex::parseClassBodyMember(Node* node) {
                     if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
                     else node->cpRanges.push_back({lo, hi});
                 }
-                else node->ranges.push_back({(unsigned char)e, (unsigned char)e}); // \: \# \- etc → literal
+                else ent.push_back({(unsigned char)e, 0}); // \: \# \- etc → literal
             }
             continue;
         }
@@ -2800,9 +2805,90 @@ void Regex::parseClassBodyMember(Node* node) {
             if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
             else node->cpRanges.push_back({lo, hi}); // any endpoint ≥ 0x80 → codepoint range
         } else if (lo < 0x80) {
-            node->ranges.push_back({(unsigned char)lo, (unsigned char)lo});
+            ent.push_back({lo, 0});
         } else {
-            node->cpRanges.push_back({lo, lo}); // non-ASCII literal → codepoint, not raw bytes
+            ent.push_back({lo, 1}); // non-ASCII literal → codepoint, not raw bytes
+        }
+    }
+    // --- flush the enumerated members, assembled into graphemes
+    auto enc1 = [](uint32_t cp) -> std::string {
+        std::string o;
+        if (cp < 0x80) o += (char)cp;
+        else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+        else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+        return o;
+    };
+    auto pushOne = [&](uint32_t cp, uint8_t dest) {
+        if (dest == 0 && cp < 0x80) node->ranges.push_back({(unsigned char)cp, (unsigned char)cp});
+        else node->cpRanges.push_back({cp, cp});
+    };
+    // what :i must fold: every member, as UTF-8 (the byteset folds ASCII by
+    // itself, but a class that also holds a codepoint member is matched by the
+    // codepoint arm, which does not: `:i <[ M é ]>` must take "m")
+    std::vector<std::string> fold;
+    bool assembles = false;   // nothing below U+0300 and no CR can join another
+    for (auto& e : ent) if (e.first == 0x0D || e.first >= 0x300) { assembles = true; break; }
+    if (!assembles) {
+        for (auto& e : ent) {
+            pushOne(e.first, e.second);
+            if (node->icase) fold.push_back(enc1(e.first));
+        }
+    }
+    else {
+        std::vector<uint32_t> cps;
+        for (auto& e : ent) cps.push_back(e.first);
+        auto starts = uniGraphemeStarts(cps);
+        for (size_t gi = 0; gi < starts.size(); gi++) {
+            const size_t gb = starts[gi], ge = gi + 1 < starts.size() ? starts[gi + 1] : cps.size();
+            if (ge - gb == 1) {
+                pushOne(cps[gb], ent[gb].second);
+                if (node->icase) fold.push_back(enc1(cps[gb]));
+                continue;
+            }
+            // a multi-codepoint grapheme: one member, in the NFC every subject
+            // string is in ("a\x[308]" is "ä", U+E4)
+            std::vector<uint32_t> g(cps.begin() + (long)gb, cps.begin() + (long)ge);
+            std::vector<uint32_t> nfc = uniNormalize(g, 1);
+            std::string mem;
+            for (uint32_t c : nfc) mem += enc1(c);
+            if (nfc.size() == 1) node->cpRanges.push_back({nfc[0], nfc[0]});
+            else node->clusterMembers.push_back(mem);
+            if (node->icase) fold.push_back(mem);
+        }
+    }
+    // :i over enumerated members: each one's single-grapheme case forms (fold,
+    // upper, lower, title) are members too — `:i <[ \x[4D] ]>` takes "m",
+    // `:i <[ ǆ ]>` takes "ǅ", `:i:m <[ \x[C0] ]>` reaches à. A form of several
+    // graphemes (ß → SS) is not one member and stays out.
+    if (node->icase && !fold.empty()) {
+        std::set<std::string> have(fold.begin(), fold.end());
+        for (const std::string& m : fold) {
+            if (m.size() == 1) {   // ASCII: the other case, no allocation-heavy mapping
+                const unsigned char c = (unsigned char)m[0];
+                const unsigned char o = ascii::isupper(c) ? (unsigned char)ascii::tolower(c)
+                                      : ascii::islower(c) ? (unsigned char)ascii::toupper(c) : c;
+                if (o != c && have.insert(std::string(1, (char)o)).second) pushOne(o, 0);
+                continue;
+            }
+            static const int kinds[4][2] = {{3, 0}, {1, 0}, {0, 0}, {0, 1}};
+            for (auto& kd : kinds) {
+                std::string r = mapCase(m, kd[0], kd[1]);
+                if (r.empty() || have.count(r)) continue;
+                if ((size_t)uniClusterEndUtf8(r, 0, r.size()) != r.size()) continue;   // one grapheme only
+                have.insert(r);
+                std::vector<uint32_t> rc;
+                for (size_t i = 0; i < r.size(); ) {
+                    unsigned char c0 = (unsigned char)r[i];
+                    int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+                    uint32_t cp = c0 < 0x80 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
+                    for (int k = 1; k < clen && i + (size_t)k < r.size(); k++) cp = (cp << 6) | ((unsigned char)r[i + (size_t)k] & 0x3F);
+                    rc.push_back(cp);
+                    i += (size_t)clen;
+                }
+                if (rc.size() == 1) pushOne(rc[0], rc[0] < 0x80 ? 0 : 1);
+                else node->clusterMembers.push_back(r);
+            }
         }
     }
     if (peek() == ']') pos_++;
@@ -2822,7 +2908,10 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     // One codepoint of `s` at `p`, and where it ends. ASCII stays one byte.
     auto cpAt = [&](long p, long* end) -> uint32_t {
         unsigned char c0 = (unsigned char)s[p];
-        if (c0 < 0x80) { *end = p + 1; return c0; }
+        if (c0 < 0x80) {   // (an ASCII base with marks after it is one grapheme: consume it all)
+            *end = (p + 1 < len && (unsigned char)s[p + 1] >= 0x80) ? (long)uniClusterEndUtf8(s, p, len) : p + 1;
+            return c0;
+        }
         if (c0 < 0xC0) { *end = p + 1; return c0; } // stray continuation byte: never a class member
         int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
         uint32_t cp = (uint32_t)(c0 & (0xFF >> (clen + 1)));
@@ -3053,6 +3142,7 @@ bool Regex::rootIsSingleChar() const {
         // accept arbitrary non-members)
         for (auto& r : n->cpRanges) if (r.second > 0xFF) return false;
         if (n->negate && !n->cpRanges.empty()) return false;
+        if (!n->clusterMembers.empty()) return false;   // a multi-codepoint member ("\r\n", "ä" as NFD)
         return n->uprop.empty();
     }
     if (n->k == K::Lit) return !n->icase && !n->imark && n->lit.size() == 1;
@@ -3066,6 +3156,9 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     // -2 tells the caller to run the real matcher instead. Deciding it here from
     // the byte alone matched one third of an `ö` and left the grammar mid-character.
     if ((unsigned char)s[pos] >= 0x80) return -2;
+    // …and an ASCII base with combining marks after it is one grapheme (b̈):
+    // the one-byte answer would split it
+    if (pos + 1 < (long)s.size() && (unsigned char)s[pos + 1] >= 0x80) return -2;
     const Node* n = root_.get();
     if (n->k == K::Any) return s[pos] == '\r' ? -2 : pos + 1; // `.` matches a newline too; a CR may start a CRLF grapheme — the real arm decides
     if (n->k == K::Lit) return s[pos] == n->lit[0] ? pos + 1 : -1;
@@ -3482,7 +3575,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // literal does. Only an ASCII base is handled here; anything else
             // falls through to the exact test below.
             // A member written WITH a mark counts by its base too: `:m <[á]>` takes "a".
-            if (n->imark && ((unsigned char)st.s[pos] >= 0xC0 || !n->cpRanges.empty() ||
+            if (n->imark && ((unsigned char)st.s[pos] >= 0xC0 || !n->cpRanges.empty() || !n->clusterMembers.empty() ||
                              (pos + 1 < len && (unsigned char)st.s[pos + 1] >= 0x80))) {
                 unsigned char c0 = (unsigned char)st.s[pos];
                 if (c0 >= 0x80 && c0 < 0xC0) return false;
@@ -3496,13 +3589,22 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 };
                 uint32_t base = baseOf(cp);
                 long gEnd = (long)uniClusterEndUtf8(st.s, pos, len);
-                if (base < 0x80 && (gEnd > pos + 1 || !n->cpRanges.empty())) {
+                if (base < 0x80 && (gEnd > pos + 1 || !n->cpRanges.empty() || !n->clusterMembers.empty())) {
                     bool in;
                     if (!n->uprop.empty()) in = uniMatchesProp(base, n->uprop) != n->negate;
                     else {
                         bool raw = classMatch(n, (char)base) != n->negate;   // membership before `<-…>`
                         for (auto& r : n->cpRanges)
                             if (!raw && r.first == r.second && r.first >= 0x80 && baseOf(r.first) == base) raw = true;
+                        // …and a multi-codepoint member by ITS base ("\r\n" by CR)
+                        for (auto& cm : n->clusterMembers)
+                            if (!raw && !cm.empty() && baseOf((unsigned char)cm[0] < 0x80 ? (unsigned char)cm[0] : [&] {
+                                    unsigned char b0 = (unsigned char)cm[0];
+                                    int cl = (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xe ? 3 : (b0 >> 3) == 0x1e ? 4 : 1;
+                                    uint32_t c = (uint32_t)(b0 & (0xFF >> (cl + 1)));
+                                    for (int q = 1; q < cl && (size_t)q < cm.size(); q++) c = (c << 6) | ((unsigned char)cm[(size_t)q] & 0x3F);
+                                    return c; }()) == base)
+                                raw = true;
                         in = raw != n->negate;
                     }
                     return in ? k(gEnd) : false;
@@ -3597,6 +3699,26 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (!classMatch(n, '\n')) return false;
                 return k(pos + 2);
             }
+            // NFG: an ASCII base with combining marks after it (`b\x[308]`, b̈)
+            // is ONE grapheme, handled by the multibyte arm's rule: an
+            // enumerated member never equals it (`<[abc]>` does not take b̈), a
+            // flag member (\w, \d, \N …) tests the base, and a match consumes
+            // the whole cluster (6.c A03 01-misc.t, `/<[abc]>/` over "b̈b̈")
+            if (pos + 1 < len && (unsigned char)st.s[pos + 1] >= 0x80) {
+                const long gEnd = (long)uniClusterEndUtf8(st.s, pos, len);
+                if (gEnd > pos + 1) {
+                    const unsigned char c = (unsigned char)st.s[pos];
+                    bool in = false;
+                    for (char f : n->classFlags)
+                        if (ascii::isupper((unsigned char)f) ? !charClassMatch((char)ascii::tolower((unsigned char)f), c)
+                                                             : charClassMatch(f, c)) { in = true; break; }
+                    bool subtracted = false;
+                    for (char f : n->negClassFlags) if (charClassMatch(f, c)) { subtracted = true; break; }
+                    if (n->negate) in = !in;
+                    if (subtracted) in = false;
+                    return in ? k(gEnd) : false;
+                }
+            }
             if (!classMatch(n, st.s[pos])) return false;
             return k(pos + 1);
         case K::AnchorStart:
@@ -3671,7 +3793,16 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 else if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
                 return k(pos);
             }
-            bool ok = (st.hooks && st.hooks->assertPassCaps)
+            bool ok;
+            if (st.hooks && st.hooks->assertPassCursor) {
+                RxCursorCaps cc;
+                cc.children = &st.children;
+                cc.capReps = &st.capReps;
+                cc.listCaps = listCapsPtr();
+                cc.listNames = listNamesPtr();
+                ok = st.hooks->assertPassCursor(n->lit, st.startPos, pos, st.named, st.caps, cc, params);
+            }
+            else ok = (st.hooks && st.hooks->assertPassCaps)
                           ? st.hooks->assertPassCaps(n->lit, st.startPos, pos, st.named, st.caps, params)
                     : (st.hooks && st.hooks->assertPass)
                           ? st.hooks->assertPass(n->lit, st.startPos, pos, st.named, params) : true;
