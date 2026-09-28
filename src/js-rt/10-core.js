@@ -151,6 +151,14 @@ function numResult(r) { return Number.isInteger(r) ? new RNum(r) : r; }
 function mkNum(v) { return Number.isInteger(v) ? new RNum(v) : v; }
 
 function bigGcd(a, b) { if (a < 0n) a = -a; if (b < 0n) b = -b; while (b) { [a, b] = [b, a % b]; } return a; }
+// The number of bits in a BigInt b >= 0n (0 for zero). BigInt has no bit-length
+// primitive; its hex form is one linear pass, where shifting a bit at a time is
+// a pass per bit.
+function bigBitLength(b) {
+    if (b === 0n) return 0;
+    const h = b.toString(16);
+    return (h.length - 1) * 4 + (32 - Math.clz32(parseInt(h[0], 16)));
+}
 function mkRat(n, d) {                 // n, d BigInt; normalizes; d == 0 kept (lazy divide-by-zero, as Rakudo)
     if (typeof n !== 'bigint') n = BigInt(n);
     if (typeof d !== 'bigint') d = BigInt(d);

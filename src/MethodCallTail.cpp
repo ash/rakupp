@@ -423,20 +423,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // (S32-num/int.t). The SUB form already had this rule; the method did
         // not, and the two disagreed on the same number.
         const bool neg = inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0;
-        // a BIG integer counts its bits by halving — 64 bits is not the limit
+        // a BIG integer reads its bits off its limbs — 64 bits is not the
+        // limit, and halving it a bit at a time was quadratic: about forty
+        // minutes for `(2 ** 1_000_000).msb`
         if (inv.big() && !inv.big()->fitsLL()) {
-            BigInt n = inv.big()->abs(), two(2LL), q, r;
-            if (n.isZero()) return Value::nil();
-            if (neg && m == "msb") n = n - BigInt(1);
-            long long lsb = -1, bit = 0;
-            while (!n.isZero()) {
-                BigInt::divmod(n, two, q, r);
-                if (!r.isZero() && lsb < 0) lsb = bit;
-                n = q; bit++;
-            }
-            // for a negative msb the loop already measured |n| - 1, whose
-            // LENGTH is the answer — not its top index
-            return Value::integer(m == "lsb" ? lsb : neg ? bit : bit - 1);
+            const BigInt& n = *inv.big();
+            if (m == "lsb") return Value::integer(n.lowestSetBit());
+            // for a negative, the LENGTH of |n| - 1 — not its top index
+            return Value::integer(neg ? (n.abs() - BigInt(1)).bitLength() : n.bitLength() - 1);
         }
         long long v = inv.toInt();
         if (v == 0) return Value::nil();

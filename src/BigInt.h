@@ -44,9 +44,14 @@ struct BigInt {
     static BigInt gcd(BigInt a, BigInt b);
     // Position of the highest set bit, 1-based (0 for zero) — what Rakudo's
     // "Cannot unbox N bit wide bigint" message counts, and S02-types/declare.t
-    // asserts the N. Exact: the limb count brackets log2 to within a bit or
-    // two and a handful of comparisons pin the rest down.
+    // asserts the N; `.msb` is this minus one. Read off the top limbs when that
+    // is provably exact, which is every magnitude not within a hair of a power
+    // of two; the rest are converted to binary.
     long long bitLength() const;
+    // Position of the lowest set bit of the magnitude, counting from 0 — the
+    // number of trailing zero bits, which is `.lsb`; -1 for zero. Read off the
+    // low limbs unless the magnitude is divisible by a large power of two.
+    long long lowestSetBit() const;
 
     bool fitsLL() const;
     // magnitude fits in a uint64 (Raku caps Rat denominators at uint64;

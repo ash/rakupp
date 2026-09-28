@@ -1,5 +1,6 @@
 #include "BigInt.h"
 #include "CNumeric.h"
+#include "IntOps.h"
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
@@ -420,24 +421,289 @@ BigInt BigInt::pow(long long e) const {
     return result;
 }
 
-// The 1-based index of the highest set bit. A base-1e9 magnitude gives no bit
-// count directly, so estimate log2 from the top limb plus 29.897… per lower
-// limb — the limb count is exact, so the product's rounding error stays around
-// 1e-8 even for a million limbs — and then walk the two-bit window around the
-// estimate, keeping the largest b with 2**(b-1) <= |self|. Each probe builds a
-// power of two the same size as the number, so the whole thing costs a few
-// multiplications; it runs on error paths, not hot ones.
+// ---------------------------------------------------------------------------
+// The magnitude in binary.
+//
+// Base 1e9 answers most bit questions from a few limbs — bitLength and
+// lowestSetBit below say which — but not all of them: 2**N and 2**N - 1 agree
+// in every digit but the last, and divisibility by 2**N depends on all of
+// them. Those convert.
+//
+// Divide and conquer: split the limbs at a power of two h, convert both
+// halves, and join them as hi·1e9^h + lo. Only the powers 1e9^(2^k) ever
+// occur, each the square of the one before, so a conversion builds log2(limbs)
+// of them. The joins are Karatsuba products, and that is what makes the whole
+// subquadratic: each level of the split costs two thirds of the one above, so
+// the top join dominates. 2**1_000_000 (33,448 limbs) converts in 23 ms.
+// Converting a limb at a time instead (acc = acc·1e9 + next) is quadratic
+// however tight the loop — 70 ms for the same number at two limbs a step — and
+// so is peeling bits off the bottom by repeated division, which is how `.msb`
+// used to do it: about forty minutes for that number.
+// ---------------------------------------------------------------------------
+namespace {
+
+#if RAKUPP_HAS_INT128
+typedef uint64_t Word;
+typedef unsigned __int128 DWord;
+#else
+typedef uint32_t Word;
+typedef uint64_t DWord;
+#endif
+const int WORD_BITS = 8 * (int)sizeof(Word);
+typedef std::vector<Word> Words;
+
+// r[0, n) += a[0, n); returns the carry out
+Word addWords(Word* r, const Word* a, std::size_t n) {
+    Word c = 0;
+    for (std::size_t i = 0; i < n; i++) {
+        DWord t = (DWord)r[i] + a[i] + c;
+        r[i] = (Word)t;
+        c = (Word)(t >> WORD_BITS);
+    }
+    return c;
+}
+
+// r[0, n) -= a[0, n); returns the borrow out
+Word subWords(Word* r, const Word* a, std::size_t n) {
+    Word b = 0;
+    for (std::size_t i = 0; i < n; i++) {
+        Word x = r[i], y = a[i];
+        r[i] = x - y - b;
+        b = (x < y || (x == y && b)) ? 1 : 0;
+    }
+    return b;
+}
+
+// c added at r[0] and carried up through r[0, n); returns what carries out
+Word rippleWords(Word* r, std::size_t n, Word c) {
+    for (std::size_t i = 0; c && i < n; i++) { r[i] += c; c = r[i] < c ? 1 : 0; }
+    return c;
+}
+
+// r[0, na + nb) = a·b
+void mulSchool(Word* r, const Word* a, std::size_t na, const Word* b, std::size_t nb) {
+    std::fill(r, r + na + nb, (Word)0);
+    for (std::size_t i = 0; i < na; i++) {
+        Word c = 0;
+        for (std::size_t j = 0; j < nb; j++) {
+            DWord t = (DWord)a[i] * b[j] + r[i + j] + c;
+            r[i + j] = (Word)t;
+            c = (Word)(t >> WORD_BITS);
+        }
+        r[i + nb] = c;
+    }
+}
+
+// d = |x - y| over n words; true when x < y
+bool absDiff(Word* d, const Word* x, const Word* y, std::size_t n) {
+    std::size_t i = n;
+    while (i > 0 && x[i - 1] == y[i - 1]) i--;
+    const bool neg = i > 0 && x[i - 1] < y[i - 1];
+    if (neg) std::swap(x, y);
+    std::copy(x, x + n, d);
+    subWords(d, y, n);
+    return neg;
+}
+
+// Below this many words a schoolbook product beats splitting it. Converting
+// 33,448 random limbs, anything from 16 to 28 measured the same (23.5 ms on an
+// M1, 64-bit words); 40 was 8% slower and 64 was 38% slower.
+const std::size_t KARATSUBA_MIN = 24;
+
+std::size_t karatsubaScratch(std::size_t n) {
+    if (n < KARATSUBA_MIN) return 0;
+    const std::size_t h = (n + 1) / 2;
+    return 4 * h + std::max(2 * h + 1, karatsubaScratch(h));
+}
+
+// r[0, 2n) = a·b for two n-word operands, s scratch of karatsubaScratch(n)
+// words. With a = a1·W^h + a0 and b likewise, the middle term costs ONE more
+// half-size product:
+//     a0·b1 + a1·b0 = a0·b0 + a1·b1 - (a0 - a1)(b0 - b1)
+// The subtractive form, because its factors stay h words where the additive
+// (a0 + a1)(b0 + b1) grows a carry word.
+void karatsuba(Word* r, const Word* a, const Word* b, std::size_t n, Word* s) {
+    if (n < KARATSUBA_MIN) { mulSchool(r, a, n, b, n); return; }
+    const std::size_t h = (n + 1) / 2, l = n - h;   // low halves h words, high l <= h
+    Word* da = s;
+    Word* db = s + h;
+    Word* t = s + 2 * h;       // 2h words
+    Word* rest = s + 4 * h;    // the recursion's scratch, then the middle term
+    std::copy(a + h, a + n, t);
+    if (l < h) t[l] = 0;       // a1, zero-extended to h words
+    const bool negA = absDiff(da, a, t, h);
+    std::copy(b + h, b + n, t);
+    if (l < h) t[l] = 0;
+    const bool negB = absDiff(db, b, t, h);
+    karatsuba(r, a, b, h, rest);                   // a0·b0 -> r[0, 2h)
+    karatsuba(r + 2 * h, a + h, b + h, l, rest);   // a1·b1 -> r[2h, 2n)
+    karatsuba(t, da, db, h, rest);                 // |a0 - a1|·|b0 - b1|
+    Word* mid = rest;                              // 2h + 1 words
+    std::copy(r, r + 2 * h, mid);
+    mid[2 * h] = 0;
+    rippleWords(mid + 2 * l, 2 * h + 1 - 2 * l, addWords(mid, r + 2 * h, 2 * l));
+    if (negA == negB) mid[2 * h] -= subWords(mid, t, 2 * h);
+    else mid[2 * h] += addWords(mid, t, 2 * h);
+    // the middle term lands at W^h; the product fits 2n words, so whatever
+    // of it would reach past them is zero
+    const std::size_t len = std::min(2 * h + 1, 2 * n - h);
+    rippleWords(r + h + len, 2 * n - h - len, addWords(r + h, mid, len));
+}
+
+// a·b at any sizes: the longer operand in slices the length of the shorter,
+// each slice a balanced product added in at its offset
+Words mulWords(const Words& a, const Words& b) {
+    if (a.empty() || b.empty()) return Words();
+    const Words& x = a.size() >= b.size() ? a : b;
+    const Words& y = a.size() >= b.size() ? b : a;
+    const std::size_t nx = x.size(), ny = y.size();
+    Words r(nx + ny, 0);
+    if (ny < KARATSUBA_MIN) {
+        mulSchool(r.data(), x.data(), nx, y.data(), ny);
+    } else {
+        Words scratch(karatsubaScratch(ny)), prod(2 * ny), slice(ny);
+        for (std::size_t at = 0; at < nx; at += ny) {
+            const std::size_t k = std::min(ny, nx - at);
+            const Word* xs = x.data() + at;
+            if (k < ny) {
+                std::copy(xs, xs + k, slice.begin());
+                std::fill(slice.begin() + k, slice.end(), (Word)0);
+                xs = slice.data();
+            }
+            karatsuba(prod.data(), xs, y.data(), ny, scratch.data());
+            const std::size_t len = std::min(2 * ny, nx + ny - at);
+            rippleWords(r.data() + at + len, nx + ny - at - len,
+                        addWords(r.data() + at, prod.data(), len));
+        }
+    }
+    while (!r.empty() && r.back() == 0) r.pop_back();
+    return r;
+}
+
+// Base-1e9 limbs to binary: of(at, n) is the sum of L[at + i]·1e9^i for i < n,
+// with no leading zero words (empty for zero).
+class ToBinary {
+public:
+    explicit ToBinary(const uint32_t* limbs) : L_(limbs) {}
+
+    Words of(std::size_t at, std::size_t n) {
+        if (n <= HORNER_MAX) return horner(at, n);
+        unsigned k = 0;
+        while (((std::size_t)2 << k) < n) k++;     // 2^k < n <= 2^(k+1)
+        const std::size_t h = (std::size_t)1 << k;
+        Words lo = of(at, h);
+        Words hi = of(at + h, n - h);
+        return join(hi, power(k), lo);
+    }
+
+    // 1e9^(2^k)
+    const Words& power(unsigned k) {
+        if (pow_.empty()) pow_.push_back(Words(1, (Word)BigInt::BASE));
+        while (pow_.size() <= k) pow_.push_back(mulWords(pow_.back(), pow_.back()));
+        return pow_[k];
+    }
+
+    // hi·p + lo, for lo < p
+    static Words join(const Words& hi, const Words& p, const Words& lo) {
+        Words r = mulWords(hi, p);
+        if (r.size() < lo.size()) r.resize(lo.size(), 0);
+        if (rippleWords(r.data() + lo.size(), r.size() - lo.size(),
+                        addWords(r.data(), lo.data(), lo.size())))
+            r.push_back(1);
+        return r;
+    }
+
+private:
+    // A few dozen limbs are cheaper one at a time than split (32, 64 and 128
+    // measured alike).
+    static constexpr std::size_t HORNER_MAX = 64;
+
+    Words horner(std::size_t at, std::size_t n) const {
+        Words w;
+        for (std::size_t i = n; i-- > 0;) {
+            Word c = L_[at + i];
+            for (Word& x : w) {
+                DWord t = (DWord)x * BigInt::BASE + c;
+                x = (Word)t;
+                c = (Word)(t >> WORD_BITS);
+            }
+            if (c) w.push_back(c);
+        }
+        return w;
+    }
+
+    const uint32_t* L_;
+    std::vector<Words> pow_;
+};
+
+// the index of the lowest set bit of a binary magnitude, -1 for zero
+long long lowestBit(const Words& w) {
+    for (std::size_t i = 0; i < w.size(); i++)
+        if (w[i]) return (long long)i * WORD_BITS + ctzll(w[i]);
+    return -1;
+}
+
+} // namespace
+
+// The 1-based index of the highest set bit of |self|.
+//
+// The top three limbs T bracket the magnitude: it lies in [T·1e9^j, (T+1)·1e9^j)
+// for j the limbs below them, so log2 of it is log2(T) + j·log2(1e9) to within
+// log2(1 + 1/T) < 2e-18. The doubles add their own rounding, under 3e-16 of
+// the result plus 2e-14, so `slack` below is thirty times what they can cost.
+// Unless that window straddles an integer, its floor is the answer — for every
+// magnitude but a sliver either side of a power of two (for a million bits,
+// the ones within about one part in 10^8).
+//
+// Those are the ones people ask about, though — 2**N, 2**N - 1, and every
+// negative power of two, since `msb` of -2**N measures 2**N - 1 — and no
+// number of leading limbs can tell them apart. They convert to binary.
 long long BigInt::bitLength() const {
     if (sign == 0) return 0;
-    long double approx = std::log2l((long double)mag.back()) +
-                         (long double)(mag.size() - 1) * 29.897352853986263L;
-    long long lo = (long long)approx - 2, hi = (long long)approx + 3;
-    if (lo < 1) lo = 1;
-    BigInt a = abs();
-    long long best = 1;
-    for (long long b = lo; b <= hi; b++)
-        if (cmpMag(BigInt(2).pow(b - 1), a) <= 0) best = b;
-    return best;
+    if (fitsU64()) return 64 - clzll(magU64(*this));
+    const std::size_t m = mag.size();                // at least three limbs here
+    static const double LOG2_1E9 = std::log2(1e9);
+    const double top = ((double)mag[m - 1] * 1e9 + mag[m - 2]) * 1e9 + mag[m - 3];
+    const double est = std::log2(top) + (double)(m - 3) * LOG2_1E9;
+    const double slack = est * 1e-14 + 1e-11;
+    const double below = std::floor(est - slack);
+    if (below == std::floor(est + slack)) return (long long)below + 1;
+    const Words w = ToBinary(mag.data()).of(0, m);
+    return (long long)(w.size() - 1) * WORD_BITS + (64 - clzll(w.back()));
+}
+
+// The index of the lowest set bit of |self|: its trailing zero bits.
+long long BigInt::lowestSetBit() const {
+    if (sign == 0) return -1;
+    // A zero limb is a factor of 1e9 = 2^9·5^9, nine trailing zero bits that
+    // nothing above can disturb.
+    std::size_t z = 0;
+    while (mag[z] == 0) z++;
+    const uint32_t* L = mag.data() + z;
+    const std::size_t m = mag.size() - z;
+    // The rest, mod 2^64. Limb i is scaled by 1e9^i = 2^9i·5^9i, so from limb
+    // 8 on (2^72) nothing reaches the low 64 bits: limbs 0 to 7 decide them.
+    uint64_t low = 0;
+    for (std::size_t i = std::min<std::size_t>(m, 8); i-- > 0;)
+        low = low * 1000000000ull + L[i];
+    if (low) return 9 * (long long)z + ctzll(low);
+    // Divisible by 2^64 — every power of two from there up is. The low 9t
+    // bits are final once t limbs are converted, so convert 16, 32, 64, …
+    // until one of them is set, extending the binary by one join each time.
+    // That is exactly the divide-and-conquer split, so the worst case, a
+    // power of two, costs one conversion in all.
+    ToBinary bin(L);
+    std::size_t t = 16;
+    unsigned k = 4;                                  // 16 = 2^4
+    Words lo = bin.of(0, std::min(t, m));
+    for (;;) {
+        const long long p = lowestBit(lo);
+        if (t >= m || (p >= 0 && p < 9 * (long long)t)) return 9 * (long long)z + p;
+        const Words hi = bin.of(t, std::min(t, m - t));
+        lo = ToBinary::join(hi, bin.power(k), lo);
+        t *= 2;
+        k++;
+    }
 }
 
 BigInt BigInt::gcd(BigInt a, BigInt b) {

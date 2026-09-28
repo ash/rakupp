@@ -371,12 +371,16 @@ function usage(cands) {
             if (p.lit !== undefined) { pos.push(p.lit); continue; }
             if (p.named && !p.slurpy) {
                 // A one-character name is a SHORT option: `-x`, not `--x`. An
-                // untyped one takes `[=Any]`, a typed one `=<Type>`, and a Bool
-                // takes nothing at all because its presence is the value. A
-                // required named (`:$x!`) prints without the outer brackets.
+                // untyped one takes `[=Any]`, one whose type would take the
+                // bare flag (a Bool is an Int, a Cool, an Any) `[=Int]`, any
+                // other `=<Type>`, and a Bool takes nothing at all because its
+                // presence is the value. A required named (`:$x!`) prints
+                // without the outer brackets.
                 let label = (p.name.length === 1 ? '-' : '--') + p.name;
                 if (p.type === 'Bool') { }
                 else if (!p.type) label += '[=Any]';
+                else if (['Int', 'UInt', 'Cool', 'Any', 'Mu', 'Numeric', 'Real'].includes(p.type))
+                    label += '[=' + p.type + ']';
                 else label += '=<' + p.type + '>';
                 named.push(p.optional ? '[' + label + ']' : label);
                 doc(label);
