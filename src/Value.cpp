@@ -360,13 +360,26 @@ double Value::toNum() const {
                     // decimal digits and let strtod do the single, correct
                     // rounding. Also covers FatRats too big for double (the
                     // old inf/inf special case).
-                    std::string sn = ratN()->abs().toString(), sd = ratD()->abs().toString();
-                    long long scale = 19 - ((long long)sn.size() - (long long)sd.size());
+                    // Only the leading limbs matter: past twelve of them (108
+                    // digits) the rest cannot move 19, and the long division is
+                    // quadratic in the length — a Rat power's million-digit parts
+                    // spent seconds here. The dropped digits go in the exponent.
                     BigInt num = ratN()->abs(), den = ratD()->abs(), q, r;
+                    long long shift = 0;
+                    auto keepTop = [](BigInt& b) -> long long {
+                        const size_t n = b.mag.size(), k = 12;
+                        if (n <= k) return 0;
+                        b.mag.erase(b.mag.begin(), b.mag.begin() + (long)(n - k));
+                        return 9LL * (long long)(n - k);
+                    };
+                    shift += keepTop(num);
+                    shift -= keepTop(den);
+                    std::string sn = num.toString(), sd = den.toString();
+                    long long scale = 19 - ((long long)sn.size() - (long long)sd.size());
                     if (scale > 0) num = num * BigInt(10).pow(scale);
                     else if (scale < 0) den = den * BigInt(10).pow(-scale);
                     BigInt::divmod(num, den, q, r);
-                    std::string lit = q.toString() + "e" + std::to_string(-scale);
+                    std::string lit = q.toString() + "e" + std::to_string(shift - scale);
                     double d = cnum::strtod(lit.c_str(), nullptr);
                     return ratN()->sign < 0 ? -d : d;
                 }

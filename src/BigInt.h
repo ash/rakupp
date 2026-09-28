@@ -84,4 +84,17 @@ struct BigInt {
     std::string toString() const;
 };
 
+// A WORK BUDGET for one operation that could otherwise run for hours — the
+// interpreter sets it around `**`: the limb products the schoolbook multiply may
+// still spend, or null for no limit. Spending past it throws
+// BigIntBudgetExceeded, from the middle of a multiplication if need be.
+extern thread_local unsigned long long* g_bigIntBudget;
+struct BigIntBudgetExceeded {};
+
+// (n/d)**e as the nearest double, never building the exact powers: each factor
+// keeps its top six limbs (54 digits) through the squarings, which leaves the
+// ratio good to some 45 significant digits whatever the exponent — far past
+// the 17 a double holds. Overflow is Inf and underflow 0, signed. d is nonzero.
+double bigRatioPowToDouble(const BigInt& n, const BigInt& d, unsigned long long e);
+
 } // namespace rakupp

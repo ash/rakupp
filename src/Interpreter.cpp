@@ -38715,14 +38715,44 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (!fat && !v.ratD()->fitsU64()) return Value::number(v.toNum());
                 return v;
             };
-            if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? powRat(rn, rd) : Value::bigint(rn); }
-            BigInt rn = bd.pow(-e), rd = bn.pow(-e);
-            if (rd.isZero()) return armedFailure("X::Numeric::DivideByZero",
-                "Attempt to divide by zero when raising 0 to a negative power");
-            Value res = powRat(rn, rd);
-            if (!anyRat && res.t == VT::Num && res.n == 0)
-                return armedFailure("X::Numeric::Underflow", "Numeric underflow");
-            return res;
+            // Every power gets a BUDGET of work — limb products, some five seconds'
+            // worth here: the exact answer is computed until it is done or the
+            // budget is spent. Nothing is refused before it is tried, and nothing
+            // grinds on for minutes. Spent, a power whose answer is a Num anyway
+            // (a Rat's, its denominator past 64 bits) is computed straight as that
+            // Num; any other is X::Numeric::Overflow. A01-limits/overflow.t needs
+            // `1.0000001 ** 10**8` still at work when its two-second timer fires;
+            // what fits in the budget grows with a faster multiply.
+            static constexpr unsigned long long kPowerBudget = 3000000000ULL;
+            unsigned long long budget = kPowerBudget;
+            struct BudgetG { unsigned long long* prev; ~BudgetG() { g_bigIntBudget = prev; } } budgetG{g_bigIntBudget};
+            g_bigIntBudget = &budget;
+            try {
+                if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? powRat(rn, rd) : Value::bigint(rn); }
+                BigInt rn = bd.pow(-e), rd = bn.pow(-e);
+                if (rd.isZero()) return armedFailure("X::Numeric::DivideByZero",
+                    "Attempt to divide by zero when raising 0 to a negative power");
+                Value res = powRat(rn, rd);
+                if (!anyRat && res.t == VT::Num && res.n == 0)
+                    return armedFailure("X::Numeric::Underflow", "Numeric underflow");
+                return res;
+            }
+            catch (BigIntBudgetExceeded&) {
+                g_bigIntBudget = budgetG.prev;   // (what follows is small and runs free)
+                const unsigned long long k = e >= 0 ? (unsigned long long)e : (unsigned long long)(-e);
+                // the answer's denominator is a power of this: past 64 bits, a Num
+                const BigInt den = (e >= 0 ? bd : bn).abs();
+                auto spills = [&]() {
+                    if (BigInt::cmpMag(den, BigInt(1)) <= 0) return false;   // 0 or 1
+                    double lg = std::log2((double)den.mag.back()) + (double)(den.mag.size() - 1) * 29.897352853986263;
+                    if (lg * (double)k > 66.0) return true;
+                    if (lg * (double)k < 62.0) return false;
+                    return !den.pow((long long)k).fitsU64();   // near the line: small enough to compute
+                };
+                if (anyRat && !fat && spills())
+                    return Value::number(e >= 0 ? bigRatioPowToDouble(bn, bd, k) : bigRatioPowToDouble(bd, bn, k));
+                return armedFailure("X::Numeric::Overflow", "Numeric overflow");
+            }
         }
         if (op == "%" || op == "div" || op == "mod" || op == "%%") {
             // These take INTEGERS, so both sides are coerced first, and the

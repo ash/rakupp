@@ -7,6 +7,51 @@
 
 namespace rakupp {
 
+thread_local unsigned long long* g_bigIntBudget = nullptr;
+
+// A number as m × BASE**ex, m truncated (toward zero) to its top K limbs.
+namespace {
+struct TopLimbs { BigInt m; long long ex = 0; };
+void keepTop(TopLimbs& x, size_t k) {
+    const size_t n = x.m.mag.size();
+    if (n <= k) return;
+    x.m.mag.erase(x.m.mag.begin(), x.m.mag.begin() + (long)(n - k));
+    x.ex += (long long)(n - k);
+}
+TopLimbs topPow(const BigInt& b, unsigned long long e, size_t k) {
+    TopLimbs r, base;
+    r.m = BigInt(1);
+    base.m = b.abs();
+    keepTop(base, k);
+    while (e) {
+        if (e & 1) { r.m = r.m * base.m; r.ex += base.ex; keepTop(r, k); }
+        e >>= 1;
+        if (e) { base.m = base.m * base.m; base.ex += base.ex; keepTop(base, k); }
+    }
+    return r;
+}
+}  // namespace
+
+double bigRatioPowToDouble(const BigInt& n, const BigInt& d, unsigned long long e) {
+    const bool neg = ((n.sign < 0) != (d.sign < 0)) && (e & 1);
+    if (n.isZero()) return e == 0 ? 1.0 : 0.0;
+    const size_t k = 6;
+    TopLimbs pn = topPow(n, e, k), pd = topPow(d, e, k);
+    // the ratio of the two mantissas to 20 significant digits, placed by the
+    // decimal digits the limb counts stand for; strtod rounds it once, and says
+    // Inf or 0 when the exponent is past a double's range
+    std::string sn = pn.m.toString(), sd = pd.m.toString();
+    long long scale = 20 - ((long long)sn.size() - (long long)sd.size());
+    BigInt num = pn.m, den = pd.m, q, rem;
+    if (scale > 0) num = num * BigInt(10).pow(scale);
+    else if (scale < 0) den = den * BigInt(10).pow(-scale);
+    BigInt::divmod(num, den, q, rem);
+    long long dexp = 9LL * (pn.ex - pd.ex) - scale;
+    std::string lit = q.toString() + "e" + std::to_string(dexp);
+    double v = cnum::strtod(lit.c_str(), nullptr);
+    return neg ? -v : v;
+}
+
 void BigInt::trim() {
     while (!mag.empty() && mag.back() == 0) mag.pop_back();
     if (mag.empty()) sign = 0;
@@ -263,7 +308,12 @@ BigInt BigInt::operator*(const BigInt& o) const {
     if (mag.size() == 1)   { BigInt r = mulLimb(o, mag[0]);       if (r.sign) r.sign = sign * o.sign; return r; }
     BigInt r;
     r.mag.assign(mag.size() + o.mag.size(), 0);
+    unsigned long long* const budget = g_bigIntBudget;   // (one thread-local read, not one per row)
     for (size_t i = 0; i < mag.size(); i++) {
+        if (budget) {   // one row of limb products, paid for before it runs
+            if (*budget < o.mag.size()) throw BigIntBudgetExceeded{};
+            *budget -= o.mag.size();
+        }
         uint64_t carry = 0;
         for (size_t j = 0; j < o.mag.size() || carry; j++) {
             uint64_t cur = r.mag[i + j] + carry +

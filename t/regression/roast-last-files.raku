@@ -31,6 +31,10 @@ check('a Rat power below the smallest double is 0e0', 0.5 ** 2000, 0e0);
 check('a Rat power past a 64-bit denominator is a Num', (1.0000001 ** 2000, 1.1 ** 700),
       (1.0002000199913315e0, 9.437992127672415e+28));
 check('a Rat power stays reduced', ((2/3) ** -5).nude, (243, 32));
+# a power gets a budget of work; past it, a Rat power whose answer is a Num
+# anyway is computed straight as that Num — the digits rakudo's exact
+# division gives (this one spends the budget first: some five seconds)
+check('a Rat power past the work budget is computed as its Num', 1.0000001 ** 1_000_000, 1.1051709125497935e0);
 
 # a type-like name before a statement's block that nothing declares is a call
 # that swallowed the block: a compile-time group, whether or not the block runs
