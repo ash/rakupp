@@ -2022,7 +2022,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "AT-POS" && !args.empty()) {
             long long i = args[0].toInt(), n = (long long)items.size();
             if (i < 0) i += n;
-            return (i >= 0 && i < n) ? items[(size_t)i] : Value::any();
+            if (i >= 0 && i < n) return items[(size_t)i];
+            // past the end: an Array's element default, but a List (or the
+            // Range or Seq it stands for) has none — `(1, 2, 3).AT-POS(5)` is Nil
+            return inv.t == VT::Array && !inv.isList ? Value::any() : Value::nil();
         }
         if (m == "EXISTS-POS" && !args.empty()) {
             long long i = args[0].toInt(), n = (long long)items.size();

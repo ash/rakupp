@@ -1081,7 +1081,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         bool in = i < (long long)inv.arr()->size();
         if (m == "EXISTS-POS") return Value::boolean(in && rtSlotExists((*inv.arr())[i]));
-        if (m == "AT-POS") return in ? (*inv.arr())[i] : Value::any();
+        // (past the end a List has no element default: `(1, 2, 3).AT-POS(5)` is Nil)
+        if (m == "AT-POS") return in ? (*inv.arr())[i] : inv.isList ? Value::nil() : Value::any();
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
             if (i >= 0) { while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());

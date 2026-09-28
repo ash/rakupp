@@ -474,6 +474,12 @@ public:
     // …and the `self!name` calls such an EVAL makes, checked against the invocant's
     // class once parsed — a compile-time error in Rakudo (advent2011-day11.t)
     std::vector<std::pair<std::string, int>> evalPrivCalls_;
+    // …and each type-like bare name that sits right before a statement's block
+    // (`when X::Y {`). To Rakudo one nothing declares is a CALL that gobbled the
+    // block, a compile-time error; EVAL resolves these once parsed (misc.t)
+    struct GobbleSite { std::string name, shown; int line; };
+    std::vector<GobbleSite> gobbleSites_;
+    void noteGobbleSite(const Expr* cond);
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
 public:

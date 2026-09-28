@@ -283,9 +283,11 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p);
 const std::vector<std::string>& typeAncestry(const std::string& t);
 // The X:: exception hierarchy (src/exception_ancestry_gen.cpp, generated from
 // Rakudo's own metamodel): what a name conforms to beyond itself/Exception/
-// Any/Mu, and which of those names are roles rather than classes.
+// Any/Mu, which of those names are roles rather than classes, and whether a
+// name is one of Rakudo's at all.
 const char* exceptionExtraAncestry(const std::string& n);
 bool isExceptionRole(const std::string& n);
+bool isRakudoExceptionName(const std::string& n);
 
 // G1 (GRAMMAR-PLAN): the last FAILED grammar parse's highwater on this
 // thread — CHARACTER position plus the rule that was trying there. valid is

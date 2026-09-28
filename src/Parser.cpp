@@ -12112,6 +12112,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         }
         if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "test-assertion")
             s->testAssertion = true;
+        if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "nodal")
+            s->isNodal = true;
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {
@@ -15810,6 +15812,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto w = std::make_unique<WhenStmt>();
             { bool sv = stmtCond_; stmtCond_ = true; w->cond = parseExpression(); stmtCond_ = sv; }
+            noteGobbleSite(w->cond.get());
             w->body = parseBlock();
             return w;
         }
@@ -16605,6 +16608,19 @@ bool Parser::slangSigillessHere() {
 
 // A name that is a TYPE here: one of the core types, or a class/role/grammar
 // this unit declared. Tuxic's spaced-call exclusion list is its only user.
+// `when X::Y {`: the condition is a bare type-like name (capitalized or
+// package-qualified, a smiley allowed) with the statement's block right after
+// it. Whether anything declares the name is known only where the code runs.
+void Parser::noteGobbleSite(const Expr* cond) {
+    if (!cond || cond->kind != NK::NameTerm || !isKind(Tok::LBrace) || !cur().spaceBefore) return;
+    auto* nt = static_cast<const NameTerm*>(cond);
+    const std::string& n = nt->name;
+    if (n.empty() || !nt->ofType.empty() || nt->pkgSelf || nt->symbolicStrict) return;
+    if (!ascii::isupper((unsigned char)n[0]) && n.find("::") == std::string::npos) return;
+    gobbleSites_.push_back({n, n + (nt->defConstraint == 1 ? ":D" : nt->defConstraint == 2 ? ":U" : ""),
+                            cond->line});
+}
+
 bool Parser::knownTypeName(const std::string& name) const {
     static const std::set<std::string> core = {
         "Int", "Str", "Num", "Rat", "FatRat", "Complex", "Bool", "Array", "Hash", "List", "Map", "Any", "Mu",

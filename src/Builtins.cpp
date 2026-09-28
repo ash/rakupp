@@ -17505,13 +17505,25 @@ void Interpreter::registerBuiltins() {
         VarExpr v(sym);
         return I.eval(&v);
     };
+    // `OUTER::<$x>` is ONE scope, the one N steps out — not that scope and
+    // outwards: an outer-outer `$x` is no OUTER's (Rakudo answers Nil). The
+    // `state` frames of a loop or a routine are no scopes of the program's, so a
+    // step passes them. A `my` further down the scope already counts
+    // (Interpreter::frameSymbol).
     B["__sym-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::nil();
         const std::string n = a[0].toStr();
         Env* e = I.tctx_.cur.get();
-        for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--)
+        for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--) {
             e = e->parent.get();
-        if (e) if (Value* v = e->find(n)) return *v;
+            while (e && (e->loopFrame || e->stateFrame) && e->parent) e = e->parent.get();
+        }
+        Value v;
+        if (e && I.frameSymbol(e, n, v)) return v;
+        // …but every block HAS a `$_`, the outer one's unless it topicalizes:
+        // `start { cas $a, -> @c { … OUTER::<$_> } }` reads the start block's,
+        // which is the `map` element around it (S17-promise/allof.t)
+        if (e && n == "$_") if (Value* t = e->find(n)) return *t;
         return Value::nil();
     };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };

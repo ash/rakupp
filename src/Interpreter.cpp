@@ -556,6 +556,7 @@ static bool valueEqv(const Value& a, const Value& b);
 static bool isSetOpStr(const std::string& o);
 static bool boxedIteration(const Value& v);
 static void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
+static bool pureSubscriptBase(const Expr* b);
 thread_local unsigned long long g_subscriptRefusals = 0;
 
 // eqv for a `repr('CStruct')`/CUnion instance. Such an object holds NO Raku
@@ -9916,6 +9917,36 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
 static thread_local std::vector<std::shared_ptr<Env>> g_evalUnits;
 // the classes whose BODY is running right now, innermost last
 static thread_local std::vector<std::string> g_classBodies;
+// A name counts when the unit (or the one running it) declares it, when it is
+// a core type — an X:: one only if Rakudo has it, since isKnownTypeName takes
+// any X:: name — or when a class, subset, package, alias or lexical answers to
+// it. A routine of that name counts too: only an UNKNOWN name is refused.
+bool Interpreter::bareNameResolves(const std::string& n, const Program& unit) {
+    auto declaredIn = [&](const Program& p) {
+        if (p.typeNamesOpaque || p.declaredTypeNames.count(n) || p.declaredTermNames.count(n)) return true;
+        for (size_t c = n.find("::"); c != std::string::npos; c = n.find("::", c + 2))
+            if (p.declaredTypeNames.count(n.substr(c + 2))) return true;
+        return false;
+    };
+    if (declaredIn(unit)) return true;
+    if (const Program* outer = unitCurrent(); !outer || declaredIn(*outer)) return true;
+    // a pseudo-package or CORE-qualified name is not this check's business
+    static const char* const kPseudo[] = {"MY::", "OUR::", "CORE::", "GLOBAL::", "PROCESS::", "COMPILING::",
+        "DYNAMIC::", "CALLER::", "CALLERS::", "LEXICAL::", "OUTER::", "OUTERS::", "SETTING::", "UNIT::",
+        "CLIENT::", "PARENT::", "EXPORT::"};
+    for (const char* p : kPseudo)
+        if (n.rfind(p, 0) == 0) return true;
+    if (n.rfind("X::", 0) == 0 ? isRakudoExceptionName(n) : isKnownTypeName(n)) return true;
+    const std::string& rn = resolveClassAlias(n);
+    if (classes_.count(n) || classes_.count(rn) || subsets_.count(n) || pkgMeta_.count(n) ||
+        pkgMeta_.count(rn) || isNativeTypeName(n) || enumPairs_.count(n))
+        return true;
+    if (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + n)) return true;
+    if (tctx_.cur && (tctx_.cur->find(n) || tctx_.cur->find("&" + n) || tctx_.cur->find("::" + n)))
+        return true;
+    return global_ && (global_->find(n) || global_->find("&" + n));
+}
+
 Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* incompleteOut,
                               bool checkOnly) {
     // `class C { EVAL 'method x { … }' }` — code EVALed while a class body runs
@@ -10018,6 +10049,20 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 }
             }
         *prog = parser.parseProgram();
+        // `CATCH { when X::Y {} }`: a type-like name before a statement's block
+        // that nothing declares is, to Rakudo, a call that swallowed the block —
+        // a compile-time group raised before anything runs, whether or not the
+        // `when` ever does (S32-exceptions/misc.t)
+        for (auto& gs : parser.gobbleSites_)
+            if (!bareNameResolves(gs.name, *prog)) {
+                std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
+                                 "it's a class that's not declared or available in this scope?)";
+                std::string pw = "block (apparently claimed by '" + gs.shown + "')";
+                throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
+                                 {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                                  {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
+                                  {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
+            }
         // `EVAL 'return 1; self!typo()'` in a method: a private method the class
         // does not have is a COMPILE-time error, raised before anything runs
         // (integration/advent2011-day11.t)
@@ -13300,6 +13345,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->isMethod = sd->isMethod;
                 c.code()->isStub = stmtIsStub(sd->body);
                 c.code()->testAssertion = sd->testAssertion;
+                c.code()->isNodal = sd->isNodal;
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
@@ -14513,6 +14559,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (!anyState) return;
                     auto e = std::make_shared<Env>();
                     e->parent = v.code()->closure ? v.code()->closure : global_;
+                    e->stateFrame = true;
                     ci->roleStateEnvs[v.code()] = e;
                 };
                 for (ClassInfo* role : composedRoles)
@@ -23022,6 +23069,34 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     return Value::object(od);
 }
 
+bool Interpreter::frameSymbol(Env* f, const std::string& key, Value& out) {
+    if (!f) return false;
+    if (Value* p = f->local(key)) { out = *p; return true; }
+    if (f->declStmts) {
+        std::vector<const VarExpr*> decls;
+        spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
+        for (auto* v : decls)
+            if (v->name == key) { out = typedDefault(v->declType, key[0]); return true; }
+    }
+    return false;
+}
+
+// Before 6.e an EVAL's SETTING is the scope it was called from, so the
+// caller's `my $x` — declared further down included — answers
+// (6.c/S04-declarations/my-6c.t); a program's own SETTING is CORE, which
+// holds no variable of a program's.
+bool Interpreter::evalSettingSymbol(const std::string& key, Value& out) {
+    if (sixE() || g_evalUnits.empty() || !g_evalUnits.back()) return false;
+    Env* unit = g_evalUnits.back().get();
+    bool inEval = false;
+    for (Env* w = tctx_.cur.get(); w && !inEval; w = w->parent.get()) inEval = w == unit;
+    if (!inEval) return false;
+    // (the EVAL's own scope is its mainline, not its setting)
+    for (Env* f = unit->evalFrame ? unit->parent.get() : unit; f; f = f->parent.get())
+        if (frameSymbol(f, key, out)) return true;
+    return false;
+}
+
 bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Value& out) {
     if (self.t != VT::Object || !self.obj()) return false;
     auto& at = self.obj()->attrs;
@@ -26640,6 +26715,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     std::call_once(c.state.init, [&] {
         c.state.env = std::make_shared<Env>();
         c.state.env->parent = c.closure ? c.closure : global_;
+        c.state.env->stateFrame = true;
     });
     env->parent = c.state.env;
     // Pads (PADS-PLAN.md): every Callable body is a pad owner, resolved at its
@@ -26816,7 +26892,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
-        if (rwArgs) setupRwLinks(c.params, env, rwArgs,
+        if (rwArgs || tctx_.rwInvocantExpr) setupRwLinks(c.params, env, rwArgs,
                                  !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
@@ -27101,9 +27177,14 @@ resumeBody:
                          tcx.wantLvalue &&
                          tcx.wantLvalue == (int)tcx.callFrames.size()) {
                     Expr* fe = static_cast<ExprStmt*>(s)->e.get();
-                    try { tcx.lvalueOut = lvalueThroughRw(fe); }
-                    catch (RakuError&) { tcx.lvalueOut = nullptr; }
-                    last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
+                    // `SELF.substr-rw($i, 1)` names no container of its own: the
+                    // answer is a Proxy over that slice of the variable
+                    if (substrRwProxyOf(fe, last)) tcx.lvalueOut = nullptr;
+                    else {
+                        try { tcx.lvalueOut = lvalueThroughRw(fe); }
+                        catch (RakuError&) { tcx.lvalueOut = nullptr; }
+                        last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
+                    }
                 }
                 else
                     last = exec(s, i != lastReal); // non-final statements sink
@@ -27853,11 +27934,22 @@ void Interpreter::bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                                const std::vector<ExprPtr>* rwArgs, bool soleCandidate) {
-    if (!params || !rwArgs) return;
+    if (!params) return;
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
         if (p.invocant) {
+            // `method AT-POS(\SELF: $i) is raw { SELF.substr-rw($i, 1) }`: a
+            // sigilless or raw invocant is the caller's CONTAINER, as a `\x`
+            // parameter is, so the Proxy it hands back writes the caller's own
+            // variable (S32-basics/xxPOS.t). bindArgCell takes it only when the
+            // parameter holds exactly what that variable holds.
+            if ((p.sigil == '\\' || p.isRaw) && !p.isRw && tctx_.rwInvocantExpr &&
+                bindArgCell(p, tctx_.rwInvocantExpr, env)) {
+                tctx_.rwInvocantExpr = nullptr;
+                continue;
+            }
+            if (!rwArgs) continue;
             // `method f(::?CLASS:U $_ is rw: …)` ASSIGNS to its invocant to
             // autovivify the caller's variable — BinaryHeap's whole `my
             // BinaryHeap::MinHeap $h; $h.push(…)` idiom, and Graph's priority
@@ -27874,6 +27966,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             }
             continue;
         }
+        if (!rwArgs) break;   // (called for the invocant alone)
         if (p.slurpy) {
             // `*@list is raw` holds the arguments' own CONTAINERS: `@list[0] =
             // "hi"` writes @test[0] and `@list[*-1] = "ho"` writes $test
@@ -28668,6 +28761,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         std::call_once(c.state.init, [&] {
             c.state.env = std::make_shared<Env>();
             c.state.env->parent = c.closure ? c.closure : global_;
+            c.state.env->stateFrame = true;
         });
         stEnv = c.state.env;
     }
@@ -28740,7 +28834,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                    whereVerified);
-        if (rwArgs) setupRwLinks(c.params, env, rwArgs,
+        if (rwArgs || tctx_.rwInvocantExpr) setupRwLinks(c.params, env, rwArgs,
                                  !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
     }
     else if (!c.placeholders.empty()) {
@@ -28964,9 +29058,14 @@ resumeMethodBody:
                          tcx.wantLvalue &&
                          tcx.wantLvalue == (int)tcx.callFrames.size()) {
                     Expr* fe = static_cast<ExprStmt*>(s)->e.get();
-                    try { tcx.lvalueOut = lvalueThroughRw(fe); }
-                    catch (RakuError&) { tcx.lvalueOut = nullptr; }
-                    last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
+                    // `SELF.substr-rw($i, 1)` names no container of its own: the
+                    // answer is a Proxy over that slice of the variable
+                    if (substrRwProxyOf(fe, last)) tcx.lvalueOut = nullptr;
+                    else {
+                        try { tcx.lvalueOut = lvalueThroughRw(fe); }
+                        catch (RakuError&) { tcx.lvalueOut = nullptr; }
+                        last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
+                    }
                 }
                 else
                     last = exec(s, i != lastReal); // non-final statements sink
@@ -29996,7 +30095,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 } wg{tcx, tcx.wantLvalue, tcx.lvalueOut};
                 tcx.wantLvalue = (int)tcx.callFrames.size() + 1;
                 tcx.lvalueOut = nullptr;
-                atPosHold = methodCall(*base, "AT-POS", ValueList{k});
+                {
+                    // …and the base EXPRESSION, for an AT-POS whose invocant is
+                    // `\SELF`: bound to the caller's own container (setupRwLinks),
+                    // which may turn the slot `base` points at into a cell
+                    struct RwInvG { ExecContext& t; Expr* prev; ~RwInvG() { t.rwInvocantExpr = prev; } }
+                        rwInvG{tcx, tcx.rwInvocantExpr};
+                    tcx.rwInvocantExpr = idx->base.get();
+                    Value inv = *base;
+                    atPosHold = methodCall(inv, "AT-POS", ValueList{k});
+                    if (base->isCell()) base = base->deref();
+                }
                 if (Value* out = tcx.lvalueOut; out && !tcx.lvalueOutLocal) return out;
                 // …or the built-in container the class derives, as the AT-KEY
                 // arm above explains. PDF::COS::Tie::Array reads every element
@@ -31730,7 +31839,10 @@ bool Interpreter::containerElemFor(const Expr* e, Value& out) {
 }
 // …and is this element such a container (or a real cell)?
 bool Interpreter::isContainerElem(const Value& v) {
-    return v.isCell() || cellOfProxy(&v) != nullptr;
+    // (…and a Proxy over an element — what `my @s := @a[1, 2]` binds — takes
+    // a write the same way)
+    return v.isCell() || cellOfProxy(&v) != nullptr ||
+           (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash() && v.hash()->count("STORE"));
 }
 
 // The storage slot an element subscript names, WITHOUT autovivifying anything:
@@ -31787,6 +31899,90 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
             return nv;
         });
     return proxy;
+}
+
+// The replacement is spliced by CHARACTER, and a Str mixin (`"asd" but R`)
+// stays one: Rakudo writes the new text into the same kind of value, so
+// `$t.substr-rw(1, 1) = "c"` leaves a Str+{R} holding "acd". A fresh object,
+// though — another holder of the old value keeps the old text.
+Value Interpreter::spliceStr(const Value& s, long long from, long long len, const Value& repl) {
+    const bool mixin = s.t == VT::Object && s.obj() && s.obj()->hasBoxed && s.obj()->boxed.t == VT::Str;
+    Value text = mixin ? s.obj()->boxed : s;
+    long long n = methodCall(text, "chars", ValueList{}).toInt();
+    long long f = std::min(from, n), e = len < 0 ? n : std::min(n, from + len);
+    std::string out = methodCall(text, "substr", ValueList{Value::integer(0), Value::integer(f)}).toStr()
+                    + repl.toStr()
+                    + methodCall(text, "substr", ValueList{Value::integer(e)}).toStr();
+    if (!mixin) return Value::str(out);
+    auto od = makePayload<ObjectData>();
+    od->cls = s.obj()->cls;
+    od->attrs = s.obj()->attrs;
+    od->boxed = Value::str(out);
+    od->hasBoxed = true;
+    Value nv = s;
+    nv.setObj(od);
+    return nv;
+}
+
+// `my $r := $str.substr-rw(0, 5)`, and the same call as the value of an `is raw`
+// routine (`method AT-POS(\SELF: $i) is raw { SELF.substr-rw($i, 1) }`): the
+// positions are fixed when the Proxy is made, as in Rakudo — a sibling proxy
+// keeps pointing at the same place when this one changes the string's length.
+Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& vname, long long from,
+                                 long long len) {
+    auto cur = [owner, vname](Interpreter& I) -> Value {
+        Value* p = owner->local(vname);
+        return p ? I.deproxy(*p) : Value::str("");
+    };
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
+        Value s = cur(I);
+        if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed;
+        ValueList sa{Value::integer(from)};
+        if (len >= 0) sa.push_back(Value::integer(len));
+        return I.methodCall(s, "substr", sa);
+    };
+    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
+        Value nv = sa.empty() ? Value::str("") : sa.back();
+        Value out = I.spliceStr(cur(I), from, len, nv);
+        if (Value* p = owner->local(vname)) *p = out;
+        return nv;
+    };
+    (*proxy.hash())["FETCH"] = fetch;
+    (*proxy.hash())["STORE"] = store;
+    return proxy;
+}
+
+bool Interpreter::substrRwProxyOf(Expr* e, Value& out) {
+    if (!e) return false;
+    Expr* invE = nullptr; const std::vector<ExprPtr>* srArgs = nullptr; size_t argOfs = 0;
+    if (e->kind == NK::MethodCall && static_cast<MethodCall*>(e)->method == "substr-rw") {
+        auto* mc = static_cast<MethodCall*>(e);
+        if (mc->meta || mc->hyper || mc->methodExpr) return false;
+        invE = mc->inv.get(); srArgs = &mc->args;
+    }
+    else if (e->kind == NK::Call && static_cast<Call*>(e)->name == "substr-rw" &&
+             !static_cast<Call*>(e)->args.empty()) {
+        auto* c = static_cast<Call*>(e);
+        invE = c->args[0].get(); srArgs = &c->args; argOfs = 1;
+    }
+    if (!invE) return false;
+    // a `$` variable, or a sigilless one (`\SELF`, `\x`)
+    std::string vname;
+    if (invE->kind == NK::VarExpr) vname = static_cast<VarExpr*>(invE)->name;
+    else if (invE->kind == NK::NameTerm) vname = static_cast<NameTerm*>(invE)->name;
+    if (vname.empty() || (invE->kind == NK::VarExpr && vname[0] != '$')) return false;
+    std::shared_ptr<Env> owner;
+    for (auto en = tctx_.cur; en; en = en->parent) if (en->local(vname)) { owner = en; break; }
+    if (!owner) return false;
+    ValueList pos;
+    for (size_t k = argOfs; k < srArgs->size(); k++) pos.push_back(eval((*srArgs)[k].get()));
+    if (pos.empty() || pos.size() > 2) return false;
+    for (auto& pv : pos) if (pv.t != VT::Int) return false;
+    out = substrRwProxy(owner, vname, pos[0].toInt(), pos.size() > 1 ? pos[1].toInt() : -1);
+    return true;
 }
 
 
@@ -33079,6 +33275,27 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                         vi++;
                         continue;
                     }
+                    // …but an `@x` BOUND to a List of containers (`my @slice :=
+                    // %hash<b c>`) takes one value per container, as List.STORE
+                    // does: `(@slice, *) = <A B C D>` fills those two and leaves
+                    // the rest to the targets after it (S32-hash/slice.t)
+                    if (!isBinding && nm[0] == '@' && !static_cast<VarExpr*>(tgt)->declare) {
+                        Value* held = tctx_.cur->find(nm);
+                        bool allCont = held && held->t == VT::Array && held->isList && !held->itemized &&
+                                       held->arr() && !held->arr()->empty() && held->enumName.empty();
+                        if (allCont)
+                            for (auto& el : *held->arr()) if (!isContainerElem(el)) { allCont = false; break; }
+                        if (allCont) {
+                            Value list = *held;   // the elements share storage
+                            for (auto& el : *list.arr()) {
+                                Value nv = vi < vals.size() ? vals[vi] : Value::any();
+                                vi++;
+                                if (el.isCell()) *el.deref() = nv;
+                                else proxyStore(el, nv);
+                            }
+                            continue;
+                        }
+                    }
                     // an @/% target slurps every remaining value; later targets get Any
                     Value rest = Value::array();
                     for (size_t j = vi; j < vals.size(); j++) {
@@ -33518,57 +33735,48 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // as in Rakudo (a sibling proxy keeps pointing at the same place when this
     // one changes the string's length).
     if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && a->value) {
-        Expr* invE = nullptr; const std::vector<ExprPtr>* srArgs = nullptr; size_t argOfs = 0;
-        if (a->value->kind == NK::MethodCall &&
-            static_cast<MethodCall*>(a->value.get())->method == "substr-rw") {
-            auto* mc = static_cast<MethodCall*>(a->value.get());
-            invE = mc->inv.get(); srArgs = &mc->args;
+        Value proxy;
+        if (substrRwProxyOf(a->value.get(), proxy)) {
+            Value* lv = lvalue(a->target.get());
+            *lv = proxy;
+            return proxy;
         }
-        else if (a->value->kind == NK::Call && static_cast<Call*>(a->value.get())->name == "substr-rw" &&
-                 !static_cast<Call*>(a->value.get())->args.empty()) {
-            auto* c = static_cast<Call*>(a->value.get());
-            invE = c->args[0].get(); srArgs = &c->args; argOfs = 1;
-        }
-        if (invE && invE->kind == NK::VarExpr) {
-            const std::string vname = static_cast<VarExpr*>(invE)->name;
-            std::shared_ptr<Env> owner;
-            for (auto e = tctx_.cur; e; e = e->parent) if (e->local(vname)) { owner = e; break; }
-            ValueList pos;
-            for (size_t k = argOfs; k < srArgs->size(); k++) pos.push_back(eval((*srArgs)[k].get()));
-            bool plain = owner && !pos.empty() && pos.size() <= 2;
-            for (auto& pv : pos) if (pv.t != VT::Int) plain = false;
-            if (plain) {
-                long long from = pos[0].toInt();
-                long long len = pos.size() > 1 ? pos[1].toInt() : -1;   // -1: to the end
-                auto cur = [owner, vname](Interpreter& I) -> Value {
-                    Value* p = owner->local(vname);
-                    return p ? I.deproxy(*p) : Value::str("");
-                };
-                Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-                Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
-                fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
-                    Value s = cur(I);
-                    ValueList sa{Value::integer(from)};
-                    if (len >= 0) sa.push_back(Value::integer(len));
-                    return I.methodCall(s, "substr", sa);
-                };
-                Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
-                store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
-                    Value nv = sa.empty() ? Value::str("") : sa.back();
-                    Value s = cur(I);
-                    long long n = I.methodCall(s, "chars", ValueList{}).toInt();
-                    long long f = std::min(from, n), e = len < 0 ? n : std::min(n, from + len);
-                    std::string out = I.methodCall(s, "substr", ValueList{Value::integer(0), Value::integer(f)}).toStr()
-                                    + nv.toStr()
-                                    + I.methodCall(s, "substr", ValueList{Value::integer(e)}).toStr();
-                    if (Value* p = owner->local(vname)) *p = Value::str(out);
-                    return nv;
-                };
-                (*proxy.hash())["FETCH"] = fetch;
-                (*proxy.hash())["STORE"] = store;
-                Value* lv = lvalue(a->target.get());
-                *lv = proxy;
-                return proxy;
+    }
+    // `my @slice := @array[1, 2]` / `:= %hash<b c>`: what is bound is the List
+    // of the ELEMENTS' containers, so assigning through @slice writes the array
+    // or hash — `@slice = <A B C D>` stores A and B there and answers (A B)
+    // (S09-subscript/slice.t, S32-hash/slice.t). Only for an index that is
+    // pure to evaluate, since a case this declines evaluates it again.
+    if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && a->value &&
+        a->value->kind == NK::Index) {
+        auto* tv = static_cast<VarExpr*>(a->target.get());
+        auto* ix = static_cast<Index*>(a->value.get());
+        if (!tv->name.empty() && tv->name[0] == '@' && ix->base && ix->index && ix->adverb.empty() &&
+            !ix->multiDim && !ix->semicolonSub && !ix->zen && ix->base->kind == NK::VarExpr &&
+            pureSubscriptBase(ix->index.get())) {
+            Value* bp = nullptr;
+            try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { bp = nullptr; }
+            const bool arrOk = bp && !ix->isHash && bp->t == VT::Array && bp->arr() && !bp->isList &&
+                               !bp->ext() && !bp->shape() && !isNativeElemType(bp->ofType());
+            const bool hashOk = bp && ix->isHash && bp->t == VT::Hash && bp->hash() && bp->hashKind.empty() &&
+                                !bp->objKeyed;
+            if (arrOk || hashOk) {
+                Value iv = eval(ix->index.get());
+                const bool slice = (iv.t == VT::Array && iv.arr() && !iv.itemized) ||
+                                   (iv.t == VT::Range && !isEndlessRange(iv));
+                bool plain = slice;
+                ValueList keys = slice ? iv.flatten() : ValueList{};
+                if (arrOk)
+                    for (auto& k : keys) if (k.t != VT::Int || k.big() || k.i < 0) plain = false;
+                if (plain) {
+                    Value lst = Value::array(); lst.isList = true;
+                    for (auto& k : keys)
+                        lst.arr()->push_back(arrOk ? makeArraySlotProxy(bp->arrS(), (size_t)k.i)
+                                                   : makeHashSlotProxy(bp->hashS(), hashSubKey(k, bp)));
+                    Value* lv = lvalue(a->target.get());
+                    *lv = lst;
+                    return lst;
+                }
             }
         }
     }
@@ -33738,6 +33946,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         std::string ct = tv->containerIs;
         if (!ct.empty() && !blobTypes.count(ct) && tctx_.cur)   // a sigilless term naming the type
             if (Value* tp = tctx_.cur->find(ct)) if (tp->t == VT::Type) ct = tp->s;
+        // `my @slice := @array[1, 2]; @slice = <A B C D>`: a List whose elements
+        // are all CONTAINERS takes an assignment element by element, into those
+        // containers — the values past its end are dropped, a container past
+        // the values' end is reset — and answers itself, (A B)
+        if (!tv->declare && !tv->name.empty() && tv->name[0] == '@' && tctx_.cur) {
+            Value* slot = tctx_.cur->find(tv->name);
+            if (slot && slot->t == VT::Array && slot->isList && !slot->itemized && slot->arr() &&
+                !slot->arr()->empty() && slot->enumName.empty()) {
+                bool allCont = true;
+                for (auto& el : *slot->arr()) if (!isContainerElem(el)) { allCont = false; break; }
+                if (allCont) {
+                    Value rhs = eval(a->value.get());
+                    ValueList vals = rhs.itemized ? ValueList{rhs} : rhs.flatten();
+                    Value held = *slot;   // (the elements share storage; the list stays put)
+                    for (size_t i = 0; i < held.arr()->size(); i++) {
+                        Value& el = (*held.arr())[i];
+                        Value nv = i < vals.size() ? vals[i] : Value::any();
+                        if (el.isCell()) *el.deref() = nv;
+                        else proxyStore(el, nv);
+                    }
+                    return sink ? Value::any() : held;
+                }
+            }
+        }
         // …and a later `@a = …` STOREs into the Buf it holds (a Blob refuses)
         if (!tv->declare && !tv->name.empty() && tv->name[0] == '@' && tctx_.cur) {
             Value* slot = tctx_.cur->find(tv->name);
@@ -34137,6 +34369,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (bp && (bp->isAllomorph() || bp->t == VT::Int || bp->t == VT::Num ||
                        bp->t == VT::Rat || bp->t == VT::Complex) && !bp->readonly)
                 { Value sv = Value::str(bp->toStr()); *bp = sv; }
+            // a Str mixin (`"asd" but R`) splices the text it boxes and stays a
+            // mixin, as in Rakudo (see spliceStr)
+            Value* mixinSlot = nullptr; Value mixinText;
+            if (bp && bp->t == VT::Object && bp->obj() && bp->obj()->hasBoxed && !bp->readonly &&
+                bp->obj()->boxed.t == VT::Str && bp->obj()->boxed.hashKind.empty()) {
+                mixinSlot = bp; mixinText = bp->obj()->boxed; bp = &mixinText;
+            }
             if (bp && bp->t == VT::Str && bp->hashKind.empty()) {
                 // GRAPHEME index -> byte offset. Counting codepoints here spliced
                 // into the middle of a cluster: `"ŕ̥tḱos".substr-rw(1,1) = 'X'`
@@ -34178,6 +34417,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value rhs = eval(a->value.get());
                 size_t b0 = byteAt(from), b1 = byteAt(from + len);
                 bp->s = bp->s.substr(0, b0) + rhs.toStr() + bp->s.substr(b1);
+                if (mixinSlot) *mixinSlot = spliceStr(*mixinSlot, 0, -1, *bp);
                 rwWriteThrough(invE);
                 return sink ? Value::any() : rhs;
             }
@@ -38386,22 +38626,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return mkRat(n1 * d2, d1 * n2);
         }
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool)) {
-            // a huge exponent produces an impractically large number: Rakudo
-            // throws rather than compute it (base 0/±1 are trivial and excepted).
-            // (A01-limits/overflow.t test 10 wants a Rat**10**8 to instead grind
-            // exactly until a racing Promise exits the process — an implementation-
-            // speed assertion we deliberately don't chase.)
+            // Rakudo computes a power whose exponent fits in 32 bits EXACTLY,
+            // however long that takes; only a wider exponent is refused, as a
+            // Failure — X::Numeric::Overflow, or Underflow for a negative exponent
+            // (base 0/±1 are trivial and excepted). A01-limits/overflow.t races
+            // `1.0000001 ** 10**8` against a Promise that prints "pass" and exits
+            // after two seconds, so the exact power must still be grinding then;
+            // the old cut-off at 900,000 refused `2 ** 1_000_000` as well.
             bool baseTrivial = l.t == VT::Int && !l.big() && (l.toInt() == 0 || l.toInt() == 1 || l.toInt() == -1);
-            bool hugeExp = (bool)r.big() || std::llabs(r.toInt()) > 900000;
+            bool hugeExp = (bool)r.big() || std::llabs(r.toInt()) > 4294967295LL;
             if (!baseTrivial && hugeExp) {
                 bool neg = r.big() ? r.big()->sign < 0 : r.toInt() < 0;
-                // a RATIONAL base FAILS (Rakudo's `fail X::Numeric::Overflow`):
-                // the caller sees it when it looks
-                if (l.t == VT::Rat)
-                    return armedFailure(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow",
-                                        neg ? "Numeric underflow" : "Numeric overflow");
-                throw RakuError{Value::typeObj(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow"),
-                                neg ? "Numeric underflow" : "Numeric overflow"};
+                // the caller sees the Failure when it looks
+                return armedFailure(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow",
+                                    neg ? "Numeric underflow" : "Numeric overflow");
             }
             // The trivial bases with a BIG exponent are answered here, exactly. They
             // used to fall through to the double pow below, where an exponent of
@@ -38423,11 +38661,36 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big()) {
             long long e = r.toInt();
             BigInt bn = getN(l), bd = getD(l);
-            if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? mkRat(rn, rd) : Value::bigint(rn); }
+            // An Int to a negative power is 1 / b**|e|, and when that is below the
+            // smallest double Rakudo fails with X::Numeric::Underflow instead of
+            // answering 0 (`2 ** -1075`; `2 ** -1074` is still 5e-324). A Rat base
+            // is not checked: `0.5 ** 2000` is a plain 0e0 there. Once |b|**|e| is
+            // certainly past 2**1076 there is no need to compute it at all.
+            if (e < 0 && !anyRat && !bn.isZero()) {
+                const BigInt& m = bn;
+                double log2Low = std::log2((double)m.mag.back()) + (double)(m.mag.size() - 1) * 29.89;
+                if (log2Low >= 1 && log2Low * (double)(-e) >= 1076.0)
+                    return armedFailure("X::Numeric::Underflow", "Numeric underflow");
+            }
+            // A reduced Rat's powers are coprime already, so build the result
+            // without a gcd — which over parts of a million digits never finishes.
+            auto powRat = [&](BigInt n, BigInt d) -> Value {
+                if (d.sign < 0) { n = -n; d = -d; }
+                Value v; v.t = VT::Rat;
+                v.ratNM() = std::make_shared<BigInt>(std::move(n));
+                v.ratDM() = std::make_shared<BigInt>(std::move(d));
+                v.fatRatM() = fat;
+                if (!fat && !v.ratD()->fitsU64()) return Value::number(v.toNum());
+                return v;
+            };
+            if (e >= 0) { BigInt rn = bn.pow(e), rd = bd.pow(e); return anyRat ? powRat(rn, rd) : Value::bigint(rn); }
             BigInt rn = bd.pow(-e), rd = bn.pow(-e);
             if (rd.isZero()) return armedFailure("X::Numeric::DivideByZero",
                 "Attempt to divide by zero when raising 0 to a negative power");
-            return mkRat(rn, rd);
+            Value res = powRat(rn, rd);
+            if (!anyRat && res.t == VT::Num && res.n == 0)
+                return armedFailure("X::Numeric::Underflow", "Numeric underflow");
+            return res;
         }
         if (op == "%" || op == "div" || op == "mod" || op == "%%") {
             // These take INTEGERS, so both sides are coerced first, and the
@@ -51179,6 +51442,36 @@ bool Interpreter::keySubscriptIsSlice(const Expr* ixExpr, const Value& iv) {
     return true;
 }
 
+// A subscript base whose evaluation has no side effects: a variable, a literal,
+// a Range or `^N` of those, a list of them — evaluating it twice is harmless.
+static bool pureSubscriptBase(const Expr* b) {
+    if (!b) return false;
+    switch (b->kind) {
+        case NK::VarExpr: case NK::IntLit: case NK::StrLit: case NK::NumLit: return true;
+        case NK::InterpStr:   // a "quoted" string whose parts are all literal
+            for (auto& p : static_cast<const InterpStr*>(b)->parts)
+                if (!p || p->kind != NK::StrLit) return false;
+            return true;
+        case NK::Range: {
+            auto* r = static_cast<const RangeExpr*>(b);
+            return pureSubscriptBase(r->from.get()) && pureSubscriptBase(r->to.get());
+        }
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(b);
+            return u->op == "^" && pureSubscriptBase(u->operand.get());
+        }
+        case NK::ListExpr:
+            for (auto& it : static_cast<const ListExpr*>(b)->items)
+                if (!pureSubscriptBase(it.get())) return false;
+            return true;
+        case NK::ArrayLit:   // …and `<b c>`, which is an Array literal of words
+            for (auto& it : static_cast<const ArrayLit*>(b)->items)
+                if (!pureSubscriptBase(it.get())) return false;
+            return true;
+        default: return false;
+    }
+}
+
 Value Interpreter::evalIndex(Index* idx) {
     // `Mu.[0]` — Mu is below Any, where postcircumfix [] lives: no candidate
     if (idx->base && idx->base->kind == NK::NameTerm && !idx->isHash &&
@@ -51221,8 +51514,11 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // …and a LAZY part (`@a[1, (lazy 3, 4, 5)]`, `@a[lazy 1, 2, (4, 5)]`)
     // stops at the end of the array, where an eager one reads Any.
+    // (the base may also be one whose evaluation has no side effects — a Range
+    // or parenthesised list of literals, `("a".."z")[3, (4, (5,))]` — since the
+    // general path below evaluates it again when this one does not answer)
     if (idx->index && idx->adverb.empty() && !idx->multiDim && idx->base &&
-        idx->base->kind == NK::VarExpr && !idx->zen) {
+        (idx->base->kind == NK::VarExpr || pureSubscriptBase(idx->base.get())) && !idx->zen) {
         auto lazyCall = [](const Expr* it) -> const Call* {
             if (it && it->kind == NK::Call) {
                 auto* c = static_cast<const Call*>(it);
@@ -51234,6 +51530,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (!it) return false;
             if (lazyCall(it)) return true;
             if (it->kind == NK::ListExpr) return static_cast<const ListExpr*>(it)->parenned;
+            if (it->kind == NK::ArrayLit) return true;   // `@a[[1, 2], 3]` is (("b", "c"), "d")
             if (it->kind == NK::Range) {
                 auto* r = static_cast<const RangeExpr*>(it);
                 return r->to && (r->to->kind == NK::IntLit || r->to->kind == NK::VarExpr) &&
@@ -51258,6 +51555,13 @@ Value Interpreter::evalIndex(Index* idx) {
         if (topLazy) { bool nested = false; for (auto& it : *top) if (it && ((it->kind == NK::ListExpr && static_cast<const ListExpr*>(it.get())->parenned) || lazyCall(it.get()))) nested = true; any = nested; }
         if (any && !bad) {
             Value base = eval(idx->base.get());
+            // a finite Range reads as the List of its elements
+            if (!idx->isHash && base.t == VT::Range && !isEndlessRange(base) && !base.big() &&
+                (base.rNum() || base.rTo() - base.rFrom() < 1000000)) {
+                Value lst = Value::array(base.flatten());
+                lst.isList = true;
+                base = std::move(lst);
+            }
             const char* meth = idx->isHash ? "AT-KEY" : "AT-POS";
             const bool okBase = idx->isHash ? (base.t == VT::Hash && base.hashKind.empty())
                                             : (base.t == VT::Array && base.arr());
@@ -52393,6 +52697,15 @@ Value Interpreter::evalIndex(Index* idx) {
             // element it made, and must not find a hole there)
             if (mx >= 0) materializeLazy(base, (size_t)mx + (wantDelete ? 2 : 1));
         }
+        // A finite Range is the List of its elements here: `("a".."z")[3, 30]:v`
+        // reads "d" and leaves the missing 30 out, as the List would. (Reading
+        // the Range's own slots found nothing at all.)
+        if (!idx->isHash && base.t == VT::Range && !wantDelete && !isEndlessRange(base) && !base.big() &&
+            (base.rNum() || base.rTo() - base.rFrom() < 1000000)) {
+            Value lst = Value::array(base.flatten());
+            lst.isList = true;
+            base = std::move(lst);
+        }
         // `@a[*]` / `%h{*}` — and the zen slice `@a[]`, which parses to `[*]` —
         // with an adverb select EVERY element.
         bool allElems = iv.t == VT::Whatever;
@@ -52443,6 +52756,37 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long i = 0; i < (long long)base.arr()->size(); i++)
                     sliceKeys.push_back(Value::integer(i));
         }
+        // A NESTED positional slice keeps its shape, adverbs and all: each part
+        // of a comma index that is itself a List or a Range answers a list of
+        // its own, and a missing element drops out of its own level only —
+        // `@a[3, (30, (5,))]:kv` is (3, "d", ((5, "f"),)) (S09-subscript/
+        // slice.t). A part is not itemized; `$(2, 3)` stays one index.
+        struct SliceShape { bool leaf = true; std::vector<SliceShape> kids; };
+        SliceShape shape;
+        bool nestedSlice = false;
+        if (!idx->isHash && !allElems && !idx->multiDim && iv.t == VT::Array && iv.arr() && iv.isList &&
+            !iv.itemized && iv.enumName.empty()) {
+            auto isPart = [](const Value& v) {
+                if (v.itemized) return false;
+                if (v.t == VT::Range) return !isEndlessRange(v);
+                return v.t == VT::Array && v.arr() && v.isList && v.enumName.empty() && !v.ext();
+            };
+            for (auto& e : *iv.arr()) if (isPart(e)) { nestedSlice = true; break; }
+            if (nestedSlice) {
+                std::function<SliceShape(const Value&)> build = [&](const Value& v) -> SliceShape {
+                    SliceShape s;
+                    if (!isPart(v)) { sliceKeys.push_back(v); return s; }
+                    s.leaf = false;
+                    if (v.t == VT::Range)
+                        for (auto& e : v.flatten()) { s.kids.push_back(SliceShape{}); sliceKeys.push_back(e); }
+                    else
+                        for (auto& e : *v.arr()) s.kids.push_back(build(e));
+                    return s;
+                };
+                shape = build(iv);
+            }
+        }
+        if (allElems || nestedSlice) {}   // (keys already listed above)
         else if (slice) {
             // an endless Range index (`@a[0..*]:exists`) stops at the array's
             // end instead of reporting 10,000 slots (issue #68)
@@ -52582,6 +52926,9 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (base.t == VT::Hash && !base.ofType().empty()) return typedElemDefault(base);
                 return Value::typeObj("Any");
             }
+            // …but a List has no containers and no default: a missing element
+            // of one is Nil (`(1, 2, 3)[1, 5]:!v` is (2, Nil))
+            if (base.t == VT::Array && base.isList) return Value::nil();
             Value dv = arrayMissingDefault(base);
             return dv.t == VT::Nil || dv.t == VT::Any ? Value::typeObj("Any") : dv;
         };
@@ -52611,28 +52958,44 @@ Value Interpreter::evalIndex(Index* idx) {
             return dv.t == VT::Nil ? Value::any() : dv;
         }
         // slice + adverb: :exists is per-key; the others filter to existing keys
-        Value out = Value::array(); out.isList = true;
-        for (auto& h : hits) {
+        auto emit = [&](const Hit& h, ValueList& dst) {
             if (wantExists) {
                 Value ex = Value::boolean(negExists ? !h.exists : h.exists);
-                if (kvF)      { if (h.exists || presenceNeg) { out.arr()->push_back(h.keyV); out.arr()->push_back(ex); } }
-                else if (pF)  { if (h.exists || presenceNeg) out.arr()->push_back(mkPair(h.keyV, ex)); }
-                else out.arr()->push_back(ex);
-                continue;
+                if (kvF)      { if (h.exists || presenceNeg) { dst.push_back(h.keyV); dst.push_back(ex); } }
+                else if (pF)  { if (h.exists || presenceNeg) dst.push_back(mkPair(h.keyV, ex)); }
+                else dst.push_back(ex);
+                return;
             }
             // A plain `:delete` SLICE reports one element PER KEY: a key that was
             // not there answers Any — Nil when the container itself is undefined
             // — rather than leaving a gap. (`%h<a zz>:delete` is `(1, Any)`.)
             if (wantDelete && !kF && !vF && !kvF && !pF && !h.exists && !presenceNeg) {
-                out.arr()->push_back(isDefined(base) ? missLeaf() : Value::nil());
-                continue;
+                dst.push_back(isDefined(base) ? missLeaf() : Value::nil());
+                return;
             }
-            if (!h.exists && !presenceNeg) continue; // missing kept only under :!k / :k(False)
+            if (!h.exists && !presenceNeg) return; // missing kept only under :!k / :k(False)
             Value v = h.exists ? h.val : missLeaf();
-            if (kvF) { out.arr()->push_back(h.keyV); out.arr()->push_back(v); }
-            else if (pF) out.arr()->push_back(mkPair(h.keyV, v));
-            else if (kF) out.arr()->push_back(h.keyV);
-            else out.arr()->push_back(v); // :v or plain :delete slice
+            if (kvF) { dst.push_back(h.keyV); dst.push_back(v); }
+            else if (pF) dst.push_back(mkPair(h.keyV, v));
+            else if (kF) dst.push_back(h.keyV);
+            else dst.push_back(v); // :v or plain :delete slice
+        };
+        Value out = Value::array(); out.isList = true;
+        if (!nestedSlice)
+            for (auto& h : hits) emit(h, *out.arr());
+        else {
+            // each part a list of its own, its elements' reports spliced in it
+            size_t hi = 0;
+            std::function<Value(const SliceShape&)> assemble = [&](const SliceShape& s) -> Value {
+                Value lst = Value::array(); lst.isList = true;
+                for (auto& k : s.kids) {
+                    if (!k.leaf) { lst.arr()->push_back(assemble(k)); continue; }
+                    if (hi < hits.size()) emit(hits[hi], *lst.arr());
+                    hi++;
+                }
+                return lst;
+            };
+            out = assemble(shape);
         }
         if (!junctionKind.empty()) { out.enumName = junctionKind; out.isList = false; }
         return out;
@@ -52915,6 +53278,7 @@ Value Interpreter::evalIndex(Index* idx) {
                         {{"what", Value::str("Index")}, {"got", Value::integer(i)},
                          {"range", Value::str("0.." + std::to_string(hi - 1))}}, msg), msg};
                 }
+                if (base.t == VT::Range) return Value::nil();   // (a Range of Str is no typed container)
                 if (base.elemDefault()) return *base.elemDefault(); // `is default(v)`
                 if (!base.ofType().empty()) return typedElemDefault(base);
                 // A List/Seq/Range indexed out of range yields Nil (List.AT-POS);
@@ -52942,6 +53306,7 @@ Value Interpreter::evalIndex(Index* idx) {
             // a missing slice index reports the element default: a mutable Array
             // yields its typed default (Any / Str / `is default`), a List/Range Nil
             auto missElem = [&]() -> Value {
+                if (base.t == VT::Range) return Value::nil();   // (a Range of Str has no Str slot to default)
                 if (base.elemDefault()) return *base.elemDefault();
                 if (!base.ofType().empty()) return typedElemDefault(base);
                 return (base.t == VT::Range || base.isList) ? Value::nil() : Value::any();
@@ -54170,6 +54535,22 @@ Value Interpreter::eval(Expr* e) {
                 ve->name.size() > 1 && !ve->declare) {
                 if (const Value* bref = builtinRef(ve->name.substr(1))) return *bref;
                 // not a builtin at all: fall through to the ordinary lookup
+            }
+            // `SETTING::<$x>` for a program's variable: the calling code's inside
+            // a 6.c/6.d EVAL (evalSettingSymbol); anywhere else the setting is
+            // CORE, whose own variables are the only ones there
+            if (ve->viaPseudoPkg && ve->pseudoPkg == "SETTING" && sigil != '&' && !ve->declare &&
+                ve->name.size() > 1 && (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                Value sv;
+                if (evalSettingSymbol(ve->name, sv)) return sv;
+                auto cv = coreVars_.find(ve->name);
+                if (cv != coreVars_.end()) return cv->second;
+                if (!sixE()) return Value::nil();
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = makeTypedEx("X::NoSuchSymbol", {{"symbol", Value::str(ve->name)}},
+                                                       "No such symbol '" + ve->name + "'");
+                (*f.hash())["message"] = Value::str("No such symbol '" + ve->name + "'");
+                return f;
             }
             // …and the QUALIFIED spelling of the same thing, `&CORE::uc`, which
             // is the one the P5* family writes: `multi sub chdir(Str() $s) { so
@@ -55692,6 +56073,23 @@ Value Interpreter::eval(Expr* e) {
                             for (auto& x : extra) as.push_back(x);
                             return callCallable(mv, as);
                         };
+                        // A NODAL routine answers about each NODE and does not
+                        // descend: `(<a b>, <c d e>)».&elems` is (2, 3), for the
+                        // built-in `&elems`, for List's own `elems` method object
+                        // and for a `sub … is nodal` alike. `.+`/`.*` hand back
+                        // each answer as the List of its one candidate.
+                        const bool nodalCode = mv.t == VT::Code && mv.code() &&
+                            (mv.code()->isNodal || (mv.code()->builtin && isNodalMethod(mv.code()->name)));
+                        if (nodalCode && !(inv.t == VT::Hash && inv.hash())) {
+                            Value out = Value::array(); out.isList = true;
+                            ValueList els = (inv.t == VT::Array && inv.arr()) ? *inv.arr() : inv.flatten();
+                            for (auto& el : els) {
+                                Value r = one(el);
+                                if (mc->allMode) { Value l = Value::array({r}); l.isList = true; r = std::move(l); }
+                                out.arr()->push_back(std::move(r));
+                            }
+                            return out;
+                        }
                         // a callable hyper is Rakudo's deepmap, like a non-nodal
                         // method: nested lists keep their shape with the LEAVES
                         // mapped (`((1,2),(3,4))».&f`), an Array stays an Array,
@@ -55756,6 +56154,24 @@ Value Interpreter::eval(Expr* e) {
             // qualified `$obj.Class::method` — dispatch to Class's method directly,
             // reaching past the invocant's own override (e.g. `self.Parent::meth`
             // called from within an override, as in zef's `self.Zef::Distribution::meta`).
+            // …and HYPERED with a built-in qualifier, `@a».Any::elems`: the call per
+            // element — a nodal method answers about each node, `.+`/`.*` as the
+            // List of its one candidate (S03-metaops/hyper.t)
+            if (!mc->methodQual.empty() && !mc->meta && mc->hyper &&
+                isKnownTypeName(mc->methodQual) && !classes_.count(mc->methodQual)) {
+                ValueList ma = evalArgs(mc->args);
+                if (!isNodalMethod(mc->method)) return hyperMethodEach(inv, mc->method, ma, mc->maybe);
+                Value out = Value::array(); out.isList = true;
+                ValueList els = (inv.t == VT::Array && inv.arr()) ? *inv.arr() : inv.flatten();
+                for (auto& el : els) {
+                    Value r;
+                    try { r = methodCall(el, mc->method, ma); }
+                    catch (RakuError&) { if (!mc->maybe) throw; r = Value::nil(); }
+                    if (mc->allMode) { Value l = Value::array({r}); l.isList = true; r = std::move(l); }
+                    out.arr()->push_back(std::move(r));
+                }
+                return out;
+            }
             if (!mc->methodQual.empty() && !mc->meta) {
                 // `1.List::join` — the invocant is not of the qualifying type
                 // (judged for the built-in types, whose conformance is certain)

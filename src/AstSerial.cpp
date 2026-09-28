@@ -327,6 +327,9 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     // …and `is DEPRECATED(…)`, which a cached module otherwise forgot:
     // its calls went unreported on every run after the first (precompilation.t)
     F(io, n.deprecated); ioExpr(io, n.deprecatedWith);
+    // `is nodal`, parser-consumed as well: a hyper over a cached module's
+    // nodal routine would descend into every node
+    F(io, n.isNodal);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

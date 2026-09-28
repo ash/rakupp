@@ -748,6 +748,7 @@ struct SubDecl : Stmt {
     bool isPrivate = false; // `method !name` — private method, called only via self!name
     bool deprecated = false;   // `is DEPRECATED` / `is DEPRECATED("use X")`
     bool testAssertion = false; // `is test-assertion`: a failing test inside reports the CALLER's line
+    bool isNodal = false;       // `is nodal`: a hyper applies it to each node and does not descend
     ExprPtr deprecatedWith;    // …its argument: what to use instead
     // How the return type was SPELLED: 'o' for `of Int`, 'r' for `returns Int`,
     // 'a' for `--> Int`, 0 for none. The three mean the same thing at run time

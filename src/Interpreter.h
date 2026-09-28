@@ -499,6 +499,9 @@ struct Env {
     bool evalFrame = false;    // a user-level EVAL's own scope (evalOwnScope): lexical, so
                                // `my`/`sub` stay inside — but a package-scoped type the
                                // EVAL declares belongs to the scope around it
+    bool stateFrame = false;   // a routine's or block's own `state` frame, spliced
+                               // between its call scope and the scope it was made in
+                               // — no scope of the program's (OUTER:: steps over it)
     bool loopFrame = false;    // a loop-statement `state` frame: plain `my` declares
                                // (e.g. in a while COND) skip past it to the enclosing
                                // scope, so they stay visible after the loop
@@ -1765,6 +1768,14 @@ public:
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
     Value makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx);
     Value makePairCellProxy(std::shared_ptr<Value> cell);   // a Pair's value container, as a Proxy
+    // `$s.substr-rw(from, len)` as a Proxy over the variable `vname` in `owner`:
+    // reading reads the text there now, assigning splices into the variable
+    // (len -1: to the end). substrRwProxyOf builds one for a `substr-rw` call
+    // whose target is a plain variable and whose positions are plain Ints.
+    Value substrRwProxy(std::shared_ptr<Env> owner, const std::string& vname, long long from, long long len);
+    bool substrRwProxyOf(Expr* e, Value& out);
+    // the Str `s` with [from, from+len) replaced — a Str mixin keeps its class
+    Value spliceStr(const Value& s, long long from, long long len, const Value& repl);
     ValueList* slotProxyTarget(const Value& proxy, size_t& idxOut); // compact array slot, or null
     Value slotProxyRead(const Value& proxy);
     Value slotProxyWrite(const Value& proxy, const Value& nv);
@@ -2133,6 +2144,15 @@ public:
     std::pair<long, long> dynQuantLimits(const Value& v, bool unboundedHint); // `** { … }` bounds
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
                      bool checkOnly = false);
+    // does a bare type-like name resolve to a type, package, constant or term
+    // here — pure lookups, for the gobbled-block check of a unit about to run
+    bool bareNameResolves(const std::string& n, const Program& unit);
+    // ONE scope's own symbol: what it holds, or — for a `my` further down that
+    // has not run yet — the declared-but-uninitialized value (OUTER::<$x>)
+    bool frameSymbol(Env* f, const std::string& key, Value& out);
+    // `SETTING::<$x>` for a user variable: a 6.c/6.d EVAL's setting is the code
+    // that called it; anywhere else the setting holds no such thing
+    bool evalSettingSymbol(const std::string& key, Value& out);
     // a user-level EVAL: the unit is a lexical scope of its own, nested in the
     // caller's — it sees the caller's lexicals, and what it DECLARES (`my $x`,
     // `sub x {}`) stays inside it. The REPL keeps calling evalString directly,
