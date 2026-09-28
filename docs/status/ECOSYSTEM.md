@@ -16,7 +16,7 @@ Nothing below reimplements anything, which is why a release has a runbook at
 all: one interpreter changes, and every surface has to be handed the new one.
 
 The pieces divide by which way they face. Most **consume** the interpreter —
-those are the ones a release has to redeploy. Four **measure** it, and those
+those are the ones a release has to redeploy. Five **measure** it, and those
 are where a fix session gets its worklist:
 
 - **raku-corpus** — real-world Raku programs, run differentially.
@@ -31,6 +31,12 @@ are where a fix session gets its worklist:
   Weekly Challenge solutions, new ecosystem releases and the corpus, and
   publishes a ranked list of what to fix. It does not run Rakugrid. Its design
   and rules live in [dev/plans/RAKU-EYE-PLAN.md](../dev/plans/RAKU-EYE-PLAN.md).
+- **Raku Behind the Docs** — the book at raku.online/deep, whose every example
+  is verified on Rakudo at build time and also run on Raku++. Each page notes
+  where Raku++ differs, and the build's `--report` writes the whole list to
+  [dev/findings/behind-the-docs/](../dev/findings/behind-the-docs/raku-divergences.md);
+  what writing it found in the semantics sheets is in
+  [dev/findings/BEHIND-THE-DOCS.md](../dev/findings/BEHIND-THE-DOCS.md).
 
 | Project | What it is | Repository | Serves |
 |---|---|---|---|
@@ -42,6 +48,7 @@ are where a fix session gets its worklist:
 | **drills** | Raku Drills: 150 graded practice questions, A1 to C2 — multiple choice, true/false, type-the-answer and fill-the-gap, the `fill` ones checked by running the finished program in the browser. Hand-maintained JS + a question bank, not generated. | [ash/raku.online `www/drills`](https://github.com/ash/raku.online/tree/main/www/drills) | [raku.online/drills](https://raku.online/drills/) |
 | **examples** | "Raku by example": one page per program in [`examples/`](../../examples) — the README's prose, the full source in a live editor (raku.online's engine), and what it prints. The outputs are **captured from the native interpreter** (`--capture`) and cross-checked byte-identical under Rakudo (`--oracle=raku`), then committed — the site can never show output a program did not produce. | [ash/raku.online `sites/examples`](https://github.com/ash/raku.online/tree/main/sites/examples) | [raku.online/examples](https://raku.online/examples/) |
 | **showcase + live + in-use** | The [`showcase/`](../../showcase) projects and [`live/`](../../live) entries as browsable pages, one per README, the index driven by the table in `showcase/README.md` (so a directory the table does not name never reaches the site). The same generator builds the **/in-use/ hub** they hang off, and the adoptions page behind it — both from [`live/ADOPTIONS.md`](../../live/ADOPTIONS.md), so a row added there reaches the site through the ordinary sync rather than by hand-editing HTML. | [ash/raku.online `sites/showcase`](https://github.com/ash/raku.online/tree/main/sites/showcase) | [raku.online/showcase](https://raku.online/showcase/) + [/live](https://raku.online/live/) + [/in-use](https://raku.online/in-use/) |
+| **Raku Behind the Docs** (deep) | An interactive book of what Raku actually does, corner by corner: each behaviour stated as a claim and shown by a short program with the output Rakudo prints, written from the semantics sheets in [`dev/findings/semantics/`](../dev/findings/semantics/). Its generator is written in Raku and run *by* rakupp; `--verify` runs every example on Rakudo (any difference fails the build) and on Raku++ (a difference becomes a note beside the example), and `--report` writes the Raku++ divergence list. Built and verified in its own repository, then copied into raku.online by `./build.sh deep`; its editors load the same origin's `raku.js`. | [ash/raku-behind-the-docs](https://github.com/ash/raku-behind-the-docs) | [raku.online/deep](https://raku.online/deep/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. The whole grid — every recorded test, matrix by matrix, plus the divergence clusters and the signed rulings — is browsable at raku.online/grid, rendered by `sites/grid` in the raku.online repo. | [ash/rakugrid](https://github.com/ash/rakugrid) | [raku.online/grid](https://raku.online/grid/) |
 | **Rakumap** | An autonomous differential explorer for behaviour not yet represented in the known grid. Its deterministic, domain-specific generators run under rakupp; Rakudo and Raku++ are bounded child engines. Stable differences become replayable evidence dossiers, not automatic language rulings, and may later graduate into Rakugrid or an implementation regression suite. | [ash/rakumap](https://github.com/ash/rakumap) | — (development tool) |
@@ -61,6 +68,7 @@ graph TD
     DRILLS["raku.online/drills<br/>150 practice questions"]
     EXAMPLES["raku.online/examples<br/>the programs, live + captured output"]
     SHOWCASE["raku.online/showcase + /live + /in-use<br/>the projects, page per README;<br/>the hub, from live/ADOPTIONS.md"]
+    DEEP["raku.online/deep<br/>Raku Behind the Docs<br/>every example checked on Rakudo"]
     CORPUS["raku-corpus<br/>real-world programs"]
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     MAP["Rakumap<br/>generated programs<br/>stable differential findings"]
@@ -78,6 +86,9 @@ graph TD
     ONLINE -->|same-origin raku.js<br/>editor per page| EXAMPLES
     NATIVE -->|--capture runs every program,<br/>Rakudo as oracle| EXAMPLES
     NATIVE -->|build.raku generator,<br/>READMEs synced from this repo| SHOWCASE
+    ONLINE -->|same-origin raku.js<br/>editor on demand| DEEP
+    NATIVE -->|rakupp build.raku --verify,<br/>Rakudo as oracle| DEEP
+    DEEP -.->|divergence report<br/>+ sheet corrections| SRC
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
     NATIVE -->|gen/*.raku run BY rakupp| GRID
@@ -132,7 +143,10 @@ Two things are worth internalising because they drive the release runbook:
   are gone; the sources live in `raku.online` under `sites/`, and raku.online's
   Pages workflow publishes `www/` **verbatim**. Whatever is not built locally and
   committed does not go live. Older notes describing a CI that builds the spec
-  are describing the retired setup.
+  are describing the retired setup. The one section whose sources live
+  elsewhere is the book at `/deep`: it is built in its own repository, and
+  `./build.sh deep` copies the finished site into `www/`, where it is committed
+  like everything else.
 
 ---
 
@@ -305,6 +319,25 @@ and data into a separate `?v=` tag (they change independently of the engine),
 so **editing the bank without re-running `./build.sh` leaves returning visitors
 on the cached old questions**. Commit `www/` and push, as ever.
 
+**The book** (Raku Behind the Docs, [ash/raku-behind-the-docs](https://github.com/ash/raku-behind-the-docs))
+is built and verified in its own checkout, because its build needs both
+engines: every example runs on Rakudo, and any difference from the page fails
+the build. A new Raku++ changes only the notes beside the examples (and the
+divergence report), never the book's text:
+
+```sh
+# in the book's checkout
+rakupp build.raku --verify                     # new or changed examples on both engines
+rakupp build.raku --verify --report=<raku++>/docs/dev/findings/behind-the-docs/raku-divergences.md
+# in the raku.online checkout
+./build.sh deep                                # the book's out/ -> www/deep
+```
+
+then commit `www/` and push. While chapters are still being written, build a
+clean copy of the finished ones into a separate directory with
+`--out=DIR --exclude=<slugs>` and run `RAKU_DEEP=<DIR's parent> ./build.sh deep`,
+so no half-written page is copied.
+
 **The examples and the showcase** are the two sections whose *content* lives in
 this repo — [`examples/`](../../examples), [`showcase/`](../../showcase) and
 [`live/`](../../live) — and is synced into the raku.online checkout rather than
@@ -446,11 +479,13 @@ Raku language domain promised by its roadmap.
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
+| a chapter of Raku Behind the Docs | `rakupp build.raku --verify` in the book's checkout, then `./build.sh deep` in the raku.online checkout, commit `www/`, push (**C**) |
 | a drills question | edit `www/drills/data/drills.js` in the raku.online checkout, re-run `./build.sh` so the drills' `?v=` tag moves, commit `www/`, push (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
 | a sweep tool (`tools/pwc-sweep.raku`, `tools/run-bench.raku`, `tools/eco-fresh/`) | push it to `main` before the next Monday — raku-eye runs the tools from `main`, so an unpushed change is a failed run (**D**) |
 | the interpreter, and you want the behavioural delta rather than a pass count | fire Rakugrid against the new binary, `rakugrid check` for unsigned divergences, append one row to [dev/rakugrid-history.tsv](../dev/rakugrid-history.tsv) (**E**) |
 | a Rakugrid atom, generator or ruling | regenerate with rakupp in the rakugrid checkout, commit there; the next `ran` step makes the history rows either side non-comparable (**E**) |
+| the interpreter, and you want its standing against the book's verified examples | `rakupp build.raku --verify --report=<raku++>/docs/dev/findings/behind-the-docs/raku-divergences.md` in the book's checkout; each example Raku++ gets wrong is listed with both outputs (**C**) |
 | the interpreter, and you want to search beyond known tests | run a bounded Rakumap `--generator=all` campaign with the new binary as host and candidate; inspect stable dossiers before promoting any result (**F**) |
 | a Rakumap generator or comparator | run its fixed-seed tests under rakupp, then regenerate only its committed fixture corpus in the Rakumap checkout (**F**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
