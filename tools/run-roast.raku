@@ -867,7 +867,7 @@ my $timeout-unknown  = 0; # timed-out files with no static plan to recover
 # while `$pass` and friends, being scalars, counted correctly: a run that looked
 # right in every headline and printed a by-synopsis table with nothing in it.
 # `%h{$k} += 1` works there and means the same thing everywhere.
-my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
+my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot, %sec-fail);
 
 # Files the harness never managed to measure. A missing result is not a failing
 # file and not a passing one; it is a hole in the run, and the only wrong thing
@@ -1114,6 +1114,7 @@ my sub tally($k) {
         $tot-todopass += $todopass;
         %sec-pass{$sec} += $passed;
         %sec-tot{$sec}  += $ran;
+        %sec-fail{$sec} += $failed;
         if $planned >= 0 {
             $tot-plan += $planned;          # it announced N before the clock ran out
         }
@@ -1136,6 +1137,7 @@ my sub tally($k) {
     $tot-todopass += $todopass;
     %sec-pass{$sec} += $passed;
     %sec-tot{$sec}  += $ran;
+    %sec-fail{$sec} += $failed;
     # "planned" denominator: how many tests the file *intended* to run. Where a plan
     # is present we count it (so tests lost to a mid-file abort count as not-passed);
     # where none was emitted we fall back to what ran.
@@ -1480,16 +1482,25 @@ my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys)
            .flat.unique.sort({ sec-order($^a) <=> sec-order($^b) });
 say "";
 say "By synopsis (paste into the ROAST.md table):";
-my @head = <Section Theme Full Part Time No-TAP Assertions %>;
-my @rows;
-for @secs -> $s {
-    my $a = %sec-pass{$s} // 0;
-    my $b = %sec-tot{$s}  // 0;
-    my $pct = $b ?? sprintf('%.2f%%', 100 * $a / $b) !! '—';
-    @rows.push([ $s, (%theme{$s} // '—'),
-                 ~(%sec-full{$s} // 0), ~(%sec-part{$s} // 0), ~(%sec-time{$s} // 0), ~(%sec-notap{$s} // 0),
-                 "$a/$b", $pct ]);
+my @head = <Section Theme Full Part Time No-TAP Assertions Failed %>;
+# A row from its seven counts: full, part, time, no-TAP, passed, ran, failed.
+# parse-tap puts every `ok`/`not ok` line in exactly one of passed and failed,
+# so Failed is ran minus passed: the `not ok` lines that carry no todo.
+sub sec-row($name, $theme, @n) {
+    [ $name, $theme, ~@n[0], ~@n[1], ~@n[2], ~@n[3], "{@n[4]}/{@n[5]}", ~@n[6],
+      (@n[5] ?? sprintf('%.2f%%', 100 * @n[4] / @n[5]) !! '—') ]
 }
+my @rows;
+my @total = 0 xx 7;
+for @secs -> $s {
+    my @n = %sec-full{$s} // 0, %sec-part{$s} // 0, %sec-time{$s} // 0, %sec-notap{$s} // 0,
+            %sec-pass{$s} // 0, %sec-tot{$s} // 0, %sec-fail{$s} // 0;
+    @total[$_] += @n[$_] for ^7;
+    @rows.push(sec-row($s, %theme{$s} // '—', @n));
+}
+# Every tallied file is in exactly one section, so the Total row's file counts
+# are the Files line's buckets and its assertions the "of tests that ran" line.
+@rows.push(sec-row('Total', '—', @total));
 # Padded to column width: readable in a terminal, and still the same markdown
 # table once pasted — a padded cell and a longer dash rule are both fine there.
 my @w;
@@ -1504,6 +1515,7 @@ say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 
 for @rows -> $r {
     say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
 }
+say "Failed: assertions that ran and failed, todo ones excluded. A test its file never reached is in no column here.";
 
 # ---- --failed: every file that did not fully pass, printed last so it is the
 # thing left on screen. Sorted by path, the order --list uses.
