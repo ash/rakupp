@@ -1937,6 +1937,7 @@ static void collectPhasersStmt(Stmt* s, const char* want, std::vector<Block*>& o
 }
 
 static void failureDetonate(const Value& v); // (defined with the exception helpers below)
+static void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res); // Instant/Duration algebra
 // A RakuError raised inside a regex/grammar block that must NOT leave the parse:
 // the block's own compile error ("EVAL parse error" — a parser gap, kept quiet
 // as before the Grand Review) and loop control the EVAL turned into
@@ -16106,6 +16107,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         return execBareBlockRare(b, sink);
     auto scope = std::make_shared<Env>();
     scope->parent = tctx_.cur;
+    scope->btBlock = true; scope->btLine = b->line;   // a frame of its own in `.backtrace.list`
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
 }
 
@@ -16153,8 +16155,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         return execBlock(b, tctx_.cur, sink);
     auto scope = std::make_shared<Env>();
     scope->parent = tctx_.cur;
+    // a bare block is a frame of its own in `.backtrace.list` (see btCaptureNow)
+    if (b->phaser.empty() && !b->isCatch) { scope->btBlock = true; scope->btLine = b->line; }
     return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
 }
+
+static bool forTailVarsExpr(const Expr* e, std::vector<const void*>& out);
 
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
@@ -16729,7 +16735,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // runs in the enclosing scope (so `my $x = … for …` leaves $x declared),
             // with $_ topicalized per iteration and restored afterward.
             if (fs->modifier && fs->vars.empty() && !fs->destructure) {
+                // a one-item list that is a block ending on a variable iterates
+                // THAT container (see forTailVarsExpr): mark the tails, and the
+                // one that runs leaves its slot in tailVarSlot
+                std::vector<const void*> tailVars;
+                if (fs->list->kind == NK::Unary && !forTailVarsExpr(fs->list.get(), tailVars))
+                    tailVars.clear();
+                struct TailVarG {
+                    ExecContext& t; const std::vector<const void*>* b; Value* s;
+                    ~TailVarG() { t.bindRawTails = b; t.tailVarSlot = s; }
+                } tvg{tctx_, tctx_.bindRawTails, tctx_.tailVarSlot};
+                if (!tailVars.empty()) { tctx_.bindRawTails = &tailVars; tctx_.tailVarSlot = nullptr; }
                 Value lvRaw = eval(fs->list.get());
+                // …a slot the loop's own scope still reaches: the same variable,
+                // not one the block declared and has already let go of
+                Value* tailSlot = nullptr;
+                if (Value* ts = tailVars.empty() ? nullptr : tctx_.tailVarSlot)
+                    for (const void* n : tailVars)
+                        if (tctx_.cur->find(static_cast<const VarExpr*>(n)->name) == ts) { tailSlot = ts; break; }
+                tctx_.bindRawTails = tvg.b; tctx_.tailVarSlot = tvg.s;
                 if (!lvRaw.itemized) seqUse(lvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
                 Value lv = iterationSourceOf(lvRaw);
                 drainIfFiniteLazy(lv);
@@ -16785,7 +16809,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                 if (derefArr) { lv.setArr(derefArr); rw = true; }
                 std::vector<Value*> aliasSlots;
-                if (!rw && scalarListAlias(fs->list.get(), aliasSlots)) {
+                // the block's tail variable, when what it yielded is one item
+                if (!rw && tailSlot && !(lvRaw.t == VT::Array && !lvRaw.itemized) && lvRaw.t != VT::Range &&
+                    !(lvRaw.t == VT::Hash && !lvRaw.itemized && lvRaw.hashKind.empty()))
+                    aliasSlots.push_back(tailSlot);
+                if (!rw && (!aliasSlots.empty() || scalarListAlias(fs->list.get(), aliasSlots))) {
                     for (size_t i = 0; i < aliasSlots.size(); i++) {
                         if (aliasSlots[i]) env->vars["$_"] = *aliasSlots[i];
                         bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0,
@@ -22766,7 +22794,9 @@ Value Interpreter::deprecationReport() {
                       (deprecations_.size() == 1 ? "" : "s") + " of deprecated code.\n";
     for (auto& r : deprecations_) {
         out += std::string(80, '=') + "\n";
-        out += r.kind + " " + r.name + " (from " + r.from + ") seen at:\n";
+        // (a spelling, not a routine — `"-".IO` — is named as it is written)
+        out += r.kind.empty() ? r.name + " seen at:\n"
+                              : r.kind + " " + r.name + " (from " + r.from + ") seen at:\n";
         out += "  " + progName() + ", line" + (r.lines.size() == 1 ? "" : "s") + " ";
         for (size_t i = 0; i < r.lines.size(); i++) out += (i ? "," : "") + std::to_string(r.lines[i]);
         out += "\nPlease use " + r.with + " instead.\n";
@@ -23926,16 +23956,34 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
 // a thread-local read on every routine return, which the perf gate would see.
 // The live chain, innermost first. Shared by every position we record: a
 // throw, a `warn`, the making of a Failure, and a worker breaking a Promise.
+thread_local int g_btSettingFrames = 0;
+
 static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx_.callFrames;
     auto out = std::make_shared<BtRecord>();
     out->frames.reserve(fr.size() + 1);
+    // `die` and `.throw` are frames of the setting's in Rakudo's list, above
+    // the code that called them (kind 2; the printed form leaves them out)
+    if (int k = g_btSettingFrames) {
+        g_btSettingFrames = 0;
+        out->frames.push_back(BtFrame{nullptr, 0, 2});                 // throw
+        if (k > 1) out->frames.push_back(BtFrame{nullptr, 0, 3});      // die
+    }
     int line = currentStmtLine();
+    Env* scope = Interpreter::tctx_.cur.get();
     for (size_t idx = fr.size(); ; idx--) {
         const Value* cv = idx > 0 ? fr[idx - 1].code : nullptr;
+        // the bare blocks this activation is running inside, innermost first:
+        // each is a Block frame of its own (kind 1), the innermost at the
+        // frame's current line and each one out at the line where the block
+        // inside it starts. The walk stops at the activation's own scope.
+        int bl = line;
+        for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
+            if (e->btBlock) { out->frames.push_back(BtFrame{nullptr, bl, 1}); bl = e->btLine; }
         out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
         if (idx == 0) break;
         line = fr[idx - 1].line;   // the CALL SITE line inside the next frame out
+        scope = fr[idx - 1].callerEnv;
     }
     // left EMPTY when it is simply the program being run, which is the common
     // case: the renderer falls back to it, and a Failure is made often enough
@@ -24070,6 +24118,7 @@ std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
     size_t n = fr.size();
     while (n > 1 && !fr[n - 1].code && fr[n - 1].line == 0) n--;
     for (size_t i = 0; i < n; i++) {
+        if (fr[i].kind) continue;   // bare-block and setting frames are the list's, not the printout's
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
         std::string file = c && !c->declFile.empty() ? c->declFile
@@ -24158,6 +24207,9 @@ std::string Interpreter::warnFrame() {
     st.excerpt = st.typeLine = st.colour = false;   // it goes through $*ERR, which may be a file
     if (st.cap == 0 && !st.full) return "";
     auto rec = btCaptureNow();
+    if (rec) rec->frames.erase(std::remove_if(rec->frames.begin(), rec->frames.end(),
+                                              [](const BtFrame& f) { return f.kind != 0; }),
+                               rec->frames.end());
     if (!rec || rec->frames.empty()) return "";
     if (!st.full && rec->frames.size() > 1) rec->frames.resize(1);
     return renderFrames(*rec, st);
@@ -24171,15 +24223,35 @@ std::string Interpreter::renderBacktraceValue(const Value& bt, const BtStyle& st
         for (auto& f : *bt.arr()) {
             if (f.t != VT::Hash || !f.hash()) continue;
             auto& h = *f.hash();
-            auto ci = h.find("code"), li = h.find("line"), fi = h.find("file");
-            rec.frames.push_back(BtFrame{ci != h.end() ? ci->second.codeS() : nullptr,
-                                         li != h.end() ? (int)li->second.toInt() : 0});
+            auto ci = h.find("code"), li = h.find("line"), fi = h.find("file"), ki = h.find("bt-kind");
+            const unsigned char kind = ki != h.end() ? (unsigned char)ki->second.toInt() : 0;
+            // the mainline's stand-in `<unit>` Block is no routine of the program's
+            rec.frames.push_back(BtFrame{ci != h.end() && !h.count("unit") ? ci->second.codeS() : nullptr,
+                                         li != h.end() ? (int)li->second.toInt() : 0, kind});
             // the frames with no declaring routine fall back to this; the
             // OUTERMOST frame is the mainline, so its file is the right one
             // (the first frame's may be a module's)
-            if (fi != h.end() && !rec.frames.back().code) rec.originFile = fi->second.toStr();
+            if (fi != h.end() && !kind && !rec.frames.back().code) rec.originFile = fi->second.toStr();
         }
     return renderFrames(rec, st);
+}
+
+// The code objects that stand in for the frames Raku++ has no Callable for:
+// 0 the mainline's `<unit>` Block, 1 the setting's `throw` method, 2 its `die`
+// sub, 3 a bare block. Made once and shared; a frame only reads them.
+static Value btStandInCode(int which) {
+    static const std::vector<Value> codes = [] {
+        auto mk = [](const char* name, bool block, bool method) {
+            Value cv; cv.t = VT::Code;
+            auto c = std::make_shared<Callable>();
+            c->name = name; c->isBlock = block; c->isMethod = method;
+            cv.setCode(c);
+            return cv;
+        };
+        return std::vector<Value>{mk("<unit>", true, false), mk("throw", false, true),
+                                  mk("die", false, false), mk("", true, false)};
+    }();
+    return codes[(size_t)which];
 }
 
 // The frames a caught exception carries. exceptionFor stores them as an opaque
@@ -24195,13 +24267,39 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     if (!raw) return captureBacktrace();
     const std::string& origin = raw->originFile;
     Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
-    for (auto& f : raw->frames) {
+    const auto& frs = raw->frames;
+    auto fileOf = [&](const Callable* c) {
+        return c && !c->declFile.empty() ? c->declFile : (!origin.empty() ? origin : srcFileAbs_);
+    };
+    for (size_t i = 0; i < frs.size(); i++) {
+        const BtFrame& f = frs[i];
         Value h = Value::makeHash(); h.hashKind = "BacktraceFrame";
-        const Callable* c = f.code.get();
-        (*h.hash())["file"] = Value::str(c && !c->declFile.empty() ? c->declFile
-                                       : (!origin.empty() ? origin : srcFileAbs_));
-        (*h.hash())["line"] = Value::integer(f.line);
-        if (f.code) { Value cv; cv.t = VT::Code; cv.setCode(f.code); (*h.hash())["code"] = cv; }
+        if (f.kind >= 2) {   // the setting's throw / die (see btCaptureNow)
+            (*h.hash())["file"] = Value::str(f.kind == 2 ? "SETTING::src/core.c/Exception.rakumod"
+                                                         : "SETTING::src/core.c/control.rakumod");
+            // the lines Rakudo 2026.08's setting reports for them: there is no
+            // setting source here to point into, and a frame's line is > 0
+            (*h.hash())["line"] = Value::integer(f.kind == 2 ? 65 : 253);
+            (*h.hash())["code"] = btStandInCode(f.kind == 2 ? 1 : 2);
+            (*h.hash())["setting"] = Value::boolean(true);
+        }
+        else {
+            // a bare block is in the file of the activation it runs inside:
+            // the next activation frame out
+            const Callable* owner = f.code.get();
+            if (f.kind == 1)
+                for (size_t j = i + 1; j < frs.size(); j++)
+                    if (!frs[j].kind) { owner = frs[j].code.get(); break; }
+            (*h.hash())["file"] = Value::str(fileOf(owner));
+            (*h.hash())["line"] = Value::integer(f.line);
+            if (f.kind == 1) (*h.hash())["code"] = btStandInCode(3);
+            else if (f.code) { Value cv; cv.t = VT::Code; cv.setCode(f.code); (*h.hash())["code"] = cv; }
+            else {   // the mainline: Rakudo's frame holds its `<unit>` Block
+                (*h.hash())["code"] = btStandInCode(0);
+                (*h.hash())["unit"] = Value::boolean(true);
+            }
+        }
+        if (f.kind) (*h.hash())["bt-kind"] = Value::integer(f.kind);
         bt.arr()->push_back(std::move(h));
     }
     at["__bt"] = bt;   // cached: a program that walks it twice pays once
@@ -26078,6 +26176,7 @@ struct FramePool {
         e->parent.reset();        // "$_" insert does not rehash
         e->routineFrame = false;
         e->loopFrame = false;
+        e->btBlock = e->callEnv = false;
         e->ex.reset();
         e->layout.reset();        // pads: next call re-attaches its own layout;
         e->pad.clear();           // clear() keeps the vector's capacity, the
@@ -26097,6 +26196,20 @@ struct PooledFrame {
 } // namespace
 
 static bool argIsNeverContainer(const Expr* e);
+// `$h{$k}` / `@a[$i]` / `%h<a>` over a variable: ONE element, named by a
+// subscript whose key reads nothing but a variable or a literal, so a Proxy
+// can re-evaluate the path on every read and write (makePathProxy).
+static bool isElementPath(const Expr* e) {
+    if (!e || e->kind != NK::Index) return false;
+    auto* ix = static_cast<const Index*>(e);
+    if (!ix->base || !ix->index || !ix->adverb.empty() || ix->multiDim || ix->zen || ix->semicolonSub)
+        return false;
+    if (ix->base->kind != NK::VarExpr || static_cast<const VarExpr*>(ix->base.get())->declare) return false;
+    const Expr* k = ix->index.get();
+    if (k->kind == NK::VarExpr)
+        return !static_cast<const VarExpr*>(k)->name.empty() && static_cast<const VarExpr*>(k)->name[0] == '$';
+    return k->kind == NK::StrLit || k->kind == NK::IntLit;
+}
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // --profile: routine-level entry/exit (RAII — this function returns in many
@@ -27050,7 +27163,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // Restored on every exit, throw included: whatever runs next runs in the
     // caller.
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal});
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
     if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
@@ -27095,6 +27208,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv};
     Value last = Value::nil();   // a body with no value is Nil — see execBlock's seed
     env->declStmts = c.body;   // what it declares (see Env::declStmts; a pooled Env is reused, so always)
+    env->callEnv = true;       // …and it is an activation: a backtrace walk for its blocks stops here
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
     if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
@@ -27218,6 +27332,16 @@ resumeBody:
                         last = tcx.lvalueOut ? *tcx.lvalueOut : exec(s);
                     }
                 }
+                // A BLOCK's value is its last expression RAW: one ending on a
+                // subscript names that element's container. When the caller asked
+                // for it (`.reduce` over an `is raw` accumulator), hand out the
+                // element itself — `-> $h is raw, $k { $h{$k} }` steps down a
+                // nested hash, and a missing level vivifies only when written
+                // through (S32-list/reduce.t).
+                else if (i == lastReal && !isRoutine && tcx.wantTailContainer &&
+                         tcx.wantTailContainer == (int)tcx.callFrames.size() &&
+                         s->kind == NK::ExprStmt && isElementPath(static_cast<ExprStmt*>(s)->e.get()))
+                    last = makePathProxy(tcx.cur, static_cast<ExprStmt*>(s)->e.get());
                 else
                     last = exec(s, i != lastReal); // non-final statements sink
                 if (tcx.returning) { // cooperative return reached this routine
@@ -28913,7 +29037,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // for callframe(N); and the caller's line comes back with the pop, as in
     // callCallableRaw — a method body advances curLine_ exactly like a sub's
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal});
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
     if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct DynGuard { ExecContext& t; Interpreter* self; int line;
         ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
@@ -29846,6 +29970,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             Value fetched = deproxy(*base);
             if (fetched.t == VT::Array || (fetched.t == VT::Hash && fetched.hashKind != "Proxy")) {
                 idxProxyHold = std::move(fetched);
+                base = &idxProxyHold;
+            }
+            // An UNDEFINED element behind a path Proxy autovivifies as a plain
+            // one does: a fresh Hash (an Array for `[ ]`) goes in through STORE
+            // and the subscript writes into it, the two sharing storage. This
+            // is how the elements `.reduce` hands down a raw accumulator
+            // (`-> $h is raw, $k { $h{$k} }`) build the nested path.
+            else if (fetched.t == VT::Any && base->hash()->count("FETCH") && base->hash()->count("STORE")) {
+                Value fresh = idx->isHash ? Value::makeHash() : Value::array();
+                proxyStore(*base, fresh);
+                idxProxyHold = std::move(fresh);
                 base = &idxProxyHold;
             }
         }
@@ -31700,6 +31835,27 @@ static void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueL
     (*proxy.hash())["STORE"] = store;
 }
 
+Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
+    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    slotProxyPair(proxy,
+        [scope, path](Interpreter& I, ValueList&) -> Value {
+            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+            Value r;
+            try { r = I.eval(path); } catch (...) { I.tctx_.cur = saved; throw; }
+            I.tctx_.cur = saved;
+            return r;
+        },
+        [scope, path](Interpreter& I, ValueList& sa) -> Value {
+            Value nv = sa.empty() ? Value::any() : sa[0];
+            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+            try { if (Value* slot = I.lvalue(path)) *slot = nv; }
+            catch (...) { I.tctx_.cur = saved; throw; }
+            I.tctx_.cur = saved;
+            return nv;
+        });
+    return proxy;
+}
+
 // `$a := $b` binds $a to the CONTAINER $b holds, not to the slot named $b —
 // which is the whole difference between the two operators. Assignment writes
 // through a shared container, so `$b = 5` is visible as `$a`; REBINDING does
@@ -32089,6 +32245,58 @@ static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
         }
         case NK::MethodCall: out.push_back(e); return;
         default: return;
+    }
+}
+
+// The `$` variables a `for` modifier's one-item list can END on:
+// `.++ for do given 1 { when True { $a } }` iterates $a's container, not a copy
+// of its value (S04-statements/when.t). The walk follows a `do`/block's last
+// statement into a given, whose `when`/`default` blocks are each the given's
+// value when they match. Every tail must be a plain variable; any other tail (a
+// literal, a call) means the value may not be a container, and the answer is no.
+static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out);
+static bool forTailVarsExpr(const Expr* e, std::vector<const void*>& out) {
+    if (!e || out.size() > 8) return false;
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->declare || v->viaPseudoPkg || v->name.size() < 2 || v->name[0] != '$' ||
+                std::strchr("*?!.^:=~", v->name[1]))
+                return false;
+            out.push_back(e);
+            return true;
+        }
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            return u->op == "do" && forTailVarsExpr(u->operand.get(), out);
+        }
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            if (be->isSub || be->body.empty()) return false;
+            return forTailVarsStmt(be->body.back().get(), out);
+        }
+        default: return false;
+    }
+}
+static bool forTailVarsBlock(const Block* b, std::vector<const void*>& out) {
+    return b && !b->stmts.empty() && forTailVarsStmt(b->stmts.back().get(), out);
+}
+static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::ExprStmt: return forTailVarsExpr(static_cast<const ExprStmt*>(s)->e.get(), out);
+        case NK::WhenStmt: return forTailVarsBlock(static_cast<const WhenStmt*>(s)->body.get(), out);
+        case NK::GivenStmt: {
+            auto* g = static_cast<const GivenStmt*>(s);
+            if (g->modifier || !g->body || g->body->stmts.empty() || g->hasElse) return false;
+            // a when/default that matches leaves the given with ITS value, so
+            // every one of them is a tail — and so is the body's last statement
+            for (auto& st : g->body->stmts)
+                if (st->kind == NK::WhenStmt && !forTailVarsStmt(st.get(), out)) return false;
+            const Stmt* last = g->body->stmts.back().get();
+            return last->kind == NK::WhenStmt || forTailVarsStmt(last, out);
+        }
+        default: return false;
     }
 }
 
@@ -32843,6 +33051,14 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 if (asciiRhs) slot->s += rhs.s;
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
+                            } else if ((sv == 2 || sv == 3) &&
+                                       (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
+                                // `$t += $d` keeps the Duration a Duration, as `+` does
+                                Value l0 = *slot;
+                                Value nv = applyArith(bop, l0, rhs);
+                                tagTemporal(bop, l0, rhs, nv);
+                                ParStripe ws(*this, slot);
+                                *slot = std::move(nv);
                             } else if (!applyArithIntoTry(bop, *slot, rhs)) {
                                 Value nv = applyArith(bop, *slot, rhs);
                                 ParStripe ws(*this, slot);
@@ -36818,9 +37034,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         const bool arrayTarget = lv->t == VT::Array && lv->arr() && !lv->isList && !lv->itemized &&
                                  lv->hashKind.empty() && exprIsArrayContainer(a->target.get(), lvAttrSigil);
         Value arrKeep = arrayTarget ? *lv : Value();
+        // Instant/Duration algebra, as the binary operators apply it: `$t +=
+        // $d` keeps the Duration a Duration (roast's Advent::GrammarProfiler
+        // sums `now - $start` into an undefined slot)
+        auto temporal = [](const Value& v) { return v.hashKind == "Instant" || v.hashKind == "Duration"; };
+        if ((binop == "+" || binop == "-" || binop == "%") && (temporal(*lv) || temporal(rhs))) {
+            Value l0 = *lv;
+            Value res = applyArith(binop, l0, rhs);
+            tagTemporal(binop, l0, rhs, res);
+            *lv = std::move(res);
+        }
         // fall back to a user `sub infix:<OP>` when the operator isn't built-in
         // (so `$m mx= 9` works for any operands, not just objects)
-        try { applyArithInto(binop, *lv, rhs); }
+        else try { applyArithInto(binop, *lv, rhs); }
         catch (RakuError&) {
             if (Value* f = tctx_.cur->find("&infix:<" + binop + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
             else throw;
@@ -43091,13 +43317,39 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         std::string rn;
         return g->findMethodForCall(nm) != nullptr || qualGrammar(nm, rn) != nullptr;
     };
-    gm.hooks.callMethod = [this, g, runCode, targetStr, qualGrammar](
+    // A metaclass that overrides find_method (`grammar G {…}` under an
+    // `EXPORTHOW.WHO.<grammar>` supersede — a profiler): every call the
+    // grammar's own rules and methods answer is resolved through it
+    // (GrammarHooks::viaHow).
+    bool howFind = false;
+    if (g->howObj.t == VT::Object && g->howObj.obj())
+        for (ClassInfo* c = g->howObj.obj()->cls.get(); c && !howFind; c = c->parent.get())
+            howFind = c->methods.count("find_method") > 0;
+    gm.hooks.viaHow = howFind;
+    gm.hooks.callMethod = [this, g, runCode, targetStr, qualGrammar, howFind](
             const std::string& name, const std::string& args, long pos,
             const NamedMap& named, const std::vector<std::pair<long, long>>& caps,
             const ParamMap& params, RxCursorCall& call, long& endOut, ParseNode& nodeOut) -> int {
         ClassInfo* owner = nullptr;
         Value* method = g->findMethodForCall(name, langRev_ < 2, &owner);
-        if (!method) {
+        // Ask the metaclass for the code to run; `callsame` inside its
+        // find_method answers what the engine would have found (the rule or
+        // method itself). Whatever it hands back runs with the cursor as its
+        // first argument — a wrapper then calls the original on that cursor.
+        Value howCode;
+        if (howFind && (method || g->findRule(name))) {
+            const Value tobj = Value::typeObj(g->name);
+            Value own = methodCall(tobj, "^find_method", ValueList{Value::str(name)});
+            RedispatchCtx rc;
+            rc.sameArgs = ValueList{tobj, Value::str(name)};
+            rc.next = [own](ValueList) { return own; };
+            redispatchStack_.push_back(std::move(rc));
+            try { howCode = methodCall(g->howObj, "find_method", ValueList{tobj, Value::str(name)}); }
+            catch (...) { redispatchStack_.pop_back(); throw; }
+            redispatchStack_.pop_back();
+            if (howCode.t != VT::Code || !howCode.code()) return 0;
+        }
+        if (!method && howCode.t != VT::Code) {
             std::string rname;
             ClassInfo* og = qualGrammar(name, rname);
             if (!og) return 0;
@@ -43123,7 +43375,19 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         self.extM() = targetStr;
         self.mdW().cursor = cur;
         Value r;
-        try { r = invokeMethodChain(name, g, self, std::move(av), nullptr, method, owner); }
+        try {
+            if (howCode.t == VT::Code) {
+                // a METHOD handed back as it was runs as one; anything else —
+                // a wrapper block, the rule itself — is called with the cursor
+                if (howCode.code()->isMethod && !howCode.code()->isRegexRoutine && !howCode.code()->builtin)
+                    r = invokeMethod(howCode, self, std::move(av));
+                else {
+                    av.insert(av.begin(), self);
+                    r = callCallable(howCode, std::move(av));
+                }
+            }
+            else r = invokeMethodChain(name, g, self, std::move(av), nullptr, method, owner);
+        }
         catch (...) { *cur->live = nullptr; throw; }
         *cur->live = nullptr; // the engine's re-entry point dies with the call
         if (r.t == VT::Match) {
@@ -47312,7 +47576,8 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.givenCtl, b.givenCtl); swap(a.givenV, b.givenV); swap(a.curGivenFrame, b.curGivenFrame); swap(a.curBlockVal, b.curBlockVal);
     swap(a.curRoutineVal, b.curRoutineVal); swap(a.callFrames, b.callFrames); swap(a.leaveResult, b.leaveResult); swap(a.leaveReturned, b.leaveReturned);
     swap(a.leaveReturnV, b.leaveReturnV); swap(a.leaveError, b.leaveError); swap(a.arityCallName, b.arityCallName); swap(a.wantLvalue, b.wantLvalue);
-    swap(a.bindRawTails, b.bindRawTails); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
+    swap(a.wantTailContainer, b.wantTailContainer);
+    swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
     swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
     swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
     swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueElemType, b.lastLvalueElemType);
@@ -47320,7 +47585,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.ctorCatchSkip, b.ctorCatchSkip); swap(a.ctorCatchDepth, b.ctorCatchDepth);
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION)
-static_assert(sizeof(ExecContext) == 1400,
+static_assert(sizeof(ExecContext) == 1408,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -54539,6 +54804,12 @@ Value Interpreter::eval(Expr* e) {
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
             char sigil = ve->name.empty() ? '$' : ve->name[0];
+            // a tail a `for` modifier's block may end on (forTailVarsExpr):
+            // leave the slot this read comes from, for the loop to alias
+            if (tctx_.bindRawTails && !ve->declare &&
+                std::find(tctx_.bindRawTails->begin(), tctx_.bindRawTails->end(), (const void*)e) !=
+                    tctx_.bindRawTails->end())
+                tctx_.tailVarSlot = tctx_.cur->find(ve->name);
             // `CORE::<CORE-SETTING-REV>` — the language revision's letter
             if (ve->name == "CORE-SETTING-REV" && !tctx_.cur->find(ve->name))
                 return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
@@ -56314,6 +56585,10 @@ Value Interpreter::eval(Expr* e) {
                 auto freezeOne = [](Value& p) {
                     Value v = p.pairVal() ? *p.pairVal() : Value::any();
                     v.readonly = v.immutableBind = false;
+                    // …and the Pair stays the object it was: a container pair
+                    // identifies by its payload, which the copy replaces, so its
+                    // WHICH is kept in the (otherwise unused) `i` (01-misc.t)
+                    if (p.pairLive() && !p.i) p.i = (long long)(intptr_t)p.pairVal();
                     p.setPairVal(std::make_shared<Value>(v));
                     p.pairValRO = true;
                     p.b = false;                       // no longer pairLive

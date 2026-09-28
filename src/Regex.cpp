@@ -4557,7 +4557,8 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     if (rule && rule->params.empty() && rule->lits.empty()) {
         std::map<std::string, std::string> b;
         m.noArg = compiled(name, "", b);
-        if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar()) m.singleChar = m.noArg;
+        // (not when the metaclass must see every call: an inlined rule has none)
+        if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar() && !hooks.viaHow) m.singleChar = m.noArg;
     }
     auto pit = protos.find(name);
     if (pit != protos.end()) m.proto = &pit->second;
@@ -4566,6 +4567,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     // call). Asked once per name; a method outranks the built-in classes below,
     // exactly as a user `method alpha` would override the inherited one.
     if (!rule && !m.proto && hooks.hasMethod && hooks.hasMethod(name)) m.isMethod = true;
+    if (hooks.viaHow && rule) m.viaHow = true;
     // Only fall back to the built-in <ws> when the grammar hasn't defined its own —
     // a user `token ws { … }` (e.g. to skip comments) must win over the builtin.
     m.isWs = (name == "ws" && !rule && !m.isMethod);
@@ -4596,6 +4598,9 @@ bool RxCursorCall::callRule(const std::string& name, const std::string& args, lo
     // rolled it back for us. The rule's own action fired on completion, its
     // memo entry stands, and its highwater note is in: all as a `<name>` would.
     static const std::string key = "\x01cursor";
+    // the metaclass's find_method answer is calling THIS rule: run its body
+    // rather than route the call back through the metaclass (GrammarHooks::viaHow)
+    if (gm->hooks.viaHow) gm->directOnce_ = name;
     bool ok = gm->matchSub(name, args, key, *st, pos, [](long) { return true; });
     auto it = st->children.find(key);
     if (it != st->children.end()) {
@@ -4738,7 +4743,15 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // An ordinary METHOD of the grammar (issue #64): call it with the cursor as
     // `self`. A returned Match continues the parse at its end (`self.b`, or
     // `self` for a zero-width pass); anything it throws leaves the parse.
-    if (meta.isMethod) {
+    // …and a RULE of a grammar whose HOW overrides find_method goes the same
+    // way, except when an LTM probe measures it, or the HOW's answer is
+    // running this very rule's body (directOnce_).
+    bool howRoute = false;
+    if (meta.viaHow && !st.probing && !st.probeAbove) {
+        if (directOnce_ == name) directOnce_.clear();
+        else howRoute = true;
+    }
+    if (meta.isMethod || howRoute) {
         // User code ends the LTM declarative prefix, as a bare `{…}` does — and
         // an Alt RANKING probe measures without running it, exactly as for one.
         if (st.firstCode < 0) st.firstCode = pos;

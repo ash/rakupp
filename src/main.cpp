@@ -2766,7 +2766,10 @@ int main(int argc, char** argv) {
     // outside the implicit line loop.)
     std::string usePrefix;
     for (auto& m : preloadModules) usePrefix += "use " + m + "; ";
-    if (!usePrefix.empty() && haveSrc && mode != Mode::Run) src = usePrefix + src;
+    if (!usePrefix.empty() && haveSrc && mode != Mode::Run) {
+        src = usePrefix + src;
+        rakupp::g_preludeCols = (int)usePrefix.size();   // not the program's own statements
+    }
 
     if (mode == Mode::Help) {
         {
@@ -3625,7 +3628,7 @@ int main(int argc, char** argv) {
                   + pre + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
         }
     }
-    if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
+    if (!usePrefix.empty()) { src = usePrefix + src; rakupp::g_preludeCols = (int)usePrefix.size(); } // -M: outside the -n/-p loop
     // --jit: hand the JIT the same compiler and headers `--exe` uses. Only a
     // RUN reaches here, which is the whole of where the flag means anything —
     // the compile modes and the source tools returned long before this point.

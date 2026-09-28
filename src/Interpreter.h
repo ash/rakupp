@@ -485,6 +485,14 @@ struct Env {
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
     bool staticSeeded = false; // a scope whose first run took its lexicals from a BEGIN-time static env
+    // A bare block's scope (`{ … }` as a statement), which `.backtrace.list`
+    // reports as a Block frame of its own, starting at btLine; and a callable
+    // ACTIVATION's own scope (a sub's, a method's, a pointy block's), where
+    // the walk for one frame's blocks stops (see btCaptureNow). In the padding
+    // after the two flags above: sizeof(Env) is unchanged.
+    bool btBlock = false;
+    bool callEnv = false;
+    int btLine = 0;
     uint64_t routineFrameId = 0; // …and its frame number, what a lexical `return` targets
     // A `strict` pragma ran HERE: 1 = `no strict` (undeclared variables
     // auto-vivify in this scope and the ones inside it), -1 = `use strict`
@@ -727,7 +735,11 @@ struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching la
 // holds, because the record has to outlive the C++ unwind that destroys the
 // live stack — CFGuard pops callFrames on the way out, so by the time any
 // `catch` runs there is nothing left to walk.
-struct BtFrame { std::shared_ptr<Callable> code; int line = 0; };
+// kind 0 is an activation (a routine, a pointy block, the mainline) and the
+// only kind the printed backtrace shows; 1 is a bare block inside the
+// activation after it, 2 and 3 the setting's `throw` and `die` (Rakudo lists
+// them with is-setting) — all three reach `.backtrace.list` only.
+struct BtFrame { std::shared_ptr<Callable> code; int line = 0; unsigned char kind = 0; };
 
 // A captured chain plus the file its routine-less frames belong to, in ONE
 // shared allocation. Failures are made in bulk — every failed coercion is one —
@@ -735,6 +747,10 @@ struct BtFrame { std::shared_ptr<Callable> code; int line = 0; };
 // as an extra map entry (measured: the entry alone cost ~6% of making a
 // Failure). `originFile` is empty when it is simply the program being run.
 struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
+// Set by `die` (2: die, then throw) and `.throw` (1) just before they raise:
+// the capture that raising makes lists that many setting frames first, and
+// clears it. Zero everywhere else.
+extern thread_local int g_btSettingFrames;
 
 // A Failure hash that REMEMBERS where it was made. A Failure is created in one
 // place and detonates in another, often far away, and until it carries the
@@ -1035,7 +1051,9 @@ struct ExecContext {
     // One entry per live routine activation: the line its CALL was written on, and
     // the routine itself. `callframe(N)` walks it (Log::Async stamps every message
     // with `callframe(1)`). Pushed next to dynStack, which every call already pays.
-    struct CallSite { int line; const Value* code; };
+    // …and the scope the call was MADE from, whose bare blocks are frames of
+    // the caller's in `.backtrace.list` (btCaptureNow walks it outwards)
+    struct CallSite { int line; const Value* code; Env* callerEnv = nullptr; };
     std::vector<CallSite> callFrames;
     // Lvalue-mode method invocation: `$obj[i] = v` on a class whose AT-POS is
     // `return-rw @!arr[$i]` must write the REAL element, not a returned copy.
@@ -1051,12 +1069,22 @@ struct ExecContext {
     const RakuError* leaveError = nullptr; // the exception a block is being left by, while its LEAVEs run ($!)
     const std::string* arityCallName = nullptr; // the name a checked call was WRITTEN with (see the arity check)
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
+    // A BLOCK called at exactly this callFrames depth hands back the CONTAINER
+    // its tail subscript names (a path Proxy, see makePathProxy) instead of the
+    // element's value. `.reduce` sets it for a reducer whose accumulator is
+    // `is raw`. 0 off. (Sits in the padding after wantLvalue.)
+    int wantTailContainer = 0;
     // A `:=` whose right side is a BLOCK (`my $v := do with … { … } else { … }`)
     // binds whatever container the block's TAIL expression names. The tail nodes
     // are worked out from the source before the RHS runs and listed here, so a
     // `.value` read hands back the Pair's cell only when it IS the block's
     // value — never when it merely happens to run while the RHS is evaluating.
     const std::vector<const void*>* bindRawTails = nullptr;
+    // …and the same list names `$` VARIABLES when a `for` modifier's one-item
+    // list is a block (`.++ for do given 1 { when True { $a } }`): the tail
+    // variable that actually ran records its slot here, and the loop aliases
+    // `$_` to it, as it does for `.++ for $a, $b`.
+    Value* tailVarSlot = nullptr;
     // Slots that must receive whatever is written through the lvalue a
     // `return-rw` just handed out: the rw-linked parameter copies the write
     // travelled PAST on its way to the caller's container. Filled by
@@ -1781,6 +1809,11 @@ public:
     Value slotProxyWrite(const Value& proxy, const Value& nv);
     Value makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key);
     Value makeCellProxy(const Value& init);
+    // A Proxy over the ELEMENT a subscript path names in `scope`: FETCH reads
+    // the path without vivifying, STORE assigns through lvalue(path), which
+    // vivifies every missing level. What a block ending on `$h{$k}` hands out
+    // when its caller wants the container (ExecContext::wantTailContainer).
+    Value makePathProxy(std::shared_ptr<Env> scope, Expr* path);
     // The take core shared by `take` and `take-rw`: push into the innermost
     // gather (honoring its lazy-probe take cap and time budget) or die outside one.
     // Run one program-init-hoisted INIT phaser. See the definition in Interpreter.cpp.

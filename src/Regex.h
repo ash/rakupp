@@ -140,6 +140,13 @@ struct GrammarHooks {
     // failed. `cursor` lets the method's own `self.rule(…)` re-enter this
     // very matcher. An exception thrown inside propagates out of the parse.
     std::function<bool(const std::string&)> hasMethod;
+    // The grammar's metaclass overrides `find_method` (a profiler, a tracer —
+    // roast's Advent::GrammarProfiler): Rakudo resolves EVERY subrule call
+    // through it, so the rules the grammar defines go through callMethod too,
+    // which asks the HOW for the code to run. A rule body the HOW's answer
+    // calls back into (`$meth($cursor)`) runs directly (GrammarMatcher::
+    // directOnce_). LTM probes measure the rules themselves, never the hook.
+    bool viaHow = false;
     std::function<int(const std::string& name, const std::string& args, long pos,
                       const NamedMap&, const std::vector<std::pair<long, long>>&, const ParamMap&,
                       struct RxCursorCall& cursor, long& endOut, ParseNode& nodeOut)> callMethod;
@@ -241,6 +248,7 @@ struct GrammarRuleMeta {
     const std::vector<std::string>* proto = nullptr; // protoregex candidate names (if this name is a proto)
     bool isWs = false;             // built-in <ws>
     bool isMethod = false;         // not a rule/proto, but the grammar has an ordinary method by this name
+    bool viaHow = false;           // a rule of a grammar whose HOW overrides find_method (GrammarHooks::viaHow)
     bool scoped = false;           // body declares `:my` — its dynamic vars are per-invocation
                                    // (save/restore interpreter scope around the call)
     bool dynDep = false;           // body declares `:my` or reads a dynamic var ($*/@*/%*): its match
@@ -648,6 +656,11 @@ public:
     // and does not need to: TOP is not entered through the subrule path, so its
     // scope is never rolled back and is still live when the actions replay.
     int dynScopeDepth_ = 0;
+    // A rule the metaclass's answer is running right now (`$meth($cursor)` in a
+    // find_method wrapper reaches the cursor's callRule): its NEXT entry runs
+    // the body instead of asking the HOW again. One-shot — the rule's own
+    // subrules still go through the HOW.
+    std::string directOnce_;
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)
     void clearMemo() { reapMemo(); }

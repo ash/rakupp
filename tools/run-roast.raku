@@ -213,6 +213,8 @@ my %SLOW-FILES =
     'S17-scheduler/in.t'   => 30,  # cues :in(1)/:in(2) and sleeps 3 s, four times:
     'S17-scheduler/at.t'   => 30,  # ~12 s here, ~28 s on Rakudo (each)
     'S17-scheduler/every.t' => 45, # the same with :every, twice over: ~24 s
+    'S17-promise/allof.t'  => 30,  # ten `start { sleep 2 * $_ }` over ^10, awaited
+                                   # together: 18 s by spec, alone and on Rakudo
     'S07-hyperrace/basics.t' => 30, # two stress loops sized to run ~1 s each, 10 racing
                                    # workers per round, 9 of them throwing
                                    # X::Seq::Consumed: ~9 s alone, more under load

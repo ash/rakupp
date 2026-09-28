@@ -15344,6 +15344,18 @@ StmtPtr Parser::parseStatementImpl() {
                 return u;
             }
             if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
+                // It must be the unit's VERY FIRST statement — comments and pod
+                // may precede it, and nothing else may: not another statement,
+                // not an empty `;`, not a second version pragma, not a block
+                // around it (Rakudo's X::Language::TooLate). A -M module's
+                // injected `use` on line 1 is not the program's (g_preludeCols).
+                if (!u->isNo && !u->isNeed) {
+                    const size_t usePos = pos_ - 1;
+                    for (size_t k = 0; k < usePos; k++)
+                        if (toks_[k].line != 1 || toks_[k].col > g_preludeCols)
+                            throw ParseError("Too late to switch language version. Must be used as the very first statement.",
+                                             toks_[usePos].line, "X::Language::TooLate");
+                }
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
                   while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
@@ -15916,8 +15928,9 @@ StmtPtr Parser::parseStatementImpl() {
             StmtPtr decl = parseClass(kw == "role", kw == "grammar",
                                       kw == "module" || kw == "package",
                                       false, kw);
-            if (kw == "class" && !supersedeHow_.empty()) {
-                auto sh = supersedeHow_.find("class");
+            // (`grammar` too: roast's Advent::GrammarProfiler supersedes it)
+            if ((kw == "class" || kw == "grammar") && !supersedeHow_.empty()) {
+                auto sh = supersedeHow_.find(kw);
                 if (sh != supersedeHow_.end() && decl && decl->kind == NK::ClassDecl &&
                     static_cast<ClassDecl*>(decl.get())->howName.empty())
                     static_cast<ClassDecl*>(decl.get())->howName = sh->second.substr(0, sh->second.find('\x01'));
@@ -16200,6 +16213,8 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                              "X::Package::Stubbed", {{"packages", names}});
     }
 }
+
+int g_preludeCols = 0;
 
 Program Parser::parseProgram() {
     Program prog;

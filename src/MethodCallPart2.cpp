@@ -3049,7 +3049,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value pin = inv; pin.hashKind = "ProcIn";
             ValueList none; methodCall(pin, "close", none);
         }
-        if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; return h; }
+        if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) (*h.hash())["bin"] = Value::boolean(true); return h; }
         if (m == "sink" || m == "self") return inv;
         if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
         // `.shell(CMD)` / `.spawn(@cmd)` on a Proc built by `Proc.new` — run it
@@ -4384,18 +4384,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             size_t n = inv.arr()->size();
             return Value::str("Backtrace(" + std::to_string(n) + (n == 1 ? " frame)" : " frames)"));
         }
-        // `.concise`: only the ROUTINE frames (Rakudo: non-hidden, non-setting routines)
-        if (m == "concise") {
-            Value only = Value::array(); only.isList = true; only.s = "Backtrace";
-            for (auto& fr : *inv.arr())
-                if (fr.t == VT::Hash && fr.hash()) {
-                    auto it = fr.hash()->find("code");
-                    if (it != fr.hash()->end() && it->second.t == VT::Code && it->second.code() &&
-                        !it->second.code()->isBlock && !it->second.code()->name.empty())
-                        only.arr()->push_back(fr);
-                }
-            BtStyle st; st.excerpt = st.typeLine = st.colour = false;
-            return Value::str(renderBacktraceValue(only, st));
+        // `.concise` / `.summary` are Rakudo's own one-liners over the list:
+        // the lines of the non-hidden routines that are not the setting's, and
+        // of every non-hidden frame that is a routine or not the setting's
+        if (m == "concise" || m == "summary") {
+            std::string out;
+            for (auto& fr : *inv.arr()) {
+                if (fr.t != VT::Hash || !fr.hash()) continue;
+                const bool setting = fr.hash()->count("setting") > 0;
+                auto it = fr.hash()->find("code");
+                const bool routine = it != fr.hash()->end() && it->second.t == VT::Code && it->second.code() &&
+                                     !it->second.code()->isBlock && !it->second.code()->name.empty();
+                if (m == "concise" ? routine && !setting : routine || !setting) out += fr.toStr();
+            }
+            return Value::str(out);
         }
         if (m == "Str" || m == "full" || m == "nice") {
             BtStyle st; st.excerpt = st.typeLine = st.colour = false;
@@ -4407,10 +4409,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // BEGIN-time failure is reported as X::Comp::BeginTime instead), so it
         // is (integration/error-reporting.t: a broken promise's exception)
         if (m == "is-runtime") return Value::boolean(true);
-        if (m == "summary") {  // Rakudo: the frames a reader cares about
-            BtStyle st; st.excerpt = st.typeLine = st.colour = false;
-            return Value::str(renderBacktraceValue(inv, st));
-        }
         if (m == "next-interesting-index") {
             // ours records only user frames, so the next one is simply the next
             long long from = args.empty() ? 0 : args[0].toInt();
@@ -4423,7 +4421,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
-        if (m == "is-hidden" || m == "is-setting") return Value::boolean(false);
+        if (m == "is-hidden") return Value::boolean(false);
+        // the setting's own `throw` / `die` frames (see btCaptureNow)
+        if (m == "is-setting") return Value::boolean(inv.hash()->count("setting") > 0);
         // a frame whose code is a SUB or METHOD (not a bare block, not the mainline)
         if (m == "is-routine") {
             auto it = inv.hash()->find("code");
@@ -5541,9 +5541,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         code.code()->podTrail = std::get<1>(pit->second);
                         code.code()->declLine = std::get<2>(pit->second);
                     }
-                    code.code()->builtin = [pat, kind](Interpreter& I, ValueList& a) -> Value {
-                        return a.empty() ? Value::nil()
-                                         : I.regexMatch(I.rxSubject(a[0]), pat, nullptr, kind);
+                    code.code()->builtin = [pat, kind, mn](Interpreter& I, ValueList& a) -> Value {
+                        if (a.empty()) return Value::nil();
+                        // …and handed a grammar CURSOR (a metaclass's find_method
+                        // wrapper calling the rule it was given, `$meth($c, |args)`),
+                        // the rule runs in the live parse at the cursor, as
+                        // `$c.rule` would
+                        if (a[0].t == VT::Match && a[0].md() && a[0].md()->cursor) {
+                            ValueList rest(a.begin() + 1, a.end());
+                            return I.methodCall(a[0], mn, rest);
+                        }
+                        return I.regexMatch(I.rxSubject(a[0]), pat, nullptr, kind);
                     };
                     return code;
                 }
@@ -6991,8 +6999,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // record the backtrace at THROW time on the object itself — the thrown
         // value is shared, so a caught `$exception.backtrace` reads it back
-        // (Log::Async::Context throws a fresh Exception exactly for the walk)
-        throw RakuError{inv, excMessageOf(*this, inv)};
+        // (Log::Async::Context throws a fresh Exception exactly for the walk).
+        // The message first: making it may raise and catch errors of its own,
+        // which must not take the `throw` frame the marker asks for.
+        std::string msg = excMessageOf(*this, inv);
+        if (m == "throw") g_btSettingFrames = 1;
+        throw RakuError{inv, msg};
     }
     // `$exception.Failure` — the exception wrapped in a Failure, unthrown, which
     // is how a routine hands one back instead of raising it (Concurrent::Stack's
@@ -9332,11 +9344,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // the native parent — so a HOW written that way found none of these
     // operations, and `self.add_role(type, Red::Model)` inside its `compose` was
     // a silent no-op. Every Red model then failed `~~ Red::Model`.
-    if (((inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") ||
+    // (A GrammarHOW is a ClassHOW, in Rakudo as here: a grammar metaclass —
+    // roast's Advent::GrammarProfiler — reaches `find_method` the same way.)
+    if (((inv.t == VT::Type && (inv.s == "Metamodel::ClassHOW" || inv.s == "Metamodel::GrammarHOW")) ||
          (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
           [&]{ for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get())
-                   if (c->name == "Metamodel::ClassHOW" ||
-                       c->nativeParent == "Metamodel::ClassHOW") return true;
+                   if (c->name == "Metamodel::ClassHOW" || c->name == "Metamodel::GrammarHOW" ||
+                       c->nativeParent == "Metamodel::ClassHOW" ||
+                       c->nativeParent == "Metamodel::GrammarHOW") return true;
                return false; }())) &&
         !args.empty() && args[0].t == VT::Type) {
         static const std::set<std::string> howOps = {

@@ -2501,9 +2501,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 } catch (LastEx&) {}
                 return acc;
             }
+            // A block whose accumulator is `is raw` folds CONTAINERS: each step
+            // hands the next the element its tail subscript names, not a copy,
+            // so `(%h, |@path).reduce: -> $h is raw, $k { $h{$k} }` ends on the
+            // leaf — and assigning through it vivifies the path (S32-list/reduce.t)
+            const Callable* rc = args[0].code();
+            const bool rawAcc = rc && rc->isBlock && rc->params && !rc->params->empty() &&
+                                ((*rc->params)[0].isRaw || (*rc->params)[0].isRw);
             Value acc = items[0];
             try {
-                for (size_t k = 1; k < items.size(); k++) acc = callCallable(args[0], {acc, items[k]});
+                for (size_t k = 1; k < items.size(); k++) {
+                    if (!rawAcc) { acc = callCallable(args[0], {acc, items[k]}); continue; }
+                    struct WantG { ExecContext& t; int w; ~WantG() { t.wantTailContainer = w; } }
+                        wg{tctx_, tctx_.wantTailContainer};
+                    tctx_.wantTailContainer = (int)tctx_.callFrames.size() + 1;
+                    acc = callCallable(args[0], {acc, items[k]});
+                }
             } catch (LastEx&) {}
             return acc;
         }

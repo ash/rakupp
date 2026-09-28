@@ -103,6 +103,20 @@ static bool succPredExact(const Value& v) {
     return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num || v.t == VT::Complex;
 }
 
+// A TEXT read folds CRLF to LF: a handle's default :nl-in is ["\n", "\r\n"] and
+// Rakudo's text decoders translate the separator on the way in — a file, $*IN,
+// $*ARGFILES and a Proc's captured pipes alike (`run(:out).out.slurp` of
+// "a\r\nb" is "a\nb"). A :bin read, and a Buf's own .decode, keep every CR.
+static void foldCrLf(std::string& text) {
+    if (text.find('\r') == std::string::npos) return;
+    std::string out; out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+        out += text[i];
+    }
+    text.swap(out);
+}
+
 // stat() for the IO methods that report a file's metadata. True (with `st`
 // filled) when the path is there; otherwise `out` carries the soft Failure
 // Rakudo hands back for .s/.z/.mode/.user/.group on a path that is not.
@@ -1589,6 +1603,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // invocant, which made `$value.^lookup('slurp')` true for a plain string and
     // sent HTTP::Tiny off to slurp a form field. `slurp $path` (the SUB) is
     // unaffected; so is every `$io.slurp`.
+    // `'-'.IO.slurp` reads standard input — $*IN, whatever it is now
+    if (m == "slurp" && inv.hashKind == "IO" && inv.t == VT::Str && inv.toStr() == "-") {
+        Value* slot = findDynamicLenient("$*IN");
+        Value in = slot ? *slot : dynVar("$*IN");
+        if (langRev_ >= 1) noteDeprecation("", "\"-\".IO", "", "$*IN or $*OUT", curLine_);
+        return methodCall(in, "slurp", args);
+    }
     if (m == "slurp" && inv.hashKind == "IO") {
         {   // a DIRECTORY has no content to slurp
             struct stat dst;
@@ -1610,14 +1631,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // (`"a\r\nb".IO.slurp.encode.bytes` is 4 in Rakudo, not 5). :bin is the
         // raw bytes and keeps every CR. HTTP::Tiny compares a generated request
         // against a CRLF fixture read this way.
-        if (!bin && text.find('\r') != std::string::npos) {
-            std::string outT; outT.reserve(text.size());
-            for (size_t i = 0; i < text.size(); i++) {
-                if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
-                outT += text[i];
-            }
-            text.swap(outT);
-        }
+        if (!bin) foldCrLf(text);
         if (bin) return binBuf(text);   // slurp(:bin) yields a Buf[uint8], not a decoded Str
         return Value::str(text);
     }
@@ -2651,6 +2665,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     "Cannot resolve caller Supply(IO::Handle: ...); none of these signatures matches:\n"
                     "    (IO::Handle:D: :$size = 65536, *%_)");
     if (m == "open") { // returns a buffered file handle
+        // `'-'.IO.open` IS $*IN (reading) or $*OUT (writing): the adverbs
+        // apply to THAT handle — `:bin` makes it binary, `:enc` sets its
+        // encoding — and one that was never opened (`IO::Handle.new(:path)`)
+        // is opened first. A handle whose own path is '-' opens onto the
+        // process's standard stream (6.c A03-older-specs/01-misc.t). 6.d
+        // deprecates the spelling, and Rakudo says so as the program ends.
+        const bool dashPath = inv.t == VT::Str && inv.hashKind == "IO" && inv.toStr() == "-";
+        const bool dashHandle = inv.t == VT::Hash && inv.hashKind == "FileHandle" && inv.hash() &&
+                                fhClosed(inv) && inv.hash()->count("path") &&
+                                (*inv.hash())["path"].toStr() == "-";
+        if (dashPath || dashHandle) {
+            bool write = false, bin = false;
+            Value enc;
+            for (auto& a : args) {
+                if (a.t != VT::Pair) continue;
+                const bool on = !a.pairVal() || a.pairVal()->truthy();
+                if (on && (a.s == "w" || a.s == "a" || a.s == "x" || a.s == "rw" || a.s == "update" ||
+                           a.s == "append" || a.s == "create" || a.s == "truncate"))
+                    write = true;
+                else if (a.s == "mode" && a.pairVal() && a.pairVal()->toStr() != "ro") write = true;
+                else if (a.s == "bin") bin = on;
+                else if ((a.s == "enc" || a.s == "encoding") && a.pairVal()) enc = *a.pairVal();
+            }
+            Value h = inv;
+            if (dashPath) {
+                const std::string var = write ? "$*OUT" : "$*IN";
+                Value* slot = findDynamicLenient(var);
+                h = slot ? *slot : dynVar(var);
+                if (langRev_ >= 1) noteDeprecation("", "\"-\".IO", "", "$*IN or $*OUT", curLine_);
+            }
+            if (!(h.t == VT::Hash && h.hashKind == "FileHandle" && h.hash())) return h;
+            auto& hh = *h.hash();
+            if (fhClosed(h)) {
+                auto pit = hh.find("path");
+                if (pit == hh.end() || pit->second.toStr() == "-") {   // the standard stream itself
+                    hh.erase("closed"); hh.erase("path");
+                    hh["std"] = Value::str(write ? "out" : "in");
+                    hh["mode"] = Value::str(write ? "w" : "r");
+                }
+                else {
+                    Value p = Value::pair(write ? "w" : "r", Value::boolean(true)); p.namedArg = true;
+                    methodCall(h, "open", ValueList{p});
+                }
+            }
+            if (bin) { hh["bin"] = Value::boolean(true); hh.erase("encoding"); }
+            else if (enc.t != VT::Any && enc.t != VT::Nil) { hh.erase("bin"); hh["encoding"] = Value::str(enc.toStr()); }
+            return h;
+        }
         // Delegates to the open() builtin: one implementation, one rule set.
         // This arm used to be a stripped copy that skipped the read-mode
         // existence check (so "/nope".IO.open handed back a live handle where
@@ -3306,11 +3368,26 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 bool capBin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy();
                 for (auto& a : args)
                     if (a.t == VT::Pair && a.namedArg && a.s == "bin") capBin = !a.pairVal() || a.pairVal()->truthy();
-                if (capBin) {
-                    Value b = Value::str(text.toStr()); b.hashKind = "Buf";
-                    return b;
+                if (capBin) return binBuf(text.toStr());   // a Buf[uint8], every CR kept
+                // what `.get` / `.lines` took already stays taken: the rest of
+                // the line cache, each line with the terminator it was read with
+                auto lit = inv.hash()->find("lines");
+                if (lit != inv.hash()->end() && lit->second.arr() && inv.hash()->count("pos")) {
+                    auto& ls = *lit->second.arr();
+                    auto eit = inv.hash()->find("line-eols");
+                    std::string rest;
+                    long long lp = (*inv.hash())["pos"].toInt();
+                    for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
+                        rest += ls[i].toStr();
+                        if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
+                            rest += (*eit->second.arr())[i].toStr();
+                    }
+                    (*inv.hash())["pos"] = Value::integer((long long)ls.size());
+                    return Value::str(rest);
                 }
-                return text;
+                std::string t = text.toStr();
+                foldCrLf(t);
+                return Value::str(t);
             }
             // a :bin handle slurps a Buf unless told otherwise
             bool sBin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy(), sClose = false;
@@ -3373,26 +3450,44 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         Value io = Value::str((*inv.hash())["path"].toStr()); io.hashKind = "IO";
                         return methodCall(io, "slurp", ValueList{[]{ Value p = Value::pair("bin", Value::boolean(true)); p.namedArg = true; return p; }()});
                     }
-                    return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
+                    std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+                    foldCrLf(text);
+                    return Value::str(text);
                 }
             }
             if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
+                // what the line reader has buffered stays the handle's: a `.get`
+                // through a handle with its own nl-in read the stream into its
+                // line cache, and the rest of THAT is where `.slurp` goes on
+                auto lit = inv.hash()->find("lines");
+                if (!sBin && lit != inv.hash()->end() && lit->second.arr() && inv.hash()->count("pos")) {
+                    auto& ls = *lit->second.arr();
+                    auto eit = inv.hash()->find("line-eols");
+                    std::string rest;
+                    long long lp = (*inv.hash())["pos"].toInt();
+                    for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
+                        rest += ls[i].toStr();
+                        if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
+                            rest += (*eit->second.arr())[i].toStr();
+                    }
+                    (*inv.hash())["pos"] = Value::integer((long long)ls.size());
+                    std::ostringstream more; more << std::cin.rdbuf();
+                    std::string tail = decodeTextEnc(more.str(), handleEnc(inv));
+                    foldCrLf(tail);
+                    if (sClose) methodCall(inv, "close", ValueList{});
+                    return Value::str(rest + tail);
+                }
                 std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
                 if (sBin) return binBuf(ss.str());   // `$*IN.encoding("bin")` / `:bin`: the bytes
-                return Value::str(decodeTextEnc(ss.str(), handleEnc(inv)));
+                std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+                foldCrLf(text);
+                return Value::str(text);
             }
             std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
             // TEXT mode folds CRLF to LF, as IO::Path.slurp does (Rakudo's text
             // decoders translate the line separator; a Buf's .decode does not)
             std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
-            if (text.find('\r') != std::string::npos) {
-                std::string outT; outT.reserve(text.size());
-                for (size_t i = 0; i < text.size(); i++) {
-                    if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
-                    outT += text[i];
-                }
-                text.swap(outT);
-            }
+            foldCrLf(text);
             return Value::str(text);
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".

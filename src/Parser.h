@@ -61,6 +61,11 @@ std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
                                                 const std::vector<std::string>& libPaths,
                                                 std::string& err);
 
+// The width of the `use M; ` text main.cpp puts at the front of a program's
+// first line for each -M/-m module (0 when none). A version pragma must be the
+// unit's very first statement, and those injected statements do not count.
+extern int g_preludeCols;
+
 class Parser {
 public:
     explicit Parser(std::vector<Token> toks);

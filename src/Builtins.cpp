@@ -3806,9 +3806,11 @@ std::string whichOf(const Value& v) {
         // an Array (or any other reference type) inside, the Pair is an object
         // and identifies by BEING itself: the payload it was built with, which
         // every copy of the Pair shares and no other Pair has.
-        case VT::Pair:    if (whichIsObjAt(v)) {
+        case VT::Pair:    if (whichIsObjAt(v) || (v.pairValRO && v.i)) {
+                              // (a FROZEN container pair keeps the identity it had)
                               char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.pairVal());
+                              std::snprintf(buf, sizeof buf, "|%p",
+                                            v.pairValRO && v.i ? (void*)(intptr_t)v.i : (void*)v.pairVal());
                               return "Pair" + std::string(buf);
                           }
                           return "Pair|" + (v.pairKey() ? whichOf(*v.pairKey()) : "Str|" + v.s.str()) +
@@ -13391,6 +13393,16 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             ValueList pending;
             long long limit = 0, running = 0, emitted = 0;
             bool srcDone = false, finished = false;
+            // ORDER: a body waits — for at most a moment — until the one
+            // dispatched before it has finished. Every Promise here is a thread
+            // of its own, and their start latencies differ, so `.throttle(3,
+            // { $c.send: $_ })` sent its first three values in any order under
+            // load (S17-channel/basic.t), where jobs queued to Rakudo's pool
+            // start first-in first-out. A quick body therefore takes effect in
+            // value order; a slow one lets the next start after the wait, so
+            // the bodies still overlap.
+            std::condition_variable cv;
+            long long nextTicket = 0, turn = 0;
         };
         auto st = std::make_shared<RunState>();
         st->limit = h.count("elems") ? h.at("elems").toInt() : 1;
@@ -13428,6 +13440,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         *pump = [self, st, process, emitCb, pump, finish]() {
             for (;;) {
                 Value v;
+                long long ticket = 0;
                 {   // One value claimed per turn, and the allowance SPENT for it
                     // before the lock drops: a second thread arriving here must
                     // find the slot already taken, or both dispatch the same
@@ -13440,10 +13453,23 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                     st->pending.erase(st->pending.begin());
                     st->running++;
                     st->emitted++;
+                    ticket = st->nextTicket++;
                 }
                 Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
                 Value pv = v, pf = process;
-                body.code()->builtin = [pv, pf](Interpreter& I2, ValueList&) -> Value {
+                body.code()->builtin = [pv, pf, st, ticket](Interpreter& I2, ValueList&) -> Value {
+                    {   // bounded: a slow or stalled predecessor holds nobody long
+                        std::unique_lock<std::mutex> lk(st->m);
+                        st->cv.wait_for(lk, std::chrono::milliseconds(10),
+                                        [&] { return st->turn >= ticket || st->finished; });
+                    }
+                    struct Next {
+                        std::shared_ptr<RunState> st; long long t;
+                        ~Next() {
+                            { std::lock_guard<std::mutex> lk(st->m); if (st->turn <= t) st->turn = t + 1; }
+                            st->cv.notify_all();
+                        }
+                    } next{st, ticket};
                     ValueList one{pv}; return I2.callCallable(pf, one);
                 };
                 Value pr = self->spawnPromise(body);
@@ -14255,6 +14281,7 @@ RakuError Interpreter::dieError(ValueList& a) {
             payload = ex;
         }
     }
+    g_btSettingFrames = 2;   // the setting's `die` and the `throw` it makes (see btCaptureNow)
     return RakuError{payload, msg};
 }
 
@@ -14657,7 +14684,14 @@ void Interpreter::registerBuiltins() {
                 ex.obj()->attrs["payload"] = a[0];
             } else ex = Value::str(a[0].toStr());
         } else {
-            Value* be = I.tctx_.cur->find("$!");
+            // the ROUTINE's own `$!`, as `die` reads it: an error the caller
+            // caught is not this routine's to fail with — a bare `fail` in a
+            // sub called after a `try` says "Failed" (Rakudo)
+            Value* be = nullptr;
+            for (Env* en = I.tctx_.cur.get(); en; en = en->parent.get()) {
+                if ((be = en->local("$!"))) break;
+                if (en->routineFrame) break;
+            }
             if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be;
         }
         // a bare `fail` with no $! still carries an exception — X::AdHoc
@@ -15770,6 +15804,7 @@ void Interpreter::registerBuiltins() {
         // expected (as-cli-arguments' twelve tests, and the eight dists behind it).
         bool merge = false;
         Value outSink, errSink;
+        bool binPipes = false;
         // A default-constructed Value is Any, not Nil — "was a sink given?" needs
         // its own flag, and testing `.t == VT::Nil` for it (as this did) answered
         // "yes" for every un-adverbed run.
@@ -15824,6 +15859,8 @@ void Interpreter::registerBuiltins() {
                 }
                 else if (v.s == "cwd" && v.pairVal()) cwd = v.pairVal()->toStr(); // was silently ignored too
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true;
+                // :bin — the pipes carry bytes: `.out.slurp` is a Buf, not a Str
+                else if (v.s == "bin") binPipes = v.pairVal() ? v.pairVal()->truthy() : true;
             }
             else argv.push_back(v.toStr());
         }
@@ -15835,6 +15872,7 @@ void Interpreter::registerBuiltins() {
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; }
         Value av = Value::array(); av.isList = true; for (auto& s : argv) av.arr()->push_back(Value::str(s));
         Value p = Value::makeHash(); p.hashKind = "Proc"; // standard Proc object
+        if (binPipes) (*p.hash())["bin"] = Value::boolean(true);
         (*p.hash())["argv"] = av; // for .command
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         if (wantIn && !haveInHandle) {
@@ -15894,6 +15932,7 @@ void Interpreter::registerBuiltins() {
     // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string cmd; bool wantOut = false, wantErr = false, merge = false;
+        bool binPipes = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
@@ -15906,6 +15945,7 @@ void Interpreter::registerBuiltins() {
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
                 else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
+                else if (v.s == "bin") binPipes = v.pairVal() ? v.pairVal()->truthy() : true;
                 // :cwd — where the command runs. Parsed by run() since it was
                 // first reported and never here, so it was accepted and
                 // ignored: the command ran in THIS process's directory, and
@@ -15951,6 +15991,7 @@ void Interpreter::registerBuiltins() {
         drainTo(I, errSink, haveErrSink, err);
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
+        if (binPipes) (*p.hash())["bin"] = Value::boolean(true);
         (*p.hash())["argv"] = av; // .command — shell reports the command string
         storeProcStatus(p, code); // exitcode + signal
         (*p.hash())["out-str"] = Value::str(out);
