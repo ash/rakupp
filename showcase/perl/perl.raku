@@ -540,7 +540,7 @@ sub eval-stmt($n, $env) {
         when 'block'  { return eval-stmts($n<stmts>, Env.new(parent => $env)) }
         when 'nop'    { return UNDEF }
         when 'subdef' {
-            $env.declare('&' ~ $n<name>, PerlSub.new(name => $n<name>, body => $n<body>, env => $env));
+            $env.declare('&' ~ $n<name>, PerlSub.new(name => $n<name>, body => @($n<body>), env => $env));
             return UNDEF;
         }
         when 'my'     { return eval-my($n, $env) }

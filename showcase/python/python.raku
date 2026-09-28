@@ -643,8 +643,8 @@ sub exec-stmt($n, $env) {
             exec-stmts($n<orelse>, $env) unless $broke;
         }
         when 'def' {
-            $env.put($n<name>, PyFunc.new(name => $n<name>, params => $n<params>,
-                     star => $n<star>, body => $n<body>, env => $env));
+            $env.put($n<name>, PyFunc.new(name => $n<name>, params => @($n<params>),
+                     star => $n<star>, body => @($n<body>), env => $env));
         }
         when 'return'   { RetX.new(value => ($n<value> ?? pyeval($n<value>, $env) !! NONE)).throw }
         when 'pass'     { }
@@ -719,7 +719,7 @@ sub pyeval($n, $env) {
         when 'call'   { return eval-call($n, $env) }
         when 'subscript' { return eval-subscript($n, $env) }
         when 'attr'   { return eval-attr(pyeval($n<obj>, $env), $n<name>) }
-        when 'lambda' { return PyFunc.new(name => '<lambda>', params => $n<params>, star => $n<star>, body => [ $( %( t => 'return', value => $n<body> ) ) ], env => $env) }
+        when 'lambda' { return PyFunc.new(name => '<lambda>', params => @($n<params>), star => $n<star>, body => [ $( %( t => 'return', value => $n<body> ) ) ], env => $env) }
         when 'comp'   { return eval-comp($n, $env) }
         when 'dictcomp' { return eval-dictcomp($n, $env) }
         default { py-raise("SyntaxError", "cannot eval $n<t>") }

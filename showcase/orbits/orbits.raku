@@ -108,7 +108,7 @@ sub planet-view(Str $p, $jd) {
     say '';
     say bold("Kepler's equation, M = E - e sin E");
     my %k = kepler(%el<M> * DEG, %el<e>);
-    my @t = %k<trail>;
+    my @t = @(%k<trail>);
     for @t.kv -> $i, $E {
         my $err = abs($E - %el<e> * sin($E) - %el<M> * DEG);
         printf("  step %d   E = %.12f   |error| = %.2e\n", $i, $E, $err);
