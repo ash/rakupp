@@ -571,6 +571,107 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
     return Value::any();
 }
 
+// A role's TYPE-CAPTURE parameter is a NAME until the composition binds it:
+// `role R[::TYPE] { has TYPE @!items }` leaves the attribute's declared type
+// reading "TYPE", and the role's ClassInfo is SHARED by every class that
+// composes it, so the name cannot be rewritten there — R[Int] and R[Str]
+// would fight over it. Resolve it per OBJECT instead, against the class's
+// own bindings, which is where the composition recorded what TYPE is.
+// Without this the typed container refused EVERY value put into it, in
+// R[Int] and R[Str] alike, and `.of` answered the literal "TYPE"
+// (Concurrent::PriorityQueue is built on exactly that shape).
+static const std::string& roleTypeIn(ClassInfo* ci, const std::string& t) {
+    if (t.empty()) return t;
+    for (ClassInfo* c = ci; c; c = c->parent.get())
+        for (auto& b : c->roleParamBindings)
+            if (b.first == t && b.second.t == VT::Type && !b.second.s.empty())
+                return b.second.s;
+    return t;
+}
+
+// A value given BY NAME — to the default constructor, `bless` or `.clone` — is
+// ASSIGNED to its `$` attribute, so it has to pass what `$!name = value` would.
+// This asked only seven core types and the subsets, and only of a DEFINED
+// value: `has Str $.s` took `Any`, `has A $.a` any object at all, `has int $.i`
+// a Str, and a program tested here built objects Rakudo refuses on the first
+// `.new` (issue #110). `ty` is the declared type with a role's capture resolved.
+// A NIL argument is a reset to the attribute's default, not a store, so the
+// declared type is not asked about it — URI's `has Port $.port` (a subset of
+// UInt) takes `port => Nil` — but a `:D` is, since what it resets to is
+// undefined unless an `is default` says otherwise.
+// A PARAMETERIZED type is not asked: the nominal predicate does not know a
+// `Hash[Array, Key]` from the object hash Cro's router hands its RouteHandler,
+// and refusing a value Rakudo takes is worse than taking one it refuses.
+// `scope` is where the class was declared, for reading the type NAME there.
+static void checkAttrStore(Interpreter& I, Value& v, const ClassAttr& at,
+                           const std::string& ty, bool wasNil, Env* scope) {
+    if (at.sigil != '$' || ty.empty() || ty == "Mu") return;
+    if (ty.find('[') != std::string::npos) return;
+    if (v.t == VT::Hash && v.hashKind == "Proxy") return;
+    // a NATIVE attribute takes only what unboxes to it. The lowercase names that
+    // are not storage types (buf8, blob8, NativeCall's long/size_t aliases) are
+    // not asked here.
+    if (!ascii::isupper((unsigned char)ty[0])) {
+        const char* kind = nullptr;
+        const char* boxT = nullptr;
+        if (ty == "num" || ty == "num32" || ty == "num64") { kind = "number"; boxT = "Num"; }
+        else if (ty == "str") { kind = "string"; boxT = "Str"; }
+        else if (ty == "byte" || ty == "uint" || ty == "uint8" || ty == "uint16" ||
+                 ty == "uint32" || ty == "uint64") { kind = "unsigned integer"; boxT = "Int"; }
+        else if (ty == "int" || ty == "int8" || ty == "int16" || ty == "int32" ||
+                 ty == "int64" || ty == "atomicint") { kind = "integer"; boxT = "Int"; }
+        if (!kind) return;
+        if (wasNil || !defined(v))   // (worded as a native variable's: see nativeUndefCheck)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot unbox a type object (" + std::string(wasNil ? "Nil" : v.typeName()) + ") to " +
+                (boxT[0] == 'I' ? std::string("int.") : boxT[0] == 'N' ? "a num." : "a str.")};
+        if (!I.typeOrSubsetMatches(v, boxT))
+            I.throwTypedV("X::TypeCheck::Assignment",
+                          {{"got", v}, {"expected", Value::typeObj(boxT)}, {"symbol", Value::str("$!" + at.name)}},
+                          std::string("This type cannot unbox to a native ") + kind + ": P6opaque, " +
+                          v.typeName());
+        return;
+    }
+    const char* smiley = at.defConstraint == 1 ? ":D" : at.defConstraint == 2 ? ":U" : "";
+    bool ok;
+    if (wasNil) ok = at.defConstraint != 1 || defined(v);
+    else if (at.coerce) { // `has Int() $.x`: convert what it was given
+        if (!I.typeOrSubsetMatches(v, ty)) v = I.coerceToType(v, ty);
+        return;
+    }
+    // a Junction is stored whole, never threaded, so only a Junction slot takes one
+    else if (isJunction(v)) ok = ty == "Junction";
+    else {
+        // The nominal predicate does not know every built-in's place in the type
+        // graph — an Array is Cool, a utf8 Stringy, a ValueObjAt an ObjAt — so a
+        // refusal of a BUILT-IN value is put to a smartmatch before it stands.
+        // That errs only toward taking a value, which is what the constructor
+        // always did. A user object or type is left to the predicate, which
+        // walks its class exactly (and the smartmatch calls any object Cool).
+        auto conforms = [&](const std::string& t) {
+            if (I.typeOrSubsetMatches(v, t)) return true;
+            if (v.t == VT::Object || (v.t == VT::Type && I.classes_.count(v.s.str())) ||
+                (v.t == VT::Hash && v.hashKind == "Failure") || I.subsets_.count(t))
+                return false;
+            return I.boolify(I.smartmatchValue("~~", v, Value::typeObj(t)));
+        };
+        ok = conforms(ty);
+        // …and a type name means what it meant WHERE THE CLASS WAS DECLARED. A
+        // lexical import can make `Bar` an alias of another class (`sub EXPORT
+        // { 'Bar' => Foo }`) while an unrelated `class Bar` elsewhere in the
+        // program answers to the name globally (S11-modules/export.t).
+        if (!ok && scope)
+            if (Value* tv = scope->find(ty); tv && tv->t == VT::Type && tv->s.str() != ty)
+                ok = conforms(tv->s.str());
+        if (ok && at.defConstraint) ok = (at.defConstraint == 1) == defined(v);
+    }
+    if (!ok)
+        I.throwTypedV("X::TypeCheck::Assignment",
+                      {{"got", v}, {"expected", Value::typeObj(ty)}, {"symbol", Value::str("$!" + at.name)}},
+                      "Type check failed in assignment to $!" + at.name + "; expected " + ty + smiley +
+                      " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
+}
+
 // Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
 // The process's output arrives in CHUNKS as it is produced (runProcPromise's
 // sink), so a `.lines`-marked stream splits HERE, at the tap: the callback runs
@@ -756,22 +857,19 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
         }
         return nameSigils[nm].size();
     };
-    // A role's TYPE-CAPTURE parameter is a NAME until the composition binds it:
-    // `role R[::TYPE] { has TYPE @!items }` leaves the attribute's declared type
-    // reading "TYPE", and the role's ClassInfo is SHARED by every class that
-    // composes it, so the name cannot be rewritten there — R[Int] and R[Str]
-    // would fight over it. Resolve it per OBJECT instead, against the class's
-    // own bindings, which is where the composition recorded what TYPE is.
-    // Without this the typed container refused EVERY value put into it, in
-    // R[Int] and R[Str] alike, and `.of` answered the literal "TYPE"
-    // (Concurrent::PriorityQueue is built on exactly that shape).
+    // a role's type-capture parameter, resolved per object (see roleTypeIn)
     auto resolveRoleType = [&](const std::string& t) -> const std::string& {
-        if (t.empty()) return t;
-        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
-            for (auto& b : c->roleParamBindings)
-                if (b.first == t && b.second.t == VT::Type && !b.second.s.empty())
-                    return b.second.s;
-        return t;
+        return roleTypeIn(ci.get(), t);
+    };
+    // What a NAMED argument puts in its attribute: a Nil resets it to the
+    // attribute's `is default` when it has one, and anything else is checked
+    // as the assignment it is (see checkAttrStore)
+    auto namedStore = [&](const Value* pv, const ClassAttr& at, Env* scope) -> Value {
+        const bool wasNil = pv && pv->t == VT::Nil;
+        Value v = nilResetForAttr(pv ? *pv : Value::any(), at);
+        if (wasNil && at.defaultTrait && at.sigil == '$') v = eval(const_cast<Expr*>(at.defaultTrait));
+        checkAttrStore(*this, v, at, resolveRoleType(at.type), wasNil, scope);
+        return v;
     };
     // A value the CALLER passed for a typed container attribute keeps the
     // attribute's element type — the coercion below builds a fresh Array/Hash
@@ -848,8 +946,10 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
             for (auto& pv : providedArgs)
                 if (*pv.name == at.name) { provided = &pv; break; }
             if (provided && (slotIsName || shadowedHere)) {
-                od->attrs[slot] = typedContainer(coerceToSigil(
-                    nilResetForAttr(provided->val ? *provided->val : Value::any(), at), at.sigil), at);
+                // (an `is default` is evaluated in this level's scope, as a default is)
+                if (at.defaultTrait && provided->val && provided->val->t == VT::Nil) ensureEnv();
+                od->attrs[slot] = typedContainer(
+                    coerceToSigil(namedStore(provided->val, at, lvl->declEnv.get()), at.sigil), at);
                 provided->bound = true;
                 continue;
             }
@@ -982,8 +1082,8 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
     // inherited through a SECOND parent, since the walk follows `parent` alone.
     for (auto& pv : providedArgs)
         if (!pv.bound)
-            od->attrs[*pv.name] = typedContainer(coerceToSigil(
-                nilResetForAttr(pv.val ? *pv.val : Value::any(), *pv.at), pv.at->sigil), *pv.at);
+            od->attrs[*pv.name] = typedContainer(
+                coerceToSigil(namedStore(pv.val, *pv.at, ci->declEnv.get()), pv.at->sigil), *pv.at);
 }
 
 #if defined(__APPLE__)
@@ -6891,35 +6991,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         std::to_string(cap - 1) + ")");
                         od->attrs[at.name] = makeShapedContainer(dims, at.type, &flat);
                     }
-                // …and the attribute's declared TYPE holds for what `new` was
-                // handed: `has Small $.small` refuses `small => 20` as Rakudo
-                // does, naming the attribute and the subset
-                for (size_t ci2 = nChain; ci2-- > 0;)
-                    for (auto& at : chainAt(ci2)->attrs) {
-                        if (at.type.empty() || at.sigil != '$') continue;
-                        static const std::set<std::string> kCore = {
-                            "Int", "UInt", "Num", "Rat", "Str", "Bool", "Complex"};
-                        if (!kCore.count(at.type) && !subsets_.count(at.type)) continue;
-                        bool gotArg = false;
-                        for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                        if (!gotArg) continue;
-                        auto vit = od->attrs.find(at.name);
-                        if (vit == od->attrs.end() || !defined(vit->second)) continue;
-                        if (at.coerce) { // `has Int() $.x`: convert what `new` got
-                            if (!typeOrSubsetMatches(vit->second, at.type))
-                                vit->second = coerceToType(vit->second, at.type);
-                            continue;
-                        }
-                        const Value& v = vit->second;
-                        if (v.t == VT::Hash && v.hashKind == "Proxy") continue;
-                        if (typeOrSubsetMatches(v, at.type)) continue;
-                        throwTypedV("X::TypeCheck::Assignment",
-                                    {{"got", v}, {"expected", Value::typeObj(at.type)},
-                                     {"symbol", Value::str("$!" + at.name)}},
-                                    "Type check failed in assignment to $!" + at.name + "; expected " +
-                                    at.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
-                    }
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
@@ -7114,12 +7185,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // replacing it: `has @.a` holds an Array whatever shape the twiddle
             // had, exactly as construction does — binding the raw value left
             // `.clone(a => (1,2))` with a List that `.push` could not touch.
+            // …and so it is checked as an assignment: `.clone(s => 42)` on a
+            // `has Str $.s` is refused, as `.new(s => 42)` is.
             for (auto& a : args) {
                 if (a.t != VT::Pair) continue;
                 const ClassAttr* at = ci->findAttr(a.s);
                 if (!at || !at->pub) continue;
-                ni->attrs[a.s] = coerceToSigil(
-                    nilResetForAttr(a.pairVal() ? *a.pairVal() : Value::any(), *at), at->sigil);
+                const Value* pv = a.pairVal();
+                const bool wasNil = pv && pv->t == VT::Nil;
+                Value v = nilResetForAttr(pv ? *pv : Value::any(), *at);
+                if (wasNil && at->defaultTrait && at->sigil == '$') v = eval(const_cast<Expr*>(at->defaultTrait));
+                checkAttrStore(*this, v, *at, roleTypeIn(ci.get(), at->type), wasNil, ci->declEnv.get());
+                ni->attrs[a.s] = coerceToSigil(std::move(v), at->sigil);
             }
             nv.setObj(ni); return nv;
         }
