@@ -7769,6 +7769,23 @@ ExprPtr Parser::parsePrimary() {
                     }
                     pos_ = save;
                 }
+                // …and an extended name nothing declares is still ONE name, not a
+                // call with an adverb: `foo:bar` is the routine `foo:bar`, which
+                // is undeclared (an adverb needs the space, `foo :bar`). A type
+                // smiley (`int:D`) is not this.
+                // (a word OPERATOR takes the pair as its operand: `so :bar`)
+                if (ascii::islower((unsigned char)name[0]) && peek(2).text != "D" &&
+                    peek(2).text != "U" && peek(2).text != "_" && name != "so" && name != "not") {
+                    const int ln = t.line;
+                    advance();
+                    std::string suf = readExtendedNameSuffix();
+                    // …a call to that name, judged where every call is: declared
+                    // later in the unit, or imported, it resolves
+                    auto c = std::make_unique<Call>();
+                    c->name = name + suf; c->line = ln;
+                    if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); c->args = parseCallArgs(); c->parenned = true; }
+                    return c;
+                }
             }
             // `set<a b c>` — the brackets tight after a bare list builtin are not
             // its arguments (and it has no postfix to take them)
@@ -13419,11 +13436,26 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 bool isDoes = isIdent("does");
                 advance();
                 if (!isDoes && isIdent("rw")) { advance(); cd->classRw = true; continue; }   // `also is rw`
+                std::string t;
                 if (isKind(Tok::Ident) || isKind(Tok::Var)) {
-                    std::string t = advance().text;
+                    t = advance().text;
                     if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
                     else if (isDoes) cd->roles.push_back(t);
                     else cd->extraParents.push_back(t);
+                }
+                // `also does R[Int]`: the arguments are the composition's, as
+                // they are in the header
+                if (!t.empty() && isKind(Tok::LBracket) && !cur().spaceBefore) {
+                    advance();
+                    std::vector<ExprPtr> rargs;
+                    if (!isKind(Tok::RBracket)) {
+                        ExprPtr e = parseExpression();
+                        if (e && e->kind == NK::ListExpr && !static_cast<ListExpr*>(e.get())->parenned)
+                            for (auto& it : static_cast<ListExpr*>(e.get())->items) rargs.push_back(std::move(it));
+                        else if (e) rargs.push_back(std::move(e));
+                    }
+                    expectKind(Tok::RBracket, "]");
+                    if (!rargs.empty()) cd->roleArgs.push_back({t, std::move(rargs)});
                 }
                 while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
@@ -14844,8 +14876,12 @@ StmtPtr Parser::parseStatementImpl() {
     }
     // statement label:  LABEL: for ...   (ident + a colon with no space before it,
     // so `say :adverb` — space before the ':' — is a listop call, not a label)
+    // …and whitespace AFTER it (a newline or a comment counts): `Int:D` and
+    // `T:U, 1` at the start of a statement are type terms, and a tight
+    // `L:for` is no label at all.
     if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
-        !peek().spaceBefore && !kBlockKeywords.count(cur().text) &&
+        !peek().spaceBefore && (peek(2).spaceBefore || peek(2).kind == Tok::End) &&
+        !kBlockKeywords.count(cur().text) &&
         // `infix:<=>(…)` is an operator-name call, not a label —
         // a tight `<`-starting op token after the colon disqualifies a label
         !(peek(2).kind == Tok::Op && !peek(2).spaceBefore && !peek(2).text.empty() &&

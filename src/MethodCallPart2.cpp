@@ -6984,6 +6984,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             od->boxed.itemized = false;
                         }
                         od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
+                        // …and a class that FIXED its element type (`class A is
+                        // Array[Int]`) puts that on the box, and the elements it
+                        // is built from are stores into it: `A.new("x")` is
+                        // X::TypeCheck::Assignment, as in Rakudo
+                        if (inv.ofType().empty() && (nb == "Array" || nb == "Hash")) {
+                            for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                                if (!c->nativeParent.empty()) {
+                                    if (!c->nativeOf.empty()) od->boxed.ofTypeM() = c->nativeOf;
+                                    break;
+                                }
+                            if (!od->boxed.ofType().empty()) {
+                                const std::string want = elemTypeOf(od->boxed);
+                                if (!want.empty()) {
+                                    if (od->boxed.t == VT::Array && od->boxed.arr())
+                                        for (auto& el : *od->boxed.arr()) checkElemType(want, el, "");
+                                    else if (od->boxed.t == VT::Hash && od->boxed.hash())
+                                        for (auto& kv : *od->boxed.hash()) checkElemType(want, kv.second, "");
+                                }
+                            }
+                        }
                         // An attribute with no value is its DECLARED TYPE OBJECT
                         // (`has Int $.obj-num` answers Int, not Any) and a typed
                         // container is that container (`has Str @.data` is an

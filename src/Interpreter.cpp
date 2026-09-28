@@ -1402,6 +1402,443 @@ static bool capturedType(Interpreter& I, Env* scope, const std::string& name, Va
     return true;
 }
 
+// A type NAME written as text — `T:D`, `T()`, `G::A:D()` — as the scope in
+// view binds it: a type capture bound here (a role parameter in one of its
+// parameterizations, a routine's `::T`) is the type it bound, and a lexical
+// naming a registered type under another registry name (`G::A` inside
+// R[Int], which is R::G::A[Int]) is that type. False when the name answers
+// for itself; a real type of that name always does.
+static bool boundTypeFor(Interpreter& I, const std::string& n, Value& out) {
+    if (n.empty() || !Interpreter::tctx_.cur || !ascii::isupper((unsigned char)n[0])) return false;
+    if (I.classes_.count(n) || isKnownTypeName(n)) return false;
+    if (capturedType(I, Interpreter::tctx_.cur.get(), n, out)) return true;
+    std::string r = lexicalTypeName(I, n);
+    if (r == n) return false;
+    out = Value::typeObj(r);
+    return true;
+}
+
+thread_local const std::set<std::string>* Interpreter::roleInstNames_ = nullptr;
+
+// ---- generic role bodies ---------------------------------------------------
+// Every name a subtree MENTIONS — variables with their sigils, terms, routine
+// names (bare and `&`), the words of a type spelled as text (`Array[T]`,
+// `T:D`) — and every name it DECLARES. Deliberately generous: a name reported
+// that is not really used only moves a role-body statement from "runs once"
+// to "runs per parameterization".
+namespace {
+struct NameScan {
+    std::set<std::string> refs, decls;
+    bool dynamic = false;   // EVAL or a symbolic lookup: it may name anything
+    void words(const std::string& s) {
+        const size_t n = s.size();
+        size_t i = 0;
+        while (i < n) {
+            const unsigned char ch = (unsigned char)s[i];
+            if (ascii::isalpha(ch) || ch == '_' || ch >= 0x80) {
+                size_t j = i;
+                while (j < n) {
+                    const unsigned char c = (unsigned char)s[j];
+                    if (ascii::isalnum(c) || c == '_' || c == '-' || c == '\'' || c >= 0x80) { j++; continue; }
+                    if (c == ':' && j + 2 < n && s[j + 1] == ':') { j += 2; continue; }
+                    break;
+                }
+                refs.insert(s.substr(i, j - i));
+                i = j;
+            }
+            else if ((ch == '$' || ch == '@' || ch == '%' || ch == '&') && i + 1 < n) {
+                size_t j = i + 1;
+                if (s[j] == '!' || s[j] == '.' || s[j] == '*' || s[j] == '?') j++;
+                size_t k = j;
+                while (k < n && (ascii::isalnum((unsigned char)s[k]) || s[k] == '_' || s[k] == '-' ||
+                                 (unsigned char)s[k] >= 0x80)) k++;
+                if (k > j) refs.insert(std::string(1, (char)ch) + s.substr(j, k - j));
+                i = k > i + 1 ? k : i + 1;
+            }
+            else i++;
+        }
+    }
+    void decl(const std::string& nm) {
+        if (nm.empty()) return;
+        decls.insert(nm);
+        if (nm[0] == '\\' && nm.size() > 1) decls.insert(nm.substr(1));
+    }
+    void params(const std::vector<Param>& ps) {
+        for (auto& p : ps) {
+            words(p.type); words(p.coerceFrom);
+            if (!p.captureName.empty()) decl(p.captureName);
+            expr(p.whereExpr.get()); expr(p.litVal.get()); expr(p.defaultVal.get());
+            for (auto& d : p.shapeDimExprs) expr(d.get());
+            for (auto& t : p.userTraits) expr(t.second.get());
+            if (p.subSig) params(*p.subSig);
+            if (p.codeSig) params(*p.codeSig);
+        }
+    }
+    void body(const std::vector<StmtPtr>& b) { for (auto& s : b) stmt(s.get()); }
+    void expr(const Expr* e) {
+        if (!e) return;
+        switch (e->kind) {
+        case NK::AllomorphLit: expr(static_cast<const AllomorphLit*>(e)->num.get()); break;
+        case NK::RegexLit: words(static_cast<const RegexLit*>(e)->pattern); break;
+        case NK::SubstLit: { auto* x = static_cast<const SubstLit*>(e); words(x->pattern); words(x->repl); break; }
+        case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) expr(o.get()); break;
+        case NK::InterpStr: for (auto& p : static_cast<const InterpStr*>(e)->parts) expr(p.get()); break;
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            refs.insert(v->name);
+            if (v->declare) decl(v->name);
+            words(v->declType); words(v->declCoerce); words(v->declCoerceFrom);
+            words(v->containerIs); words(v->containerOf);
+            if (!v->declStubType.empty()) decl(v->declStubType);
+            expr(v->declDefault.get()); expr(v->declShape.get()); expr(v->declTypeExpr.get());
+            expr(v->declWhereExpr);
+            break;
+        }
+        case NK::NameTerm: {
+            auto* t = static_cast<const NameTerm*>(e);
+            refs.insert(t->name); words(t->ofType);
+            break;
+        }
+        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) expr(x.get()); break;
+        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) expr(x.get()); break;
+        case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) expr(x.get()); break;
+        case NK::SymbolicRef: {
+            auto* x = static_cast<const SymbolicRef*>(e);
+            dynamic = true;   // `::('$y')`: a name this scan cannot see
+            words(x->pkg); expr(x->nameExpr.get());
+            for (auto& sg : x->segs) expr(sg.get());
+            break;
+        }
+        case NK::Assign: { auto* x = static_cast<const Assign*>(e); expr(x->target.get()); expr(x->value.get()); break; }
+        case NK::Binary: { auto* x = static_cast<const Binary*>(e); expr(x->lhs.get()); expr(x->rhs.get()); break; }
+        case NK::Unary: expr(static_cast<const Unary*>(e)->operand.get()); break;
+        case NK::Call: {
+            auto* x = static_cast<const Call*>(e);
+            if (x->name == "EVAL" || x->name == "EVALFILE") dynamic = true;   // code compiled at run time
+            if (!x->name.empty()) { refs.insert(x->name); refs.insert("&" + x->name); }
+            expr(x->callee.get());
+            for (auto& a : x->args) expr(a.get());
+            break;
+        }
+        case NK::MethodCall: {
+            auto* x = static_cast<const MethodCall*>(e);
+            expr(x->inv.get()); expr(x->methodExpr.get()); words(x->methodQual);
+            for (auto& a : x->args) expr(a.get());
+            break;
+        }
+        case NK::Index: { auto* x = static_cast<const Index*>(e); expr(x->base.get()); expr(x->index.get()); break; }
+        case NK::Ternary: {
+            auto* x = static_cast<const Ternary*>(e);
+            expr(x->cond.get()); expr(x->then.get()); expr(x->els.get());
+            break;
+        }
+        case NK::Range: { auto* x = static_cast<const RangeExpr*>(e); expr(x->from.get()); expr(x->to.get()); break; }
+        case NK::Pair: { auto* x = static_cast<const PairExpr*>(e); expr(x->keyExpr.get()); expr(x->value.get()); break; }
+        case NK::NqpOp: for (auto& a : static_cast<const NqpOp*>(e)->args) expr(a.get()); break;
+        case NK::BlockExpr: {
+            auto* x = static_cast<const BlockExpr*>(e);
+            params(x->params); body(x->body); words(x->retType);
+            break;
+        }
+        default: break;
+        }
+    }
+    void block(const Block* b) { if (b) body(b->stmts); }
+    void stmt(const Stmt* s) {
+        if (!s) return;
+        switch (s->kind) {
+        case NK::ExprStmt: expr(static_cast<const ExprStmt*>(s)->e.get()); break;
+        case NK::VarDecl: {
+            auto* x = static_cast<const VarDecl*>(s);
+            for (auto& n : x->names) decl(n);
+            expr(x->init.get());
+            break;
+        }
+        case NK::SubDecl: {
+            auto* x = static_cast<const SubDecl*>(s);
+            if (!x->name.empty()) { decl(x->name); decl("&" + x->name); }
+            expr(x->nameExpr.get());
+            params(x->params);
+            for (auto& ap : x->altParams) params(ap);
+            body(x->body);
+            words(x->retType);
+            for (auto& t : x->traits) expr(t.arg.get());
+            for (auto& a : x->immediateArgs) expr(a.get());
+            expr(x->retLiteral.get()); expr(x->deprecatedWith.get());
+            expr(x->nativeLibExpr.get()); expr(x->nativeSymExpr.get());
+            break;
+        }
+        case NK::ClassDecl: {
+            auto* x = static_cast<const ClassDecl*>(s);
+            decl(x->name);
+            expr(x->nameExpr.get());
+            words(x->parent);
+            for (auto& p : x->extraParents) words(p);
+            for (auto& r : x->roles) words(r);
+            for (auto& t : x->trustsNames) words(t);
+            for (auto& ra : x->roleArgs) for (auto& a : ra.second) expr(a.get());
+            for (auto& ut : x->userTraits) expr(ut.second.get());
+            params(x->roleParams);
+            for (auto& a : x->attrs) {
+                words(a.type); words(a.containerIs); words(a.coerceFrom);
+                expr(a.def.get()); expr(a.defaultTrait.get()); expr(a.whereExpr.get()); expr(a.shape.get());
+                for (auto& ut : a.userTraits) expr(ut.second.get());
+            }
+            for (auto& m : x->methods) if (m) stmt(m.get());
+            body(x->body);
+            break;
+        }
+        case NK::Block: block(static_cast<const Block*>(s)); break;
+        case NK::EnumDecl: {
+            auto* x = static_cast<const EnumDecl*>(s);
+            decl(x->name); expr(x->values.get()); words(x->ofType);
+            break;
+        }
+        case NK::SubsetDecl: {
+            auto* x = static_cast<const SubsetDecl*>(s);
+            decl(x->name); words(x->baseType); words(x->coerceFrom); expr(x->where.get());
+            break;
+        }
+        case NK::NamedRegexDecl: {
+            auto* x = static_cast<const NamedRegexDecl*>(s);
+            decl(x->name); words(x->pattern);
+            break;
+        }
+        case NK::IfStmt: {
+            auto* x = static_cast<const IfStmt*>(s);
+            for (auto& br : x->branches) { expr(br.first.get()); block(br.second.get()); }
+            for (auto& bp : x->branchParams) params(bp);
+            params(x->elseParams);
+            block(x->elseBlock.get());
+            break;
+        }
+        case NK::WhileStmt: {
+            auto* x = static_cast<const WhileStmt*>(s);
+            expr(x->cond.get()); params(x->params); block(x->body.get());
+            break;
+        }
+        case NK::ForStmt: {
+            auto* x = static_cast<const ForStmt*>(s);
+            expr(x->list.get()); params(x->params); block(x->body.get());
+            break;
+        }
+        case NK::ReturnStmt: expr(static_cast<const ReturnStmt*>(s)->value.get()); break;
+        case NK::UseStmt: {
+            auto* x = static_cast<const UseStmt*>(s);
+            expr(x->ifCond.get()); expr(x->fileExpr.get()); expr(x->argExpr.get());
+            break;
+        }
+        case NK::GivenStmt: {
+            auto* x = static_cast<const GivenStmt*>(s);
+            expr(x->topic.get()); params(x->params); params(x->elseParams);
+            block(x->body.get()); block(x->elseBody.get());
+            break;
+        }
+        case NK::WhenStmt: {
+            auto* x = static_cast<const WhenStmt*>(s);
+            expr(x->cond.get()); block(x->body.get());
+            break;
+        }
+        case NK::LoopStmt: {
+            auto* x = static_cast<const LoopStmt*>(s);
+            expr(x->init.get()); expr(x->cond.get()); expr(x->incr.get()); block(x->body.get());
+            break;
+        }
+        case NK::RepeatStmt: {
+            auto* x = static_cast<const RepeatStmt*>(s);
+            expr(x->cond.get()); block(x->body.get());
+            break;
+        }
+        default: break;
+        }
+    }
+};
+
+// Does a mentioned name fall in the tainted set? A qualified name is tainted
+// by its first part: `G::A` is the package G's.
+bool taintedName(const std::set<std::string>& t, const std::string& r) {
+    if (t.count(r)) return true;
+    size_t c = r.find("::");
+    return c != std::string::npos && c > 0 && t.count(r.substr(0, c)) > 0;
+}
+} // namespace
+
+// Which of a parametric role's body statements are GENERIC: the ones that use
+// a role parameter, or a name a generic statement declares (transitively —
+// `my T $x; my $y = $x.^name` makes both generic). Repeated to a fixed point
+// because a sub is declared ahead of its textual position, so an earlier sub
+// can call a later generic one. Never generic: a `use` (a load, which the
+// declaration needs), a `my method` (it is the role's method), and a multi or
+// proto sub (a group grows by joining, and a second scope would split it).
+const Interpreter::GenericRoleBody* Interpreter::genericRoleBody(const ClassDecl* cd) {
+    if (!cd || !cd->isRole || cd->roleParams.empty()) return nullptr;
+    auto hit = genericRoleBodies_.find(cd);
+    if (hit != genericRoleBodies_.end()) return &hit->second;
+    GenericRoleBody g;
+    const size_t n = cd->body.size();
+    g.generic.assign(n, 0);
+    for (auto& p : cd->roleParams) {
+        if (!p.name.empty()) {
+            g.names.insert(p.name);
+            if (p.name[0] == '\\' && p.name.size() > 1) g.names.insert(p.name.substr(1));
+        }
+        if (p.typeCapture && !p.type.empty()) g.names.insert(p.type);
+        if (!p.captureName.empty()) g.names.insert(p.captureName);
+    }
+    std::vector<NameScan> scans(n);
+    std::vector<char> eligible(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        const Stmt* st = cd->body[i].get();
+        if (!st || st->kind == NK::UseStmt || st->kind == NK::EmptyStmt) continue;
+        if (st->kind == NK::SubDecl) {
+            auto* sd = static_cast<const SubDecl*>(st);
+            if (sd->isMethod || sd->isMulti || sd->isProto) continue;
+        }
+        // (compile-time constructs run once, at the declaration, as in Rakudo:
+        // a BEGIN, a constant, an enum)
+        if (st->kind == NK::EnumDecl) continue;
+        if (st->kind == NK::Block && !static_cast<const Block*>(st)->phaser.empty()) continue;
+        if (st->kind == NK::ExprStmt) {
+            const Expr* ex = static_cast<const ExprStmt*>(st)->e.get();
+            if (ex && ex->kind == NK::Assign) {
+                const Expr* t = static_cast<const Assign*>(ex)->target.get();
+                const Expr* v = static_cast<const Assign*>(ex)->value.get();
+                if (t && t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->declScope == "constant") continue;
+                if (v && v->kind == NK::BlockExpr && !static_cast<const BlockExpr*>(v)->phaser.empty()) continue;   // `my $x = BEGIN { … }`
+                if (v && v->kind == NK::Unary && static_cast<const Unary*>(v)->op == "BEGIN") continue;              // `my $x = BEGIN …`
+            }
+        }
+        eligible[i] = 1;
+        scans[i].stmt(st);
+    }
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            if (!eligible[i] || g.generic[i]) continue;
+            // a statement whose names are decided at run time (EVAL, `::('…')`)
+            // may name a generic lexical: it runs where those exist
+            bool uses = scans[i].dynamic && !scans[i].decls.empty();
+            for (auto& r : scans[i].refs)
+                if (!uses && taintedName(g.names, r)) { uses = true; break; }
+            // …and a declaration a generic statement USES is per
+            // parameterization too (`my @seen; … @seen.push(T)`)
+            if (!uses)
+                for (auto& d : scans[i].decls) {
+                    for (size_t j = 0; j < n && !uses; j++)
+                        if (g.generic[j] && j != i && scans[j].refs.count(d)) uses = true;
+                    if (uses) break;
+                }
+            if (!uses) continue;
+            g.generic[i] = 1;
+            g.any = changed = true;
+            for (auto& d : scans[i].decls) {
+                g.names.insert(d);
+                if (!d.empty() && (d[0] == '$' || d[0] == '@' || d[0] == '%') && d.size() > 1) g.lexicals.insert(d);
+            }
+        }
+    }
+    // A multi, proto or `my method` is never split out, but one that
+    // mentions a generic name is declared AGAIN in each parameterization's
+    // scope (whole groups: every candidate of that name), so it reads that
+    // parameterization's types and lexicals
+    for (auto& st : cd->body) {
+        if (!st || st->kind != NK::SubDecl) continue;
+        auto* sd = static_cast<const SubDecl*>(st.get());
+        if (!(sd->isMulti || sd->isProto || sd->isMethod) || sd->name.empty()) continue;
+        NameScan ns; ns.stmt(st.get());
+        for (auto& r : ns.refs) if (taintedName(g.names, r)) { g.groups.insert(sd->name); g.any = true; break; }
+    }
+    return &(genericRoleBodies_[cd] = std::move(g));
+}
+
+// One parameterization's run of its role's generic statements: in a scope of
+// its own (under the role body's, so everything the body declared once is
+// still in view), with the parameters bound and the role's package current,
+// as Rakudo runs a role body per composition. That scope becomes the
+// parameterization's declaration scope — its attribute defaults evaluate there
+// and its methods close over it (recloseRoleMethods) — and the attributes are
+// re-read against it: `has @.a is G::A` names this parameterization's G::A.
+bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role) {
+    if (!conc || !role || !role->decl) return false;
+    const GenericRoleBody* g = genericRoleBody(role->decl);
+    if (!g || !g->any) return false;
+    auto env = std::make_shared<Env>();
+    env->parent = role->declEnv ? role->declEnv : global_;
+    env->packageFrame = true;
+    env->x().pkgType = conc;
+    for (auto& b : conc->roleParamBindings)
+        if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);
+    struct Restore {
+        Interpreter& I;
+        std::shared_ptr<Env> cur;
+        std::string pfx;
+        const std::set<std::string>* inst;
+        int line;
+        ~Restore() { I.tctx_.cur = cur; I.tctx_.pkgPrefix = pfx; I.roleInstNames_ = inst; I.curLine_ = line; }
+    } restore{*this, tctx_.cur, tctx_.pkgPrefix, roleInstNames_, curLine_};
+    tctx_.cur = env;
+    tctx_.pkgPrefix = role->name + "::";
+    roleInstNames_ = &g->names;
+    const auto& body = role->decl->body;
+    auto isSub = [](const Stmt* st) { return st && st->kind == NK::SubDecl; };
+    // the subs first, as a block hoists them: a generic statement may call
+    // one declared further down, and must find THIS parameterization's
+    for (size_t i = 0; i < body.size() && i < g->generic.size(); i++)
+        if (g->generic[i] && isSub(body[i].get())) exec(body[i].get());
+    // …and a multi, proto or `my method` that mentions a generic name is
+    // declared here again (whole groups: every candidate of that name), so
+    // it reads THIS parameterization's lexicals
+    {
+        const std::set<std::string>& groups = g->groups;
+        // (a group of this scope's own, so the body's candidates — closed over
+        // the role body — are not what the calls here find)
+        for (auto& nm : groups) {
+            Value fresh; fresh.t = VT::Code; fresh.setCode(std::make_shared<Callable>());
+            fresh.code()->name = nm;
+            fresh.code()->isMultiDispatcher = true;
+            env->define("&" + nm, fresh);
+        }
+        for (auto& st : body)
+            if (isSub(st.get()) && groups.count(static_cast<const SubDecl*>(st.get())->name)) exec(st.get());
+    }
+    // (the subs declared here read their parameters' types — `T $x` — from
+    // this scope, as a parameterization's methods do: before anything calls them)
+    auto markConcrete = [&]() {
+        for (auto& kv : env->vars) {
+            if (kv.first.empty() || kv.first[0] != '&' || kv.second.t != VT::Code || !kv.second.code()) continue;
+            Callable* c = kv.second.code();
+            if (c->isMultiDispatcher) { for (auto& cand : c->candidates) if (cand.code()) cand.code()->roleConcrete = true; }
+            else if (c->closure == env) c->roleConcrete = true;
+        }
+    };
+    markConcrete();
+    for (size_t i = 0; i < body.size() && i < g->generic.size(); i++)
+        if (g->generic[i] && body[i] && !isSub(body[i].get())) exec(body[i].get());
+    markConcrete();
+    for (auto& a : conc->attrs) applyContainerElemType(a);
+    conc->declEnv = env;
+    return true;
+}
+
+// See Interpreter.h. Looked up the way a composition names its parent: the
+// lexical binding first, then the enclosing package's own, then the alias.
+void Interpreter::applyContainerElemType(ClassAttr& a) {
+    if (a.containerIs.empty() || (a.sigil != '@' && a.sigil != '%')) return;
+    auto it = classes_.find(lexicalTypeName(*this, a.containerIs));
+    if (it == classes_.end() && !tctx_.pkgPrefix.empty()) it = classes_.find(tctx_.pkgPrefix + a.containerIs);
+    if (it == classes_.end()) it = classes_.find(resolveClassAlias(a.containerIs));
+    if (it == classes_.end() || !it->second || it->second->isRole) return;
+    a.containerIs = it->first;
+    if (!a.type.empty()) return;
+    for (ClassInfo* k = it->second.get(); k; k = k->parent.get()) {
+        if (k->nativeParent.empty()) continue;
+        if (!k->nativeOf.empty() &&
+            ((a.sigil == '@' && k->nativeParent == "Array") || (a.sigil == '%' && k->nativeParent == "Hash")))
+            a.type = k->nativeOf;
+        break;
+    }
+}
+
 Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // `my ::foo $x` with no `foo` anywhere: $x holds a BARE type of that name
     if (ve && !ve->declStubType.empty() && sigil == '$' && ve->declType.empty()) {
@@ -12852,8 +13289,11 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     if (pun->dispName != roleName) pun->doneRoles.insert(pun->dispName);
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
+    // (the generic statements run for THIS parameterization, and its methods
+    // close over the scope they ran in)
+    const bool generic = !pun->roleParamBindings.empty() && runGenericRoleBody(pun, role);
     applyRoleTypeParamsToAttrs(pun.get());
-    recloseRoleMethods(pun);
+    recloseRoleMethods(pun, generic ? role->declEnv.get() : nullptr, generic ? pun->declEnv : nullptr);
     concretizeInnerRoles(pun, role);
     // The roles this parameterization DOES through its parameters: `role
     // RR[::T] does T` (RR[Foo] does Foo) and `role PR1[::T1] does PR00[T1]`
@@ -12964,7 +13404,10 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
         // `role R[::T]`: a bare type-capture param binds the type NAME to the
         // argument at its positional slot (Cro::ConnectionState[TestState]
         // answers TestState for T in the role body)
-        if (p.typeCapture && !p.type.empty() && !p.named) {
+        // (a capture after a constraint, `Numeric ::T`, is one too: typeCapture
+        // stays false there because the parameter HAS a type)
+        const std::string capName = !p.captureName.empty() ? p.captureName : p.type;
+        if ((p.typeCapture || !p.captureName.empty()) && !capName.empty() && !p.named) {
             size_t ai = 0, seen = 0; bool found = false;
             for (; ai < argv.size(); ai++)
                 if (!argv[ai].namedArg && seen++ == posIdx) { found = true; break; }
@@ -12980,7 +13423,7 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
                 Value tv = (argv[ai].t == VT::Type || enumTypeObj)
                              ? argv[ai]
                              : Value::typeObj(argv[ai].typeName());
-                dest->roleParamBindings.push_back({p.type, tv});
+                dest->roleParamBindings.push_back({capName, tv});
             }
             // …and a bare `does R` takes the capture's DEFAULT (`role R[::T = Any]`),
             // which is as load-bearing as an explicit argument: an attribute
@@ -12991,7 +13434,7 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
                 try { dv = eval(p.defaultVal.get()); } catch (...) { got = false; }
                 if (got)
                     dest->roleParamBindings.push_back(
-                        {p.type, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName())});
+                        {capName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName())});
             }
         }
         if (!p.named && !p.slurpy) posIdx++;
@@ -13024,9 +13467,14 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
 // parameters at call time by whichever class called — `does R[Str] does R[Int]`
 // gave both its multis T = Str, and a `multi method foo(T $t)` matched nothing
 // at all, since the dispatcher resolved T from the CALLER's scope.
-void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc) {
+void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env* bodyScope,
+                                     const std::shared_ptr<Env>& concScope) {
     if (!conc || conc->roleParamBindings.empty()) return;
     std::unordered_map<Env*, std::shared_ptr<Env>> scopes;
+    // a method declared in the role body closes over the scope this
+    // parameterization's generic statements ran in, which already binds the
+    // parameters (and answers pkgType) — so its `$v` and `G::A` are its own
+    if (bodyScope && concScope) scopes[bodyScope] = concScope;
     auto reclose = [&](Value& m) {
         const Callable* c = m.code();
         if (!c || !c->body || c->builtin) return;
@@ -13063,8 +13511,9 @@ std::shared_ptr<ClassInfo> Interpreter::concretizeRole(const std::shared_ptr<Cla
     conc->roleParamBindings.clear();
     bindRoleParamsInto(conc.get(), role.get(), argv, scope);
     if (conc->roleParamBindings.empty()) return role;
+    const bool generic = runGenericRoleBody(conc, role.get());
     applyRoleTypeParamsToAttrs(conc.get());
-    recloseRoleMethods(conc);
+    recloseRoleMethods(conc, generic ? role->declEnv.get() : nullptr, generic ? conc->declEnv : nullptr);
     concretizeInnerRoles(conc, role.get());
     return conc;
 }
@@ -14667,6 +15116,16 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (!(st->kind == NK::ClassDecl && !static_cast<ClassDecl*>(st.get())->isAugment))
                         exec(st.get());
                 tctx_.cur = saved; curPkgEnv_ = savedPkg;
+                // …and in a role parameterization's generic statements the
+                // package's types are reachable by their package-qualified
+                // names FROM HERE, lexically: `my package G { class A is
+                // Array[T] {} }` makes `G::A` this parameterization's
+                // R::G::A[Int], which no global name can tell from R[Str]'s
+                if (roleInstNames_ && !cd->name.empty())
+                    for (auto& kv : pkgEnv->vars)
+                        if (kv.second.t == VT::Type && !kv.first.empty() &&
+                            (ascii::isalpha((unsigned char)kv.first[0]) || kv.first[0] == '_'))
+                            tctx_.cur->define(cd->name + "::" + kv.first, kv.second);
                 // Only `our`-declared sigil vars are visible by qualified name; `my` stays lexical.
                 // …and so does a routine declared without `our` — `package P { sub f {} }`
                 // leaves `P::f` unfound, an `is export` one included (it is in
@@ -14797,6 +15256,42 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 ? "<anon|" + std::to_string(++anonTypeCounter_) + ">"
                 : (!tctx_.pkgPrefix.empty() && declName.rfind(tctx_.pkgPrefix, 0) != 0
                     ? tctx_.pkgPrefix + declName : declName);
+            // A class a parametric role's generic statements declare, whose
+            // PARENT is parameterized by a role parameter, is a class of this
+            // parameterization's own, named for the parent's arguments:
+            // `class A is Array[T]` in R[Int] is R::G::A[Int] (and
+            // `class H is Hash[V, K]` in R2[Str, Int] is R2::G::H[Int,Str]).
+            // A class that only USES a parameter keeps its plain name.
+            bool genericInstance = false;
+            // (not when the parent is a ROLE: `is P2[T]` inherits that role's pun,
+            // and the class keeps its own name)
+            bool parentIsRole = false;
+            if (roleInstNames_ && !cd->parent.empty()) {
+                auto pit = classes_.find(lexicalTypeName(*this, cd->parent));
+                if (pit == classes_.end()) pit = classes_.find(resolveClassAlias(cd->parent));
+                parentIsRole = pit != classes_.end() && pit->second && pit->second->isRole;
+            }
+            if (roleInstNames_ && !parentIsRole && !cd->isRole && !cd->parent.empty() && !cd->parentIsDoes) {
+                for (auto& ra : cd->roleArgs) {
+                    if (ra.first != cd->parent || ra.second.empty()) continue;
+                    NameScan ns;
+                    for (auto& e : ra.second) ns.expr(e.get());
+                    bool uses = false;
+                    for (auto& r : ns.refs)
+                        if (taintedName(*roleInstNames_, r)) { uses = true; break; }
+                    if (uses) {
+                        ValueList av;
+                        bool ok = true;
+                        try { for (auto& e : ra.second) av.push_back(eval(e.get())); }
+                        catch (RakuError&) { ok = false; }
+                        if (ok && !av.empty()) {
+                            const std::string sfx = roleArgsDisplay("", av);
+                            if (!sfx.empty()) { clsName += sfx; genericInstance = true; }
+                        }
+                    }
+                    break;
+                }
+            }
             ci->name = clsName;
             ci->pod = cd->pod; ci->podTrail = cd->podTrail;
             // A type composing a parametric role gets its own parameterization
@@ -14907,6 +15402,27 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         ci->parent = rargs ? pickRoleVariantArgs(it->second, *rargs) : pickRoleVariant(it->second, n);
                     }
                     if (cd->parentIsDoes) ci->parent = concretizeOccurrence(ci->parent, cd->parent, 0);
+                    // `is R[Str]`: a parametric role as a PARENT is its pun
+                    else if (ci->parent->isRole && ci->parent->decl && !ci->parent->decl->roleParams.empty()) {
+                        const std::vector<ExprPtr>* rargs = nullptr;
+                        for (auto& ra : cd->roleArgs) if (ra.first == cd->parent) { rargs = &ra.second; break; }
+                        if (rargs && !rargs->empty()) {
+                            ValueList av;
+                            bool ok = true;
+                            try {
+                                for (auto& e : *rargs) {
+                                    Value v = eval(e.get());
+                                    if (e->kind == NK::Pair) v.namedArg = true;
+                                    av.push_back(std::move(v));
+                                }
+                            } catch (RakuError&) { ok = false; }
+                            if (ok) {
+                                Value pun = makeRolePun(ci->parent.get(), cd->parent, av);
+                                auto pc = classes_.find(pun.s);
+                                if (pc != classes_.end() && pc->second) ci->parent = pc->second;
+                            }
+                        }
+                    }
                 }
                 else if (rakuAstParent) ci->parent = *rakuAstParent;
                 else if (isKnownTypeName(cd->parent)) {
@@ -16280,7 +16796,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // `unit module Getopt::Long`, a multi param typed `Argument::Boolean`
             // must find Getopt::Long::Argument::Boolean, or its whole dispatch
             // group resolves no candidate.
-            for (size_t sep = clsName.find("::"); sep != std::string::npos;
+            // (not for one parameterization's instance of a generic class: its
+            // names are the lexical ones that parameterization binds)
+            for (size_t sep = genericInstance ? std::string::npos : clsName.find("::"); sep != std::string::npos;
                  sep = clsName.find("::", sep + 1)) {
                 std::string tail = clsName.substr(sep + 2);
                 // never shadow a BUILT-IN type: `class X::Roast::Channel` must not
@@ -16306,7 +16824,41 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // An EVAL in the body adds to THIS class (`EVAL 'method x {…}'`)
                 g_classBodies.push_back(clsName);
                 struct PopBody { ~PopBody() { g_classBodies.pop_back(); } } popBody;
-                try { for (auto& st : cd->body) exec(st.get()); }
+                // A parametric role's GENERIC statements wait for a
+                // parameterization (runGenericRoleBody); the rest run once, now.
+                const GenericRoleBody* grb = cd->isRole ? genericRoleBody(cd) : nullptr;
+                if (grb && !grb->any) grb = nullptr;
+                // …unless every parameter has a default: the role type ITSELF is
+                // then usable (`R.m`, a pun of the defaults), so its own body
+                // runs whole, now, with the defaults bound where it runs
+                if (grb) {
+                    bool allDefaulted = true;
+                    for (auto& p : cd->roleParams) {
+                        if (p.slurpy) continue;
+                        if (p.named ? (p.required && !p.defaultVal) : (!p.defaultVal && !p.optional)) {
+                            allDefaulted = false;
+                            break;
+                        }
+                    }
+                    if (allDefaulted) {
+                        for (auto& b : ci->roleParamBindings)
+                            if (!b.first.empty() && !bodyEnv->local(b.first)) bodyEnv->define(b.first, b.second);
+                        grb = nullptr;
+                    }
+                }
+                // (what a generic statement declares still EXISTS here, unset: a
+                // method compiled now — an `EVAL 'method …'` — can name it, and
+                // a use of the role no parameterization runs for finds it; a
+                // generic SUB is declared here too, as it always was)
+                if (grb)
+                    for (auto& nm : grb->lexicals)
+                        if (!bodyEnv->local(nm))
+                            bodyEnv->define(nm, nm[0] == '@' ? Value::array() : nm[0] == '%' ? Value::makeHash() : Value::any());
+                try {
+                    for (size_t bi = 0; bi < cd->body.size(); bi++)
+                        if (!grb || bi >= grb->generic.size() || !grb->generic[bi] ||
+                            (cd->body[bi] && cd->body[bi]->kind == NK::SubDecl)) exec(cd->body[bi].get());
+                }
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 // `sub … is export` in a CLASS body still exports: in a `unit class`
                 // the whole file IS the body, which is where several dists keep
@@ -16322,6 +16874,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         }
                 tctx_.cur = saved;
                 tctx_.pkgPrefix = savedPrefix;
+                // Inside a parameterization's run, `my class Box { class In … }`:
+                // `Box::In` names THIS parameterization's In (as a `my package`'s
+                // members are bound, above), whatever its registry name
+                if (roleInstNames_ && !cd->name.empty() && !cd->isRole)
+                    for (auto& kv : bodyEnv->vars)
+                        if (kv.second.t == VT::Type && !kv.first.empty() &&
+                            (ascii::isupper((unsigned char)kv.first[0]) || kv.first[0] == '_') &&
+                            kv.second.s != clsName)
+                            tctx_.cur->define(cd->name + "::" + kv.first, kv.second);
             }
             // A NESTED class shadows an outer one of the same name for the types
             // written in its parent's body — and it only exists NOW, because the
@@ -16334,6 +16895,22 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (!ca2.type.empty() && ca2.type.find("::") == std::string::npos &&
                     classes_.count(clsName + "::" + ca2.type))
                     ca2.type = clsName + "::" + ca2.type;
+            // …and a container class named for an `@`/`%` attribute
+            // (`has @.a is G::A`, G declared in the body) is looked up from the
+            // body too, where it now exists; an `is Array[Int]` one types it
+            {
+                bool anyIs = false;
+                for (auto& ca2 : ci->attrs) if (!ca2.containerIs.empty()) { anyIs = true; break; }
+                if (anyIs) {
+                    auto savedCur = tctx_.cur;
+                    std::string savedPfx = tctx_.pkgPrefix;
+                    tctx_.cur = bodyEnv;
+                    tctx_.pkgPrefix = clsName + "::";
+                    for (auto& ca2 : ci->attrs) applyContainerElemType(ca2);
+                    tctx_.cur = savedCur;
+                    tctx_.pkgPrefix = savedPfx;
+                }
+            }
             // The metaobject a MODULE-SUPPLIED DECLARATOR names (`model Foo`),
             // made before the attribute traits run: a trait reaches it through
             // the type (`$attr.package.^add-relationship(…)` in Red's
@@ -51341,11 +51918,23 @@ Value Interpreter::evalCall(Call* c) {
         if (c->callee->kind == NK::NameTerm && static_cast<const NameTerm*>(c->callee.get())->defConstraint) {
             const auto* nt = static_cast<const NameTerm*>(c->callee.get());
             const int dc = nt->defConstraint;
+            // the type as the scope binds the name (`T:D()` in R[Int] is
+            // Int:D(Any)), else as a package-relative name resolves
+            // (`G::A:D()` inside R is R::G::A:D(Any))
+            std::string base = nt->name;
+            {
+                Value bt;
+                if (boundTypeFor(*this, base, bt)) base = bt.s.str();
+                else if (!classes_.count(base)) {
+                    const std::string& rn = resolveClassAlias(base);
+                    if (rn != base && classes_.count(rn)) base = rn;
+                }
+            }
             if (args.empty() || (args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
                                  args[0].ofType().empty() && args[0].s.find('(') == std::string::npos))
-                return Value::typeObj(nt->name + (dc == 1 ? ":D" : dc == 2 ? ":U" : ":_") + "(" +
+                return Value::typeObj(base + (dc == 1 ? ":D" : dc == 2 ? ":U" : ":_") + "(" +
                                       (args.empty() ? std::string("Any") : args[0].s.str()) + ")");
-            if (args.size() == 1 && !args[0].namedArg) return coerceToType(args[0], nt->name);
+            if (args.size() == 1 && !args[0].namedArg) return coerceToType(args[0], base);
         }
         // move, not copy: `args` is a local about to die and ValueList is taken BY
         // VALUE — passing it as an lvalue copied the vector and every Value in it on
@@ -51878,6 +52467,17 @@ Value Interpreter::evalCall(Call* c) {
         if (c->parenned && !c->callee) {
             bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
                            args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
+            // A name BOUND to a type first — a role's type capture, `T()` in
+            // R[Int], is Int(Any), and `T($v)` coerces to Int — ahead of any
+            // registered type, which a capture of the same name never is
+            {
+                Value bt;
+                if ((args.empty() || typeArg) && boundTypeFor(*this, c->name, bt))
+                    return Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")");
+                if (args.size() == 1 && !args[0].namedArg && !classes_.count(c->name) &&
+                    capturedType(*this, tctx_.cur.get(), c->name, bt))
+                    return coerceToType(args[0], bt.s.str());
+            }
             // A MODULE or PACKAGE is a type here too. It is registered in
             // pkgKind_ rather than classes_, so `module foo {}; foo()` was
             // "Undefined routine 'foo'" where Rakudo answers the coercion type
@@ -55079,7 +55679,14 @@ struct NodeCountReport {
             }
             // `Foo:D` / `Foo:U` — the smiley rides on the type value (i), so the
             // constraint survives into .^name, smartmatch and .^base_type
-            if (nt->defConstraint) { Value ty = Value::typeObj(n); ty.i = nt->defConstraint; return ty; }
+            // …and a name BOUND to a type — a role's type capture (`T:D` in
+            // R[Int] is Int:D), a per-parameterization `G::A` — is that type
+            if (nt->defConstraint) {
+                Value ty;
+                if (!boundTypeFor(*this, n, ty)) ty = Value::typeObj(n);
+                ty.i = nt->defConstraint;
+                return ty;
+            }
             if (n == "next" || n == "last" || n == "redo") {
                 if (tctx_.frameTop == tctx_.curLoopFrame) {
                     tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative

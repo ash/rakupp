@@ -1310,6 +1310,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (!param.empty()) return Value::typeObj(param);
             }
         }
+        // …and a CLASS that inherits a parameterized container keeps its
+        // element type: `class A is Array[Int] {}; A.of` is Int
+        if (inv.ofType().empty()) {
+            auto cit = classes_.find(inv.s);
+            if (cit != classes_.end() && cit->second)
+                for (ClassInfo* k = cit->second.get(); k; k = k->parent.get())
+                    if (!k->nativeParent.empty()) {
+                        if (!k->nativeOf.empty() && (k->nativeParent == "Array" || k->nativeParent == "Hash"))
+                            return Value::typeObj(k->nativeOf);
+                        break;
+                    }
+        }
         return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
     }
     // …and on a buffer INSTANCE: `Buf.new(1,2).of`. The element type rides on

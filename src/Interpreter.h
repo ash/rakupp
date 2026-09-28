@@ -1518,7 +1518,40 @@ public:
     // there is nothing to bind.
     std::shared_ptr<ClassInfo> concretizeRole(const std::shared_ptr<ClassInfo>& role, ValueList& argv,
                                               const std::shared_ptr<Env>& scope);
-    void recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc);
+    // `bodyScope`: the role body's own scope, and `concScope` the scope one
+    // parameterization's generic statements ran in — a method that closed over
+    // the first closes over the second instead (see runGenericRoleBody)
+    void recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env* bodyScope = nullptr,
+                            const std::shared_ptr<Env>& concScope = nullptr);
+    // A parametric role body's GENERIC statements — the ones that use a role
+    // parameter, directly or through a name another generic statement declared —
+    // run once per parameterization, with the parameters bound, in a scope of
+    // their own (Rakudo runs the whole body per composition). Decided once per
+    // declaration: `generic[i]` marks cd->body[i]; `names` is the tainted set
+    // (the parameters and every name the generic statements declare).
+    struct GenericRoleBody {
+        std::vector<char> generic;
+        std::set<std::string> names;
+        std::set<std::string> groups;   // multi/proto/`my method` names declared again per parameterization
+        std::set<std::string> lexicals; // the variables generic statements declare (pre-declared, unset, in the body)
+        bool any = false;
+    };
+    std::map<const ClassDecl*, GenericRoleBody> genericRoleBodies_;
+    const GenericRoleBody* genericRoleBody(const ClassDecl* cd);
+    // Runs `role`'s generic statements for the parameterization `conc`, whose
+    // roleParamBindings are already bound. Makes conc->declEnv that scope.
+    // Answers false when the role has none.
+    bool runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role);
+    // While a parameterization's generic statements run: the tainted names, so a
+    // class declared there whose parent parameterization uses one is that
+    // class's own instance (`class A is Array[T]` in R[Int] is R::G::A[Int]).
+    // (per thread: parameterizations may run in parallel `start` blocks)
+    static thread_local const std::set<std::string>* roleInstNames_;
+    // `has @.a is SomeArray` / `has %.h is SomeHash`: the container class as the
+    // scope in view names it (a lexical or package-relative name resolved to its
+    // registry name), and — when the attribute declares no type of its own — the
+    // element type a class `is Array[Int]` gives it.
+    void applyContainerElemType(ClassAttr& a);
     void concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role);
     // `inv.R::m` for a parametric R: the parameterization of R the invocant's
     // type composed (null when it composed none that can be told apart)

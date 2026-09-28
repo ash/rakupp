@@ -7663,6 +7663,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         // `X.^parameterize(T)` yields the parameterized type `X[T]` (same as `X[T]`)
         if (mm == "parameterize") {
+            // …and a parametric ROLE's is its pun, exactly as `R[T]` makes it
+            if (inv.t == VT::Type) {
+                auto rit = classes_.find(inv.s);
+                if (rit != classes_.end() && rit->second && rit->second->isRole && rit->second->decl &&
+                    (!rit->second->decl->roleParams.empty() || !rit->second->roleVariants.empty())) {
+                    ValueList av = args;
+                    ClassInfo* role = rit->second->roleVariants.empty()
+                                    ? rit->second.get() : pickRoleVariantValues(rit->second, av).get();
+                    return makeRolePun(role, inv.s, av);
+                }
+            }
             Value ty = Value::typeObj(inv.t == VT::Type ? inv.s : inv.typeName());
             for (auto& a : args) {
                 std::string pn = a.t == VT::Type ? a.s : a.typeName();
