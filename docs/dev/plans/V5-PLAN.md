@@ -274,6 +274,15 @@ Everything under "Silent wrong answers" above.
   accepted path. Read why the first attempt was backed out before starting.
 - New strictness, such as "Strange text after block", lands only with a clean
   battery scan.
+- Two divergences an adopter's course teaches (Raku Koans,
+  [live/ADOPTIONS.md](../../../live/ADOPTIONS.md)). Rakudo refuses a call that
+  can never bind when it compiles the file (`Calling f(Int) will never work
+  with declared signature (Str $x)`, and the same for a missing required
+  named); rakupp raises that error only when the call runs, so
+  `dies-ok { f(42) }` passes here and never compiles there. And under a label
+  named `OUTER`, Rakudo reads `next OUTER` as the pseudo-package and dies;
+  rakupp takes the label. The first is new strictness, so the battery scan
+  applies.
 
 ### B4 — the ecosystem clusters
 

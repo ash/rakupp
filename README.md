@@ -201,7 +201,8 @@ exploring Raku++:
   tools people already use, driven by Raku++ exactly as their authors wrote
   them. The other direction — other people's software that reached for *this*
   engine — is **[live/ADOPTIONS.md](live/ADOPTIONS.md)**: a Wolfram paclet, a
-  browser playground offering rakupp as one of four runtimes, a Guix channel.
+  browser playground offering rakupp as one of four runtimes, a course of Raku
+  koans graded by Raku.js, a Guix channel.
 
 ## Run Raku in the browser — Raku.js
 

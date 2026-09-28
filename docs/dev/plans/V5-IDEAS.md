@@ -95,7 +95,15 @@ a planted exfiltration in a test file fails closed, gated.
   as Linux is the real one. iOS follows the same shape.
 - **A fresh WebAssembly build.** The engine behind `--fallback=wasm` is a July
   build; the playground cannot load a module. WASI would make one artifact run
-  in every runtime rather than only a browser.
+  in every runtime rather than only a browser. Raku Koans
+  ([live/ADOPTIONS.md](../../../live/ADOPTIONS.md)) builds on the released
+  Raku.js and works around three things it lacks: the release is
+  `web,worker` only, so its CI loads it under Node through Emscripten's
+  `instantiateWasm` (a `RAKUJS_ENV=node` build exists and is not released);
+  `rakupp_run()` cannot be stopped by the host, so a watchdog kills the
+  worker; and recursion in a Web Worker ends at 59 levels in Chrome and 32 in
+  Safari ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)), with no
+  main-thread retry of the kind the playground has.
 - **More hosts on the one C API.** The JavaScript binding is Bun-only
   (`bun:ffi`); Node needs N-API. Emacs Lisp is requested (issue #44, with
   raku-mode and org-babel named). Ruby, PHP, Java, .NET, Swift and Lua each cost

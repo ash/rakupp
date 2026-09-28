@@ -21,6 +21,7 @@ raku.online — those are ours and belong in
 |---|---|---|
 | [**RakuppLink**](https://resources.wolframcloud.com/PacletRepository/resources/AntonAntonov/RakuppLink/) | Anton Antonov | ships the Wolfram binding as a paclet in Wolfram's own repository |
 | [**Raku Playground**](https://fco.github.io/Raku-Playground/?runtime=rakupp) | Fernando Correa de Oliveira | offers rakupp as one of four runtimes, in the browser |
+| [**Raku Koans**](https://hankache.github.io/raku-koans/) | Naoum Hankache | runs a course of 105 test-driven koans on Raku.js, in the browser |
 | [**rakupp-dsci**](https://github.com/melezhik/rakupp-dsci) | Alexey Melezhik | ports the Raku++ release matrix to another CI |
 | [**sibl**](https://github.com/4zv4l/sibl-channel) | 4zv4l | packages rakupp in a personal Guix channel |
 
@@ -101,6 +102,28 @@ subtracts a line offset from our `line N` errors to point them back at the
 user's own code. Two workarounds, both fair descriptions of something this
 engine does not offer an embedder.
 
+## Raku Koans — a Raku course graded by Raku.js
+
+[**Raku Koans**](https://hankache.github.io/raku-koans/) is a course by Naoum
+Hankache, the author of [raku.guide](https://raku.guide)
+([source](https://github.com/hankache/raku-koans); code Artistic-2.0, artwork
+CC BY-SA 4.0). It follows the guide's order through 105 koans in sixteen
+groups, from `Test` assertions to grammars: each koan is a short program whose
+tests fail until the learner fills in every `___`. The idea is Ruby Koans'.
+
+Every answer is checked in the browser by Raku.js, the WebAssembly build of
+this engine. The course downloads it from a Raku++ release and pins it by
+checksum — v4.0.1 when this entry was written — and moves to a newer release
+only after re-running every koan on it.
+
+**Where it meets our plans.** Three koans teach code this engine accepts and
+Rakudo refuses: two calls Rakudo rejects at compile time as ones that "will
+never work", and a `next OUTER` that Rakudo resolves differently. They are in
+the v5 error work ([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3). What the
+course had to build around — a Raku.js that runs only in a browser, no way to
+stop a running program, shallow recursion in a Web Worker — is under "A fresh
+WebAssembly build" in [V5-IDEAS.md](../docs/dev/plans/V5-IDEAS.md).
+
 ## rakupp-dsci — the release matrix on somebody else's CI
 
 [**rakupp-dsci**](https://github.com/melezhik/rakupp-dsci) is Alexey
@@ -131,7 +154,8 @@ package without asking us, which is exactly why it is worth recording.
 ## What they have in common
 
 Every one of these pins a snapshot. The playground vendors a July build, the
-Guix channel a v1.2.0 tag, and the paclet is written against the C ABI in
+Guix channel a v1.2.0 tag, the koans a v4.0.1 release by checksum, and the
+paclet is written against the C ABI in
 [include/rakupp/rakupp.h](../include/rakupp/rakupp.h), linking whatever
 `librakupp` its user happened to build. A fix landing here reaches none of
 them until their author re-vendors or re-pins — worth remembering before
@@ -140,5 +164,5 @@ other way round: that ABI is the one part of this project other people's
 builds are compiled against, so it is the part to keep still.
 
 None of this is under our control. Rows can move or disappear without notice;
-the links are what they were on **2026-08-28**, the date each was last
-checked.
+the links are what they were on the date each was last checked —
+**2026-09-28** for Raku Koans, **2026-08-28** for the rest.
