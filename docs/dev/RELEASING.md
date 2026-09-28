@@ -446,6 +446,35 @@ reads as an equality bug and is not one.
 Commit the battery repo with `battery: N/59` in the **subject** — the dashboard
 mines that string and nothing warns when it goes stale.
 
+### 6b. An adopter's gate — Raku Koans
+
+```bash
+git -C ~/raku-koans pull --ff-only          # once: git clone https://github.com/hankache/raku-koans.git ~/raku-koans
+rakupp tools/koans-gate.raku                # RAKUPP=/path/to/rakupp to name the binary
+```
+
+[Raku Koans](../../live/ADOPTIONS.md) is a course graded by Raku.js. It pins a
+Raku++ release by checksum and moves to a newer one only after its own check
+passes: every line holding a `___` fails while unfilled, and every solution
+passes. A release that breaks a koan blocks that upgrade, so this runs the same
+check on the candidate first. It takes seconds natively.
+
+**Red is a koan the candidate gets wrong, named.** To tell a regression from a
+koan that is new upstream, run it again with `RAKUPP=` the previous release's
+binary: green there and red here is ours. Exit 2 means it could not judge (no
+checkout, no binary) and is never a pass.
+
+The same check on Raku.js itself — the bundle the course actually loads — runs
+their own harness, `node scripts/check-koans.mjs`, on a Raku.js build (Node 22+):
+
+```bash
+rakujs/build.sh && rakupp tools/koans-gate.raku --rakujs=rakujs/playground
+```
+
+This runs after the tag at the latest, on the bundle copied to raku.online
+(see "Always — after the tag" below), and before the tag whenever the
+candidate's Raku.js was built this cycle.
+
 ### 7. Conformance — only before a release
 
 ```bash
@@ -738,6 +767,7 @@ cp ../raku++/rakujs/playground/examples.js www/play/
 #    (worker.js is NOT copied — the site keeps its own variant.)
 #    Then check the bundle you copied, not the build — see below:
 strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'
+rakupp ../raku++/tools/koans-gate.raku --rakujs=www   # gate 6b on the bundle itself
 
 cd sites/spec
 rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)      # 2. gate 1's output

@@ -114,7 +114,8 @@ tests fail until the learner fills in every `___`. The idea is Ruby Koans'.
 Every answer is checked in the browser by Raku.js, the WebAssembly build of
 this engine. The course downloads it from a Raku++ release and pins it by
 checksum — v4.0.1 when this entry was written — and moves to a newer release
-only after re-running every koan on it.
+only after re-running every koan on it. Every Raku++ release candidate runs
+that same check first: gate 6b in [RELEASING.md](../docs/dev/RELEASING.md).
 
 **Where it meets our plans.** Three koans teach code this engine accepts and
 Rakudo refuses: two calls Rakudo rejects at compile time as ones that "will

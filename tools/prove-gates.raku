@@ -238,6 +238,36 @@ gate
           !! 'the run does NOT name the committed baseline — it may be comparing against itself' )
   };
 
+# --- 6b. an adopter's gate: Raku Koans ---------------------------------------
+# The faithful plant is an engine that answers a koan wrongly, which costs a
+# rebuild. This wraps the real binary instead and turns the first assertion of
+# every program into `not ok` — the gate's red path and its naming, not a
+# measurement of which real regressions the koans would notice. Say so when
+# quoting it.
+gate
+  id     => '6b',
+  name   => 'koans-gate (Raku Koans)',
+  defect => 'an engine whose first assertion in every program comes out `not ok`',
+  cost   => '~10 s',
+  run    => sub {
+      my $koans = (%*ENV<RAKU_KOANS> // ((%*ENV<HOME> // '.') ~ '/raku-koans')).IO;
+      return (Nil, "no Raku Koans checkout at $koans — clone it, or set RAKU_KOANS=")
+          unless $koans.add('koans').d;
+      my $wrap = $*TMPDIR.add("prove-gates-koans-{$*PID}");
+      my $undo = plant-file($wrap, qq:to/WRAP/);
+          #!/bin/bash
+          # PLANTED by tools/prove-gates.raku — delete if a killed run left it.
+          "$RAKUPP" "\$@" | sed -E 's/^ok 1( |\$)/not ok 1\\1/'
+          exit \$\{PIPESTATUS[0]\}
+          WRAP
+      LEAVE $undo();
+      $wrap.chmod(0o755);
+      my ($rc, $out, $err) = sh($RAKUPP, $ROOT.add('tools/koans-gate.raku').Str,
+                                :env(%( RAKUPP => $wrap.Str )));
+      my $named = $out.contains('solution does not pass');
+      ( $rc == 1, "exit $rc" ~ ($named ?? ', naming the koans whose solutions fail' !! ', but no koan is named') )
+  };
+
 # --- 1. Roast (slow) -------------------------------------------------------
 gate
   id     => '1',
