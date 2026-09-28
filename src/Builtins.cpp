@@ -8411,7 +8411,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE", "can",
             // …and `.VAR` of a mixin is the mixin itself: `(5 but R).VAR` is an Int+{R}
             "VAR"};
-        if (!keepOnObj.count(m)) return methodCall(inv.obj()->boxed, m, args, rwArgs);
+        if (!keepOnObj.count(m)) {
+            Value r = methodCall(inv.obj()->boxed, m, args, rwArgs);
+            // …and a subclassed Promise's `.then` is one of the subclass too
+            // (S17-promise/basic.t: `class Meows is Promise`)
+            if (m == "then" && r.t == VT::Hash && r.hashKind == "Promise" &&
+                inv.obj()->boxed.t == VT::Hash && inv.obj()->boxed.hashKind == "Promise") {
+                auto od = makePayload<ObjectData>();
+                od->cls = inv.obj()->cls;
+                od->hasBoxed = true;
+                od->boxed = r;
+                return Value::object(od);
+            }
+            return r;
+        }
     }
 
     // `IO::Socket::INET.listen($host, $port, …)` / `.connect($host, $port, …)`:
@@ -9606,6 +9619,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return methodCall(l, m, args); // Bool.pick(*) shuffles (False, True)
     }
     if (inv.t == VT::Type && inv.s == "IO::Path" && m == "new") {
+        // the path's SPEC: `:SPEC(…)`, else the dynamic $*SPEC. A built-in
+        // flavor makes a path of that flavor; a user subclass of IO::Spec
+        // rides along for `.SPEC` to answer (S32-io/io-path.t)
+        Value specArg;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "SPEC" && a.pairVal()) specArg = *a.pairVal();
+        if (specArg.t != VT::Type)
+            if (Value* sp = findDynamicLenient("$*SPEC")) specArg = *sp;
+        std::string flavor, userSpec;
+        if (specArg.t == VT::Type) {
+            const std::string sn = specArg.s.str();
+            if (sn.rfind("IO::Spec::", 0) == 0) {
+                const std::string fl = sn.substr(10);
+                if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") flavor = fl;
+            }
+            else if (sn != "IO::Spec" && classes_.count(sn)) userSpec = sn;
+        }
         std::string path; bool havePositional = false;
         for (auto& a : args) if (a.t != VT::Pair) { path = a.toStr(); havePositional = true; break; }
         // the parts constructor: `.new(:basename, :dirname, :volume)` builds the
@@ -9619,8 +9648,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 else if (a.s == "basename") base = a.pairVal()->toStr();
             }
             if (!base.empty()) {
-                while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
-                path = vol + (dir.empty() || dir == "." ? "" : (dir == "/" ? "/" : dir + "/")) + base;
+                // (a flavored SPEC joins the pieces its own way)
+                Value jr;
+                ValueList ja{Value::str(vol), Value::str(dir), Value::str(base)};
+                if (!flavor.empty() && ioSpecMethod(*this, "IO::Spec::" + flavor, "join", ja, jr)) path = jr.toStr();
+                else {
+                    while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
+                    path = vol + (dir.empty() || dir == "." ? "" : (dir == "/" ? "/" : dir + "/")) + base;
+                }
                 havePositional = true;
             }
         }
@@ -9631,6 +9666,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             "Must specify a non-empty string as a path"};
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO";
+        if (!flavor.empty()) p.enumName = flavor;
+        if (!userSpec.empty()) p.enumType = userSpec;
         // the `:CWD` is the directory this path is relative to; it rides in
         // ofType, which a path value has no other use for. Captured from the
         // current $*CWD by default (Rakudo's model); an explicit :CWD wins.
@@ -14941,7 +14978,12 @@ void Interpreter::registerBuiltins() {
             // tagged value) must go through the real operator (`cmp-ok $v, '>',
             // v0.0.0` flattened both sides to 0 and failed; Log::Async's suite)
             bool bothNum = x.isNumeric() && y.isNumeric();
-            if (bothNum && op == "==") c = x.toNum() == y.toNum();
+            // a JUNCTION on either side threads through the real operator —
+            // `cmp-ok "/", 'eq', <\ />.any` is True (S32-io/io-path.t); the
+            // string shortcut below compared against the text "any(…)"
+            if ((isJunction(x) || isJunction(y)) && op != "~~" && op != "!~~")
+                c = applyArith(op, x, y).truthy();
+            else if (bothNum && op == "==") c = x.toNum() == y.toNum();
             else if (bothNum && op == "!=") c = x.toNum() != y.toNum();
             else if (bothNum && op == "<") c = x.toNum() < y.toNum();
             else if (bothNum && op == ">") c = x.toNum() > y.toNum();
@@ -15346,11 +15388,36 @@ void Interpreter::registerBuiltins() {
     };
     // (the EVAL moves the current line into its own text: a failure is reported
     // at the CALLER's line, where the test is written)
+    // Rakudo's Test runs the string inside a ROUTINE of its own
+    // (`eval_exception`), so a `fail` — or a `return` — at the string's top
+    // level returns from THAT, and the helper judges the value it hands back:
+    // defined is "died", undefined "lived". `eval-lives-ok 'map -> $x, $y {
+    // ... }, 1..6'` lives there because a stub FAILS (advent2009-day20.t).
+    // True when the code returned something (into `returned`).
+    static const auto evalAsRoutine = [](Interpreter& I, const std::string& code, Value& returned) {
+        ExecContext& t = I.tctx_;
+        ++t.frameTop;
+        struct Frame {
+            ExecContext& t; uint64_t top, rf;
+            Frame(ExecContext& x) : t(x), top(x.frameTop), rf(x.curRoutineFrame) { x.curRoutineFrame = x.frameTop; }
+            ~Frame() { t.frameTop = top - 1; t.curRoutineFrame = rf; }
+        } frame{t};
+        try { I.evalOwnScope(code); }
+        catch (ReturnEx& r) { returned = r.v; return true; }
+        if (t.returning) { t.returning = false; returned = t.returnV; return true; }
+        return false;
+    };
     B["eval-lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool lived = true;
         const int line = I.curLine_;
         std::string why;
-        try { if (!a.empty()) I.evalOwnScope(a[0].toStr()); }
+        try {
+            Value rv;
+            if (!a.empty() && evalAsRoutine(I, a[0].toStr(), rv) && rtIsDefined(rv)) {
+                lived = false;
+                why = rv.toStr();
+            }
+        }
         catch (RakuError& e) {
             lived = false;
             why = e.message;
@@ -15364,7 +15431,11 @@ void Interpreter::registerBuiltins() {
     B["eval-dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
         const int line = I.curLine_;
-        try { if (!a.empty()) I.evalOwnScope(a[0].toStr()); } catch (RakuError&) { died = true; }
+        try {
+            Value rv;
+            if (!a.empty() && evalAsRoutine(I, a[0].toStr(), rv)) died = rtIsDefined(rv);
+        }
+        catch (RakuError&) { died = true; }
         I.curLine_ = line;
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
@@ -15613,7 +15684,14 @@ void Interpreter::registerBuiltins() {
     };
     // stub / yada operators
     B["!!!"] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
-    B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
+    // `...` FAILS, as Rakudo's does: the routine it stands in answers a Failure
+    // carrying X::StubCode, which throws when it is used or sunk — and with no
+    // routine around it, it throws where it stands. (`!!!` always throws.)
+    B["..."] = [](Interpreter& I, ValueList& a) -> Value {
+        const std::string msg = a.empty() ? std::string("Stub code executed") : a[0].toStr();
+        ValueList fa{I.makeTypedEx("X::StubCode", {}, msg)};
+        return I.callBuiltin("fail", fa);
+    };
     // `???` WARNS — through `warn`, so a CONTROL block sees the CX::Warn
     B["???"] = [](Interpreter& I, ValueList& a) -> Value {
         ValueList wa{Value::str(a.empty() ? std::string("Stub code executed") : a[0].toStr())};
@@ -19436,6 +19514,13 @@ void Interpreter::registerBuiltins() {
             throw RakuError{Value::typeObj("X::AdHoc"), "Must specify at least one Awaitable to await"};
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
+            // a subclassed Promise (`class Meows is Promise`) is awaited through
+            // the Promise it boxes
+            if (p.t == VT::Object && p.obj() && p.obj()->hasBoxed &&
+                p.obj()->boxed.t == VT::Hash && p.obj()->boxed.hashKind == "Promise") {
+                Value inner = p.obj()->boxed;
+                return resolve(inner);
+            }
             // a NESTED list of awaitables is awaited all the way down
             if (p.t == VT::Array && p.arr() && p.enumName.empty() && p.hashKind.empty()) {
                 Value out = Value::array(); out.isList = true;

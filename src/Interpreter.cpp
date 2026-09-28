@@ -1417,7 +1417,8 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // is answered "known".
     // Rakudo reports it as a group: the undeclared type (with its "Did you
     // mean" suggestions) as the sorrow, and the declaration it broke as the panic.
-    if (ve && !ve->declType.empty() && !ve->declTypeExpr && !declTypeIsKnown(ve->declType)) {
+    if (ve && !ve->declType.empty() && !ve->declTypeExpr &&
+        (!declTypeIsKnown(ve->declType) || requireHidden(ve->declType))) {
         auto sug = typeSuggestions(ve->declType);
         Value sl = Value::array(); sl.isList = true;
         for (auto& n : sug) sl.arr()->push_back(Value::str(n));
@@ -1993,6 +1994,19 @@ static bool exprYieldsContainer(const Expr* e) {
 // unhandled Failure detonates; a Proc that exited unsuccessfully throws
 // X::Proc::Unsuccessful (Rakudo's Proc.sink). One rule, wherever the sink is.
 void Interpreter::sinkValue(const Value& r) {
+    // A sunk lazy `.map` over an ENDLESS source runs until its block says
+    // `last`, as Rakudo iterates any sunk Seq (`(^Inf).map({ last if …; … });`).
+    // Nothing keeps what it produces, so the buffer is not left to grow.
+    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized) {
+        auto st = std::static_pointer_cast<LazySeqState>(r.ext());
+        if (st->mapView && st->infinite && st->appendNext && !st->exhausted) {
+            ValueList& buf = *r.arr();
+            while (st->appendNext(buf)) if (buf.size() > 1024) buf.clear();
+            st->exhausted = true;
+            st->infinite = false;
+            return;
+        }
+    }
     // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
     // (…but an ITEM is a container, and sinking a container reads nothing:
     // `lives-ok { my $s = (gather die)[] }` lives — S02-types/array.t)
@@ -2003,6 +2017,8 @@ void Interpreter::sinkValue(const Value& r) {
     if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
         (std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource ||
          std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe ||
+         // …and a lazy `.map`: `(^Inf).map({ last if …; … });` runs until its `last`
+         std::static_pointer_cast<LazySeqState>(r.ext())->mapView ||
          (RAKUPP_HAVE_CORO && std::static_pointer_cast<LazySeqState>(r.ext())->gatherSeq && r.s == "Seq"))) {
         forceLazy(r); return;
     }
@@ -6936,6 +6952,38 @@ int Interpreter::run(Program& prog) {
         // (`my $x = E if COND` at file scope must declare $x even when COND is
         // false) — the loop above only sees plain top-level ExprStmts
         hoistExprDecls(prog.stmts, global_.get(), nullptr);
+        // A `require Name` the unit writes installs a STUB package of that name at
+        // compile time, before the load happens at run time — so a BEGIN already
+        // sees the name (`BEGIN try EVAL '$staticname = Test'`, S11-modules/require.t).
+        {
+            std::function<void(const Expr*)> seeReq = [&](const Expr* e) {
+                if (!e) return;
+                if (e->kind == NK::Assign) { seeReq(static_cast<const Assign*>(e)->value.get()); return; }
+                if (e->kind == NK::ListExpr) {
+                    for (auto& it : static_cast<const ListExpr*>(e)->items) seeReq(it.get());
+                    return;
+                }
+                if (e->kind != NK::Unary) return;
+                auto* u = static_cast<const Unary*>(e);
+                if (u->op != "require") { seeReq(u->operand.get()); return; }
+                if (!u->operand || u->operand->kind != NK::StrLit) return;
+                const std::string& nm = static_cast<const StrLit*>(u->operand.get())->v;
+                if (!nm.empty() && ascii::isalpha((unsigned char)nm[0]) && !classes_.count(nm) &&
+                    !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
+                    global_->define(nm, Value::typeObj(nm));
+            };
+            for (auto& st : prog.stmts) {
+                if (!st) continue;
+                if (st->kind == NK::ExprStmt) seeReq(static_cast<const ExprStmt*>(st.get())->e.get());
+                else if (st->kind == NK::UseStmt) {
+                    auto* us = static_cast<const UseStmt*>(st.get());
+                    const std::string& nm = us->module;
+                    if (us->isRequire && !us->fileExpr && !nm.empty() && ascii::isalpha((unsigned char)nm[0]) &&
+                        !classes_.count(nm) && !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
+                        global_->define(nm, Value::typeObj(nm));
+                }
+            }
+        }
         // nested BEGIN/CHECK/INIT (in blocks and closures) — see runStaticPhasers
         runStaticPhasers(prog.stmts, tctx_.cur, /*unitIsLive=*/false);
         // BEGIN: source order. What dies in one is a compile-time failure,
@@ -8994,6 +9042,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                     "Circular module loading detected trying to precompile " + name);
     if (loadedModules_.count(name) && doImport && !requireForm) checkImportTags(name, importArgs);
     if (loadedModules_.count(name)) {
+        // a module `use`d again, anywhere, is everyone's: its classes stop being
+        // the first importing block's alone
+        if (!requireScoped_.empty()) {
+            auto mc = moduleClasses_.find(name);
+            if (mc != moduleClasses_.end())
+                for (auto& c : mc->second) requireScoped_.erase(c);
+        }
         // The module body ran once and stays run — but a repeat `use` still
         // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs
         // replaying (its symbols are defined lexically, per use-statement, and
@@ -9132,6 +9187,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     const char* howLabel = "embedded";
     std::optional<std::set<std::string>> srcExportTags;   // set from the source, when there is one
     auto loadParsed = [&](std::shared_ptr<Program> prog, const std::string& finish) {
+        // (the classes that exist before this module's body runs — see the end)
+        std::unordered_set<std::string> classesBefore;
+        for (auto& kv : classes_) classesBefore.insert(kv.first);
         double tRun = traceLoad ? nowMs() : 0;
         struct TGuard {
             bool on; const std::string& nm; double pms, t0;
@@ -9454,6 +9512,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                            c->methods.empty(); }
                 return false;
             };
+            moduleTopEnvs_.push_back(moduleEnv.get());
+            struct TopPop { std::vector<Env*>& v; ~TopPop() { v.pop_back(); } } topPop{moduleTopEnvs_};
             for (auto& st : prog->stmts) {
                 tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
                 if (!isPrologue(st.get())) runInitsOnce(); // every `use` above us has run
@@ -9499,6 +9559,20 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (name == "JSON::Fast") wrapJsonFastExports(*moduleEnv);
         publish();
         tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
+        // What the module declares is the IMPORTING scope's when that is a block
+        // or a routine: `{ use EmptyClass; my EmptyClass $foo }` leaves no
+        // EmptyClass after the block (S11-modules/lexical.t). A `use` at the
+        // top of the program or of a module keeps its packages for everyone.
+        if (!name.empty()) {
+            std::vector<std::string> fresh;
+            for (auto& kv : classes_) if (!classesBefore.count(kv.first)) fresh.push_back(kv.first);
+            const bool nested = saved && saved.get() != global_.get() &&
+                                std::find(moduleTopEnvs_.begin(), moduleTopEnvs_.end(), saved.get()) ==
+                                    moduleTopEnvs_.end();
+            if (nested && !requireForm)
+                for (auto& c : fresh) requireScoped_[c] = saved;
+            moduleClasses_[name] = std::move(fresh);
+        }
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
         // args; its returned Map ('&name' => &code, ...) defines the imports
         // in the USING scope.
@@ -9961,6 +10035,38 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         // as "incomplete" so the caller can ask for the next line, rather than
         // raising a syntax error the user would have to work around.
         if (incompleteOut && e.atEof) { *incompleteOut = true; return Value::any(); }
+        // A BEGIN runs as it is PARSED, so one written above the line that fails
+        // has already run when the error is reported: `EVAL q[BEGIN { $t =
+        // 'begin' }; …; 1 1]` leaves $t 'begin' (S04-phasers/begin.t). The
+        // source above the failing line is parsed again on its own, and its
+        // top-level BEGIN blocks run in the caller's scope; a prefix that does
+        // not parse runs nothing, and nothing else in it runs at all.
+        if (!incompleteOut && e.line > 1 && src.find("BEGIN") != std::string::npos) {
+            size_t cut = 0;
+            for (int ln = 1; ln < e.line && cut != std::string::npos; ln++) {
+                cut = src.find('\n', cut);
+                if (cut != std::string::npos) cut++;
+            }
+            if (cut != std::string::npos && cut > 0) {
+                const std::string pre = src.substr(0, cut);
+                try {
+                    Lexer pl(pre);
+                    pl.tolerant_ = true;
+                    Parser pp(pl.tokenize());
+                    pp.src_ = &pre;
+                    pp.libPaths_ = libPaths_;
+                    pp.strictSep_ = true;
+                    Program pprog = pp.parseProgram();
+                    for (auto& st : pprog.stmts) {
+                        if (!st || st->kind != NK::Block) continue;
+                        auto* b = static_cast<Block*>(st.get());
+                        if (b->phaser != "BEGIN") continue;
+                        if (b->stmtForm) execBlock(b, tctx_.cur);
+                        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                    }
+                } catch (...) {}
+            }
+        }
         if (e.exType == "X::Package::Stubbed") {
             // the space-joined `packages` names become a real list attribute
             std::string names;
@@ -12453,7 +12559,7 @@ void Interpreter::seqUse(const Value& v, SeqUse how) {
     if (st == kSeqCached) return;
     if (st == kSeqConsumed) {
         if (how == SeqUse::Sink) return;
-        throwTypedV("X::Seq::Consumed", {},
+        throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj("Seq")}},
                     "The iterator of this Seq is already in use/consumed by another Seq\n"
                     "(you might solve this by adding .cache on usages of the Seq, or\n"
                     "by assigning the Seq into an array)");
@@ -15487,8 +15593,10 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // never shadow a BUILT-IN type: `class X::Roast::Channel` must not
                 // make bare `Channel` mean the exception class
                 if (!tail.empty() && !isKnownTypeName(tail) &&
-                    !classes_.count(tail) && !classAliases_.count(tail))
+                    !classes_.count(tail) && !classAliases_.count(tail)) {
                     classAliases_[tail] = clsName;
+                    if (loadingModuleDepth_ == 0) programAliases_.insert(tail);
+                }
             }
             // (`anon class C {…}` installs its name nowhere — S12-class/anonymous.t)
             if (!cd->name.empty() && !cd->isAnonDecl) tctx_.cur->define(cd->name, Value::typeObj(clsName));
@@ -21652,8 +21760,10 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
             return Value::any();
         }
     };
-    if (inv.t == VT::Hash && inv.hash() && inv.hashKind.empty()) {
+    // (…and a Map hypers to a Map: `(:42a, :666b).Map».Str` — S03-metaops/hyper.t)
+    if (inv.t == VT::Hash && inv.hash() && (inv.hashKind.empty() || inv.hashKind == "Map")) {
         Value hout = Value::makeHash();
+        hout.hashKind = inv.hashKind;
         hout.ofTypeM() = inv.ofType(); hout.objKeyed = inv.objKeyed;
         for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = each(kv.second);
         return hout;
@@ -43161,6 +43271,20 @@ struct HyperOpName {
     explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
     ~HyperOpName() { g_hyperOpName = prev; }
 };
+// A TYPED Array operand of a hyper keeps its type on the result when every
+// element still fits it (`my Int @a; @a >>*>> 4` is an Array[Int]), and the
+// answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
+static Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {
+    const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
+                       : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
+    if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
+    bool fits = true;
+    for (auto& e : *res.arr()) if (!I.typeOrSubsetMatches(e, typed->ofType())) { fits = false; break; }
+    if (fits) { res.isList = false; res.ofTypeM() = typed->ofType(); }
+    else { res.isList = true; res.ofTypeM() = ""; }
+    return res;
+}
+
 Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
         Value* lroot, Value* rroot, bool wantSlots) {
@@ -43771,8 +43895,8 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         Value ll = l, rr = r;
         HyperOpName hon{inner};
-        return hyperCore(ll, rr, strictL, strictR,
-            [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
+        return typedHyperResult(*this, l, r, hyperCore(ll, rr, strictL, strictR,
+            [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); }));
     }
     if (Value* f = lexShadowedInfix(op, l, r)) return callCallable(*f, ValueList{l, r});
     try { return applyArith(op, l, r); }
@@ -44600,8 +44724,8 @@ Value Interpreter::evalBinary(Binary* b) {
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             Value ll = l, rr = r;
             HyperOpName hon{inner};
-            return hyperCore(ll, rr, strictL, strictR,
-                [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
+            return typedHyperResult(*this, l, r, hyperCore(ll, rr, strictL, strictR,
+                [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); }));
         }
         // zip/cross metaop `Zop`/`Xop` — one implementation (zxOp), which also
         // brings this path the endless-Z lazy view it used to lack
@@ -46642,6 +46766,41 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         const void* key = r.blk ? (const void*)r.blk : (const void*)r.be;
         if (staticPhaserVal_.count(key)) return;
         auto senv = staticEnvFor(r);
+        // A BEGIN written between a stub `sub f {...}` and the sub's real body
+        // sees the STUB — at that point of the parse nothing else exists yet —
+        // so calling it there is X::StubCode (S06-advanced/stub.t). The stub is
+        // bound in a scope of its own, just for this phaser.
+        if (r.kind == "BEGIN" && r.blk && !r.chain.empty()) {
+            const auto& scope = *r.chain.back();
+            size_t pi = scope.size();
+            for (size_t i = 0; i < scope.size(); i++) if (scope[i].get() == r.blk) { pi = i; break; }
+            auto isStubSub = [](const Stmt* s) {
+                if (!s || s->kind != NK::SubDecl) return false;
+                auto* sd = static_cast<const SubDecl*>(s);
+                if (sd->body.size() != 1 || !sd->body[0] || sd->body[0]->kind != NK::ExprStmt) return false;
+                const Expr* e = static_cast<const ExprStmt*>(sd->body[0].get())->e.get();
+                if (!e || e->kind != NK::Call) return false;
+                auto* c = static_cast<const Call*>(e);
+                return (c->name == "..." || c->name == "!!!" || c->name == "???") && c->args.empty() && !c->callee;
+            };
+            std::shared_ptr<Env> ov;
+            for (size_t i = 0; i < pi && pi < scope.size(); i++) {
+                if (!isStubSub(scope[i].get())) continue;
+                const std::string& nm = static_cast<const SubDecl*>(scope[i].get())->name;
+                bool realLater = false;
+                for (size_t j = pi + 1; j < scope.size() && !realLater; j++)
+                    if (scope[j] && scope[j]->kind == NK::SubDecl && !isStubSub(scope[j].get()) &&
+                        static_cast<const SubDecl*>(scope[j].get())->name == nm)
+                        realLater = true;
+                if (!realLater) continue;
+                if (!ov) { ov = std::make_shared<Env>(); ov->parent = senv; }
+                auto savedCur = tctx_.cur;
+                tctx_.cur = ov;
+                try { exec(scope[i].get()); } catch (...) { tctx_.cur = savedCur; throw; }
+                tctx_.cur = savedCur;
+            }
+            if (ov) senv = ov;
+        }
         auto saved = tctx_.cur;
         tctx_.cur = senv;
         Value v;
@@ -47877,8 +48036,16 @@ Value Interpreter::evalUnary(Unary* u) {
                 u->operand->kind != NK::SymbolicRef) {
                 std::string mod = name.substr(0, name.size() - el);
                 for (size_t k; (k = mod.find('/')) != std::string::npos; ) mod.replace(k, 1, "::");
-                try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true); }
+                std::unordered_set<std::string> before;
+                for (auto& kv : classes_) before.insert(kv.first);
+                try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
                 catch (ParseError& pe) { throw RakuError{Value::typeObj("X::AdHoc"), pe.what()}; }
+                // …and what the FILE declares is the requiring scope's alone: a
+                // `require "GlobalInner.rakumod"` inside a method leaves
+                // `::('GlobalInner')` a Failure outside it (S11-modules/require.t)
+                if (tctx_.cur && tctx_.cur.get() != global_.get())
+                    for (auto& kv : classes_)
+                        if (!before.count(kv.first)) requireScoped_[kv.first] = tctx_.cur;
                 return Value::str(name);
             }
         }
@@ -47890,8 +48057,11 @@ Value Interpreter::evalUnary(Unary* u) {
         // ParseError escaping as a compile-time abort killed the whole program
         // over a module the caller had already said it could do without. The
         // exception type matches what Rakudo throws here.
+        // (a runtime `require ::($name)` loads for everyone — a plugin loader
+        // requires in a routine and uses the class elsewhere — so it is not a
+        // block's `use`)
         try {
-            loadModule(name, {}, /*doImport=*/true, /*quiet=*/true);
+            loadModule(name, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true);
         } catch (ParseError& pe) {
             throw RakuError{Value::typeObj("X::AdHoc"), pe.what()};
         }
@@ -53159,7 +53329,8 @@ struct NodeCountReport {
                 catch (RakuError&) { return noSuch(); }
             }
             // sigilless: constant, then type / builtin resolution (NameTerm rules)
-            if (Value* p = tctx_.cur->find(nm)) return *p;
+            // (…less a name a file-form `require` elsewhere brought in)
+            if (Value* p = tctx_.cur->find(nm); p && !(p == global_->local(nm) && requireHidden(nm))) return *p;
             // the built-in numeric TERMS: `::('e')`, `::('pi')`
             if (nm == "e" || nm == "pi" || nm == "tau" || nm == "\xCF\x80" || nm == "\xCF\x84" ||
                 nm == "\xF0\x9D\x91\x92" || nm == "i") {
@@ -53431,7 +53602,7 @@ struct NodeCountReport {
             // the `$`-variable paths do: handing the Proxy itself back let it be
             // copied into the assignment target, and a later write to that copy
             // reached back into the array it aliased.
-            if (Value* p = tctx_.cur->find(n)) {
+            if (Value* p = tctx_.cur->find(n); p && !(p == global_->local(n) && requireHidden(n))) {
                 if (p->t == VT::Hash && p->hashKind == "PoisonedAlias" && p->hash()) {
                     const std::string pk = (*p->hash())["package-name"].toStr();
                     throwTypedV("X::PoisonedAlias",
@@ -53465,7 +53636,25 @@ struct NodeCountReport {
             // package-relative short name: bare `Path` answers `URI::Path` when no
             // class/var/builtin claims it (see classAliases_)
             {
-                const std::string& rn = resolveClassAlias(n);
+                std::string rn = resolveClassAlias(n);
+                // …but only INSIDE that package: `Path` within `unit class URI`,
+                // `B` within `class A { class B {} }` — never at file scope, where
+                // `B.new` is an undeclared name (S12-class/namespaced.t). The code
+                // is inside the package when the package prefix says so (its body
+                // or unit is running) or the running routine was declared there.
+                // (a MODULE's nested names stay lenient: a module reaches its own
+                // `Globber::Match` from routines this cannot place — IO::Glob)
+                if (rn != n && !classes_.count(n) && programAliases_.count(n) && rn.size() > n.size() + 2 &&
+                    rn.compare(rn.size() - n.size() - 2, n.size() + 2, "::" + n) == 0) {
+                    const std::string owner = rn.substr(0, rn.size() - n.size() - 2);
+                    std::string here = tctx_.pkgPrefix;
+                    if (here.size() >= 2 && here.compare(here.size() - 2, 2, "::") == 0) here.resize(here.size() - 2);
+                    if (here.empty() && tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+                        tctx_.curRoutineVal->code())
+                        here = tctx_.curRoutineVal->code()->pkg;
+                    if (here == "GLOBAL") here.clear();
+                    if (!(here == owner || here.rfind(owner + "::", 0) == 0)) rn = n;
+                }
                 // ::($name) resolution refuses to manufacture: a name no registry
                 // knows throws X::NoSuchSymbol instead of minting a stub type
                 // object — a stub and a real class are both undefined, so a
@@ -53482,7 +53671,7 @@ struct NodeCountReport {
                     size_t c = s.find("::");
                     return c != std::string::npos && ps.count(s.substr(0, c)) > 0;
                 };
-                bool known = classes_.count(rn) || subsets_.count(rn) ||
+                bool known = (classes_.count(rn) && !requireHidden(rn)) || subsets_.count(rn) ||
                              pkgMeta_.count(rn) || isKnownTypeName(rn) ||
                              isNativeTypeName(rn) || isPseudoPkg(rn);
                 // …but a `my class` / `my role` is LEXICAL: the name means

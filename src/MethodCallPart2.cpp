@@ -6569,6 +6569,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // `self.IO::Path::slurp` goes straight to it (the skipOwn
                     // forward in methodCallInner). Without the box the instance
                     // was a bare object: "No such method 'slurp'".
+                    // `class Meows is Promise`: back the instance with a real
+                    // Promise, so keep/break/result/then reach it while `.WHAT`
+                    // says Meows (S17-promise/basic.t)
+                    if (nb == "Promise") {
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                        ValueList builtinArgs;
+                        for (auto& a : args)
+                            if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        od->boxed = methodCall(Value::typeObj("Promise"), "new", builtinArgs);
+                        runAttrDefaults(od, ci, args);
+                        Value self = Value::object(od);
+                        runBuildChain(ci.get(), self, args);
+                        maybeRegisterDestroy(self);
+                        return self;
+                    }
                     if (nb == "IO::Path") {
                         auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true;
                         ValueList builtinArgs;
@@ -6912,13 +6927,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             // `SubDateTime.now` / `.today` — a type-level method not on the user class
             // dispatches to its built-in parent; box the result to keep the subclass.
+            // (…and `Meows.start` / `.in` / `.anyof` for `class Meows is Promise`)
             {
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
-                if ((nb == "DateTime" || nb == "Date") && !ci->findMethod(m) &&
+                if ((nb == "DateTime" || nb == "Date" || nb == "Promise") && !ci->findMethod(m) &&
                     m != "raku" && m != "gist" && m != "Str") {
                     Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
-                    if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date")) {
+                    if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date" ||
+                                            r.hashKind == "Promise")) {
                         auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
                         // the ONE attribute walk (the stripped copy here had no
                         // `self` in scope); `.now`'s args are the built-in's, so
@@ -9084,7 +9101,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 t = t->second.expired() ? taken.erase(t) : std::next(t);
             auto hit = taken.find(inv.arr());
             if (hit != taken.end())
-                throwTypedV("X::Seq::Consumed", {},
+                throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(inv.s.str())}},
                             "The iterator of this Seq is already in use/consumed by another Seq\n"
                             "(you might solve this by adding .cache on usages of the Seq, or\n"
                             "by assigning the Seq into an array)");

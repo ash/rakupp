@@ -1572,11 +1572,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         p.ofTypeM() = cwdName(); // :CWD captured at creation — the base `.absolute` resolves against
         // a `$*SPEC` of another flavor makes a path of THAT flavor
         // (`my $*SPEC = IO::Spec::Win32; 'C:\x'.IO` is an IO::Path::Win32)
-        if (Value* sp = findDynamicLenient("$*SPEC"))
+        if (Value* sp = findDynamicLenient("$*SPEC")) {
             if (sp->t == VT::Type && sp->s.str().rfind("IO::Spec::", 0) == 0) {
                 std::string fl = sp->s.str().substr(10);
                 if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") p.enumName = fl;
             }
+            // …and a user subclass of IO::Spec is the path's SPEC as it stands
+            else if (sp->t == VT::Type && sp->s.str() != "IO::Spec" && classes_.count(sp->s.str()))
+                p.enumType = sp->s.str();
+        }
         return p;
     }
     // `.slurp` belongs to IO::Path (IO::Handle has its own, below) — a Str is NOT
@@ -2106,6 +2110,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else r = b + "\\" + part;
                 return flav(r);
             }
+            // `.sibling` — the flavor's join of the volume, the dirname and the name
+            if (m == "sibling" && args.size() == 1 && args[0].t != VT::Pair) {
+                Value sp = specCall("split", {Value::str(inv.s)});
+                if (sp.t == VT::Hash && sp.hash()) {
+                    auto get = [&](const char* k) { auto it = sp.hash()->find(k); return it != sp.hash()->end() ? it->second : Value::str(""); };
+                    return flav(specCall("join", {get("volume"), get("dirname"), args[0]}).toStr());
+                }
+            }
+            // `.parent(N)` — the one-level parent below, N times
+            if (m == "parent" && args.size() == 1 && args[0].t != VT::Pair && a0().toInt() > 1) {
+                Value cur = inv;
+                for (long long k = a0().toInt(); k > 0; k--) cur = methodCall(cur, "parent", ValueList{});
+                return cur;
+            }
             // parent, as Rakudo's IO::Path.parent spells it: an absolute path
             // drops its last part; `.`/`..`-only paths climb by adding `..`
             if (m == "parent" && (args.empty() || a0().toInt() == 1)) {
@@ -2213,10 +2231,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*pp.hash())["dirname"]  = Value::str(dirOf(full));
             std::string b = full; while (b.size() > 1 && b.back() == '/') b.pop_back();
             auto bp = b.find_last_of('/');
-            (*pp.hash())["basename"] = Value::str(bp == std::string::npos ? b : b.substr(bp + 1));
+            // (the root's own basename is the root: `/`.parts<basename> is `/`)
+            (*pp.hash())["basename"] = Value::str(b == "/" ? b : bp == std::string::npos ? b : b.substr(bp + 1));
             return pp;
         }
-        if (m == "sibling") return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
+        // `.sibling` is IO::Spec::Unix's join of the dirname and the new name,
+        // as Rakudo builds it: `foo` gives `bar`, `/foo/` gives `/bar`
+        if (m == "sibling") {
+            Value jr;
+            ValueList ja{Value::str(""), Value::str(dirOf(inv.toStr())), Value::str(args.empty() ? std::string() : a0().toStr())};
+            if (ioSpecMethod(*this, "IO::Spec::Unix", "join", ja, jr)) return asIO(jr.toStr());
+            return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
+        }
         if (m == "child" || m == "add") {
             if (!args.empty()) rejectNulPath(args[0].toStr());
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
@@ -2331,6 +2357,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // Merely absolutizing, as this used to, made `.resolve` a no-op on
             // macOS, where $*TMPDIR is /var/… and the kernel reports /private/var/….
             std::string s = inv.toStr();
+            // (a Win32 or Cygwin path separates with `\` as well: `..\bar`)
+            if (inv.enumName == "Win32" || inv.enumName == "Cygwin") std::replace(s.begin(), s.end(), '\\', '/');
             if (!s.empty() && s[0] != '/') {
                 std::string base = inv.ofType().empty() ? cwdName() : inv.ofType();
                 while (base.size() > 1 && base.back() == '/') base.pop_back();
@@ -2494,7 +2522,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
         // the path's OS grammar and the directory it is resolved against
-        if (m == "SPEC") return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
+        if (m == "SPEC") {
+            if (!inv.enumType.empty()) return Value::typeObj(inv.enumType.str());   // a user IO::Spec
+            return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
+        }
         if (m == "CWD") {
             if (!inv.ofType().empty()) return Value::str(inv.ofType()); // the captured :CWD
             return Value::str(cwdName());
@@ -2662,6 +2693,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash()->find("chomp");  return it != inv.hash()->end() ? it->second : Value::boolean(true); }
         if (m == "opened") return Value::boolean(!fhClosed(inv));
+        // `.eof` on a handle nothing has read from, or moved in, yet is False —
+        // Rakudo finds the end by reading — even over an empty file or a
+        // terminal. And asking must not read: `$*IN.eof` on a TTY would wait
+        // for input and swallow it before `.slurp` asked (S16-io/eof.t).
+        {
+            static const std::set<std::string> kTouch = {
+                "get", "getline", "lines", "words", "slurp", "slurp-rest", "read", "readchars",
+                "getc", "comb", "split", "seek", "Supply"};
+            if (kTouch.count(m)) (*inv.hash())["\x01touched"] = Value::boolean(true);
+            else if (m == "eof" && !fhClosed(inv) && !inv.hash()->count("\x01touched"))
+                return Value::boolean(false);
+        }
         // `.DESTROY` closes the handle (what the GC would do to an open one)
         if (m == "DESTROY") {
             // …but never a standard handle: `$*OUT.DESTROY` leaves it open
@@ -3634,8 +3677,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     return n2;
                 };
                 long long pos0 = (*inv.hash())["pos"].toInt();
+                // (where the cache starts, once a seek has re-split it)
+                const long long base = inv.hash()->count("seekbase") ? (*inv.hash())["seekbase"].toInt() : 0;
                 if (m == "tell") {
-                    long long off = 0;
+                    long long off = base;
                     for (long long i = 0; i < pos0 && i < (long long)ln.size(); i++) off += (long long)lineBytes((size_t)i);
                     return Value::integer(off);
                 }
@@ -3643,6 +3688,50 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 long long whence = 0;                        // SeekFromBeginning
                 for (size_t i = 1; i < args.size(); i++)
                     if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
+                // A byte offset INSIDE a line is a position like any other: the
+                // text is split again from exactly there, so the next read takes
+                // the rest of that line and `.eof` is False until the end is
+                // reached (`$fh.seek: 1` on "meows" reads "eows"). The whole text
+                // is kept from the first seek on. (A custom `nl-in` keeps the
+                // line-granular seek below.)
+                if (!inv.hash()->count("nl-in")) {
+                    if (!inv.hash()->count("fulltext")) {
+                        std::string full;
+                        for (size_t i = 0; i < ln.size(); i++) {
+                            full += ln[i].toStr();
+                            if (eolIt2 != inv.hash()->end() && eolIt2->second.arr() &&
+                                i < eolIt2->second.arr()->size())
+                                full += (*eolIt2->second.arr())[i].toStr();
+                        }
+                        (*inv.hash())["fulltext"] = Value::str(full);
+                    }
+                    const std::string full = (*inv.hash())["fulltext"].toStr();
+                    long long cur = base;
+                    for (long long i = 0; i < pos0 && i < (long long)ln.size(); i++) cur += (long long)lineBytes((size_t)i);
+                    if (whence == 1) want += cur;
+                    else if (whence == 2) want += (long long)full.size();
+                    if (want < 0) want = 0;
+                    Value nl = Value::array(), ne = Value::array();
+                    size_t start = std::min<size_t>((size_t)want, full.size());
+                    while (start < full.size()) {
+                        size_t e = full.find('\n', start);
+                        if (e == std::string::npos) {
+                            nl.arr()->push_back(Value::str(full.substr(start)));
+                            ne.arr()->push_back(Value::str(""));
+                            break;
+                        }
+                        std::string l = full.substr(start, e - start);
+                        if (!l.empty() && l.back() == '\r') l.pop_back();
+                        nl.arr()->push_back(Value::str(l));
+                        ne.arr()->push_back(Value::str("\n"));
+                        start = e + 1;
+                    }
+                    (*inv.hash())["lines"] = nl;
+                    (*inv.hash())["line-eols"] = ne;
+                    (*inv.hash())["pos"] = Value::integer(0);
+                    (*inv.hash())["seekbase"] = Value::integer(want);
+                    return Value::boolean(true);
+                }
                 if (whence == 2) {                           // SeekFromEnd
                     long long total = 0;
                     for (size_t i = 0; i < ln.size(); i++) total += (long long)lineBytes(i);

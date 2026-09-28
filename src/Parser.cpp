@@ -6194,6 +6194,14 @@ ExprPtr Parser::parsePrimary() {
         parseSymSegs(sr.get());
         return sr;
     }
+    // `%::{''}` / `%::` — a sigil with no NAME before the package separator:
+    // the variable it names is the bare sigil, which nothing can declare
+    // (integration/error-reporting.t asks for X::Undeclared, with its line)
+    if (cur().kind == Tok::Var && cur().text.size() == 1 && std::strchr("$@%&", cur().text[0]) &&
+        peek().kind == Tok::Op && peek().text == "::" && !peek().spaceBefore &&
+        peek(2).kind != Tok::LParen && peek(2).kind != Tok::Ident)
+        throw ParseError("Variable '" + cur().text + "' is not declared", cur().line, "X::Undeclared",
+                         {{"symbol", cur().text}, {"what", "Variable"}});
     // symbolic name reference in term position: `::Foo::Bar` → the named type/package
     // `::CALLERS::<&x>` is `CALLERS::<&x>`: a leading `::` before a
     // pseudo-package is the root it already names (Red's ResultSeq asks

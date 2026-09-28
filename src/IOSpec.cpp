@@ -298,6 +298,12 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
             if (dir == "." && file == ".") { out = Value::str(vol.empty() ? "." : vol + "."); return true; }
             if (dir == ".") dir = "";
         }
+        // the glue after a volume that is not a drive (`foo:`, a UNC share)
+        // and does not end in a separator, before a relative dirname:
+        // `join('foo:', 'bar', 'ber')` is `foo:\bar\ber`, as Rakudo's
+        // catpath makes it — only `C:bar` stays a drive-relative path
+        const bool drive = vol.size() == 2 && vol[1] == ':' && ascii::isalpha((unsigned char)vol[0]);
+        if (!vol.empty() && !dir.empty() && !drive && !wsep(vol.back()) && !wsep(dir[0])) vol += "\\";
         std::string r = vol + dir;
         if (!dir.empty() && !file.empty() && !wsep(dir.back())) r += "\\";
         r += file;

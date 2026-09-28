@@ -163,6 +163,87 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
 // nullopt = "not handled here", and the caller falls through to the next segment.
 namespace rakupp {
 
+// Does a map block `return` from the routine around it? A `return` anywhere in
+// the block counts — but not one in a routine nested inside it, which returns
+// from that routine instead. Asked once per block body (see the map arm).
+static bool stmtReturnsOut(const Stmt* s);
+static bool bodyReturnsOut(const std::vector<StmtPtr>& b) {
+    for (auto& s : b) if (stmtReturnsOut(s.get())) return true;
+    return false;
+}
+static bool exprReturnsOut(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+            if (u->op == "return" || u->op == "return-rw") return true;
+            return exprReturnsOut(u->operand.get()); }
+        case NK::BlockExpr: { auto* be = static_cast<const BlockExpr*>(e);
+            return !be->isSub && bodyReturnsOut(be->body); }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e);
+            return exprReturnsOut(a->target.get()) || exprReturnsOut(a->value.get()); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            return exprReturnsOut(b->lhs.get()) || exprReturnsOut(b->rhs.get()); }
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            if (c->name == "return" || c->name == "return-rw" || exprReturnsOut(c->callee.get())) return true;
+            for (auto& a : c->args) if (exprReturnsOut(a.get())) return true;
+            return false; }
+        case NK::MethodCall: { auto* mc = static_cast<const MethodCall*>(e);
+            if (exprReturnsOut(mc->inv.get())) return true;
+            for (auto& a : mc->args) if (exprReturnsOut(a.get())) return true;
+            return false; }
+        case NK::Index: { auto* ix = static_cast<const Index*>(e);
+            return exprReturnsOut(ix->base.get()) || exprReturnsOut(ix->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return exprReturnsOut(t->cond.get()) || exprReturnsOut(t->then.get()) || exprReturnsOut(t->els.get()); }
+        case NK::ListExpr:
+            for (auto& i : static_cast<const ListExpr*>(e)->items) if (exprReturnsOut(i.get())) return true;
+            return false;
+        case NK::ChainExpr:
+            for (auto& o : static_cast<const ChainExpr*>(e)->operands) if (exprReturnsOut(o.get())) return true;
+            return false;
+        case NK::Pair: return exprReturnsOut(static_cast<const PairExpr*>(e)->value.get());
+        default: return false;
+    }
+}
+static bool stmtReturnsOut(const Stmt* s) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::ReturnStmt: return true;
+        case NK::ExprStmt: return exprReturnsOut(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::Block: return bodyReturnsOut(static_cast<const Block*>(s)->stmts);
+        case NK::IfStmt: { auto* f = static_cast<const IfStmt*>(s);
+            for (auto& br : f->branches) {
+                if (exprReturnsOut(br.first.get())) return true;
+                if (br.second && bodyReturnsOut(br.second->stmts)) return true;
+            }
+            return f->elseBlock && bodyReturnsOut(f->elseBlock->stmts); }
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            return exprReturnsOut(w->cond.get()) || (w->body && bodyReturnsOut(w->body->stmts)); }
+        case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s);
+            return exprReturnsOut(r->cond.get()) || (r->body && bodyReturnsOut(r->body->stmts)); }
+        case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);
+            return exprReturnsOut(l->init.get()) || exprReturnsOut(l->cond.get()) ||
+                   exprReturnsOut(l->incr.get()) || (l->body && bodyReturnsOut(l->body->stmts)); }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            return exprReturnsOut(f->list.get()) || (f->body && bodyReturnsOut(f->body->stmts)); }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            return exprReturnsOut(g->topic.get()) || (g->body && bodyReturnsOut(g->body->stmts)); }
+        case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s);
+            return exprReturnsOut(w->cond.get()) || (w->body && bodyReturnsOut(w->body->stmts)); }
+        default: return false;   // a nested routine returns from itself
+    }
+}
+static bool mapBlockReturnsOut(const Value& fn) {
+    if (fn.t != VT::Code || !fn.code() || !fn.code()->body || fn.code()->builtin) return false;
+    thread_local std::unordered_map<const void*, bool> seen;   // per body, asked once
+    const void* key = fn.code()->body;
+    auto it = seen.find(key);
+    if (it != seen.end()) return it->second;
+    bool r = bodyReturnsOut(*fn.code()->body);
+    seen.emplace(key, r);
+    return r;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -833,6 +914,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …but `.roll($n)` and `.List` of a lazy ARRAY throw where the
             // no-argument forms fail, and a lazy LIST answers `.List` with
             // itself.
+            // …except a `.map` over one, which may yet END — its block can say
+            // `last` — so `.eager` runs it to that point, as Rakudo does:
+            // `(^Inf).map({ last if $_ > 6; $_ }).eager` is (0 … 6)
+            if (m == "eager" && lst->mapView && lst->appendNext && !lst->exhausted) {
+                ValueList& buf = *inv.arr();
+                while (lst->appendNext(buf)) {}
+                lst->exhausted = true;
+                lst->infinite = false;
+                Value all = Value::array(); all.isList = true;
+                *all.arr() = buf;
+                return all;
+            }
             if (m == "roll" && !args.empty())
                 throwTyped("X::Cannot::Lazy", {{"action", "roll"}}, "Cannot roll a lazy list");
             if (m == "List" && !inv.isList)
@@ -903,14 +996,36 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;
+            st->mapView = true;
             Interpreter* self = this;
-            st->appendNext = [self, src, fn](ValueList& cache) -> bool {
-                size_t si = cache.size();
-                self->materializeLazy(src, si + 1);
-                if (si >= src.arr()->size()) return false;
-                ValueList one{ (*src.arr())[si] };
-                cache.push_back(self->callCallable(fn, one));
-                return true;
+            // (its own source position: a `next` skips an element, so the cache
+            // and the source part company)
+            auto spos = std::make_shared<size_t>(0);
+            auto ended = std::make_shared<bool>(false);
+            std::weak_ptr<LazySeqState> stw = st;   // weak: st owns the closure
+            st->appendNext = [self, src, fn, spos, ended, stw](ValueList& cache) -> bool {
+                for (;;) {
+                    if (*ended) return false;
+                    size_t si = *spos;
+                    self->materializeLazy(src, si + 1);
+                    if (si >= src.arr()->size()) return false;
+                    (*spos)++;
+                    ValueList one{ (*src.arr())[si] };
+                    // `last` ends the map and `next` skips the element, as in the
+                    // eager loop: `(^Inf).map({ last if $_ > 2; $_ })` is (0 1 2)
+                    try { cache.push_back(self->callCallable(fn, one)); return true; }
+                    catch (LastEx& le) {
+                        if (!le.label.empty()) throw;
+                        if (auto s = stw.lock()) s->infinite = false;
+                        *ended = true;   // nothing more, whatever the source still holds
+                        if (le.hasVal) { cache.push_back(le.val); return true; }
+                        return false;
+                    }
+                    catch (NextEx& ne) {
+                        if (!ne.label.empty()) throw;
+                        if (ne.hasVal) { cache.push_back(ne.val); return true; }
+                    }
+                }
             };
             out.extM() = st;
             return out;
@@ -2331,6 +2446,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return acc;
                 }
             }
+            // an `is assoc<chain>` operator tests each ADJACENT pair, as a chained
+            // comparison does: `(5,4,3,2,1).reduce(&infix:<eog>)` is
+            // 5 eog 4 && 4 eog 3 && …, False at the first pair that fails
+            // (S32-list/reduce.t)
+            if (args[0].code() && args[0].code()->assocChain) {
+                for (size_t k = 0; k + 1 < items.size(); k++)
+                    if (!callCallable(args[0], ValueList{items[k], items[k + 1]}).truthy())
+                        return Value::boolean(false);
+                return Value::boolean(true);
+            }
             // an N-ARY reducer (`{ $^a + $^b * $^c }`) takes N-1 new items per step:
             // ((1 + 2*3) + 4*5) + … — and from the right when it is assoc<right>
             {
@@ -3729,6 +3854,52 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (!args.empty() && args[0].t != VT::Code &&
                     !(args[0].t == VT::Pair && args[0].namedArg))
                     throwCannotMap(*this, inv.typeName(), args[0]);
+            }
+            // A block that `return`s runs LAZILY, as every map does in Rakudo: the
+            // Seq is read by whoever consumes it, so a map handed back out of its
+            // routine and read there returns from a routine that has already left
+            // — X::ControlFlow::Return (S04-statements/return.t,
+            // integration/error-reporting.t). A sunk one still runs where it
+            // stands (sinkValue), `return` and all. Every other block keeps the
+            // eager loop below: only a `return` tells the two apart, and the loop
+            // is the fast path.
+            if (m == "map" && !args.empty() && mapBlockReturnsOut(args[0])) {
+                auto src = std::make_shared<ValueList>(items);
+                const Value fn = args[0];
+                const size_t ar = std::max<size_t>(1, codeArity(fn));
+                Value lz = Value::array(); lz.isList = true; lz.s = "Seq";
+                auto st = std::make_shared<LazySeqState>();
+                st->mapView = true;
+                auto pos = std::make_shared<size_t>(0);
+                Interpreter* self = this;
+                st->appendNext = [self, src, fn, ar, pos](ValueList& cache) -> bool {
+                    while (*pos < src->size()) {
+                        ValueList ca;
+                        for (size_t k = 0; k < ar && *pos < src->size(); k++) ca.push_back((*src)[(*pos)++]);
+                        Value r;
+                        try { r = self->callCallable(fn, ca); }
+                        catch (LastEx& le) {
+                            if (!le.label.empty()) throw;
+                            *pos = src->size();
+                            if (le.hasVal) { cache.push_back(le.val); return true; }
+                            return false;
+                        }
+                        catch (NextEx& ne) {
+                            if (!ne.label.empty()) throw;
+                            if (ne.hasVal) { cache.push_back(ne.val); return true; }
+                            continue;
+                        }
+                        if (r.t == VT::Array && r.isList && r.s == "Slip") {   // a Slip spreads
+                            if (r.arr()->empty()) continue;
+                            for (auto& x : *r.arr()) cache.push_back(x);
+                        }
+                        else cache.push_back(r);
+                        return true;
+                    }
+                    return false;
+                };
+                lz.extM() = st;
+                return lz;
             }
             Value out = Value::array();
             if (!args.empty() && args[0].t == VT::Code) {

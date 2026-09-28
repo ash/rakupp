@@ -15,7 +15,10 @@
 # S10-packages/scope.t, S17-supply/syntax.t, S05-grammar/inheritance.t,
 # integration/advent2011-day11.t, integration/advent2012-day15.t,
 # S14-traits/attributes.t, S14-traits/variables.t, S12-coercion/coercion-methods.t,
-# S12-coercion/parameterized.t, integration/error-reporting.t).
+# S12-coercion/parameterized.t, integration/error-reporting.t, S16-io/eof.t,
+# S32-list/reduce.t, S17-promise/basic.t, S12-class/namespaced.t,
+# S04-phasers/begin.t, integration/advent2009-day20.t, S03-metaops/hyper.t,
+# S32-io/io-path.t).
 # Every line answers the same under Rakudo 2026.08.
 
 use MONKEY-SEE-NO-EVAL;
@@ -405,6 +408,80 @@ check('a role may be `is` its parameter', RoleParUser.new.hi, 'base');
 check('does a stubbed class', (try EVAL q[class StubC { ... }; class StubD does StubC { }; 1]) // $!.^name,
       'X::Composition::NotComposable');
 check('a broken promise backtrace is-runtime', (try { await start die 'x' }) // $!.backtrace.is-runtime, True);
+
+# a map is lazy: a `return` in its block that runs after the routine left is
+# X::ControlFlow::Return, a sunk one still returns where it stands, `last`
+# ends one over an endless source, and sinking that one runs it
+sub lazy-ret { (1, 2).map({ return 5 }) }
+check('a map read after its routine returned', (try { lazy-ret().eager; 1 }) // $!.^name, 'X::ControlFlow::Return');
+sub sunk-ret { (1, 2, 3).map({ return $_ * 10 if $_ == 2 }); 99 }
+check('a sunk map returns from its routine', sunk-ret(), 20);
+check('`last` ends a map over an endless source',
+      ((^Inf).map({ last if $_ > 2; $_ }).head(5).List, (^Inf).map({ next if $_ %% 2; last if $_ > 6; $_ }).eager.List),
+      ((0, 1, 2), (1, 3, 5)));
+my @lazy-seen;
+sub sunk-endless { (^Inf).map({ last if $_ > 1; @lazy-seen.push($_) }); 1 }
+sunk-endless();
+check('sinking one runs it', @lazy-seen.List, (0, 1));
+check('`%::` names the undeclared variable %', (try EVAL q[%::{''}]) // $!.^name, 'X::Undeclared');
+
+# a handle nothing has read from is not at its end, even over an empty file,
+# and a seek into the middle of a line reads the rest of it
+my $eof-tmp = $*TMPDIR.add("rakupp-eof-{$*PID}");
+$eof-tmp.spurt('');
+check('an empty file is not at eof before a read', $eof-tmp.open.eof, False);
+$eof-tmp.spurt('meows');
+{
+    my $fh = $eof-tmp.open;
+    $fh.seek(1, SeekFromBeginning);
+    check('a seek into a line', ($fh.eof, $fh.get, $fh.eof), (False, 'eows', True));
+    $fh.close;
+}
+$eof-tmp.unlink;
+
+# reducing with an `is assoc<chain>` operator tests each adjacent pair
+sub infix:<one-more> ($a, $b) is assoc<chain> { $a == $b + 1 }
+check('reduce with a chain operator', ((5, 4, 3, 2).reduce(&infix:<one-more>), (5, 4, 2).reduce(&infix:<one-more>)),
+      (True, False));
+
+# a Promise subclass makes promises of its own type, and they still work
+my class MyPromise is Promise { }
+my $myp = MyPromise.start({ 42 });
+check('a Promise subclass', ($myp.^name, (await $myp), $myp.then({ .result + 1 }).^name, MyPromise.kept(3).result),
+      ('MyPromise', 42, 'MyPromise', 3));
+
+# a nested class answers to its short name inside its package only
+class NsOuter { class NsInner { method v { 7 } }; method via { NsInner.new.v } }
+check('a nested class by its short name inside', NsOuter.new.via, 7);
+check('…but not at file scope', (try EVAL q[NsInner.new]) // $!.^name, 'X::Undeclared::Symbols');
+
+# a BEGIN above the line an EVAL fails on has run by the time it fails
+my $begin-seen = '';
+try EVAL "BEGIN \{ \$begin-seen = 'begin' }\n\$begin-seen = 'run';\n1 1\n";
+check('BEGIN runs before a later parse error', $begin-seen, 'begin');
+
+# `...` FAILS: the routine it stands in answers a Failure (X::StubCode)
+sub yada-sub { ... }
+sub yada-in-map { (1, 2).map({ ... }).eager; 'after' }
+check('a stub fails', (yada-sub().^name, yada-in-map().^name, yada-sub().defined),
+      ('Failure', 'Failure', False));
+
+# a hyper over a Map is a Map, and a typed Array keeps its type only while
+# every result fits it
+my Int @hy-int = 1, 2, 3;
+check('hyper results', (((:42a, :666b).Map».Str).WHAT, (@hy-int >>*>> 4).of, (@hy-int >>/>> 4).WHAT),
+      (Map, Int, List));
+
+# paths: a sibling is the SPEC's join, a Win32 volume glues with `\`, the root's
+# basename is the root, and a user IO::Spec in $*SPEC is the path's SPEC
+check('IO::Path siblings and parts',
+      ('foo'.IO.sibling('bar').Str, '/foo/'.IO.sibling('bar').Str, IO::Spec::Win32.join('foo:', 'bar', 'ber'),
+       IO::Path.new('/').parts<basename>),
+      ('bar', '/bar', 'foo:\\bar\\ber', '/'));
+{
+    temp $*SPEC = my class MySpec is IO::Spec { }
+    check('a user $*SPEC is the path\'s SPEC', (IO::Path.new('x').SPEC, 'x'.IO.SPEC), (MySpec, MySpec));
+}
 
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);

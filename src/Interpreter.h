@@ -1142,6 +1142,9 @@ struct LazySeqState {
     // `1, { …; last } ... *` — an endless SEQUENCE whose generator is user code:
     // it may yet end (a `last` in the generator), so sinking it runs it
     bool seqUserGen = false;
+    // a `.map` that runs its block as it is read: sinking it runs the block too
+    // (Rakudo iterates a sunk Seq), however the source is made
+    bool mapView = false;
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
@@ -2280,6 +2283,26 @@ public:
     std::map<std::string, std::shared_ptr<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
+    // …the ones the PROGRAM's own declarations made (not a module's): those
+    // answer only inside their package (see the NameTerm arm)
+    std::unordered_set<std::string> programAliases_;
+    // the classes a `require "File.rakumod"` brought in, and the scope that ran
+    // it: outside that scope the names are not there (requireHidden)
+    std::unordered_map<std::string, std::weak_ptr<Env>> requireScoped_;
+    // …and, for `use`, the classes each module's first load brought in (a later
+    // `use` of it anywhere makes them everyone's), and the top-level scopes of
+    // the modules being loaded (a `use` there is the module's, not a block's)
+    std::unordered_map<std::string, std::vector<std::string>> moduleClasses_;
+    std::vector<Env*> moduleTopEnvs_;
+    bool requireHidden(const std::string& n) {
+        if (requireScoped_.empty()) return false;
+        auto it = requireScoped_.find(n);
+        if (it == requireScoped_.end()) return false;
+        auto sp = it->second.lock();
+        if (!sp) return true;
+        for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) if (e == sp.get()) return false;
+        return true;
+    }
     // Does a TYPE THIS PROGRAM DECLARED carry the name `n`, in scope here?
     // Then a bare `n(…)` is that type's COERCION and not a routine of the same
     // name — `&n(…)` is how the routine is reached. Raku resolves the bare
