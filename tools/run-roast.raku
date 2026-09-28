@@ -44,7 +44,7 @@
 #
 # --failed prints, after the summary, every file that did not fully pass —
 # partial, no-TAP, timed out or lost — one per line with its category and
-# passed/ran count, sorted by path, and under each file the source lines of its
+# passed/plan count, sorted by path, and under each file the source lines of its
 # failing tests (the first ten), located from Test's `Failed test … line N`
 # diagnostics on the child's stderr. --failed=FILE writes the bare paths to FILE
 # instead, one per line, sorted: the complement of --list, ready to feed back
@@ -122,7 +122,7 @@ if @*ARGS.grep({ $_ eq '--help' || $_ eq '-h' }) {
     Environment
       ROAST                the Roast checkout (default: \$HOME/roast)
       ROAST_TIMEOUT        seconds a file may run before it is killed and
-                           scored as a timeout (default: 10, or 60 under a
+                           scored as a timeout (default: 10, or 120 under a
                            foreign engine); files that sleep by spec have
                            limits of their own
       MUTSU_FUDGE=1        mutsu applies the #?rakudo directives itself, and
@@ -183,9 +183,17 @@ my %RUN-AS;
 # tests. That is how a Rakudo run reported 76,285 declared tests for a suite
 # that declares ~216,000: not because its files are slow, because they are
 # ordinary files measured against another engine's stopwatch. A foreign engine
-# gets 6x the budget; ROAST_TIMEOUT still wins if it is set.
-my $TIME-SCALE = $FOREIGN ?? 6 !! 1;
-my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // (10 * $TIME-SCALE)).Int; # parallel-mode legs need headroom:
+# gets 12x the budget, 120 s. 6x was not enough: S32-str/sprintf-b.t and
+# sprintf-x.t (`use v6.e.PREVIEW`, 2,282 subtests each) take 46 s each under
+# Rakudo alone, and a full run slowed them about 1.5x and killed them at 60 s,
+# 1,925 and 2,139 subtests in, with every one of those passing. ROAST_TIMEOUT
+# still wins if it is set.
+#
+# The spec-sleep files below keep 6x their own limits. Their time is sleep, which
+# does not grow with the engine: Rakudo takes 13-38 s on the ones measured, and
+# the scaled limits are 180-360 s.
+my $TIME-SCALE = $FOREIGN ?? 6 !! 1;   # %SLOW-FILES only
+my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // ($FOREIGN ?? 120 !! 10)).Int; # parallel-mode legs need headroom:
     # under RAKUPP_PARALLEL a thread-spawning file pays real contention (cas
     # retries, worker scheduling) that the GIL leg never sees — thread.t takes
     # ~20 s there and PASSES. The GIL baseline keeps the default 10.
@@ -980,7 +988,7 @@ say "run-roast: cpu budget $CPU cores over $WORKERS workers; {@files.elems - $sa
   ~ "{@demand.grep({ $_ < 0.25 }).elems} known to wait (last run's CPU samples)";
 
 my @fullypassing;   # the release gate's file LIST, collected as data not as text
-my @notpassing;     # [rel, mark, "passed/ran"] for every other file, for --failed
+my @notpassing;     # [rel, mark, "passed/plan"] for every other file, for --failed
 my @result;         # per file position, set by whichever worker ran it
 my @wall;           # per file position, this run's wall seconds: the next run's ordering
 my $lock    = Lock.new;
@@ -1119,20 +1127,27 @@ my sub tally($k) {
         $tot-todopass += $todopass;
         %sec-pass{$sec}  += $passed;
         %sec-fudge{$sec} += $skipped + $todofail + $todopass;
+        # $of is what the file is charged, and the printed count is passed over
+        # it. It used to be passed over ran, both read off the TAP printed before
+        # the kill, so a file stopped partway with every test so far passing
+        # showed as `[TIME] 2139/2139` — sprintf-x.t under Rakudo, killed 2,139
+        # subtests into a plan of 2,282. It shows as 2139/2282 now.
+        my $of = $ran;
         if $planned >= 0 {
             $tot-plan += $planned;          # it announced N before the clock ran out
             %sec-decl{$sec} += $planned;
+            $of = $planned;
         }
         else {
             # Killed before it could announce a plan. Recover N from source, the
             # way the no-TAP branch does; measure 3 is defined over files that
             # emitted a plan, so this lands in measure 4 only.
             my $sp = static-plan($f);
-            if $sp > 0 { $timeout-declared += $sp; $timeout-counted++; %sec-decl{$sec} += $sp }
+            if $sp > 0 { $timeout-declared += $sp; $timeout-counted++; %sec-decl{$sec} += $sp; $of = $sp }
             else       { $tot-plan += $ran; $timeout-unknown++; %sec-decl{$sec} += $ran }
         }
-        @notpassing.push([$rel, 'TIME', "$passed/$ran", $k]);
-        say sprintf('  [TIME]  %5s  %s', "$passed/$ran", $rel);
+        @notpassing.push([$rel, 'TIME', "$passed/$of", $k]);
+        say sprintf('  [TIME]  %5s  %s', "$passed/$of", $rel);
         return;
     }
     $tot-ran  += $ran;
@@ -1144,9 +1159,12 @@ my sub tally($k) {
     %sec-fudge{$sec} += $skipped + $todofail + $todopass;
     # "planned" denominator: how many tests the file *intended* to run. Where a plan
     # is present we count it (so tests lost to a mid-file abort count as not-passed);
-    # where none was emitted we fall back to what ran.
-    $tot-plan += ($planned >= 0 ?? $planned !! $ran);
-    %sec-decl{$sec} += ($planned >= 0 ?? $planned !! $ran);
+    # where none was emitted we fall back to what ran. The printed count divides
+    # by the same number, so a file that dies 14 tests into a plan of 18 shows
+    # 14/18, not 14/14.
+    my $of = $planned >= 0 ?? $planned !! $ran;
+    $tot-plan += $of;
+    %sec-decl{$sec} += $of;
     my $mark;
     if $planned == 0 && $failed == 0 && $has-skip {
         $pass++;              # genuine `plan skip-all` (emits `1..0 # SKIP …`) is a passing outcome
@@ -1176,11 +1194,11 @@ my sub tally($k) {
         $mark = 'part';
     }
     if $mark eq 'PASS'    { @fullypassing.push($rel) }
-    elsif $mark eq 'part' { @notpassing.push([$rel, 'part', "$passed/$ran", $k]) }
+    elsif $mark eq 'part' { @notpassing.push([$rel, 'part', "$passed/$of", $k]) }
     else                  { @notpassing.push([$rel, 'noTAP', '—']) }
     # live per-file result (skip the no-TAP noise, like the Python harness)
     if $mark ne '----' {
-        say sprintf('  [%s]  %5s  %s', $mark, "$passed/$ran", $rel);
+        say sprintf('  [%s]  %5s  %s', $mark, "$passed/$of", $rel);
     }
 }
 

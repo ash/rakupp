@@ -254,9 +254,11 @@ Rakudo 2026.08 passes 1,425 of the 1,434 listed files that way
 nine it fails. Three things are calibrated for Raku++, and the harness adjusts
 them when it detects a foreign engine:
 
-- **The ceiling.** A foreign engine gets 6x the budget, 60 s. Rakudo takes the
-  81 S15 files 16x longer than Raku++, and S15 is over two fifths of the
-  declared tests. `ROAST_TIMEOUT` overrides.
+- **The ceiling.** A foreign engine gets 12x the budget, 120 s. Rakudo takes
+  the 81 S15 files 16x longer than Raku++, and S15 is over two fifths of the
+  declared tests; `S32-str/sprintf-b.t` and `sprintf-x.t` (`use v6.e.PREVIEW`,
+  2,282 subtests each) take 46 s each under Rakudo alone. The spec-sleep files
+  keep limits of their own, 6x Raku++'s. `ROAST_TIMEOUT` overrides the default.
 - **`roast.times`.** Its wall times and CPU samples describe Raku++, so a
   foreign engine gets neither those estimates nor their ordering unless
   `--times` says so.
