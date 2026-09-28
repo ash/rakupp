@@ -21,10 +21,12 @@ sub check(Str $desc, $got, $want) {
 # Failure (not a throw); an Int to a negative power below the smallest double is
 # X::Numeric::Underflow, while a Rat's is a plain 0e0
 check('an exponent past 900,000 is computed', (2 ** 1_000_000) ~~ Int, True);
+my $rlf-over = 3 ** 2**32;
 check('a 33-bit exponent is an Overflow Failure',
-      ((3 ** 2**32) // 'handled', (3 ** 2**32).exception.^name), ('handled', 'X::Numeric::Overflow'));
+      ($rlf-over // 'handled', $rlf-over.exception.^name), ('handled', 'X::Numeric::Overflow'));
+my $rlf-under = 2 ** -1075;
 check('an Int power below the smallest double underflows',
-      ((2 ** -1075).exception.^name, 2 ** -1074 == 5e-324), ('X::Numeric::Underflow', True));
+      ($rlf-under.defined, $rlf-under.exception.^name, 2 ** -1074 == 5e-324), (False, 'X::Numeric::Underflow', True));
 check('a Rat power below the smallest double is 0e0', 0.5 ** 2000, 0e0);
 check('a Rat power past a 64-bit denominator is a Num', (1.0000001 ** 2000, 1.1 ** 700),
       (1.0002000199913315e0, 9.437992127672415e+28));
@@ -110,6 +112,13 @@ check('a nodal routine in a hyper stops at each node',
       (@rlf-ll».&elems, @rlf-ll».$rlf-m2, @rlf-ll».&rlf-count, @rlf-ll».Any::elems, @rlf-ll».?&elems),
       ((2, 3), (2, 3), (2, 3), (2, 3), (2, 3)));
 check('.+/.* of one nodal routine', (@rlf-ll».+&elems, @rlf-ll».*Any::elems), (((2,), (3,)), ((2,), (3,))));
+# List and Any each declare an `elems`, Any's being `self.list.elems`: `.+elems`
+# finds both on a List, and Any's after a class's own
+class RLFArr is Array { method elems { 42 } }
+class RLFOwn { method elems { 7 } }
+check('List and Any both declare elems',
+      (@rlf-ll».+elems, [1, 2].*elems, RLFArr.new(1, 2).+elems, RLFOwn.new.+elems, "abc".+elems),
+      (((2, 2), (3, 3)), (2, 2), (42, 2, 42), (7, 1), (1,)));
 
 check('substr-rw into a Str mixin keeps the mixin',
       ($rlf-m eq 'Zsd', $rlf-m.^name, $rlf-n eq 'asQ', $rlf-n.^name), (True, 'Str+{RLFStrIdx}', True, 'Str+{RLFStrIdx}'));

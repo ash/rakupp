@@ -21743,13 +21743,36 @@ static bool isNodalMethod(const std::string& m) {
     return kNodal.count(m) > 0;
 }
 
+// A List, an Array or a Slip: a built-in value whose class chain runs through List.
+static bool listBuiltIn(const Value& v) {
+    return v.t == VT::Array && v.arr() && v.enumName.empty() && (v.s.empty() || v.s == "Slip");
+}
+
 // `.+m` / `.*m` — the results of every candidate, as a List. On a user object
 // each class of the MRO that declares the method runs it, most-derived first
 // (`$c.*foo` climbs C, B, A); otherwise the one method dispatch finds. `.*` of a
 // method nobody has is the empty List, `.+` of one dies.
+// Of the BUILT-IN classes, List and Any each declare an `elems` of their own,
+// Any's being `self.list.elems`, a fresh dispatch: so a List answers `.+elems`
+// twice (`<a b>.+elems` is (2 2), S03-metaops/hyper.t), a class built on one
+// gets both after its own (`class M is Array { method elems { 42 } }` gives
+// (42 2 42)), and any other class that declares `elems` gets Any's after its
+// own (7 1). Only those two are modelled; Rakudo's Seq, Range, Map and the rest
+// declare one too, and answer a single candidate here.
 Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname, ValueList args,
                                      char mode, const std::vector<ExprPtr>* rwArgs) {
     Value l = Value::array(); l.isList = true;
+    const bool allElems = mname == "elems" && args.empty();
+    // Any's: `self.list.elems` — a List's .list is itself, so its own dispatch
+    auto anyElems = [&](const Value& self, bool listSelf) -> Value {
+        if (listSelf) return methodCall(self, "elems", ValueList{});
+        return methodCall(methodCall(self, "list", ValueList{}), "elems", ValueList{});
+    };
+    if (allElems && listBuiltIn(inv)) {
+        l.arr()->push_back(methodCall(inv, "elems", ValueList{}));   // List's
+        l.arr()->push_back(anyElems(inv, true));                     // Any's
+        return l;
+    }
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
         std::vector<ClassInfo*> mro;
         std::set<ClassInfo*> seen;
@@ -21767,6 +21790,15 @@ Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname,
             any = true;
             Value um = it->second;
             l.arr()->push_back(invokeMethodChain(mname, c, inv, args, rwArgs, &um, c));
+        }
+        if (allElems) {
+            // …then the built-ins': List's for a class built on one, and Any's
+            const bool onList = inv.obj()->hasBoxed && listBuiltIn(inv.obj()->boxed);
+            if (onList) l.arr()->push_back(methodCall(inv.obj()->boxed, "elems", ValueList{}));
+            if (any || onList) {
+                l.arr()->push_back(anyElems(inv, onList));
+                return l;
+            }
         }
         if (any) return l;
     }

@@ -8540,6 +8540,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return I.methodCall(a[0], mnc, std::move(rest));
                     };
                     out.arr()->push_back(stub);
+                    // …and `elems` twice on a List: List declares one and so does
+                    // Any (see Interpreter::callAllCandidates, which `.+` uses)
+                    const bool listish =
+                        (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array")) ||
+                        (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
+                         (inv.s.empty() || inv.s == "Slip"));
+                    if (mn == "elems" && listish) out.arr()->push_back(stub);
                 }
             }
         }
