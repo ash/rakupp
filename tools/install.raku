@@ -1471,7 +1471,8 @@ sub store-check(Str $prefix) {
             }
             next unless $verify;
             my $got = sha1-blob($blob);
-            next if $got eq (~$sha).uc;
+            # (a resource's id carries its file's extension: <SHA>.txt)
+            next if $got eq (~$sha).subst(/ '.' <-[./]>+ $ /, '').uc;
             say "BROKEN: {%m<name>} ($dist-id) $rel: {$blob.parent.basename}/$sha holds different bytes"
                 ~ ($got ?? " (SHA-1 $got)" !! " (unreadable)");
             $broken++;
@@ -1864,7 +1865,7 @@ sub store-state(Str $prefix, %verify = {}) {
 sub store-blobs-intact(Str $prefix, %m, Bool :$verify --> Bool) {
     my $p = $prefix.IO;
     for (%m<files> // {}).values.grep(* ne '') -> $sha {
-        my $want = (~$sha).uc;
+        my $want = (~$sha).subst(/ '.' <-[./]>+ $ /, '').uc;   # <SHA>.txt holds <SHA>'s bytes
         my $blob = blob-path($p, ~$sha);
         return False without $blob;
         return False if $verify && sha1-blob($blob) ne $want;

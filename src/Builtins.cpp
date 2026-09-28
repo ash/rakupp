@@ -5917,6 +5917,28 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (!invIn.ofType().empty()) p.ofTypeM() = invIn.ofType();
         return p;
     }
+    // `GLOBALish.WHO.merge-symbols($cu.handle.globalish-package)`: the names a
+    // `$*REPO.need` kept to its unit become the program's
+    if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && mName == "merge-symbols") {
+        for (auto& a : args) {
+            if (a.t != VT::Hash || !a.hash()) continue;
+            auto gu = globalishUnits_.find((const void*)a.hash());
+            if (gu != globalishUnits_.end()) stashImport(stashUnitHere(), gu->second);
+            for (auto& kv : *a.hash()) {
+                std::string k = kv.first;
+                if (kv.second.t == VT::Type && !kv.second.s.empty()) k = kv.second.s;
+                for (auto it = requireScoped_.begin(); it != requireScoped_.end(); ) {
+                    if (it->first == k || it->first.rfind(k + "::", 0) == 0) it = requireScoped_.erase(it);
+                    else ++it;
+                }
+                for (auto it = needHidden_.begin(); it != needHidden_.end(); ) {
+                    if (*it == k || it->rfind(k + "::", 0) == 0) it = needHidden_.erase(it);
+                    else ++it;
+                }
+            }
+        }
+        return invIn;
+    }
     // a package's stash (`Foo::Bar.WHO`) gists and stringifies as the package's
     // long name
     if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && !invIn.s.empty() &&
@@ -6086,7 +6108,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // `use Zef::CLI` mainline + MAIN dispatch; run-script never returns).
             if (m == "run-script") {
                 std::string script = args.empty() ? "" : args[0].toStr();
-                for (auto& repo : rakuRepoPrefixes()) {
+                // (an `-I inst#…` store first, then the default repositories)
+                for (auto& repo : repoPrefixesForPath(libPaths_)) {
                     std::string distDir = repo + "/dist";
                     DIR* d = opendir(distDir.c_str());
                     if (!d) continue;
@@ -6160,7 +6183,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // rakupp resolves `use` from ~/.raku, so every writable name maps there;
                 // 'core'/'perl' get the same prefix but hold no CORE dist, so their
                 // candidates come back empty (zef's ignore list ends up empty).
-                return mkCURI(nm, homeDir() + "/.raku");
+                Value r = mkCURI(nm, homeDir() + "/.raku");
+                r.obj()->attrs["\x01chain"] = Value::boolean(true);
+                return r;
             }
             if (m == "repository-for-spec") {
                 std::string spec = args.empty() ? "" : args[0].toStr();
@@ -6168,10 +6193,36 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 std::string prefix = homeDir() + "/.raku";
                 auto hash = spec.find('#');
                 if (hash != std::string::npos && hash + 1 < spec.size()) prefix = spec.substr(hash + 1);
-                return mkCURI(spec, prefix);
+                Value r = mkCURI(spec, prefix);
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.s == "next-repo" && a.pairVal()) r.obj()->attrs["next-repo"] = *a.pairVal();
+                return r;
             }
-            if (m == "head") return mkCURI("home", homeDir() + "/.raku");
+            if (m == "head") {
+                Value r = mkCURI("home", homeDir() + "/.raku");
+                r.obj()->attrs["\x01chain"] = Value::boolean(true);
+                return r;
+            }
             if (m == "name-for-repository") return Value::str("home");
+        }
+        // `CompUnit::Repository::Installation.new(:prefix, :next-repo, :name)` — a
+        // store at that directory, which is made if it is not there yet
+        if (inv.t == VT::Type && inv.s == "CompUnit::Repository::Installation" && m == "new") {
+            std::string pfx, nm; Value next = Value::any();
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "prefix") pfx = a.pairVal()->toStr();
+                    else if (a.s == "next-repo") next = *a.pairVal();
+                    else if (a.s == "name") nm = a.pairVal()->toStr();
+                }
+            if (!pfx.empty()) {
+                std::string acc;
+                for (size_t i = 0; i <= pfx.size(); i++) {
+                    if (i == pfx.size() || pfx[i] == '/') { if (!acc.empty() && acc != "/") ::mkdir(acc.c_str(), 0777); }
+                    if (i < pfx.size()) acc += pfx[i];
+                }
+            }
+            return makeCuri(nm, pfx, next);
         }
         // A FileSystem repo is the non-installed sibling: it serves a source tree
         // directly. rakupp does not enumerate its dists either, so `.files` answers
@@ -6206,6 +6257,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 p.hashKind = "IO"; return p;
             }
             if (m == "short-id") return Value::str("file");
+            if (m == "id") {
+                std::string nextId;
+                auto nx = at.find("next-repo");
+                if (nx != at.end() && nx->second.t == VT::Object) nextId = methodCall(nx->second, "id", ValueList{}).toStr();
+                return Value::str(sha1hex("file#" + (at.count("prefix") ? at["prefix"].toStr() : std::string()) + nextId));
+            }
             if (m == "can-install") return Value::boolean(false);
             if (m == "precomp-repository") {
                 auto it = at.find("\x01precomp");
@@ -6215,6 +6272,35 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             if (m == "install")
                 throwTyped("X::AdHoc", {}, "Cannot install on CompUnit::Repository::FileSystem");
+        }
+        // `.candidates($spec)` / `.files($name)`: the tree's one distribution,
+        // when it provides the module (or holds the file) and fits the spec's
+        // matchers — a tree without a META6.json has a wildcard version, API
+        // and auth
+        if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            inv.obj()->cls->name == "CompUnit::Repository::FileSystem" &&
+            (m == "files" || m == "candidates") && !args.empty()) {
+            Value e = Value::array(); e.isList = true; e.s = "Seq";
+            Value dist = curfsDistribution(*inv.obj());
+            Value meta = methodCall(dist, "meta", ValueList{});
+            const Value& spec = args[0];
+            std::string want = spec.t == VT::Hash && spec.hash() && spec.hash()->count("short-name")
+                             ? spec.hash()->at("short-name").toStr() : spec.toStr();
+            auto has = [&](const char* k) {
+                auto it = meta.hash() ? meta.hash()->find(k) : ValueMap::iterator();
+                return meta.hash() && it != meta.hash()->end() && it->second.t == VT::Hash && it->second.hash() &&
+                       it->second.hash()->count(want);
+            };
+            bool hit = m == "files" ? has("files") : (has("provides") || has("files"));
+            if (hit && spec.t == VT::Hash && spec.hash()) {
+                auto field = [&](const char* k) { auto it = meta.hash()->find(k); return it != meta.hash()->end() ? it->second.toStr() : std::string(); };
+                auto matcher = [&](const char* k) { auto it = spec.hash()->find(k); return it != spec.hash()->end() ? it->second : Value::boolean(true); };
+                hit = distFieldMatches(field("auth"), matcher("auth-matcher"), true, true) &&
+                      distFieldMatches(field("ver"), matcher("version-matcher"), false, true) &&
+                      distFieldMatches(field("api"), matcher("api-matcher"), false, true);
+            }
+            if (hit) e.arr()->push_back(dist);
+            return e;
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
             inv.obj()->cls->name == "CompUnit::Repository::FileSystem" &&
@@ -6274,7 +6360,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         found = exists(prefix + "/" + meta.substr(q1 + 1, q2 - q1 - 1));
                 }
             }
-            if (!found) return Value::nil();
+            if (!found) {
+                if (m == "need") {   // (resolve answers Nil; need, like any repository's, dies)
+                    auto nx = at.find("next-repo");
+                    if (nx != at.end() && nx->second.t == VT::Object) return methodCall(nx->second, m, args);
+                    throwTypedV("X::CompUnit::UnsatisfiedDependency", {{"specification", args[0]}},
+                                "Could not find " + want + " in:\n    file#" + prefix);
+                }
+                return Value::nil();
+            }
             // the SAME CompUnit each time the repository is asked (Rakudo caches
             // what it loaded): `$curlf.need(…) === $curlf.need(…)`
             {
@@ -6285,7 +6379,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // the repository's OWN tree is where the module is: search it first
                 libPaths_.insert(libPaths_.begin(), prefix);
                 struct RtLoad { int& d; RtLoad(int& x) : d(x) { d++; } ~RtLoad() { d--; } } rtLoad{runtimeLoadDepth_};
-                try { loadModule(want, {}, /*doImport=*/false); }
+                try { loadModule(want, {}, /*doImport=*/false, false, "", false, /*mergeGlobals=*/false); }
                 catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
                 libPaths_.erase(libPaths_.begin());
             }
@@ -6313,6 +6407,193 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (it != at.end() && it->second.t == VT::Array) return it->second;
                 Value e = Value::array(); e.isList = true; return e;
             }
+            // A repository the program named (`inst#…`, `.new(:prefix)`), as
+            // against one of the default chain zef drives (home, site, vendor):
+            // only a named store answers from its own contents below.
+            const bool chain = at.count("\x01chain") && at["\x01chain"].truthy();
+            if (m == "short-id") return Value::str("inst");
+            if (m == "id") {
+                auto it = at.find("\x01id");
+                if (it != at.end()) return it->second;
+                std::string nextId;
+                auto nx = at.find("next-repo");
+                if (nx != at.end() && nx->second.t == VT::Object) nextId = methodCall(nx->second, "id", ValueList{}).toStr();
+                return at["\x01id"] = Value::str(sha1hex("inst#" + prefix + nextId));
+            }
+            if (m == "next-repo") {
+                auto nx = at.find("next-repo");
+                return nx != at.end() && nx->second.t == VT::Object ? nx->second : Value::nil();
+            }
+            if (!chain && (m == "candidates" || m == "resolve" || m == "need" || m == "files" || m == "uninstall")) {
+                if (m == "candidates") {
+                    Value e = Value::array(); e.isList = true; e.s = "Seq";
+                    if (!args.empty()) *e.arr() = curiCandidates(prefix, args[0]);
+                    return e;
+                }
+                if (m == "files") {
+                    Value e = Value::array(); e.isList = true; e.s = "Seq";
+                    if (args.empty()) return e;
+                    const std::string want = args[0].toStr();
+                    for (auto& d : curiCandidates(prefix, args[0])) {
+                        Value files = methodCall(methodCall(d, "meta", ValueList{}), "AT-KEY", ValueList{Value::str("files")});
+                        if (files.t != VT::Hash || !files.hash() || !files.hash()->count(want)) continue;
+                        struct stat st;
+                        if (::stat((prefix + "/resources/" + files.hash()->at(want).toStr()).c_str(), &st) == 0) e.arr()->push_back(d);
+                    }
+                    return e;
+                }
+                if (m == "uninstall") {
+                    Value dist = args.empty() ? Value::any() : args[0];
+                    std::string distId;
+                    if (dist.t == VT::Hash && dist.hash() && dist.hash()->count("dist-id")) distId = dist.hash()->at("dist-id").toStr();
+                    if (distId.empty()) {
+                        Value mv = methodCall(dist, "meta", ValueList{});
+                        auto f = [&](const char* k) { return mv.hash() && mv.hash()->count(k) ? mv.hash()->at(k).toStr() : std::string(); };
+                        std::string ver = mv.hash() && mv.hash()->count("version") ? mv.hash()->at("version").toStr() : f("ver");
+                        distId = sha1hex(f("name") + ver + f("auth") + f("api"));
+                    }
+                    std::ifstream in(prefix + "/dist/" + distId);
+                    if (!in) {   // (a dist another installer recorded: find it by its fields)
+                        Value mv = methodCall(dist, "meta", ValueList{});
+                        auto f = [&](const Value& h, const char* k) { return h.hash() && h.hash()->count(k) ? h.hash()->at(k).toStr() : std::string(); };
+                        auto verOf = [&](const Value& h) { std::string v = f(h, "ver"); return v.empty() ? f(h, "version") : v; };
+                        if (DIR* dd = opendir((prefix + "/dist").c_str())) {
+                            while (struct dirent* de = readdir(dd)) {
+                                std::string n = de->d_name;
+                                if (n == "." || n == "..") continue;
+                                std::ifstream r(prefix + "/dist/" + n);
+                                std::ostringstream rs; rs << r.rdbuf();
+                                Value rm = jsonParseDoc(rs.str());
+                                if (rm.t != VT::Hash) continue;
+                                if (f(rm, "name") == f(mv, "name") && verOf(rm) == verOf(mv) &&
+                                    f(rm, "auth") == f(mv, "auth") && f(rm, "api") == f(mv, "api")) { distId = n; break; }
+                            }
+                            closedir(dd);
+                        }
+                        in.open(prefix + "/dist/" + distId);
+                        if (!in) return Value::boolean(false);
+                    }
+                    std::ostringstream ss; ss << in.rdbuf(); in.close();
+                    Value rec = jsonParseDoc(ss.str());
+                    // (a name taken from a record must stay inside the store)
+                    auto safeName = [](const std::string& n) {
+                        return !n.empty() && n[0] != '/' && n.find("..") == std::string::npos && n.find('\\') == std::string::npos;
+                    };
+                    auto recHash = [](const Value& r, const char* k) -> std::shared_ptr<ValueMap> {
+                        if (r.t != VT::Hash || !r.hash()) return nullptr;
+                        auto it = r.hash()->find(k);
+                        return it != r.hash()->end() && it->second.t == VT::Hash ? it->second.hashS() : nullptr;
+                    };
+                    auto dropShort = [&](const std::string& key) {
+                        std::string dir = prefix + "/short/" + sha1hex(key);
+                        ::unlink((dir + "/" + distId).c_str());
+                        ::rmdir(dir.c_str());   // only when nothing else lives there
+                    };
+                    std::set<std::string> mine;   // this dist's blobs
+                    if (auto pv = recHash(rec, "provides"))
+                        for (auto& kv : *pv) {
+                            dropShort(kv.first);
+                            if (kv.second.t == VT::Hash && kv.second.hash())
+                                for (auto& pk : *kv.second.hash())
+                                    if (pk.second.t == VT::Hash && pk.second.hash() && pk.second.hash()->count("file") &&
+                                        safeName(pk.second.hash()->at("file").toStr()) &&
+                                        pk.second.hash()->at("file").toStr().find('/') == std::string::npos)
+                                        mine.insert("sources/" + pk.second.hash()->at("file").toStr());
+                        }
+                    std::vector<std::string> bins;
+                    if (auto fv = recHash(rec, "files"))
+                        for (auto& kv : *fv) {
+                            dropShort(kv.first);
+                            const std::string id = kv.second.toStr();
+                            if (safeName(id) && id.find('/') == std::string::npos) {
+                                mine.insert("resources/" + id);
+                                // …and a library's platform twin beside it
+                                if (kv.first.rfind("resources/libraries/", 0) == 0) {
+#if defined(_WIN32)
+                                    mine.insert("resources/" + id + ".dll");
+#elif defined(__APPLE__)
+                                    mine.insert("resources/lib" + id + ".dylib");
+#else
+                                    mine.insert("resources/lib" + id + ".so");
+#endif
+                                }
+                            }
+                            if (kv.first.rfind("bin/", 0) == 0 && safeName(kv.first.substr(4)) &&
+                                kv.first.find('/', 4) == std::string::npos)
+                                bins.push_back(kv.first.substr(4));
+                        }
+                    ::unlink((prefix + "/dist/" + distId).c_str());
+                    // a blob another installed dist still references stays
+                    // (sources and resources are stored by content)
+                    std::string others;
+                    if (DIR* dd = opendir((prefix + "/dist").c_str())) {
+                        while (struct dirent* de = readdir(dd)) {
+                            std::string n = de->d_name;
+                            if (n == "." || n == "..") continue;
+                            std::ifstream o(prefix + "/dist/" + n);
+                            std::ostringstream os; os << o.rdbuf(); others += os.str();
+                        }
+                        closedir(dd);
+                    }
+                    for (auto& b : mine) {
+                        std::string id = b.substr(b.find('/') + 1);
+                        std::string bare = id.rfind("lib", 0) == 0 ? id.substr(3) : id;
+                        bare = bare.substr(0, bare.find('.'));
+                        if (others.find("\"" + id + "\"") != std::string::npos ||
+                            others.find("\"" + bare + "\"") != std::string::npos) continue;
+                        ::unlink((prefix + "/" + b).c_str());
+                    }
+                    for (auto& b : bins)
+                        if (others.find("\"bin/" + b + "\"") == std::string::npos) ::unlink((prefix + "/bin/" + b).c_str());
+                    return Value::boolean(true);
+                }
+                // resolve / need
+                ValueList cands = args.empty() ? ValueList{} : curiCandidates(prefix, args[0]);
+                std::string want = args.empty() ? std::string()
+                                 : args[0].t == VT::Hash && args[0].hash() && args[0].hash()->count("short-name")
+                                 ? args[0].hash()->at("short-name").toStr() : args[0].toStr();
+                if (cands.empty()) {
+                    auto nx = at.find("next-repo");
+                    if (nx != at.end() && nx->second.t == VT::Object) return methodCall(nx->second, m, args);
+                    if (m == "resolve") return Value::nil();
+                    throwTypedV("X::CompUnit::UnsatisfiedDependency", {{"specification", args.empty() ? Value::any() : args[0]}},
+                                "Could not find " + want + " in:\n    inst#" + prefix);
+                }
+                const Value& dist = cands.front();
+                const std::string cuKey = "\x01cu:" + dist.hash()->at("dist-id").toStr() + ":" + want;
+                if (m == "need") {   // the same unit each time it is asked for
+                    auto hit = at.find(cuKey);
+                    if (hit != at.end()) return hit->second;
+                }
+                Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
+                (*cu.hash())["from"] = Value::str("Raku");
+                (*cu.hash())["short-name"] = Value::str(want);
+                (*cu.hash())["repo"] = inv;
+                (*cu.hash())["distribution"] = dist;
+                (*cu.hash())["version"] = methodCall(Value::typeObj("Version"), "new",
+                                                     ValueList{Value::str(dist.hash()->at("\x01ver").toStr())});
+                (*cu.hash())["precompiled"] = Value::boolean(true);
+                if (m == "resolve") return cu;
+                // Load THIS dist's source, and keep what it declares out of the
+                // program's names: `$*REPO.need` merges no globals (the unit's
+                // own are in `$cu.handle.globalish-package`, for merge-symbols)
+                std::unordered_set<std::string> before, firstSegs;
+                for (auto& kv : classes_) { before.insert(kv.first); firstSegs.insert(kv.first.substr(0, kv.first.find("::"))); }
+                pinnedInstall_ = PinnedInstall{want, prefix, dist.hash()->at("dist-id").toStr(), dist.hash()->at("\x01src").toStr()};
+                {
+                    struct Unpin { std::optional<PinnedInstall>& p; ~Unpin() { p.reset(); } } unpin{pinnedInstall_};
+                    struct RtLoad { int& d; RtLoad(int& x) : d(x) { d++; } ~RtLoad() { d--; } } rtLoad{runtimeLoadDepth_};
+                    loadModule(want, {}, /*doImport=*/false, false, "", false, /*mergeGlobals=*/false);
+                }
+                for (auto& kv : classes_)
+                    if (!before.count(kv.first) && !firstSegs.count(kv.first.substr(0, kv.first.find("::"))))
+                        needHidden_.insert(kv.first);
+                auto& lst = inv.obj()->attrs["\x01loaded"];
+                if (lst.t != VT::Array) { lst = Value::array(); lst.isList = true; }
+                lst.arrRef().push_back(cu);
+                inv.obj()->attrs[cuKey] = cu;
+                return cu;
+            }
             if (m == "id" || m == "short-id") return Value::str(name.empty() ? std::string("inst") : name);
             if (m == "Str" || m == "gist" || m == "raku") return Value::str("inst#" + prefix);
             if (m == "path-spec") return Value::str("inst#" + prefix);
@@ -6330,6 +6611,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // system-wide.
                 Value e = Value::array(); e.isList = true; e.s = "Seq";
                 std::string homeRepo = platHomeDir() + "/.raku";
+                if (!chain) {   // a store the program named: itself, then its next-repo's chain
+                    e.arr()->push_back(inv);
+                    auto nx = at.find("next-repo");
+                    if (nx != at.end() && nx->second.t == VT::Object && nx->second.obj()) {
+                        Value rest = nx->second.obj()->cls && nx->second.obj()->cls->name == "CompUnit::Repository::Installation"
+                                   ? methodCall(nx->second, "repo-chain", ValueList{}) : Value::any();
+                        if (rest.t == VT::Array && rest.arr()) for (auto& r : *rest.arr()) e.arr()->push_back(r);
+                        else e.arr()->push_back(nx->second);
+                    }
+                    return e;
+                }
                 for (const std::string& pre : rakuRepoPrefixes()) {
                     auto od = makePayload<ObjectData>();
                     od->cls = inv.obj()->cls;   // the Installation class, already in hand
@@ -6338,6 +6630,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                                    : pre.size() > 7 && pre.compare(pre.size()-7,7,"/vendor") == 0 ? "vendor"
                                    : "inst";
                     od->attrs["name"] = Value::str(nm);
+                    od->attrs["\x01chain"] = Value::boolean(true);
                     Value p2 = Value::str(pre); p2.hashKind = "IO";
                     od->attrs["prefix"] = p2;
                     e.arr()->push_back(Value::object(od));
@@ -6355,6 +6648,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     auto od = makePayload<ObjectData>();
                     od->cls = inv.obj()->cls;
                     od->attrs["name"] = Value::str("core");
+                    od->attrs["\x01chain"] = Value::boolean(true);
                     Value p3 = Value::str(core); p3.hashKind = "IO";
                     od->attrs["prefix"] = p3;
                     e.arr()->push_back(Value::object(od));
@@ -6387,6 +6681,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         (*d.hash())["meta"] = meta;
                         Value p2 = Value::str(prefix); p2.hashKind = "IO";
                         (*d.hash())["prefix"] = p2;
+                        (*d.hash())["dist-id"] = Value::str(n);
                         e.arr()->push_back(d);
                     }
                     closedir(dd);
@@ -6417,7 +6712,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (want.empty()) return Value::nil();
                 if (m == "need") {                            // throws if it cannot load
                     struct RtLoad { int& d; RtLoad(int& x) : d(x) { d++; } ~RtLoad() { d--; } } rtLoad{runtimeLoadDepth_};
-                    loadModule(want);
+                    loadModule(want, {}, true, false, "", false, /*mergeGlobals=*/false);
                 }
                 Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
                 (*cu.hash())["short-name"] = Value::str(want);
@@ -6442,6 +6737,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (prefix.empty())
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         "install: this repository object carries no prefix — construct it with "
+                        "CompUnit::Repository::Installation.new(:prefix(…)) or "
                         "CompUnit::RepositoryRegistry.repository-for-spec('inst#/path')"};
                 Value dist = args.empty() ? Value::any() : args[0];
                 bool force = false;
@@ -6464,11 +6760,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // Adding the separators would rename every record and orphan every
                 // installed distribution: this line is a format, not a hash call.
                 std::string distId = sha1hex(name + "\0" + ver + "\0" + auth + "\0" + api);
-                std::string distRoot = methodCall(dist, "IO", ValueList{}).toStr();
+                // (a Distribution::Path / ::Hash / a repository's dist says where
+                // its files are; any other distribution object answers .IO)
+                std::string distRoot = dist.t == VT::Hash && dist.hashKind == "Distribution" && dist.hash() &&
+                                       dist.hash()->count("prefix")
+                                     ? dist.hash()->at("prefix").toStr()
+                                     : methodCall(dist, "IO", ValueList{}).toStr();
                 auto mkdirp = [](const std::string& p) {
                     std::string acc;
                     for (size_t i = 0; i <= p.size(); i++) {
-                        if (i == p.size() || p[i] == '/') { if (acc.size() > 1) ::mkdir(acc.c_str(), 0777); }
+                        if (i == p.size() || p[i] == '/') { if (!acc.empty() && acc != "/") ::mkdir(acc.c_str(), 0777); }
                         if (i < p.size()) acc += p[i];
                     }
                 };
@@ -6478,6 +6779,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 };
                 // already installed? (a short entry for a provided module under this dist-id)
                 Value provV = meta.count("provides") ? meta["provides"] : Value::makeHash();
+                // (a meta built in code may give `provides` as one Pair, or a
+                // list of them: `:provides(:Foo<lib/Foo.rakumod>)`)
+                if (provV.t == VT::Pair || (provV.t == VT::Array && provV.arr())) {
+                    Value h = Value::makeHash();
+                    if (provV.t == VT::Pair) (*h.hash())[provV.s.str()] = provV.pairVal() ? *provV.pairVal() : Value::any();
+                    else for (auto& e : *provV.arr())
+                        if (e.t == VT::Pair) (*h.hash())[e.s.str()] = e.pairVal() ? *e.pairVal() : Value::any();
+                    provV = h;
+                }
                 if (!force && provV.t == VT::Hash && provV.hash() && !provV.hash()->empty()) {
                     std::string firstMod = provV.hash()->begin()->first;
                     std::string sentinel = prefix + "/short/" + sha1hex(firstMod) + "/" + distId;
@@ -6521,8 +6831,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     mkdirp(prefix + "/resources"); mkdirp(prefix + "/bin");
                     for (auto& kv : *meta["files"].hash()) {
                         std::string rel = kv.first, src = kv.second.toStr();
-                        std::string content = slurp(src.empty() ? distRoot + "/" + rel : src);
+                        // the file's source: the dist's own copy at the same
+                        // relative path, a path relative to the dist, or an
+                        // absolute one (zef hands those in)
+                        struct stat sst;
+                        std::string from = src.empty() ? distRoot + "/" + rel
+                                         : (src[0] == '/' && ::stat(src.c_str(), &sst) == 0) ? src
+                                         : distRoot + "/" + src;
+                        std::string content = slurp(from);
                         std::string sha = sha1hex(content);
+                        // a resource keeps its extension (config.txt is
+                        // resources/<SHA>.txt, as Rakudo stores it); a library
+                        // keeps the bare id beside its platform twin below
+                        if (rel.rfind("resources/", 0) == 0 && rel.rfind("resources/libraries/", 0) != 0) {
+                            size_t dot = from.rfind('.'), sl = from.rfind('/');
+                            if (dot != std::string::npos && (sl == std::string::npos || dot > sl + 1))
+                                sha += from.substr(dot);
+                        }
                         // EVERY file blob lands in resources/ — bin/ scripts too.
                         // That is Rakudo's layout (bin/ holds only the named
                         // wrappers below), and it is what run-script reads. This
@@ -6964,14 +7289,30 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "from") return Value::str("Raku");
         // the unit's handle: its GLOBALish package is the one every loaded
         // unit merges into here
-        if (m == "handle") { Value hd = Value::makeHash(); hd.hashKind = "CompUnit::Handle"; return hd; }
-        if (m == "short-name" || m == "repo") {
+        if (m == "handle") {
+            Value hd = Value::makeHash(); hd.hashKind = "CompUnit::Handle";
+            auto it = h.find("short-name");
+            if (it != h.end()) (*hd.hash())["short-name"] = it->second;
+            return hd;
+        }
+        if (m == "short-name" || m == "repo" || m == "version" || m == "distribution") {
             auto it = h.find(m);
             return it != h.end() ? it->second : Value::any();
         }
         if (m == "Str" || m == "gist") {
             auto it = h.find("short-name");
             return it != h.end() ? it->second : Value::str("");
+        }
+    }
+    // (the unit's OWN GLOBALish: the packages it declared, and what they hold)
+    if (inv.t == VT::Hash && inv.hashKind == "CompUnit::Handle" && m == "globalish-package" && inv.hash()->count("short-name")) {
+        auto us = unitStash_.find((*inv.hash())["short-name"].toStr());
+        if (us != unitStash_.end()) {
+            Value st = Value::makeHash(); st.hashKind = "Stash"; st.s = "GLOBAL";
+            for (auto& kv : us->second.globalish)
+                if (kv.second) (*st.hash())[kv.first] = Value::typeObj(kv.second->fq);
+            globalishUnits_[(const void*)st.hash()] = us->first;   // (merge-symbols joins this unit's view)
+            return st;
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "CompUnit::Handle" &&
@@ -13464,6 +13805,27 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             bool finished = false;
         };
         auto st = std::make_shared<CombineState>();
+        // Sources may emit from different threads at once (two Suppliers fed
+        // by `start` blocks): the state is kept under `mx`, and deliveries go
+        // one at a time — a delivery that arrives while another runs waits in
+        // `pending` and is run by that one (the same rule as a Supplier's
+        // own activation), so the block never runs beside itself.
+        struct Serial { std::mutex m; bool running = false; std::deque<std::function<void()>> pending; };
+        auto mx = std::make_shared<std::mutex>();
+        auto serial = std::make_shared<Serial>();
+        auto deliver = [serial](std::function<void()> f) {
+            {   std::lock_guard<std::mutex> lk(serial->m);
+                if (serial->running) { serial->pending.push_back(std::move(f)); return; }
+                serial->running = true;
+            }
+            for (;;) {
+                try { f(); } catch (...) {}
+                std::lock_guard<std::mutex> lk(serial->m);
+                if (serial->pending.empty()) { serial->running = false; return; }
+                f = std::move(serial->pending.front());
+                serial->pending.pop_front();
+            }
+        };
         st->queues.resize(n);
         st->latest.resize(n);
         st->have.assign(n, 0);
@@ -13471,22 +13833,28 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         for (size_t i = 0; i < n && i < initial.size(); i++) { st->latest[i] = initial[i]; st->have[i] = 1; }
         st->liveCount = (int)n;
         Interpreter* self = this;
-        auto finish = [self, st, doneCb, handle]() {
-            if (st->finished) return;
-            st->finished = true;
-            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
-            self->closeTapHandle(handle);
+        // (each is called with `mx` NOT held: it runs the subscriber's code)
+        auto finish = [self, st, doneCb, handle, deliver, mx]() {
+            { std::lock_guard<std::mutex> lk(*mx); if (st->finished) return; st->finished = true; }
+            deliver([self, doneCb, handle] {
+                if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+                self->closeTapHandle(handle);
+            });
         };
-        auto fail = [self, st, quitCb, handle](const Value& ex) {
-            if (st->finished) return;
-            st->finished = true;
-            if (quitCb.t == VT::Code) { ValueList one{ex}; try { self->callCallable(quitCb, one); } catch (...) {} }
-            self->closeTapHandle(handle);
+        auto fail = [self, st, quitCb, handle, deliver, mx](const Value& ex) {
+            { std::lock_guard<std::mutex> lk(*mx); if (st->finished) return; st->finished = true; }
+            deliver([self, quitCb, handle, ex] {
+                if (quitCb.t == VT::Code) { ValueList one{ex}; try { self->callCallable(quitCb, one); } catch (...) {} }
+                self->closeTapHandle(handle);
+            });
         };
-        auto push = [self, st, emitCb](Value v) {
-            if (st->finished || emitCb.t != VT::Code) return;
-            ValueList one{std::move(v)};
-            try { self->callCallable(emitCb, one); } catch (...) {}
+        auto push = [self, st, emitCb, deliver](Value v) {
+            if (emitCb.t != VT::Code) return;
+            deliver([self, st, emitCb, v] {
+                if (st->finished) return;
+                ValueList one{v};
+                try { self->callCallable(emitCb, one); } catch (...) {}
+            });
         };
         auto row = [self, withOp](ValueList vs) -> Value {
             if (withOp.t == VT::Code) return self->callCallable(withOp, vs);
@@ -13496,39 +13864,56 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         };
         for (size_t i = 0; i < n; i++) {
             Value e; e.t = VT::Code; e.setCode(std::make_shared<Callable>());
-            e.code()->builtin = [i, n, op, st, push, row, finish](Interpreter&, ValueList& a) -> Value {
-                if (st->finished) return Value::any();
+            e.code()->builtin = [i, n, op, st, push, row, finish, mx](Interpreter&, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
-                if (op == "merge") { push(v); return Value::any(); }
-                if (op == "zip") {
-                    st->queues[i].push_back(v);
-                    for (;;) {
-                        for (size_t k = 0; k < n; k++) if (st->queues[k].empty()) return Value::any();
-                        ValueList vs;
-                        for (size_t k = 0; k < n; k++) { vs.push_back(st->queues[k].front()); st->queues[k].erase(st->queues[k].begin()); }
-                        push(row(std::move(vs)));
-                        if (st->finished) return Value::any();
-                        // a source that has already finished and has nothing left
-                        // to give ends the zip: the others cannot be paired again
-                        for (size_t k = 0; k < n; k++)
-                            if (st->ended[k] && st->queues[k].empty()) { finish(); return Value::any(); }
+                if (op == "merge") {
+                    { std::lock_guard<std::mutex> lk(*mx); if (st->finished) return Value::any(); }
+                    push(v); return Value::any();
+                }
+                // the rows are worked out under the lock and delivered after it
+                std::vector<ValueList> rows;
+                bool end = false;
+                {
+                    std::lock_guard<std::mutex> lk(*mx);
+                    if (st->finished) return Value::any();
+                    if (op == "zip") {
+                        st->queues[i].push_back(v);
+                        for (;;) {
+                            bool full = true;
+                            for (size_t k = 0; k < n; k++) if (st->queues[k].empty()) { full = false; break; }
+                            if (!full) break;
+                            ValueList vs;
+                            for (size_t k = 0; k < n; k++) { vs.push_back(st->queues[k].front()); st->queues[k].erase(st->queues[k].begin()); }
+                            rows.push_back(std::move(vs));
+                            // a source that has already finished and has nothing left
+                            // to give ends the zip: the others cannot be paired again
+                            for (size_t k = 0; k < n; k++)
+                                if (st->ended[k] && st->queues[k].empty()) { end = true; break; }
+                            if (end) break;
+                        }
+                    }
+                    else if (op == "zip-latest") {
+                        st->latest[i] = v; st->have[i] = 1;
+                        bool all = true;
+                        for (size_t k = 0; k < n; k++) if (!st->have[k]) { all = false; break; }
+                        if (all) rows.push_back(ValueList(st->latest.begin(), st->latest.end()));
                     }
                 }
-                if (op == "zip-latest") {
-                    st->latest[i] = v; st->have[i] = 1;
-                    for (size_t k = 0; k < n; k++) if (!st->have[k]) return Value::any();
-                    ValueList vs(st->latest.begin(), st->latest.end());
-                    push(row(std::move(vs)));
-                }
+                for (auto& r : rows) push(row(std::move(r)));
+                if (end) finish();
                 return Value::any();
             };
             Value d; d.t = VT::Code; d.setCode(std::make_shared<Callable>());
-            d.code()->builtin = [i, op, st, finish](Interpreter&, ValueList&) -> Value {
-                if (st->finished || st->ended[i]) return Value::any();
-                st->ended[i] = 1;
-                if (st->liveCount > 0) st->liveCount--;
-                if (op == "zip") { if (st->queues[i].empty()) finish(); }
-                else if (st->liveCount == 0) finish();
+            d.code()->builtin = [i, op, st, finish, mx](Interpreter&, ValueList&) -> Value {
+                bool fin = false;
+                {
+                    std::lock_guard<std::mutex> lk(*mx);
+                    if (st->finished || st->ended[i]) return Value::any();
+                    st->ended[i] = 1;
+                    if (st->liveCount > 0) st->liveCount--;
+                    fin = op == "zip" ? st->queues[i].empty() : st->liveCount == 0;
+                }
+                if (fin) finish();
                 return Value::any();
             };
             Value q; q.t = VT::Code; q.setCode(std::make_shared<Callable>());
@@ -13553,7 +13938,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                     }
                 }
             }
-            if (st->finished) break;   // a synchronous source may have ended it already
+            { std::lock_guard<std::mutex> lk(*mx); if (st->finished) break; }   // a synchronous source may have ended it already
         }
         if (n == 0) finish();
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
@@ -18576,6 +18961,162 @@ void Interpreter::registerBuiltins() {
                     }
                     return I.tapSupply(s, blk, doneW, Value::nil());
                 }
+                // A MERGE (zip, zip-latest) with a LIVE source among its inputs
+                // subscribes NOW, not after the react body: a `signal()` in it
+                // must have its handler in place before a later whenever in the
+                // same body runs — Roast's bug-coverage-stress.t child prints
+                // 'started' from `whenever Promise.kept` and is sent SIGINT the
+                // moment it does. Only list-backed inputs keep the deferred
+                // activation below.
+                std::function<bool(const Value&)> liveSource = [&](const Value& v) -> bool {
+                    if (v.t != VT::Hash || v.hashKind != "Supply" || !v.hash()) return false;
+                    if (v.hash()->count("supplier")) return true;
+                    auto kt = v.hash()->find("kind");
+                    if (kt == v.hash()->end()) return false;
+                    const std::string kk = kt->second.toStr();
+                    if (kk == "signal" || kk == "interval" || kk == "watch" || kk == "async-read" ||
+                        kk == "async-listen" || kk == "udp-read") return true;
+                    if (kk == "combine" && v.hash()->count("sources") && (*v.hash())["sources"].arr())
+                        for (auto& src : *(*v.hash())["sources"].arr()) if (liveSource(src)) return true;
+                    return false;
+                };
+                if (k == "combine" && liveSource(s)) {
+                    std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                    // the phasers close over a shim env mirroring each call's
+                    // parameters, so `LAST { say $v }` sees the last value
+                    auto phEnv = std::make_shared<Env>();
+                    phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
+                    ValueList lastP, quitP;
+                    scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
+                    std::vector<std::string> pnames;
+                    if (blk.code() && blk.code()->params)
+                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
+                    std::weak_ptr<ReactCtx> wctx = ctx;
+                    // The subscription is made NOW — a signal() in it has its
+                    // handler from this moment — but what it delivers is HELD
+                    // until the react body (or the whenever block this runs in)
+                    // has finished, as Rakudo delivers it: a list-backed input
+                    // emits during the subscribe itself.
+                    struct Eager {
+                        std::mutex m; bool holding = true, ended = false;
+                        std::vector<std::function<void()>> held;
+                        std::shared_ptr<TapHandle> handle;
+                        std::atomic<bool> released{false};
+                    };
+                    auto es = std::make_shared<Eager>();
+                    auto release = [wctx, es]() {
+                        if (es->released.exchange(true)) return;
+                        if (auto c = wctx.lock()) {
+                            std::lock_guard<std::mutex> lk(c->m);
+                            if (c->liveSources > 0) c->liveSources--;
+                            c->cv.notify_all();
+                        }
+                    };
+                    auto endSub = [es]() -> bool {   // true the first time only
+                        std::lock_guard<std::mutex> lk(es->m);
+                        if (es->ended) return false;
+                        es->ended = true;
+                        return true;
+                    };
+                    auto gate = [es](std::function<void()> f) {
+                        {   std::lock_guard<std::mutex> lk(es->m);
+                            if (es->ended) return;
+                            if (es->holding) { es->held.push_back(std::move(f)); return; }
+                        }
+                        f();
+                    };
+                    auto closeTap = [es](Interpreter& I2) { if (es->handle) I2.closeTapHandle(es->handle); };
+                    Value blkCopy = blk;
+                    auto onEmit = [blkCopy, wctx, es, phEnv, pnames, lastP, release, endSub, closeTap](Interpreter& I2, ValueList args) {
+                        { std::lock_guard<std::mutex> lk(es->m); if (es->ended) return; }
+                        auto c = wctx.lock();
+                        if (c) { std::lock_guard<std::mutex> lk(c->m); if (c->closed) return; }   // after `done`, nothing more
+                        struct Push {
+                            Interpreter& I; bool on;
+                            ~Push() { if (on && !I.reactStack_.empty()) I.reactStack_.pop_back(); }
+                        } push{I2, (bool)c};
+                        if (c) I2.reactStack_.push_back(c);
+                        for (size_t i = 0; i < pnames.size(); i++)
+                            phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
+                        if (!args.empty()) phEnv->define("$_", args[0]);
+                        try { I2.callCallable(blkCopy, args); }
+                        catch (NextEx&) {}
+                        catch (DoneEx&) {}
+                        catch (LastEx&) {        // `last`: this subscription ends, with its LAST
+                            if (endSub()) { closeTap(I2); I2.runLastPhasers(lastP, c); release(); }
+                        }
+                        catch (RakuError& e) {   // a die in the block: the react dies with it
+                            if (endSub()) {
+                                if (c) {
+                                    std::lock_guard<std::mutex> lk(c->m);
+                                    if (!c->quitFlag) { c->quitFlag = true; c->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload; }
+                                    c->closed = true; c->cv.notify_all();
+                                }
+                                closeTap(I2); release();
+                            }
+                        }
+                    };
+                    Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
+                    emitW.code()->builtin = [gate, onEmit](Interpreter& I2, ValueList& args) -> Value {
+                        ValueList a = args;
+                        Interpreter* ip = &I2;
+                        gate([ip, onEmit, a] { onEmit(*ip, a); });
+                        return Value::any();
+                    };
+                    // the block's LAST and QUIT phasers are this subscription's
+                    // done and quit (`LAST { done }` ends the react)
+                    Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                    doneW.code()->builtin = [gate, lastP, release, wctx, endSub](Interpreter& I2, ValueList&) -> Value {
+                        Interpreter* ip = &I2;
+                        gate([ip, lastP, release, wctx, endSub] {
+                            if (endSub()) { ip->runLastPhasers(lastP, wctx.lock()); release(); }
+                        });
+                        return Value::any();
+                    };
+                    Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                    quitW.code()->builtin = [gate, wctx, quitP, release, endSub](Interpreter& I2, ValueList& a) -> Value {
+                        Interpreter* ip = &I2;
+                        ValueList args = a;
+                        gate([ip, wctx, quitP, release, endSub, args] {
+                            if (!endSub()) return;
+                            auto c = wctx.lock();
+                            if (c) ip->reactStack_.push_back(c);
+                            for (auto& p : quitP) { ValueList one = args; try { ip->callCallable(p, one); } catch (...) {} }
+                            if (c) ip->reactStack_.pop_back();
+                            if (c && quitP.empty()) {   // unhandled: fatal to the react
+                                std::lock_guard<std::mutex> lk(c->m);
+                                if (!c->quitFlag) { c->quitFlag = true; c->quitErr = args.empty() ? Value::str("quit") : args[0]; }
+                                c->closed = true; c->cv.notify_all();
+                            }
+                            release();
+                        });
+                        return Value::any();
+                    };
+                    Value tap = I.tapSupply(s, emitW, doneW, quitW);
+                    if (tap.t == VT::Hash && tap.ext() && tap.hash() && tap.hash()->count("wired"))
+                        es->handle = std::static_pointer_cast<TapHandle>(tap.ext());
+                    // what the subscribe delivered (and whatever arrives until the
+                    // body is over) goes out afterwards, in order
+                    auto flush = [es]() {
+                        for (;;) {
+                            std::vector<std::function<void()>> items;
+                            {   std::lock_guard<std::mutex> lk(es->m);
+                                if (es->held.empty()) { es->holding = false; return; }
+                                items.swap(es->held);
+                            }
+                            for (auto& f : items) f();
+                        }
+                    };
+                    if (ctx) {
+                        std::lock_guard<std::mutex> lk(ctx->m);
+                        if (es->handle) ctx->extTaps.push_back(es->handle);   // closed with the react
+                        ctx->deferred.push_back(flush);
+                        ctx->cv.notify_all();
+                    }
+                    else flush();
+                    return tap;
+                }
             }
             if (s.t == VT::Hash && s.hashKind == "Supply") {
                 if (s.hash()->count("supplier")) {
@@ -18838,7 +19379,7 @@ void Interpreter::registerBuiltins() {
                     bool procStream = s.t == VT::Hash && s.hashKind == "Supply" && s.hash() &&
                                       s.hash()->count("proc");
                     if (rctx && !procStream) {
-                        { std::lock_guard<std::mutex> lk(rctx->m); rctx->deferred.push_back(drain); }
+                        { std::lock_guard<std::mutex> lk(rctx->m); rctx->deferred.push_back(drain); rctx->cv.notify_all(); }
                         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                     }
                     drain(); // no react ctx (bare whenever in a plain block): keep the eager order

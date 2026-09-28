@@ -4755,8 +4755,68 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // $?DISTRIBUTION — the compiling module's distribution. `.meta` is the parsed
     // META6.json (zef reads <version>/<ver>/<api>/<auth> from it), `.prefix` the
     // checkout root; `.content` reads a file listed in the meta.
+    // `Distribution::Path.new($dir, :$meta-file)` reads the dist's META6, and
+    // `Distribution::Hash.new(%meta, :$prefix!)` takes the meta as given
+    if (inv.t == VT::Type && m == "new" && (inv.s == "Distribution::Path" || inv.s == "Distribution::Hash")) {
+        std::string prefix, metaFile = "META6.json";
+        Value first = Value::any(); bool haveFirst = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg && a.pairVal()) {
+                if (a.s == "prefix") prefix = a.pairVal()->toStr();
+                else if (a.s == "meta-file") metaFile = a.pairVal()->toStr();
+            }
+            else if (!haveFirst) { first = a; haveFirst = true; }
+        }
+        if (inv.s == "Distribution::Path") {
+            prefix = first.toStr();
+            bool givenMeta = false;
+            for (auto& a : args) if (a.t == VT::Pair && a.namedArg && a.s == "meta-file") givenMeta = true;
+            // (a :meta-file given is a path in its own right; the default is the prefix's META6.json)
+            std::string mf = givenMeta ? metaFile : prefix + "/" + metaFile;
+            std::ifstream in(mf);
+            if (!in) throwTyped("X::AdHoc", {}, "No meta file located at " + mf);
+            std::ostringstream ss; ss << in.rdbuf();
+            return makeDistribution(jsonParseDoc(ss.str()), prefix, "Distribution::Path", true);
+        }
+        Value meta = first;
+        if (meta.t != VT::Hash) meta = methodCall(first, "hash", ValueList{});
+        return makeDistribution(meta, prefix, "Distribution::Hash", false);
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Distribution" && inv.hash()) {
         if (m == "meta") { auto it = inv.hash()->find("meta"); return it != inv.hash()->end() ? it->second : Value::makeHash(); }
+        // `.content($address)`: a handle (not yet opened) on the file the dist
+        // holds under that name — meta<files> maps it, else it is a path
+        if (m == "content" && !args.empty()) {
+            std::string addr = args[0].toStr(), rel = addr;
+            auto mt = inv.hash()->find("meta");
+            if (mt != inv.hash()->end() && mt->second.t == VT::Hash && mt->second.hash()) {
+                auto ft = mt->second.hash()->find("files");
+                if (ft != mt->second.hash()->end() && ft->second.t == VT::Hash && ft->second.hash() && ft->second.hash()->count(addr))
+                    rel = ft->second.hash()->at(addr).toStr();
+            }
+            auto pt = inv.hash()->find("prefix");
+            std::string pfx = pt != inv.hash()->end() ? pt->second.toStr() : std::string(".");
+            // an INSTALLED dist's files live in its store: a file under
+            // resources/<id>, a module's source under sources/<id>
+            if (inv.hash()->count("dist-id")) {
+                std::string src;   // a module's path: its source, under sources/
+                if (mt != inv.hash()->end() && mt->second.t == VT::Hash && mt->second.hash()) {
+                    auto pv = mt->second.hash()->find("provides");
+                    if (pv != mt->second.hash()->end() && pv->second.t == VT::Hash && pv->second.hash())
+                        for (auto& mod : *pv->second.hash())
+                            if (mod.second.t == VT::Hash && mod.second.hash())
+                                for (auto& pth : *mod.second.hash())
+                                    if (pth.first == addr && pth.second.t == VT::Hash && pth.second.hash() &&
+                                        pth.second.hash()->count("file"))
+                                        src = "sources/" + pth.second.hash()->at("file").toStr();
+                }
+                if (!src.empty()) rel = src;
+                else if (rel != addr) rel = "resources/" + rel;   // any other file: resources/<id>
+            }
+            Value path = Value::str(rel.size() && rel[0] == '/' ? rel : pfx + "/" + rel); path.hashKind = "IO";
+            Value pa = Value::pair("path", path); pa.namedArg = true;
+            return methodCall(Value::typeObj("IO::Handle"), "new", ValueList{pa});
+        }
         if (m == "prefix") { auto it = inv.hash()->find("prefix"); return it != inv.hash()->end() ? it->second : Value::any(); }
         if (m == "name" || m == "Str" || m == "gist") {
             auto it = inv.hash()->find("meta");
@@ -9910,6 +9970,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (kv.first.rfind(pkg + "::", 0) == 0 &&
                 kv.first.find("::", pkg.size() + 2) == std::string::npos)
                 (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
+        // …as the ASKING unit sees the package: of the types units declared
+        // under it, the ones that reached this unit through what it uses
+        // (`Example2::.keys` after `use Example2::F` is not every Example2::*
+        // loaded anywhere). A package the unit has no view of lists as is.
+        // (the listing is a VIEW: the package's own stash keeps every entry,
+        // for every other unit that asks)
+        if (!stashTracked_.empty())
+            if (StashNode* nd = stashResolve(stashUnitHere(), pkg)) {
+                std::vector<std::string> drop;
+                for (auto& kv : *stash)
+                    if (!nd->kids.count(kv.first) && stashTracked_.count(pkg + "::" + kv.first)) drop.push_back(kv.first);
+                if (!drop.empty()) {
+                    auto view = makePayload<ValueMap>(*stash);
+                    for (auto& k : drop) view->erase(k);
+                    Value st; st.t = VT::Hash; st.setHash(view); st.hashKind = "Stash"; st.s = pkg;
+                    return st;
+                }
+            }
         // an ENUM type's stash holds its values (`Bool::.values` is (True, False))
         if (pkg == "Bool") {
             (*stash)["True"]  = Value::boolean(true);
@@ -9980,6 +10058,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
     if (m == "does") { // .does(Role/Type) — role/type membership introspection
         if (args.empty()) return Value::boolean(false);
+        if (inv.t == VT::Hash && inv.hashKind == "Distribution" && args[0].t == VT::Type && args[0].s == "Distribution")
+            return Value::boolean(true);
         // HOW form: `$obj.HOW.does($obj, Role)` — the metaclass takes (object, role).
         // The metaclass may be the plain type object OR a persistent .HOW metaobject.
         bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0);

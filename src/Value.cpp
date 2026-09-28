@@ -1145,6 +1145,12 @@ std::string Value::typeName() const {
                         // module asserts come back False (Identity::Utils, PURL,
                         // SBOM::Raku, MCP, Pod::TreeWalker all test it)
                         if (hashKind == "DependencySpec") return "CompUnit::DependencySpecification";
+                        // Distribution::Path / ::Hash / a repository's own: the
+                        // kind stays Distribution (what `~~ Distribution` checks)
+                        if (hashKind == "Distribution" && hash()) {
+                            auto it = hash()->find("\x01type");
+                            if (it != hash()->end()) return it->second.toStr();
+                        }
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
         case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
                              : code() && code()->isRegexRoutine ? "Regex"

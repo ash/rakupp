@@ -3585,7 +3585,7 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
         return;
     }
     if (module == "lib") {
-        if (!arg.empty()) libPaths_.insert(libPaths_.begin(), arg);
+        if (!arg.empty()) useLibPath(arg);
         return;
     }
     if (!module.empty()) loadModule(module);
@@ -4620,7 +4620,21 @@ Interpreter::Interpreter() {
         // on-disk prefix held in the `prefix` attr.
         auto inst = std::make_shared<ClassInfo>();
         inst->name = "CompUnit::Repository::Installation"; inst->parent = repoRole;
+        for (const char* a : {"prefix", "name", "next-repo"}) {
+            ClassAttr ca; ca.name = a; ca.sigil = '$'; ca.pub = true; inst->attrs.push_back(ca);
+        }
         classes_["CompUnit::Repository::Installation"] = inst;
+        // the roles a repository answers to: every one is Locally (a directory
+        // on this machine), an Installation is also Installable
+        for (const char* rn : {"CompUnit::Repository::Installable", "CompUnit::Repository::Locally"}) {
+            auto r = std::make_shared<ClassInfo>();
+            r->name = rn; r->isRole = true;
+            classes_[rn] = r;
+        }
+        for (const char* rn : {"CompUnit::Repository", "CompUnit::Repository::Installable", "CompUnit::Repository::Locally"})
+            inst->doneRoles.insert(rn);
+        fs->doneRoles.insert("CompUnit::Repository");
+        fs->doneRoles.insert("CompUnit::Repository::Locally");
         // the registry is a bare type object; its methods are handled in methodCall.
         auto reg = std::make_shared<ClassInfo>();
         reg->name = "CompUnit::RepositoryRegistry";
@@ -4651,6 +4665,7 @@ Interpreter::Interpreter() {
         od->attrs["name"] = Value::str("home");
         Value pfx = Value::str(platHomeDir() + "/.raku"); pfx.hashKind = "IO";
         od->attrs["prefix"] = pfx;
+        od->attrs["\x01chain"] = Value::boolean(true);   // (one of the default chain: see the CURI arm)
         global_->define("$*REPO", Value::object(od));
     }
     // The slang language-objects ($~MAIN and friends) exist as defined Grammar
@@ -5245,6 +5260,112 @@ static bool hoistableTypeDecl(const Stmt* s) {
 
 // Create a type whose declaration is further down the file, the moment its name
 // is actually used. Answers false when there is no such pending declaration.
+// ---- per-unit package stashes (see Interpreter.h) ----
+std::string Interpreter::stashUnitHere() {
+    if (stashUnitOverride_) return *stashUnitOverride_;
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        if (e->unitFrame) {
+            auto it = unitOfEnv_.find(e);
+            if (it != unitOfEnv_.end()) return it->second;
+        }
+    return "";
+}
+
+static std::vector<std::string> stashParts(const std::string& fq) {
+    std::vector<std::string> parts;
+    size_t b = 0;
+    for (;;) {
+        size_t c = fq.find("::", b);
+        parts.push_back(fq.substr(b, c == std::string::npos ? std::string::npos : c - b));
+        if (c == std::string::npos) break;
+        b = c + 2;
+    }
+    return parts;
+}
+
+// `class A::B::C` in unit U: A resolves in U's own view (a package U imported
+// is the SAME node the exporting unit holds, so the declaration shows there
+// too), B and C are made under it as needed, and A becomes one of U's
+// package-scoped names.
+void Interpreter::stashDeclare(const std::string& fq, bool stubPkg) {
+    if (fq.empty() || fq.find('\x01') != std::string::npos) return;
+    std::vector<std::string> parts = stashParts(fq);
+    if (parts.empty() || parts[0].empty()) return;
+    const std::string& p1 = parts[0];
+    std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+    if (parallelMode_) kl.lock();
+    auto newNode = [&](const std::string& name, bool stub) {
+        stashNodes_.emplace_back();
+        StashNode* n = &stashNodes_.back();
+        n->fq = name; n->stub = stub;
+        return n;
+    };
+    UnitStash& U = unitStash_[stashUnitHere()];
+    StashNode*& slot = U.lexical[p1];
+    const bool single = parts.size() == 1;
+    if (!slot) slot = newNode(p1, !single || stubPkg);
+    else if (single && !stubPkg) slot->stub = false;
+    U.globalish[p1] = slot;
+    stashTracked_.insert(p1);
+    StashNode* n = slot;
+    std::string acc = p1;
+    for (size_t i = 1; i < parts.size(); i++) {
+        acc += "::" + parts[i];
+        const bool last = i + 1 == parts.size();
+        StashNode*& k = n->kids[parts[i]];
+        if (!k) k = newNode(acc, !last || stubPkg);
+        else if (last && !stubPkg) k->stub = false;
+        stashTracked_.insert(acc);
+        n = k;
+    }
+}
+
+// Package nodes merge by CONTENT: a stub (an implied package, or `package
+// P {}`) takes the other's entries, a real one is kept, and entries that are
+// already the same node are left alone.
+void Interpreter::stashMergeNodes(StashNode* t, StashNode* s, std::set<StashNode*>& seen) {
+    if (!t || !s || t == s || !seen.insert(t).second) return;
+    for (auto& kv : s->kids) {
+        auto it = t->kids.find(kv.first);
+        if (it == t->kids.end()) t->kids[kv.first] = kv.second;
+        else if (it->second != kv.second && (kv.second->stub || it->second->stub))
+            stashMergeNodes(it->second, kv.second, seen);
+    }
+}
+
+// `use M` in unit I: M's package-scoped names join I's view.
+void Interpreter::stashImport(const std::string& importer, const std::string& mod) {
+    if (importer == mod) return;
+    std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock);
+    if (parallelMode_) kl.lock();
+    auto mit = unitStash_.find(mod);
+    if (mit == unitStash_.end()) return;
+    std::vector<std::pair<std::string, StashNode*>> names(mit->second.globalish.begin(), mit->second.globalish.end());
+    UnitStash& I = unitStash_[importer];
+    for (auto& [name, src] : names) {
+        StashNode*& tgt = I.lexical[name];
+        if (!tgt) { tgt = src; continue; }
+        if (tgt == src) continue;
+        std::set<StashNode*> seen;
+        if (src->stub || !tgt->stub) stashMergeNodes(tgt, src, seen);
+        else { stashMergeNodes(src, tgt, seen); tgt = src; }
+    }
+}
+
+Interpreter::StashNode* Interpreter::stashResolve(const std::string& unit, const std::string& pkg) {
+    auto uit = unitStash_.find(unit);
+    if (uit == unitStash_.end()) return nullptr;
+    std::vector<std::string> parts = stashParts(pkg);
+    auto lit = uit->second.lexical.find(parts[0]);
+    if (lit == uit->second.lexical.end() || !lit->second) return nullptr;
+    StashNode* n = lit->second;
+    for (size_t i = 1; i < parts.size() && n; i++) {
+        auto k = n->kids.find(parts[i]);
+        n = k == n->kids.end() ? nullptr : k->second;
+    }
+    return n;
+}
+
 // A declaration counts as built when the type it made is the one registered
 // under its name (or one of that role group's candidates), or when a hoist
 // pass made it and normal flow has not reached it yet. A same-named type from
@@ -5263,6 +5384,7 @@ void Interpreter::notePendingType(ClassDecl* cd) {
     if (typeDeclBuilt(cd)) return;
     auto& v = pendingTypes_[cd->name];
     if (std::find(v.begin(), v.end(), cd) == v.end()) v.push_back(cd);
+    pendingTypeUnit_[cd] = stashUnitHere();   // built early, it is still ITS unit's declaration
 }
 
 bool Interpreter::materializePendingType(const std::string& name) {
@@ -5288,6 +5410,12 @@ bool Interpreter::materializePendingType(const std::string& name) {
     // so each joins the one before it (`role R[::T] {…}; role R {…}`);
     // anything else is its last declaration, the completion of any stub.
     auto build = [&](ClassDecl* d) {
+        struct UnitOverride {
+            Interpreter& I; std::optional<std::string> saved;
+            ~UnitOverride() { I.stashUnitOverride_ = saved; }
+        } unitOverride{*this, stashUnitOverride_};
+        auto pu = pendingTypeUnit_.find(d);
+        if (pu != pendingTypeUnit_.end()) stashUnitOverride_ = pu->second;
         exec(d);
         hoistedTypes_[d]++;   // …so reaching it in normal flow does not rebuild it
     };
@@ -6351,10 +6479,26 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         std::lock_guard<std::mutex> g(parkedReactsMut_);
         parkedReacts_.push_back(ctx);
     }
-    auto pred = [&] { return ctx->liveSources <= 0 || ctx->closed ||
+    auto pred = [&] { return ctx->liveSources <= 0 || ctx->closed || !ctx->deferred.empty() ||
                              (t_isWorker && ctx->aborted); };
     auto sourcesDone = [&] { return ctx->liveSources <= 0 || ctx->closed; };
     std::unique_lock<std::mutex> lk(ctx->m);
+    // A whenever registered from INSIDE a whenever block defers its first
+    // deliveries like one in the react body does (issue #18); here they run
+    // once that block has finished. (They were queued and never run: a
+    // nested `whenever Supply.from-list(…)` delivered nothing.)
+    auto drainDeferred = [&]() -> bool {   // lk held on entry and on exit
+        if (ctx->closed || ctx->deferred.empty()) return false;
+        std::vector<std::function<void()>> ds;
+        ds.swap(ctx->deferred);
+        lk.unlock();
+        try { for (auto& d : ds) d(); }
+        catch (DoneEx&) {}
+        catch (...) { lk.lock(); throw; }
+        lk.lock();
+        return true;
+    };
+    while (drainDeferred()) {}
     while (ctx->liveSources > 0 && !ctx->closed) {
         if (!gilHeld_) break; // no async emitter can exist → don't hang the loop
         if (parallelMode_) {  // no GIL: wait for an emitter thread to close/drain
@@ -6372,7 +6516,9 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         loadCtx(parked);
         if (aborted) throw WorkerAbortEx{};
         lk.lock();         // re-check the loop condition under ctx->m
+        while (drainDeferred()) {}
     }
+    while (drainDeferred()) {}
 }
 
 // Wake every parked react so its worker can unwind promptly at shutdown:
@@ -7309,6 +7455,9 @@ static std::vector<std::string> repoPrefixesFor(const std::vector<std::string>& 
     for (auto& r : rakuRepoPrefixes()) repos.push_back(r);
     return repos;
 }
+std::vector<std::string> repoPrefixesForPath(const std::vector<std::string>& searchPath) {
+    return repoPrefixesFor(searchPath);
+}
 
 // Build the %?RESOURCES hash for an installed distribution: read its dist meta
 // (JSON) and map each `resources/<name>` file entry to an IO::Path pointing at
@@ -7353,6 +7502,267 @@ Value Interpreter::buildResourceMap(const std::string& repo, const std::string& 
 // writes `use Zef:ver($?DISTRIBUTION.meta<version> // …)` at the top of every one
 // of its modules, so an undefined value there stops the load dead. Built from the
 // source checkout's META6.json; the `meta` hash is what callers actually read.
+Value Interpreter::makeCuri(const std::string& name, const std::string& prefix, const Value& nextRepo) {
+    auto od = makePayload<ObjectData>();
+    od->cls = classes_["CompUnit::Repository::Installation"];
+    od->attrs["name"] = Value::str(name);
+    Value p = Value::str(prefix); p.hashKind = "IO";
+    od->attrs["prefix"] = p;
+    od->attrs["next-repo"] = nextRepo;
+    return Value::object(od);
+}
+
+// `use lib "inst#/path"` puts an Installation over /path at the HEAD of the
+// repository chain — `$*REPO` is it from here on, and what was the head is
+// its next-repo — besides adding the store to the module search.
+void Interpreter::useLibPath(const std::string& path) {
+    libPaths_.insert(libPaths_.begin(), path);
+    std::string pre;
+    if (path.rfind("inst#", 0) != 0 || !global_) return;
+    pre = path.substr(5);
+    if (pre.empty()) return;
+    Value* cur = global_->find("$*REPO");
+    Value head = makeCuri("", pre, cur ? *cur : Value::any());
+    if (cur) *cur = head;
+    else global_->define("$*REPO", head);
+}
+
+static std::string platformLibraryName(const std::string& base) {
+#if defined(_WIN32)
+    return base + ".dll";
+#elif defined(__APPLE__)
+    return "lib" + base + ".dylib";
+#else
+    return "lib" + base + ".so";
+#endif
+}
+// …and back: resources/libraries/libfoo.dylib is the library `foo`
+static std::string universalLibraryName(const std::string& file) {
+    std::string b = file;
+    for (const char* ext : {".dylib", ".so", ".dll"}) {
+        size_t n = std::strlen(ext);
+        if (b.size() > n && b.compare(b.size() - n, n, ext) == 0) { b.resize(b.size() - n); break; }
+    }
+#if !defined(_WIN32)
+    if (b.rfind("lib", 0) == 0 && b.size() > 3) b = b.substr(3);
+#endif
+    return b;
+}
+static void walkFiles(const std::string& root, const std::string& rel, std::vector<std::string>& out, int depth = 0) {
+    if (depth > 32) return;
+    DIR* d = opendir((rel.empty() ? root : root + "/" + rel).c_str());
+    if (!d) return;
+    std::vector<std::string> names;
+    while (struct dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == ".." || n == ".precomp") continue;
+        names.push_back(n);
+    }
+    closedir(d);
+    std::sort(names.begin(), names.end());
+    for (auto& n : names) {
+        std::string r = rel.empty() ? n : rel + "/" + n;
+        struct stat st;
+        if (::stat((root + "/" + r).c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) walkFiles(root, r, out, depth + 1);
+        else out.push_back(r);
+    }
+}
+
+Value Interpreter::makeDistribution(Value meta, const std::string& prefix, const std::string& type, bool fabricateFiles) {
+    Value m = Value::makeHash();
+    if (meta.t == VT::Hash && meta.hash()) *m.hash() = *meta.hash();
+    if (fabricateFiles) {
+        // meta<files>: what the dist holds besides its modules — every file
+        // under bin/, and each META6 resource (a `libraries/x` one under its
+        // platform file name), each keyed by the name it is asked for by
+        // (a META6 `files` entry is not taken as given: what the dist holds
+        // is what is on disk — a META6 cannot name paths outside it)
+        Value files = Value::makeHash();
+        std::vector<std::string> bins;
+        walkFiles(prefix + "/bin", "", bins);
+        for (auto& b : bins) (*files.hash())["bin/" + b] = Value::str("bin/" + b);
+        auto rit = m.hash()->find("resources");
+        if (rit != m.hash()->end() && rit->second.t == VT::Array && rit->second.arr())
+            for (auto& r : *rit->second.arr()) {
+                std::string rn = r.toStr();
+                if (rn.rfind("libraries/", 0) == 0) {
+                    std::string dir = "libraries/", base = rn.substr(10);
+                    size_t sl = base.rfind('/');
+                    if (sl != std::string::npos) { dir += base.substr(0, sl + 1); base = base.substr(sl + 1); }
+                    (*files.hash())["resources/" + rn] = Value::str("resources/" + dir + platformLibraryName(base));
+                }
+                else (*files.hash())["resources/" + rn] = Value::str("resources/" + rn);
+            }
+        (*m.hash())["files"] = files;
+    }
+    Value d = Value::makeHash(); d.hashKind = "Distribution";
+    (*d.hash())["meta"] = m;
+    Value pfx = Value::str(prefix); pfx.hashKind = "IO";
+    (*d.hash())["prefix"] = pfx;
+    (*d.hash())["\x01type"] = Value::str(type);
+    return d;
+}
+
+bool Interpreter::distFieldMatches(const std::string& field, const Value& matcher, bool isAuth, bool starIsWildcard) {
+    if (matcher.t == VT::Bool) return matcher.truthy();
+    // a Junction matcher threads: each of its values is a matcher in turn
+    if (matcher.t == VT::Array && matcher.arr() &&
+        (matcher.enumName == "any" || matcher.enumName == "all" || matcher.enumName == "one" || matcher.enumName == "none")) {
+        size_t hits = 0, n = matcher.arr()->size();
+        for (auto& m : *matcher.arr()) if (distFieldMatches(field, m, isAuth, starIsWildcard)) hits++;
+        const std::string& k = matcher.enumName;
+        return k == "any" ? hits > 0 : k == "all" ? hits == n : k == "one" ? hits == 1 : hits == 0;
+    }
+    if (matcher.t == VT::Any || matcher.t == VT::Nil) return true;
+    if (starIsWildcard && field == "*") return true;
+    try {
+        if (isAuth) {
+            if (starIsWildcard && field.empty()) return true;
+            return boolify(smartmatchValue("~~", Value::str(field), matcher));
+        }
+        Value have = methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(field)});
+        const bool matcherIsVersion = matcher.t == VT::Str && matcher.hashKind == "Version";
+        Value want = matcherIsVersion || matcher.t == VT::Code || matcher.t == VT::Range || matcher.t == VT::Regex ||
+                     (matcher.t == VT::Array && !matcher.enumName.empty())
+                   ? matcher : methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(matcher.toStr())});
+        return boolify(smartmatchValue("~~", have, want));
+    } catch (RakuError&) { return false; }
+}
+
+// The FileSystem repository's distribution: its META6.json when the prefix
+// (or the directory above a `lib` prefix) has one, else the tree itself —
+// named after the prefix, with a wildcard version and API — providing
+// every module file under the prefix.
+Value Interpreter::curfsDistribution(ObjectData& repo) {
+    auto cached = repo.attrs.find("\x01dist");
+    if (cached != repo.attrs.end()) return cached->second;
+    std::string prefix = repo.attrs.count("prefix") ? repo.attrs["prefix"].toStr() : std::string(".");
+    while (prefix.size() > 1 && prefix.back() == '/') prefix.pop_back();
+    auto isFile = [](const std::string& p) { struct stat st; return ::stat(p.c_str(), &st) == 0 && !S_ISDIR(st.st_mode); };
+    Value dist;
+    if (isFile(prefix + "/META6.json")) {
+        std::ifstream in(prefix + "/META6.json");
+        std::ostringstream ss; ss << in.rdbuf();
+        Value meta = jsonParseDoc(ss.str());
+        if (meta.t != VT::Hash || !meta.hash()) meta = Value::makeHash();
+        for (const char* k : {"ver", "api"})
+            if (!meta.hash()->count(k)) (*meta.hash())[k] = Value::str(std::string(k) == "ver" && meta.hash()->count("version")
+                                                                        ? (*meta.hash())["version"].toStr() : "");
+        dist = makeDistribution(meta, prefix, "CompUnit::Repository::Distribution", true);
+    }
+    else {
+        std::string filesPrefix = prefix;
+        size_t sl = prefix.rfind('/');
+        if (sl != std::string::npos && sl > 0) filesPrefix = prefix.substr(0, sl);
+        std::string relBase = prefix.size() > filesPrefix.size() ? prefix.substr(filesPrefix.size() + 1) : std::string();
+        Value meta = Value::makeHash();
+        (*meta.hash())["name"] = Value::str(prefix);
+        (*meta.hash())["ver"] = Value::str("*");
+        (*meta.hash())["api"] = Value::str("*");
+        (*meta.hash())["auth"] = Value::str("");
+        Value provides = Value::makeHash();
+        std::map<std::string, int> rank;   // .rakumod over .pm6 over .pm
+        std::vector<std::string> srcs;
+        walkFiles(prefix, "", srcs);
+        for (auto& f : srcs) {
+            int r = -1; size_t cut = 0;
+            if (f.size() > 8 && f.compare(f.size() - 8, 8, ".rakumod") == 0) { r = 3; cut = 8; }
+            else if (f.size() > 4 && f.compare(f.size() - 4, 4, ".pm6") == 0) { r = 2; cut = 4; }
+            else if (f.size() > 3 && f.compare(f.size() - 3, 3, ".pm") == 0) { r = 1; cut = 3; }
+            if (r < 0) continue;
+            std::string mod = f.substr(0, f.size() - cut);
+            for (size_t p = mod.find('/'); p != std::string::npos; p = mod.find('/')) mod.replace(p, 1, "::");
+            if (rank.count(mod) && rank[mod] >= r) continue;
+            rank[mod] = r;
+            (*provides.hash())[mod] = Value::str(relBase.empty() ? f : relBase + "/" + f);
+        }
+        (*meta.hash())["provides"] = provides;
+        Value files = Value::makeHash();
+        Value resources = Value::array();
+        std::vector<std::string> bins, res;
+        walkFiles(filesPrefix + "/bin", "", bins);
+        for (auto& b : bins) (*files.hash())["bin/" + b] = Value::str("bin/" + b);
+        walkFiles(filesPrefix + "/resources", "", res);
+        for (auto& r : res) {
+            std::string key = r;
+            if (r.rfind("libraries/", 0) == 0) {
+                size_t s2 = r.rfind('/');
+                key = r.substr(0, s2 + 1) + universalLibraryName(r.substr(s2 + 1));
+            }
+            (*files.hash())["resources/" + key] = Value::str("resources/" + r);
+            resources.arr()->push_back(Value::str(key));
+        }
+        (*meta.hash())["files"] = files;
+        (*meta.hash())["resources"] = resources;
+        dist = makeDistribution(meta, filesPrefix, "CompUnit::Repository::Distribution", false);
+    }
+    repo.attrs["\x01dist"] = dist;
+    return dist;
+}
+
+ValueList Interpreter::curiCandidates(const std::string& prefix, const Value& spec) {
+    std::string want;
+    Value verM = Value::boolean(true), authM = Value::boolean(true), apiM = Value::boolean(true);
+    if (spec.t == VT::Hash && spec.hash()) {
+        auto g = [&](const char* k, Value& into) { auto it = spec.hash()->find(k); if (it != spec.hash()->end()) into = it->second; };
+        Value sn; g("short-name", sn); want = sn.toStr();
+        g("version-matcher", verM); g("auth-matcher", authM); g("api-matcher", apiM);
+    }
+    else want = spec.toStr();
+    struct Cand { std::string ver, auth, api, src, id; };
+    std::vector<Cand> found;
+    const std::string shortDir = prefix + "/short/" + sha1hex(want);
+    if (DIR* d = opendir(shortDir.c_str())) {
+        while (struct dirent* e = readdir(d)) {
+            std::string n = e->d_name;
+            if (n == "." || n == "..") continue;
+            std::ifstream in(shortDir + "/" + n);
+            std::vector<std::string> lines; std::string ln;
+            while (std::getline(in, ln)) lines.push_back(ln);
+            if (lines.size() < 4) continue;
+            // (the dist id is the ENTRY's name: Rakudo's own fifth line is a checksum)
+            Cand c{lines[0], lines[1], lines[2], lines[3], n};
+            if (!distFieldMatches(c.auth, authM, true, false)) continue;
+            if (!distFieldMatches(c.ver.empty() ? "0" : c.ver, verM, false, false)) continue;
+            if (!distFieldMatches(c.api.empty() ? "0" : c.api, apiM, false, false)) continue;
+            found.push_back(c);
+        }
+        closedir(d);
+    }
+    auto cmpVer = [&](const std::string& a, const std::string& b) -> long long {
+        try {
+            Value va = methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(a.empty() ? "0" : a)});
+            Value vb = methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(b.empty() ? "0" : b)});
+            return applyArith("cmp", va, vb).toInt();
+        } catch (RakuError&) { return a < b ? -1 : a > b ? 1 : 0; }
+    };
+    std::sort(found.begin(), found.end(), [&](const Cand& x, const Cand& y) {
+        long long v = cmpVer(x.ver, y.ver);
+        if (v != 0) return v > 0;
+        return cmpVer(x.api, y.api) > 0;
+    });
+    ValueList out;
+    for (auto& c : found) {
+        std::ifstream in(prefix + "/dist/" + c.id);
+        std::ostringstream ss; ss << in.rdbuf();
+        Value meta = jsonParseDoc(ss.str());
+        if (meta.t != VT::Hash) meta = Value::makeHash();
+        // (a stored dist's meta answers its version and API as Versions)
+        for (const char* k : {"ver", "version", "api"}) {
+            auto it = meta.hash()->find(k);
+            if (it != meta.hash()->end() && ((it->second.t == VT::Str && it->second.hashKind.empty()) || it->second.t == VT::Int))
+                try { it->second = methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(it->second.toStr())}); } catch (RakuError&) {}
+        }
+        Value d = makeDistribution(meta, prefix, "CompUnit::Repository::Installation::LazyDistribution", false);
+        (*d.hash())["dist-id"] = Value::str(c.id);
+        (*d.hash())["\x01src"] = Value::str(c.src);
+        (*d.hash())["\x01ver"] = Value::str(c.ver);
+        out.push_back(d);
+    }
+    return out;
+}
+
 Value Interpreter::buildDistribution(const std::string& distRoot) {
     // ALWAYS an object: a source tree with no META6.json still has a
     // $?DISTRIBUTION in Rakudo (whose .meta<anything> is a quiet Nil), and
@@ -7397,6 +7807,7 @@ Value Interpreter::buildInstalledDistribution(const std::string& repo, const std
     (*d.hash())["meta"] = m;
     Value pfx = Value::str(repo); pfx.hashKind = "IO";
     (*d.hash())["prefix"] = pfx;
+    (*d.hash())["dist-id"] = Value::str(distId);   // (its files are in the store: see .content)
     return d;
 }
 
@@ -9051,7 +9462,23 @@ void Interpreter::checkImportTags(const std::string& name, const std::vector<std
                         "Module '" + name + "' exports nothing under the tag '" + t + "'");
 }
 
-void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
+// A `use`/`need`/`require` merges what the loaded unit declared into the
+// importing unit's view of the packages (stashImport) — every form of load
+// but a repository's `.need`, which hands the unit back without merging.
+void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm, bool mergeGlobals) {
+    const std::string importer = stashUnitHere();
+    {   // (the module's own declarations are ITS, whatever unit a hoisted
+        // type being built asked for it — see materializePendingType)
+        struct Override { std::optional<std::string>& o; std::optional<std::string> saved;
+                          ~Override() { o = saved; } } ov{stashUnitOverride_, stashUnitOverride_};
+        stashUnitOverride_.reset();
+        try { loadModuleImpl(name, importArgs, doImport, quiet, verReq, requireForm); }
+        catch (...) { unitStash_.erase(name); throw; }   // a failed load merges nothing, now or on a retry
+    }
+    if (mergeGlobals && unitStash_.count(name)) stashImport(importer, name);
+}
+
+void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
     // the evaluated `use Mod EXPR, …` arguments belong to THIS load — take them
     // now, before the module's own `use` statements run through here again
     const ValueList useExtra = std::move(useExprArgs_);
@@ -9076,10 +9503,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     if (loadedModules_.count(name)) {
         // a module `use`d again, anywhere, is everyone's: its classes stop being
         // the first importing block's alone
-        if (!requireScoped_.empty()) {
+        if (!requireScoped_.empty() || !needHidden_.empty()) {
             auto mc = moduleClasses_.find(name);
             if (mc != moduleClasses_.end())
-                for (auto& c : mc->second) requireScoped_.erase(c);
+                for (auto& c : mc->second) { requireScoped_.erase(c); needHidden_.erase(c); }
         }
         // The module body ran once and stays run — but a repeat `use` still
         // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs
@@ -9247,6 +9674,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // while an importer's bare `run(...)` reaches the built-in.
         auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
         moduleEnv->unitFrame = true;
+        unitOfEnv_[moduleEnv.get()] = name;
+        unitStash_[name];
         // %?RESOURCES is LEXICAL to the compiling module: bind it in the module env so
         // subs defined here close over their OWN resources and still resolve them when
         // called later, after the load-time resourceStack_ entry has been popped.
@@ -9641,6 +10070,12 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                                 continue;
                             if (importWouldShadowRoutine(kv.first, kv.second)) continue;
                             tctx_.cur->define(kv.first, kv.second);
+                            // (a TYPE it hands over is the importer's lexical)
+                            if (!kv.first.empty() && ascii::isupper((unsigned char)kv.first[0])) {
+                                auto& sl = unitStash_[stashUnitHere()].lexical[kv.first];
+                                if (!sl) { stashNodes_.emplace_back(); sl = &stashNodes_.back();
+                                           sl->fq = kv.second.t == VT::Type ? kv.second.s.str() : kv.first; sl->stub = false; }
+                            }
                         }
                 } catch (RakuError& e) {
                     // see the replay site above for all three halves of this
@@ -9780,6 +10215,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // MoarVM's REPR memory layout by design and cannot run here, so even the
     // dist's OWN suite — which `rakupp test` runs with the dist's lib in
     // front — must exercise the shadow, which keeps the same surface.
+    // A store's `.need` of one particular distribution (see the CURI arm):
+    // that dist's source, whatever else the search path holds
+    if (pinnedInstall_ && pinnedInstall_->name == name) {
+        const PinnedInstall pin = *pinnedInstall_;
+        pinnedInstall_.reset();
+        std::ifstream src(pin.repo + "/sources/" + pin.srcId);
+        if (src) {
+            std::ostringstream ss; ss << src.rdbuf();
+            resourceStack_.push_back(buildResourceMap(pin.repo, pin.distId));
+            distStack_.push_back(buildInstalledDistribution(pin.repo, pin.distId));
+            struct RGuard { ValueList& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
+            struct DGuard { ValueList& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
+            loadSource(ss.str(), pin.repo + "/sources/" + pin.srcId);
+            return;
+        }
+    }
     std::vector<std::string> searchOrder = libPaths_;
     // `PROCESS::<$REPO> := CompUnit::Repository::FileSystem.new(:prefix(…))`
     // puts a source tree at the head of the chain: its prefix (and those of
@@ -11870,6 +12321,8 @@ const std::set<std::string>& coreTypeNames() {
         // was rejected as inheriting from an unknown TRAIT rather than a type.
         "Supplier", "Supplier::Preserving", "Tap",
         "Distribution", "CompUnit", "Label", "Nd",
+        "Distribution::Path", "Distribution::Hash", "Distribution::Locally", "Distribution::Resource",
+        "CompUnit::Repository::Distribution",
         // Core names Rakudo resolves that rakupp has not materialized — real
         // types, answered as unmaterialized stubs (the Cursor/Nd model).
         // S02-types/WHICH.t enumerates the lot through ::($name).
@@ -13182,9 +13635,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (pv.t == VT::Array && pv.arr() && !pv.itemized)
                         for (auto& e : *pv.arr()) paths.push_back(e.toStr());
                     else paths.push_back(pv.toStr());
+                    // (the literal form refuses '' at parse time; a computed one here)
+                    for (auto& p : paths)
+                        if (p.empty())
+                            throwTyped("X::LibEmpty", {}, "Repository specification can not be an empty string.  "
+                                                          "Did you mean 'use lib \".\"' ?");
                 }
                 for (auto& p : paths)
-                    if (!p.empty()) libPaths_.insert(libPaths_.begin(), p);
+                    if (!p.empty()) useLibPath(p);
             }
             // `use Rakupp::Ext` is the discoverable spelling for code that is
             // rakupp-only by design; the loader itself is a builtin (see
@@ -14131,6 +14589,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
                 if (!cd->name.empty()) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
+                    if (!cd->isMy && lexicalPkgDepth_ == 0) stashDeclare(tctx_.pkgPrefix + cd->name, !cd->isModuleDecl);
+                    else if (stashUnitHere().empty()) {
+                        auto& slot = unitStash_[""].lexical[cd->name];
+                        if (!slot) { stashNodes_.emplace_back(); slot = &stashNodes_.back(); slot->fq = cd->name; }
+                    }
                     lastDecl_[cd->name] = {cd, true, cd->isStubDecl};
                     pkgKind_[tctx_.pkgPrefix + cd->name] = k;
                     if (!tctx_.pkgPrefix.empty()) pkgKind_[cd->name] = k;
@@ -14190,6 +14653,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 pkgEnv->packageFrame = true;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
+                // (inside a `my package`, the types it declares are not package-scoped)
+                struct LexPkg { int& d; bool on; LexPkg(int& x, bool o) : d(x), on(o) { if (on) d++; }
+                                ~LexPkg() { if (on) d--; } } lexPkg{lexicalPkgDepth_, cd->isMy};
                 hoistSubs(cd->body); // forward refs: Cro::HTTP::Router calls router-plugin-register long before its definition
                 // classes/roles register FIRST (Rakudo declares types at compile
                 // time): `our $p = router-plugin-register('link')` at the top of
@@ -15650,6 +16116,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
             }
             if (!stubOverCompleted) classes_[clsName] = ci;
+            if (!cd->isAugment && !cd->name.empty() && !cd->isAnonDecl) {
+                if (!cd->isMy && lexicalPkgDepth_ == 0) stashDeclare(clsName, false);
+                else if (stashUnitHere().empty()) {   // the program's own lexical type
+                    auto& slot = unitStash_[""].lexical[clsName];
+                    if (!slot) { stashNodes_.emplace_back(); slot = &stashNodes_.back(); slot->fq = clsName; slot->stub = false; }
+                }
+            }
             // now the type resolves, dispatch the collected non-type `is` names to a
             // user trait_mod:<is>. Only NO-CANDIDATE means "not a trait"; a trait
             // body that ran and DIED propagates, or its real error would be replaced
@@ -20868,6 +21341,9 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
 }
 
 bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
+    // Distribution::Path, ::Hash and a repository's own dists report their own
+    // names, and every one of them does Distribution
+    if (v.t == VT::Hash && v.hashKind == "Distribution" && type == "Distribution") return true;
     // a PARAMETERIZED container type: `Array[Bool]` takes an Array whose element
     // type is Bool (what `Array[Array[Bool]].new($(Array[Bool].new(…)))` checks)
     if (v.t == VT::Array && type.size() > 2 && type.back() == ']' && v.enumName.empty()) {
@@ -23264,14 +23740,36 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     // the snapshot the rest of the Hash protocol (`.keys`, `.grep`, …) reads
     Value snap = Value::makeHash();
     Env* e = raw ? raw : env.get();
+    // The program's own frame holds, besides its lexicals, every qualified
+    // global and every type any unit declared: only what the PROGRAM declared
+    // or imported is its lexical (`-M Top1` shows Top1, not the Needed that
+    // Top1 needed; no `Mod::EXPORT::…`).
+    const UnitStash* progView = nullptr;
+    { auto pv = unitStash_.find(""); if (pv != unitStash_.end()) progView = &pv->second; }
+    auto notProgLexical = [&](Env* f, const std::string& k, const Value& v) {
+        if (f != global_.get()) return false;
+        // a QUALIFIED global (`Mod::EXPORT::…`, `&Pkg::sub`) is not a lexical;
+        // `&term:<A::B>` is — its `::` is inside the name's own brackets
+        const size_t c = k.find("::");
+        if (c != std::string::npos && c != 0) {
+            size_t b = std::strchr("$@%&", k[0]) ? 1 : 0;
+            bool ident = b < c;
+            for (size_t i = b; i < c && ident; i++)
+                if (!(ascii::isalnum((unsigned char)k[i]) || k[i] == '_' || k[i] == '-' || k[i] == '\'')) ident = false;
+            if (ident) return true;
+        }
+        // (only a TYPE some unit declared under that name; the program's own
+        // constant or term of the same name is its own)
+        return v.t == VT::Type && stashTracked_.count(k) && !(progView && progView->lexical.count(k));
+    };
     auto takeFrame = [&](Env* f) {
         if (!f) return;
         for (auto& kv : f->vars)
-            if (!snap.hash()->count(kv.first)) (*snap.hash())[kv.first] = *kv.second.deref();
+            if (!snap.hash()->count(kv.first) && !notProgLexical(f, kv.first, *kv.second.deref())) (*snap.hash())[kv.first] = *kv.second.deref();
         if (f->layout)
             for (auto& nm : f->layout->names)
                 if (Value* p = f->padFind(nm))
-                    if (!snap.hash()->count(nm)) (*snap.hash())[nm] = *p->deref();
+                    if (!snap.hash()->count(nm) && !notProgLexical(f, nm, *p->deref())) (*snap.hash())[nm] = *p->deref();
     };
     if (mode == 'L') for (Env* f = e; f; f = f->parent.get()) takeFrame(f);
     else if (mode == 'F' || mode == 'C') takeFrame(e);
@@ -38068,6 +38566,11 @@ Value composeCode(const Value& fV, const Value& gV) {
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
+    // Distribution::Path / ::Hash / a repository's dist: each reports its own
+    // type name, and each does Distribution
+    if (r.t == VT::Type && l.t == VT::Hash && l.hashKind == "Distribution" && r.s == "Distribution" &&
+        (op == "~~" || op == "!~~"))
+        return Value::boolean(op == "~~");
     // two ALLOMORPHS `cmp` by value, then by their strings (valueCmp knows)
     if (op.size() == 3 && op == "cmp" && l.isAllomorph() && r.isAllomorph())
         return Value::orderVal(valueCmp(l, r));
@@ -54376,6 +54879,9 @@ struct NodeCountReport {
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            // `GLOBALish` — the unit's view of GLOBAL, which the program's is
+            if (n == "GLOBALish" && !classes_.count(n) && !(tctx_.cur && tctx_.cur->find(n)))
+                return Value::typeObj("GLOBAL");
             // `$?PACKAGE` inside a lexical `my package` names a package no global
             // lookup finds: it is still that package, as a type (scope.t)
             if (nt->pkgSelf) {

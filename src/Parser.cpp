@@ -15492,9 +15492,15 @@ StmtPtr Parser::parseStatementImpl() {
             // whose path is kept as text (the native backends read it there). A
             // COMMA LIST is not that form: `use lib 'lib', 't/lib'` kept the first
             // path and silently dropped the rest.
+            // …nor is a string that INTERPOLATES: `use lib "inst#$repo-path"`
+            // names the path the variable holds, not the text `$repo-path`.
+            auto plainLibString = [&]() {
+                if (isKind(Tok::StrLit)) return true;
+                return isKind(Tok::StrInterp) && cur().text.find_first_of("$@%&{\\") == std::string::npos;
+            };
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
-                (!(isKind(Tok::StrLit) || isKind(Tok::StrInterp)) ||
-                 peek().kind == Tok::Comma)) {
+                (!plainLibString() ||
+                 !(peek().kind == Tok::Semicolon || peek().kind == Tok::End || peek().kind == Tok::RBrace))) {
                 u->argExpr = parseExpression(); // `use lib $?FILE.IO.parent`
             } else {
                 // capture first string argument, e.g. `use lib 'lib'`

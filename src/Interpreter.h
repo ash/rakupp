@@ -73,6 +73,8 @@ bool isNativeTypeName(const std::string& n);
 Value makeCollation();   // a fresh `Collation` (every level on)
 // Installation-repository prefixes, in resolution order.
 const std::vector<std::string>& rakuRepoPrefixes();
+// the stores a search path names (`inst#…` entries), then the default repositories
+std::vector<std::string> repoPrefixesForPath(const std::vector<std::string>& searchPath);
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
 std::vector<std::pair<std::string, int>> signalNamesAndNumbers(); // every Signal name this build knows
 void srandSeed(long long s); // reseed the RNG (srand)
@@ -2238,7 +2240,28 @@ public:
     // see eval(): the first of an element assignment's two subscript evaluations
     // parks its result here so the second one does not re-run the user's code
     std::vector<std::pair<const Expr*, Value>> pendingSubscripts_;
-    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false);
+    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false, bool mergeGlobals = true);
+    void loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm);
+    // ---- per-unit package stashes: what each compilation unit declared at
+    // package scope, and what it sees of the packages its `use`/`need`s
+    // brought in (Rakudo's GLOBALish merge). Name RESOLUTION stays global;
+    // this answers the questions that list: `Pkg::.keys`, mainline `MY::`,
+    // `$cu.handle.globalish-package`. The program's own unit is "".
+    struct StashNode { std::string fq; bool stub = true; std::map<std::string, StashNode*> kids; };
+    struct UnitStash { std::map<std::string, StashNode*> globalish, lexical; };
+    std::deque<StashNode> stashNodes_;
+    std::unordered_map<std::string, UnitStash> unitStash_;
+    std::unordered_set<std::string> stashTracked_;            // every package-scoped type name some unit declared
+    std::unordered_map<const Env*, std::string> unitOfEnv_;   // a module's file scope → its unit
+    std::optional<std::string> stashUnitOverride_;            // a hoisted type built under another unit's lookup
+    std::unordered_map<const ClassDecl*, std::string> pendingTypeUnit_;
+    int lexicalPkgDepth_ = 0;   // inside a `my package`'s body: its members are not package-scoped
+    std::unordered_map<const void*, std::string> globalishUnits_;   // a globalish-package Stash → its unit
+    std::string stashUnitHere();
+    void stashDeclare(const std::string& fq, bool stubPkg);
+    void stashImport(const std::string& importer, const std::string& mod);
+    StashNode* stashResolve(const std::string& unit, const std::string& pkg);
+    static void stashMergeNodes(StashNode* t, StashNode* s, std::set<StashNode*>& seen);
     // `.AST("DE")` — the localized parse (RAKUAST-PLAN P1-L10N). Loads
     // `L10N::<lang>` and turns the role it ships into a rewrite over the token
     // stream. Defined beside the `.AST` arm in MethodCallPart3.cpp.
@@ -2269,7 +2292,10 @@ public:
     // …and the ones whose body is running right now: a `use` of one of THESE is
     // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading
     std::set<std::string> modulesLoading_;
-    int runtimeLoadDepth_ = 0;   // inside a `$repo.need(…)`: the load is a RUN-time one (see loadParsed)
+    int runtimeLoadDepth_ = 0;
+    // A CompUnit::Repository::Installation over `prefix` (see Builtins' CUR arms)
+    Value makeCuri(const std::string& name, const std::string& prefix, const Value& nextRepo = Value::any());
+    void useLibPath(const std::string& path);   // `use lib` / rtUse: prepend, and an inst# spec heads $*REPO   // inside a `$repo.need(…)`: the load is a RUN-time one (see loadParsed)
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
     // import protocol again in the new scope (JSON::Fast's per-scope defaults)
     std::map<std::string, Value> moduleExportSubs_;
@@ -2363,12 +2389,21 @@ public:
     // the classes a `require "File.rakumod"` brought in, and the scope that ran
     // it: outside that scope the names are not there (requireHidden)
     std::unordered_map<std::string, std::weak_ptr<Env>> requireScoped_;
+    // …and the names a store's `.need` loaded: hidden from the PROGRAM's own
+    // code until merge-symbols (or a `use`) makes them its — module code, any
+    // unit's, still sees them (a needed module's methods use its dependencies)
+    std::unordered_set<std::string> needHidden_;
     // …and, for `use`, the classes each module's first load brought in (a later
     // `use` of it anywhere makes them everyone's), and the top-level scopes of
     // the modules being loaded (a `use` there is the module's, not a block's)
     std::unordered_map<std::string, std::vector<std::string>> moduleClasses_;
     std::vector<Env*> moduleTopEnvs_;
     bool requireHidden(const std::string& n) {
+        if (!needHidden_.empty() && needHidden_.count(n)) {
+            bool inUnit = false;
+            for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) if (e->unitFrame) { inUnit = true; break; }
+            if (!inUnit) return true;
+        }
         if (requireScoped_.empty()) return false;
         auto it = requireScoped_.find(n);
         if (it == requireScoped_.end()) return false;
@@ -3177,6 +3212,19 @@ public:
     Value buildResourceMap(const std::string& repo, const std::string& distId); // dist files → resource Hash
     Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
     Value buildDistribution(const std::string& distRoot);      // source checkout META6 → $?DISTRIBUTION
+    // Distribution::Path / ::Hash / a repository's own: {meta, prefix} with its
+    // type name; `fabricateFiles` fills meta<files> from bin/ and resources
+    Value makeDistribution(Value meta, const std::string& prefix, const std::string& type, bool fabricateFiles);
+    // Does a dist's ver/api/auth field satisfy a DependencySpecification matcher?
+    bool distFieldMatches(const std::string& field, const Value& matcher, bool isAuth, bool starIsWildcard);
+    // CompUnit::Repository::FileSystem: the one distribution its tree is
+    Value curfsDistribution(ObjectData& repo);
+    // CompUnit::Repository::Installation: the stored dists providing `spec`'s
+    // short-name that satisfy its matchers, newest first
+    ValueList curiCandidates(const std::string& prefix, const Value& spec);
+    // `$repo.need` of an explicit store loads THIS dist's source (see loadModuleImpl)
+    struct PinnedInstall { std::string name, repo, distId, srcId; };
+    std::optional<PinnedInstall> pinnedInstall_;
     Value buildInstalledDistribution(const std::string& repo, const std::string& distId); // CURI dist/<id> meta → $?DISTRIBUTION
     Value buildEmbeddedResourceMap(const std::string& distKey); // resources compiled INTO this binary → resource Hash
     Value buildEmbeddedDistribution(const std::string& distKey); // embedded META6 → $?DISTRIBUTION
