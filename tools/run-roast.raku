@@ -867,7 +867,11 @@ my $timeout-unknown  = 0; # timed-out files with no static plan to recover
 # while `$pass` and friends, being scalars, counted correctly: a run that looked
 # right in every headline and printed a by-synopsis table with nothing in it.
 # `%h{$k} += 1` works there and means the same thing everywhere.
-my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot, %sec-fail);
+#
+# %sec-decl and %sec-fudge are the summary's $declared and $fudged, section by
+# section — added wherever those are — so the table's two assertion columns
+# add up to the summary's "of ALL declared tests" and "without skip/todo" lines.
+my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-decl, %sec-fudge);
 
 # Files the harness never managed to measure. A missing result is not a failing
 # file and not a passing one; it is a hole in the run, and the only wrong thing
@@ -1074,6 +1078,7 @@ my sub lose($k, $why) {
     @lost-files.push("$rel — $why");
     my $sp = static-plan(@files[$k]);
     $lost-declared += $sp if $sp > 0;
+    %sec-decl{seckey($rel)} += $sp if $sp > 0;
     fudge-tally(fudge-directives(@files[$k], ''));
     @notpassing.push([$rel, 'LOST', '—']);
     say sprintf('  [LOST]  %5s  %s', '—', $rel);
@@ -1112,19 +1117,19 @@ my sub tally($k) {
         $tot-skip += $skipped;
         $tot-todofail += $todofail;
         $tot-todopass += $todopass;
-        %sec-pass{$sec} += $passed;
-        %sec-tot{$sec}  += $ran;
-        %sec-fail{$sec} += $failed;
+        %sec-pass{$sec}  += $passed;
+        %sec-fudge{$sec} += $skipped + $todofail + $todopass;
         if $planned >= 0 {
             $tot-plan += $planned;          # it announced N before the clock ran out
+            %sec-decl{$sec} += $planned;
         }
         else {
             # Killed before it could announce a plan. Recover N from source, the
             # way the no-TAP branch does; measure 3 is defined over files that
             # emitted a plan, so this lands in measure 4 only.
             my $sp = static-plan($f);
-            if $sp > 0 { $timeout-declared += $sp; $timeout-counted++ }
-            else       { $tot-plan += $ran; $timeout-unknown++ }
+            if $sp > 0 { $timeout-declared += $sp; $timeout-counted++; %sec-decl{$sec} += $sp }
+            else       { $tot-plan += $ran; $timeout-unknown++; %sec-decl{$sec} += $ran }
         }
         @notpassing.push([$rel, 'TIME', "$passed/$ran", $k]);
         say sprintf('  [TIME]  %5s  %s', "$passed/$ran", $rel);
@@ -1135,13 +1140,13 @@ my sub tally($k) {
     $tot-skip += $skipped;
     $tot-todofail += $todofail;
     $tot-todopass += $todopass;
-    %sec-pass{$sec} += $passed;
-    %sec-tot{$sec}  += $ran;
-    %sec-fail{$sec} += $failed;
+    %sec-pass{$sec}  += $passed;
+    %sec-fudge{$sec} += $skipped + $todofail + $todopass;
     # "planned" denominator: how many tests the file *intended* to run. Where a plan
     # is present we count it (so tests lost to a mid-file abort count as not-passed);
     # where none was emitted we fall back to what ran.
     $tot-plan += ($planned >= 0 ?? $planned !! $ran);
+    %sec-decl{$sec} += ($planned >= 0 ?? $planned !! $ran);
     my $mark;
     if $planned == 0 && $failed == 0 && $has-skip {
         $pass++;              # genuine `plan skip-all` (emits `1..0 # SKIP …`) is a passing outcome
@@ -1157,7 +1162,7 @@ my sub tally($k) {
         # source so those tests count against us instead of vanishing.
         if $planned < 0 {
             my $sp = static-plan($f);
-            if $sp > 0 { $notap-declared += $sp; $notap-counted++ } else { $notap-unknown++ }
+            if $sp > 0 { $notap-declared += $sp; $notap-counted++; %sec-decl{$sec} += $sp } else { $notap-unknown++ }
         }
     }
     elsif $failed == 0 && ($planned < 0 || $planned == $ran) {
@@ -1478,29 +1483,44 @@ sub sec-order($s) {
     my %tail = 'integration' => 100, '6.c' => 101, '6.d' => 102, 'APPENDICES' => 103, 'MISC / t' => 104;
     return %tail{$s} // 200;
 }
-my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys)
+my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys, %sec-decl.keys)
            .flat.unique.sort({ sec-order($^a) <=> sec-order($^b) });
 say "";
 say "By synopsis (paste into the ROAST.md table):";
-my @head = <Section Theme Full Part Time No-TAP Assertions Failed %>;
-# A row from its seven counts: full, part, time, no-TAP, passed, ran, failed.
-# parse-tap puts every `ok`/`not ok` line in exactly one of passed and failed,
-# so Failed is ran minus passed: the `not ok` lines that carry no todo.
+my @head = 'Section', 'Theme', 'Full', 'Part', 'Time', 'No-TAP',
+           'Passed', 'Failed', '%', 'No skip/todo', 'Failed', '%';
+# A row from its seven counts: full, part, time, no-TAP; passed, declared,
+# skip/todo. Both assertion columns are over every declared test, as the
+# summary's lines are: Passed counts a skip or todo as a pass (the "of ALL
+# declared tests" line), No skip/todo leaves those tests out of both sides
+# (the "without skip/todo" line). Each has its own Failed — the `not ok` tests
+# and the tests a file declared but never reached — and the two are always
+# equal: a skip or todo is a pass in one and absent from the other, a failure
+# in neither.
+sub pct($n, $of) { $of ?? sprintf('%.2f%%', 100 * $n / $of) !! '—' }
 sub sec-row($name, $theme, @n) {
-    [ $name, $theme, ~@n[0], ~@n[1], ~@n[2], ~@n[3], "{@n[4]}/{@n[5]}", ~@n[6],
-      (@n[5] ?? sprintf('%.2f%%', 100 * @n[4] / @n[5]) !! '—') ]
+    my ($got, $of, $st) = @n[4], @n[5], @n[6];   # passed, declared, skip/todo
+    my ($ok, $want)     = $got - $st, $of - $st; # the same two without skip/todo
+    [ $name, $theme, ~@n[0], ~@n[1], ~@n[2], ~@n[3],
+      "$got/$of",  ~($of - $got),  pct($got, $of),
+      "$ok/$want", ~($want - $ok), pct($ok, $want) ]
 }
 my @rows;
 my @total = 0 xx 7;
 for @secs -> $s {
     my @n = %sec-full{$s} // 0, %sec-part{$s} // 0, %sec-time{$s} // 0, %sec-notap{$s} // 0,
-            %sec-pass{$s} // 0, %sec-tot{$s} // 0, %sec-fail{$s} // 0;
+            %sec-pass{$s} // 0, %sec-decl{$s} // 0, %sec-fudge{$s} // 0;
     @total[$_] += @n[$_] for ^7;
     @rows.push(sec-row($s, %theme{$s} // '—', @n));
 }
 # Every tallied file is in exactly one section, so the Total row's file counts
-# are the Files line's buckets and its assertions the "of tests that ran" line.
+# are the Files line's buckets and its assertion columns the summary's two
+# lines. If they ever are not, a count went into $tot-pass, $declared or $fudged
+# without its per-section twin: say so.
 @rows.push(sec-row('Total', '—', @total));
+note "run-roast: the by-synopsis Total ({@total[4]} passed of {@total[5]} declared, {@total[6]} skip/todo) is not "
+   ~ "the summary's ($tot-pass of $declared, $fudged) — a count the table does not add up."
+    unless @total[4] == $tot-pass && @total[5] == $declared && @total[6] == $fudged;
 # Padded to column width: readable in a terminal, and still the same markdown
 # table once pasted — a padded cell and a longer dash rule are both fine there.
 my @w;
@@ -1515,7 +1535,10 @@ say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 
 for @rows -> $r {
     say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
 }
-say "Failed: assertions that ran and failed, todo ones excluded. A test its file never reached is in no column here.";
+say "Passed: of every declared test, a skip or todo counted as a pass (the \"of ALL declared tests\" line). "
+  ~ "No skip/todo: those tests left out of both sides (the \"without skip/todo\" line).";
+say "Failed: the declared tests that did not pass, the ones a file never reached included — the same in both, "
+  ~ "since a skip or todo is a failure in neither.";
 
 # ---- --failed: every file that did not fully pass, printed last so it is the
 # thing left on screen. Sorted by path, the order --list uses.
