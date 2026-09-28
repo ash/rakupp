@@ -6,7 +6,7 @@ raku-behind-the-docs repository (github.com/ash/raku-behind-the-docs) on
 
 - Oracle: Rakudo v2026.08 — every Rakudo output below is the one the book
   prints and the build verifies.
-- Raku++: Raku++ 4.0.1-240-g0aca2320-modified (2026-09-28) arm64-darwin.
+- Raku++: Raku++ 4.0.1-245-ge1e6e3a1-modified (2026-09-28) arm64-darwin.
 
 An example counts as a divergence when Raku++'s standard output differs from
 Rakudo's, or when one engine rejects the program and the other runs it.
@@ -14,7 +14,7 @@ Standard error is shown for context; its wording is not compared. Examples
 marked *(local)* touch files, processes or threads: the book shows them
 without a Run button, and they were run here natively.
 
-In total Raku++ matches Rakudo on 595 of 1235 examples.
+In total Raku++ matches Rakudo on 742 of 1599 examples.
 
 | chapter | examples run on both | Raku++ matches | differs |
 |---|---|---|---|
@@ -26,7 +26,7 @@ In total Raku++ matches Rakudo on 595 of 1235 examples.
 | 5. Containers and Binding | 46 | 28 | 18 |
 | 6. Nil, Any and the Undefined | 56 | 38 | 18 |
 | 7. Numbers | 70 | 40 | 30 |
-| 8. Strings | 96 | 45 | 51 |
+| 8. Strings | 97 | 45 | 52 |
 | 9. Lists, Arrays, Seqs and Slips | 82 | 55 | 27 |
 | 10. Hashes, Maps and Pairs | 50 | 39 | 11 |
 | 11. Ranges | 51 | 22 | 29 |
@@ -37,6 +37,12 @@ In total Raku++ matches Rakudo on 595 of 1235 examples.
 | 16. Exceptions and Failures | 90 | 41 | 49 |
 | 17. Regexes and Grammars | 84 | 39 | 45 |
 | 18. Dates and Times | 70 | 18 | 52 |
+| 19. Files and Paths | 69 | 37 | 32 |
+| 20. Processes | 44 | 8 | 36 |
+| 21. Promises, Locks and Awaiting | 55 | 9 | 46 |
+| 22. Supplies | 95 | 65 | 30 |
+| A. Possible Rakudo Bugs | 64 | 4 | 60 |
+| B. Writing a Probe | 36 | 24 | 12 |
 
 ## 1. Who Takes the Operand
 
@@ -1088,7 +1094,7 @@ Doubles,
 
 ### 4.2 A block whose value is unused sinks its last statement
 
-`src/chapters/04-sink.md:49`
+`src/chapters/04-sink.md:50`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1121,7 +1127,7 @@ do try
 
 ### 4.3 A call that stands alone sinks the value it returns
 
-`src/chapters/04-sink.md:79`
+`src/chapters/04-sink.md:80`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1149,7 +1155,7 @@ sunk not last
 
 ### 4.4 A sunk operator sinks its result, not its condition
 
-`src/chapters/04-sink.md:101`
+`src/chapters/04-sink.md:102`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1177,7 +1183,7 @@ Raku++:
 
 ### 4.5 `//` never sinks its left side
 
-`src/chapters/04-sink.md:126`
+`src/chapters/04-sink.md:127`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1204,7 +1210,7 @@ Raku++:
 
 ### 4.6 A sunk list sinks every element; a sunk `xx` sinks none
 
-`src/chapters/04-sink.md:151`
+`src/chapters/04-sink.md:152`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1231,7 +1237,7 @@ sunk modifier
 
 ### 4.12 Everything after an item assignment's comma is sunk
 
-`src/chapters/04-sink.md:336`
+`src/chapters/04-sink.md:337`
 
 ```raku
 my @a;
@@ -1263,7 +1269,7 @@ $[2, 3]
 
 ### 4.15 A handled Failure is `NaN` as a number and "(HANDLED)" as a string
 
-`src/chapters/04-sink.md:473`
+`src/chapters/04-sink.md:474`
 
 ```raku
 sub parse($s) { fail "cannot parse '$s'" }
@@ -1307,7 +1313,7 @@ cannot parse 'abc'
 
 ### 4.16 Inside `try`, a Failure throws as soon as a call returns it
 
-`src/chapters/04-sink.md:506`
+`src/chapters/04-sink.md:507`
 
 ```raku
 sub parse($s) { fail "cannot parse '$s'" }
@@ -1345,7 +1351,7 @@ with: Nil
 
 ### 4.17 A failed process throws when its `Proc` is sunk (local)
 
-`src/chapters/04-sink.md:557`
+`src/chapters/04-sink.md:558`
 
 ```raku
 my $missing = run "no-such-command-here";
@@ -1382,7 +1388,7 @@ No such method 'proc' for invocant of type 'X::Proc::Unsuccessful'
 
 ### 4.21 The last value of a `for` body is not always sunk
 
-`src/chapters/04-sink.md:673`
+`src/chapters/04-sink.md:674`
 
 ```raku
 class Noisy { has $.name; method sink { say "sunk $!name" } }
@@ -1408,7 +1414,7 @@ sunk pointy block, method call
 
 ### 4.21 The last value of a `for` body is not always sunk (local)
 
-`src/chapters/04-sink.md:690`
+`src/chapters/04-sink.md:691`
 
 ```raku
 for <true false> -> $cmd { run $cmd }
@@ -1446,7 +1452,7 @@ The spawned command 'false' exited unsuccessfully (exit code: 1, signal: 0)
 
 ### 4.22 A sunk `Seq` runs to the end, even a lazy one
 
-`src/chapters/04-sink.md:712`
+`src/chapters/04-sink.md:713`
 
 ```raku
 my $n = 0;
@@ -1482,7 +1488,7 @@ Raku++:
 
 ### 4.22 A sunk `Seq` runs to the end, even a lazy one
 
-`src/chapters/04-sink.md:735`
+`src/chapters/04-sink.md:736`
 
 ```raku
 my $n = 0;
@@ -1510,7 +1516,7 @@ True
 
 ### 4.23 A routine's value is its last statement's, and a loop's is `Nil`
 
-`src/chapters/04-sink.md:796`
+`src/chapters/04-sink.md:797`
 
 ```raku
 sub nothing  { }
@@ -1539,7 +1545,7 @@ Nil
 
 ### 4.24 A `given` without a matching `when` gives `False`, not `Nil`
 
-`src/chapters/04-sink.md:819`
+`src/chapters/04-sink.md:820`
 
 ```raku
 sub name-of($n) {
@@ -1574,7 +1580,7 @@ Bool::False
 
 ### 4.25 `return $x` keeps the container that a last statement drops
 
-`src/chapters/04-sink.md:849`
+`src/chapters/04-sink.md:850`
 
 ```raku
 sub implicit { my $x = 5; $x }
@@ -3302,7 +3308,7 @@ Attempt to divide 7 by zero using mod
 
 ### 7.22 `**` stays exact with an Int exponent
 
-`src/chapters/07-numbers.md:731`
+`src/chapters/07-numbers.md:733`
 
 ```raku
 say (2 ** 10).^name;
@@ -3340,7 +3346,7 @@ NaN
 
 ### 7.23 A power too large or too small is a Failure, except `** 2`
 
-`src/chapters/07-numbers.md:779`
+`src/chapters/07-numbers.md:781`
 
 ```raku
 my $big = 2 ** 2 ** 40;
@@ -3371,9 +3377,9 @@ X::Numeric::Underflow
 Failure.new(exception => X::Numeric::Underflow)
 ```
 
-### 7.25 A negative base to a negative power builds a broken Rat
+### 7.25 A negative base to a negative power puts the sign on the denominator
 
-`src/chapters/07-numbers.md:826`
+`src/chapters/07-numbers.md:831`
 
 ```raku
 my $x = (-2) ** -3;
@@ -3409,7 +3415,7 @@ True
 
 ### 7.26 Superscript digits are the `**` operator
 
-`src/chapters/07-numbers.md:852`
+`src/chapters/07-numbers.md:857`
 
 ```raku
 say 3⁴;
@@ -3447,7 +3453,7 @@ Raku++:
 
 ### 7.28 `floor` and friends return an Int; `round` with a scale may not
 
-`src/chapters/07-numbers.md:919`
+`src/chapters/07-numbers.md:924`
 
 ```raku
 say 1234.round(100), " ", 1234.round(100).^name;
@@ -3480,7 +3486,7 @@ Nil
 
 ### 7.35 A reduction over one operand returns it unchanged
 
-`src/chapters/07-numbers.md:1115`
+`src/chapters/07-numbers.md:1120`
 
 ```raku
 say [-] 5;
@@ -3519,7 +3525,7 @@ Nil
 
 ### 7.36 `[lcm] ()` dies of an ambiguous call
 
-`src/chapters/07-numbers.md:1157`
+`src/chapters/07-numbers.md:1163`
 
 ```raku
 say [gcd] 12, 18;
@@ -3553,7 +3559,7 @@ Raku++:
 
 ### 7.37 Of two equal values, `max` keeps the second; of more, the first
 
-`src/chapters/07-numbers.md:1183`
+`src/chapters/07-numbers.md:1189`
 
 ```raku
 say (1 max 1.0).raku;
@@ -3588,7 +3594,7 @@ Raku++:
 
 ### 7.39 A left shift by a negative count past -63 wraps around
 
-`src/chapters/07-numbers.md:1255`
+`src/chapters/07-numbers.md:1261`
 
 ```raku
 say 5 +< -1;
@@ -3626,7 +3632,7 @@ Raku++:
 
 ### 7.40 `Inf - Inf` is NaN, and the negative zero keeps its sign
 
-`src/chapters/07-numbers.md:1283`
+`src/chapters/07-numbers.md:1289`
 
 ```raku
 say Inf - Inf, " ", Inf * 0;
@@ -3662,7 +3668,7 @@ Attempt to divide 1 by zero using /
 
 ### 7.41 `narrow` makes an Int of any Num close to one, however small
 
-`src/chapters/07-numbers.md:1317`
+`src/chapters/07-numbers.md:1324`
 
 ```raku
 say (4/2).narrow.raku;
@@ -3700,7 +3706,7 @@ Raku++:
 
 ### 7.42 `base` rounds its last digit, and `*` asks for every digit
 
-`src/chapters/07-numbers.md:1345`
+`src/chapters/07-numbers.md:1352`
 
 ```raku
 say 255.base(16), " ", (-255).base(16);
@@ -3738,7 +3744,7 @@ base argument to base out of range. Is: 37, should be in 2..36
 
 ### 7.44 `is-prime` and `expmod` accept whole numbers of any type
 
-`src/chapters/07-numbers.md:1417`
+`src/chapters/07-numbers.md:1424`
 
 ```raku
 say 2e0.is-prime, " ", 2.0.is-prime, " ", 2.5.is-prime;
@@ -3771,7 +3777,7 @@ expmod: 42 has no inverse modulo 7
 
 ### 7.45 `polymod` stops at a divisor of 1 or less
 
-`src/chapters/07-numbers.md:1442`
+`src/chapters/07-numbers.md:1449`
 
 ```raku
 say 3661.polymod(60, 60);
@@ -3804,9 +3810,9 @@ Raku++:
 invocant to polymod out of range. Is: -1, should be in 0..^Inf
 ```
 
-### 7.46 `polymod` of an Int by a fraction goes wrong
+### 7.46 An Int's `polymod` by a fraction gives negative remainders
 
-`src/chapters/07-numbers.md:1467`
+`src/chapters/07-numbers.md:1475`
 
 ```raku
 say 10.polymod(2.5);
@@ -3835,7 +3841,7 @@ Raku++:
 
 ### 7.51 `sqrt` of a negative Real is NaN, not a Complex
 
-`src/chapters/07-numbers.md:1591`
+`src/chapters/07-numbers.md:1599`
 
 ```raku
 say sqrt(-1);
@@ -3877,7 +3883,7 @@ No such method 'exception' for invocant of type 'Num'
 
 ### 7.53 `srand` repeats a sequence only from its second run
 
-`src/chapters/07-numbers.md:1637`
+`src/chapters/07-numbers.md:1645`
 
 ```raku
 my @runs;
@@ -3908,7 +3914,7 @@ True
 
 ### 7.55 Native integers wrap around, and a 64-bit one refuses a big Int
 
-`src/chapters/07-numbers.md:1730`
+`src/chapters/07-numbers.md:1738`
 
 ```raku
 my int $a = 7;
@@ -4200,7 +4206,7 @@ Int
 
 ### 8.15 `<42>.lines` returns an allomorph whose number is 0
 
-`src/chapters/08-strings.md:554`
+`src/chapters/08-strings.md:556`
 
 ```raku
 say <42>.lines.raku;
@@ -4226,7 +4232,7 @@ False
 
 ### 8.16 `~` calls `.Str`, which shortens a Rat and tab-joins a Hash
 
-`src/chapters/08-strings.md:593`
+`src/chapters/08-strings.md:595`
 
 ```raku
 my $s;
@@ -4261,7 +4267,7 @@ Raku++:
 
 ### 8.17 The count of `x` goes through `.Int`, and Inf is refused
 
-`src/chapters/08-strings.md:636`
+`src/chapters/08-strings.md:638`
 
 ```raku
 for Inf, NaN, 2**31 -> $n {
@@ -4288,7 +4294,7 @@ Nil
 
 ### 8.19 `~|`, `~&` and `~^` combine strings code point by code point
 
-`src/chapters/08-strings.md:703`
+`src/chapters/08-strings.md:705`
 
 ```raku
 try { say ~^"a" };
@@ -4313,7 +4319,7 @@ Cannot resolve caller infix:<~<>(Str, Int); no such operator is defined
 
 ### 8.20 `succ` increments the last run of letters or digits
 
-`src/chapters/08-strings.md:724`
+`src/chapters/08-strings.md:726`
 
 ```raku
 say .succ for "Az", "zz", "a9", "Zz9", "img001.png", "12.34", "a.9", "a-", "é";
@@ -4349,7 +4355,7 @@ b-
 
 ### 8.20 `succ` increments the last run of letters or digits
 
-`src/chapters/08-strings.md:743`
+`src/chapters/08-strings.md:745`
 
 ```raku
 say "α".succ, " ", "ω".succ;
@@ -4381,7 +4387,7 @@ Raku++:
 
 ### 8.21 `pred` fails where `succ` would have carried
 
-`src/chapters/08-strings.md:764`
+`src/chapters/08-strings.md:766`
 
 ```raku
 say "b".pred;
@@ -4421,7 +4427,7 @@ Decrement out of range
 
 ### 8.23 `wordcase` capitalises a letter after a digit or a dot
 
-`src/chapters/08-strings.md:830`
+`src/chapters/08-strings.md:832`
 
 ```raku
 say "don't stop-me now".wordcase;
@@ -4456,7 +4462,7 @@ Have Fun Working On Raku
 
 ### 8.24 `samecase` and `samemark` copy a pattern position by position
 
-`src/chapters/08-strings.md:878`
+`src/chapters/08-strings.md:880`
 
 ```raku
 say "\r\n".samemark("ä").ords;
@@ -4476,7 +4482,7 @@ Raku++:
 
 ### 8.27 `trim` removes Unicode whitespace, but not zero-width characters
 
-`src/chapters/08-strings.md:955`
+`src/chapters/08-strings.md:957`
 
 ```raku
 say "\x[A0]a\x[3000]".trim.raku;
@@ -4505,7 +4511,7 @@ Raku++:
 
 ### 8.29 A negative position fails; one past the end finds nothing
 
-`src/chapters/08-strings.md:1012`
+`src/chapters/08-strings.md:1014`
 
 ```raku
 my $s = "abc";
@@ -4535,7 +4541,7 @@ False
 
 ### 8.30 `rindex` dies on a position at the end
 
-`src/chapters/08-strings.md:1035`
+`src/chapters/08-strings.md:1038`
 
 ```raku
 my $s = "abc";
@@ -4569,9 +4575,9 @@ Nil
 2
 ```
 
-### 8.32 `rindex` searches backwards and ignores `:i`
+### 8.33 `rindex` searches backwards and ignores `:i`
 
-`src/chapters/08-strings.md:1088`
+`src/chapters/08-strings.md:1100`
 
 ```raku
 say "abcabc".rindex("b", 3);
@@ -4601,9 +4607,9 @@ Raku++:
 1
 ```
 
-### 8.34 `contains(/…/, $pos)` cannot match at the end
+### 8.35 `contains(/…/, $pos)` cannot match at the end
 
-`src/chapters/08-strings.md:1132`
+`src/chapters/08-strings.md:1144`
 
 ```raku
 say "abc".contains("", 3);
@@ -4636,9 +4642,9 @@ True
 True
 ```
 
-### 8.35 `:i` folds case fully, except in `ends-with`
+### 8.36 `:i` folds case fully, except in `ends-with`
 
-`src/chapters/08-strings.md:1159`
+`src/chapters/08-strings.md:1171`
 
 ```raku
 say "Straße".starts-with("STRASSE", :i);
@@ -4671,9 +4677,9 @@ False
 True
 ```
 
-### 8.36 `starts-with`, `ends-with` and `substr-eq` compare at one place
+### 8.37 `starts-with`, `ends-with` and `substr-eq` compare at one place
 
-`src/chapters/08-strings.md:1184`
+`src/chapters/08-strings.md:1196`
 
 ```raku
 say "foobar".substr-eq("bar", 3);
@@ -4714,9 +4720,9 @@ Actually thrown at:
   in block <unit> at example.raku line 4
 ```
 
-### 8.37 `substr` takes a range or code, but not `*-3..*`
+### 8.38 `substr` takes a range or code, but not `*-3..*`
 
-`src/chapters/08-strings.md:1232`
+`src/chapters/08-strings.md:1244`
 
 ```raku
 my $s = "abcdef";
@@ -4743,9 +4749,9 @@ Nil
 def
 ```
 
-### 8.38 `substr` out of range returns a Failure with advice
+### 8.39 `substr` out of range returns a Failure with advice
 
-`src/chapters/08-strings.md:1253`
+`src/chapters/08-strings.md:1265`
 
 ```raku
 my $s = "abc";
@@ -4773,9 +4779,9 @@ Start argument to substr out of range. Is: 4, should be in 0..3
 Length argument to substr out of range. Is: -1, should be in 0..2; use *-1 if you want to index relative to the end
 ```
 
-### 8.39 `substr-rw` splices into the variable
+### 8.40 `substr-rw` splices into the variable
 
-`src/chapters/08-strings.md:1274`
+`src/chapters/08-strings.md:1286`
 
 ```raku
 my $s = "abcd";
@@ -4808,9 +4814,9 @@ aX-YZd
 Target is not assignable
 ```
 
-### 8.40 A bound `substr-rw` writes into the text it first saw
+### 8.41 A bound `substr-rw` writes into the text it first saw
 
-`src/chapters/08-strings.md:1301`
+`src/chapters/08-strings.md:1313`
 
 ```raku
 my $s = "abcd";
@@ -4835,9 +4841,9 @@ xy
 wQz
 ```
 
-### 8.43 `comb` with a string and a limit finds overlapping matches
+### 8.44 `comb` with a string and a limit finds overlapping matches
 
-`src/chapters/08-strings.md:1373`
+`src/chapters/08-strings.md:1386`
 
 ```raku
 say "aaaa".comb("aa");
@@ -4864,9 +4870,9 @@ Raku++:
 ()
 ```
 
-### 8.46 `lines(:!count)` dies
+### 8.47 `lines(:!count)` dies
 
-`src/chapters/08-strings.md:1444`
+`src/chapters/08-strings.md:1458`
 
 ```raku
 say "a\nb\nc".lines(:count);
@@ -4893,9 +4899,9 @@ Raku++:
 (a b c)
 ```
 
-### 8.49 `split` can return the separators, but in one form only
+### 8.50 `split` can return the separators, but in one form only
 
-`src/chapters/08-strings.md:1516`
+`src/chapters/08-strings.md:1530`
 
 ```raku
 say "a;b,c".split(";", :v).raku;
@@ -4923,9 +4929,9 @@ Raku++:
 Unsupported combination of adverbs ('v', 'k') passed to split on 'Str'.
 ```
 
-### 8.50 The limit of `split` counts pieces; `:end` counts from the right
+### 8.51 The limit of `split` counts pieces; `:end` counts from the right
 
-`src/chapters/08-strings.md:1539`
+`src/chapters/08-strings.md:1553`
 
 ```raku
 say "a;b;c;d".split(";", 2).raku;
@@ -4961,9 +4967,9 @@ Raku++:
 ("abcab", "").Seq
 ```
 
-### 8.51 A fractional limit kills `split` with a string needle
+### 8.52 `split` with a string needle dies on a fractional limit
 
-`src/chapters/08-strings.md:1565`
+`src/chapters/08-strings.md:1581`
 
 ```raku
 my $limit = 2.0;
@@ -4991,15 +4997,13 @@ Raku++:
 ("a", "b;c;d").Seq
 ```
 
-### 8.53 A list of needles splits at the longest, and returns strings
+### 8.54 A list of needles splits at the earliest match, then the longest
 
-`src/chapters/08-strings.md:1609`
+`src/chapters/08-strings.md:1622`
 
 ```raku
 say "a;b,c".split(<; ,>, :k).raku;
 say "aaa".split(("a", "aa"), :v).raku;
-say "1a2bb3".split(['a', /b+/], :v).raku;
-say "1a2bb3".split(['a', /b+/], :v).map(*.^name);
 say "abc".split(()).raku;
 ```
 
@@ -5008,8 +5012,6 @@ Rakudo:
 ```
 ("a", 0, "b", 1, "c").Seq
 ("", "aa", "", "a", "").Seq
-("1", "a", "2", "bb", "3").Seq
-(Str Str Str Str Str)
 ().Seq
 ```
 
@@ -5018,14 +5020,35 @@ Raku++:
 ```
 ("a", 0, "b", 1, "c").Seq
 ("", "aa", "", "a", "").Seq
-("1", "a", "2", Match.new(:orig("bb"), :from(3), :pos(5)), "3").Seq
-(Str Str Str Match Str)
 ("abc",).Seq
 ```
 
-### 8.56 An empty needle with `:g` misses both ends
+### 8.55 `:v` gives a string for a regex in a list of needles
 
-`src/chapters/08-strings.md:1670`
+`src/chapters/08-strings.md:1643`
+
+```raku
+say "1a2bb3".split(['a', /b+/], :v).raku;
+say "1a2bb3".split(['a', /b+/], :v).map(*.^name);
+```
+
+Rakudo:
+
+```
+("1", "a", "2", "bb", "3").Seq
+(Str Str Str Str Str)
+```
+
+Raku++:
+
+```
+("1", "a", "2", Match.new(:orig("bb"), :from(3), :pos(5)), "3").Seq
+(Str Str Str Match Str)
+```
+
+### 8.58 An empty needle with `:g` misses both ends
+
+`src/chapters/08-strings.md:1698`
 
 ```raku
 say "abc".subst("", "-");
@@ -5055,9 +5078,9 @@ abc
 ""
 ```
 
-### 8.57 `subst` passes `:nth` and `:x` on, and refuses `:ov` and `:ex`
+### 8.59 `subst` passes `:nth` and `:x` on, and refuses `:ov` and `:ex`
 
-`src/chapters/08-strings.md:1693`
+`src/chapters/08-strings.md:1721`
 
 ```raku
 say "abcbcb".subst("b", "x", :nth(2));
@@ -5091,9 +5114,9 @@ abcxcx
 Adverb overlap not allowed on substitution
 ```
 
-### 8.58 `:as(Str)` breaks `subst` with `:g`, `:nth` or `:x`
+### 8.60 `subst` with `:as(Str)` dies under `:g`, `:nth` or `:x`
 
-`src/chapters/08-strings.md:1724`
+`src/chapters/08-strings.md:1753`
 
 ```raku
 say "abc".subst(/b/, "x", :as(Str));
@@ -5120,9 +5143,9 @@ axc
 axcx
 ```
 
-### 8.59 A replacement block receives the Match
+### 8.61 A replacement block receives the Match
 
-`src/chapters/08-strings.md:1744`
+`src/chapters/08-strings.md:1773`
 
 ```raku
 say "a1b22".subst(/(\d+)/, { "<$0>" }, :g);
@@ -5153,9 +5176,9 @@ a0c1
 Nil
 ```
 
-### 8.60 With a string needle, `subst` leaves `$/` alone
+### 8.62 With a string needle, `subst` leaves `$/` alone
 
-`src/chapters/08-strings.md:1769`
+`src/chapters/08-strings.md:1798`
 
 ```raku
 "prior" ~~ /o/;
@@ -5187,9 +5210,9 @@ Match.new(:orig("abc"), :from(1), :pos(2))
 Match.new(:orig("abc"), :from(1), :pos(2))
 ```
 
-### 8.61 `:ii`, `:ss` and `:mm` shape the replacement, not the match
+### 8.63 `:ii`, `:ss` and `:mm` shape the replacement, not the match
 
-`src/chapters/08-strings.md:1799`
+`src/chapters/08-strings.md:1828`
 
 ```raku
 say "Hello World".subst(/hello \s world/, "bye bye", :ii);
@@ -5224,9 +5247,9 @@ bye  bye
 Bye byE
 ```
 
-### 8.63 `subst-mutate` accepts `:ov` and `:ex`, and they garble the text
+### 8.65 `subst-mutate` accepts `:ov` and `:ex`, which `subst` refuses
 
-`src/chapters/08-strings.md:1856`
+`src/chapters/08-strings.md:1885`
 
 ```raku
 my $s = "aaa";
@@ -5251,9 +5274,9 @@ xax
 Unrecognized regex adverb: :ex
 ```
 
-### 8.64 `.match` with a negative `:c` matches before the start
+### 8.66 `.match` with a negative `:c` matches before the start
 
-`src/chapters/08-strings.md:1878`
+`src/chapters/08-strings.md:1908`
 
 ```raku
 say "abc".match(/./, :c(-1)).raku;
@@ -5281,9 +5304,9 @@ Nil
 3
 ```
 
-### 8.65 `trans` maps characters, and a short target string starts over
+### 8.67 `trans` maps characters, and a short target string starts over
 
-`src/chapters/08-strings.md:1903`
+`src/chapters/08-strings.md:1933`
 
 ```raku
 say "abc".trans("ab" => "xyz");
@@ -5319,9 +5342,9 @@ xyd
 aþðþbþðþc
 ```
 
-### 8.66 When `trans` keys repeat, the last wins, or the first
+### 8.68 When `trans` keys repeat, the last wins, or the first
 
-`src/chapters/08-strings.md:1946`
+`src/chapters/08-strings.md:1976`
 
 ```raku
 say "abc".trans("a" => "x", "a" => "y");
@@ -5345,9 +5368,9 @@ xbc
 xbc
 ```
 
-### 8.67 `trans` replaces a regex key's whole match, or calls code
+### 8.69 `trans` replaces a regex key's whole match, or calls code
 
-`src/chapters/08-strings.md:1964`
+`src/chapters/08-strings.md:1994`
 
 ```raku
 say "a1b2".trans(/\d/ => { $/ * 2 });
@@ -5380,9 +5403,9 @@ a#b#
 xcc
 ```
 
-### 8.68 `trans` wants Pairs, and `Str => "x"` is not one
+### 8.70 `trans` wants Pairs, and `Str => "x"` is not one
 
-`src/chapters/08-strings.md:1994`
+`src/chapters/08-strings.md:2024`
 
 ```raku
 say (try "abc".trans("a")) // $!.^name;
@@ -5420,9 +5443,9 @@ bc
 abc
 ```
 
-### 8.71 `parse-base` reads a string in any base from 2 to 36
+### 8.73 `parse-base` reads a string in any base from 2 to 36
 
-`src/chapters/08-strings.md:2077`
+`src/chapters/08-strings.md:2107`
 
 ```raku
 say "ff".parse-base(16);
@@ -5462,9 +5485,9 @@ X::Syntax::Number::RadixOutOfRange
 <100000000000000000001/100000000000000000000>
 ```
 
-### 8.71 `parse-base` reads a string in any base from 2 to 36
+### 8.73 `parse-base` reads a string in any base from 2 to 36
 
-`src/chapters/08-strings.md:2102`
+`src/chapters/08-strings.md:2132`
 
 ```raku
 say "🐪🐫🐪".parse-base("camel");
@@ -5491,9 +5514,9 @@ Radix 0 out of range (allowed: 2..36)
       1 | say "🐪🐫🐪".parse-base("camel");
 ```
 
-### 8.74 `encode` composes first, and refuses what it cannot encode
+### 8.76 `encode` composes first, and refuses what it cannot encode
 
-`src/chapters/08-strings.md:2191`
+`src/chapters/08-strings.md:2221`
 
 ```raku
 say "e\x[301]".encode.bytes;
@@ -5526,9 +5549,9 @@ utf8:0x<45 55 52>
 utf32:0x<00000061>
 ```
 
-### 8.76 `fmt` counts graphemes, and its errors have no type
+### 8.78 `fmt` counts graphemes, and its errors have no type
 
-`src/chapters/08-strings.md:2228`
+`src/chapters/08-strings.md:2259`
 
 ```raku
 say "é".fmt("[%3s]");
@@ -5560,9 +5583,9 @@ Nil: Nil
 Nil
 ```
 
-### 8.77 `.Version`, `.Date` and `.IO` parse strings; one string has a `WHY`
+### 8.79 `.Version`, `.Date` and `.IO` parse strings; one string has a `WHY`
 
-`src/chapters/08-strings.md:2254`
+`src/chapters/08-strings.md:2285`
 
 ```raku
 say "1.2.3".Version;
@@ -5598,9 +5621,9 @@ Nil
 Nil
 ```
 
-### 8.79 The Str type object warns, answers empty, or refuses
+### 8.81 The Str type object warns, answers empty, or refuses
 
-`src/chapters/08-strings.md:2307`
+`src/chapters/08-strings.md:2338`
 
 ```raku
 my Str $s;
@@ -6043,7 +6066,7 @@ Raku++:
 [2, 3]
 (1, 4, 5).Seq
 [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649, 650, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710, 711, 712, 713, 714, 715, 716, 717, 718, 719, 720, 721, 722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740, 741, 742, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 755, 756, 757, 758, 759, 760, 761, 762, 763, 764, 765, 766, 767, 768, 769, 770, 771, 772, 773, 774, 775, 776, 777, 778, 779, 780, 781, 782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 810, 811, 812, 813, 814, 815, 816, 817, 818, 819, 820, 821, 822, 823, 824, 825, 826, 827, 828, 829, 830, 831, 832, 833, 834, 835, 836, 837, 838, 839, 840, 841, 842, 843, 844, 845, 846, 847, 848, 849, 850, 851, 852, 853, 854, 855, 856, 857, 858, 859, 860, 861, 862, 863, 864, 865, 866, 867, 868, 869, 870, 871, 872, 873, 874, 875, 876, 877, 878, 879, 880, 881, 882, 883, 884, 885, 886, 887, 888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 904, 905, 906, 907, 908, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 940, 941, 942, 943, 944, 945, 946, 947, 948, 949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980, 981, 982, 983, 984, 985, 986, 987, 988, 989, 990, 991, 992, 993, 994, 995, 996, 997, 998, 999, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077, 1078, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090, 1091, 1092, 1093, 1094, 1095, 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1125, 1126, 1127, 1128, 1129, 1130, 1131, 1132, 1133, 1134, 1135, 1136, 1137, 1138, 1139, 1140, 1141, 1142, 1143, 1144, 1145, 1146, 1147, 1148, 1149, 1150, 1151, 1152, 1153, 1154, 1155, 1156, 1157, 1158, 1159, 1160, 1161, 1162, 1163, 1164, 1165, 1166, 1167, 1168, 1169, 1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1179, 1180, 1181, 1182, 1183, 1184, 1185, 1186, 1187, 1188, 1189, 1190, 1191, 1192, 1193, 1194, 1195, 1196, 1197, 1198, 1199, 1200, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211, 1212, 1213, 1214, 1215, 1216, 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1234, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1259, 1260, 1261, 1262, 1263, 1264, 1265, 1266, 1267, 1268, 1269, 1270, 1271, 1272, 1273, 1274, 1275, 1276, 1277, 1278, 1279, 1280, 1281, 1282, 1283, 1284, 1285, 1286, 1287, 1288, 1289, 1290, 1291, 1292, 1293, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309, 1310, 1311, 1312, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321, 1322, 1323, 1324, 1325, 1326, 1327, 1328, 1329, 1330, 1331, 1332, 1333, 1334, 1335, 1336, 1337, 1338, 1339, 1340, 1341, 1342, 1343, 1344, 1345, 1346, 1347, 1348, 1349, 1350, 1351, 1352, 1353, 1354, 1355, 1356, 1357, 1358, 1359, 1360, 1361, 1362, 1363, 1364, 1365, 1366, 1367, 1368, 1369, 1370, 1371, 1372, 1373, 1374, 1375, 1376, 1377, 1378, 1379, 1380, 1381, 1382, 1383, 1384, 1385, 1386, 1387, 1388, 1389, 1390, 1391, 1392, 1393, 1394, 1395, 1396, 1397, 1398, 1399, 1400, 1401, 1402, 1403, 1404, 1405, 1406, 1407, 1408, 1409, 1410, 1411, 1412, 1413, 1414, 1415, 1416, 1417, 1418, 1419, 1420, 1421, 1422, 1423, 1424, 1425, 1426, 1427, 1428, 1429, 1430, 1431, 1432, 1433, 1434, 1435, 1436, 1437, 1438, 1439, 1440, 1441, 1442, 1443, 1444, 1445, 1446, 1447, 1448, 1449, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472, 1473, 1474, 1475, 1476, 1477, 1478, 1479, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487, 1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499, 1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533, 1534, 1535, 1536, 1537, 1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552, 1553, 1554, 1555, 1556, 1557, 1558, 1559, 1560, 1561, 1562, 1563, 1564, 1565, 1566, 1567, 1568, 1569, 1570, 1571, 1572, 1573, 1574, 1575, 1576, 1577, 1578, 1579, 1580, 1581, 1582, 1583, 1584, 1585, 1586, 1587, 1588, 1589, 1590, 1591, 1592, 1593, 1594, 1595, 1596, 1597, 1598, 1599, 1600, 1601, 1602, 1603, 1604, 1605, 1606, 1607, 1608, 1609, 1610, 1611, 1612, 1613, 1614, 1615, 1616, 1617, 1618, 1619, 1620, 1621, 1622, 1623, 1624, 1625, 1626, 1627, 1628, 1629, 1630, 1631, 1632, 1633, 1634, 1635, 1636, 1637, 1638, 1639, 1640, 1641, 1642, 1643, 1644, 1645, 1646, 1647, 1648, 1649, 1650, 1651, 1652, 1653, 1654, 1655, 1656, 1657, 1658, 1659, 1660, 1661, 1662, 1663, 1664, 1665, 1666, 1667, 1668, 1669, 1670, 1671, 1672, 1673, 1674, 1675, 1676, 1677, 1678, 1679, 1680, 1681, 1682, 1683, 1684, 1685, 1686, 1687, 1688, 1689, 1690, 1691, 1692, 1693, 1694, 1695, 1696, 1697, 1698, 1699, 1700, 1701, 1702, 1703, 1704, 1705, 1706, 1707, 1708, 1709, 1710, 1711, 1712, 1713, 1714, 1715, 1716, 1717, 1718, 1719, 1720, 1721, 1722, 1723, 1724, 1725, 1726, 1727, 1728, 1729, 1730, 1731, 1732, 1733, 1734, 1735, 1736, 1737, 1738, 1739, 1740, 1741, 1742, 1743, 1744, 1745, 1746, 1747, 1748, 1749, 1750, 1751, 1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760, 1761, 1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769, 1770, 1771, 1772, 1773, 1774, 1775, 1776, 1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786, 1787, 1788, 1789, 1790, 1791, 1792, 1793, 1794, 1795, 1796, 1797, 1798, 1799, 1800, 1801, 1802, 1803, 1804, 1805, 1806, 1807, 1808, 1809, 1810, 1811, 1812, 1813, 1814, 1815, 1816, 1817, 1818, 1819, 1820, 1821, 1822, 1823, 1824, 1825, 1826, 1827, 1828, 1829, 1830, 1831, 1832, 1833, 1834, 1835, 1836, 1837, 1838, 1839, 1840, 1841, 1842, 1843, 1844, 1845, 1846, 1847, 1848, 1849, 1850, 1851, 1852, 1853, 1854, 1855, 1856, 1857, 1858, 1859, 1860, 1861, 1862, 1863, 1864, 1865, 1866, 1867, 1868, 1869, 1870, 1871, 1872, 1873, 1874, 1875, 1876, 1877, 1878, 1879, 1880, 1881, 1882, 1883, 1884, 1885, 1886, 1887, 1888, 1889, 1890, 1891, 1892, 1893, 1894, 1895, 1896, 1897, 1898, 1899, 1900, 1901, 1902, 1903, 1904, 1905, 1906, 1907, 1908, 1909, 1910, 1911, 1912, 1913, 1914, 1915, 1916, 1917, 1918, 1919, 1920, 1921, 1922, 1923, 1924, 1925, 1926, 1927, 1928, 1929, 1930, 1931, 1932, 1933, 1934, 1935, 1936, 1937, 1938, 1939, 1940, 1941, 1942, 1943, 1944, 1945, 1946, 1947, 1948, 1949, 1950, 1951, 1952, 1953, 1954, 1955, 1956, 1957, 1958, 1959, 1960, 1961, 1962, 1963, 1964, 1965, 1966, 1967, 1968, 1969, 1970, 1971, 1972, 1973, 1974, 1975, 1976, 1977, 1978, 1979, 1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033, 2034, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2042, 2043, 2044, 2045, 2046, 2047, 2048, 2049, 2050, 2051, 2052, 2053, 2054, 2055, 2056, 2057, 2058, 2059, 2060, 2061, 2062, 2063, 2064, 2065, 2066, 2067, 2068, 2069, 2070, 2071, 2072, 2073, 2074, 2075, 2076, 2077, 2078, 2079, 2080, 2081, 2082, 2083, 2084, 2085, 2086, 2087, 2088, 2089, 2090, 2091, 2092, 2093, 2094, 2095, 2096, 2097, 2098, 2099, 2100, 2101, 2102, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2110, 2111, 2112, 2113, 2114, 2115, 2116, 2117, 2118, 2119, 2120, 2121, 2122, 2123, 2124, 2125, 2126, 2127, 2128, 2129, 2130, 2131, 2132, 2133, 2134, 2135, 2136, 2137, 2138, 2139, 2140, 2141, 2142, 2143, 2144, 2145, 2146, 2147, 2148, 2149, 2150, 2151, 2152, 2153, 2154, 2155, 2156, 2157, 2158, 2159, 2160, 2161, 2162, 2163, 2164, 2165, 2166, 2167, 2168, 2169, 2170, 2171, 2172, 2173, 2174, 2175, 2176, 2177, 2178, 2179, 2180, 2181, 2182, 2183, 2184, 2185, 2186, 2187, 2188, 2189, 2190, 2191, 2192, 2193, 2194, 2195, 2196, 2197, 2198, 2199, 2200, 2201, 2202, 2203, 2204, 2205, 2206, 2207, 2208, 2209, 2210, 2211, 2212, 2213, 2214, 2215, 2216, 2217, 2218, 2219, 2220, 2221, 2222, 2223, 2224, 2225, 2226, 2227, 2228, 2229, 2230, 2231, 2232, 2233, 2234, 2235, 2236, 2237, 2238, 2239, 2240, 2241, 2242, 2243, 2244, 2245, 2246, 2247, 2248, 2249, 2250, 2251, 2252, 2253, 2254, 2255, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2263, 2264, 2265, 2266, 2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2282, 2283, 2284, 2285, 2286, 2287, 2288, 2289, 2290, 2291, 2292, 2293, 2294, 2295, 2296, 2297, 2298, 2299, 2300, 2301, 2302, 2303, 2304, 2305, 2306, 2307, 2308, 2309, 2310, 2311, 2312, 2313, 2314, 2315, 2316, 2317, 2318, 2319, 2320, 2321, 2322, 2323, 2324, 2325, 2326, 2327, 2328, 2329, 2330, 2331, 2332, 2333, 2334, 2335, 2336, 2337, 2338, 2339, 2340, 2341, 2342, 2343, 2344, 2345, 2346, 2347, 2348, 2349, 2350, 2351, 2352, 2353, 2354, 2355, 2356, 2357, 2358, 2359, 2360, 2361, 2362, 2363, 2364, 2365, 2366, 2367, 2368, 2369, 2370, 2371, 2372, 2373, 2374, 2375, 2376, 2377, 2378, 2379, 2380, 2381, 2382, 2383, 2384, 2385, 2386, 2387, 2388, 2389, 2390, 2391, 2392, 2393, 2394, 2395, 2396, 2397, 2398, 2399, 2400, 2401, 2402, 2403, 2404, 2405, 2406, 2407, 2408, 2409, 2410, 2411, 2412, 2413, 2414, 2415, 2416, 2417, 2418, 2419, 2420, 2421, 2422, 2423, 2424, 2425, 2426, 2427, 2428, 2429, 2430, 2431, 2432, 2433, 2434, 2435, 2436, 2437, 2438, 2439, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447, 2448, 2449, 2450, 2451, 2452, 2453, 2454, 2455, 2456, 2457, 2458, 2459, 2460, 2461, 2462, 2463, 2464, 2465, 2466, 2467, 2468, 2469, 2470, 2471, 2472, 2473, 2474, 2475, 2476, 2477, 2478, 2479, 2480, 2481, 2482, 2483, 2484, 2485, 2486, 2487, 2488, 2489, 2490, 2491, 2492, 2493, 2494, 2495, 2496, 2497, 2498, 2499, 2500, 2501, 2502, 2503, 2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515, 2516, 2517, 2518, 2519, 2520, 2521, 2522, 2523, 2524, 2525, 2526, 2527, 2528, 2529, 2530, 2531, 2532, 2533, 2534, 2535, 2536, 2537, 2538, 2539, 2540, 2541, 2542, 2543, 2544, 2545, 2546, 2547, 2548, 2549, 2550, 2551, 2552, 2553, 2554, 2555, 2556, 2557, 2558, 2559, 2560, 2561, 2562, 2563, 2564, 2565, 2566, 2567, 2568, 2569, 2570, 2571, 2572, 2573, 2574, 2575, 2576, 2577, 2578, 2579, 2580, 2581, 2582, 2583, 2584, 2585, 2586, 2587, 2588, 2589, 2590, 2591, 2592, 2593, 2594, 2595, 2596, 2597, 2598, 2599, 2600, 2601, 2602, 2603, 2604, 2605, 2606, 2607, 2608, 2609, 2610, 2611, 2612, 2613, 2614, 2615, 2616, 2617, 2618, 2619, 2620, 2621, 2622, 2623, 2624, 2625, 2626, 2627, 2628, 2629, 2630, 2631, 2632, 2633, 2634, 2635, 2636, 2637, 2638, 2639, 2640, 2641, 2642, 2643, 2644, 2645, 2646, 2647, 2648, 2649, 2650, 2651, 2652, 2653, 2654, 2655, 2656, 2657, 2658, 2659, 2660, 2661, 2662, 2663, 2664, 2665, 2666, 2667, 2668, 2669, 2670, 2671, 2672, 2673, 2674, 2675, 2676, 2677, 2678, 2679, 2680, 2681, 2682, 2683, 2684, 2685, 2686, 2687, 2688, 2689, 2690, 2691, 2692, 2693, 2694, 2695, 2696, 2697, 2698, 2699, 2700, 2701, 2702, 2703, 2704, 2705, 2706, 2707, 2708, 2709, 2710, 2711, 2712, 2713, 2714, 2715, 2716, 2717, 2718, 2719, 2720, 2721, 2722, 2723, 2724, 2725, 2726, 2727, 2728, 2729, 2730, 2731, 2732, 2733, 2734, 2735, 2736, 2737, 2738, 2739, 2740, 2741, 2742, 2743, 2744, 2745, 2746, 2747, 2748, 2749, 2750, 2751, 2752, 2753, 2754, 2755, 2756, 2757, 2758, 2759, 2760, 2761, 2762, 2763, 2764, 2765, 2766, 2767, 2768, 2769, 2770, 2771, 2772, 2773, 2774, 2775, 2776, 2777, 2778, 2779, 2780, 2781, 2782, 2783, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793, 2794, 2795, 2796, 2797, 2798, 2799, 2800, 2801, 2802, 2803, 2804, 2805, 2806, 2807, 2808, 2809, 2810, 2811, 2812, 2813, 2814, 2815, 2816, 2817, 2818, 2819, 2820, 2821, 2822, 2823, 2824, 2825, 2826, 2827, 2828, 2829, 2830, 2831, 2832, 2833, 2834, 2835, 2836, 2837, 2838, 2839, 2840, 2841, 2842, 2843, 2844, 2845, 2846, 2847, 2848, 2849, 2850, 2851, 2852, 2853, 2854, 2855, 2856, 2857, 2858, 2859, 2860, 2861, 2862, 2863, 2864, 2865, 2866, 2867, 2868, 2869, 2870, 2871, 2872, 2873, 2874, 2875, 2876, 2877, 2878, 2879, 2880, 2881, 2882, 2883, 2884, 2885, 2886, 2887, 2888, 2889, 2890, 2891, 2892, 2893, 2894, 2895, 2896, 2897, 2898, 2899, 2900, 2901, 2902, 2903, 2904, 2905, 2906, 2907, 2908, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2918, 2919, 2920, 2921, 2922, 2923, 2924, 2925, 2926, 2927, 2928, 2929, 2930, 2931, 2932, 2933, 2934, 2935, 2936, 2937, 2938, 2939, 2940, 2941, 2942, 2943, 2944, 2945, 2946, 2947, 2948, 2949, 2950, 2951, 2952, 2953, 2954, 2955, 2956, 2957, 2958, 2959, 2960, 2961, 2962, 2963, 2964, 2965, 2966, 2967, 2968, 2969, 2970, 2971, 2972, 2973, 2974, 2975, 2976, 2977, 2978, 2979, 2980, 2981, 2982, 2983, 2984, 2985, 2986, 2987, 2988, 2989, 2990, 2991, 2992, 2993, 2994, 2995, 2996, 2997, 2998, 2999, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027, 3028, 3029, 3030, 3031, 3032, 3033, 3034, 3035, 3036, 3037, 3038, 3039, 3040, 3041, 3042, 3043, 3044, 3045, 3046, 3047, 3048, 3049, 3050, 3051, 3052, 3053, 3054, 3055, 3056, 3057, 3058, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3070, 3071, 3072, 3073, 3074, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3092, 3093, 3094, 3095, 3096, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108, 3109, 3110, 3111, 3112, 3113, 3114, 3115, 3116, 3117, 3118, 3119, 3120, 3121, 3122, 3123, 3124, 3125, 3126, 3127, 3128, 3129, 3130, 3131, 3132, 3133, 3134, 3135, 3136, 3137, 3138, 3139, 3140, 3141, 3142, 3143, 3144, 3145, 3146, 3147, 3148, 3149, 3150, 3151, 3152, 3153, 3154, 3155, 3156, 3157, 3158, 3159, 3160, 3161, 3162, 3163, 3164, 3165, 3166, 3167, 3168, 3169, 3170, 3171, 3172, 3173, 3174, 3175, 3176, 3177, 3178, 3179, 3180, 3181, 3182, 3183, 3184, 3185, 3186, 3187, 3188, 3189, 3190, 3191, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3202, 3203, 3204, 3205, 3206, 3207, 3208, 3209, 3210, 3211, 3212, 3213, 3214, 3215, 3216, 3217, 3218, 3219, 3220, 3221, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3241, 3242, 3243, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3252, 3253, 3254, 3255, 3256, 3257, 3258, 3259, 3260, 3261, 3262, 3263, 3264, 3265, 3266, 3267, 3268, 3269, 3270, 3271, 3272, 3273, 3274, 3275, 3276, 3277, 3278, 3279, 3280, 3281, 3282, 3283, 3284, 3285, 3286, 3287, 3288, 3289, 3290, 3291, 3292, 3293, 3294, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3305, 3306, 3307, 3308, 3309, 3310, 3311, 3312, 3313, 3314, 3315, 3316, 3317, 3318, 3319, 3320, 3321, 3322, 3323, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3342, 3343, 3344, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3352, 3353, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3362, 3363, 3364, 3365, 3366, 3367, 3368, 3369, 3370, 3371, 3372, 3373, 3374, 3375, 3376, 3377, 3378, 3379, 3380, 3381, 3382, 3383, 3384, 3385, 3386, 3387, 3388, 3389, 3390, 3391, 3392, 3393, 3394, 3395, 3396, 3397, 3398, 3399, 3400, 3401, 3402, 3403, 3404, 3405, 3406, 3407, 3408, 3409, 3410, 3411, 3412, 3413, 3414, 3415, 3416, 3417, 3418, 3419, 3420, 3421, 3422, 3423, 3424, 3425, 3426, 3427, 3428, 3429, 3430, 3431, 3432, 3433, 3434, 3435, 3436, 3437, 3438, 3439, 3440, 3441, 3442, 3443, 3444, 3445, 3446, 3447, 3448, 3449, 3450, 3451, 3452, 3453, 3454, 3455, 3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465, 3466, 3467, 3468, 3469, 3470, 3471, 3472, 3473, 3474, 3475, 3476, 3477, 3478, 3479, 3480, 3481, 3482, 3483, 3484, 3485, 3486, 3487, 3488, 3489, 3490, 3491, 3492, 3493, 3494, 3495, 3496, 3497, 3498, 3499, 3500, 3501, 3502, 3503, 3504, 3505, 3506, 3507, 3508, 3509, 3510, 3511, 3512, 3513, 3514, 3515
-… (cut: the program printed 15777852 characters)
+… (cut: the program printed 20046 characters)
 ```
 
 ### 9.29 `clone` is shallow, and a lazy clone shares its source
@@ -7281,7 +7304,7 @@ True 4
 
 ### 11.17 `reverse` of a fractional range counts down from its end
 
-`src/chapters/11-ranges.md:586`
+`src/chapters/11-ranges.md:587`
 
 ```raku
 say (1^..5).reverse.raku;
@@ -7319,7 +7342,7 @@ Raku++:
 
 ### 11.18 `first(:end, :kv)` counts its index from the end
 
-`src/chapters/11-ranges.md:620`
+`src/chapters/11-ranges.md:623`
 
 ```raku
 my $r = 1..10;
@@ -7353,7 +7376,7 @@ Raku++:
 
 ### 11.19 A loop over a range gets values, not containers
 
-`src/chapters/11-ranges.md:651`
+`src/chapters/11-ranges.md:654`
 
 ```raku
 try { for 1..3 { $_++ } };
@@ -7392,7 +7415,7 @@ Nil
 
 ### 11.20 A range in a list is one element
 
-`src/chapters/11-ranges.md:681`
+`src/chapters/11-ranges.md:684`
 
 ```raku
 for 1..3, 7..8 { say .raku }
@@ -7430,7 +7453,7 @@ Array
 
 ### 11.21 Indexing a range computes the element
 
-`src/chapters/11-ranges.md:713`
+`src/chapters/11-ranges.md:716`
 
 ```raku
 my $r = 1..5;
@@ -7471,7 +7494,7 @@ X::Cannot::Lazy
 
 ### 11.21 Indexing a range computes the element
 
-`src/chapters/11-ranges.md:738`
+`src/chapters/11-ranges.md:741`
 
 ```raku
 my $r = 1..5;
@@ -7495,7 +7518,7 @@ True True
 
 ### 11.22 A range subscript selects its elements, and cannot go below zero
 
-`src/chapters/11-ranges.md:760`
+`src/chapters/11-ranges.md:763`
 
 ```raku
 my @l = <a b c d e>;
@@ -7536,7 +7559,7 @@ Nil
 
 ### 11.23 A Range is immutable
 
-`src/chapters/11-ranges.md:795`
+`src/chapters/11-ranges.md:798`
 
 ```raku
 my $r = 1..5;
@@ -7580,7 +7603,7 @@ X::Assignment::RO
 
 ### 11.28 Anything comparable can be a topic, and a Date range walks days
 
-`src/chapters/11-ranges.md:963`
+`src/chapters/11-ranges.md:966`
 
 ```raku
 say <42+0i> ~~ 10..50;
@@ -7621,7 +7644,7 @@ Nil
 
 ### 11.29 `in-range` returns True or throws
 
-`src/chapters/11-ranges.md:993`
+`src/chapters/11-ranges.md:996`
 
 ```raku
 say (1..5).in-range(3);
@@ -7655,7 +7678,7 @@ Value out of range. Is: d, should be in "a".."c"
 
 ### 11.30 Arithmetic with a number moves the endpoints, not the elements
 
-`src/chapters/11-ranges.md:1019`
+`src/chapters/11-ranges.md:1022`
 
 ```raku
 my $r = 1..^10;
@@ -7695,7 +7718,7 @@ Range
 
 ### 11.30 Arithmetic with a number moves the endpoints, not the elements
 
-`src/chapters/11-ranges.md:1044`
+`src/chapters/11-ranges.md:1047`
 
 ```raku
 my $r = 1..10;
@@ -7734,7 +7757,7 @@ Actually thrown at:
 
 ### 11.31 A string range plus a number gets Failure endpoints
 
-`src/chapters/11-ranges.md:1065`
+`src/chapters/11-ranges.md:1068`
 
 ```raku
 my $letters = "a".."c";
@@ -7781,7 +7804,7 @@ No such method 'exception' for invocant of type 'Int'
 
 ### 11.33 `sum` uses a formula, and answers an Int for a Num range
 
-`src/chapters/11-ranges.md:1142`
+`src/chapters/11-ranges.md:1145`
 
 ```raku
 say (1..10**20).sum;
@@ -7819,7 +7842,7 @@ Inf -Inf NaN
 
 ### 11.36 `pick` and `roll` choose without building the list
 
-`src/chapters/11-ranges.md:1235`
+`src/chapters/11-ranges.md:1238`
 
 ```raku
 say (1..100).pick.^name;
@@ -7854,13 +7877,13 @@ Seq
 100
 3
 Nil ()
-8126340070998386936 8449506740605040036
+5301748409930758661 4195207722198717274
 (1.5, 2.5, 3.5).Seq
 ```
 
 ### 11.37 After `srand`, the first `pick` from a range differs
 
-`src/chapters/11-ranges.md:1271`
+`src/chapters/11-ranges.md:1274`
 
 ```raku
 my @draws;
@@ -7892,7 +7915,7 @@ True
 
 ### 11.39 A Range converts to lists and hashes; its Capture has six names
 
-`src/chapters/11-ranges.md:1322`
+`src/chapters/11-ranges.md:1325`
 
 ```raku
 my $r = 1..4;
@@ -7935,7 +7958,7 @@ No such method 'Hash' for invocant of type 'Range'
 
 ### 11.39 A Range converts to lists and hashes; its Capture has six names
 
-`src/chapters/11-ranges.md:1345`
+`src/chapters/11-ranges.md:1348`
 
 ```raku
 say (1..^3).Capture.raku;
@@ -7964,7 +7987,7 @@ Nil
 
 ### 11.40 String methods see the range's text
 
-`src/chapters/11-ranges.md:1368`
+`src/chapters/11-ranges.md:1371`
 
 ```raku
 my $r = 1..3;
@@ -8009,7 +8032,7 @@ True
 
 ### 11.41 Each numeric type has a Range, and a native type its exact bounds
 
-`src/chapters/11-ranges.md:1404`
+`src/chapters/11-ranges.md:1407`
 
 ```raku
 say Int.Range.raku, " ", UInt.Range.raku;
@@ -8051,7 +8074,7 @@ X::Method::NotFound
 
 ### 11.42 The Range type object is a list of one undefined element
 
-`src/chapters/11-ranges.md:1435`
+`src/chapters/11-ranges.md:1438`
 
 ```raku
 say Range.elems;
@@ -8348,7 +8371,7 @@ Raku++:
 
 ### 12.8 A `none` junction as the endpoint makes the sequence endless
 
-`src/chapters/12-sequences.md:317`
+`src/chapters/12-sequences.md:318`
 
 ```raku
 say (1 ... none(1, 2)).is-lazy;
@@ -8377,7 +8400,7 @@ True
 
 ### 12.11 Only the first seed is emitted as written
 
-`src/chapters/12-sequences.md:394`
+`src/chapters/12-sequences.md:395`
 
 ```raku
 say (1, 1.5 ... 3).raku;
@@ -8412,7 +8435,7 @@ Raku++:
 
 ### 12.12 Only the last three seeds decide the step
 
-`src/chapters/12-sequences.md:420`
+`src/chapters/12-sequences.md:421`
 
 ```raku
 say (1, 5, 2, 4, 6 ... 12).raku;
@@ -8439,7 +8462,7 @@ Raku++:
 
 ### 12.13 A failed deduction throws when the sequence is read, not when it is built
 
-`src/chapters/12-sequences.md:443`
+`src/chapters/12-sequences.md:444`
 
 ```raku
 my $s = (1, 2, 4, 7 ... *);
@@ -8481,7 +8504,7 @@ No such method 'from' for invocant of type 'X::Cannot::Lazy'
 
 ### 12.13 A failed deduction throws when the sequence is read, not when it is built
 
-`src/chapters/12-sequences.md:464`
+`src/chapters/12-sequences.md:465`
 
 ```raku
 for (1, 2, 4, 7 ... *) { say $_ }
@@ -8521,7 +8544,7 @@ Unable to deduce arithmetic or geometric sequence from: 1,2,4,7
 
 ### 12.14 Seeds already beyond the endpoint produce nothing at all
 
-`src/chapters/12-sequences.md:488`
+`src/chapters/12-sequences.md:489`
 
 ```raku
 say (5, 6 ... 3).raku;
@@ -8552,12 +8575,12 @@ Raku++:
 ().Seq
 ().Seq
 (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
-… (cut: the program printed 3000062 characters)
+… (cut: the program printed 20046 characters)
 ```
 
 ### 12.16 A geometric sequence of negative numbers misses its endpoint
 
-`src/chapters/12-sequences.md:544`
+`src/chapters/12-sequences.md:547`
 
 ```raku
 say (-1, -3 ... -9).raku;
@@ -8587,7 +8610,7 @@ Raku++ (exit 142):
 
 ### 12.17 A code object among the seeds is the generator, and ends them
 
-`src/chapters/12-sequences.md:568`
+`src/chapters/12-sequences.md:571`
 
 ```raku
 say (1, { $_ + 10 }, 99, 98 ... 31).raku;
@@ -8616,7 +8639,7 @@ Raku++:
 
 ### 12.21 A code endpoint receives as many values as it has parameters
 
-`src/chapters/12-sequences.md:666`
+`src/chapters/12-sequences.md:669`
 
 ```raku
 say (1, * * 2 ... * > 10).raku;
@@ -8651,7 +8674,7 @@ Raku++:
 
 ### 12.22 `last` inside a generator or an endpoint ends the sequence
 
-`src/chapters/12-sequences.md:704`
+`src/chapters/12-sequences.md:707`
 
 ```raku
 say (1, { last if $_ > 3; $_ + 1 } ... *).eager.raku;
@@ -8686,7 +8709,7 @@ Cannot eager a lazy list
 
 ### 12.24 The endpoint is tested once per call of the generator
 
-`src/chapters/12-sequences.md:755`
+`src/chapters/12-sequences.md:758`
 
 ```raku
 say (1, { slip 2, 3 } ... 3).head(6).raku;
@@ -8711,12 +8734,12 @@ Raku++:
 ```
 (1, 2, 3).Seq
 (1, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5,
-… (cut: the program printed 6000067 characters)
+… (cut: the program printed 20046 characters)
 ```
 
 ### 12.25 A sequence fails where it is read, which may be outside the `try`
 
-`src/chapters/12-sequences.md:785`
+`src/chapters/12-sequences.md:787`
 
 ```raku
 my $s = try (1, 2, 4, 7 ... *);
@@ -8742,7 +8765,7 @@ Seq
 
 ### 12.25 A sequence fails where it is read, which may be outside the `try`
 
-`src/chapters/12-sequences.md:801`
+`src/chapters/12-sequences.md:803`
 
 ```raku
 my @l = ('c', 'b', 'a' ... *).head(4);
@@ -8774,7 +8797,7 @@ No such method 'exception' for invocant of type 'Any'
 
 ### 12.28 `...^` keeps the end of a string sequence of equal lengths
 
-`src/chapters/12-sequences.md:875`
+`src/chapters/12-sequences.md:878`
 
 ```raku
 say ('a' ...^ 'e').raku;
@@ -8803,7 +8826,7 @@ Raku++:
 
 ### 12.29 Strings of different lengths walk in string order
 
-`src/chapters/12-sequences.md:899`
+`src/chapters/12-sequences.md:902`
 
 ```raku
 say ('a' ... 'zz').elems;
@@ -8838,7 +8861,7 @@ Raku++:
 
 ### 12.31 Any type with `succ` and `pred` can be walked
 
-`src/chapters/12-sequences.md:964`
+`src/chapters/12-sequences.md:967`
 
 ```raku
 say Date.new('2026-01-30') ... Date.new('2026-02-02');
@@ -8879,7 +8902,7 @@ No such method 'day-of-week' for invocant of type 'Num'
 
 ### 12.33 A chain always ends with its last endpoint
 
-`src/chapters/12-sequences.md:1033`
+`src/chapters/12-sequences.md:1036`
 
 ```raku
 say (1 ... 7.5).raku;
@@ -8911,7 +8934,7 @@ Raku++:
 
 ### 12.34 `...^` cannot be chained
 
-`src/chapters/12-sequences.md:1055`
+`src/chapters/12-sequences.md:1058`
 
 ```raku
 say 1 ...^ 5 ...^ 1;
@@ -9306,7 +9329,7 @@ False False
 
 ### 13.16 `.Bag` of a Mix truncates the Mix itself
 
-`src/chapters/13-sets.md:466`
+`src/chapters/13-sets.md:467`
 
 ```raku
 my $m = ("a" => 2.7, "b" => 0.5).Mix;
@@ -9339,7 +9362,7 @@ Mix(a(2.7) b(0.5))
 
 ### 13.17 `Set[Str]` checks its elements and keeps its name
 
-`src/chapters/13-sets.md:492`
+`src/chapters/13-sets.md:493`
 
 ```raku
 my $s = Set[Str].new(<a>);
@@ -9380,7 +9403,7 @@ Type check failed for Set key; expected Int but got 3
 
 ### 13.17 `Set[Str]` checks its elements and keeps its name
 
-`src/chapters/13-sets.md:513`
+`src/chapters/13-sets.md:514`
 
 ```raku
 say Set[Int].new(1) === set(1);
@@ -9416,7 +9439,7 @@ Nil
 
 ### 13.18 `is Set` makes the variable a Set; `is SetHash` makes it assignable
 
-`src/chapters/13-sets.md:560`
+`src/chapters/13-sets.md:561`
 
 ```raku
 say BagHash.new.STORE(<a b c>, (1, 2, 4));
@@ -9443,7 +9466,7 @@ Nil
 
 ### 13.19 `my %h is Set;` without a value is unusable
 
-`src/chapters/13-sets.md:581`
+`src/chapters/13-sets.md:583`
 
 ```raku
 my %h is Set;
@@ -9481,7 +9504,7 @@ SetHash(a)
 
 ### 13.22 A Mix's total is exact, may be negative, and has no `.kxxv`
 
-`src/chapters/13-sets.md:665`
+`src/chapters/13-sets.md:667`
 
 ```raku
 my $m = ("a" => 1.5, "b" => -2, "c" => 1/3).Mix;
@@ -9528,7 +9551,7 @@ No such method 'kxxv' for invocant of type 'Mix'
 
 ### 13.23 `say` sorts the elements; `.Str` and `.raku` do not
 
-`src/chapters/13-sets.md:693`
+`src/chapters/13-sets.md:695`
 
 ```raku
 say set(1, 2, 10);
@@ -9563,7 +9586,7 @@ Mix(a(0.333333))
 
 ### 13.24 `.hash` keeps the elements as objects; `.Map` makes them strings
 
-`src/chapters/13-sets.md:740`
+`src/chapters/13-sets.md:742`
 
 ```raku
 my $s = set(1, "1");
@@ -9601,7 +9624,7 @@ Nil
 
 ### 13.25 Set, Bag and Mix are values; the hash forms are objects
 
-`src/chapters/13-sets.md:773`
+`src/chapters/13-sets.md:775`
 
 ```raku
 say set(<a b>) === set(<b a>);
@@ -9643,7 +9666,7 @@ False
 
 ### 13.27 Smartmatching against a Set converts the left side to a Set
 
-`src/chapters/13-sets.md:837`
+`src/chapters/13-sets.md:839`
 
 ```raku
 say <b a b> ~~ set(<a b>);
@@ -9684,7 +9707,7 @@ True
 
 ### 13.27 Smartmatching against a Set converts the left side to a Set
 
-`src/chapters/13-sets.md:863`
+`src/chapters/13-sets.md:865`
 
 ```raku
 say set(<a>) ~~ Setty;
@@ -9730,7 +9753,7 @@ No such method 'roles' for invocant of type 'Set'
 
 ### 13.28 A Bag in a `$` variable is one item; a bare Bag gives its Pairs
 
-`src/chapters/13-sets.md:913`
+`src/chapters/13-sets.md:915`
 
 ```raku
 my $b = bag <b a a>;
@@ -9771,7 +9794,7 @@ X::Multi::NoMatch
 
 ### 13.29 In numeric context a QuantHash is its total, and it is not Cool
 
-`src/chapters/13-sets.md:944`
+`src/chapters/13-sets.md:946`
 
 ```raku
 say set(<a b>) + 1;
@@ -9813,7 +9836,7 @@ Nil
 
 ### 13.30 The type object `Set` counts as one element of itself
 
-`src/chapters/13-sets.md:975`
+`src/chapters/13-sets.md:977`
 
 ```raku
 say Set.elems;
@@ -9856,7 +9879,7 @@ Set
 
 ### 13.31 A subscript on a Set answers a Bool, and assigning to it dies
 
-`src/chapters/13-sets.md:1028`
+`src/chapters/13-sets.md:1030`
 
 ```raku
 my $s = set <a b>;
@@ -9891,7 +9914,7 @@ X::Assignment::RO
 
 ### 13.32 Assigning to a SetHash key stores its truth
 
-`src/chapters/13-sets.md:1055`
+`src/chapters/13-sets.md:1057`
 
 ```raku
 my $s = SetHash.new(<a b>);
@@ -9930,7 +9953,7 @@ Bool::True Any
 
 ### 13.32 Assigning to a SetHash key stores its truth
 
-`src/chapters/13-sets.md:1080`
+`src/chapters/13-sets.md:1082`
 
 ```raku
 my $s = SetHash.new;
@@ -9965,7 +9988,7 @@ Nil
 
 ### 13.33 `.set` of a Set adds its Pairs, not its elements
 
-`src/chapters/13-sets.md:1107`
+`src/chapters/13-sets.md:1109`
 
 ```raku
 my $s = SetHash.new;
@@ -9997,7 +10020,7 @@ Raku++:
 
 ### 13.34 A BagHash truncates weights, and zero or less removes the key
 
-`src/chapters/13-sets.md:1132`
+`src/chapters/13-sets.md:1134`
 
 ```raku
 my $b = BagHash.new(<a a b>);
@@ -10037,7 +10060,7 @@ X::Str::Numeric
 
 ### 13.34 A BagHash truncates weights, and zero or less removes the key
 
-`src/chapters/13-sets.md:1157`
+`src/chapters/13-sets.md:1159`
 
 ```raku
 my $b = BagHash.new;
@@ -10065,7 +10088,7 @@ BagHash()
 
 ### 13.36 An undefined SetHash variable comes to life when used
 
-`src/chapters/13-sets.md:1226`
+`src/chapters/13-sets.md:1228`
 
 ```raku
 my SetHash $s;
@@ -10102,7 +10125,7 @@ X::Assignment::RO False
 
 ### 13.37 The values of a hash form are live
 
-`src/chapters/13-sets.md:1253`
+`src/chapters/13-sets.md:1255`
 
 ```raku
 my $b = BagHash.new(<a a a b>);
@@ -10133,7 +10156,7 @@ SetHash(a b)
 
 ### 13.37 The values of a hash form are live
 
-`src/chapters/13-sets.md:1273`
+`src/chapters/13-sets.md:1275`
 
 ```raku
 my $b = BagHash.new(<a a>);
@@ -10166,7 +10189,7 @@ Nil
 
 ### 13.37 The values of a hash form are live
 
-`src/chapters/13-sets.md:1296`
+`src/chapters/13-sets.md:1298`
 
 ```raku
 my $b = BagHash.new(<a a>);
@@ -10193,7 +10216,7 @@ Raku++:
 
 ### 13.38 `>>` maps the weights, and truncates them on a Mix
 
-`src/chapters/13-sets.md:1320`
+`src/chapters/13-sets.md:1322`
 
 ```raku
 my $d = <a a b>.BagHash;
@@ -10230,7 +10253,7 @@ MixHash(a(2.5) b(-1.5))
 
 ### 13.39 `pick` draws without replacement, `roll` with
 
-`src/chapters/13-sets.md:1375`
+`src/chapters/13-sets.md:1377`
 
 ```raku
 my $s = set <a b c>;
@@ -10264,7 +10287,7 @@ X::AdHoc
 
 ### 13.40 `grab` needs a hash form, and a Mix cannot `pick`
 
-`src/chapters/13-sets.md:1401`
+`src/chapters/13-sets.md:1403`
 
 ```raku
 try { set(<a>).grab };
@@ -10308,7 +10331,7 @@ No such method 'method' for invocant of type 'X::Immutable'
 
 ### 13.42 `grab(*)` removes each element only as it is read
 
-`src/chapters/13-sets.md:1459`
+`src/chapters/13-sets.md:1461`
 
 ```raku
 my $b = BagHash.new(<a a a b>);
@@ -10337,7 +10360,7 @@ Raku++:
 
 ### 13.42 `grab(*)` removes each element only as it is read
 
-`src/chapters/13-sets.md:1477`
+`src/chapters/13-sets.md:1479`
 
 ```raku
 my $b = BagHash.new(<a a a>);
@@ -10368,7 +10391,7 @@ Nil
 
 ### 13.44 `∈` sees a string as one element and a Hash by its values
 
-`src/chapters/13-sets.md:1528`
+`src/chapters/13-sets.md:1530`
 
 ```raku
 say "a" ∈ "ab";
@@ -10412,7 +10435,7 @@ True
 
 ### 13.44 `∈` sees a string as one element and a Hash by its values
 
-`src/chapters/13-sets.md:1554`
+`src/chapters/13-sets.md:1556`
 
 ```raku
 say 1 ∈ (1, 2), " ", 3 ∉ (1, 2);
@@ -10452,7 +10475,7 @@ stderr:
 
 ### 13.45 `∪` takes the larger weight; the left operand decides mutability
 
-`src/chapters/13-sets.md:1607`
+`src/chapters/13-sets.md:1609`
 
 ```raku
 say (SetHash.new(<a>) ∪ bag(<b>)).^name;
@@ -10484,7 +10507,7 @@ False
 
 ### 13.46 `∩` takes the smaller weight
 
-`src/chapters/13-sets.md:1631`
+`src/chapters/13-sets.md:1633`
 
 ```raku
 say set(<a b c>) (&) set(<b c d>);
@@ -10522,7 +10545,7 @@ False
 
 ### 13.47 `∩` of two Hashes ignores false values
 
-`src/chapters/13-sets.md:1659`
+`src/chapters/13-sets.md:1662`
 
 ```raku
 say { a => 1, b => 0 } ∩ { a => 1, b => 1 };
@@ -10557,7 +10580,7 @@ False
 
 ### 13.49 A Hash on the right of a Mix difference counts as a Set
 
-`src/chapters/13-sets.md:1711`
+`src/chapters/13-sets.md:1714`
 
 ```raku
 say ("a" => 2.5).Mix (-) { a => 2 };
@@ -10589,7 +10612,7 @@ Bag(a)
 
 ### 13.51 `⊖` of three operands is not two `⊖` in a row
 
-`src/chapters/13-sets.md:1756`
+`src/chapters/13-sets.md:1759`
 
 ```raku
 say <a> (^) <a> (^) <a>;
@@ -10624,7 +10647,7 @@ Bag()
 
 ### 13.52 `⊎` adds weights and `⊍` multiplies them; neither makes a Set
 
-`src/chapters/13-sets.md:1784`
+`src/chapters/13-sets.md:1787`
 
 ```raku
 say set(<a b>) (+) set(<b c>);
@@ -10665,7 +10688,7 @@ Bag(Nil(2))
 
 ### 13.52 `⊎` adds weights and `⊍` multiplies them; neither makes a Set
 
-`src/chapters/13-sets.md:1808`
+`src/chapters/13-sets.md:1811`
 
 ```raku
 say bag(<a a b>) (.) bag(<a a a c>);
@@ -10703,7 +10726,7 @@ BagHash BagHash
 
 ### 13.53 A reduction with no operands gives an empty Set or Bag
 
-`src/chapters/13-sets.md:1834`
+`src/chapters/13-sets.md:1837`
 
 ```raku
 say [(|)]();
@@ -10744,7 +10767,7 @@ SetHash
 
 ### 13.53 A reduction with no operands gives an empty Set or Bag
 
-`src/chapters/13-sets.md:1860`
+`src/chapters/13-sets.md:1863`
 
 ```raku
 say [(|)] <a b>;
@@ -10773,7 +10796,7 @@ SetHash
 
 ### 13.54 `⊆` compares weights, and a negative weight is less than none
 
-`src/chapters/13-sets.md:1909`
+`src/chapters/13-sets.md:1912`
 
 ```raku
 say ("a" => -1).Mix ⊆ mix();
@@ -10813,7 +10836,7 @@ stderr:
 
 ### 13.55 `(<+)` and `≼` were removed in 6.d
 
-`src/chapters/13-sets.md:1934`
+`src/chapters/13-sets.md:1937`
 
 ```raku
 try { bag(<a>) (<+) bag(<a a>) };
@@ -10841,7 +10864,7 @@ Sub
 
 ### 13.56 `≡` compares in the richer type of its two operands
 
-`src/chapters/13-sets.md:1977`
+`src/chapters/13-sets.md:1980`
 
 ```raku
 say set(<a>) (==) bag(<a>);
@@ -10879,7 +10902,7 @@ True
 
 ### 13.57 Two Hashes compare their sizes before their truth
 
-`src/chapters/13-sets.md:2004`
+`src/chapters/13-sets.md:2007`
 
 ```raku
 say { a => 0 } (==) set();
@@ -10914,7 +10937,7 @@ True
 
 ### 13.58 Set operators sit on the junction levels, and different ones do not mix
 
-`src/chapters/13-sets.md:2029`
+`src/chapters/13-sets.md:2032`
 
 ```raku
 say 1 + 2 (|) 4;
@@ -10946,7 +10969,7 @@ Junction
 
 ### 13.58 Set operators sit on the junction levels, and different ones do not mix
 
-`src/chapters/13-sets.md:2049`
+`src/chapters/13-sets.md:2052`
 
 ```raku
 say <a> (|) <b> (-) <b>;
@@ -10978,7 +11001,7 @@ Set(a)
 
 ### 13.59 The Boolean set operators chain like comparisons
 
-`src/chapters/13-sets.md:2072`
+`src/chapters/13-sets.md:2075`
 
 ```raku
 say 1 (elem) (1, 2) == True;
@@ -11007,7 +11030,7 @@ False
 
 ### 13.60 `∪=` builds a new collection instead of changing the old one
 
-`src/chapters/13-sets.md:2098`
+`src/chapters/13-sets.md:2101`
 
 ```raku
 my $s = set(<a>);
@@ -11041,7 +11064,7 @@ Nil
 
 ### 13.61 A Junction operand makes four operators hang
 
-`src/chapters/13-sets.md:2124`
+`src/chapters/13-sets.md:2127`
 
 ```raku
 say (1 (elem) any(1, 2)).^name;
@@ -11080,7 +11103,7 @@ Nil
 
 ### 13.62 A Failure operand throws, even one already handled
 
-`src/chapters/13-sets.md:2165`
+`src/chapters/13-sets.md:2168`
 
 ```raku
 my $f = "x".Int;
@@ -11353,7 +11376,7 @@ Int
 
 ### 14.7 `.bytes` of a `Blob[int]` counts one byte per element
 
-`src/chapters/14-buffers.md:215`
+`src/chapters/14-buffers.md:217`
 
 ```raku
 say buf8.new(1, 2).bytes;
@@ -11388,7 +11411,7 @@ Blob[int8]:0x<01 02>
 
 ### 14.8 `allocate` fills with a value or repeats a pattern
 
-`src/chapters/14-buffers.md:265`
+`src/chapters/14-buffers.md:267`
 
 ```raku
 my $f = Blob.allocate(2, "x");
@@ -11431,7 +11454,7 @@ Cannot use a Str as a fill value in Blob.allocate
 
 ### 14.10 `say` prints a buffer in hex, and `~` refuses it
 
-`src/chapters/14-buffers.md:304`
+`src/chapters/14-buffers.md:307`
 
 ```raku
 say Blob.new(1, 2, 255);
@@ -11469,7 +11492,7 @@ Blob:0x<>
 
 ### 14.10 `say` prints a buffer in hex, and `~` refuses it
 
-`src/chapters/14-buffers.md:328`
+`src/chapters/14-buffers.md:331`
 
 ```raku
 my $b = Blob.new(97);
@@ -11508,7 +11531,7 @@ a
 
 ### 14.13 `eqv` wants the same type, `eq` compares values, `==` counts
 
-`src/chapters/14-buffers.md:420`
+`src/chapters/14-buffers.md:423`
 
 ```raku
 say Blob.new(1, 2) eqv Blob.new(1, 2);
@@ -11550,7 +11573,7 @@ Nil
 
 ### 14.13 `eqv` wants the same type, `eq` compares values, `==` counts
 
-`src/chapters/14-buffers.md:446`
+`src/chapters/14-buffers.md:449`
 
 ```raku
 my %h;
@@ -11576,7 +11599,7 @@ Nil
 
 ### 14.14 `cmp` compares lengths before contents
 
-`src/chapters/14-buffers.md:467`
+`src/chapters/14-buffers.md:470`
 
 ```raku
 say Blob.new(1, 2, 4) cmp Blob.new(1, 2, 3);
@@ -11611,7 +11634,7 @@ Blob.new(9)
 
 ### 14.14 `cmp` compares lengths before contents
 
-`src/chapters/14-buffers.md:488`
+`src/chapters/14-buffers.md:491`
 
 ```raku
 say Blob.new(1) eq blob8.new(1);
@@ -11650,7 +11673,7 @@ Less
 
 ### 14.15 A buffer is its number of elements in numeric context
 
-`src/chapters/14-buffers.md:517`
+`src/chapters/14-buffers.md:520`
 
 ```raku
 say ?Blob.new;
@@ -11701,7 +11724,7 @@ Nil
 
 ### 14.16 Smartmatching a buffer compares its elements, across types
 
-`src/chapters/14-buffers.md:556`
+`src/chapters/14-buffers.md:559`
 
 ```raku
 say Blob.new(1, 2) ~~ Buf.new(1, 2);
@@ -11742,7 +11765,7 @@ False
 
 ### 14.16 Smartmatching a buffer compares its elements, across types
 
-`src/chapters/14-buffers.md:581`
+`src/chapters/14-buffers.md:584`
 
 ```raku
 say Blob.new(1) ~~ Blob;
@@ -11774,7 +11797,7 @@ True
 
 ### 14.17 A regex against a buffer matches one element's digits
 
-`src/chapters/14-buffers.md:605`
+`src/chapters/14-buffers.md:608`
 
 ```raku
 say (Blob.new(10, 11) ~~ /.+/).Str;
@@ -11811,7 +11834,7 @@ False
 
 ### 14.18 A Blob refuses every change, each with its own exception
 
-`src/chapters/14-buffers.md:633`
+`src/chapters/14-buffers.md:636`
 
 ```raku
 my $b = Blob.new(1, 2, 3);
@@ -11863,7 +11886,7 @@ No such method 'exception' for invocant of type 'Blob'
 
 ### 14.19 A Blob index past the end is a Failure; a slice past the end throws
 
-`src/chapters/14-buffers.md:672`
+`src/chapters/14-buffers.md:675`
 
 ```raku
 my $b = Blob.new(5, 6);
@@ -11908,7 +11931,7 @@ No such method 'exception' for invocant of type 'Any'
 
 ### 14.20 A Buf reads zeros past its end, and grows when written there
 
-`src/chapters/14-buffers.md:702`
+`src/chapters/14-buffers.md:705`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -11951,7 +11974,7 @@ Buf.new(0,255,1,0,0,7)
 
 ### 14.20 A Buf reads zeros past its end, and grows when written there
 
-`src/chapters/14-buffers.md:730`
+`src/chapters/14-buffers.md:733`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -11995,7 +12018,7 @@ Index out of range. Is: -1, should be in 0..^Inf
 
 ### 14.21 Every element view of a Buf writes back into it
 
-`src/chapters/14-buffers.md:761`
+`src/chapters/14-buffers.md:764`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12036,7 +12059,7 @@ Target is not assignable
 
 ### 14.21 Every element view of a Buf writes back into it
 
-`src/chapters/14-buffers.md:788`
+`src/chapters/14-buffers.md:791`
 
 ```raku
 my $b = Buf.new(1, 2);
@@ -12072,7 +12095,7 @@ Buf.new(1,2)
 
 ### 14.22 `push` takes values; `append` also spreads a list
 
-`src/chapters/14-buffers.md:817`
+`src/chapters/14-buffers.md:820`
 
 ```raku
 my $b = Buf.new(1);
@@ -12119,7 +12142,7 @@ No such method 'exception' for invocant of type 'Buf'
 
 ### 14.22 `push` takes values; `append` also spreads a list
 
-`src/chapters/14-buffers.md:845`
+`src/chapters/14-buffers.md:848`
 
 ```raku
 my $e = Buf.new;
@@ -12163,7 +12186,7 @@ Cannot pop from an empty Buf
 
 ### 14.23 A bad value among several grows the Buf, then throws
 
-`src/chapters/14-buffers.md:877`
+`src/chapters/14-buffers.md:882`
 
 ```raku
 my $b = Buf.new(7, 7);
@@ -12207,7 +12230,7 @@ Type check failed in push to Buf; expected uint8 but got Str ("x")
 
 ### 14.24 `splice` removes, inserts, and pads past the end
 
-`src/chapters/14-buffers.md:938`
+`src/chapters/14-buffers.md:943`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12246,7 +12269,7 @@ Buf.new(1,2,9)
 
 ### 14.24 `splice` removes, inserts, and pads past the end
 
-`src/chapters/14-buffers.md:963`
+`src/chapters/14-buffers.md:968`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12285,7 +12308,7 @@ No such method 'exception' for invocant of type 'Buf'
 
 ### 14.25 A failed `splice` still changes the Buf
 
-`src/chapters/14-buffers.md:992`
+`src/chapters/14-buffers.md:998`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12328,7 +12351,7 @@ No such method 'exception' for invocant of type 'Buf'
 
 ### 14.26 `is buf8` makes an array variable a Buf
 
-`src/chapters/14-buffers.md:1029`
+`src/chapters/14-buffers.md:1035`
 
 ```raku
 my @a is buf8 = 1, 2, 300;
@@ -12369,7 +12392,7 @@ Nil
 
 ### 14.26 `is buf8` makes an array variable a Buf
 
-`src/chapters/14-buffers.md:1057`
+`src/chapters/14-buffers.md:1063`
 
 ```raku
 my Blob $x = "hi".encode;
@@ -12406,7 +12429,7 @@ Nil
 
 ### 14.27 `subbuf` takes a start and a length, a range, or code
 
-`src/chapters/14-buffers.md:1117`
+`src/chapters/14-buffers.md:1123`
 
 ```raku
 my $b = Blob.new(^10);
@@ -12454,7 +12477,7 @@ From argument to subbuf out of range. Is: 11, should be in 0..10
 
 ### 14.28 `subbuf` with a string start and a length never returns
 
-`src/chapters/14-buffers.md:1149`
+`src/chapters/14-buffers.md:1155`
 
 ```raku
 try { Blob.new(1, 2).subbuf("1") };
@@ -12483,7 +12506,7 @@ Nil
 
 ### 14.29 `subbuf-rw` replaces a stretch of a Buf, and reads back the old one
 
-`src/chapters/14-buffers.md:1181`
+`src/chapters/14-buffers.md:1187`
 
 ```raku
 my $b = Buf.new(0..5);
@@ -12527,7 +12550,7 @@ Undefined routine 'subbuf-rw'
 
 ### 14.29 `subbuf-rw` replaces a stretch of a Buf, and reads back the old one
 
-`src/chapters/14-buffers.md:1208`
+`src/chapters/14-buffers.md:1214`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12561,7 +12584,7 @@ Buf.new(8,44,1,2,3,1)
 
 ### 14.30 `reallocate` sets the length, padding with zeros
 
-`src/chapters/14-buffers.md:1233`
+`src/chapters/14-buffers.md:1239`
 
 ```raku
 my $b = Buf.new(1, 2, 3);
@@ -12608,7 +12631,7 @@ Internal error: basic_string
 
 ### 14.31 `~` keeps the type only when both sides share it
 
-`src/chapters/14-buffers.md:1266`
+`src/chapters/14-buffers.md:1272`
 
 ```raku
 say (Blob.new(1) ~ Blob.new(2)).raku;
@@ -12648,7 +12671,7 @@ Buf.new(1)
 
 ### 14.31 `~` keeps the type only when both sides share it
 
-`src/chapters/14-buffers.md:1291`
+`src/chapters/14-buffers.md:1297`
 
 ```raku
 say (utf8.new(97) ~ "b").raku;
@@ -12690,7 +12713,7 @@ Buf.new(1,2)
 
 ### 14.32 `X` takes a buffer as one item; `Z` walks through it
 
-`src/chapters/14-buffers.md:1324`
+`src/chapters/14-buffers.md:1330`
 
 ```raku
 say (Blob.new(1, 2) X 3).raku;
@@ -12729,7 +12752,7 @@ Raku++:
 
 ### 14.32 `X` takes a buffer as one item; `Z` walks through it
 
-`src/chapters/14-buffers.md:1350`
+`src/chapters/14-buffers.md:1356`
 
 ```raku
 say [+] Blob.new(10, 20, 30);
@@ -12766,7 +12789,7 @@ Nil
 
 ### 14.33 `~&`, `~|` and `~^` combine buffers element by element
 
-`src/chapters/14-buffers.md:1378`
+`src/chapters/14-buffers.md:1384`
 
 ```raku
 say (Blob.new(0xF0, 0x0F) ~& Blob.new(0xFF, 0x00)).raku;
@@ -12813,7 +12836,7 @@ Buf.new(3)
 
 ### 14.33 `~&`, `~|` and `~^` combine buffers element by element
 
-`src/chapters/14-buffers.md:1410`
+`src/chapters/14-buffers.md:1416`
 
 ```raku
 say ("foo".encode ~^ "bar".encode).raku;
@@ -12852,7 +12875,7 @@ Stringification of a Blob is not done with 'Stringy', which the '~&' operator us
 
 ### 14.34 `~&` and `~|` die on signed buffers of unequal length
 
-`src/chapters/14-buffers.md:1436`
+`src/chapters/14-buffers.md:1443`
 
 ```raku
 my $long  = Blob[int8].new(-1, -1);
@@ -12895,7 +12918,7 @@ Blob[uint8].new(1,0)
 
 ### 14.35 List methods see the elements; `reduce` sees one buffer
 
-`src/chapters/14-buffers.md:1470`
+`src/chapters/14-buffers.md:1477`
 
 ```raku
 my $b = Blob.new(3, 1, 2);
@@ -12954,7 +12977,7 @@ No such method 'is-lazy' for invocant of type 'Blob'
 
 ### 14.35 List methods see the elements; `reduce` sees one buffer
 
-`src/chapters/14-buffers.md:1502`
+`src/chapters/14-buffers.md:1509`
 
 ```raku
 my $b = Blob.new(3, 1, 2);
@@ -12991,7 +13014,7 @@ X::Method::NotFound
 
 ### 14.36 `encode` returns a `utf8`, a `utf16` or a `Blob[uint8]`
 
-`src/chapters/14-buffers.md:1533`
+`src/chapters/14-buffers.md:1540`
 
 ```raku
 say "é".encode.raku;
@@ -13032,7 +13055,7 @@ utf16.new(55357,56832)
 
 ### 14.36 `encode` returns a `utf8`, a `utf16` or a `Blob[uint8]`
 
-`src/chapters/14-buffers.md:1560`
+`src/chapters/14-buffers.md:1567`
 
 ```raku
 say "a".encode.encoding;
@@ -13073,7 +13096,7 @@ No such method 'encoding' for invocant of type 'utf8'
 
 ### 14.37 Encoding names ignore case; an unknown name throws
 
-`src/chapters/14-buffers.md:1589`
+`src/chapters/14-buffers.md:1596`
 
 ```raku
 say "a".encode("UTF-8").^name;
@@ -13120,7 +13143,7 @@ Nil
 
 ### 14.39 Without `:strict`, a code point below 256 is written as its byte
 
-`src/chapters/14-buffers.md:1639`
+`src/chapters/14-buffers.md:1646`
 
 ```raku
 say "€".encode("windows-1252").list;
@@ -13164,7 +13187,7 @@ Error encoding Windows-1252 string: could not encode codepoint 128
 
 ### 14.39 Without `:strict`, a code point below 256 is written as its byte
 
-`src/chapters/14-buffers.md:1665`
+`src/chapters/14-buffers.md:1672`
 
 ```raku
 try { "a\x[81]".encode("windows-1252", :strict) };
@@ -13195,7 +13218,7 @@ Error encoding Windows-1251 string: could not encode codepoint 233
 
 ### 14.40 `:replacement` also applies under `:strict`, and takes any value
 
-`src/chapters/14-buffers.md:1689`
+`src/chapters/14-buffers.md:1696`
 
 ```raku
 say "a☺b".encode("ascii", :replacement("")).list;
@@ -13233,7 +13256,7 @@ Nil
 
 ### 14.40 `:replacement` also applies under `:strict`, and takes any value
 
-`src/chapters/14-buffers.md:1713`
+`src/chapters/14-buffers.md:1720`
 
 ```raku
 say "é".encode("windows-1251", :replacement("?")).list;
@@ -13262,7 +13285,7 @@ Raku++:
 
 ### 14.41 `decode` uses the buffer's own encoding, or UTF-8
 
-`src/chapters/14-buffers.md:1735`
+`src/chapters/14-buffers.md:1742`
 
 ```raku
 say Blob.new(195, 169).decode;
@@ -13307,7 +13330,7 @@ Nil
 
 ### 14.42 Malformed bytes die, and `:replacement` does not rescue UTF-8
 
-`src/chapters/14-buffers.md:1766`
+`src/chapters/14-buffers.md:1773`
 
 ```raku
 for Blob.new(255), Blob.new(195), Blob.new(0xC0, 0x80), Blob.new(0xED, 0xA0, 0x80) -> $b {
@@ -13340,7 +13363,7 @@ Will not decode invalid ASCII (code point (-56) < 0 found)
 
 ### 14.42 Malformed bytes die, and `:replacement` does not rescue UTF-8
 
-`src/chapters/14-buffers.md:1787`
+`src/chapters/14-buffers.md:1794`
 
 ```raku
 try { Blob.new(97, 255).decode("utf8", :replacement("?")) };
@@ -13378,7 +13401,7 @@ Nil
 
 ### 14.43 UTF-16 follows a byte-order mark; UTF-8 drops one
 
-`src/chapters/14-buffers.md:1818`
+`src/chapters/14-buffers.md:1825`
 
 ```raku
 say Blob.new(0xEF, 0xBB, 0xBF, 97).decode.ords;
@@ -13420,7 +13443,7 @@ Nil
 
 ### 14.44 `utf8-c8` keeps every byte, in synthetic characters
 
-`src/chapters/14-buffers.md:1848`
+`src/chapters/14-buffers.md:1855`
 
 ```raku
 my $s = Blob.new(97, 255, 101, 204, 129).decode("utf8-c8");
@@ -13450,7 +13473,7 @@ Raku++:
 
 ### 14.45 A 16-bit buffer decodes its bytes, not its elements
 
-`src/chapters/14-buffers.md:1875`
+`src/chapters/14-buffers.md:1882`
 
 ```raku
 say blob16.new(97, 98).decode.raku;
@@ -13483,7 +13506,7 @@ Nil
 
 ### 14.46 A `utf8` becomes its text wherever a string is wanted
 
-`src/chapters/14-buffers.md:1899`
+`src/chapters/14-buffers.md:1906`
 
 ```raku
 my $u = "héllo".encode;
@@ -13526,7 +13549,7 @@ False
 
 ### 14.46 A `utf8` becomes its text wherever a string is wanted
 
-`src/chapters/14-buffers.md:1926`
+`src/chapters/14-buffers.md:1933`
 
 ```raku
 try { utf8.new(255).Str };
@@ -13568,7 +13591,7 @@ No such method 'Buf' for invocant of type 'Blob'
 
 ### 14.47 An `Encoding` object makes encoders and incremental decoders
 
-`src/chapters/14-buffers.md:1955`
+`src/chapters/14-buffers.md:1962`
 
 ```raku
 my $enc = Encoding::Registry.find("Latin1");
@@ -13609,7 +13632,7 @@ X::Method::NotFound
 
 ### 14.47 An `Encoding` object makes encoders and incremental decoders
 
-`src/chapters/14-buffers.md:2006`
+`src/chapters/14-buffers.md:2013`
 
 ```raku
 my $d = Encoding::Registry.find("utf8").decoder(:translate-nl);
@@ -13634,7 +13657,7 @@ Raku++:
 
 ### 14.48 `Encoding::Registry.register` teaches `encode` a new name
 
-`src/chapters/14-buffers.md:2025`
+`src/chapters/14-buffers.md:2032`
 
 ```raku
 class Shout does Encoding {
@@ -13675,7 +13698,7 @@ Nil
 
 ### 14.49 `read-uint16` and its kin read bytes at an offset, in a chosen order
 
-`src/chapters/14-buffers.md:2058`
+`src/chapters/14-buffers.md:2065`
 
 ```raku
 my $b = blob8.new(1, 2, 3, 4, 255);
@@ -13728,7 +13751,7 @@ No such method 'enums' for invocant of type 'Endian'
 
 ### 14.49 `read-uint16` and its kin read bytes at an offset, in a chosen order
 
-`src/chapters/14-buffers.md:2087`
+`src/chapters/14-buffers.md:2094`
 
 ```raku
 my $b = blob8.new(1, 2, 3);
@@ -13763,7 +13786,7 @@ Nil
 
 ### 14.51 `read-num32` and `read-num64` decode IEEE floats
 
-`src/chapters/14-buffers.md:2144`
+`src/chapters/14-buffers.md:2151`
 
 ```raku
 say buf8.new(0, 0, 128, 63).read-num32(0, LittleEndian);
@@ -13802,7 +13825,7 @@ X::OutOfRange
 
 ### 14.52 `read-ubits` counts bits from the top of the first byte
 
-`src/chapters/14-buffers.md:2172`
+`src/chapters/14-buffers.md:2179`
 
 ```raku
 my $b = blob8.new(0x12, 0x34, 0x56);
@@ -13854,7 +13877,7 @@ bit range 0+-1 out of 0..24
 
 ### 14.53 `read-bits` of zero bits is -1
 
-`src/chapters/14-buffers.md:2208`
+`src/chapters/14-buffers.md:2216`
 
 ```raku
 my $b = blob8.new(0x12, 0x34);
@@ -13890,7 +13913,7 @@ bit range 0+0 out of 0..16
 
 ### 14.54 `write-*` grows the buffer and cuts the value to size
 
-`src/chapters/14-buffers.md:2231`
+`src/chapters/14-buffers.md:2239`
 
 ```raku
 my $b = buf8.new;
@@ -13942,7 +13965,7 @@ No such method 'write-uint8' for invocant of type 'Buf'
 
 ### 14.54 `write-*` grows the buffer and cuts the value to size
 
-`src/chapters/14-buffers.md:2262`
+`src/chapters/14-buffers.md:2270`
 
 ```raku
 try { buf8.new.write-uint64(0, -1) };
@@ -13986,7 +14009,7 @@ Buf[uint8].new(63,240,0,0,0,0,0,0)
 
 ### 14.55 `write-ubits` writes the low bits of a value at a bit position
 
-`src/chapters/14-buffers.md:2295`
+`src/chapters/14-buffers.md:2303`
 
 ```raku
 say buf8.new.write-ubits(4, 8, 0xAB).raku;
@@ -14031,7 +14054,7 @@ bit range 0+0 out of range
 
 ### 14.56 `write-ubits` clears the bits after the run in its last byte
 
-`src/chapters/14-buffers.md:2327`
+`src/chapters/14-buffers.md:2337`
 
 ```raku
 say buf8.new(0xFF).write-ubits(0, 4, 0).raku;
@@ -14063,7 +14086,7 @@ Buf[uint8].new(1,255,3)
 
 ### 14.57 `pack` and `unpack` need `use experimental :pack`
 
-`src/chapters/14-buffers.md:2350`
+`src/chapters/14-buffers.md:2361`
 
 ```raku
 try { Blob.new(1, 2).unpack("C*") };
@@ -14087,7 +14110,7 @@ Nil
 
 ### 14.57 `pack` and `unpack` need `use experimental :pack`
 
-`src/chapters/14-buffers.md:2360`
+`src/chapters/14-buffers.md:2371`
 
 ```raku
 say pack("C", 1);
@@ -14116,7 +14139,7 @@ Buf:0x<01>
 
 ### 14.57 `pack` and `unpack` need `use experimental :pack`
 
-`src/chapters/14-buffers.md:2376`
+`src/chapters/14-buffers.md:2387`
 
 ```raku
 use experimental :pack;
@@ -14153,7 +14176,7 @@ Nil
 
 ### 14.58 The type object `Blob` is a list of one element
 
-`src/chapters/14-buffers.md:2404`
+`src/chapters/14-buffers.md:2415`
 
 ```raku
 say Blob.elems;
@@ -14211,7 +14234,7 @@ Use of uninitialized value of type Blob in numeric context
 
 ### 14.59 `Blob(…)` coerces through `.new`; `.Buf` and `.Blob` copy
 
-`src/chapters/14-buffers.md:2441`
+`src/chapters/14-buffers.md:2452`
 
 ```raku
 say Blob([1, 2]).raku;
@@ -14261,7 +14284,7 @@ No such method 'Blob' for invocant of type 'Array'
 
 ### 14.59 `Blob(…)` coerces through `.new`; `.Buf` and `.Blob` copy
 
-`src/chapters/14-buffers.md:2474`
+`src/chapters/14-buffers.md:2485`
 
 ```raku
 sub takes-blob(Blob() $b) { $b.^name }
@@ -14307,7 +14330,7 @@ Nil
 
 ### 15.1 `.arity` counts required positionals; `.count` counts all of them
 
-`src/chapters/15-signatures.md:55`
+`src/chapters/15-signatures.md:56`
 
 ```raku
 say { $_ }.arity, " ", { $_ }.count;
@@ -14344,7 +14367,7 @@ Raku++:
 
 ### 15.2 A call with the wrong arguments dies with `X::AdHoc`
 
-`src/chapters/15-signatures.md:85`
+`src/chapters/15-signatures.md:86`
 
 ```raku
 sub one($x) { $x }
@@ -14380,7 +14403,7 @@ X::Parameter::RequiredNamed
 
 ### 15.3 A call that can never bind is refused before the program runs
 
-`src/chapters/15-signatures.md:117`
+`src/chapters/15-signatures.md:118`
 
 ```raku
 sub one($x) { $x }
@@ -14410,7 +14433,7 @@ Raku++:
 
 ### 15.4 A method takes any named argument; a sub refuses it
 
-`src/chapters/15-signatures.md:157`
+`src/chapters/15-signatures.md:158`
 
 ```raku
 class Greeter {
@@ -14454,7 +14477,7 @@ Unexpected named argument 'loud' passed
 
 ### 15.9 `is rw` needs a variable, and a typed one checks its type
 
-`src/chapters/15-signatures.md:298`
+`src/chapters/15-signatures.md:299`
 
 ```raku
 sub bump($x is rw) { $x++ }
@@ -14493,7 +14516,7 @@ Nil
 
 ### 15.9 `is rw` needs a variable, and a typed one checks its type
 
-`src/chapters/15-signatures.md:325`
+`src/chapters/15-signatures.md:326`
 
 ```raku
 sub typed(Int $x is rw) { $x = 1 }
@@ -14526,7 +14549,7 @@ Nil
 
 ### 15.10 `\x` and `is raw` pass the argument as it is
 
-`src/chapters/15-signatures.md:350`
+`src/chapters/15-signatures.md:351`
 
 ```raku
 sub raw(\x) { x.VAR.^name }
@@ -14567,7 +14590,7 @@ Cannot assign to a readonly variable or a value
 
 ### 15.11 `:D` and `:U` check definedness, with their own exception
 
-`src/chapters/15-signatures.md:379`
+`src/chapters/15-signatures.md:380`
 
 ```raku
 sub defined(Int:D $x) { "got $x" }
@@ -14604,7 +14627,7 @@ Parameter '$x' must be a type object of type 'Int', not an object instance
 
 ### 15.11 `:D` and `:U` check definedness, with their own exception
 
-`src/chapters/15-signatures.md:403`
+`src/chapters/15-signatures.md:404`
 
 ```raku
 class Counter {
@@ -14634,7 +14657,7 @@ Invocant of method '' must be an object instance of type 'Counter', not a type o
 
 ### 15.13 `where` smartmatches the argument against anything
 
-`src/chapters/15-signatures.md:456`
+`src/chapters/15-signatures.md:457`
 
 ```raku
 sub small($x where 1..3) { "small $x" }
@@ -14684,7 +14707,7 @@ No such method 'expected' for invocant of type 'X::TypeCheck::Binding::Parameter
 
 ### 15.16 `Int()` calls `.Int` on whatever arrives
 
-`src/chapters/15-signatures.md:596`
+`src/chapters/15-signatures.md:597`
 
 ```raku
 sub from-str(Int(Str) $x) { $x.raku }
@@ -14725,7 +14748,7 @@ Type check failed in binding to parameter '$x'; expected Int(Str) but got Int (4
 
 ### 15.18 A coercion from an undefined value warns; other bad sources throw
 
-`src/chapters/15-signatures.md:668`
+`src/chapters/15-signatures.md:669`
 
 ```raku
 sub to-int(Int() $x) { $x }
@@ -14760,7 +14783,7 @@ X::Coerce::Impossible
 
 ### 15.19 A coerced parameter has no container, and its elements are not coerced
 
-`src/chapters/15-signatures.md:696`
+`src/chapters/15-signatures.md:697`
 
 ```raku
 sub bump(Int() $x is rw) { $x = 1 }
@@ -14797,7 +14820,7 @@ Nil
 
 ### 15.21 A slurpy array is an Array, but `+a` and `is raw` give a List
 
-`src/chapters/15-signatures.md:780`
+`src/chapters/15-signatures.md:781`
 
 ```raku
 sub a(*@a) { @a.^name }
@@ -14827,7 +14850,7 @@ Array Array List List Array
 
 ### 15.22 A `*@` slurpy of literals has read-only elements
 
-`src/chapters/15-signatures.md:805`
+`src/chapters/15-signatures.md:806`
 
 ```raku
 sub set-first(*@a) { @a[0] = 99; @a }
@@ -14857,7 +14880,7 @@ Nil
 
 ### 15.23 A slurpy hash takes the named arguments; a capture takes everything
 
-`src/chapters/15-signatures.md:826`
+`src/chapters/15-signatures.md:827`
 
 ```raku
 sub opts(*%o) { %o.sort.raku }
@@ -14890,7 +14913,7 @@ Raku++:
 
 ### 15.24 `is item` only chooses between candidates
 
-`src/chapters/15-signatures.md:854`
+`src/chapters/15-signatures.md:855`
 
 ```raku
 multi f(@a is item) { "item" }
@@ -14932,7 +14955,7 @@ Array
 
 ### 15.24 `is item` only chooses between candidates
 
-`src/chapters/15-signatures.md:880`
+`src/chapters/15-signatures.md:881`
 
 ```raku
 sub f($x is item) { }
@@ -14964,7 +14987,7 @@ Raku++:
 
 ### 15.25 `::T` captures the type of an argument
 
-`src/chapters/15-signatures.md:901`
+`src/chapters/15-signatures.md:902`
 
 ```raku
 sub same(::T $a, T $b) { "both {T.^name}" }
@@ -15000,7 +15023,7 @@ Rat
 
 ### 15.26 A sub-signature unpacks an argument
 
-`src/chapters/15-signatures.md:951`
+`src/chapters/15-signatures.md:952`
 
 ```raku
 sub two(@ ($a, $b)) { "$a $b" }
@@ -15034,7 +15057,7 @@ False
 
 ### 15.27 Placeholders become parameters in alphabetical order
 
-`src/chapters/15-signatures.md:995`
+`src/chapters/15-signatures.md:996`
 
 ```raku
 my $swap = { $^b ~ $^a };
@@ -15073,7 +15096,7 @@ yx
 
 ### 15.27 Placeholders become parameters in alphabetical order
 
-`src/chapters/15-signatures.md:1020`
+`src/chapters/15-signatures.md:1021`
 
 ```raku
 sub f($x) { $^y }
@@ -15102,7 +15125,7 @@ Raku++:
 
 ### 15.28 A block without a signature takes one optional argument
 
-`src/chapters/15-signatures.md:1056`
+`src/chapters/15-signatures.md:1057`
 
 ```raku
 my $b = { $_ };
@@ -15130,7 +15153,7 @@ Raku++:
 
 ### 15.29 The topic parameter's default is the `Code` type object
 
-`src/chapters/15-signatures.md:1078`
+`src/chapters/15-signatures.md:1079`
 
 ```raku
 say {;}.signature.params[0].raku;
@@ -15164,7 +15187,7 @@ No such method 'CALL-ME' for invocant of type 'Int'
 
 ### 15.33 `--> 42` and `--> Nil` return a constant whatever the body does
 
-`src/chapters/15-signatures.md:1225`
+`src/chapters/15-signatures.md:1226`
 
 ```raku
 sub answer(--> 42) { say "working" }
@@ -15194,7 +15217,7 @@ Nil
 
 ### 15.33 `--> 42` and `--> Nil` return a constant whatever the body does
 
-`src/chapters/15-signatures.md:1257`
+`src/chapters/15-signatures.md:1258`
 
 ```raku
 sub answer(--> 42) { }
@@ -15221,7 +15244,7 @@ Sub
 
 ### 15.34 A return constraint makes a routine a `Callable[T]`
 
-`src/chapters/15-signatures.md:1276`
+`src/chapters/15-signatures.md:1277`
 
 ```raku
 sub typed(--> Str) { "s" }
@@ -15260,7 +15283,7 @@ Nil
 
 ### 15.34 A return constraint makes a routine a `Callable[T]`
 
-`src/chapters/15-signatures.md:1300`
+`src/chapters/15-signatures.md:1301`
 
 ```raku
 my &c;
@@ -15290,7 +15313,7 @@ Nil
 
 ### 15.35 `return` leaves the innermost routine, through any blocks
 
-`src/chapters/15-signatures.md:1347`
+`src/chapters/15-signatures.md:1348`
 
 ```raku
 sub f { 5 ==> return }
@@ -15333,7 +15356,7 @@ Too many positionals passed; expected 1 argument but got 2
 
 ### 15.36 A `return` with no routine to leave throws
 
-`src/chapters/15-signatures.md:1373`
+`src/chapters/15-signatures.md:1374`
 
 ```raku
 my $top = { return 1 };
@@ -15375,7 +15398,7 @@ No such method 'out-of-dynamic-scope' for invocant of type 'X::ControlFlow::Retu
 
 ### 15.37 `return` hands back a read-only container; `return-rw` a writable one
 
-`src/chapters/15-signatures.md:1403`
+`src/chapters/15-signatures.md:1404`
 
 ```raku
 my $v = 1;
@@ -15414,7 +15437,7 @@ Int
 
 ### 15.39 Blocks, routines and WhateverCodes share one type tree
 
-`src/chapters/15-signatures.md:1462`
+`src/chapters/15-signatures.md:1463`
 
 ```raku
 say Block.^mro;
@@ -15455,7 +15478,7 @@ False
 
 ### 15.39 Blocks, routines and WhateverCodes share one type tree
 
-`src/chapters/15-signatures.md:1486`
+`src/chapters/15-signatures.md:1487`
 
 ```raku
 try Code.new;
@@ -15483,7 +15506,7 @@ X::Method::NotFound
 
 ### 15.40 A code object knows its name; an anonymous one's is empty
 
-`src/chapters/15-signatures.md:1506`
+`src/chapters/15-signatures.md:1507`
 
 ```raku
 sub foo($x) { }
@@ -15525,7 +15548,7 @@ bar
 
 ### 15.40 A code object knows its name; an anonymous one's is empty
 
-`src/chapters/15-signatures.md:1534`
+`src/chapters/15-signatures.md:1535`
 
 ```raku
 sub shape($code) { $code.raku.subst(/'#`(' <-[)]>* ')'/, '#`(…)') }
@@ -15553,7 +15576,7 @@ sub { ... }
 
 ### 15.40 A code object knows its name; an anonymous one's is empty
 
-`src/chapters/15-signatures.md:1550`
+`src/chapters/15-signatures.md:1551`
 
 ```raku
 sub foo { }
@@ -15581,7 +15604,7 @@ name: &foo
 
 ### 15.41 `.file`, `.line` and `.package` say where code was declared
 
-`src/chapters/15-signatures.md:1569`
+`src/chapters/15-signatures.md:1570`
 
 ```raku
 sub foo { }
@@ -15620,7 +15643,7 @@ Nil
 
 ### 15.41 `.file`, `.line` and `.package` say where code was declared
 
-`src/chapters/15-signatures.md:1594`
+`src/chapters/15-signatures.md:1595`
 
 ```raku
 sub outer { my sub inner { }; &inner }
@@ -15657,7 +15680,7 @@ No such method 'static_id' for invocant of type 'Sub'
 
 ### 15.42 Smartmatching against code calls it and takes the truth of the result
 
-`src/chapters/15-signatures.md:1637`
+`src/chapters/15-signatures.md:1638`
 
 ```raku
 my $two = -> $a, $b { True };
@@ -15683,7 +15706,7 @@ inside
 
 ### 15.43 `.cando` tells whether a Capture would bind; a routine's ignores extra nameds
 
-`src/chapters/15-signatures.md:1657`
+`src/chapters/15-signatures.md:1658`
 
 ```raku
 my $b = { $^a };
@@ -15722,7 +15745,7 @@ Unexpected named argument 'n' passed
 
 ### 15.44 A block lists its phasers, and they can be called by hand
 
-`src/chapters/15-signatures.md:1690`
+`src/chapters/15-signatures.md:1691`
 
 ```raku
 my @log;
@@ -15770,7 +15793,7 @@ No such method 'has-phasers' for invocant of type 'Block'
 
 ### 15.44 A block lists its phasers, and they can be called by hand
 
-`src/chapters/15-signatures.md:1720`
+`src/chapters/15-signatures.md:1721`
 
 ```raku
 my $x = 0;
@@ -15811,7 +15834,7 @@ No such method 'has-phaser' for invocant of type 'Block'
 
 ### 15.45 `KEEP` and `UNDO` look at the result; `PRE` and `POST` guard a call
 
-`src/chapters/15-signatures.md:1746`
+`src/chapters/15-signatures.md:1747`
 
 ```raku
 my @log;
@@ -15842,7 +15865,7 @@ Raku++:
 
 ### 15.45 `KEEP` and `UNDO` look at the result; `PRE` and `POST` guard a call
 
-`src/chapters/15-signatures.md:1767`
+`src/chapters/15-signatures.md:1768`
 
 ```raku
 sub positive($x) { PRE $x > 0; POST $_ > 1; $x }
@@ -15874,7 +15897,7 @@ Postcondition 'False' failed
 
 ### 15.47 A multi's name is its proto, which lists the candidates
 
-`src/chapters/15-signatures.md:1823`
+`src/chapters/15-signatures.md:1824`
 
 ```raku
 multi f(Int $x) { "Int" }
@@ -15915,7 +15938,7 @@ f
 
 ### 15.47 A multi's name is its proto, which lists the candidates
 
-`src/chapters/15-signatures.md:1848`
+`src/chapters/15-signatures.md:1849`
 
 ```raku
 multi f(Int $x) { }
@@ -15941,7 +15964,7 @@ Nil
 
 ### 15.48 `.multi` is 0 on a proto, and a plain sub's `.dispatcher` is an `NQPMu`
 
-`src/chapters/15-signatures.md:1871`
+`src/chapters/15-signatures.md:1872`
 
 ```raku
 multi f(Int $x) { }
@@ -15979,7 +16002,7 @@ Nil
 
 ### 15.49 The narrowest candidate wins
 
-`src/chapters/15-signatures.md:1928`
+`src/chapters/15-signatures.md:1929`
 
 ```raku
 multi opt($x, $y?) { "optional" }
@@ -16021,7 +16044,7 @@ array array scalar
 
 ### 15.50 A tie dies as ambiguous, unless one candidate `is default`
 
-`src/chapters/15-signatures.md:1960`
+`src/chapters/15-signatures.md:1961`
 
 ```raku
 multi pick-one(Int $x) { "first" }
@@ -16054,7 +16077,7 @@ Nil
 
 ### 15.51 `Int:D` and `Int` tie for a defined Int
 
-`src/chapters/15-signatures.md:1988`
+`src/chapters/15-signatures.md:1989`
 
 ```raku
 multi d(Int:D $x) { "defined" }
@@ -16086,7 +16109,7 @@ Nil
 
 ### 15.52 No matching candidate throws `X::Multi::NoMatch`
 
-`src/chapters/15-signatures.md:2015`
+`src/chapters/15-signatures.md:2016`
 
 ```raku
 multi f(Int $x) { }
@@ -16128,7 +16151,7 @@ No such method 'capture' for invocant of type 'X::Multi::NoMatch'
 
 ### 15.54 `callsame` and `nextsame` go on to the next candidate
 
-`src/chapters/15-signatures.md:2160`
+`src/chapters/15-signatures.md:2161`
 
 ```raku
 multi g(Int $x) { callwith("s") }
@@ -16151,7 +16174,7 @@ str
 
 ### 15.56 `.wrap` puts a new layer around a routine
 
-`src/chapters/15-signatures.md:2200`
+`src/chapters/15-signatures.md:2201`
 
 ```raku
 sub f($x) { "f($x)" }
@@ -16196,7 +16219,7 @@ No such method 'is-wrapped' for invocant of type 'Sub'
 
 ### 15.56 `.wrap` puts a new layer around a routine
 
-`src/chapters/15-signatures.md:2225`
+`src/chapters/15-signatures.md:2226`
 
 ```raku
 sub f($x) { "f($x)" }
@@ -16238,7 +16261,7 @@ f(1)
 
 ### 15.58 A wrapper sees every call, recursive ones included
 
-`src/chapters/15-signatures.md:2320`
+`src/chapters/15-signatures.md:2321`
 
 ```raku
 sub sig($x) { "sig" }
@@ -16269,7 +16292,7 @@ hello
 
 ### 15.59 `.assuming` fixes some arguments and leaves the rest
 
-`src/chapters/15-signatures.md:2391`
+`src/chapters/15-signatures.md:2392`
 
 ```raku
 sub typed(Int $x, $y) { "$x$y" }
@@ -16305,7 +16328,7 @@ Too many positionals passed; expected 2 arguments but got 3
 
 ### 15.60 A primed sub is named `assumed.f`, and holds on to variables
 
-`src/chapters/15-signatures.md:2417`
+`src/chapters/15-signatures.md:2418`
 
 ```raku
 sub f($a, $b, $c) { "$a-$b-$c" }
@@ -16333,7 +16356,7 @@ Sub
 
 ### 15.60 A primed sub is named `assumed.f`, and holds on to variables
 
-`src/chapters/15-signatures.md:2434`
+`src/chapters/15-signatures.md:2435`
 
 ```raku
 sub f($a, $b, $c) { "$a-$b-$c" }
@@ -16364,7 +16387,7 @@ Raku++:
 
 ### 15.61 A routine trait mixes a role into the routine
 
-`src/chapters/15-signatures.md:2460`
+`src/chapters/15-signatures.md:2461`
 
 ```raku
 sub pure-one() is pure { 1 }
@@ -16409,7 +16432,7 @@ No such method 'is-pure' for invocant of type 'Sub'
 
 ### 15.62 `is DEPRECATED` keeps a routine working and reports it at exit
 
-`src/chapters/15-signatures.md:2527`
+`src/chapters/15-signatures.md:2528`
 
 ```raku
 sub old() is DEPRECATED("new-name") { 42 }
@@ -16459,7 +16482,7 @@ Saw 1 occurrence of deprecated code.
 
 ### 15.63 `is export` files a symbol under tags
 
-`src/chapters/15-signatures.md:2560`
+`src/chapters/15-signatures.md:2561`
 
 ```raku
 module Shapes {
@@ -16494,7 +16517,7 @@ Raku++:
 
 ### 15.63 `is export` files a symbol under tags
 
-`src/chapters/15-signatures.md:2600`
+`src/chapters/15-signatures.md:2601`
 
 ```raku
 module A { sub greet() is export { "A" } }
@@ -16524,7 +16547,7 @@ compiled
 
 ### 15.64 `is tighter`, `is looser` and `is equiv` place a new operator
 
-`src/chapters/15-signatures.md:2639`
+`src/chapters/15-signatures.md:2640`
 
 ```raku
 sub infix:<rr>($a, $b) is assoc<right> { "($a r $b)" }
@@ -16558,7 +16581,7 @@ Raku++:
 
 ### 15.65 An operator reports its precedence, and `.prec("prec")` dies
 
-`src/chapters/15-signatures.md:2668`
+`src/chapters/15-signatures.md:2669`
 
 ```raku
 say &infix:<+>.precedence;
@@ -16601,7 +16624,7 @@ No such method 'precedence' for invocant of type 'Sub'
 
 ### 15.65 An operator reports its precedence, and `.prec("prec")` dies
 
-`src/chapters/15-signatures.md:2693`
+`src/chapters/15-signatures.md:2694`
 
 ```raku
 say &infix:<+>.prec<prec>;
@@ -16635,7 +16658,7 @@ No such method 'prec' for invocant of type 'Sub'
 
 ### 15.66 A method's signature starts with its invocant and ends with `*%_`
 
-`src/chapters/15-signatures.md:2715`
+`src/chapters/15-signatures.md:2716`
 
 ```raku
 class C {
@@ -16678,7 +16701,7 @@ m(1)
 
 ### 15.66 A method's signature starts with its invocant and ends with `*%_`
 
-`src/chapters/15-signatures.md:2742`
+`src/chapters/15-signatures.md:2743`
 
 ```raku
 my method free(Int:D: $x) { self + $x }
@@ -16702,7 +16725,7 @@ Raku++:
 
 ### 15.67 A parameter can set an attribute directly
 
-`src/chapters/15-signatures.md:2758`
+`src/chapters/15-signatures.md:2759`
 
 ```raku
 class Point {
@@ -16737,7 +16760,7 @@ Raku++:
 
 ### 15.68 A method's signature prints `$::`, which does not parse back
 
-`src/chapters/15-signatures.md:2788`
+`src/chapters/15-signatures.md:2790`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -16767,7 +16790,7 @@ Nil
 
 ### 15.69 A printed signature leaves out the default type and computed values
 
-`src/chapters/15-signatures.md:2829`
+`src/chapters/15-signatures.md:2831`
 
 ```raku
 say :($x);
@@ -16805,7 +16828,7 @@ Any
 
 ### 15.69 A printed signature leaves out the default type and computed values
 
-`src/chapters/15-signatures.md:2854`
+`src/chapters/15-signatures.md:2856`
 
 ```raku
 say :($x where { $_ > 1 });
@@ -16849,7 +16872,7 @@ Raku++:
 
 ### 15.69 A printed signature leaves out the default type and computed values
 
-`src/chapters/15-signatures.md:2881`
+`src/chapters/15-signatures.md:2883`
 
 ```raku
 say :($a;; $b);
@@ -16882,9 +16905,9 @@ Raku++:
 (Mu)
 ```
 
-### 15.70 Two spellings in a printed signature do not work as code
+### 15.70 `Int:D()` prints as `Int:D(Any):D`, which does not compile
 
-`src/chapters/15-signatures.md:2906`
+`src/chapters/15-signatures.md:2908`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -16908,9 +16931,9 @@ Raku++:
 Nil
 ```
 
-### 15.70 Two spellings in a printed signature do not work as code
+### 15.71 A computed default prints as `Code.new`, which does not rebuild it
 
-`src/chapters/15-signatures.md:2921`
+`src/chapters/15-signatures.md:2927`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -16938,9 +16961,9 @@ Raku++:
 X::Method::NotFound
 ```
 
-### 15.71 The compiler refuses a malformed signature
+### 15.72 The compiler refuses a malformed signature
 
-`src/chapters/15-signatures.md:2944`
+`src/chapters/15-signatures.md:2950`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -16986,9 +17009,9 @@ Raku++:
 :(Nonesuch $x)     Nil
 ```
 
-### 15.71 The compiler refuses a malformed signature
+### 15.72 The compiler refuses a malformed signature
 
-`src/chapters/15-signatures.md:2991`
+`src/chapters/15-signatures.md:2997`
 
 ```raku
 say :($x is rw is copy);
@@ -17024,9 +17047,9 @@ Raku++:
 (Int:D $x = Int)
 ```
 
-### 15.72 A Capture smartmatches a signature it would bind to
+### 15.73 A Capture smartmatches a signature it would bind to
 
-`src/chapters/15-signatures.md:3017`
+`src/chapters/15-signatures.md:3023`
 
 ```raku
 my $sig = :(Int $a, $b?, :$n);
@@ -17069,9 +17092,9 @@ True
 False
 ```
 
-### 15.73 Signature against signature: `~~` asks for compatibility, `eqv` for sameness
+### 15.74 Signature against signature: `~~` asks for compatibility, `eqv` for sameness
 
-`src/chapters/15-signatures.md:3078`
+`src/chapters/15-signatures.md:3084`
 
 ```raku
 say :($a, $b) ~~ :($foo, $bar, $baz?);
@@ -17116,9 +17139,9 @@ True
 False
 ```
 
-### 15.73 Signature against signature: `~~` asks for compatibility, `eqv` for sameness
+### 15.74 Signature against signature: `~~` asks for compatibility, `eqv` for sameness
 
-`src/chapters/15-signatures.md:3107`
+`src/chapters/15-signatures.md:3113`
 
 ```raku
 say :(Int $x) eqv :(Int $y);
@@ -17154,9 +17177,9 @@ False
 False
 ```
 
-### 15.74 A `where` clause is equal to nothing, not even to itself
+### 15.75 A `where` clause is equal to nothing, not even to itself
 
-`src/chapters/15-signatures.md:3135`
+`src/chapters/15-signatures.md:3141`
 
 ```raku
 sub P($sig) { $sig.params[0] }
@@ -17197,9 +17220,9 @@ No such method 'constraint_list' for invocant of type 'Parameter'
       6 | say P(:($x where 42)).constraint_list.map(*.^name);
 ```
 
-### 15.75 A signature built with `Signature.new` cannot bind anything
+### 15.76 A signature built with `Signature.new` cannot bind anything
 
-`src/chapters/15-signatures.md:3162`
+`src/chapters/15-signatures.md:3171`
 
 ```raku
 my $sig = Signature.new(params => (Parameter.new(name => '$x', type => Int),));
@@ -17232,9 +17255,9 @@ Nil
 Nil
 ```
 
-### 15.75 A signature built with `Signature.new` cannot bind anything
+### 15.77 `Signature.new` takes the count as given
 
-`src/chapters/15-signatures.md:3183`
+`src/chapters/15-signatures.md:3196`
 
 ```raku
 say Signature.new(params => (Parameter.new(name => '*@a'),)).count;
@@ -17258,9 +17281,9 @@ Raku++:
 :( --> Mu)
 ```
 
-### 15.76 `Parameter.new` dies on `+@a` and doubles a bare name
+### 15.78 `Parameter.new` dies on `+@a` and doubles a bare name
 
-`src/chapters/15-signatures.md:3203`
+`src/chapters/15-signatures.md:3218`
 
 ```raku
 say Parameter.new(name => '$x').raku;
@@ -17300,9 +17323,9 @@ Nil
 Nil
 ```
 
-### 15.77 A Parameter answers questions about itself
+### 15.79 A Parameter answers questions about itself
 
-`src/chapters/15-signatures.md:3233`
+`src/chapters/15-signatures.md:3248`
 
 ```raku
 sub f(Int:D $x, &cb, \raw, $y?, :ali(:$named), *@rest) { }
@@ -17333,9 +17356,9 @@ $named named $ - - - Any
 @rest  rest @ * - - Positional
 ```
 
-### 15.77 A Parameter answers questions about itself
+### 15.79 A Parameter answers questions about itself
 
-`src/chapters/15-signatures.md:3252`
+`src/chapters/15-signatures.md:3267`
 
 ```raku
 sub f($x, $y?, $z = 1, :$n, :$m!, *@a, |c) { }
@@ -17373,9 +17396,9 @@ $m  named
 c    slurpy capture
 ```
 
-### 15.77 A Parameter answers questions about itself
+### 15.79 A Parameter answers questions about itself
 
-`src/chapters/15-signatures.md:3277`
+`src/chapters/15-signatures.md:3292`
 
 ```raku
 say :($x is rw).params[0].rw;
@@ -17423,9 +17446,9 @@ No such method 'sub_signature' for invocant of type 'Parameter'
       7 | say :(@a ($b)).params[0].sub_signature;
 ```
 
-### 15.77 A Parameter answers questions about itself
+### 15.79 A Parameter answers questions about itself
 
-`src/chapters/15-signatures.md:3304`
+`src/chapters/15-signatures.md:3319`
 
 ```raku
 my $p = :(Int() $x).params[0];
@@ -17463,9 +17486,9 @@ No such method 'coerce_type' for invocant of type 'Parameter'
       3 | say $p.coerce_type.^name;
 ```
 
-### 15.78 An Attribute answers questions about itself
+### 15.80 An Attribute answers questions about itself
 
-`src/chapters/15-signatures.md:3333`
+`src/chapters/15-signatures.md:3348`
 
 ```raku
 class C {
@@ -17514,9 +17537,9 @@ No such method 'required' for invocant of type 'Attribute'
       12 |     say .name.fmt('%-9s'), " ", .type.^name.fmt('%-10s'),
 ```
 
-### 15.79 `is required`, `is built` and `is default` on attributes
+### 15.81 `is required`, `is built` and `is default` on attributes
 
-`src/chapters/15-signatures.md:3392`
+`src/chapters/15-signatures.md:3407`
 
 ```raku
 class C {
@@ -17551,9 +17574,9 @@ Scalar
 C.new(shown => "default")
 ```
 
-### 15.80 A role's attribute belongs to `$?CLASS` until it is composed
+### 15.82 A role's attribute belongs to `$?CLASS` until it is composed
 
-`src/chapters/15-signatures.md:3446`
+`src/chapters/15-signatures.md:3461`
 
 ```raku
 role R { has $.r }
@@ -17583,9 +17606,9 @@ R
 K
 ```
 
-### 15.81 `set_value` writes an attribute without a type check
+### 15.83 `set_value` writes an attribute without a type check
 
-`src/chapters/15-signatures.md:3469`
+`src/chapters/15-signatures.md:3484`
 
 ```raku
 class C { has Int $.n = 5; has int $!raw = 3 }
@@ -17617,9 +17640,9 @@ Int
 Nil
 ```
 
-### 15.82 A WhateverCode has one parameter per star
+### 15.84 A WhateverCode has one parameter per star
 
-`src/chapters/15-signatures.md:3495`
+`src/chapters/15-signatures.md:3510`
 
 ```raku
 my $one = * + 1;
@@ -17655,9 +17678,9 @@ WhateverCode.new
 Nil
 ```
 
-### 15.82 A WhateverCode has one parameter per star
+### 15.84 A WhateverCode has one parameter per star
 
-`src/chapters/15-signatures.md:3518`
+`src/chapters/15-signatures.md:3533`
 
 ```raku
 my $w = * + 1;
@@ -17688,9 +17711,9 @@ True
 False
 ```
 
-### 15.85 A WhateverCode's `.file` is a null string
+### 15.87 A WhateverCode's `.file` is a null string
 
-`src/chapters/15-signatures.md:3601`
+`src/chapters/15-signatures.md:3616`
 
 ```raku
 my $w = * + 1;
@@ -17727,9 +17750,9 @@ Nil
 example.raku
 ```
 
-### 15.86 Code in an array subscript receives the length once per parameter
+### 15.88 Code in an array subscript receives the length once per parameter
 
-`src/chapters/15-signatures.md:3629`
+`src/chapters/15-signatures.md:3644`
 
 ```raku
 my @a = 1, 2, 3;
@@ -17760,9 +17783,9 @@ Raku++:
 1
 ```
 
-### 15.86 Code in an array subscript receives the length once per parameter
+### 15.88 Code in an array subscript receives the length once per parameter
 
-`src/chapters/15-signatures.md:3650`
+`src/chapters/15-signatures.md:3665`
 
 ```raku
 my @a = 1, 2, 3;
@@ -17790,9 +17813,9 @@ X::TypeCheck::Argument
 (3, Any, Any)
 ```
 
-### 15.87 A ForeignCode's gist is not its name
+### 15.89 A ForeignCode's gist is not its name
 
-`src/chapters/15-signatures.md:3696`
+`src/chapters/15-signatures.md:3711`
 
 ```raku
 sub f() { }
@@ -17838,9 +17861,9 @@ No such method 'signature' for invocant of type 'Any'
       8 | say $fc.signature;
 ```
 
-### 15.87 A ForeignCode's gist is not its name
+### 15.89 A ForeignCode's gist is not its name
 
-`src/chapters/15-signatures.md:3722`
+`src/chapters/15-signatures.md:3737`
 
 ```raku
 say &infix:<+>.^name;
@@ -18555,7 +18578,7 @@ Nil: Nil
 
 ### 16.27 Rethrowing a caught `return`, `take` or `emit` loses its value
 
-`src/chapters/16-exceptions.md:1010`
+`src/chapters/16-exceptions.md:1012`
 
 ```raku
 sub five {
@@ -18588,7 +18611,7 @@ Raku++:
 
 ### 16.27 Rethrowing a caught `return`, `take` or `emit` loses its value
 
-`src/chapters/16-exceptions.md:1032`
+`src/chapters/16-exceptions.md:1034`
 
 ```raku
 my $s = supply {
@@ -18613,7 +18636,7 @@ got: 7
 
 ### 16.28 Loop control outside a loop throws X::ControlFlow
 
-`src/chapters/16-exceptions.md:1059`
+`src/chapters/16-exceptions.md:1061`
 
 ```raku
 sub stop { last }
@@ -18657,7 +18680,7 @@ last without loop construct
 
 ### 16.31 A class that does X::Control reaches CONTROL and never CATCH
 
-`src/chapters/16-exceptions.md:1187`
+`src/chapters/16-exceptions.md:1189`
 
 ```raku
 class CX::Progress does X::Control {
@@ -18701,9 +18724,9 @@ No such method 'illegal' for invocant of type 'CX::Progress'
       5 | say $!.^name, ": ", $!.illegal, " / ", $!.enclosing;
 ```
 
-### 16.32 A bare `succeed` leaves a value that cannot even be printed
+### 16.32 A bare `succeed` yields an internal null that cannot be printed
 
-`src/chapters/16-exceptions.md:1218`
+`src/chapters/16-exceptions.md:1220`
 
 ```raku
 say (do given 5 { when Int { succeed "early"; "not reached" } }).raku;
@@ -18730,9 +18753,9 @@ Raku++:
 Nil
 ```
 
-### 16.32 A bare `succeed` leaves a value that cannot even be printed
+### 16.32 A bare `succeed` yields an internal null that cannot be printed
 
-`src/chapters/16-exceptions.md:1235`
+`src/chapters/16-exceptions.md:1237`
 
 ```raku
 my $v = do given 5 { when Int { succeed } };
@@ -18761,7 +18784,7 @@ Raku++:
 
 ### 16.34 `fail` accepts what `die` accepts
 
-`src/chapters/16-exceptions.md:1280`
+`src/chapters/16-exceptions.md:1282`
 
 ```raku
 sub f(|c) { fail |c }
@@ -18804,7 +18827,7 @@ X::AdHoc: given to new
 
 ### 16.34 `fail` accepts what `die` accepts
 
-`src/chapters/16-exceptions.md:1306`
+`src/chapters/16-exceptions.md:1308`
 
 ```raku
 my $e = X::AdHoc.new(payload => 42);
@@ -18840,7 +18863,7 @@ X::AdHoc
 
 ### 16.36 A bare `fail` and `Failure.new` look for `$!` in different places
 
-`src/chapters/16-exceptions.md:1358`
+`src/chapters/16-exceptions.md:1360`
 
 ```raku
 sub with-fail {
@@ -18887,7 +18910,7 @@ new-in-do: the cause
 
 ### 16.40 An unhandled Failure passes through subscripts, lists and `for`
 
-`src/chapters/16-exceptions.md:1468`
+`src/chapters/16-exceptions.md:1470`
 
 ```raku
 sub lookup { fail "not found" }
@@ -18928,7 +18951,7 @@ elems: threw
 
 ### 16.40 An unhandled Failure passes through subscripts, lists and `for`
 
-`src/chapters/16-exceptions.md:1496`
+`src/chapters/16-exceptions.md:1498`
 
 ```raku
 sub lookup { fail "not found" }
@@ -18973,7 +18996,7 @@ not found
 
 ### 16.41 A Failure owns the backtrace of its `fail`
 
-`src/chapters/16-exceptions.md:1525`
+`src/chapters/16-exceptions.md:1527`
 
 ```raku
 sub inner { fail "deep" }
@@ -19013,7 +19036,7 @@ deep
 
 ### 16.43 A Failure assigned to a typed variable reports two errors
 
-`src/chapters/16-exceptions.md:1612`
+`src/chapters/16-exceptions.md:1614`
 
 ```raku
 sub lookup { fail "not found" }
@@ -19041,7 +19064,7 @@ X::AdHoc
 
 ### 16.44 A backtrace holds every frame; its string shows the interesting ones
 
-`src/chapters/16-exceptions.md:1633`
+`src/chapters/16-exceptions.md:1635`
 
 ```raku
 sub inner { die "bt" }
@@ -19083,7 +19106,7 @@ No such method 'subtype' for invocant of type 'Backtrace::Frame'
 
 ### 16.44 A backtrace holds every frame; its string shows the interesting ones
 
-`src/chapters/16-exceptions.md:1660`
+`src/chapters/16-exceptions.md:1662`
 
 ```raku
 sub inner { die "bt" }
@@ -19129,7 +19152,7 @@ Raku++:
 
 ### 16.45 `.nice(:oneline)` shows the second frame, not the first
 
-`src/chapters/16-exceptions.md:1690`
+`src/chapters/16-exceptions.md:1693`
 
 ```raku
 sub inner { die "bt" }
@@ -19155,7 +19178,7 @@ Raku++:
 
 ### 16.46 `Backtrace.new` records where it is created
 
-`src/chapters/16-exceptions.md:1709`
+`src/chapters/16-exceptions.md:1712`
 
 ```raku
 sub where-am-i { Backtrace.new }
@@ -19200,7 +19223,7 @@ True
 
 ### 16.47 `is hidden-from-backtrace` leaves a routine out of the report
 
-`src/chapters/16-exceptions.md:1743`
+`src/chapters/16-exceptions.md:1746`
 
 ```raku
 sub validate($x) is hidden-from-backtrace {
@@ -19251,7 +19274,7 @@ No such method 'is-hidden-from-backtrace' for invocant of type 'Sub'
 
 ### 16.48 `await` rethrows a thread's exception with a role mixed in (local)
 
-`src/chapters/16-exceptions.md:1774`
+`src/chapters/16-exceptions.md:1777`
 
 ```raku
 my $p = start { die "in the thread" };
@@ -19290,7 +19313,7 @@ Kept failed in the thread
 
 ### 16.49 A `die` in a `map` block fires when that element is computed
 
-`src/chapters/16-exceptions.md:1822`
+`src/chapters/16-exceptions.md:1825`
 
 ```raku
 my \seq = (1, 2, 3).map({ die "bad $_" if $_ == 2; $_ * 10 });
@@ -19324,7 +19347,7 @@ bad 2
 
 ### 16.52 A LEAVE sees the exception in `$!` only inside the `try`
 
-`src/chapters/16-exceptions.md:1956`
+`src/chapters/16-exceptions.md:1959`
 
 ```raku
 try {
@@ -19363,7 +19386,7 @@ block LEAVE sees: caught
 
 ### 16.54 PRE and POST throw X::Phaser::PrePost with the condition's source
 
-`src/chapters/16-exceptions.md:2012`
+`src/chapters/16-exceptions.md:2016`
 
 ```raku
 sub half(Int $n) {
@@ -19399,7 +19422,7 @@ Postcondition 'False' failed
 
 ### 16.54 PRE and POST throw X::Phaser::PrePost with the condition's source
 
-`src/chapters/16-exceptions.md:2054`
+`src/chapters/16-exceptions.md:2058`
 
 ```raku
 sub guarded($x) {
@@ -19443,7 +19466,7 @@ Postcondition 'False' failed
 
 ### 16.55 Compile-time errors are exceptions, and EVAL makes them catchable
 
-`src/chapters/16-exceptions.md:2089`
+`src/chapters/16-exceptions.md:2093`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -19486,7 +19509,7 @@ No such method 'is-compile-time' for invocant of type 'X::Undeclared'
 
 ### 16.56 A call that can never match its signature fails at compile time
 
-`src/chapters/16-exceptions.md:2134`
+`src/chapters/16-exceptions.md:2138`
 
 ```raku
 sub greet(Str $name) { say "hello $name" }
@@ -19526,7 +19549,7 @@ Calling greet(Int) will never work with declared signature (Str $name)
 
 ### 16.57 A compile-time exception carries the details of the complaint
 
-`src/chapters/16-exceptions.md:2174`
+`src/chapters/16-exceptions.md:2178`
 
 ```raku
 use MONKEY-SEE-NO-EVAL;
@@ -19564,7 +19587,7 @@ X::Comp::Group: (X::Syntax::BlockGobbled), X::Syntax::Missing
 
 ### 16.58 Dispatch and type-check errors name what they got and expected
 
-`src/chapters/16-exceptions.md:2203`
+`src/chapters/16-exceptions.md:2207`
 
 ```raku
 try 42.nosuch;
@@ -19611,7 +19634,7 @@ No such method 'suggestions' for invocant of type 'X::Method::NotFound'
 
 ### 16.58 Dispatch and type-check errors name what they got and expected
 
-`src/chapters/16-exceptions.md:2233`
+`src/chapters/16-exceptions.md:2237`
 
 ```raku
 proto area(|) {*}
@@ -19653,7 +19676,7 @@ No such method 'dispatcher' for invocant of type 'X::Multi::NoMatch'
 
 ### 16.59 Each misuse of a value has its own exception type
 
-`src/chapters/16-exceptions.md:2259`
+`src/chapters/16-exceptions.md:2263`
 
 ```raku
 try { 1.0 = 3 };
@@ -19708,7 +19731,10 @@ Raku++ (exit 1):
 stderr:
 
 ```
-No such method 'value' for type Str
+No such method 'value' for invocant of type 'X::Assignment::RO'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 2
+      2 | say $!.^name, ": ", $!.value, " ", $!.typename;
 ```
 
 ## 17. Regexes and Grammars
@@ -20236,7 +20262,7 @@ False
 
 ### 17.33 A regex in Boolean context matches `$_`, and in string context warns
 
-`src/chapters/17-regexes.md:952`
+`src/chapters/17-regexes.md:953`
 
 ```raku
 $_ = "abc";
@@ -20281,7 +20307,7 @@ pattern: :i  a.b
 
 ### 17.34 A regex called with a Match matches only at that position
 
-`src/chapters/17-regexes.md:984`
+`src/chapters/17-regexes.md:985`
 
 ```raku
 my $r = rx/ b /;
@@ -20313,7 +20339,7 @@ X::Method::NotFound
 
 ### 17.36 `.match` with a string searches for the text, and ignores `:i`
 
-`src/chapters/17-regexes.md:1042`
+`src/chapters/17-regexes.md:1043`
 
 ```raku
 say "a.b".match(".").from;
@@ -20357,7 +20383,7 @@ No such method 'match' for invocant of type 'Str'
 
 ### 17.37 `:g` returns a List, empty when nothing matches
 
-`src/chapters/17-regexes.md:1071`
+`src/chapters/17-regexes.md:1072`
 
 ```raku
 say "a1b2c3".match(/\d/, :g)».Str;
@@ -20404,7 +20430,7 @@ Unrecognized regex adverb: :g
 
 ### 17.40 An invalid `:x` is a Failure, and `:x(Nil)` dies
 
-`src/chapters/17-regexes.md:1153`
+`src/chapters/17-regexes.md:1155`
 
 ```raku
 my $r = "aaaa".match(/a/, :x("2"));
@@ -20442,7 +20468,7 @@ in Str.match, got invalid value of type Str for :x, must be Int or Range
 
 ### 17.41 `:nth` counts from 1, from the end, or down a list
 
-`src/chapters/17-regexes.md:1180`
+`src/chapters/17-regexes.md:1182`
 
 ```raku
 my $s = "abcd";
@@ -20487,7 +20513,7 @@ Match.new(:orig("abcd"), :from(1), :pos(2))
 
 ### 17.42 `:nth` refuses 0 and a list that does not increase
 
-`src/chapters/17-regexes.md:1213`
+`src/chapters/17-regexes.md:1215`
 
 ```raku
 my $s = "abcd";
@@ -20527,7 +20553,7 @@ Attempt to fetch matches out of order with :nth
 
 ### 17.43 `:nth(2), :x(1)` answers an empty list
 
-`src/chapters/17-regexes.md:1239`
+`src/chapters/17-regexes.md:1242`
 
 ```raku
 my $s = "abcd";
@@ -20557,7 +20583,7 @@ Match.new(:orig("abcd"), :from(1), :pos(2))
 
 ### 17.44 `:c` scans from a position, `:p` anchors there, and Nil swaps them
 
-`src/chapters/17-regexes.md:1264`
+`src/chapters/17-regexes.md:1267`
 
 ```raku
 my $s = "aXbXc";
@@ -20599,7 +20625,7 @@ Nil
 
 ### 17.45 `:as(Str)` returns the text, but not with `:c` or `:p`
 
-`src/chapters/17-regexes.md:1293`
+`src/chapters/17-regexes.md:1296`
 
 ```raku
 say "a1b2".match(/\d/, :as(Str)).raku;
@@ -20634,7 +20660,7 @@ Str
 
 ### 17.48 `S///` works on `$_`, and `~~ S///` is never useful
 
-`src/chapters/17-regexes.md:1380`
+`src/chapters/17-regexes.md:1383`
 
 ```raku
 my $s = "a1b2";
@@ -20673,7 +20699,7 @@ a1b2
 
 ### 17.50 `index` and its relatives refuse a regex; `substr` dies trying
 
-`src/chapters/17-regexes.md:1448`
+`src/chapters/17-regexes.md:1451`
 
 ```raku
 for "index", "starts-with", "ends-with" -> $method {
@@ -20708,7 +20734,7 @@ Nil
 
 ### 17.52 `parse` must reach the end, and returns the grammar's own type
 
-`src/chapters/17-regexes.md:1493`
+`src/chapters/17-regexes.md:1496`
 
 ```raku
 grammar G { token TOP { a+ } }
@@ -20739,7 +20765,7 @@ Nil
 
 ### 17.53 A grammar without `TOP` cannot parse, and neither can `Grammar`
 
-`src/chapters/17-regexes.md:1516`
+`src/chapters/17-regexes.md:1519`
 
 ```raku
 grammar Empty {}
@@ -20769,7 +20795,7 @@ G.new
 
 ### 17.54 A failed `subparse` is a Match whose `.to` is -3
 
-`src/chapters/17-regexes.md:1540`
+`src/chapters/17-regexes.md:1543`
 
 ```raku
 grammar G { token TOP { a+ } }
@@ -20809,7 +20835,7 @@ No such method 'to' for invocant of type 'Any'
 
 ### 17.55 `:rule`, `:args` and `:pos` choose where a parse starts
 
-`src/chapters/17-regexes.md:1565`
+`src/chapters/17-regexes.md:1568`
 
 ```raku
 grammar G {
@@ -20858,7 +20884,7 @@ Nil
 
 ### 17.56 A grammar parses any object, and `.orig` keeps it
 
-`src/chapters/17-regexes.md:1602`
+`src/chapters/17-regexes.md:1605`
 
 ```raku
 grammar Digits { token TOP { \d+ } }
@@ -20902,7 +20928,7 @@ Nil
 
 ### 17.57 `parsefile` reads the file and hands the rest to `parse` (local)
 
-`src/chapters/17-regexes.md:1633`
+`src/chapters/17-regexes.md:1636`
 
 ```raku
 grammar Words { token TOP { \w+ \n? } }
@@ -20935,7 +20961,7 @@ X::AdHoc
 
 ### 17.58 `parse` retries `TOP` only if `TOP` can backtrack
 
-`src/chapters/17-regexes.md:1659`
+`src/chapters/17-regexes.md:1662`
 
 ```raku
 grammar R { regex TOP { a || aa } }
@@ -20967,7 +20993,7 @@ a
 
 ### 17.59 Named arguments to `parse` set attributes the result forgets
 
-`src/chapters/17-regexes.md:1683`
+`src/chapters/17-regexes.md:1686`
 
 ```raku
 grammar Limited {
@@ -21008,7 +21034,7 @@ stderr:
 
 ### 17.60 A rule is a method that runs on a Match
 
-`src/chapters/17-regexes.md:1713`
+`src/chapters/17-regexes.md:1716`
 
 ```raku
 grammar G { token TOP { a+ }; token b { b } }
@@ -21051,7 +21077,7 @@ No such method 'pos' for invocant of type 'Any'
 
 ### 17.61 A subgrammar overrides rules by name, and `<ws>` captures
 
-`src/chapters/17-regexes.md:1739`
+`src/chapters/17-regexes.md:1742`
 
 ```raku
 grammar A { token TOP { <x> <y> }; token x { a }; token y { b } }
@@ -21083,7 +21109,7 @@ ab cb
 
 ### 17.61 A subgrammar overrides rules by name, and `<ws>` captures
 
-`src/chapters/17-regexes.md:1758`
+`src/chapters/17-regexes.md:1761`
 
 ```raku
 grammar S { token TOP { <ws> a <ws> b } }
@@ -21109,7 +21135,7 @@ Raku++:
 
 ### 17.62 An actions object is called after each named rule succeeds
 
-`src/chapters/17-regexes.md:1803`
+`src/chapters/17-regexes.md:1806`
 
 ```raku
 grammar G { token TOP { <a> }; token a { a } }
@@ -21131,7 +21157,7 @@ Nil
 
 ### 17.63 `.actions` of a parse without actions is not a Raku object
 
-`src/chapters/17-regexes.md:1820`
+`src/chapters/17-regexes.md:1823`
 
 ```raku
 grammar G { token TOP { a } }
@@ -21164,7 +21190,7 @@ Any
 
 ### 17.65 The action is named after the rule, not the alias
 
-`src/chapters/17-regexes.md:1861`
+`src/chapters/17-regexes.md:1864`
 
 ```raku
 my @fired;
@@ -21202,7 +21228,7 @@ Raku++:
 
 ### 17.66 A proto token takes the longest candidate, whose action fires
 
-`src/chapters/17-regexes.md:1911`
+`src/chapters/17-regexes.md:1914`
 
 ```raku
 my @fired;
@@ -21248,7 +21274,7 @@ List 2
 
 ### 17.66 A proto token takes the longest candidate, whose action fires
 
-`src/chapters/17-regexes.md:1945`
+`src/chapters/17-regexes.md:1948`
 
 ```raku
 grammar J {
@@ -21281,7 +21307,7 @@ x
 
 ### 17.67 Actions fire for branches that are later abandoned
 
-`src/chapters/17-regexes.md:1971`
+`src/chapters/17-regexes.md:1974`
 
 ```raku
 my @fired;
@@ -22191,7 +22217,7 @@ $({:day(1), :month(5), :year(2019)}, {:day(2), :month(5), :year(2019)}, {:day(3)
 
 ### 18.29 A Date range compares by text, so a formatter cuts it short
 
-`src/chapters/18-dates.md:912`
+`src/chapters/18-dates.md:914`
 
 ```raku
 my $r = Date.new("2019-05-01") .. Date.new("2019-05-05");
@@ -22222,7 +22248,7 @@ False
 
 ### 18.30 `later` and `earlier` move by one unit; a month clips the day
 
-`src/chapters/18-dates.md:968`
+`src/chapters/18-dates.md:971`
 
 ```raku
 my $d = Date.new("2021-01-30");
@@ -22255,7 +22281,7 @@ Nil
 
 ### 18.31 An unknown unit dies on a Date and does nothing on a DateTime
 
-`src/chapters/18-dates.md:994`
+`src/chapters/18-dates.md:997`
 
 ```raku
 my $d = Date.new("2021-03-31");
@@ -22291,7 +22317,7 @@ Nil
 
 ### 18.32 `truncated-to` accepts any word that begins with a unit
 
-`src/chapters/18-dates.md:1022`
+`src/chapters/18-dates.md:1025`
 
 ```raku
 my $d = Date.new("2012-12-24");
@@ -22332,7 +22358,7 @@ Nil
 
 ### 18.34 `clone` replaces fields and checks them again
 
-`src/chapters/18-dates.md:1079`
+`src/chapters/18-dates.md:1082`
 
 ```raku
 my $d = Date.new("2015-11-24");
@@ -22373,7 +22399,7 @@ X::Temporal::OutOfRange
 
 ### 18.34 `clone` replaces fields and checks them again
 
-`src/chapters/18-dates.md:1106`
+`src/chapters/18-dates.md:1109`
 
 ```raku
 my $d = Date.new("2016-02-10");
@@ -22418,7 +22444,7 @@ No such method 'new-from-daycount' for invocant of type 'Date'
 
 ### 18.35 A Date becomes a DateTime at midnight UTC, without its formatter
 
-`src/chapters/18-dates.md:1134`
+`src/chapters/18-dates.md:1137`
 
 ```raku
 my $d = Date.new("2015-12-24", :formatter({ "F" }));
@@ -22456,7 +22482,7 @@ True
 
 ### 18.36 `:year` beside `:date` throws the date away
 
-`src/chapters/18-dates.md:1162`
+`src/chapters/18-dates.md:1165`
 
 ```raku
 my $d = Date.new("2015-12-24");
@@ -22486,7 +22512,7 @@ Raku++:
 
 ### 18.38 Near misses of ISO 8601 are refused
 
-`src/chapters/18-dates.md:1236`
+`src/chapters/18-dates.md:1239`
 
 ```raku
 for "2012-12-22 07:02:00", "2012-12-22T07:02", "2012-12-22T07:02:00UTC",
@@ -22530,7 +22556,7 @@ Raku++:
 
 ### 18.38 Near misses of ISO 8601 are refused
 
-`src/chapters/18-dates.md:1261`
+`src/chapters/18-dates.md:1264`
 
 ```raku
 try DateTime.new("2012-12-22T07:02:00+00:75");
@@ -22554,7 +22580,7 @@ Minute out of range. Is: 75, should be in 0..59
 
 ### 18.39 A `Z` gives way to `:timezone`, but an offset clashes with it
 
-`src/chapters/18-dates.md:1280`
+`src/chapters/18-dates.md:1283`
 
 ```raku
 say DateTime.new("2012-12-22T07:02:00Z", :timezone(3600));
@@ -22590,7 +22616,7 @@ DateTime.new(Str): :timezone argument not allowed with a timestamp offset
 
 ### 18.40 A date-only string with a bad month dies with an internal error
 
-`src/chapters/18-dates.md:1303`
+`src/chapters/18-dates.md:1307`
 
 ```raku
 try DateTime.new("2012-13-22T07:02:00Z");
@@ -22622,7 +22648,7 @@ Month out of range. Is: 13, should be in 1..12
 
 ### 18.41 A number is a POSIX time, and the second takes its type
 
-`src/chapters/18-dates.md:1330`
+`src/chapters/18-dates.md:1334`
 
 ```raku
 say DateTime.new(0);
@@ -22671,7 +22697,7 @@ X::Temporal::InvalidFormat
 
 ### 18.42 The six-part form keeps the second exactly as given, even a string
 
-`src/chapters/18-dates.md:1367`
+`src/chapters/18-dates.md:1371`
 
 ```raku
 my $dt = DateTime.new(2020, 1, 2, 3, 4, "5");
@@ -22720,7 +22746,7 @@ Cannot call DateTime.new with no arguments
 
 ### 18.43 Hour and minute throw `X::Temporal::OutOfRange`; the second does not
 
-`src/chapters/18-dates.md:1400`
+`src/chapters/18-dates.md:1404`
 
 ```raku
 try DateTime.new(:1984year, :24hour);
@@ -22761,7 +22787,7 @@ No such method 'what' for invocant of type 'X::OutOfRange'
 
 ### 18.44 A second of 60 is accepted only at 23:59 UTC on a leap-second day
 
-`src/chapters/18-dates.md:1426`
+`src/chapters/18-dates.md:1430`
 
 ```raku
 say DateTime.new("1998-12-31T23:59:60Z");
@@ -22795,7 +22821,7 @@ Second out of range. Is: 60, should be in 0..^60 (or leap second not allowed her
 
 ### 18.45 `.posix` drops the fraction, `.Instant` keeps it, and `.Int` is refused
 
-`src/chapters/18-dates.md:1453`
+`src/chapters/18-dates.md:1457`
 
 ```raku
 my $dt = DateTime.new("2015-12-24T12:23:45.5+02:00");
@@ -22838,7 +22864,7 @@ False False
 
 ### 18.46 The calendar methods follow the local date; the Julian dates follow UTC
 
-`src/chapters/18-dates.md:1484`
+`src/chapters/18-dates.md:1488`
 
 ```raku
 my $dt = DateTime.new("2015-12-24T00:30:00+02:00");
@@ -22880,7 +22906,7 @@ Raku++:
 
 ### 18.47 The default text shows the zone to the minute, and six decimals when needed
 
-`src/chapters/18-dates.md:1517`
+`src/chapters/18-dates.md:1521`
 
 ```raku
 say DateTime.new(:2000year, :timezone(3661));
@@ -22921,7 +22947,7 @@ DateTime.new(2000,1,1,0,0,0,:timezone(-30))
 
 ### 18.48 Rounding the second can print one that does not exist, or die
 
-`src/chapters/18-dates.md:1546`
+`src/chapters/18-dates.md:1553`
 
 ```raku
 say DateTime.new(:2000year, :second(59.9999994));
@@ -22953,7 +22979,7 @@ Nil
 
 ### 18.49 A DateTime's identity is its printed text
 
-`src/chapters/18-dates.md:1575`
+`src/chapters/18-dates.md:1584`
 
 ```raku
 my $utc = DateTime.new("1971-10-28T10:45:00Z");
@@ -22987,7 +23013,7 @@ True False
 
 ### 18.53 `.local` follows `my $*TZ`, but `DateTime.now` does not
 
-`src/chapters/18-dates.md:1688`
+`src/chapters/18-dates.md:1698`
 
 ```raku
 say $*TZ.^name;
@@ -23024,7 +23050,7 @@ True
 
 ### 18.54 `DateTime.now` is local with a Num second; `now.DateTime` is UTC with a Rat
 
-`src/chapters/18-dates.md:1719`
+`src/chapters/18-dates.md:1729`
 
 ```raku
 say DateTime.now.^name;
@@ -23065,7 +23091,7 @@ today
 
 ### 18.55 A leap second and the second after it share one POSIX time
 
-`src/chapters/18-dates.md:1747`
+`src/chapters/18-dates.md:1757`
 
 ```raku
 my $leap = DateTime.new("2016-12-31T23:59:60Z");
@@ -23102,7 +23128,7 @@ True
 
 ### 18.56 The Date of a leap-second Instant is the next day
 
-`src/chapters/18-dates.md:1776`
+`src/chapters/18-dates.md:1786`
 
 ```raku
 my $leap = DateTime.new("2016-12-31T23:59:60Z");
@@ -23141,7 +23167,7 @@ DateTime.new(2016,12,31,23,59,60)
 
 ### 18.58 `later` on a DateTime carries into days and keeps the zone
 
-`src/chapters/18-dates.md:1823`
+`src/chapters/18-dates.md:1833`
 
 ```raku
 my $d = DateTime.new("2013-12-23T12:34:36Z");
@@ -23177,7 +23203,7 @@ Int
 
 ### 18.60 DateTime minus DateTime is a Duration that counts leap seconds
 
-`src/chapters/18-dates.md:1876`
+`src/chapters/18-dates.md:1886`
 
 ```raku
 say DateTime.new("2017-01-01T00:00:00Z") - DateTime.new("2016-12-31T23:59:59Z");
@@ -23215,7 +23241,7 @@ Duration.new(0)
 
 ### 18.61 A DateTime plus a plain number is an Instant, and a Duration drops the formatter
 
-`src/chapters/18-dates.md:1905`
+`src/chapters/18-dates.md:1915`
 
 ```raku
 my $dt = DateTime.new(0, :formatter({ "F" }));
@@ -23255,7 +23281,7 @@ Nil
 
 ### 18.62 Instants and Durations are Cool; Dates and DateTimes are not
 
-`src/chapters/18-dates.md:1934`
+`src/chapters/18-dates.md:1944`
 
 ```raku
 say Date ~~ Dateish, " ", DateTime ~~ Dateish, " ", Instant ~~ Dateish;
@@ -23294,7 +23320,7 @@ Nil
 
 ### 18.63 The fields are read-only, and the type objects refuse them
 
-`src/chapters/18-dates.md:1964`
+`src/chapters/18-dates.md:1974`
 
 ```raku
 my $d = Date.new("2015-12-24");
@@ -23330,5 +23356,7279 @@ DateTime
 No such method 'year' for invocant of type 'Date'
 Nil
 Nil
+```
+
+## 19. Files and Paths
+
+### 19.3 `dirname` and `basename` split the text at the last slash
+
+`src/chapters/19-files.md:107`
+
+```raku
+my $parts = "/a/b.txt".IO.parts;
+say $parts.^name;
+say $parts<dirname>, " ", $parts<basename>;
+say $parts[2].raku;
+.raku.say for "/a/b.txt".IO.parts;
+say "/a/b.txt".IO.volume.raku;
+```
+
+Rakudo:
+
+```
+IO::Path::Parts
+/a b.txt
+:basename("b.txt")
+:volume("")
+:dirname("/a")
+:basename("b.txt")
+""
+```
+
+Raku++:
+
+```
+IO::Path::Parts
+/a b.txt
+:basename("b.txt")
+IO::Path::Parts.new("","/a","b.txt")
+""
+```
+
+### 19.7 A relative path remembers the directory it was made in (local)
+
+`src/chapters/19-files.md:228`
+
+```raku
+mkdir "sub";
+spurt "here.txt", "found";
+my $p = "here.txt".IO;
+indir "sub", {
+    say $p.slurp;
+    say "here.txt".IO.e;
+    say (try slurp ~$p) // "the string: " ~ $!.^name;
+};
+unlink "here.txt";
+rmdir "sub";
+```
+
+Rakudo:
+
+```
+found
+False
+the string: X::AdHoc
+```
+
+Raku++:
+
+```
+found
+False
+the string: X::IO::Open
+```
+
+### 19.13 `.succ` on a path increments the text before its first dot
+
+`src/chapters/19-files.md:398`
+
+```raku
+put "file1.txt".IO.succ;
+put "file1.txt".IO.pred;
+put "img/photo9.jpg".IO.succ;
+put "v1.2/notes".IO.succ;
+say "data/42".IO + 1;
+```
+
+Rakudo:
+
+```
+file2.txt
+file0.txt
+img/photp0.jpg
+v2.2/notes
+43
+```
+
+Raku++ (exit 1):
+
+```
+file2.txt
+file0.txt
+img/photp0.jpg
+v1.2/notet
+```
+
+stderr:
+
+```
+Cannot convert string to number: trailing characters after number in '<HERE>data/42' (indicated by <HERE>)
+  (X::Str::Numeric)
+  in block <unit> at example.raku line 5
+      5 | say "data/42".IO + 1;
+```
+
+### 19.15 Two paths with the same text are two values
+
+`src/chapters/19-files.md:450`
+
+```raku
+say "a".IO eqv "a".IO;
+say "./a".IO eqv "a".IO;
+say "a".IO === "a".IO;
+say ("a".IO, "a".IO).unique.elems;
+say set("a".IO, "a".IO).elems;
+say ("a".IO, "./a".IO).unique(with => &[~~]).elems;
+```
+
+Rakudo:
+
+```
+True
+False
+False
+2
+2
+1
+```
+
+Raku++:
+
+```
+True
+False
+True
+1
+1
+1
+```
+
+### 19.16 `.e` is a Bool; the other tests of a missing file fail (local)
+
+`src/chapters/19-files.md:476`
+
+```raku
+my $m = "missing.txt".IO;
+say $m.e;
+my $d = $m.d;
+say $d.^name, " ", $d.so;
+say $d.exception.^name, " ", $d.exception.trying;
+say $d.exception.path.IO.basename;
+say $m.s // 0;
+say $m.f ?? "a file" !! "not a file";
+```
+
+Rakudo:
+
+```
+False
+Failure False
+X::IO::DoesNotExist d
+missing.txt
+0
+not a file
+```
+
+Raku++ (exit 1):
+
+```
+False
+Failure False
+X::IO::DoesNotExist (Any)
+```
+
+stderr:
+
+```
+No such method 'IO' for invocant of type 'Any'
+  in block <unit> at example.raku line 6
+      6 | say $d.exception.path.IO.basename;
+```
+
+### 19.19 `mkdir` creates the parents and passes over an existing directory (local)
+
+`src/chapters/19-files.md:575`
+
+```raku
+say "d/x/y".IO.mkdir.^name;
+say "d/x/y".IO.d;
+my $mode = "d".IO.mode;
+say "d".IO.mkdir(0o700) ?? "no-op" !! "failed";
+say "d".IO.mode eq $mode;
+spurt "f", "";
+my $r = "f".IO.mkdir;
+say $r.so, " ", $r.exception.^name, " ", $r.exception.path.IO.basename;
+unlink "f";
+rmdir "d/x/y", "d/x", "d";
+```
+
+Rakudo:
+
+```
+IO::Path
+True
+no-op
+True
+False X::IO::Mkdir f
+```
+
+Raku++ (exit 1):
+
+```
+IO::Path
+True
+no-op
+True
+```
+
+stderr:
+
+```
+No such method 'IO' for invocant of type 'Any'
+  in block <unit> at example.raku line 8
+      8 | say $r.so, " ", $r.exception.^name, " ", $r.exception.path.IO.basename;
+```
+
+### 19.20 `unlink` of a missing file is True (local)
+
+`src/chapters/19-files.md:603`
+
+```raku
+say "never-was.txt".IO.unlink;
+mkdir "d";
+my $u = "d".IO.unlink;
+say $u.so, " ", $u.exception.^name;
+spurt "d/f", "x";
+my $r = "d".IO.rmdir;
+say $r.so, " ", $r.exception.^name;
+unlink "d/f";
+say "d".IO.rmdir;
+my $again = "d".IO.rmdir;
+say $again.so, " ", $again.exception.^name;
+```
+
+Rakudo:
+
+```
+True
+False X::IO::Unlink
+False X::IO::Rmdir
+True
+False X::IO::Rmdir
+```
+
+Raku++ (exit 1):
+
+```
+True
+False X::IO::Unlink
+False X::IO::Rmdir
+```
+
+stderr:
+
+```
+Failed to remove the directory 'd': Directory not empty
+  (X::IO::Rmdir)
+  in block <unit> at example.raku line 9
+      9 | say "d".IO.rmdir;
+
+Actually thrown at:
+… (1 more lines)
+```
+
+### 19.21 The sub forms of `unlink`, `rmdir` and `chmod` return what worked (local)
+
+`src/chapters/19-files.md:632`
+
+```raku
+spurt $_, "" for <a b f>;
+mkdir "d";
+say unlink("a", "b", "never-was").raku;
+say rmdir("f", "d", "never-was").raku;
+say chmod(0o600, "f", "never-was").raku;
+say "f".IO.mode;
+say (try unlink()) // $!.^name;
+unlink "f";
+```
+
+Rakudo:
+
+```
+["a", "b", "never-was"]
+["d"]
+["f"]
+0600
+X::NoZeroArgMeaning
+```
+
+Raku++:
+
+```
+["a", "b", "never-was"]
+[]
+["f"]
+0600
+X::NoZeroArgMeaning
+```
+
+### 19.22 `copy`, `rename` and `move` give the reason in `.os-error` (local)
+
+`src/chapters/19-files.md:657`
+
+```raku
+spurt "src", "text";
+say "src".IO.copy("dst");
+say "dst".IO.slurp;
+for "src".IO.copy("src"),
+    "src".IO.copy("dst", :createonly),
+    "missing".IO.copy("new") -> $r {
+    say $r.so, " ", $r.exception.^name, ": ", $r.exception.os-error;
+}
+say "new".IO.e;
+unlink "src", "dst";
+```
+
+Rakudo:
+
+```
+True
+text
+False X::IO::Copy: source and target are the same
+False X::IO::Copy: :createonly specified and destination exists
+False X::IO::Copy: Failed to copy file: no such file or directory
+False
+```
+
+Raku++:
+
+```
+True
+text
+False X::IO::Copy: source and target are the same
+False X::IO::Copy: :createonly specified and destination exists
+False X::IO::Copy: No such file or directory
+False
+```
+
+### 19.25 `dir` lists paths that start with the directory as written (local)
+
+`src/chapters/19-files.md:777`
+
+```raku
+mkdir "box/sub";
+spurt "box/$_", "" for <b.txt a.raku .hidden>;
+say dir("box").sort.map(*.Str);
+say dir("box/").sort.map(*.Str);
+say dir("./box").sort.map(*.Str);
+say indir("box", { dir.sort.map(*.Str) });
+say dir("box").head.^name, " ", "box/sub".IO.dir-with-entries;
+say (try dir("missing")) // $!.^name;
+unlink "box/$_" for <b.txt a.raku .hidden>;
+rmdir "box/sub", "box";
+```
+
+Rakudo:
+
+```
+(box/.hidden box/a.raku box/b.txt box/sub)
+(box/.hidden box/a.raku box/b.txt box/sub)
+(./box/.hidden ./box/a.raku ./box/b.txt ./box/sub)
+(.hidden a.raku b.txt sub)
+IO::Path False
+X::IO::Dir
+```
+
+Raku++ (exit 1):
+
+```
+(box/.hidden box/a.raku box/b.txt box/sub)
+(box/.hidden box/a.raku box/b.txt box/sub)
+(./box/.hidden ./box/a.raku ./box/b.txt ./box/sub)
+(.hidden a.raku b.txt sub)
+```
+
+stderr:
+
+```
+No such method 'dir-with-entries' for invocant of type 'IO::Path'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 7
+      7 | say dir("box").head.^name, " ", "box/sub".IO.dir-with-entries;
+```
+
+### 19.28 `slurp` of a missing file throws, while `open` fails (local)
+
+`src/chapters/19-files.md:875`
+
+```raku
+my $h = open("missing.txt");
+say "open: ", $h.^name, ", defined: ", $h.defined;
+{
+    my $s = slurp("missing.txt");
+    say "not reached";
+    CATCH { default { say "slurp threw ", .^name } }
+}
+{
+    my @l = "missing.txt".IO.lines;
+    say "not reached";
+    CATCH { default { say "lines threw ", .^name } }
+}
+```
+
+Rakudo:
+
+```
+open: Failure, defined: False
+slurp threw X::AdHoc
+lines threw X::AdHoc
+```
+
+Raku++:
+
+```
+open: Failure, defined: False
+slurp threw X::IO::Open
+lines threw X::IO::Open
+```
+
+### 19.29 Reading turns `\r\n` into `\n` (local)
+
+`src/chapters/19-files.md:905`
+
+```raku
+spurt "crlf.txt", "a\r\nb\rc\n";
+say slurp("crlf.txt").raku;
+say slurp("crlf.txt", :bin).elems;
+say "crlf.txt".IO.slurp(:!translate-nl).raku;
+say open("crlf.txt", :!translate-nl).slurp.raku;
+unlink "crlf.txt";
+```
+
+Rakudo:
+
+```
+"a\nb\rc\n"
+7
+"a\r\nb\rc\n"
+"a\nb\rc\n"
+```
+
+Raku++:
+
+```
+"a\nb\rc\n"
+7
+"a\nb\rc\n"
+"a\nb\rc\n"
+```
+
+### 19.30 `.lines` splits on `nl-in`, and `:!chomp` keeps the separators (local)
+
+`src/chapters/19-files.md:927`
+
+```raku
+spurt "crlf.txt", "a\r\nb\rc\n";
+say "crlf.txt".IO.lines.raku;
+say "crlf.txt".IO.lines(:!chomp).raku;
+say "crlf.txt".IO.lines(:nl-in("\r")).raku;
+spurt "list.txt", "a;b,c\nd";
+say "list.txt".IO.lines(:nl-in(";", ",")).raku;
+unlink "crlf.txt", "list.txt";
+```
+
+Rakudo:
+
+```
+("a", "b\rc").Seq
+("a\n", "b\rc\n").Seq
+("a\nb", "c\n").Seq
+("a", "b", "c\nd").Seq
+```
+
+Raku++:
+
+```
+("a", "b\rc").Seq
+("a\n", "b\rc\n").Seq
+("a", "\nb", "c\n").Seq
+("a", "b,c\nd").Seq
+```
+
+### 19.33 A UTF-16 file begins with a byte-order mark (local)
+
+`src/chapters/19-files.md:1009`
+
+```raku
+spurt "u16.txt", "é", :enc<utf16>;
+say slurp("u16.txt", :bin).list;
+spurt "u16.txt", "e", :enc<utf16>, :append;
+say slurp("u16.txt", :bin).list;
+say slurp("u16.txt", :enc<utf16>);
+say "é".encode("utf16").list;
+spurt "le.txt", "é", :enc<utf16le>;
+say slurp("le.txt", :bin).list;
+unlink "u16.txt", "le.txt";
+```
+
+Rakudo:
+
+```
+(255 254 233 0)
+(255 254 233 0 101 0)
+ée
+(233)
+(233 0)
+```
+
+Raku++:
+
+```
+(233 0)
+(233 0 101 0)
+ée
+(233)
+(233 0)
+```
+
+### 19.33 A UTF-16 file begins with a byte-order mark (local)
+
+`src/chapters/19-files.md:1032`
+
+```raku
+spurt "l1.txt", "é", :enc<latin1>;
+say slurp("l1.txt", :bin).list;
+say slurp("l1.txt", :enc<latin1>);
+{
+    my $s = slurp("l1.txt");
+    CATCH { default { say .^name, ": ", .message } }
+}
+unlink "l1.txt";
+```
+
+Rakudo:
+
+```
+(233)
+é
+X::AdHoc: Malformed termination of UTF-8 string
+```
+
+Raku++:
+
+```
+(233)
+é
+```
+
+### 19.35 A closed handle refuses with two kinds of exception (local)
+
+`src/chapters/19-files.md:1091`
+
+```raku
+my $fh = open("log.txt", :w);
+$fh.close;
+for { $fh.print("x") }, { $fh.get }, { $fh.lines }, { $fh.tell }, { $fh.slurp } -> &op {
+    op();
+    CATCH { default { say .^name } }
+}
+say (try $fh.tell) // $!.message;
+say $fh.eof;
+unlink "log.txt";
+```
+
+Rakudo:
+
+```
+X::IO::Closed
+X::IO::Closed
+X::IO::Closed
+X::AdHoc
+X::AdHoc
+tell requires an object with REPR MVMOSHandle (got VMNull with REPR Null)
+True
+```
+
+Raku++:
+
+```
+X::IO::Closed
+X::IO::Closed
+X::IO::Closed
+X::AdHoc
+X::IO::Closed
+Cannot do 'tell' on a closed filehandle
+True
+```
+
+### 19.38 On a handle, `.lines(:!chomp)` keeps every line end but the first (local)
+
+`src/chapters/19-files.md:1192`
+
+```raku
+spurt "r.txt", "l1\nl2\nl3\n";
+say open("r.txt").lines(:!chomp).raku;
+say open("r.txt", :!chomp).lines.raku;
+my $fh = open("r.txt");
+$fh.chomp = False;
+say $fh.lines.raku;
+$fh.close;
+unlink "r.txt";
+```
+
+Rakudo:
+
+```
+("l1", "l2\n", "l3\n").Seq
+("l1\n", "l2\n", "l3\n").Seq
+("l1\n", "l2\n", "l3\n").Seq
+```
+
+Raku++:
+
+```
+("l1", "l2", "l3").Seq
+("l1\n", "l2\n", "l3\n").Seq
+("l1\n", "l2\n", "l3\n").Seq
+```
+
+### 19.39 A handle's `:nl-in("\r\n")` never sees a `\r\n` (local)
+
+`src/chapters/19-files.md:1220`
+
+```raku
+spurt "r.txt", "l1\nl2\r\nl3";
+say open("r.txt", :nl-in("\r")).lines.raku;
+say open("r.txt", :nl-in("\r\n")).lines.raku;
+say open("r.txt").lines(:nl-in("\r")).raku;
+unlink "r.txt";
+```
+
+Rakudo:
+
+```
+("l1\nl2\nl3",).Seq
+("l1\nl2\nl3",).Seq
+("l1", "l2", "l3").Seq
+```
+
+Raku++:
+
+```
+("l1\nl2", "\nl3").Seq
+("l1\nl2", "l3").Seq
+("l1", "l2", "l3").Seq
+```
+
+### 19.40 `read`, `readchars` and `slurp` go on from the current position (local)
+
+`src/chapters/19-files.md:1240`
+
+```raku
+spurt "r.txt", "abcdef\nghi";
+my $fh = open("r.txt");
+say $fh.read(2).raku;
+say $fh.readchars(3);
+say $fh.slurp.raku;
+say $fh.eof;
+say $fh.seek(-3, SeekFromEnd);
+say $fh.slurp;
+say $fh.seek(0), " ", $fh.tell;
+say $fh.readchars(1), " ", $fh.seek(2, SeekFromCurrent), " ", $fh.get;
+$fh.close;
+unlink "r.txt";
+```
+
+Rakudo:
+
+```
+Buf[uint8].new(97,98)
+cde
+"f\nghi"
+True
+True
+ghi
+True 0
+a True def
+```
+
+Raku++:
+
+```
+Buf[uint8].new(97,98)
+abc
+"def\nghi"
+False
+True
+
+True 0
+ True Nil
+```
+
+### 19.40 `read`, `readchars` and `slurp` go on from the current position (local)
+
+`src/chapters/19-files.md:1270`
+
+```raku
+spurt "r.txt", "l1\nl2\r\nl3";
+my $fh = open("r.txt");
+say $fh.read(3).raku;
+say $fh.readchars(2), " ", $fh.tell;
+$fh.close;
+unlink "r.txt";
+```
+
+Rakudo:
+
+```
+Buf[uint8].new(108,49,10)
+l2 6
+```
+
+Raku++:
+
+```
+Buf[uint8].new(108,49,10)
+l1 3
+```
+
+### 19.41 A `:bin` handle reads bytes and refuses lines (local)
+
+`src/chapters/19-files.md:1291`
+
+```raku
+spurt "r.txt", "l1\nl2";
+my $b = open("r.txt", :bin);
+say $b.encoding.raku;
+say $b.read(2).raku;
+say $b.slurp.raku;
+$b.close;
+for { open("r.txt", :bin).get }, { open("r.txt", :bin).lines.eager }, { open("r.txt", :bin).readchars(1) } -> &op {
+    op();
+    CATCH { default { say .^name } }
+}
+say open("r.txt").slurp(:bin).^name;
+say open("r.txt", :bin).Supply(:size(2)).list.raku;
+say open("r.txt").Supply(:size(2)).list.raku;
+unlink "r.txt";
+```
+
+Rakudo:
+
+```
+Nil
+Buf[uint8].new(108,49)
+Buf[uint8].new(10,108,50)
+X::IO::BinaryMode
+X::IO::BinaryMode
+X::IO::BinaryMode
+Buf[uint8]
+(Buf[uint8].new(108,49), Buf[uint8].new(10,108), Buf[uint8].new(50))
+("l1", "\nl", "2")
+```
+
+Raku++:
+
+```
+Nil
+Buf[uint8].new(108,49)
+Buf[uint8].new(10,108,50)
+Buf[uint8]
+(Buf.new(108,49), Buf.new(10,108), Buf.new(50))
+("l1", "\nl", "2")
+```
+
+### 19.42 `open` fails when the system refuses, and throws on a bad argument (local)
+
+`src/chapters/19-files.md:1328`
+
+```raku
+mkdir "d";
+spurt "f", "old";
+for open("missing"), open("d"), open("f", :x) -> $h {
+    say $h.so, " ", $h.exception.^name;
+}
+my $d = open("d");
+say $d.so, " ", $d.exception.trying;
+for { open("f", :enc<klingon>) }, { open("f", :bin, :enc<utf8>) } -> &bad {
+    my $h = bad();
+    say "not reached";
+    CATCH { default { say "threw ", .^name } }
+}
+rmdir "d";
+unlink "f";
+```
+
+Rakudo:
+
+```
+False X::AdHoc
+False X::IO::Directory
+False X::AdHoc
+False open
+threw X::Encoding::Unknown
+threw X::IO::BinaryAndEncoding
+```
+
+Raku++:
+
+```
+False X::IO::Open
+False X::IO::Directory
+False X::IO::Exclusive
+False (Any)
+threw X::Encoding::Unknown
+threw X::IO::BinaryAndEncoding
+```
+
+### 19.43 `:rw` creates without emptying; `:update` does not create (local)
+
+`src/chapters/19-files.md:1367`
+
+```raku
+spurt "f", "old";
+given open("f", :a) { .print("+new"); .close }
+say slurp("f");
+open("f", :w).close;
+say slurp("f").raku;
+spurt "f", "abc";
+given open("f", :rw) { .print("X"); .seek(0); say .get; .close }
+given open("f", :update) { .print("Y"); .close }
+say slurp("f");
+my $u = open("new", :update);
+say $u.so, " ", "new".IO.e;
+open("new", :x).close;
+say "new".IO.e;
+given open("f") { say (try .print("z")) // $!.message; .close }
+given open("f", :a) { say (try .get) // $!.message; .close }
+unlink "f", "new";
+```
+
+Rakudo:
+
+```
+old+new
+""
+Xbc
+Ybc
+False False
+True
+Failed to write 1 bytes to filehandle: Bad file descriptor
+Reading from filehandle failed: Bad file descriptor
+```
+
+Raku++:
+
+```
+old+new
+""
+Xbc
+Ybc
+False False
+True
+True
+Ybc
+```
+
+### 19.45 `prompt` returns an allomorph, and Nil at the end of input (local)
+
+`src/chapters/19-files.md:1445`
+
+```raku
+my $name = prompt "Name? ";
+my $age = prompt "Age? ";
+say "|";
+say $name.raku;
+say $age.raku;
+say prompt("More? ").raku;
+say $*IN.get.raku, " ", $*IN.eof;
+say $*IN.lines.raku, " ", $*IN.slurp.raku;
+```
+
+Rakudo:
+
+```
+Name? Age? |
+"Ada"
+IntStr.new(36, "36")
+More? Nil
+Nil True
+().Seq ""
+```
+
+Raku++:
+
+```
+Name? Age? |
+"Ada"
+IntStr.new(36, "36")
+More? Nil
+Nil False
+().Seq ""
+```
+
+### 19.46 `$*IN.lines($n)` leaves the rest of the input unread (local)
+
+`src/chapters/19-files.md:1475`
+
+```raku
+my @header = $*IN.lines(1);
+say @header.raku;
+say $*IN.words.raku;
+say $*IN.eof, " ", slurp().raku;
+say $*ARGFILES === $*IN;
+```
+
+Rakudo:
+
+```
+["name age"]
+("Ada", "36", "Alan", "41").Seq
+True ""
+True
+```
+
+Raku++:
+
+```
+["name age"]
+().Seq
+False ""
+False
+```
+
+### 19.48 `chdir` changes `$*CWD`, not the process's directory (local)
+
+`src/chapters/19-files.md:1550`
+
+```raku
+use NativeCall;
+sub getcwd(Buf, size_t --> Pointer) is native {*}
+sub process-dir { my $b = Buf.allocate(4096); getcwd($b, 4096); $b.decode.subst(/\0.*/, "") }
+mkdir "sub";
+chdir "sub";
+say $*CWD.basename, " ", process-dir().IO.basename eq "sub";
+chdir "..";
+&*chdir("sub");
+say $*CWD.basename, " ", process-dir().IO.basename eq "sub";
+&*chdir("..");
+rmdir "sub";
+```
+
+Rakudo:
+
+```
+sub False
+sub True
+```
+
+Raku++:
+
+```
+sub True
+sub True
+```
+
+### 19.49 `IO::Path.chdir` only computes a path (local)
+
+`src/chapters/19-files.md:1576`
+
+```raku
+say "/a/b".IO.chdir("../c", :!d).Str;
+say "/a/b".IO.chdir("/x", :!d).Str;
+my $p = "/a/b".IO.chdir("c");
+say $p.so, " ", $p.exception.os-error;
+```
+
+Rakudo:
+
+```
+/a/c
+/x
+False does not exist
+```
+
+Raku++:
+
+```
+/a/b/../c
+/x
+False does not exist
+```
+
+### 19.51 `say` prints a Junction; `put` and `print` print each value
+
+`src/chapters/19-files.md:1629`
+
+```raku
+say any(1, 2);
+put any(1, 2);
+print any(1, 2);
+print "\n";
+say (put "x" | "y").raku;
+```
+
+Rakudo:
+
+```
+any(1, 2)
+1
+2
+12
+x
+y
+any(Bool::True, Bool::True)
+```
+
+Raku++:
+
+```
+any(1, 2)
+1
+2
+12
+x
+y
+Bool::True
+```
+
+### 19.51 `say` prints a Junction; `put` and `print` print each value (local)
+
+`src/chapters/19-files.md:1648`
+
+```raku
+my $fh = open("j.txt", :w);
+$fh.say(any(1, 2));
+$fh.put(any(1, 2));
+$fh.say((1, 2));
+$fh.put((1, 2));
+$fh.close;
+.say for "j.txt".IO.lines;
+unlink "j.txt";
+```
+
+Rakudo:
+
+```
+any(1, 2)
+1
+2
+(1 2)
+1 2
+```
+
+Raku++:
+
+```
+any(1, 2)
+12
+(1 2)
+1 2
+```
+
+### 19.52 `nl-out` is what `say`, `put` and `print-nl` add
+
+`src/chapters/19-files.md:1690`
+
+```raku
+$*OUT.nl-out = " <end>\n";
+say "one";
+put "two";
+print "three\n";
+note "four";
+```
+
+Rakudo:
+
+```
+one <end>
+two <end>
+three
+```
+
+stderr:
+
+```
+four
+```
+
+Raku++:
+
+```
+one
+two
+three
+```
+
+stderr:
+
+```
+four
+```
+
+### 19.55 A command's output is an IO::Pipe whose `close` returns the Proc (local)
+
+`src/chapters/19-files.md:1792`
+
+```raku
+my $q = run "cat", :in, :out;
+$q.in.print("via a pipe");
+$q.in.close;
+say $q.out.slurp(:close);
+say (try run("printf", "x", :out).out.print("y")) // $!.^name;
+say run("printf", "AB", :out, :bin).out.read(2).raku;
+```
+
+Rakudo:
+
+```
+via a pipe
+X::AdHoc
+Buf[uint8].new(65,66)
+```
+
+Raku++:
+
+```
+via a pipe
+True
+Buf[uint8].new()
+```
+
+### 19.57 A CatHandle's on-switch runs per file, and once more with Nil (local)
+
+`src/chapters/19-files.md:1866`
+
+```raku
+spurt "a.txt", "a1";
+my $m = IO::CatHandle.new("a.txt", "missing.txt");
+say $m.get;
+say (try $m.get) // $!.^name;
+say (try IO::CatHandle.new("missing.txt")) // $!.^name;
+my $n = IO::CatHandle.new("a.txt", "a.txt");
+say $n.next-handle.^name, " ", $n.get;
+unlink "a.txt";
+```
+
+Rakudo:
+
+```
+a1
+X::AdHoc
+X::AdHoc
+IO::Handle a1
+```
+
+Raku++:
+
+```
+a1
+X::IO::Open
+X::IO::Open
+IO::Handle a1
+```
+
+## 20. Processes
+
+### 20.2 Arguments are turned into strings, and lists are flattened (local)
+
+`src/chapters/20-processes.md:57`
+
+```raku
+my @words = <b c>;
+say run("printf", "<%s>", 42, 1.5, "x".IO, @words, (1, 2), :out).out.slurp(:close);
+say run(<printf [%s] one>, :out).out.slurp(:close);
+say run("printf", :out, "<%s>", "named anywhere").out.slurp(:close);
+say (try run()) // $!.^name;
+say run("").exitcode;
+say shell("").exitcode;
+```
+
+Rakudo:
+
+```
+<42><1.5><x><b><c><1><2>
+[one]
+<named anywhere>
+X::Multi::NoMatch
+-1
+0
+```
+
+Raku++:
+
+```
+<42><1.5><x><b><c><1><2>
+[one]
+<named anywhere>
+Proc.new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, os-error => Str, exitcode => -1, signal => 0, pid => Any, command => ())
+-1
+0
+```
+
+### 20.3 A `Proc` is true only when the exit code and the signal are both 0 (local)
+
+`src/chapters/20-processes.md:91`
+
+```raku
+my $p = run "sh", "-c", "exit 3";
+say $p.exitcode, " ", $p.signal, " ", ?$p, " ", +$p;
+say ?run("true"), " ", +run("true");
+my $k = run "sh", "-c", 'kill -9 $$';
+say $k.exitcode, " ", $k.signal, " ", ?$k, " ", +$k;
+say run("sh", "-c", "exit 256").exitcode;
+say $p.pid ~~ Int && $p.pid > 0;
+say $p.out.raku, " ", $p.os-error.raku;
+```
+
+Rakudo:
+
+```
+3 0 False 3
+True 0
+0 9 False 0
+0
+True
+IO::Pipe Str
+```
+
+Raku++ (exit 1):
+
+```
+3 0 False 3
+True 0
+0 9 False 0
+0
+True
+```
+
+stderr:
+
+```
+No such method 'os-error' for invocant of type 'Proc'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 8
+      8 | say $p.out.raku, " ", $p.os-error.raku;
+```
+
+### 20.4 A program that cannot start gives exit code -1, signal 254 and no pid (local)
+
+`src/chapters/20-processes.md:129`
+
+```raku
+my $p = run "no-such-command-here", "arg", :out;
+say $p.exitcode, " ", $p.signal, " ", $p.pid.raku, " ", $p.so;
+say $p.os-error;
+say $p.out.slurp(:close).raku;
+say run("sh", "-c", "true", :cwd<no-such-dir>).os-error;
+my $s = shell "no-such-command-here 2>/dev/null";
+say $s.exitcode, " ", $s.signal, " ", $s.pid.^name;
+```
+
+Rakudo:
+
+```
+-1 254 Nil False
+Failed to spawn process no-such-command-here: no such file or directory (error code -2)
+""
+Failed to spawn process sh: no such file or directory (error code -2)
+127 0 Int
+```
+
+Raku++ (exit 1):
+
+```
+-1 0 0 False
+```
+
+stderr:
+
+```
+No such method 'os-error' for invocant of type 'Proc'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 3
+      3 | say $p.os-error;
+```
+
+### 20.5 `:out` gives a read-only `IO::Pipe`, and closing it returns the `Proc` (local)
+
+`src/chapters/20-processes.md:176`
+
+```raku
+my $p = run "printf", 'a\nb\nc\n', :out;
+say $p.out.^name, " ", $p.out ~~ IO::Handle;
+say $p.out.nl-in.raku;
+say $p.out.get.raku, " ", $p.out.eof;
+say $p.out.lines.raku;
+say $p.out.get.raku, " ", $p.out.eof;
+say (try $p.out.print("x")) // $!.message;
+say $p.out.close === $p, " ", $p.out.opened;
+```
+
+Rakudo:
+
+```
+IO::Pipe True
+"\n"
+"a" False
+("b", "c").Seq
+Nil True
+This pipe was opened for reading, not writing
+True False
+```
+
+Raku++:
+
+```
+IO::Pipe True
+$["\n", "\r\n"]
+"a" False
+("a", "b", "c").Seq
+"a" False
+True
+True True
+```
+
+### 20.6 `.exitcode` waits for the program, and so does reading to the end (local)
+
+`src/chapters/20-processes.md:206`
+
+```raku
+my $p = run "cat", :in, :out;
+my $status = start { $p.exitcode };
+sleep 1;
+say $status.status;
+$p.in.print("late");
+$p.in.close;
+say await $status;
+say $p.out.slurp(:close);
+```
+
+Rakudo:
+
+```
+Planned
+0
+late
+```
+
+Raku++:
+
+```
+Kept
+0
+late
+```
+
+### 20.7 Reading `.out` first can deadlock when `.err` is captured too (local)
+
+`src/chapters/20-processes.md:265`
+
+```raku
+my $cmd = "yes | head -c 200000 >&2; echo done";
+my $p = run "sh", "-c", $cmd, :out, :err;
+say $p.err.slurp(:close).chars;
+say $p.out.slurp(:close).raku;
+my $q = run "sh", "-c", $cmd, :out, :err;
+$q.err.close;
+say $q.out.slurp(:close).raku;
+my $r = run "sh", "-c", $cmd, :out, :err;
+say $r.exitcode;
+say $r.out.slurp(:close).raku;
+say run("sh", "-c", $cmd, :merge).out.slurp(:close).chars;
+```
+
+Rakudo:
+
+```
+200000
+"done\n"
+"done\n"
+0
+"done\n"
+200005
+```
+
+Raku++:
+
+```
+200025
+"done\n"
+"done\n"
+0
+"done\n"
+200030
+```
+
+### 20.8 `:merge` puts both streams in `.out`, but not in the order they were written (local)
+
+`src/chapters/20-processes.md:299`
+
+```raku
+my $cmd = "echo out; echo err >&2";
+my $p = run "sh", "-c", $cmd, :out, :err;
+say $p.out.slurp(:close).raku, " ", $p.err.slurp(:close).raku;
+my $m = run "sh", "-c", $cmd, :merge, :!out, :err;
+say $m.out.slurp(:close).lines.sort;
+say $m.err.raku;
+my $o = run "sh", "-c", $cmd, :out;
+say $o.out.slurp(:close).raku;
+my $d = run "sh", "-c", $cmd, :out, :!err;
+say $d.out.slurp(:close).raku;
+```
+
+Rakudo:
+
+```
+"out\n" "err\n"
+(err out)
+IO::Pipe
+"out\n"
+"out\n"
+```
+
+stderr:
+
+```
+err
+```
+
+Raku++:
+
+```
+"out\n" "err\n"
+()
+{:buffer(""), :captured(Bool::True), :mode("r"), :proc-owner(${:argv($("sh", "-c", "echo out; echo err >\&2")), :err-str(""), :exitcode(0), :out-str(""), :pid(8391), :signal(0), :timedout(Bool::False)})}
+"out\n"
+"out\n"
+```
+
+stderr:
+
+```
+err
+err
+```
+
+### 20.9 `:in` gives a write-only pipe; without it, the program reads the parent's input (local)
+
+`src/chapters/20-processes.md:334`
+
+```raku
+my $p = run "cat", :in, :out;
+say $p.in.print("a"), " ", $p.in.say("b"), " ", $p.in.write("c".encode);
+say (try $p.in.get) // $!.message;
+say $p.in.close.^name;
+say $p.out.slurp(:close).raku;
+my $q = run "cat", :in, :out;
+$q.in.spurt("spurted", :close);
+say $q.out.slurp(:close).raku;
+```
+
+Rakudo:
+
+```
+True True True
+This pipe was opened for writing, not reading
+Proc
+"ab\nc"
+"spurted"
+```
+
+Raku++:
+
+```
+True True True
+No such method 'get' for invocant of type 'IO::Pipe'
+Proc
+"ab\nc"
+"spurtedclose\tTrue"
+```
+
+### 20.9 `:in` gives a write-only pipe; without it, the program reads the parent's input (local)
+
+`src/chapters/20-processes.md:356`
+
+```raku
+say run("cat", :!in, :out).out.slurp(:close).raku;
+say run("cat", :out).out.slurp(:close).raku;
+say $*IN.get.raku;
+```
+
+Rakudo:
+
+```
+""
+"line one\nline two\n"
+Nil
+```
+
+Raku++:
+
+```
+"line one\nline two\n"
+""
+Nil
+```
+
+### 20.10 An open handle or another program's pipe can stand in for a stream (local)
+
+`src/chapters/20-processes.md:378`
+
+```raku
+my $a = run "printf", 'b\na\n', :out;
+my $b = run "sort", :in($a.out), :out;
+say $b.out.slurp(:close).raku;
+say $a.out.opened;
+my $log = open "log.txt", :w;
+my $c = run "sh", "-c", "echo to-out; echo to-err >&2", :out($log), :err($log);
+$log.close;
+say $c.out.raku;
+say "log.txt".IO.lines.sort;
+unlink "log.txt";
+say (try run("true", :out(IO::Handle.new))) // $!.message;
+```
+
+Rakudo:
+
+```
+"a\nb\n"
+False
+IO::Pipe
+(to-err to-out)
+File handle not open, so cannot get native descriptor
+```
+
+Raku++:
+
+```
+"a\nb\n"
+True
+{:buffer("to-out\n"), :captured(Bool::True), :mode("r"), :proc-owner(${:argv($("sh", "-c", "echo to-out; echo to-err >\&2")), :err-str("to-err\n"), :exitcode(0), :out-str("to-out\n"), :pid(8406), :signal(0), :timedout(Bool::False)})}
+(to-err to-out)
+Proc.new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, os-error => Str, exitcode => 0, signal => 0, pid => 8407, command => ("true",))
+```
+
+### 20.11 A binary pipe refuses text with `X::IO::Closed` (local)
+
+`src/chapters/20-processes.md:414`
+
+```raku
+my $b = run "printf", 'caf\303\251', :out, :bin;
+say $b.out.encoding.raku;
+say (try $b.out.get) // "{$!.^name}: {$!.message}";
+say $b.out.slurp(:close).raku;
+say run("printf", 'caf\351', :out, :enc<latin1>).out.slurp(:close);
+say run("printf", 'x', :out, :enc<Latin1>).out.encoding;
+say run("printf", "ab", :out).out.slurp(:close, :bin).raku;
+say (try run("printf", "x", :out, :bin, :enc<utf8>)) // $!.^name;
+say (try run("printf", 'caf\377', :out).out.slurp(:close)) // $!.message;
+```
+
+Rakudo:
+
+```
+Nil
+X::IO::Closed: Cannot do 'get' on a closed handle
+Buf[uint8].new(99,97,102,195,169)
+café
+iso-8859-1
+Buf[uint8].new(97,98)
+X::IO::BinaryAndEncoding
+Malformed UTF-8 near bytes 61 66 ff
+```
+
+Raku++:
+
+```
+Nil
+café
+Buf[uint8].new(99,97,102,195,169)
+caf�\\\\\\nutf8
+Buf[uint8].new(97,98)
+Proc.new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, os-error => Str, exitcode => 0, signal => 0, pid => 8414, command => ("printf", "x"))
+caf�
+```
+
+### 20.12 `read($n)` on a binary pipe returns a whole chunk, whatever `$n` is (local)
+
+`src/chapters/20-processes.md:450`
+
+```raku
+my $b = run "printf", "abcdef", :out, :bin;
+say $b.out.read(2).raku;
+say $b.out.read(2).raku;
+say $b.out.eof;
+my $t = run "printf", "abcdef", :out;
+say $t.out.readchars(2).raku;
+say $t.out.getc.raku;
+say $t.out.read(2).raku;
+say $t.out.slurp(:close).raku;
+```
+
+Rakudo:
+
+```
+Buf[uint8].new(97,98,99,100,101,102)
+Buf[uint8].new()
+True
+"ab"
+"c"
+Buf[uint8].new(100,101)
+"f"
+```
+
+Raku++:
+
+```
+Buf[uint8].new()
+Buf[uint8].new()
+False
+""
+Nil
+Buf[uint8].new()
+"abcdef"
+```
+
+### 20.13 `:nl` sets the line separator both ways, and `:!chomp` keeps it (local)
+
+`src/chapters/20-processes.md:481`
+
+```raku
+say run("printf", 'a!b\nc!', :out, :nl<!>).out.lines.raku;
+say run("printf", 'a\nb\n', :out, :!chomp).out.lines.raku;
+my $p = run "cat", :in, :out, :nl<!>;
+$p.in.say("x");
+$p.in.close;
+say $p.out.slurp(:close).raku;
+```
+
+Rakudo:
+
+```
+("a", "b\nc").Seq
+("a\n", "b\n").Seq
+"x!"
+```
+
+Raku++:
+
+```
+("a!b", "c!").Seq
+("a", "b").Seq
+"x\n"
+```
+
+### 20.14 A text pipe turns `\r\n` into `\n` before `:nl` sees it (local)
+
+`src/chapters/20-processes.md:505`
+
+```raku
+say run("printf", 'a\r\nb\r\n', :out).out.lines.raku;
+say run("printf", 'a\r\nb\r\n', :out, :nl("\r\n")).out.lines.raku;
+say run("printf", 'a\rb\rc', :out).out.slurp(:close).ords;
+say run("printf", 'a\rb\rc', :out, :nl("\r")).out.lines.raku;
+say run("printf", 'a\r\nb', :out).out.slurp(:close, :bin).raku;
+```
+
+Rakudo:
+
+```
+("a", "b").Seq
+("a\nb\n",).Seq
+(97 13 98 13 99)
+("a", "b", "c").Seq
+Buf[uint8].new(97,13,10,98)
+```
+
+Raku++:
+
+```
+("a", "b").Seq
+("a", "b").Seq
+(97 13 98 13 99)
+("a\rb\rc",).Seq
+Buf[uint8].new(97,13,10,98)
+```
+
+### 20.16 `Proc.new` builds a finished `Proc`, or one that spawns later (local)
+
+`src/chapters/20-processes.md:562`
+
+```raku
+my $p = Proc.new(:out);
+say $p.pid.raku, " ", $p.command.raku;
+say $p.spawn("printf", "spawned");
+say $p.out.slurp(:close), " ", $p.exitcode, " ", $p.command.raku;
+say Proc.new.shell("exit 5");
+say Proc.new.spawn("no-such-command-here");
+my $done = Proc.new(:exitcode(3), :signal(0), :command<make all>);
+say $done.so, " ", $done.command.raku;
+sink $done;
+```
+
+Rakudo (exit 1):
+
+```
+Nil []
+True
+spawned 0 ("printf", "spawned")
+True
+False
+False ("make", "all")
+```
+
+stderr:
+
+```
+The spawned command 'make' exited unsuccessfully (exit code: 3, signal: 0)
+  in block <unit> at example.raku line 9
+```
+
+Raku++ (exit 1):
+
+```
+0 ()
+True
+spawned 0 ("printf", "spawned")
+False
+False
+False ()
+```
+
+stderr:
+
+```
+The spawned command '' exited unsuccessfully (exit code: -1, signal: 0)
+  in block <unit> at example.raku line 9
+      9 | sink $done;
+```
+
+### 20.16 `Proc.new` builds a finished `Proc`, or one that spawns later (local)
+
+`src/chapters/20-processes.md:589`
+
+```raku
+my $p = Proc.new(:exitcode(0));
+say $p.signal.raku;
+say $p.so;
+```
+
+Rakudo:
+
+```
+Any
+True
+```
+
+stderr:
+
+```
+Use of uninitialized value $!signal of type Any in numeric context
+  in block <unit> at example.raku line 3
+```
+
+Raku++:
+
+```
+0
+False
+```
+
+### 20.17 Asking a new `Proc` for its status fixes the status at 1 (local)
+
+`src/chapters/20-processes.md:615`
+
+```raku
+my $p = Proc.new;
+say $p.exitcode, " ", $p.signal;
+$p.spawn("true");
+say $p.exitcode, " ", $p.so;
+my $q = Proc.new;
+$q.spawn("sh", "-c", "exit 7");
+$q.spawn("sh", "-c", "exit 8");
+say $q.exitcode, " ", $q.command.raku;
+my $r = run "true";
+$r.shell("exit 9");
+say $r.exitcode, " ", $r.command.raku;
+```
+
+Rakudo:
+
+```
+1 0
+1 False
+7 ("sh", "-c", "exit 8")
+0 ("exit 9",)
+```
+
+Raku++:
+
+```
+-1 0
+0 True
+8 ("sh", "-c", "exit 8")
+9 ("exit 9",)
+```
+
+### 20.18 `Proc::Async.new` ignores the named arguments it does not know (local)
+
+`src/chapters/20-processes.md:649`
+
+```raku
+my $p = Proc::Async.new(<echo a>, "b", 42, :out);
+say $p.command.raku;
+say $p.enc, " ", $p.translate-nl, " ", $p.w.raku, " ", $p.started;
+say (try Proc::Async.new(:path<echo>, :args<hi>)) // $!.^name;
+say (try Proc::Async.new("cat", :enc<nope>)) // $!.^name;
+say (try run("true", :bogus)) // $!.^name;
+```
+
+Rakudo:
+
+```
+("echo", "a", "b", 42)
+utf8 True Any False
+X::Multi::NoMatch
+X::Encoding::Unknown
+X::Multi::NoMatch
+```
+
+Raku++ (exit 1):
+
+```
+("echo", "a", "b", 42)
+```
+
+stderr:
+
+```
+No such method 'enc' for invocant of type 'Proc::Async'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 3
+      3 | say $p.enc, " ", $p.translate-nl, " ", $p.w.raku, " ", $p.started;
+```
+
+### 20.19 `.start` returns a promise of a bare `Proc`, and `await` as a statement checks it (local)
+
+`src/chapters/20-processes.md:686`
+
+```raku
+my $proc = Proc::Async.new("sh", "-c", "exit 6");
+my $promise = $proc.start;
+say $promise.^name;
+say (try $proc.start) // $!.^name;
+my $result = await $promise;
+say $result.^name, " ", $result.exitcode, " ", $result.so;
+say $result.pid.raku, " ", $result.out.raku;
+say $proc.pid === $proc.ready;
+say (await $proc.ready) > 0;
+await $promise;
+say "not reached";
+```
+
+Rakudo (exit 1):
+
+```
+Promise
+X::Proc::Async::AlreadyStarted
+Proc 6 False
+Nil IO::Pipe
+True
+True
+```
+
+stderr:
+
+```
+The spawned command 'sh' exited unsuccessfully (exit code: 6, signal: 0)
+  in block <unit> at example.raku line 10
+```
+
+Raku++ (exit 1):
+
+```
+Promise
+X::Proc::Async::AlreadyStarted
+Proc 6 False
+8455 {:buffer(Any), :captured(Bool::True), :mode("r"), :proc-owner(${:argv($["sh", "-c", "exit 6"]), :exitcode(6), :out-str(Any), :pid(8455), :signal(0), :started(Bool::True), :taps($[]), :timedout(Bool::False)})}
+False
+True
+```
+
+stderr:
+
+```
+The spawned command 'sh' exited unsuccessfully (exit code: 6, signal: 0)
+  in block <unit> at example.raku line 10
+      10 | await $promise;
+```
+
+### 20.20 A program that cannot start breaks the promise with `X::OS` (local)
+
+`src/chapters/20-processes.md:723`
+
+```raku
+my $proc = Proc::Async.new("no-such-command-here");
+my $promise = $proc.start;
+try await $promise;
+say $promise.status, " ", $!.^name;
+say $promise.cause.^name, " ", $promise.cause.error-code;
+say $promise.cause.message;
+say $proc.ready.status, " ", $proc.ready.cause === $promise.cause;
+say $proc.started;
+spurt "a-file", "";
+my $f = Proc::Async.new("true").start(:cwd<a-file>);
+try await $f;
+say $f.cause.error-code, " ", $f.cause.message;
+unlink "a-file";
+```
+
+Rakudo:
+
+```
+Broken X::OS+{X::Await::Died}
+X::OS -2
+Failed to spawn process no-such-command-here: no such file or directory (error code -2)
+Broken True
+True
+-20 Failed to spawn process true: not a directory (error code -20)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+The spawned command 'no-such-command-here' exited unsuccessfully (exit code: -1, signal: 0)
+  in block <unit> at example.raku line 3
+      3 | try await $promise;
+```
+
+### 20.20 A program that cannot start breaks the promise with `X::OS` (local)
+
+`src/chapters/20-processes.md:752`
+
+```raku
+my $proc = Proc::Async.new("no-such-command-here", :w);
+my $quit = Promise.new;
+$proc.stdout.tap(-> $chunk { }, quit => -> $e { $quit.keep($e) });
+my $promise = $proc.start;
+my $e = await $quit;
+say $e.^name, ": ", $e.message;
+my $w = $proc.print("x");
+try await $w;
+say $w.status, " ", $w.cause.message;
+say $proc.close-stdin, " ", $proc.kill;
+```
+
+Rakudo:
+
+```
+X::AdHoc: Failed to spawn process no-such-command-here: no such file or directory (error code -2)
+Broken broken pipe
+True 1
+```
+
+Raku++ (exit 1):
+
+```
+X::OS: Failed to spawn process no-such-command-here: no such file or directory (error code -2)
+```
+
+stderr:
+
+```
+Cannot look up attributes in a X::IO type object
+  in block <unit> at example.raku line 9
+      9 | say $w.status, " ", $w.cause.message;
+```
+
+### 20.21 `.start` takes `:ENV`, not `:env`, and ignores the wrong one (local)
+
+`src/chapters/20-processes.md:778`
+
+```raku
+mkdir "sub";
+my $proc = Proc::Async.new("sh", "-c", 'echo "$(basename "$PWD") [$GREETING]"');
+my $out = "";
+$proc.stdout.tap(-> $chunk { $out ~= $chunk });
+await $proc.start(:cwd<sub>, :ENV{ GREETING => "hi" });
+print $out;
+my $wrong = Proc::Async.new("sh", "-c", 'echo "[$GREETING]"');
+my $out2 = "";
+$wrong.stdout.tap(-> $chunk { $out2 ~= $chunk });
+await $wrong.start(:env{ GREETING => "hi" });
+print $out2;
+rmdir "sub";
+```
+
+Rakudo:
+
+```
+sub [hi]
+[]
+```
+
+Raku++:
+
+```
+sub []
+[]
+```
+
+### 20.22 An untapped `.stdout` holds back the start promise (local)
+
+`src/chapters/20-processes.md:809`
+
+```raku
+my $proc = Proc::Async.new("echo", "hello");
+my $stdout = $proc.stdout;
+my $promise = $proc.start;
+await Promise.anyof($promise, Promise.in(1));
+say $promise.status, " ", $proc.ready.status;
+my $out = "";
+$stdout.tap(-> $chunk { $out ~= $chunk });
+await $promise;
+say $promise.status, " ", $out.raku;
+```
+
+Rakudo:
+
+```
+Planned Kept
+Kept "hello\n"
+```
+
+Raku++:
+
+```
+Kept Kept
+Kept ""
+```
+
+### 20.23 Output nobody captures can overtake the parent's buffered output (local)
+
+`src/chapters/20-processes.md:851`
+
+```raku
+say "parent 1";
+say "parent 2";
+run "echo", "child of run";
+$*OUT.flush;
+await Proc::Async.new("echo", "child after a flush").start;
+say "parent 3";
+```
+
+Rakudo:
+
+```
+parent 1
+child of run
+parent 2
+child after a flush
+parent 3
+```
+
+Raku++:
+
+```
+parent 1
+parent 2
+child of run
+child after a flush
+parent 3
+```
+
+### 20.24 A Supply must be chosen before `.start`, and some choices exclude others (local)
+
+`src/chapters/20-processes.md:880`
+
+```raku
+my $proc = Proc::Async.new("echo", "hi");
+my $a = $proc.stdout;
+say $a.^name, " ", $a ~~ Supply, " ", $a === $proc.stdout;
+say (try $proc.stdout(:bin)) // $!.message;
+say (try $proc.Supply) // $!.message;
+my $out = "";
+$a.tap(-> $chunk { $out ~= $chunk });
+my $promise = $proc.start;
+say (try $proc.stderr) // $!.message;
+await $promise;
+print $out;
+```
+
+Rakudo:
+
+```
+Proc::Async::Pipe True False
+Can only tap one of chars or bytes supply for stdout
+Using .Supply on a Proc::Async implies merging stdout and stderr; .stdout and .stderr cannot therefore be used in combination with it
+To avoid data races, you must tap stderr before running the process
+hi
+```
+
+Raku++:
+
+```
+Supply True False
+Can only get stdout as characters or bytes, not both
+Using .Supply on a Proc::Async implies merging stdout and stderr; .stdout and .stderr cannot therefore be used in combination with it
+To avoid data races, you must tap stderr before running the process
+hi
+```
+
+### 20.27 A chunk is not a line, and its last character waits for the next (local)
+
+`src/chapters/20-processes.md:987`
+
+```raku
+my $proc = Proc::Async.new("sh", "-c", 'printf "one\ntw"; sleep 0.5; printf "o\nthree\n"');
+my (@chunks, @lines);
+$proc.stdout.tap(-> $chunk { @chunks.push($chunk) });
+$proc.stdout.lines.tap(-> $line { @lines.push($line) });
+await $proc.start;
+say @chunks.raku;
+say @lines.raku;
+```
+
+Rakudo:
+
+```
+["one\nt", "wo\nthree\n"]
+["one", "two", "three"]
+```
+
+Raku++:
+
+```
+["one\ntw", "o\nthree\n"]
+["one", "two", "three"]
+```
+
+### 20.27 A chunk is not a line, and its last character waits for the next (local)
+
+`src/chapters/20-processes.md:1006`
+
+```raku
+my $proc = Proc::Async.new("sh", "-c", 'printf "ab"; sleep 0.5; printf "\314\201c"');
+my @chunks;
+$proc.stdout.tap(-> $chunk { @chunks.push($chunk) });
+await $proc.start;
+say @chunks.raku;
+my $b = Proc::Async.new("sh", "-c", 'printf "ab"; sleep 0.5; printf "cd"');
+my @bytes;
+$b.stdout(:bin).tap(-> $chunk { @bytes.push($chunk) });
+await $b.start;
+say @bytes.raku;
+```
+
+Rakudo:
+
+```
+["a", "b́", "c"]
+[Buf[uint8].new(97,98), Buf[uint8].new(99,100)]
+```
+
+Raku++:
+
+```
+["ab", "\x[301]c"]
+[Blob.new(97,98), Blob.new(99,100)]
+```
+
+### 20.28 `\r\n` becomes `\n`, and `:enc` can be set for each stream (local)
+
+`src/chapters/20-processes.md:1030`
+
+```raku
+sub capture(Proc::Async $proc, *%opts) {
+    my $out = "";
+    $proc.stdout(|%opts).tap(-> $chunk { $out ~= $chunk });
+    await $proc.start;
+    $out
+}
+say capture(Proc::Async.new("printf", 'a\r\nb\rc')).ords;
+say capture(Proc::Async.new("printf", 'a\r\nb'), :!translate-nl).ords;
+say capture(Proc::Async.new("printf", 'a\r\nb', :!translate-nl)).ords;
+say capture(Proc::Async.new("printf", 'caf\351', :enc<latin1>));
+say capture(Proc::Async.new("printf", 'caf\351'), :enc<latin1>);
+```
+
+Rakudo:
+
+```
+(97 10 98 13 99)
+(97 13 10 98)
+(97 13 10 98)
+café
+café
+```
+
+Raku++:
+
+```
+(97 10 98 13 99)
+(97 10 98)
+(97 10 98)
+café�\\\\\\ncafé�\\\\\\n
+```
+
+### 20.29 Malformed input quits the Supply, and the text before it is lost (local)
+
+`src/chapters/20-processes.md:1059`
+
+```raku
+my $proc = Proc::Async.new("printf", 'good \377 bad');
+my $out = "";
+my $quit = "";
+$proc.stdout.tap(-> $chunk { $out ~= $chunk }, quit => -> $e { $quit = "{$e.^name}: {$e.message}" });
+my $result = await $proc.start;
+say $out.raku;
+say $quit;
+say $result.exitcode;
+my $b = Proc::Async.new("printf", 'good \377 bad');
+my $buf = Buf.new;
+$b.stdout(:bin).tap(-> $chunk { $buf.append($chunk) });
+await $b.start;
+say $buf.elems;
+```
+
+Rakudo:
+
+```
+""
+X::AdHoc: Malformed UTF-8 near bytes 64 20 ff
+0
+10
+```
+
+Raku++:
+
+```
+""
+X::AdHoc: Malformed UTF-8
+0
+10
+```
+
+### 20.30 The merged Supply is read from the start, and `whenever $proc` taps it (local)
+
+`src/chapters/20-processes.md:1114`
+
+```raku
+my $proc = Proc::Async.new("sh", "-c", "echo out; echo err >&2");
+my $all = "";
+react {
+    whenever $proc { $all ~= $_ }
+    whenever $proc.start { say "exit code ", .exitcode }
+}
+say $all.lines.sort;
+my $late = Proc::Async.new("echo", "merged");
+my $supply = $late.Supply;
+await $late.start;
+my $out = "";
+$supply.tap(-> $chunk { $out ~= $chunk });
+say $out.raku;
+```
+
+Rakudo:
+
+```
+exit code 0
+(err out)
+"merged\n"
+```
+
+Raku++:
+
+```
+exit code 0
+(err out)
+""
+```
+
+### 20.31 `bind-stdout` and `bind-stderr` send a stream into an open handle (local)
+
+`src/chapters/20-processes.md:1147`
+
+```raku
+my $log = open "log.txt", :w;
+my $proc = Proc::Async.new("sh", "-c", "echo out; echo err >&2");
+say $proc.bind-stdout($log).raku;
+$proc.bind-stderr($log);
+say (try $proc.stdout) // $!.message;
+await $proc.start;
+say $log.opened;
+$log.close;
+say "log.txt".IO.lines.sort;
+unlink "log.txt";
+say (try Proc::Async.new("true").bind-stdout("log.txt")) // $!.^name;
+```
+
+Rakudo:
+
+```
+Nil
+Cannot both bind stdout to a handle and also get the stdout Supply
+True
+(err out)
+X::TypeCheck::Binding::Parameter
+```
+
+Raku++:
+
+```
+Bool::True
+Cannot both bind stdout to a handle and also get the stdout Supply
+True
+(err out)
+X::Method::NotFound
+```
+
+### 20.32 `bind-stdin` feeds a program from a file or another program (local)
+
+`src/chapters/20-processes.md:1176`
+
+```raku
+my $producer = Proc::Async.new("printf", 'b\na\nc\n');
+my $consumer = Proc::Async.new("sort");
+$consumer.bind-stdin($producer.stdout);
+my $sorted = "";
+$consumer.stdout.tap(-> $chunk { $sorted ~= $chunk });
+await $producer.start, $consumer.start;
+say $sorted.lines;
+my $pipe = run "printf", "via run", :out;
+my $cat = Proc::Async.new("cat");
+$cat.bind-stdin($pipe.out);
+my $got = "";
+$cat.stdout.tap(-> $chunk { $got ~= $chunk });
+await $cat.start;
+say $got, " ", $pipe.out.opened;
+say (try Proc::Async.new("cat", :w).bind-stdin($*IN)) // $!.^name;
+```
+
+Rakudo:
+
+```
+(a b c)
+via run False
+X::Proc::Async::BindOrUse
+```
+
+Raku++:
+
+```
+(a b c)
+ True
+X::Proc::Async::BindOrUse
+```
+
+### 20.33 Writing needs `:w`, and the program sees the end only after `close-stdin` (local)
+
+`src/chapters/20-processes.md:1209`
+
+```raku
+my $proc = Proc::Async.new("cat", :w);
+my $out = "";
+$proc.stdout.tap(-> $chunk { $out ~= $chunk });
+my $done = $proc.start;
+say await $proc.write("ab".encode);
+say await $proc.print("cd");
+say await $proc.say(<e f>);
+say await $proc.put(<g h>);
+await Promise.anyof($done, Promise.in(1));
+say $done.status;
+say $proc.close-stdin;
+await $done;
+say $out.raku;
+```
+
+Rakudo:
+
+```
+2
+2
+6
+3
+Planned
+True
+"abcd(e f)\ngh\n"
+```
+
+Raku++:
+
+```
+2
+2
+6
+4
+Broken
+True
+"abcd(e f)\ng h\n"
+```
+
+### 20.33 Writing needs `:w`, and the program sees the end only after `close-stdin` (local)
+
+`src/chapters/20-processes.md:1239`
+
+```raku
+my $unstarted = Proc::Async.new("cat", :w);
+say (try $unstarted.print("x")) // "{$!.^name} {$!.method}";
+say (try $unstarted.put("x")) // $!.message;
+my $readonly = Proc::Async.new("true");
+my $r = $readonly.start;
+say (try $readonly.put("x")) // $!.message;
+await $r;
+my $w = Proc::Async.new("cat", :w);
+my $wp = $w.start;
+say (try $w.write("text")) // $!.^name;
+$w.close-stdin;
+await $wp;
+my $late = $w.write("z".encode);
+try await $late;
+say $late.status, " ", $late.cause.message;
+say $w.close-stdin;
+```
+
+Rakudo:
+
+```
+X::Proc::Async::MustBeStarted print
+Process must be started first before calling 'say'
+Process must be opened for writing with :w to call 'say'
+X::TypeCheck::Binding::Parameter
+Broken Cannot write to process that has already terminated
+True
+```
+
+Raku++ (exit 1):
+
+```
+X::Proc::Async::MustBeStarted print
+Process must be started first before calling 'put'
+Process must be opened for writing with :w to call 'put'
+result	4
+status	Kept
+text
+```
+
+stderr:
+
+```
+The process's standard input is already closed
+  in block <unit> at example.raku line 13
+      13 | my $late = $w.write("z".encode);
+```
+
+### 20.34 `.kill` sends SIGHUP unless told otherwise, and returns the number it sent (local)
+
+`src/chapters/20-processes.md:1277`
+
+```raku
+sub killed-by($signal?) {
+    my $proc = Proc::Async.new("sleep", "5");
+    my $promise = $proc.start;
+    await $proc.ready;
+    my $sent = $signal.defined ?? $proc.kill($signal) !! $proc.kill;
+    my $result = await $promise;
+    "sent $sent, exit code {$result.exitcode}, signal {$result.signal}, {$result.so}"
+}
+say killed-by();
+say killed-by(SIGTERM);
+say killed-by("INT");
+say killed-by("SIGKILL");
+say killed-by(9);
+```
+
+Rakudo:
+
+```
+sent 1, exit code 0, signal 1, False
+sent 15, exit code 0, signal 15, False
+sent 2, exit code 0, signal 2, False
+sent 9, exit code 0, signal 9, False
+sent 9, exit code 0, signal 9, False
+```
+
+Raku++:
+
+```
+sent True, exit code 0, signal 1, False
+sent True, exit code 0, signal 15, False
+sent True, exit code 0, signal 1, False
+sent True, exit code 0, signal 1, False
+sent True, exit code 0, signal 9, False
+```
+
+### 20.34 `.kill` sends SIGHUP unless told otherwise, and returns the number it sent (local)
+
+`src/chapters/20-processes.md:1305`
+
+```raku
+my $proc = Proc::Async.new("sleep", "5");
+say (try $proc.kill) // $!.^name;
+my $promise = $proc.start;
+await $proc.ready;
+say (try $proc.kill("NOPE")) // $!.message;
+say $proc.kill("TERM");
+my $result = await $promise;
+say $proc.kill;
+say $*KERNEL.signal("TERM"), " ", $*KERNEL.signal(SIGINT);
+```
+
+Rakudo:
+
+```
+X::Proc::Async::MustBeStarted
+Type check failed for return value; expected Int:D but got Int (Int)
+15
+1
+15 2
+```
+
+Raku++:
+
+```
+X::Proc::Async::MustBeStarted
+True
+True
+True
+15 2
+```
+
+## 21. Promises, Locks and Awaiting
+
+### 21.2 `say` on a Promise shows its status, not its value
+
+`src/chapters/21-promises.md:52`
+
+```raku
+my $p = Promise.kept(42);
+say $p;
+say $p.result;
+say PromiseStatus.enums;
+say PromiseStatus(2);
+```
+
+Rakudo:
+
+```
+Promise.new(scheduler => ThreadPoolScheduler.new(uncaught_handler => Callable), status => PromiseStatus::Kept)
+42
+Map.new((Broken => 2, Kept => 1, Planned => 0))
+Broken
+```
+
+Raku++ (exit 1):
+
+```
+result	42
+status	Kept
+42
+```
+
+stderr:
+
+```
+No such method 'enums' for invocant of type 'PromiseStatus'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 4
+      4 | say PromiseStatus.enums;
+```
+
+### 21.3 `keep` stores exactly its argument, and `True` when there is none
+
+`src/chapters/21-promises.md:76`
+
+```raku
+my $p = Promise.new;
+say $p.keep.raku;
+say $p.result.raku;
+sub kept-with(\value) { my $q = Promise.new; $q.keep(value); $q.result }
+say kept-with(Nil).raku;
+say kept-with(Int).raku;
+say kept-with((1, 2).Slip).raku;
+say Promise.kept.result, " ", Promise.kept("value").result;
+say Promise.kept(False).so;
+```
+
+Rakudo:
+
+```
+Nil
+Bool::True
+Nil
+Int
+slip(1, 2)
+True value
+True
+```
+
+Raku++:
+
+```
+${:result(Bool::True), :status("Kept"), :vowed(Bool::True)}
+Bool::True
+Nil
+Int
+slip(1, 2)
+True value
+True
+```
+
+### 21.4 `break` without a cause breaks with "Died", not False
+
+`src/chapters/21-promises.md:109`
+
+```raku
+my $p = Promise.new;
+say $p.break.raku;
+say $p.cause.^name, ": ", $p.cause.message;
+sub broken-with(\cause) { my $q = Promise.new; $q.break(cause); $q.cause }
+say broken-with("glass").raku;
+say broken-with(False).raku;
+my $e = X::NYI.new(feature => "flight");
+say broken-with($e) === $e;
+say Promise.broken.cause.message, " ", Promise.broken("glass").cause.message;
+```
+
+Rakudo:
+
+```
+Nil
+X::AdHoc: Died
+X::AdHoc.new(payload => "glass")
+X::AdHoc.new(payload => Bool::False)
+True
+Died glass
+```
+
+Raku++:
+
+```
+${:cause(X::AdHoc.new(payload => "Died")), :status("Broken"), :vowed(Bool::True)}
+X::AdHoc: Died
+X::AdHoc.new(payload => "glass")
+X::AdHoc.new(payload => Bool::False)
+True
+Died glass
+```
+
+### 21.4 `break` without a cause breaks with "Died", not False
+
+`src/chapters/21-promises.md:133`
+
+```raku
+my $t = Promise.broken(X::NYI);
+say $t.cause.raku, " ", $t.cause.defined;
+try $t.result;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+X::NYI False
+X::Multi::NoMatch
+```
+
+Raku++:
+
+```
+X::AdHoc.new(payload => X::NYI) True
+X::AdHoc
+```
+
+### 21.6 `.result` waits, then rethrows a copy of the cause
+
+`src/chapters/21-promises.md:172`
+
+```raku
+my $p = Promise.broken("oh no");
+try $p.result;
+say $!.^name;
+say $! ~~ X::AdHoc, " ", $!.message;
+say $! === $p.cause, " ", $p.cause.^name;
+say $!.result-backtrace.^name;
+my $copy = $!;
+try $p.result;
+say $! === $copy;
+my $q = Promise.broken(X::NYI.new(feature => "levitation"));
+try $q.result;
+say $!.^name, ": ", $!.feature;
+```
+
+Rakudo:
+
+```
+X::AdHoc+{X::Promise::Broken}
+True oh no
+False X::AdHoc
+Backtrace
+False
+X::NYI+{X::Promise::Broken}: levitation
+```
+
+Raku++ (exit 1):
+
+```
+X::AdHoc
+True oh no
+True X::AdHoc
+```
+
+stderr:
+
+```
+No such method 'result-backtrace' for invocant of type 'X::AdHoc'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 6
+      6 | say $!.result-backtrace.^name;
+```
+
+### 21.7 A promise is resolved once, and the refusal names a vow
+
+`src/chapters/21-promises.md:227`
+
+```raku
+my $p = Promise.new;
+$p.keep(1);
+try $p.keep(2);
+say $!.^name, ": ", $!.message;
+my $q = Promise.new;
+my $vow = $q.vow;
+say $vow.^name, " ", $vow.promise === $q;
+try $q.keep(1);
+say $!.^name;
+$vow.keep(42);
+try $vow.keep(43);
+say $!.^name, ": ", $!.message;
+say $q.result;
+try Promise.new.vow.keep;
+say $!.message;
+```
+
+Rakudo:
+
+```
+X::Promise::Vowed: Access denied to keep/break this Promise; already vowed
+Promise::Vow True
+X::Promise::Vowed
+X::Promise::Resolved: Cannot keep/break a Promise more than once (status: Kept)
+42
+Too few positionals passed; expected 2 arguments but got 1
+```
+
+Raku++ (exit 1):
+
+```
+X::Promise::Vowed: Access denied to keep/break this Promise; already vowed
+```
+
+stderr:
+
+```
+No such method 'promise' for invocant of type 'Vow'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 7
+      7 | say $vow.^name, " ", $vow.promise === $q;
+```
+
+### 21.7 A promise is resolved once, and the refusal names a vow (local)
+
+`src/chapters/21-promises.md:262`
+
+```raku
+for Promise.kept, Promise.broken, Promise.in(5), (start { 1 }),
+    Promise.kept.then({ 1 }), Promise.allof() -> $p {
+    try $p.keep(1);
+    say $!.^name;
+}
+```
+
+Rakudo:
+
+```
+X::Promise::Resolved
+X::Promise::Resolved
+X::Promise::Vowed
+X::Promise::Vowed
+X::Promise::Vowed
+X::Promise::Vowed
+```
+
+Raku++:
+
+```
+X::Promise::Vowed
+X::Promise::Vowed
+Nil
+Nil
+Nil
+Nil
+```
+
+### 21.8 `keep` holds on to the variable, not its value
+
+`src/chapters/21-promises.md:287`
+
+```raku
+my $x = 5;
+my $p = Promise.new;
+$p.keep($x);
+$x = 6;
+say $p.result;
+my $z = 9;
+my $q = Promise.kept($z);
+$z = 10;
+say $q.result;
+my $v = 1;
+my $r = Promise.kept(+$v);
+$v = 2;
+say $r.result;
+try { $p.result = 1 };
+say $!.^name;
+```
+
+Rakudo:
+
+```
+6
+10
+1
+X::Assignment::RO
+```
+
+Raku++:
+
+```
+5
+9
+1
+X::Assignment::RO
+```
+
+### 21.8 `keep` holds on to the variable, not its value (local)
+
+`src/chapters/21-promises.md:314`
+
+```raku
+my $y = 7;
+my $s = start { $y };
+await $s;
+$y = 8;
+say await $s;
+```
+
+Rakudo:
+
+```
+8
+```
+
+Raku++:
+
+```
+7
+```
+
+### 21.9 `eqv` compares results, so it waits for them (local)
+
+`src/chapters/21-promises.md:333`
+
+```raku
+say Promise.kept(1) eqv Promise.kept(1);
+say Promise.kept(1) === Promise.kept(1);
+say Promise.kept(1) eqv Promise.kept("1");
+say (try Promise.kept(1) eqv Promise.broken("x")) // $!.^name;
+my ($p, $q) = Promise.new, Promise.new;
+my $compare = start { $p eqv $q };
+await Promise.anyof($compare, Promise.in(0.2));
+say $compare.status;
+```
+
+Rakudo:
+
+```
+True
+False
+False
+X::AdHoc+{X::Promise::Broken}
+Planned
+```
+
+Raku++:
+
+```
+True
+False
+False
+False
+Kept
+```
+
+### 21.11 Each `then` makes a new promise, and one promise can have many (local)
+
+`src/chapters/21-promises.md:388`
+
+```raku
+my $p = Promise.new;
+my $t = $p.then({ .result + 1 });
+my $u = $p.then({ .result * 10 });
+say $t === $p, " ", $t.status;
+$p.keep(5);
+say await $t, $u;
+say await Promise.kept(1).then({ .result + 1 }).then({ .result * 10 });
+say (await Promise.kept(1).then({ (1, 2) })).raku;
+try await Promise.kept(1).then(-> $a, $b { 1 });
+say $!.message;
+try Promise.kept(1).then(42);
+say $!.^name;
+```
+
+Rakudo:
+
+```
+False Planned
+(6 50)
+20
+(1, 2)
+Too few positionals passed; expected 2 arguments but got 1
+X::TypeCheck::Binding::Parameter
+```
+
+Raku++:
+
+```
+False Planned
+(6 50)
+20
+(1, 2)
+Nil
+Nil
+```
+
+### 21.12 `then(:synchronous)` runs inside `keep`, and may return a plain value (local)
+
+`src/chapters/21-promises.md:423`
+
+```raku
+my @log;
+my $p = Promise.new;
+$p.then({ @log.push("first then") }, :synchronous);
+$p.then({ @log.push("second then") }, :synchronous);
+@log.push("before keep");
+$p.keep;
+@log.push("after keep");
+say @log;
+say Promise.kept(1).then({ .result + 1 }).^name;
+say Promise.kept(1).then({ .result + 1 }, :synchronous).raku;
+try Promise.kept(1).then({ die "at once" }, :synchronous);
+say $!.^name, ": ", $!.message;
+```
+
+Rakudo:
+
+```
+[before keep first then second then after keep]
+Promise
+2
+X::AdHoc: at once
+```
+
+Raku++:
+
+```
+[before keep first then second then after keep]
+Promise
+{:status("Planned")}
+Nil: Nil
+```
+
+### 21.13 A dying synchronous `then` makes `keep` throw an unrelated error (local)
+
+`src/chapters/21-promises.md:459`
+
+```raku
+my $p = Promise.new;
+my $dies  = $p.then({ die "in a synchronous then" }, :synchronous);
+my $later = $p.then({ "never runs" }, :synchronous);
+try $p.keep(1);
+say $!.message;
+say $p.status;
+await Promise.anyof($dies, $later, Promise.in(0.2));
+say $dies.status, " ", $later.status;
+my $q = Promise.new;
+my $reader = $q.then({ .result }, :synchronous);
+try $q.break("bad");
+say $!.message, " / ", $q.status, " ", $reader.status;
+```
+
+Rakudo:
+
+```
+Too few positionals passed; expected 1 argument but got 0
+Kept
+Planned Planned
+Too few positionals passed; expected 1 argument but got 0 / Broken Planned
+```
+
+Raku++:
+
+```
+Nil
+Kept
+Broken Kept
+Nil / Broken Broken
+```
+
+### 21.15 A `start` block sees the outer `$_`, but fresh `$/` and `$!` (local)
+
+`src/chapters/21-promises.md:523`
+
+```raku
+"abc" ~~ /b/;
+try die "outer";
+$_ = "outer topic";
+say await start { $_.raku, $/.raku, $!.raku };
+my @p;
+for 1..3 { @p.push: start { $_ * 10 } }
+say await @p;
+my @q;
+loop (my $i = 1; $i <= 3; $i++) { @q.push: start { sleep 0.1; $i * 10 } }
+say await @q;
+```
+
+Rakudo:
+
+```
+("outer topic" Nil Nil)
+(10 20 30)
+(40 40 40)
+```
+
+Raku++:
+
+```
+("outer topic" Any Any)
+(10 20 30)
+(40 40 40)
+```
+
+### 21.16 `start` and `then` see the dynamic variables of their creator (local)
+
+`src/chapters/21-promises.md:553`
+
+```raku
+my $*LOG = "main";
+await (start { $*LOG ~= " start" }).then({ $*LOG ~= " then" });
+say $*LOG;
+my $p = start { $*PROMISE };
+say (await $p) === $p;
+say await Promise.kept.then({ $*PROMISE.status });
+say (try $*PROMISE) // $!.^name;
+sub helper { $*DEPTH }
+my $*DEPTH = 3;
+say await start { helper() };
+```
+
+Rakudo:
+
+```
+main start then
+True
+Planned
+X::Dynamic::NotFound
+3
+```
+
+Raku++ (exit 1):
+
+```
+main start then
+False
+```
+
+stderr:
+
+```
+Dynamic variable $*PROMISE not found
+  (X::Dynamic::NotFound+{X::Await::Died})
+  in block <unit> at example.raku line 6
+      6 | say await Promise.kept.then({ $*PROMISE.status });
+```
+
+### 21.17 `start` takes an expression, and a dying block breaks its promise (local)
+
+`src/chapters/21-promises.md:582`
+
+```raku
+say await start 6 * 7;
+say (await start (0..3).map(* + 1)).raku;
+say await Promise.start(-> $a, $b { $a + $b }, 3, 4);
+my $f = start { fail "failed in the thread" };
+try await $f;
+say $f.status, " ", $!.message;
+my $c = start { die "x"; CATCH { default { say "handled in the thread" } } };
+say (await $c).raku, " ", $c.status;
+my $r = start { return 5 };
+try await $r;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+42
+(1, 2, 3, 4).Seq
+7
+Broken failed in the thread
+handled in the thread
+Nil Kept
+X::ControlFlow::Return+{X::Await::Died}
+```
+
+Raku++:
+
+```
+7
+(1, 2, 3, 4).Seq
+0
+Kept failed in the thread
+handled in the thread
+Nil Kept
+Nil
+```
+
+### 21.17 `start` takes an expression, and a dying block breaks its promise (local)
+
+`src/chapters/21-promises.md:608`
+
+```raku
+my @seen;
+my $p = Promise.start({ die "oops" }, :catch({ @seen.push: .message }));
+try await $p;
+say @seen, " ", $p.status;
+```
+
+Rakudo:
+
+```
+[oops] Broken
+```
+
+Raku++:
+
+```
+[] Broken
+```
+
+### 21.18 A dying `start` whose promise is sunk ends the program (local)
+
+`src/chapters/21-promises.md:635`
+
+```raku
+sub child($code) {
+    my $proc = run $*EXECUTABLE, "-e", $code, :out, :err;
+    my $out = $proc.out.slurp(:close).lines.join(",");
+    my $err = $proc.err.slurp(:close).lines.head(2).join(" / ").subst(/\d+/, "N");
+    say "exit $proc.exitcode() out [$out] err [$err]";
+}
+child 'start { die "boom" }; sleep 0.2; say "after"';
+child 'my $p = start { die "boom" }; sleep 0.2; say "after"';
+child 'sub f { start { die "boom" } }; f(); sleep 0.2; say "after"';
+child 'sub f { start { die "boom" } }; my $p = f(); sleep 0.2; say "after"';
+child 'use v6.c; start { die "boom" }; sleep 0.2; say "after"';
+child 'Promise.start({ die "boom" }); sleep 0.2; say "after"';
+child 'Promise.start({ die "boom" }, :report-broken-if-sunk); sleep 0.2; say "after"';
+child '$*SCHEDULER.uncaught_handler = { say "handled: ", .message }; start { die "boom" }; sleep 0.2; say "after"';
+child '$*SCHEDULER.cue({ die "cued" }); sleep 0.2; say "after"';
+```
+
+Rakudo:
+
+```
+exit 1 out [] err [Unhandled exception in code scheduled on thread N / boom]
+exit 0 out [after] err []
+exit 1 out [] err [Unhandled exception in code scheduled on thread N / boom]
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 1 out [] err [Unhandled exception in code scheduled on thread N / boom]
+exit 0 out [handled: boom,after] err []
+exit 1 out [] err [Unhandled exception in code scheduled on thread N / cued]
+```
+
+Raku++:
+
+```
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [after] err []
+exit 0 out [handled: boom,after] err []
+exit 0 out [after] err []
+```
+
+### 21.19 `Promise.in` keeps with True after a delay; `Inf` never does (local)
+
+`src/chapters/21-promises.md:678`
+
+```raku
+my $p = Promise.in(0.1);
+say $p.status;
+say $p.result;
+say Promise.in(-1).result, " ", Promise.at(now - 100).result;
+say Promise.in("0.1").result, " ", Promise.in(Duration.new(0.1)).result;
+say Promise.at(DateTime.now.later(seconds => 0.1)).result, " ", Promise.at(now.Num + 0.1).result;
+my $never = Promise.in(Inf);
+await Promise.anyof($never, Promise.in(0.2));
+say $never.status;
+try Promise.in(NaN);
+say $!.^name;
+try Promise.in("soon");
+say $!.^name;
+try Promise.in(0.1).keep;
+say $!.^name;
+say Promise.in(Any).result;
+```
+
+Rakudo:
+
+```
+Planned
+True
+True True
+True True
+True True
+Planned
+X::Scheduler::CueInNaNSeconds
+X::TypeCheck::Binding::Parameter
+X::Promise::Vowed
+True
+```
+
+stderr:
+
+```
+Use of uninitialized value of type Any in numeric context
+  in block <unit> at example.raku line 16
+```
+
+Raku++:
+
+```
+Planned
+True
+True True
+True True
+True True
+Planned
+Nil
+Nil
+Nil
+True
+```
+
+### 21.20 `anyof` and `allof` count a broken promise as done (local)
+
+`src/chapters/21-promises.md:724`
+
+```raku
+my $ok  = Promise.new;
+my $bad = Promise.new;
+my $any = Promise.anyof($ok, $bad);
+my $all = Promise.allof($ok, $bad);
+$bad.break("failed");
+say $any.result;
+say $all.status;
+$ok.keep(1);
+say $all.result;
+say Promise.allof().status;
+say Promise.anyof([Promise.kept, Promise.kept]).result;
+try Promise.allof(Promise.kept, 42);
+say $!.^name, " ", $!.combinator;
+```
+
+Rakudo:
+
+```
+True
+Planned
+True
+Kept
+True
+X::Promise::Combinator allof
+```
+
+Raku++ (exit 1):
+
+```
+True
+Planned
+True
+Kept
+True
+```
+
+stderr:
+
+```
+No such method 'combinator' for invocant of type 'X::Promise::Combinator'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 13
+      13 | say $!.^name, " ", $!.combinator;
+```
+
+### 21.21 `await` and `.result` rethrow with different roles
+
+`src/chapters/21-promises.md:772`
+
+```raku
+my $p = Promise.broken("oh");
+try $p.result;
+say $!.^name;
+try await $p;
+say $!.^name, " ", $!.await-backtrace.^name;
+say $! ~~ X::AdHoc, " ", $! === $p.cause;
+class X::Mine is Exception { method message { "mine" } }
+try await Promise.broken(X::Mine.new);
+say $!.^name, " ", $! ~~ X::Mine;
+```
+
+Rakudo:
+
+```
+X::AdHoc+{X::Promise::Broken}
+X::AdHoc+{X::Await::Died} Backtrace
+True False
+X::Mine+{X::Await::Died} True
+```
+
+Raku++ (exit 1):
+
+```
+X::AdHoc
+```
+
+stderr:
+
+```
+No such method 'await-backtrace' for invocant of type 'X::AdHoc+{X::Await::Died}'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 5
+      5 | say $!.^name, " ", $!.await-backtrace.^name;
+```
+
+### 21.21 `await` and `.result` rethrow with different roles (local)
+
+`src/chapters/21-promises.md:793`
+
+```raku
+my $p = Promise.broken("inner");
+try await start { await $p };
+say $!.^name, ": ", $!.message;
+```
+
+Rakudo:
+
+```
+X::AdHoc+{X::Await::Died}: inner
+```
+
+Raku++:
+
+```
+X::AdHoc+{X::Await::Died}+{X::Await::Died}: inner
+```
+
+### 21.22 `await` on several promises returns their results in argument order (local)
+
+`src/chapters/21-promises.md:810`
+
+```raku
+my $slow = start { sleep 0.1; "slow" };
+my $fast = start { "fast" };
+say await $slow, $fast;
+say (await ($slow, ($fast, $slow))).raku;
+say (await start { (1, 2).Slip }, start { (3, 4).Slip }).raku;
+say (await Promise.kept(1)).^name, " ", (await (Promise.kept(1),)).raku;
+try await Promise.kept(1), Promise.broken("second");
+say $!.message;
+```
+
+Rakudo:
+
+```
+(slow fast)
+("slow", "fast", "slow")
+(1, 2, 3, 4)
+Int (1,)
+second
+```
+
+Raku++:
+
+```
+(slow fast)
+("slow", ("fast", "slow"))
+(1, 2, 3, 4)
+Int (1,)
+second
+```
+
+### 21.23 `await ()` is an empty list; `await()` is an error
+
+`src/chapters/21-promises.md:837`
+
+```raku
+say (await ()).raku;
+for { await() }, { await Nil }, { await Promise }, { await 42 },
+    { await Promise.kept, "text" } -> &code {
+    code();
+    CATCH { default { say .^name, ": ", .message } }
+}
+```
+
+Rakudo:
+
+```
+()
+X::AdHoc: Must specify an Awaitable to await (got an empty list)
+X::AdHoc: Must specify a defined Awaitable to await (got an undefined Nil)
+X::AdHoc: Must specify a defined Awaitable to await (got an undefined Promise)
+X::AdHoc+{X::Await::Died}: Can only specify Awaitable objects to await (got a Int)
+X::AdHoc+{X::Await::Died}: Can only specify Awaitable objects to await (got a Str)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+Must specify at least one Awaitable to await
+  in block <unit> at example.raku line 1
+      1 | say (await ()).raku;
+```
+
+### 21.24 `await` on the thread pool does not hold on to its thread (local)
+
+`src/chapters/21-promises.md:863`
+
+```raku
+PROCESS::<$SCHEDULER> := ThreadPoolScheduler.new(max_threads => 4);
+sub fib($n) {
+    start { $n <= 1 ?? 1 !! await(fib($n - 2)) + await(fib($n - 1)) }
+}
+say await fib(10);
+say $*SCHEDULER.max_threads;
+```
+
+Rakudo:
+
+```
+89
+4
+```
+
+Raku++ (exit 1):
+
+```
+89
+```
+
+stderr:
+
+```
+No such method 'max_threads' for invocant of type 'Scheduler'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 6
+      6 | say $*SCHEDULER.max_threads;
+```
+
+### 21.25 `await` refuses a Junction, and `break` autothreads over one
+
+`src/chapters/21-promises.md:899`
+
+```raku
+my ($a, $b) = Promise.kept(1), Promise.kept(2);
+try await $a | $b;
+say $!.message;
+say ($a | $b).result;
+my $k = Promise.new;
+$k.keep(1 | 2);
+say $k.result;
+my $p = Promise.new;
+try $p.break(1 | 2);
+say $!.^name, " ", $p.cause.payload;
+try Promise.broken(1 | 2);
+say $!.^name;
+```
+
+Rakudo:
+
+```
+Can only specify Awaitable objects to await (got a Junction)
+any(1, 2)
+any(1, 2)
+X::Promise::Vowed 1
+X::Promise::Resolved
+```
+
+Raku++ (exit 1):
+
+```
+Nil
+any(1, 2)
+```
+
+stderr:
+
+```
+Access denied to keep/break this Promise; already vowed
+  in block <unit> at example.raku line 6
+      6 | $k.keep(1 | 2);
+```
+
+### 21.28 A Channel passes values between threads, and `await` receives one (local)
+
+`src/chapters/21-promises.md:992`
+
+```raku
+my $c = Channel.new;
+my $producer = start {
+    for 1..5 { $c.send($_ ** 2) }
+    $c.close;
+}
+my @got;
+for $c.list -> $v { @got.push($v) }
+say @got;
+await $producer;
+my $d = Channel.new;
+start { sleep 0.1; $d.send("late") };
+say await $d;
+$d.send(1);
+$d.send(2);
+say await $d, $d;
+$d.close;
+try await $d;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+[1 4 9 16 25]
+late
+(1 2)
+X::Channel::ReceiveOnClosed+{X::Await::Died}
+```
+
+Raku++:
+
+```
+[1 4 9 16 25]
+late
+(1 2)
+X::Channel::ReceiveOnClosed
+```
+
+### 21.29 `await` on a Channel takes a Nil value for no value (local)
+
+`src/chapters/21-promises.md:1028`
+
+```raku
+my $c = Channel.new;
+$c.send(Nil);
+say $c.receive.raku;
+my $d = Channel.new;
+$d.send(Nil);
+$d.send(1);
+say await $d;
+say $d.poll.raku;
+$d.send(Nil);
+my $waiter = start { await $d };
+await Promise.anyof($waiter, Promise.in(0.2));
+say $waiter.status;
+```
+
+Rakudo:
+
+```
+Nil
+1
+Nil
+Planned
+```
+
+Raku++:
+
+```
+Nil
+Nil
+1
+Kept
+```
+
+### 21.30 `sleep` returns Nil, and some arguments mean never (local)
+
+`src/chapters/21-promises.md:1067`
+
+```raku
+say (sleep 0.1).raku;
+say (sleep "0.05").raku;
+say (sleep -1).raku, " ", (sleep 0).raku, " ", (sleep NaN).raku;
+say (sleep "abc").raku;
+my @forever = (start { sleep }), (start { sleep Inf }), (start { sleep * });
+await Promise.anyof(Promise.allof(@forever), Promise.in(0.2));
+say @forever».status;
+say (sleep Any).raku;
+```
+
+Rakudo:
+
+```
+Nil
+Nil
+Nil Nil Nil
+Nil
+[Planned Planned Planned]
+Nil
+```
+
+stderr:
+
+```
+Use of uninitialized value of type Any in numeric context
+  in block <unit> at example.raku line 8
+Use of uninitialized value of type Any in numeric context
+  in block <unit> at example.raku line 8
+Use of uninitialized value of type Any in numeric context
+  in block <unit> at example.raku line 8
+```
+
+Raku++:
+
+```
+Nil
+Nil
+Nil Nil Nil
+Nil
+[Kept Planned Kept]
+Nil
+```
+
+### 21.31 `sleep-timer` returns what it did not sleep; `sleep-until` a Bool (local)
+
+`src/chapters/21-promises.md:1102`
+
+```raku
+say (sleep-timer 0.1).raku;
+say (sleep-timer -1).raku;
+say (sleep-until now + 0.1).raku;
+say (sleep-until now - 1).raku;
+say (sleep-until now).raku;
+say (sleep-until DateTime.now.later(seconds => 0.1)).raku;
+try sleep-until 5;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+Duration.new(0.0)
+Duration.new(0.0)
+Bool::True
+Bool::False
+Bool::False
+Bool::True
+X::Cannot::New
+```
+
+Raku++:
+
+```
+Duration.new(0e0)
+Duration.new(0e0)
+Bool::True
+Bool::False
+Bool::False
+Bool::True
+Nil
+```
+
+### 21.32 `sleep-timer NaN` fails its own return type check (local)
+
+`src/chapters/21-promises.md:1131`
+
+```raku
+say (sleep NaN).raku;
+try sleep-timer NaN;
+say $!.^name;
+say $!.message;
+```
+
+Rakudo:
+
+```
+Nil
+X::TypeCheck::Return
+Type check failed for return value; expected Duration:D but got Rat+{Duration::add-tai} (<0/0>)
+```
+
+Raku++:
+
+```
+Nil
+Nil
+Nil
+```
+
+### 21.33 `Lock.protect` returns what its block returns, container and all (local)
+
+`src/chapters/21-promises.md:1151`
+
+```raku
+my $lock = Lock.new;
+my $total = 0;
+await (1..100).map: { start { $lock.protect({ $total += $_ }) } };
+say $total;
+say $lock.protect({ 1, 2 }).raku;
+my $x = 5;
+$lock.protect({ $x }) = 6;
+say $x;
+try $lock.protect({ die "inside" });
+say $!.message;
+say await start { $lock.protect({ "the lock was released" }) };
+```
+
+Rakudo:
+
+```
+5050
+(1, 2)
+6
+inside
+the lock was released
+```
+
+Raku++ (exit 1):
+
+```
+5050
+(1, 2)
+```
+
+stderr:
+
+```
+Target is not assignable
+  in block <unit> at example.raku line 7
+      7 | $lock.protect({ $x }) = 6;
+```
+
+### 21.34 A Lock is re-entrant, and only its holder may unlock it (local)
+
+`src/chapters/21-promises.md:1183`
+
+```raku
+my $lock = Lock.new;
+say $lock.protect({ $lock.protect({ "re-entrant" }) });
+say $lock.lock.raku;
+say $lock.unlock.raku;
+try Lock.new.unlock;
+say $!.message;
+$lock.lock;
+$lock.lock;
+$lock.unlock;
+my $other = start { $lock.protect({ "got it" }) };
+await Promise.anyof($other, Promise.in(0.2));
+say $other.status;
+$lock.unlock;
+say await $other;
+$lock.lock;
+say await start { (try $lock.unlock) // $!.message };
+$lock.unlock;
+```
+
+Rakudo:
+
+```
+re-entrant
+Lock.new
+Lock.new
+Attempt to unlock mutex by thread not holding it
+Planned
+got it
+Attempt to unlock mutex by thread not holding it
+```
+
+Raku++:
+
+```
+re-entrant
+Bool::True
+Bool::True
+Nil
+Planned
+got it
+True
+```
+
+### 21.35 Every call of `.condition` makes a new condition variable (local)
+
+`src/chapters/21-promises.md:1222`
+
+```raku
+my $lock = Lock.new;
+my $cond = $lock.condition;
+say $cond === $lock.condition;
+my $waiting = Promise.new;
+my $waiter = start $lock.protect({ $waiting.keep; $cond.wait; "woken" });
+await $waiting;
+$lock.protect({ $lock.condition.signal_all });
+await Promise.anyof($waiter, Promise.in(0.2));
+say $waiter.status;
+$lock.protect({ $cond.signal_all });
+say await $waiter;
+try $cond.wait;
+say $!.message;
+say $lock.protect({ $cond.wait({ True }); "no wait" });
+```
+
+Rakudo:
+
+```
+False
+Planned
+woken
+Can only wait on a condition variable when holding mutex
+no wait
+```
+
+Raku++ (exit 142):
+
+```
+False
+Planned
+woken
+```
+
+### 21.36 `Lock::Soft` is a Lock whose misuse has typed exceptions (local)
+
+`src/chapters/21-promises.md:1258`
+
+```raku
+my $lock = Lock::Soft.new;
+say $lock.lock.raku, " ", $lock.unlock.raku;
+try $lock.unlock;
+say $!.^name;
+$lock.lock;
+say await start { (try $lock.unlock) // $!.^name };
+$lock.unlock;
+say $lock.protect({ $lock.protect({ "re-entrant" }) });
+say $lock.condition === $lock.condition;
+try $lock.condition.wait;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+Nil Nil
+X::Lock::Unlock::NoMutex
+X::Lock::Unlock::WrongThread
+re-entrant
+True
+X::Lock::ConditionVariable::NoMutex
+```
+
+Raku++ (exit 142):
+
+```
+Bool::True Bool::True
+Nil
+True
+re-entrant
+False
+```
+
+### 21.37 `Lock::Async.lock` returns a promise, and the lock is not re-entrant (local)
+
+`src/chapters/21-promises.md:1290`
+
+```raku
+my $lock = Lock::Async.new;
+my $first = $lock.lock;
+say $first.^name, " ", $first.status;
+my $second = $lock.lock;
+my $third = $lock.lock;
+say $second.status, " ", $third.status;
+$lock.unlock;
+await $second;
+say $second.status, " ", $third.status;
+$lock.unlock;
+await $third;
+$lock.unlock;
+try $lock.unlock;
+say $!.^name, ": ", $!.message;
+my $again = $lock.lock;
+say $again === $first, " ", $again === Lock::Async.new.lock;
+```
+
+Rakudo:
+
+```
+Promise Kept
+Planned Planned
+Kept Planned
+X::Lock::Async::NotLocked: Cannot unlock a Lock::Async that is not currently locked
+True True
+```
+
+Raku++:
+
+```
+Promise Kept
+Planned Planned
+Kept Planned
+X::Lock::Async::NotLocked: Cannot unlock a Lock::Async that is not currently locked
+False False
+```
+
+### 21.38 `protect-or-queue-on-recursion` defers the inner call instead of waiting (local)
+
+`src/chapters/21-promises.md:1348`
+
+```raku
+my $lock = Lock::Async.new;
+my @log;
+say $lock.protect-or-queue-on-recursion({ @log.push("free") }).raku;
+my $queued;
+$lock.protect-or-queue-on-recursion({
+    $queued = $lock.protect-or-queue-on-recursion({ @log.push("inner"); "inner's value" });
+    say $queued.status;
+    @log.push("outer");
+});
+say @log;
+say await $queued;
+```
+
+Rakudo:
+
+```
+Nil
+Planned
+[free outer inner]
+inner's value
+```
+
+Raku++ (exit 1):
+
+```
+["free"]
+```
+
+stderr:
+
+```
+No such method 'status' for invocant of type 'Str'
+  (X::Method::NotFound)
+  in block  at example.raku line 7
+      7 |     say $queued.status;
+  in block <unit> at example.raku line 5
+```
+
+### 21.38 `protect-or-queue-on-recursion` defers the inner call instead of waiting (local)
+
+`src/chapters/21-promises.md:1372`
+
+```raku
+my $lock = Lock::Async.new;
+my $w = start $lock.protect-or-queue-on-recursion({
+    $lock.with-lock-hidden-from-recursion-check({
+        $lock.protect-or-queue-on-recursion({ "never" })
+    })
+});
+await Promise.anyof($w, Promise.in(0.2));
+say $w.status;
+```
+
+Rakudo:
+
+```
+Planned
+```
+
+Raku++:
+
+```
+Broken
+```
+
+### 21.39 A Semaphore hands out permits, and `release` has no ceiling (local)
+
+`src/chapters/21-promises.md:1395`
+
+```raku
+my $s = Semaphore.new(2);
+say $s.try_acquire, " ", $s.try_acquire, " ", $s.try_acquire;
+say $s.release.raku;
+$s.release for ^3;
+say (^6).map({ $s.try_acquire });
+my $zero = Semaphore.new(0);
+my $w = start { $zero.acquire; "acquired" };
+await Promise.anyof($w, Promise.in(0.2));
+say $w.status;
+$zero.release;
+say await $w;
+for { Semaphore.new }, { Semaphore.new("2") }, { Semaphore.new(-1) } -> &c {
+    try c();
+    say $!.message;
+}
+```
+
+Rakudo:
+
+```
+True True False
+Mu
+(True True True True False False)
+Planned
+acquired
+Too few positionals passed; expected 2 arguments but got 1
+This type cannot unbox to a native integer: P6opaque, Str
+Failed to initialize Semaphore: invalid argument
+```
+
+Raku++:
+
+```
+True True False
+Bool::True
+(True True True True False False)
+Planned
+acquired
+Nil
+Nil
+Nil
+```
+
+### 21.40 A Semaphore's permit count wraps at 32 bits
+
+`src/chapters/21-promises.md:1434`
+
+```raku
+for 2**31 - 1, 2**31, 2**32, 2**32 + 1 -> $n {
+    my $s = try Semaphore.new($n);
+    say "$n: ", $s ?? "{$s.try_acquire} {$s.try_acquire}" !! $!.message;
+}
+try Semaphore.new(2**64);
+say $!.message;
+```
+
+Rakudo:
+
+```
+2147483647: True True
+2147483648: Failed to initialize Semaphore: invalid argument
+4294967296: False False
+4294967297: True False
+Cannot unbox 65 bit wide bigint into native integer. Did you mix int and Int or literals?
+```
+
+Raku++:
+
+```
+2147483647: True True
+2147483648: True True
+4294967296: True True
+4294967297: True True
+Nil
+```
+
+### 21.41 `cue` returns Nil, and a Cancellation only with a timer (local)
+
+`src/chapters/21-promises.md:1462`
+
+```raku
+say $*SCHEDULER.^name;
+my $done = Promise.new;
+say $*SCHEDULER.cue({ $done.keep("ran") }).raku;
+say await $done;
+my $timer = $*SCHEDULER.cue({ say "never printed" }, :in(0.1));
+say $timer.^name, " ", $timer.cancelled;
+say $timer.cancel.raku, " ", $timer.cancelled;
+my $caught = Promise.new;
+$*SCHEDULER.cue({ die "in cued code" }, :catch({ $caught.keep(.message) }));
+say await $caught;
+sleep 0.2;
+```
+
+Rakudo:
+
+```
+ThreadPoolScheduler
+Nil
+ran
+Cancellation False
+Bool::True True
+in cued code
+```
+
+Raku++:
+
+```
+Scheduler
+{}
+ran
+Cancellation False
+Bool::True True
+in cued code
+```
+
+### 21.41 `cue` returns Nil, and a Cancellation only with a timer (local)
+
+`src/chapters/21-promises.md:1490`
+
+```raku
+my $count = 0;
+my $third = Promise.new;
+$*SCHEDULER.cue({ $third.keep if ++$count == 3 }, :every(0.05), :times(3));
+await $third;
+sleep 0.2;
+say $count;
+my $n = 0;
+$*SCHEDULER.cue({ $n++ }, :every(Inf));
+say $n;
+try $*SCHEDULER.cue({ ; }, :in(NaN));
+say $!.^name;
+try $*SCHEDULER.cue({ ; }, :in(1), :at(now));
+say $!.message;
+```
+
+Rakudo:
+
+```
+3
+1
+X::Scheduler::CueInNaNSeconds
+Cannot specify :at and :in at the same time
+```
+
+stderr:
+
+```
+Inf was passed via :every; running the given block only once, immediately
+  in block <unit> at example.raku line 8
+```
+
+Raku++:
+
+```
+3
+0
+X::Scheduler::CueInNaNSeconds
+Cannot specify both :at and :in
+```
+
+### 21.42 A CurrentThreadScheduler runs everything at once, in the caller (local)
+
+`src/chapters/21-promises.md:1525`
+
+```raku
+my $here = CurrentThreadScheduler.new;
+my @log;
+my $p = Promise.start({ @log.push("ran"); 42 }, :scheduler($here));
+@log.push("start returned");
+say $p.status, " ", $p.result;
+say $p.then({ .result + 1 }).status;
+say Promise.in(0.1, :scheduler($here)).status;
+$here.cue({ @log.push("cued") });
+say @log;
+try $here.cue({ die "loud" });
+say $!.message;
+try $here.cue({ ; }, :every(1));
+say $!.^name;
+```
+
+Rakudo:
+
+```
+Kept 42
+Kept
+Kept
+[ran start returned cued]
+loud
+X::AdHoc
+```
+
+Raku++:
+
+```
+Kept 42
+Kept
+Planned
+[ran start returned cued]
+loud
+X::Scheduler::Cue
+```
+
+### 21.43 `hyper` keeps the order of the elements, `race` does not (local)
+
+`src/chapters/21-promises.md:1556`
+
+```raku
+my @squares = (1..8).hyper(:batch(1)).map({ sleep 0.1 if $_ == 1; $_ ** 2 });
+say @squares;
+my @raced = (1..8).race(:batch(1)).map({ sleep 0.1 if $_ == 1; $_ ** 2 });
+say @raced[*-1];
+say @raced.sort;
+say (1..8).hyper.^name, " ", (1..8).race.^name;
+```
+
+Rakudo:
+
+```
+[1 4 9 16 25 36 49 64]
+1
+(1 4 9 16 25 36 49 64)
+HyperSeq RaceSeq
+```
+
+Raku++:
+
+```
+[1 4 9 16 25 36 49 64]
+64
+(1 4 9 16 25 36 49 64)
+HyperSeq RaceSeq
+```
+
+### 21.44 An exception in a `hyper` worker surfaces where the values are read (local)
+
+`src/chapters/21-promises.md:1579`
+
+```raku
+try { my @r = (1..20).hyper(:batch(2)).map({ die "bad $_" if $_ == 7; $_ }) };
+say $!.^name, ": ", $!.message;
+my $l = try (1..20).hyper(:batch(2)).map({ die "bad $_" if $_ == 7; $_ }).List;
+say "the try is over";
+say $l.elems;
+```
+
+Rakudo (exit 1):
+
+```
+X::AdHoc+{X::HyperRace::Died}: bad 7
+the try is over
+```
+
+stderr:
+
+```
+A worker in a parallel iteration (hyper or race) initiated here:
+  in block <unit> at example.raku line 5
+
+Died at:
+    bad 7
+      in block  at example.raku line 3
+```
+
+Raku++:
+
+```
+X::AdHoc: bad 7
+the try is over
+1
+```
+
+### 21.45 A Promise becomes a Supply of its one value (local)
+
+`src/chapters/21-promises.md:1611`
+
+```raku
+my $s = Promise.kept(5).Supply;
+say $s.list, " ", $s.list;
+try await Promise.broken("no luck").Supply;
+say $!.^name, ": ", $!.message;
+say await Supply.from-list(1, 2, 3);
+```
+
+Rakudo:
+
+```
+(5) (5)
+X::AdHoc+{X::Await::Died}: no luck
+3
+```
+
+Raku++:
+
+```
+(result => 5 status => Kept) (result => 5 status => Kept)
+Nil: Nil
+3
+```
+
+## 22. Supplies
+
+### 22.3 `from-list` flattens a single Iterable argument only
+
+`src/chapters/22-supplies.md:94`
+
+```raku
+say Supply.from-list([1, 2, 3]).list.raku;
+say Supply.from-list(1..3).list.raku;
+say Supply.from-list((1, 2), (3, 4)).list.raku;
+say Supply.from-list("abc").list.raku;
+say Supply.from-list().list.raku;
+```
+
+Rakudo:
+
+```
+(1, 2, 3)
+(1, 2, 3)
+($(1, 2), $(3, 4))
+("abc",)
+()
+```
+
+Raku++:
+
+```
+(1, 2, 3)
+(1, 2, 3)
+((1, 2), (3, 4))
+("abc",)
+()
+```
+
+### 22.12 `on-demand` runs its producer once per tap, on the tapping thread
+
+`src/chapters/22-supplies.md:387`
+
+```raku
+my $s = Supply.on-demand(-> $p { $p.emit(1) }, closing => { say "closing" });
+my $tap = $s.tap(-> $v { say "got $v" });
+say "no done yet";
+$tap.close;
+$tap.close;
+Supply.on-demand(-> $p { die "producer failed" })
+    .tap(-> $v { }, quit => { say "quit: ", .message });
+```
+
+Rakudo:
+
+```
+got 1
+no done yet
+closing
+quit: producer failed
+```
+
+Raku++:
+
+```
+got 1
+closing
+no done yet
+quit: producer failed
+```
+
+### 22.17 A whenever over a Promise delivers its value later, from another thread (local)
+
+`src/chapters/22-supplies.md:555`
+
+```raku
+my @got;
+my $done = Promise.new;
+my $s = supply { whenever Promise.kept(42) { emit $_ } }
+$s.tap(-> $v { @got.push($v) }, done => { $done.keep });
+say "when tap returns: ", @got.raku;
+await $done;
+say "after the done: ", @got.raku;
+```
+
+Rakudo:
+
+```
+when tap returns: []
+after the done: [42]
+```
+
+Raku++:
+
+```
+when tap returns: [42]
+after the done: [42]
+```
+
+### 22.23 `last` finishes one whenever, `next` skips one value
+
+`src/chapters/22-supplies.md:767`
+
+```raku
+my $sup = Supplier.new;
+my $source = supply {
+    whenever $sup.Supply { emit $_ }
+    CLOSE { say "the source is closed" }
+}
+react {
+    whenever $source {
+        say "got $_";
+        last if $_ == 2;
+    }
+    $sup.emit($_) for 1..3;
+}
+say "react returned";
+```
+
+Rakudo:
+
+```
+got 1
+got 2
+the source is closed
+react returned
+```
+
+Raku++:
+
+```
+got 1
+got 2
+got 3
+react returned
+```
+
+### 22.24 A LAST run by `last` cannot emit
+
+`src/chapters/22-supplies.md:799`
+
+```raku
+sub numbers($stop) {
+    supply {
+        whenever Supply.from-list(1, 2, 3) {
+            emit $_;
+            last if $_ == $stop;
+            LAST { emit "from LAST" }
+        }
+    }
+}
+numbers(9).tap(-> $v { say "got $v" }, done => { say "done" });
+numbers(2).tap(-> $v { say "got $v" }, done => { say "done" },
+               quit => { say "quit: ", .message });
+```
+
+Rakudo:
+
+```
+got 1
+got 2
+got 3
+got from LAST
+done
+got 1
+got 2
+quit: emit without supply or react
+```
+
+Raku++:
+
+```
+got 1
+got 2
+got 3
+got from LAST
+done
+got 1
+got 2
+got from LAST
+done
+```
+
+### 22.29 A QUIT that matches nothing lets the quit through
+
+`src/chapters/22-supplies.md:946`
+
+```raku
+sub failing { Supply.from-list(1).map({ die "source failed" }) }
+my $s1 = supply {
+    whenever failing() {
+        QUIT { when X::NYI { say "never" } }
+    }
+}
+$s1.tap(-> $v { }, quit => { say "no match, tap's quit: ", .message });
+my $s2 = supply {
+    whenever failing() {
+        QUIT { say "QUIT ran without when" }
+    }
+}
+$s2.tap(-> $v { }, quit => { say "tap's quit: ", .message });
+my $s3 = supply {
+    whenever failing() {
+        QUIT { default { .resume } }
+    }
+}
+$s3.tap(-> $v { }, quit => { say "tap's quit: ", .message });
+```
+
+Rakudo:
+
+```
+no match, tap's quit: source failed
+QUIT ran without when
+tap's quit: source failed
+tap's quit: Too late to resume this exception
+```
+
+Raku++:
+
+```
+no match, tap's quit: source failed
+QUIT ran without when
+tap's quit: source failed
+tap's quit: Cannot resume without an active exception handler
+```
+
+### 22.32 CLOSE phasers run in reverse, before or after the done handler
+
+`src/chapters/22-supplies.md:1041`
+
+```raku
+my $natural = supply {
+    whenever Supply.from-list(1) { emit $_ }
+    CLOSE { say "CLOSE 1" }
+    CLOSE { say "CLOSE 2" }
+}
+$natural.tap(-> $v { say "got $v" }, done => { say "done handler" });
+say "---";
+my $explicit = supply {
+    whenever Supply.from-list(1) { emit $_; done }
+    CLOSE { say "CLOSE 1" }
+    CLOSE { say "CLOSE 2" }
+}
+$explicit.tap(-> $v { say "got $v" }, done => { say "done handler" });
+```
+
+Rakudo:
+
+```
+got 1
+done handler
+CLOSE 2
+CLOSE 1
+---
+got 1
+CLOSE 2
+CLOSE 1
+done handler
+```
+
+Raku++:
+
+```
+got 1
+done handler
+CLOSE 2
+CLOSE 1
+---
+got 1
+done handler
+CLOSE 2
+CLOSE 1
+```
+
+### 22.32 CLOSE phasers run in reverse, before or after the done handler
+
+`src/chapters/22-supplies.md:1070`
+
+```raku
+my $s = supply {
+    whenever Supply.from-list(1) { die "failed" }
+    CLOSE { say "CLOSE ran" }
+}
+$s.tap(-> $v { }, quit => { say "quit handler" });
+```
+
+Rakudo:
+
+```
+CLOSE ran
+quit handler
+```
+
+Raku++:
+
+```
+quit handler
+CLOSE ran
+```
+
+### 22.36 An exception in `.map` becomes a quit, and later values still arrive
+
+`src/chapters/22-supplies.md:1169`
+
+```raku
+Supply.from-list(1, 2, 3, 4)
+    .map({ die "cannot map $_" if $_ == 2; $_ * 10 })
+    .tap(-> $v { say "got $v" }, done => { say "done" }, quit => { say "quit: ", .message });
+```
+
+Rakudo:
+
+```
+got 10
+quit: cannot map 2
+got 30
+got 40
+done
+```
+
+Raku++:
+
+```
+got 10
+quit: cannot map 2
+```
+
+### 22.36 An exception in `.map` becomes a quit, and later values still arrive
+
+`src/chapters/22-supplies.md:1185`
+
+```raku
+my $sup = Supplier.new;
+$sup.Supply.map({ die "cannot map $_" if $_ == 2; $_ * 10 })
+    .tap(-> $v { say "live got $v" }, done => { say "live done" },
+         quit => { say "live quit: ", .message });
+$sup.emit($_) for 1..3;
+$sup.done;
+Supply.from-list(1, 2, 3)
+    .do({ die "cannot do $_" if $_ == 2 })
+    .tap(-> $v { say "do got $v" }, quit => { say "do quit: ", .message });
+```
+
+Rakudo:
+
+```
+live got 10
+live quit: cannot map 2
+do got 1
+do quit: cannot do 2
+```
+
+Raku++ (exit 1):
+
+```
+live got 10
+```
+
+stderr:
+
+```
+cannot map 2
+  in block  at example.raku line 2
+      2 | $sup.Supply.map({ die "cannot map $_" if $_ == 2; $_ * 10 })
+  in block <unit> at example.raku line 5
+```
+
+### 22.37 After a leaking quit, `.list` and `await` lose the exception
+
+`src/chapters/22-supplies.md:1216`
+
+```raku
+my &risky = { die "cannot map $_" if $_ == 2; $_ * 10 };
+my @all = Supply.from-list(1, 2, 3).map(&risky).list;
+say @all;
+my $last = try await Supply.from-list(1, 2, 3).map(&risky);
+say $last, " ", $!.raku;
+my $none = try await Supply.from-list(2).map(&risky);
+say $none.raku, " ", $!.raku;
+try Supply.from-list(1, 2, 3).map(&risky).wait;
+say $!.message;
+```
+
+Rakudo:
+
+```
+[10]
+30 Any
+Any Any
+Type check failed in binding; expected Exception but got Any (Any)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+cannot map 2
+  in block <unit> at example.raku line 2
+      2 | my @all = Supply.from-list(1, 2, 3).map(&risky).list;
+```
+
+### 22.39 `head` closes its source; `tail` waits for done
+
+`src/chapters/22-supplies.md:1298`
+
+```raku
+my $sup = Supplier.new;
+my $s = supply {
+    whenever $sup.Supply { emit $_ }
+    CLOSE { say "source closed" }
+}
+$s.head(2).tap(-> $v { say "got $v" }, done => { say "done" });
+$sup.emit($_) for 1..4;
+say "end";
+```
+
+Rakudo:
+
+```
+got 1
+got 2
+source closed
+done
+end
+```
+
+Raku++:
+
+```
+done
+end
+```
+
+### 22.40 `tail` of an empty supply emits Any
+
+`src/chapters/22-supplies.md:1322`
+
+```raku
+say Supply.from-list().tail.list.raku;
+say Supply.from-list().tail(1).list.raku;
+say Supply.from-list().tail(2).list.raku;
+say ().tail.raku;
+```
+
+Rakudo:
+
+```
+(Any,)
+(Any,)
+()
+Nil
+```
+
+Raku++:
+
+```
+(Any,)
+()
+()
+Nil
+```
+
+### 22.41 `unique` compares by identity; `squish`'s `:with` sees the previous value
+
+`src/chapters/22-supplies.md:1363`
+
+```raku
+my &next-number = -> $prev, $new { say "  with($prev, $new)"; $new == $prev + 1 };
+say Supply.from-list(1, 2, 3, 5).squish(:with(&next-number)).list;
+```
+
+Rakudo:
+
+```
+  with(1, 2)
+  with(2, 3)
+  with(3, 5)
+(1 5)
+```
+
+Raku++:
+
+```
+  with(1, 2)
+  with(1, 3)
+  with(3, 5)
+(1 3 5)
+```
+
+### 22.44 `batch(:emit-timed)` never emits (local)
+
+`src/chapters/22-supplies.md:1448`
+
+```raku
+for False, True -> $timed {
+    my $sup = Supplier.new;
+    my @got;
+    $sup.Supply.batch(:seconds(0.1), :emit-timed($timed))
+        .tap(-> $b { @got.push($b) }, done => { @got.push("done") });
+    $sup.emit(1);
+    $sup.emit(2);
+    sleep 0.2;
+    $sup.emit(3);
+    $sup.done;
+    sleep 0.1;
+    say ":emit-timed($timed) ", @got.raku;
+}
+```
+
+Rakudo:
+
+```
+:emit-timed(False) [(1, 2), (3,), "done"]
+:emit-timed(True) []
+```
+
+Raku++:
+
+```
+:emit-timed(False) [(1, 2), (3,), "done"]
+:emit-timed(True) [(1, 2), (3,), "done"]
+```
+
+### 22.45 `elems($seconds)` never reports the final count
+
+`src/chapters/22-supplies.md:1479`
+
+```raku
+say Supply.from-list(<a b c>).elems.list;
+say Supply.from-list(<a b c>).elems(10).list;
+```
+
+Rakudo:
+
+```
+(1 2 3)
+()
+```
+
+Raku++:
+
+```
+(1 2 3)
+(3)
+```
+
+### 22.46 `elems` with an interval below one second divides by zero
+
+`src/chapters/22-supplies.md:1496`
+
+```raku
+try say Supply.from-list(1, 2).elems(0.5).list;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+X::Numeric::DivideByZero
+```
+
+Raku++:
+
+```
+(2)
+Nil
+```
+
+### 22.49 `sort` and `reverse` wait for done; `rotate` holds back only its count
+
+`src/chapters/22-supplies.md:1584`
+
+```raku
+my $sup = Supplier.new;
+$sup.Supply.rotate(2).tap(-> $v { say "got $v" }, done => { say "done" });
+for 1..4 { say "emit $_"; $sup.emit($_) }
+say "sending done";
+$sup.done;
+say Supply.from-list(1, 2, 3, 4).rotate(-1).list;
+say Supply.from-list(1, 2).rotate(3).list;
+```
+
+Rakudo:
+
+```
+emit 1
+emit 2
+emit 3
+got 3
+emit 4
+got 4
+sending done
+got 1
+got 2
+done
+(4 1 2 3)
+(2 1)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'tap' for invocant of type 'Seq'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 2
+      2 | $sup.Supply.rotate(2).tap(-> $v { say "got $v" }, done => { say "done" });
+```
+
+### 22.54 `decode` holds back the last character of every chunk
+
+`src/chapters/22-supplies.md:1745`
+
+```raku
+my $sup = Supplier.new;
+$sup.Supply.decode.tap(-> $text { say "decoded: ", $text.raku }, done => { say "done" });
+say "send ab";
+$sup.emit("ab".encode);
+say "send c";
+$sup.emit("c".encode);
+say "send done";
+$sup.done;
+```
+
+Rakudo:
+
+```
+send ab
+decoded: "a"
+send c
+decoded: "b"
+send done
+decoded: "c"
+done
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'decode' for invocant of type 'Supply'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 2
+      2 | $sup.Supply.decode.tap(-> $text { say "decoded: ", $text.raku }, done => { say "done" });
+```
+
+### 22.55 `flat` follows every inner supply; `migrate` only the newest
+
+`src/chapters/22-supplies.md:1796`
+
+```raku
+try Supply.from-list(1, 2).migrate.list.eager;
+say $!.^name;
+say $!.message;
+```
+
+Rakudo:
+
+```
+X::Supply::Migrate::Needs
+.migrate needs Supplies to be emitted
+```
+
+Raku++:
+
+```
+X::Supply::Migrate::Needs
+migrate expects Supply values
+```
+
+### 22.58 `sanitize` enforces the order of events, and `act` taps through it
+
+`src/chapters/22-supplies.md:1891`
+
+```raku
+my $s = Supplier.new.Supply;
+say $s.serialize === $s, " ", $s.sanitize === $s;
+my $blk = supply { emit 1 };
+say $blk.serialize === $blk, " ", $blk.sanitize === $blk;
+```
+
+Rakudo:
+
+```
+True True
+True True
+```
+
+Raku++:
+
+```
+True True
+False False
+```
+
+### 22.58 `sanitize` enforces the order of events, and `act` taps through it
+
+`src/chapters/22-supplies.md:1905`
+
+```raku
+my $wild = Supply.new(class :: does Tappable {
+    method tap(&emit, &done, &quit, &tap) {
+        emit(1); done(); emit(2); done();
+        Tap.new
+    }
+    method live { False }
+    method serial { False }
+    method sane { False }
+});
+$wild.tap(-> $v { say "raw got $v" }, done => { say "raw done" });
+$wild.act(-> $v { say "act got $v" }, done => { say "act done" });
+```
+
+Rakudo:
+
+```
+raw got 1
+raw done
+raw got 2
+raw done
+act got 1
+act done
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+Invalid typename 'Tappable'
+  (X::InvalidType)
+  in block  at example.raku line 1
+      1 | my $wild = Supply.new(class :: does Tappable {
+  in block <unit> at example.raku line 1
+```
+
+### 22.59 `share` subscribes once, and at once
+
+`src/chapters/22-supplies.md:1937`
+
+```raku
+my $runs = 0;
+my $source = Supplier.new;
+my $counted = supply {
+    $runs++;
+    whenever $source.Supply { emit "$_ (run $runs)" }
+}
+my $shared = $counted.share;
+$shared.tap(-> $v { say "A: $v" });
+$shared.tap(-> $v { say "B: $v" });
+$source.emit(1);
+say "the block ran $runs time";
+my @got;
+Supply.from-list(1, 2, 3).share.tap(-> $v { @got.push($v) }, done => { @got.push("done") });
+say @got.raku;
+```
+
+Rakudo:
+
+```
+A: 1 (run 1)
+B: 1 (run 1)
+the block ran 1 time
+[]
+```
+
+Raku++:
+
+```
+the block ran 1 time
+[]
+```
+
+### 22.60 `.list` subscribes at once and reads lazily
+
+`src/chapters/22-supplies.md:1988`
+
+```raku
+my $s = supply { emit 1; die "boom" }
+my $list = try $s.list;
+say "try returned a ", $list.^name;
+try say $list.elems;
+say "reading it threw: ", $!.message;
+```
+
+Rakudo:
+
+```
+try returned a List
+reading it threw: boom
+```
+
+Raku++:
+
+```
+try returned a Any
+1
+reading it threw: Nil
+```
+
+### 22.63 `interval` ticks from 0, and its delay comes first (local)
+
+`src/chapters/22-supplies.md:2047`
+
+```raku
+say Supply.interval(0.05).head(3).list;
+react {
+    whenever Supply.interval(0.05) -> $n {
+        say "tick $n";
+        done if $n == 2;
+    }
+}
+my $t0 = now;
+my $first = Supply.interval(10, 0.1).head(1).list;
+say $first, " after less than a second: ", now - $t0 < 1;
+try Supply.from-list(1).interval(1);
+say $!.^name;
+```
+
+Rakudo:
+
+```
+(0 1 2)
+tick 0
+tick 1
+tick 2
+(0) after less than a second: True
+X::Parameter::InvalidConcreteness
+```
+
+Raku++:
+
+```
+(0 1 2)
+tick 0
+tick 1
+tick 2
+(0) after less than a second: True
+X::Method::NotFound
+```
+
+### 22.64 `delayed` shifts every event, done included (local)
+
+`src/chapters/22-supplies.md:2076`
+
+```raku
+my $s = Supply.from-list(1, 2, 3);
+say $s.delayed(0) === $s;
+my @got;
+my $done = Promise.new;
+$s.delayed(0.1).tap(-> $v { @got.push($v) }, done => { $done.keep });
+say "right after tap: ", @got.raku;
+await $done;
+say "after the done: ", @got.raku;
+```
+
+Rakudo:
+
+```
+True
+right after tap: []
+after the done: [1, 2, 3]
+```
+
+Raku++:
+
+```
+True
+right after tap: [1, 2, 3]
+after the done: [1, 2, 3]
+```
+
+### 22.65 `stable` emits a waiting value after the done (local)
+
+`src/chapters/22-supplies.md:2104`
+
+```raku
+my $sup = Supplier.new;
+my @got;
+$sup.Supply.stable(0.1).tap(-> $v { @got.push($v) }, done => { @got.push("done") });
+$sup.emit(1);
+$sup.emit(2);
+sleep 0.2;
+$sup.emit(3);
+$sup.done;
+sleep 0.2;
+say @got;
+say Supply.from-list(1, 2, 3).stable(0.05).list;
+say Supply.from-list(1, 2, 3).stable(0).list;
+```
+
+Rakudo:
+
+```
+[2 done 3]
+()
+(1 2 3)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'stable' for invocant of type 'Supply'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 3
+      3 | $sup.Supply.stable(0.1).tap(-> $v { @got.push($v) }, done => { @got.push("done") });
+```
+
+### 22.66 `throttle` lets a number of values through per interval (local)
+
+`src/chapters/22-supplies.md:2155`
+
+```raku
+my $status = Supplier.new;
+my @reports;
+$status.Supply.tap(-> %report { @reports.push(%report) });
+my $control = Supplier.new;
+my $sup = Supplier.new;
+my $done = Promise.new;
+$sup.Supply.throttle(1, 0.05, :control($control.Supply), :$status)
+    .tap(-> $v { }, done => { $done.keep });
+$sup.emit($_) for 1..4;
+$control.emit("status:first");
+$control.emit("limit:10");
+$sup.done;
+await $done;
+say @reports.map(*<id>);
+say @reports[0].keys.sort;
+```
+
+Rakudo:
+
+```
+(first done)
+(allowed bled buffered emitted id limit vent-at)
+```
+
+Raku++:
+
+```
+()
+()
+```
+
+### 22.66 `throttle` lets a number of values through per interval (local)
+
+`src/chapters/22-supplies.md:2181`
+
+```raku
+my $bleed = Supplier.new;
+my @bled;
+$bleed.Supply.tap(-> $v { @bled.push($v) }, done => { @bled.push("bleed done") });
+my $sup = Supplier.new;
+my @got;
+my $done = Promise.new;
+$sup.Supply.throttle(1, 0.05, :$bleed, :vent-at(2))
+    .tap(-> $v { @got.push($v) }, done => { $done.keep });
+$sup.emit($_) for 1..6;
+$sup.done;
+await $done;
+say @got;
+say @bled;
+```
+
+Rakudo:
+
+```
+[1]
+[4 5 6 2 3 bleed done]
+```
+
+Raku++:
+
+```
+[1 2 3 4 5 6]
+[]
+```
+
+### 22.66 `throttle` lets a number of values through per interval (local)
+
+`src/chapters/22-supplies.md:2205`
+
+```raku
+my @status;
+my @results;
+react {
+    whenever Supply.from-list(1, 2, 3).throttle(2, -> $n { $n * 10 }) -> $p {
+        @status.push: $p.^name ~ " " ~ $p.status;
+        @results.push: $p.result;
+    }
+}
+say @status.unique;
+say @results.sort;
+```
+
+Rakudo:
+
+```
+(Promise Kept)
+(10 20 30)
+```
+
+Raku++:
+
+```
+(Promise Kept Promise Planned)
+(10 20 30)
+```
+
+## A. Possible Rakudo Bugs
+
+### A.1 Braces inside `qx{…}` run a command of their own (local)
+
+`src/chapters/90-rakudo-bugs.md:60`
+
+```raku
+say qx[echo '{echo inner}'].raku;
+say qx{echo '{echo inner}'}.raku;
+```
+
+Rakudo:
+
+```
+"\{echo inner}\n"
+"\{inner\n}\n"
+```
+
+Raku++:
+
+```
+"\{echo inner}\n"
+"\{echo inner}\n"
+```
+
+### A.2 `7 mod 2.5` is -0.5, and an Int's `polymod` follows it
+
+`src/chapters/90-rakudo-bugs.md:87`
+
+```raku
+say 7 mod 2.5;
+say 7 % 2.5;
+say 10.polymod(2.5);
+say 10.0.polymod(2.5);
+```
+
+Rakudo:
+
+```
+-0.5
+2
+(-2.5 5)
+(0 4)
+```
+
+Raku++:
+
+```
+-0.5
+2
+(0 5)
+(0 4)
+```
+
+### A.4 A negative base to a negative power puts the sign on the denominator
+
+`src/chapters/90-rakudo-bugs.md:138`
+
+```raku
+my $x = (-2) ** -3;
+say $x.raku;
+say $x == -0.125;
+say $x;
+```
+
+Rakudo:
+
+```
+<1/-8>
+False
+-1.875
+```
+
+Raku++:
+
+```
+-0.125
+True
+-0.125
+```
+
+### A.5 `[lcm] ()` dies of an ambiguous call
+
+`src/chapters/90-rakudo-bugs.md:165`
+
+```raku
+say ([gcd] ()).exception.^name;
+say [lcm] ();
+```
+
+Rakudo (exit 1):
+
+```
+X::NoZeroArgMeaning
+```
+
+stderr:
+
+```
+Ambiguous call to 'infix:<lcm>(...)'; these signatures all match:
+  () from SETTING::src/core.c/Numeric.rakumod line 265
+  () from SETTING::src/core.c/Int.rakumod line 421
+  in block <unit> at example.raku line 2
+```
+
+Raku++:
+
+```
+X::NoZeroArgMeaning
+1
+```
+
+### A.6 A left shift by a negative count past -63 wraps around
+
+`src/chapters/90-rakudo-bugs.md:193`
+
+```raku
+say 1024 +< -64;
+say 1024 +> 64;
+say 1024 +< -65;
+say 1024 +> 65;
+```
+
+Rakudo:
+
+```
+1024
+0
+512
+0
+```
+
+Raku++:
+
+```
+0
+0
+0
+0
+```
+
+### A.7 `1e-300.narrow` is 0
+
+`src/chapters/90-rakudo-bugs.md:220`
+
+```raku
+say 4.5e0.narrow.raku;
+say 1e-14.narrow.raku;
+say 1e-300.narrow.raku;
+```
+
+Rakudo:
+
+```
+4.5e0
+1e-14
+0
+```
+
+Raku++:
+
+```
+4.5e0
+1e-14
+1e-300
+```
+
+### A.8 `<42>.lines` returns an allomorph whose number is 0
+
+`src/chapters/90-rakudo-bugs.md:246`
+
+```raku
+say <42>.lines.raku;
+say <42>.lines[0] == 0;
+say <42>.lc.raku;
+```
+
+Rakudo:
+
+```
+(IntStr.new(0, "42"),).Seq
+True
+"42"
+```
+
+Raku++:
+
+```
+("42",).Seq
+False
+"42"
+```
+
+### A.9 `rindex` dies on a position at the end
+
+`src/chapters/90-rakudo-bugs.md:271`
+
+```raku
+say "abc".rindex("c", 2);
+say "abc".rindex("c", 3);
+```
+
+Rakudo (exit 1):
+
+```
+2
+```
+
+stderr:
+
+```
+index start offset (3) out of range (0..3)
+  in block <unit> at example.raku line 2
+```
+
+Raku++:
+
+```
+2
+2
+```
+
+### A.11 `comb` with a string and a limit finds overlapping matches
+
+`src/chapters/90-rakudo-bugs.md:312`
+
+```raku
+say "aaaa".comb("aa");
+say "aaaa".comb("aa", 3);
+```
+
+Rakudo:
+
+```
+(aa aa)
+(aa aa aa)
+```
+
+Raku++:
+
+```
+(aa aa)
+(aa aa)
+```
+
+### A.12 `lines(:!count)` dies
+
+`src/chapters/90-rakudo-bugs.md:334`
+
+```raku
+say "a\nb".lines(:!count);
+```
+
+Rakudo (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+Type check failed for return value; expected Int:D but got Seq (("a", "b").Seq)
+  in block <unit> at example.raku line 1
+```
+
+Raku++:
+
+```
+(a b)
+```
+
+### A.13 `split` with a string needle dies on a fractional limit
+
+`src/chapters/90-rakudo-bugs.md:358`
+
+```raku
+say "a1b2c".split(/\d/, 2.0).raku;
+say "a;b;c".split(";", 2.0).raku;
+```
+
+Rakudo (exit 1):
+
+```
+("a", "b2c").Seq
+```
+
+stderr:
+
+```
+This type cannot unbox to a native integer: P6opaque, Rat
+  in block <unit> at example.raku line 2
+```
+
+Raku++:
+
+```
+("a", "b2c").Seq
+("a", "b;c").Seq
+```
+
+### A.14 `split(:v)` gives a string for a regex in a list of needles
+
+`src/chapters/90-rakudo-bugs.md:384`
+
+```raku
+say "1bb2".split(/b+/, :v).map(*.^name);
+say "1bb2".split([/b+/], :v).map(*.^name);
+```
+
+Rakudo:
+
+```
+(Str Match Str)
+(Str Str Str)
+```
+
+Raku++:
+
+```
+(Str Match Str)
+(Str Match Str)
+```
+
+### A.16 An empty needle with `:g` misses both ends
+
+`src/chapters/90-rakudo-bugs.md:424`
+
+```raku
+say "abc".subst("", "-");
+say "abc".subst("", "-", :g);
+say "abc".subst(/<?>/, "-", :g);
+```
+
+Rakudo:
+
+```
+-abc
+a-b-c
+-a-b-c-
+```
+
+Raku++:
+
+```
+abc
+abc
+-a-b-c-
+```
+
+### A.17 `subst` with `:as(Str)` dies under `:g`, `:nth` or `:x`
+
+`src/chapters/90-rakudo-bugs.md:448`
+
+```raku
+say "abcb".subst("b", "x", :as(Str));
+say "abcb".subst("b", "x", :as(Str), :g);
+```
+
+Rakudo (exit 1):
+
+```
+axcb
+```
+
+stderr:
+
+```
+No such method 'from' for string 'b'. Did you mean 'trim'?
+  in block <unit> at example.raku line 2
+```
+
+Raku++:
+
+```
+axcb
+axcx
+```
+
+### A.18 `subst-mutate` accepts `:ov` and `:ex`, which `subst` refuses
+
+`src/chapters/90-rakudo-bugs.md:474`
+
+```raku
+my $s = "aaa";
+$s.subst-mutate(/aa/, "x", :ov);
+say $s;
+try "aaa".subst(/aa/, "x", :ov);
+say $!.^name;
+```
+
+Rakudo:
+
+```
+xax
+X::Str::Subst::Adverb
+```
+
+Raku++:
+
+```
+xax
+X::Syntax::Regex::Adverb
+```
+
+### A.19 `.match` with a negative `:c` matches before the start
+
+`src/chapters/90-rakudo-bugs.md:500`
+
+```raku
+say "abc".match(/./, :c(-1)).raku;
+"abcabc".match(/c/);
+say "abcabc".match(/./, :c).from;
+```
+
+Rakudo:
+
+```
+Match.new(:orig("abc"), :from(-1), :pos(0))
+1
+```
+
+Raku++:
+
+```
+Nil
+3
+```
+
+### A.21 `splice` without a size removes only what a lazy array has computed
+
+`src/chapters/90-rakudo-bugs.md:547`
+
+```raku
+my @a = 1..*;
+say @a.splice(1).raku;
+say @a.head(3).raku;
+```
+
+Rakudo:
+
+```
+[]
+(1, 2, 3).Seq
+```
+
+Raku++:
+
+```
+[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649, 650, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710, 711, 712, 713, 714, 715, 716, 717, 718, 719, 720, 721, 722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740, 741, 742, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 755, 756, 757, 758, 759, 760, 761, 762, 763, 764, 765, 766, 767, 768, 769, 770, 771, 772, 773, 774, 775, 776, 777, 778, 779, 780, 781, 782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 810, 811, 812, 813, 814, 815, 816, 817, 818, 819, 820, 821, 822, 823, 824, 825, 826, 827, 828, 829, 830, 831, 832, 833, 834, 835, 836, 837, 838, 839, 840, 841, 842, 843, 844, 845, 846, 847, 848, 849, 850, 851, 852, 853, 854, 855, 856, 857, 858, 859, 860, 861, 862, 863, 864, 865, 866, 867, 868, 869, 870, 871, 872, 873, 874, 875, 876, 877, 878, 879, 880, 881, 882, 883, 884, 885, 886, 887, 888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 904, 905, 906, 907, 908, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 940, 941, 942, 943, 944, 945, 946, 947, 948, 949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980, 981, 982, 983, 984, 985, 986, 987, 988, 989, 990, 991, 992, 993, 994, 995, 996, 997, 998, 999, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077, 1078, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090, 1091, 1092, 1093, 1094, 1095, 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1125, 1126, 1127, 1128, 1129, 1130, 1131, 1132, 1133, 1134, 1135, 1136, 1137, 1138, 1139, 1140, 1141, 1142, 1143, 1144, 1145, 1146, 1147, 1148, 1149, 1150, 1151, 1152, 1153, 1154, 1155, 1156, 1157, 1158, 1159, 1160, 1161, 1162, 1163, 1164, 1165, 1166, 1167, 1168, 1169, 1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1179, 1180, 1181, 1182, 1183, 1184, 1185, 1186, 1187, 1188, 1189, 1190, 1191, 1192, 1193, 1194, 1195, 1196, 1197, 1198, 1199, 1200, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211, 1212, 1213, 1214, 1215, 1216, 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1234, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1259, 1260, 1261, 1262, 1263, 1264, 1265, 1266, 1267, 1268, 1269, 1270, 1271, 1272, 1273, 1274, 1275, 1276, 1277, 1278, 1279, 1280, 1281, 1282, 1283, 1284, 1285, 1286, 1287, 1288, 1289, 1290, 1291, 1292, 1293, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309, 1310, 1311, 1312, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321, 1322, 1323, 1324, 1325, 1326, 1327, 1328, 1329, 1330, 1331, 1332, 1333, 1334, 1335, 1336, 1337, 1338, 1339, 1340, 1341, 1342, 1343, 1344, 1345, 1346, 1347, 1348, 1349, 1350, 1351, 1352, 1353, 1354, 1355, 1356, 1357, 1358, 1359, 1360, 1361, 1362, 1363, 1364, 1365, 1366, 1367, 1368, 1369, 1370, 1371, 1372, 1373, 1374, 1375, 1376, 1377, 1378, 1379, 1380, 1381, 1382, 1383, 1384, 1385, 1386, 1387, 1388, 1389, 1390, 1391, 1392, 1393, 1394, 1395, 1396, 1397, 1398, 1399, 1400, 1401, 1402, 1403, 1404, 1405, 1406, 1407, 1408, 1409, 1410, 1411, 1412, 1413, 1414, 1415, 1416, 1417, 1418, 1419, 1420, 1421, 1422, 1423, 1424, 1425, 1426, 1427, 1428, 1429, 1430, 1431, 1432, 1433, 1434, 1435, 1436, 1437, 1438, 1439, 1440, 1441, 1442, 1443, 1444, 1445, 1446, 1447, 1448, 1449, 1450, 1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472, 1473, 1474, 1475, 1476, 1477, 1478, 1479, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487, 1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499, 1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533, 1534, 1535, 1536, 1537, 1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552, 1553, 1554, 1555, 1556, 1557, 1558, 1559, 1560, 1561, 1562, 1563, 1564, 1565, 1566, 1567, 1568, 1569, 1570, 1571, 1572, 1573, 1574, 1575, 1576, 1577, 1578, 1579, 1580, 1581, 1582, 1583, 1584, 1585, 1586, 1587, 1588, 1589, 1590, 1591, 1592, 1593, 1594, 1595, 1596, 1597, 1598, 1599, 1600, 1601, 1602, 1603, 1604, 1605, 1606, 1607, 1608, 1609, 1610, 1611, 1612, 1613, 1614, 1615, 1616, 1617, 1618, 1619, 1620, 1621, 1622, 1623, 1624, 1625, 1626, 1627, 1628, 1629, 1630, 1631, 1632, 1633, 1634, 1635, 1636, 1637, 1638, 1639, 1640, 1641, 1642, 1643, 1644, 1645, 1646, 1647, 1648, 1649, 1650, 1651, 1652, 1653, 1654, 1655, 1656, 1657, 1658, 1659, 1660, 1661, 1662, 1663, 1664, 1665, 1666, 1667, 1668, 1669, 1670, 1671, 1672, 1673, 1674, 1675, 1676, 1677, 1678, 1679, 1680, 1681, 1682, 1683, 1684, 1685, 1686, 1687, 1688, 1689, 1690, 1691, 1692, 1693, 1694, 1695, 1696, 1697, 1698, 1699, 1700, 1701, 1702, 1703, 1704, 1705, 1706, 1707, 1708, 1709, 1710, 1711, 1712, 1713, 1714, 1715, 1716, 1717, 1718, 1719, 1720, 1721, 1722, 1723, 1724, 1725, 1726, 1727, 1728, 1729, 1730, 1731, 1732, 1733, 1734, 1735, 1736, 1737, 1738, 1739, 1740, 1741, 1742, 1743, 1744, 1745, 1746, 1747, 1748, 1749, 1750, 1751, 1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760, 1761, 1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769, 1770, 1771, 1772, 1773, 1774, 1775, 1776, 1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786, 1787, 1788, 1789, 1790, 1791, 1792, 1793, 1794, 1795, 1796, 1797, 1798, 1799, 1800, 1801, 1802, 1803, 1804, 1805, 1806, 1807, 1808, 1809, 1810, 1811, 1812, 1813, 1814, 1815, 1816, 1817, 1818, 1819, 1820, 1821, 1822, 1823, 1824, 1825, 1826, 1827, 1828, 1829, 1830, 1831, 1832, 1833, 1834, 1835, 1836, 1837, 1838, 1839, 1840, 1841, 1842, 1843, 1844, 1845, 1846, 1847, 1848, 1849, 1850, 1851, 1852, 1853, 1854, 1855, 1856, 1857, 1858, 1859, 1860, 1861, 1862, 1863, 1864, 1865, 1866, 1867, 1868, 1869, 1870, 1871, 1872, 1873, 1874, 1875, 1876, 1877, 1878, 1879, 1880, 1881, 1882, 1883, 1884, 1885, 1886, 1887, 1888, 1889, 1890, 1891, 1892, 1893, 1894, 1895, 1896, 1897, 1898, 1899, 1900, 1901, 1902, 1903, 1904, 1905, 1906, 1907, 1908, 1909, 1910, 1911, 1912, 1913, 1914, 1915, 1916, 1917, 1918, 1919, 1920, 1921, 1922, 1923, 1924, 1925, 1926, 1927, 1928, 1929, 1930, 1931, 1932, 1933, 1934, 1935, 1936, 1937, 1938, 1939, 1940, 1941, 1942, 1943, 1944, 1945, 1946, 1947, 1948, 1949, 1950, 1951, 1952, 1953, 1954, 1955, 1956, 1957, 1958, 1959, 1960, 1961, 1962, 1963, 1964, 1965, 1966, 1967, 1968, 1969, 1970, 1971, 1972, 1973, 1974, 1975, 1976, 1977, 1978, 1979, 1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033, 2034, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2042, 2043, 2044, 2045, 2046, 2047, 2048, 2049, 2050, 2051, 2052, 2053, 2054, 2055, 2056, 2057, 2058, 2059, 2060, 2061, 2062, 2063, 2064, 2065, 2066, 2067, 2068, 2069, 2070, 2071, 2072, 2073, 2074, 2075, 2076, 2077, 2078, 2079, 2080, 2081, 2082, 2083, 2084, 2085, 2086, 2087, 2088, 2089, 2090, 2091, 2092, 2093, 2094, 2095, 2096, 2097, 2098, 2099, 2100, 2101, 2102, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2110, 2111, 2112, 2113, 2114, 2115, 2116, 2117, 2118, 2119, 2120, 2121, 2122, 2123, 2124, 2125, 2126, 2127, 2128, 2129, 2130, 2131, 2132, 2133, 2134, 2135, 2136, 2137, 2138, 2139, 2140, 2141, 2142, 2143, 2144, 2145, 2146, 2147, 2148, 2149, 2150, 2151, 2152, 2153, 2154, 2155, 2156, 2157, 2158, 2159, 2160, 2161, 2162, 2163, 2164, 2165, 2166, 2167, 2168, 2169, 2170, 2171, 2172, 2173, 2174, 2175, 2176, 2177, 2178, 2179, 2180, 2181, 2182, 2183, 2184, 2185, 2186, 2187, 2188, 2189, 2190, 2191, 2192, 2193, 2194, 2195, 2196, 2197, 2198, 2199, 2200, 2201, 2202, 2203, 2204, 2205, 2206, 2207, 2208, 2209, 2210, 2211, 2212, 2213, 2214, 2215, 2216, 2217, 2218, 2219, 2220, 2221, 2222, 2223, 2224, 2225, 2226, 2227, 2228, 2229, 2230, 2231, 2232, 2233, 2234, 2235, 2236, 2237, 2238, 2239, 2240, 2241, 2242, 2243, 2244, 2245, 2246, 2247, 2248, 2249, 2250, 2251, 2252, 2253, 2254, 2255, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2263, 2264, 2265, 2266, 2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2282, 2283, 2284, 2285, 2286, 2287, 2288, 2289, 2290, 2291, 2292, 2293, 2294, 2295, 2296, 2297, 2298, 2299, 2300, 2301, 2302, 2303, 2304, 2305, 2306, 2307, 2308, 2309, 2310, 2311, 2312, 2313, 2314, 2315, 2316, 2317, 2318, 2319, 2320, 2321, 2322, 2323, 2324, 2325, 2326, 2327, 2328, 2329, 2330, 2331, 2332, 2333, 2334, 2335, 2336, 2337, 2338, 2339, 2340, 2341, 2342, 2343, 2344, 2345, 2346, 2347, 2348, 2349, 2350, 2351, 2352, 2353, 2354, 2355, 2356, 2357, 2358, 2359, 2360, 2361, 2362, 2363, 2364, 2365, 2366, 2367, 2368, 2369, 2370, 2371, 2372, 2373, 2374, 2375, 2376, 2377, 2378, 2379, 2380, 2381, 2382, 2383, 2384, 2385, 2386, 2387, 2388, 2389, 2390, 2391, 2392, 2393, 2394, 2395, 2396, 2397, 2398, 2399, 2400, 2401, 2402, 2403, 2404, 2405, 2406, 2407, 2408, 2409, 2410, 2411, 2412, 2413, 2414, 2415, 2416, 2417, 2418, 2419, 2420, 2421, 2422, 2423, 2424, 2425, 2426, 2427, 2428, 2429, 2430, 2431, 2432, 2433, 2434, 2435, 2436, 2437, 2438, 2439, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447, 2448, 2449, 2450, 2451, 2452, 2453, 2454, 2455, 2456, 2457, 2458, 2459, 2460, 2461, 2462, 2463, 2464, 2465, 2466, 2467, 2468, 2469, 2470, 2471, 2472, 2473, 2474, 2475, 2476, 2477, 2478, 2479, 2480, 2481, 2482, 2483, 2484, 2485, 2486, 2487, 2488, 2489, 2490, 2491, 2492, 2493, 2494, 2495, 2496, 2497, 2498, 2499, 2500, 2501, 2502, 2503, 2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515, 2516, 2517, 2518, 2519, 2520, 2521, 2522, 2523, 2524, 2525, 2526, 2527, 2528, 2529, 2530, 2531, 2532, 2533, 2534, 2535, 2536, 2537, 2538, 2539, 2540, 2541, 2542, 2543, 2544, 2545, 2546, 2547, 2548, 2549, 2550, 2551, 2552, 2553, 2554, 2555, 2556, 2557, 2558, 2559, 2560, 2561, 2562, 2563, 2564, 2565, 2566, 2567, 2568, 2569, 2570, 2571, 2572, 2573, 2574, 2575, 2576, 2577, 2578, 2579, 2580, 2581, 2582, 2583, 2584, 2585, 2586, 2587, 2588, 2589, 2590, 2591, 2592, 2593, 2594, 2595, 2596, 2597, 2598, 2599, 2600, 2601, 2602, 2603, 2604, 2605, 2606, 2607, 2608, 2609, 2610, 2611, 2612, 2613, 2614, 2615, 2616, 2617, 2618, 2619, 2620, 2621, 2622, 2623, 2624, 2625, 2626, 2627, 2628, 2629, 2630, 2631, 2632, 2633, 2634, 2635, 2636, 2637, 2638, 2639, 2640, 2641, 2642, 2643, 2644, 2645, 2646, 2647, 2648, 2649, 2650, 2651, 2652, 2653, 2654, 2655, 2656, 2657, 2658, 2659, 2660, 2661, 2662, 2663, 2664, 2665, 2666, 2667, 2668, 2669, 2670, 2671, 2672, 2673, 2674, 2675, 2676, 2677, 2678, 2679, 2680, 2681, 2682, 2683, 2684, 2685, 2686, 2687, 2688, 2689, 2690, 2691, 2692, 2693, 2694, 2695, 2696, 2697, 2698, 2699, 2700, 2701, 2702, 2703, 2704, 2705, 2706, 2707, 2708, 2709, 2710, 2711, 2712, 2713, 2714, 2715, 2716, 2717, 2718, 2719, 2720, 2721, 2722, 2723, 2724, 2725, 2726, 2727, 2728, 2729, 2730, 2731, 2732, 2733, 2734, 2735, 2736, 2737, 2738, 2739, 2740, 2741, 2742, 2743, 2744, 2745, 2746, 2747, 2748, 2749, 2750, 2751, 2752, 2753, 2754, 2755, 2756, 2757, 2758, 2759, 2760, 2761, 2762, 2763, 2764, 2765, 2766, 2767, 2768, 2769, 2770, 2771, 2772, 2773, 2774, 2775, 2776, 2777, 2778, 2779, 2780, 2781, 2782, 2783, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793, 2794, 2795, 2796, 2797, 2798, 2799, 2800, 2801, 2802, 2803, 2804, 2805, 2806, 2807, 2808, 2809, 2810, 2811, 2812, 2813, 2814, 2815, 2816, 2817, 2818, 2819, 2820, 2821, 2822, 2823, 2824, 2825, 2826, 2827, 2828, 2829, 2830, 2831, 2832, 2833, 2834, 2835, 2836, 2837, 2838, 2839, 2840, 2841, 2842, 2843, 2844, 2845, 2846, 2847, 2848, 2849, 2850, 2851, 2852, 2853, 2854, 2855, 2856, 2857, 2858, 2859, 2860, 2861, 2862, 2863, 2864, 2865, 2866, 2867, 2868, 2869, 2870, 2871, 2872, 2873, 2874, 2875, 2876, 2877, 2878, 2879, 2880, 2881, 2882, 2883, 2884, 2885, 2886, 2887, 2888, 2889, 2890, 2891, 2892, 2893, 2894, 2895, 2896, 2897, 2898, 2899, 2900, 2901, 2902, 2903, 2904, 2905, 2906, 2907, 2908, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2918, 2919, 2920, 2921, 2922, 2923, 2924, 2925, 2926, 2927, 2928, 2929, 2930, 2931, 2932, 2933, 2934, 2935, 2936, 2937, 2938, 2939, 2940, 2941, 2942, 2943, 2944, 2945, 2946, 2947, 2948, 2949, 2950, 2951, 2952, 2953, 2954, 2955, 2956, 2957, 2958, 2959, 2960, 2961, 2962, 2963, 2964, 2965, 2966, 2967, 2968, 2969, 2970, 2971, 2972, 2973, 2974, 2975, 2976, 2977, 2978, 2979, 2980, 2981, 2982, 2983, 2984, 2985, 2986, 2987, 2988, 2989, 2990, 2991, 2992, 2993, 2994, 2995, 2996, 2997, 2998, 2999, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027, 3028, 3029, 3030, 3031, 3032, 3033, 3034, 3035, 3036, 3037, 3038, 3039, 3040, 3041, 3042, 3043, 3044, 3045, 3046, 3047, 3048, 3049, 3050, 3051, 3052, 3053, 3054, 3055, 3056, 3057, 3058, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3070, 3071, 3072, 3073, 3074, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3092, 3093, 3094, 3095, 3096, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108, 3109, 3110, 3111, 3112, 3113, 3114, 3115, 3116, 3117, 3118, 3119, 3120, 3121, 3122, 3123, 3124, 3125, 3126, 3127, 3128, 3129, 3130, 3131, 3132, 3133, 3134, 3135, 3136, 3137, 3138, 3139, 3140, 3141, 3142, 3143, 3144, 3145, 3146, 3147, 3148, 3149, 3150, 3151, 3152, 3153, 3154, 3155, 3156, 3157, 3158, 3159, 3160, 3161, 3162, 3163, 3164, 3165, 3166, 3167, 3168, 3169, 3170, 3171, 3172, 3173, 3174, 3175, 3176, 3177, 3178, 3179, 3180, 3181, 3182, 3183, 3184, 3185, 3186, 3187, 3188, 3189, 3190, 3191, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3202, 3203, 3204, 3205, 3206, 3207, 3208, 3209, 3210, 3211, 3212, 3213, 3214, 3215, 3216, 3217, 3218, 3219, 3220, 3221, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3241, 3242, 3243, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3252, 3253, 3254, 3255, 3256, 3257, 3258, 3259, 3260, 3261, 3262, 3263, 3264, 3265, 3266, 3267, 3268, 3269, 3270, 3271, 3272, 3273, 3274, 3275, 3276, 3277, 3278, 3279, 3280, 3281, 3282, 3283, 3284, 3285, 3286, 3287, 3288, 3289, 3290, 3291, 3292, 3293, 3294, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3305, 3306, 3307, 3308, 3309, 3310, 3311, 3312, 3313, 3314, 3315, 3316, 3317, 3318, 3319, 3320, 3321, 3322, 3323, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3342, 3343, 3344, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3352, 3353, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3362, 3363, 3364, 3365, 3366, 3367, 3368, 3369, 3370, 3371, 3372, 3373, 3374, 3375, 3376, 3377, 3378, 3379, 3380, 3381, 3382, 3383, 3384, 3385, 3386, 3387, 3388, 3389, 3390, 3391, 3392, 3393, 3394, 3395, 3396, 3397, 3398, 3399, 3400, 3401, 3402, 3403, 3404, 3405, 3406, 3407, 3408, 3409, 3410, 3411, 3412, 3413, 3414, 3415, 3416, 3417, 3418, 3419, 3420, 3421, 3422, 3423, 3424, 3425, 3426, 3427, 3428, 3429, 3430, 3431, 3432, 3433, 3434, 3435, 3436, 3437, 3438, 3439, 3440, 3441, 3442, 3443, 3444, 3445, 3446, 3447, 3448, 3449, 3450, 3451, 3452, 3453, 3454, 3455, 3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465, 3466, 3467, 3468, 3469, 3470, 3471, 3472, 3473, 3474, 3475, 3476, 3477, 3478, 3479, 3480, 3481, 3482, 3483, 3484, 3485, 3486, 3487, 3488, 3489, 3490, 3491, 3492, 3493, 3494, 3495, 3496, 3497, 3498, 3499, 3500, 3501, 3502, 3503, 3504, 3505, 3506, 3507, 3508, 3509, 3510, 3511, 3512, 3513, 3514, 3515, 3516, 3517, 3518, 3
+… (cut: the program printed 20046 characters)
+```
+
+### A.22 `reverse` of a fractional range counts down from its end
+
+`src/chapters/90-rakudo-bugs.md:572`
+
+```raku
+say (1.1..4).list.raku;
+say (1.1..4).reverse.raku;
+```
+
+Rakudo:
+
+```
+(1.1, 2.1, 3.1)
+(4, 3, 2).Seq
+```
+
+Raku++:
+
+```
+(1.1, 2.1, 3.1)
+(3.1, 2.1, 1.1).Seq
+```
+
+### A.23 `first(:end, :kv)` on a Range counts its index from the end
+
+`src/chapters/90-rakudo-bugs.md:596`
+
+```raku
+say (1..10).first(* %% 3, :end, :k);
+say (1..10).first(* %% 3, :end, :kv).raku;
+say [1..10].first(* %% 3, :end, :kv).raku;
+```
+
+Rakudo:
+
+```
+8
+(1, 9)
+(8, 9)
+```
+
+Raku++:
+
+```
+8
+(8, 9)
+(8, 9)
+```
+
+### A.24 A `none` junction as the endpoint makes the sequence endless
+
+`src/chapters/90-rakudo-bugs.md:623`
+
+```raku
+say (1 ... none(1, 2)).head(5).raku;
+say (1 ... { $_ ~~ none(1, 2) }).raku;
+```
+
+Rakudo:
+
+```
+(1, 2, 3, 4, 5).Seq
+(1, 2, 3).Seq
+```
+
+Raku++:
+
+```
+(1, 2, 3).Seq
+(1, 2, 3).Seq
+```
+
+### A.26 The endpoint is tested once per call of the generator
+
+`src/chapters/90-rakudo-bugs.md:673`
+
+```raku
+say (1, { slip 2, 3 } ... 3).head(6).raku;
+say (1, { slip 5, 6 } ... 2).raku;
+```
+
+Rakudo:
+
+```
+(1, 2, 3, 2, 3, 2).Seq
+(1, 5, 6).Seq
+```
+
+Raku++:
+
+```
+(1, 2, 3).Seq
+(1, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5, 6, 5,
+… (cut: the program printed 20046 characters)
+```
+
+### A.27 `...^` keeps the end of a string sequence of equal lengths
+
+`src/chapters/90-rakudo-bugs.md:698`
+
+```raku
+say ('a' ...^ 'c').raku;
+say ('aa' ...^ 'ab').raku;
+```
+
+Rakudo:
+
+```
+("a", "b").Seq
+("aa", "ab").Seq
+```
+
+Raku++:
+
+```
+("a", "b").Seq
+("aa",).Seq
+```
+
+### A.28 A chain always ends with its last endpoint
+
+`src/chapters/90-rakudo-bugs.md:722`
+
+```raku
+say (1 ... 7.5).raku;
+say (1 ... 5 ... 7.5).raku;
+say (1 ^...^ 5 ^...^ 1).raku;
+```
+
+Rakudo:
+
+```
+(1, 2, 3, 4, 5, 6, 7).Seq
+(1, 2, 3, 4, 5, 6, 7, 7.5).Seq
+(2, 3, 4, 5, 4, 3, 2, 1).Seq
+```
+
+Raku++:
+
+```
+(1, 2, 3, 4, 5, 6, 7).Seq
+(1, 2, 3, 4, 5, 6, 7, 7.5).Seq
+(2, 3, 4, 5, 4, 3, 2).Seq
+```
+
+### A.29 `.Bag` of a Mix truncates the Mix itself
+
+`src/chapters/90-rakudo-bugs.md:746`
+
+```raku
+my $m = ("a" => 2.7, "b" => 0.5).Mix;
+say $m.Bag;
+say $m;
+```
+
+Rakudo:
+
+```
+Bag(a(2))
+Mix(a(2) b(0.5))
+```
+
+Raku++:
+
+```
+Bag(a(2))
+Mix(a(2.7) b(0.5))
+```
+
+### A.30 `my %h is Set;` without a value is unusable
+
+`src/chapters/90-rakudo-bugs.md:772`
+
+```raku
+my %h is Set;
+try { %h.elems };
+say $!.message;
+my %e is Set = ();
+say %e.elems;
+```
+
+Rakudo:
+
+```
+This type (Scalar) does not support elems
+0
+```
+
+Raku++:
+
+```
+Nil
+0
+```
+
+### A.31 `∩` of two Hashes ignores false values
+
+`src/chapters/90-rakudo-bugs.md:798`
+
+```raku
+say { a => 1, b => 0 } ∩ { a => 1, b => 1 };
+say { a => 1, b => 0 }.Set ∩ { a => 1, b => 1 };
+```
+
+Rakudo:
+
+```
+Set(a b)
+Set(a)
+```
+
+Raku++:
+
+```
+Set(a)
+Set(a)
+```
+
+### A.32 A Junction operand makes four set operators hang
+
+`src/chapters/90-rakudo-bugs.md:821`
+
+```raku
+try { set(1) (-) any(2, 3) };
+say $!.message;
+```
+
+Rakudo:
+
+```
+Cannot iterate object with P6opaque representation (Junction)
+```
+
+Raku++:
+
+```
+Nil
+```
+
+### A.33 `.bytes` of a `Blob[int]` counts one byte per element
+
+`src/chapters/90-rakudo-bugs.md:851`
+
+```raku
+say buf64.new(1, 2).bytes;
+say Blob[int].new(1, 2).bytes;
+say Blob[int].new(1, 2);
+```
+
+Rakudo:
+
+```
+16
+2
+Blob[int]:0x<0000000000000001 0000000000000002>
+```
+
+Raku++:
+
+```
+16
+2
+Blob[int8]:0x<01 02>
+```
+
+### A.35 A bad value among several grows the Buf, then throws
+
+`src/chapters/90-rakudo-bugs.md:891`
+
+```raku
+my $b = Buf.new(7, 7);
+try { $b.push(1, "x") };
+say $b.raku;
+my $f = $b.push("x");
+say $f.^name;
+say $b.raku;
+```
+
+Rakudo:
+
+```
+Buf.new(7,7,1,0)
+Failure
+Buf.new(7,7,1,0)
+```
+
+Raku++ (exit 1):
+
+```
+Buf.new(7,7)
+```
+
+stderr:
+
+```
+Type check failed in push to Buf; expected uint8 but got Str ("x")
+  (X::TypeCheck)
+  in block <unit> at example.raku line 4
+      4 | my $f = $b.push("x");
+```
+
+### A.36 A failed `splice` still changes the Buf
+
+`src/chapters/90-rakudo-bugs.md:919`
+
+```raku
+my $b = Buf.new(1, 2, 3);
+my $f = $b.splice(5, 1);
+say $f.exception.^name;
+say $b.raku;
+```
+
+Rakudo:
+
+```
+X::OutOfRange
+Buf.new(1,2,3,0,0)
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'exception' for invocant of type 'Buf'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 3
+      3 | say $f.exception.^name;
+```
+
+### A.38 `~&` and `~|` die on signed buffers of unequal length
+
+`src/chapters/90-rakudo-bugs.md:966`
+
+```raku
+try { Blob[int8].new(-1, -1) ~& Blob[int8].new(1) };
+say $!.message;
+say (blob8.new(1, 1) ~& blob8.new(1)).raku;
+```
+
+Rakudo:
+
+```
+MVMArray: bindpos I8 expected int register
+Blob[uint8].new(1,0)
+```
+
+Raku++:
+
+```
+Nil
+Blob[uint8].new(1,0)
+```
+
+### A.39 `write-ubits` clears the bits after the run in its last byte
+
+`src/chapters/90-rakudo-bugs.md:990`
+
+```raku
+say buf8.new(0xFF).write-ubits(0, 4, 0).raku;
+say buf8.new(0xFF).write-ubits(4, 4, 0).raku;
+```
+
+Rakudo:
+
+```
+Buf[uint8].new(8)
+Buf[uint8].new(240)
+```
+
+Raku++:
+
+```
+Buf[uint8].new(15)
+Buf[uint8].new(240)
+```
+
+### A.40 `.multi` is 0 on a proto, and a plain sub's `.dispatcher` is an `NQPMu`
+
+`src/chapters/90-rakudo-bugs.md:1015`
+
+```raku
+multi f(Int $x) { }
+sub g($x) { }
+say &f.multi.raku;
+say &g.dispatcher.^name;
+```
+
+Rakudo:
+
+```
+0
+NQPMu
+```
+
+Raku++:
+
+```
+Bool::True
+Mu
+```
+
+### A.41 `.prec("prec")` fails its own return type
+
+`src/chapters/90-rakudo-bugs.md:1040`
+
+```raku
+say &infix:<+>.prec<prec>;
+try &infix:<+>.prec("prec");
+say $!.message;
+```
+
+Rakudo:
+
+```
+t=
+Type check failed for return value; expected Hash:D but got Str
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'prec' for invocant of type 'Sub'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 1
+      1 | say &infix:<+>.prec<prec>;
+```
+
+### A.42 A method's signature prints `$::`, which does not parse back
+
+`src/chapters/90-rakudo-bugs.md:1065`
+
+```raku
+use MONKEY-SEE-NO-EVAL;
+class C { method m($x) { } }
+my $printed = C.^lookup('m').signature.raku;
+say $printed;
+try EVAL $printed;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+:(C $:: $x, *%_)
+X::Syntax::Signature::InvocantMarker
+```
+
+Raku++:
+
+```
+:($x, *%_)
+Nil
+```
+
+### A.43 `Int:D()` prints as `Int:D(Any):D`, which does not compile
+
+`src/chapters/90-rakudo-bugs.md:1091`
+
+```raku
+use MONKEY-SEE-NO-EVAL;
+my $printed = :(Int:D() $x).raku;
+say $printed;
+try EVAL $printed;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+:(Int:D(Any):D $x)
+X::MultipleTypeSmiley
+```
+
+Raku++:
+
+```
+:(Int(Any):D $x)
+Nil
+```
+
+### A.44 A signature built with `Signature.new` cannot bind anything
+
+`src/chapters/90-rakudo-bugs.md:1118`
+
+```raku
+try { \() ~~ Signature.new };
+say $!.message;
+```
+
+Rakudo:
+
+```
+p6invokeunder first argument has to be a concrete MVMCode, got a concrete P6opaque (type ContainerDescriptor)
+```
+
+Raku++:
+
+```
+Nil
+```
+
+### A.45 `Parameter.new` dies on `+@a` and doubles a bare name
+
+`src/chapters/90-rakudo-bugs.md:1141`
+
+```raku
+say Parameter.new(name => 'x').raku;
+try Parameter.new(name => '+@a');
+say $!.message;
+```
+
+Rakudo:
+
+```
+xx
+Start argument to substr out of range. Is: -1, should be in 0..2; use *-1 if you want to index relative to the end
+```
+
+Raku++:
+
+```
+x
+Nil
+```
+
+### A.46 A WhateverCode's `.file` is a null string
+
+`src/chapters/90-rakudo-bugs.md:1164`
+
+```raku
+my $w = * + 1;
+my $f = $w.file;
+say $f.defined;
+try say ~$f;
+say $!.message;
+```
+
+Rakudo:
+
+```
+True
+concatenate requires a concrete string, but got null
+```
+
+Raku++:
+
+```
+True
+SETTING::src/core.c/
+Nil
+```
+
+### A.47 A ForeignCode's gist is not its name
+
+`src/chapters/90-rakudo-bugs.md:1189`
+
+```raku
+sub f() { }
+my $fc = &f.^methods.first(* ~~ ForeignCode);
+say $fc.name;
+say $fc.gist;
+```
+
+Rakudo:
+
+```
+<anon>
+ForeignCode.new
+```
+
+Raku++:
+
+```
+Any
+(Any)
+```
+
+### A.48 Rethrowing a caught `return`, `take` or `emit` loses its value
+
+`src/chapters/90-rakudo-bugs.md:1215`
+
+```raku
+sub five {
+    CONTROL { when CX::Return { .rethrow } }
+    return 5;
+}
+say five().raku;
+```
+
+Rakudo:
+
+```
+CX::Return.new
+```
+
+Raku++:
+
+```
+5
+```
+
+### A.49 A bare `succeed` yields an internal null that cannot be printed
+
+`src/chapters/90-rakudo-bugs.md:1239`
+
+```raku
+my $v = do given 5 { when Int { succeed } };
+say $v;
+```
+
+Rakudo (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'gist' for invocant of type 'VMNull'. Found 'gist' on
+type 'Mu'
+  in block <unit> at example.raku line 2
+```
+
+Raku++:
+
+```
+(Any)
+```
+
+### A.51 `.match` with `:x(Nil)` dies of an arity error
+
+`src/chapters/90-rakudo-bugs.md:1293`
+
+```raku
+say "aaaa".match(/a/, :x("2")).exception.^name;
+try "aaaa".match(/a/, :x(Nil));
+say $!.message;
+```
+
+Rakudo:
+
+```
+X::Str::Match::x
+Too many positionals passed; expected 3 arguments but got 4
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+in Str.match, got invalid value of type Str for :x, must be Int or Range
+  (X::Str::Match::x)
+  in block <unit> at example.raku line 1
+      1 | say "aaaa".match(/a/, :x("2")).exception.^name;
+```
+
+### A.52 `:nth(2), :x(1)` answers an empty list
+
+`src/chapters/90-rakudo-bugs.md:1315`
+
+```raku
+say "abcd".match(/./, :nth((2,)), :x(1))».Str;
+say "abcd".match(/./, :nth(2), :x(1)).raku;
+```
+
+Rakudo:
+
+```
+(b)
+()
+```
+
+Raku++:
+
+```
+(b)
+Match.new(:orig("abcd"), :from(1), :pos(2))
+```
+
+### A.53 `.actions` of a parse without actions is not a Raku object
+
+`src/chapters/90-rakudo-bugs.md:1337`
+
+```raku
+grammar G { token TOP { a } }
+say G.parse("a").actions.^name;
+say G.parse("a").actions;
+```
+
+Rakudo (exit 1):
+
+```
+NQPMu
+```
+
+stderr:
+
+```
+Method NQPMu.gist not found
+  in block <unit> at example.raku line 3
+```
+
+Raku++:
+
+```
+Any
+(Any)
+```
+
+### A.54 A Date range compares by text, so a formatter cuts it short
+
+`src/chapters/90-rakudo-bugs.md:1366`
+
+```raku
+my $start = Date.new("2019-05-01", :formatter({ ~.day }));
+say ($start .. Date.new("2019-05-09")).list;
+```
+
+Rakudo:
+
+```
+(1 2)
+```
+
+Raku++:
+
+```
+(1 2 3 4 5 6 7 8 9)
+```
+
+### A.55 A date-only string with a bad month dies with an internal error
+
+`src/chapters/90-rakudo-bugs.md:1387`
+
+```raku
+try DateTime.new("2012-13-22T07:02:00Z");
+say $!.^name;
+try DateTime.new("2012-13-22");
+say $!.message;
+```
+
+Rakudo:
+
+```
+X::Temporal::OutOfRange
+Cannot unbox a type object (Nil) to int.
+```
+
+Raku++:
+
+```
+X::Temporal::OutOfRange
+Month out of range. Is: 13, should be in 1..12
+```
+
+### A.56 Rounding the second can print one that does not exist, or die
+
+`src/chapters/90-rakudo-bugs.md:1413`
+
+```raku
+say DateTime.new(:2000year, :second(59.9999999));
+try say DateTime.new(:2000year, :second(0.9999999));
+say $!.message;
+```
+
+Rakudo:
+
+```
+2000-01-01T00:00:60.000000Z
+Repeat count (-1) cannot be negative
+```
+
+Raku++:
+
+```
+2000-01-01T00:00:60.000000Z
+2000-01-01T00:00:01.000000Z
+Nil
+```
+
+### A.57 A DateTime's identity is its printed text
+
+`src/chapters/90-rakudo-bugs.md:1437`
+
+```raku
+my $utc  = DateTime.new("1971-10-28T10:45:00Z");
+my $cest = DateTime.new("1971-10-28T12:45:00+02:00");
+say $utc eqv $cest, " ", $utc === $cest;
+```
+
+Rakudo:
+
+```
+True False
+```
+
+Raku++:
+
+```
+False False
+```
+
+### A.59 `read($n)` on a binary pipe returns a whole chunk, whatever `$n` is (local)
+
+`src/chapters/90-rakudo-bugs.md:1485`
+
+```raku
+my $p = run "printf", "abcdef", :out, :bin;
+say $p.out.read(2).raku;
+```
+
+Rakudo:
+
+```
+Buf[uint8].new(97,98,99,100,101,102)
+```
+
+Raku++:
+
+```
+Buf[uint8].new()
+```
+
+### A.60 Asking a new `Proc` for its status fixes the status at 1 (local)
+
+`src/chapters/90-rakudo-bugs.md:1506`
+
+```raku
+my $p = Proc.new;
+say $p.exitcode;
+$p.spawn("true");
+say $p.exitcode;
+```
+
+Rakudo:
+
+```
+1
+1
+```
+
+Raku++:
+
+```
+-1
+0
+```
+
+### A.61 A dying synchronous `then` makes `keep` throw an unrelated error (local)
+
+`src/chapters/90-rakudo-bugs.md:1533`
+
+```raku
+my $p = Promise.new;
+my $dies = $p.then({ die "in a synchronous then" }, :synchronous);
+try $p.keep(1);
+say $!.message;
+say $p.status, " ", $dies.status;
+```
+
+Rakudo:
+
+```
+Too few positionals passed; expected 1 argument but got 0
+Kept Planned
+```
+
+Raku++:
+
+```
+Nil
+Kept Broken
+```
+
+### A.62 `await` on a Channel takes a Nil value for no value (local)
+
+`src/chapters/90-rakudo-bugs.md:1558`
+
+```raku
+my $c = Channel.new;
+$c.send(Nil);
+say $c.receive.raku;
+$c.send(Nil);
+$c.send(1);
+say await $c;
+```
+
+Rakudo:
+
+```
+Nil
+1
+```
+
+Raku++:
+
+```
+Nil
+Nil
+```
+
+### A.63 `sleep-timer NaN` fails its own return type check (local)
+
+`src/chapters/90-rakudo-bugs.md:1586`
+
+```raku
+try sleep-timer NaN;
+say $!.message;
+```
+
+Rakudo:
+
+```
+Type check failed for return value; expected Duration:D but got Rat+{Duration::add-tai} (<0/0>)
+```
+
+Raku++:
+
+```
+Nil
+```
+
+### A.64 A Semaphore's permit count wraps at 32 bits
+
+`src/chapters/90-rakudo-bugs.md:1608`
+
+```raku
+my $s = Semaphore.new(2**32 + 1);
+say $s.try_acquire, " ", $s.try_acquire;
+try Semaphore.new(2**31);
+say $!.message;
+```
+
+Rakudo:
+
+```
+True False
+Failed to initialize Semaphore: invalid argument
+```
+
+Raku++:
+
+```
+True True
+Nil
+```
+
+### A.65 A LAST run by `last` cannot emit
+
+`src/chapters/90-rakudo-bugs.md:1634`
+
+```raku
+my $s = supply {
+    whenever Supply.from-list(1, 2, 3) {
+        emit $_;
+        last if $_ == 2;
+        LAST { emit "from LAST" }
+    }
+}
+$s.tap(-> $v { say "got $v" }, quit => { say "quit: ", .message });
+```
+
+Rakudo:
+
+```
+got 1
+got 2
+quit: emit without supply or react
+```
+
+Raku++:
+
+```
+got 1
+got 2
+got from LAST
+```
+
+### A.66 After a quit from `.map`, later values and a done still arrive
+
+`src/chapters/90-rakudo-bugs.md:1669`
+
+```raku
+my &risky = { die "cannot map $_" if $_ == 2; $_ * 10 };
+Supply.from-list(1, 2, 3).map(&risky)
+    .tap(-> $v { say "got $v" }, done => { say "done" }, quit => { say "quit: ", .message });
+say Supply.from-list(1, 2, 3).map(&risky).list;
+try Supply.from-list(1, 2, 3).map(&risky).wait;
+say $!.message;
+```
+
+Rakudo:
+
+```
+got 10
+quit: cannot map 2
+got 30
+done
+(10)
+Type check failed in binding; expected Exception but got Any (Any)
+```
+
+Raku++ (exit 1):
+
+```
+got 10
+quit: cannot map 2
+```
+
+stderr:
+
+```
+cannot map 2
+  in block <unit> at example.raku line 4
+      4 | say Supply.from-list(1, 2, 3).map(&risky).list;
+```
+
+### A.67 `batch(:emit-timed)` never emits (local)
+
+`src/chapters/90-rakudo-bugs.md:1704`
+
+```raku
+my $sup = Supplier.new;
+my @got;
+$sup.Supply.batch(:seconds(0.1), :emit-timed)
+    .tap(-> $b { @got.push($b) }, done => { @got.push("done") });
+$sup.emit(1);
+sleep 0.2;
+$sup.done;
+say @got.raku;
+```
+
+Rakudo:
+
+```
+[]
+```
+
+Raku++:
+
+```
+[(1,), "done"]
+```
+
+### A.68 `elems` with an interval below one second divides by zero
+
+`src/chapters/90-rakudo-bugs.md:1731`
+
+```raku
+try say Supply.from-list(1, 2).elems(0.5).list;
+say $!.^name;
+```
+
+Rakudo:
+
+```
+X::Numeric::DivideByZero
+```
+
+Raku++:
+
+```
+(2)
+Nil
+```
+
+### A.69 `stable` emits a waiting value after the done (local)
+
+`src/chapters/90-rakudo-bugs.md:1752`
+
+```raku
+my $sup = Supplier.new;
+my @got;
+$sup.Supply.stable(0.1).tap(-> $v { @got.push($v) }, done => { @got.push("done") });
+$sup.emit(1);
+$sup.done;
+sleep 0.2;
+say @got;
+```
+
+Rakudo:
+
+```
+[done 1]
+```
+
+Raku++ (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+No such method 'stable' for invocant of type 'Supply'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 3
+      3 | $sup.Supply.stable(0.1).tap(-> $v { @got.push($v) }, done => { @got.push("done") });
+```
+
+## B. Writing a Probe
+
+### B.1 A `try` around a lazy Seq catches nothing
+
+`src/chapters/91-probes.md:25`
+
+```raku
+my $r = try (1..3).map({ die "bad $_" if $_ == 2; $_ });
+say $! ?? "threw: $!.message()" !! "did not throw";
+```
+
+Rakudo:
+
+```
+did not throw
+```
+
+Raku++:
+
+```
+threw: bad 2
+```
+
+### B.1 A `try` around a lazy Seq catches nothing
+
+`src/chapters/91-probes.md:37`
+
+```raku
+my $r = try (1..3).map({ die "bad $_" if $_ == 2; $_ }).eager;
+say $! ?? "threw: $!.message()" !! "did not throw";
+my $l = try (1..3).map({ die "bad $_" if $_ == 2; $_ }).List;
+say $! ?? "threw: $!.message()" !! "did not throw";
+```
+
+Rakudo:
+
+```
+threw: bad 2
+did not throw
+```
+
+Raku++:
+
+```
+threw: bad 2
+threw: bad 2
+```
+
+### B.2 Through `try`, a Failure looks like a `die`, or like success
+
+`src/chapters/91-probes.md:94`
+
+```raku
+my $s = "abc";
+my $r = try $s < 1;
+say $! ?? "threw" !! "did not throw";
+say $r.defined ?? "result: $r" !! "failed: " ~ $r.exception.^name;
+```
+
+Rakudo:
+
+```
+did not throw
+failed: X::Str::Numeric
+```
+
+Raku++ (exit 1):
+
+```
+threw
+```
+
+stderr:
+
+```
+No such method 'exception' for invocant of type 'Any'
+  (X::Method::NotFound)
+  in block <unit> at example.raku line 4
+      4 | say $r.defined ?? "result: $r" !! "failed: " ~ $r.exception.^name;
+```
+
+### B.5 Rakudo computes an operation on literals while it compiles
+
+`src/chapters/91-probes.md:199`
+
+```raku
+my $calls = 0;
+&infix:<+>.wrap(-> |c { $calls++; callsame });
+my $sum = 1 + 2;
+say "calls: $calls";
+my $one = 1;
+$sum = $one + 2;
+say "calls: $calls";
+```
+
+Rakudo:
+
+```
+calls: 0
+calls: 1
+```
+
+Raku++:
+
+```
+calls: 0
+calls: 0
+```
+
+### B.6 A literal mistake keeps the whole probe from compiling
+
+`src/chapters/91-probes.md:232`
+
+```raku
+say "7 div 2 is ", 7 div 2;
+sub greet(Str $name) { "hello $name" }
+say greet(42);
+```
+
+Rakudo (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+===SORRY!=== Error while compiling example.raku
+Calling greet(Int) will never work with declared signature (Str $name)
+at example.raku:3
+------> say <HERE>greet(42);
+```
+
+Raku++ (exit 1):
+
+```
+7 div 2 is 3
+```
+
+stderr:
+
+```
+Calling greet(Int) will never work with declared signature (Str $name)
+  (X::TypeCheck::Argument)
+  in block <unit> at example.raku line 3
+      3 | say greet(42);
+```
+
+### B.6 A literal mistake keeps the whole probe from compiling
+
+`src/chapters/91-probes.md:250`
+
+```raku
+my $v = 1.5;
+try { my int $x = $v };
+say $!.^name;
+my @a = 1, 2;
+my $i = -1;
+my $r = @a[$i];
+say $r.defined ?? $r !! $r.exception.^name;
+my $n = 42;
+try { Array[$n] };
+say $!.^name;
+```
+
+Rakudo:
+
+```
+X::AdHoc
+X::OutOfRange
+X::AdHoc
+```
+
+Raku++:
+
+```
+Nil
+X::OutOfRange
+X::OutOfRange
+```
+
+### B.6 A literal mistake keeps the whole probe from compiling
+
+`src/chapters/91-probes.md:273`
+
+```raku
+use MONKEY-SEE-NO-EVAL;
+for 'my int $x = 1.5', 'my @a = 1, 2; @a[-1]', 'Array[42]',
+    'sub greet(Str $n) { }; greet(42)' -> $code {
+    try EVAL $code;
+    say $!.^name;
+}
+```
+
+Rakudo:
+
+```
+X::Syntax::Number::LiteralType
+X::Obsolete
+X::AdHoc
+X::TypeCheck::Argument+{X::Comp}
+```
+
+Raku++:
+
+```
+X::Syntax::Number::LiteralType
+X::Obsolete
+X::OutOfRange
+X::TypeCheck::Argument
+```
+
+### B.10 A sub's `$_`, `(* + 1).arity` and `try { $^a }` mislead
+
+`src/chapters/91-probes.md:424`
+
+```raku
+my $f = try { $^a * 2 };
+```
+
+Rakudo (exit 1):
+
+```
+(nothing)
+```
+
+stderr:
+
+```
+===SORRY!=== Error while compiling example.raku
+Placeholder variable '$^a' may not be used here because the surrounding
+block does not take a signature.
+at example.raku:1
+------> my $f = try { $^a * 2 }<HERE>;
+    expecting any of:
+… (4 more lines)
+```
+
+Raku++:
+
+```
+(nothing)
+```
+
+### B.10 A sub's `$_`, `(* + 1).arity` and `try { $^a }` mislead
+
+`src/chapters/91-probes.md:446`
+
+```raku
+sub double($_) { $_ * 2 }
+say double(21);
+my $inc = * + 1;
+say $inc.arity;
+my $f = try ({ $^a * 2 });
+say $f(21);
+```
+
+Rakudo:
+
+```
+42
+1
+42
+```
+
+Raku++:
+
+```
+42
+1
+21
+```
+
+### B.16 After `srand`, a first pass draws other numbers
+
+`src/chapters/91-probes.md:676`
+
+```raku
+srand(42); my @first = (^100).roll(5);
+srand(42); my @second = (^100).roll(5);
+say @first eqv @second;
+```
+
+Rakudo:
+
+```
+False
+```
+
+Raku++:
+
+```
+True
+```
+
+### B.16 After `srand`, a first pass draws other numbers
+
+`src/chapters/91-probes.md:688`
+
+```raku
+for 1, 2 -> $pass {
+    srand(42); my @first = (^100).roll(5);
+    srand(42); my @second = (^100).roll(5);
+    say "pass $pass: ", @first eqv @second;
+}
+```
+
+Rakudo:
+
+```
+pass 1: False
+pass 2: True
+```
+
+Raku++:
+
+```
+pass 1: True
+pass 2: True
+```
+
+### B.16 After `srand`, a first pass draws other numbers
+
+`src/chapters/91-probes.md:704`
+
+```raku
+for 1, 2 {
+    srand(42); my $shown = (^100).roll(5).gist;
+    srand(42); my @kept = (^100).roll(5);
+    say $shown eq @kept.List.gist;
+}
+```
+
+Rakudo:
+
+```
+False
+False
+```
+
+Raku++:
+
+```
+True
+True
 ```
 
