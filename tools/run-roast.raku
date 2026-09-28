@@ -1488,22 +1488,22 @@ my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys, %se
 say "";
 say "By synopsis (paste into the ROAST.md table):";
 my @head = 'Section', 'Theme', 'Full', 'Part', 'Time', 'No-TAP',
-           'Passed', 'Failed', '%', 'No skip/todo', 'Failed', '%';
+           'Assertions', '%', 'No skip/todo', '%';
 # A row from its seven counts: full, part, time, no-TAP; passed, declared,
 # skip/todo. Both assertion columns are over every declared test, as the
-# summary's lines are: Passed counts a skip or todo as a pass (the "of ALL
+# summary's lines are: Assertions counts a skip or todo as a pass (the "of ALL
 # declared tests" line), No skip/todo leaves those tests out of both sides
-# (the "without skip/todo" line). Each has its own Failed — the `not ok` tests
-# and the tests a file declared but never reached — and the two are always
-# equal: a skip or todo is a pass in one and absent from the other, a failure
-# in neither.
+# (the "without skip/todo" line). A cell is passed/total/failed, right-aligned
+# so the failed counts line up. Failed — the `not ok` tests and the tests a
+# file declared but never reached — is the same in both: a skip or todo is a
+# pass in one and absent from the other, a failure in neither.
 sub pct($n, $of) { $of ?? sprintf('%.2f%%', 100 * $n / $of) !! '—' }
 sub sec-row($name, $theme, @n) {
     my ($got, $of, $st) = @n[4], @n[5], @n[6];   # passed, declared, skip/todo
     my ($ok, $want)     = $got - $st, $of - $st; # the same two without skip/todo
     [ $name, $theme, ~@n[0], ~@n[1], ~@n[2], ~@n[3],
-      "$got/$of",  ~($of - $got),  pct($got, $of),
-      "$ok/$want", ~($want - $ok), pct($ok, $want) ]
+      "$got/$of/{$of - $got}",   pct($got, $of),
+      "$ok/$want/{$want - $ok}", pct($ok, $want) ]
 }
 my @rows;
 my @total = 0 xx 7;
@@ -1535,10 +1535,9 @@ say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 
 for @rows -> $r {
     say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
 }
-say "Passed: of every declared test, a skip or todo counted as a pass (the \"of ALL declared tests\" line). "
-  ~ "No skip/todo: those tests left out of both sides (the \"without skip/todo\" line).";
-say "Failed: the declared tests that did not pass, the ones a file never reached included — the same in both, "
-  ~ "since a skip or todo is a failure in neither.";
+say "Assertions: passed/total/failed of every declared test, a skip or todo counted as a pass (the \"of ALL "
+  ~ "declared tests\" line). No skip/todo: those tests left out of both sides (the \"without skip/todo\" line).";
+say "Failed includes the tests a file never reached, and is the same in both: a skip or todo is a failure in neither.";
 
 # ---- --failed: every file that did not fully pass, printed last so it is the
 # thing left on screen. Sorted by path, the order --list uses.
