@@ -1488,24 +1488,27 @@ my @secs = (%sec-full.keys, %sec-part.keys, %sec-time.keys, %sec-notap.keys, %se
 say "";
 say "By synopsis (paste into the ROAST.md table):";
 my @head = 'Section', 'Theme', 'Full', 'Part', 'Time', 'No-TAP',
-           'Assertions', '%', 'No skip/todo', '%';
+           'Assertions', '', '', '', 'No skip/todo', '', '', '';
 # A row from its seven counts: full, part, time, no-TAP; passed, declared,
-# skip/todo. Both assertion columns are over every declared test, as the
+# skip/todo. Both assertion sets are over every declared test, as the
 # summary's lines are: Assertions counts a skip or todo as a pass (the "of ALL
 # declared tests" line), No skip/todo leaves those tests out of both sides
-# (the "without skip/todo" line). A cell is passed/total/failed, right-aligned
-# so the failed counts line up. Failed — the `not ok` tests and the tests a
-# file declared but never reached — is the same in both: a skip or todo is a
-# pass in one and absent from the other, a failure in neither.
+# (the "without skip/todo" line). A set is four real columns — passed, total,
+# failed, % — so they line up on a rendered page too, under a two-row header:
+# the set's name above, the four names below. Markdown allows one header row,
+# so the second is the table's first body row. Fail — the `not ok` tests and
+# the tests a file declared but never reached — is the same in both: a skip or
+# todo is a pass in one and absent from the other, a failure in neither.
 sub pct($n, $of) { $of ?? sprintf('%.2f%%', 100 * $n / $of) !! '—' }
 sub sec-row($name, $theme, @n) {
     my ($got, $of, $st) = @n[4], @n[5], @n[6];   # passed, declared, skip/todo
     my ($ok, $want)     = $got - $st, $of - $st; # the same two without skip/todo
     [ $name, $theme, ~@n[0], ~@n[1], ~@n[2], ~@n[3],
-      "$got/$of/{$of - $got}",   pct($got, $of),
-      "$ok/$want/{$want - $ok}", pct($ok, $want) ]
+      ~$got, ~$of, ~($of - $got),   pct($got, $of),
+      ~$ok, ~$want, ~($want - $ok), pct($ok, $want) ]
 }
 my @rows;
+@rows.push(['', '', '', '', '', '', 'Passed', 'Total', 'Fail', '%', 'Passed', 'Total', 'Fail', '%']);
 my @total = 0 xx 7;
 for @secs -> $s {
     my @n = %sec-full{$s} // 0, %sec-part{$s} // 0, %sec-time{$s} // 0, %sec-notap{$s} // 0,
@@ -1535,9 +1538,9 @@ say '|' ~ (^@head.elems).map({ $_ < 2 ?? '-' x (@w[$_] + 2) !! ('-' x (@w[$_] + 
 for @rows -> $r {
     say '| ' ~ (^@head.elems).map({ cell($r[$_], $_) }).join(' | ') ~ ' |';
 }
-say "Assertions: passed/total/failed of every declared test, a skip or todo counted as a pass (the \"of ALL "
-  ~ "declared tests\" line). No skip/todo: those tests left out of both sides (the \"without skip/todo\" line).";
-say "Failed includes the tests a file never reached, and is the same in both: a skip or todo is a failure in neither.";
+say "Assertions: every declared test, a skip or todo counted as a pass (the \"of ALL declared tests\" line). "
+  ~ "No skip/todo: those tests left out of both sides (the \"without skip/todo\" line).";
+say "Fail includes the tests a file never reached, and is the same in both: a skip or todo is a failure in neither.";
 
 # ---- --failed: every file that did not fully pass, printed last so it is the
 # thing left on screen. Sorted by path, the order --list uses.
