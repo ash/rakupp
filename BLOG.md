@@ -28,6 +28,7 @@ What other people write about Raku++ is a different file:
 | 13 September 2026 | [Raku: a language where a value can have several values at once (Part 1)](https://andrewshitov.com/2026/09/13/raku-a-language-where-a-value-can-have-several-values-at-once-part-1/) | Junctions. |
 | 15 September 2026 | [Raku: la lingua dove posso parlare italiano](https://andrewshitov.com/2026/09/15/raku-la-lingua-dove-posso-parlare-italiano/) | The L10N modules: Raku keywords in Italian and other languages. |
 | 17 September 2026 | [Raku++ module manager](https://andrewshitov.com/2026/09/17/raku-module-manager/) | The v4.0.0 release, "Raku that travels", and the module manager that brought 1000 ecosystem modules to Raku++. |
+| 29 September 2026 | [Raku++ v5.0.0 reaches 100.00% of Roast](https://andrewshitov.com/2026/09/29/raku-v5-0-0-reaches-100-00-of-roast/) | The v5.0.0 release: 100.00% of Roast, the official Raku test suite. |
 
 ## On dev.to
 
