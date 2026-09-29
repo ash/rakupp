@@ -1889,8 +1889,46 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
 // check failure however numeric its text. rakupp truncated both: `my int8 $x =
 // 'foo'` stored 0 and `my int64 $x = 2**63` wrapped to the minimum
 // (S02-types/int-uint.t; Int-Num-Rat sheet N-27).
+//
+// Nor is anything converted on the way in: a native int holds an Int (Bool
+// and an Int-valued enum are Ints) and a native num holds a Num, so
+// `my num $x = 1/2`, `my int $x = 7/2`, `my num $x = $some-int` and
+// `my int $x = 1.5e0` all die at run time as they do in Rakudo — the literal
+// spellings are refused at compile time already. rakupp stored 0.5 and 3.
+static bool nativeRefusesKind(const Value& v, bool isFloat) {
+    if (v.isNumeric() && (v.hashKind == "Duration" || v.hashKind == "Instant")) return true;
+    switch (v.t) {
+        case VT::Rat: case VT::Complex: return true;
+        case VT::Num:                   return !isFloat;
+        case VT::Int: case VT::Bool:    return isFloat;
+        default:                        return false;
+    }
+}
+
+// The declared spelling of a native container from its slot tags.
+static std::string nativeTypeName(int bits, bool isFloat, bool sign) {
+    if (isFloat) return bits == 32 ? "num32" : "num";
+    std::string base = sign ? "int" : "uint";
+    return bits == 64 ? base : base + std::to_string(bits);
+}
+
+// The refusal: an X::AdHoc, the class Rakudo raises. `where` names the target
+// (`$x`, or `parameter $x`).
+[[noreturn]] static void throwNativeKind(const Value& v, const std::string& natType, bool isFloat,
+                                         const std::string& where) {
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "Cannot put a " + v.typeName() + " (" + v.gist() + ") into the native " +
+        natType + " " + where + ": it holds " +
+        (isFloat ? "a Num" : "an Int") + " only (coerce it with ." + (isFloat ? "Num" : "Int") + ")"};
+}
+[[noreturn]] static void throwNativeKind(const Value& v, int bits, bool isFloat, bool sign,
+                                         const std::string& where) {
+    throwNativeKind(v, nativeTypeName(bits, isFloat, sign), isFloat, where);
+}
+
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
     if (bits <= 0) return;
+    if (nativeRefusesKind(v, isFloat)) throwNativeKind(v, bits, isFloat, sign, what);
     // a native NUM refuses a Str too (`my num $n; $n = "x"`)
     if (isFloat) {
         if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
@@ -1912,6 +1950,21 @@ void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string
             "Cannot unbox " + std::to_string(v.big()->bitLength()) +
             " bit wide bigint into native integer. Did you mix int and Int or literals?"};
 }
+
+// Whether nativeAssignCheck has anything to say about `v` — the store paths ask
+// this first, so the common case (an Int into an int, a Num into a num) pays
+// for two tag tests and never builds the variable name the message wants.
+static inline bool nativeNeedsCheck(const Value& v, bool isFloat) {
+    if (isFloat ? v.t == VT::Num : v.t == VT::Int) return v.big() || !v.hashKind.empty();
+    return v.t == VT::Str || nativeRefusesKind(v, isFloat);
+}
+
+// A value read from a native container carries its tags — operators and multi
+// dispatch look at them — but a NON-native container that takes it must drop
+// them, or it starts to wrap and refuse as a native would: `my $n = $an-int;
+// $n = 1/2` stored 0 (and `$n /= 2` truncated) where Rakudo holds 0.5.
+static inline void dropNativeTags(Value& v) { v.natBits = 0; v.natSigned = v.natFloat = false; }
+
 
 // A native container cannot hold a type object, Nil included: `my int $x = Nil`
 // dies "Cannot unbox a type object (Nil) to int." rather than storing (Any).
@@ -1980,6 +2033,38 @@ static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
     }
     else v = Value::integer((long long)u);
     v.natBits = bits; v.natSigned = sign;
+}
+
+// `$i ** -1` with a native int `$i` and an int LITERAL exponent (or another
+// native int) is the native candidate, whose answer is an Int — 0 for every
+// negative exponent — where the boxed one makes a Rat; a boxed exponent stays
+// boxed (`$i ** $n` is 0.1). Only the negative case differs, so only it is
+// answered here. Once a native refuses a Rat, `$i = $i ** -1` depends on it.
+static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhsNode) {
+    if (l.t != VT::Int || l.big() || r.t != VT::Int || r.big() || r.i >= 0) return false;
+    if (r.natBits && !r.natFloat) return true;
+    const Expr* e = rhsNode;
+    if (e && e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;   // `-` or U+2212
+        e = u->operand.get();
+    }
+    return e && e->kind == NK::IntLit;
+}
+
+// A compound op on a native WRAPS an Int result rather than refusing it, but a
+// result of the wrong kind (`$i /= 2` is a Rat, `$i += 1.5e0` a Num) is refused
+// as `=` refuses it, and the container keeps what it held before the op.
+static void nativeCompoundStore(Value& slot, const Value& before, int bits, bool sign, bool isFloat,
+                                const Expr* target) {
+    if (nativeRefusesKind(slot, isFloat)) {
+        Value got = slot;
+        slot = before;
+        throwNativeKind(got, bits, isFloat, sign,
+                        target && target->kind == NK::VarExpr ? static_cast<const VarExpr*>(target)->name
+                                                              : std::string("$x"));
+    }
+    wrapNative(slot, bits, sign, isFloat);
 }
 
 // ---- placeholder ($^a) collection ----
@@ -19870,6 +19955,18 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
             {{"got", v}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
             "Cannot unbox a type object (" + v.typeName() + ") to " +
             (p.type.rfind("num", 0) == 0 ? std::string("a num") : p.type.rfind("str", 0) == 0 ? std::string("a str") : std::string("an int")) + ".");
+    // …nor a number of the other kind: `sub f(num $x) {}; f(1/2)` dies as
+    // `my num $x = 1/2` does, and with the same X::AdHoc Rakudo raises rather
+    // than a binding type check. (A multi candidate that cannot take it was
+    // already passed over by the dispatcher.)
+    if (!p.type.empty() && (p.type[0] == 'i' || p.type[0] == 'u' || p.type[0] == 'n' ||
+                            p.type == "byte" || p.type == "atomicint") && isDefined(v)) {
+        const bool isFloat = p.type == "num" || p.type == "num32" || p.type == "num64";
+        bool sign;
+        if ((isFloat || p.type == "int" || p.type == "atomicint" || Value::natWidthOfType(p.type, sign)) &&
+            nativeRefusesKind(v, isFloat))
+            throwNativeKind(v, p.type, isFloat, "parameter " + p.name);
+    }
     // `Any` is everything BELOW Mu, so an Any-constrained parameter takes any
     // value except Mu itself. Asked before the type-object bypass on the next
     // line, which is what previously let `sub f($x) {…}; f(Mu)` bind where
@@ -20916,7 +21013,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
         bool sign; int bits = Value::natWidthOfType(p.type, sign);
         if (!bits && p.type == "int") { bits = 64; sign = true; }   // checked, not wrapped (below)
-        if (!bits) continue;
+        if (!bits) {
+            // an `is copy` parameter is a fresh BOXED container: a native
+            // argument's tags stay behind (see dropNativeTags)
+            if (p.isCopy && !isNativeTypeName(p.type))
+                if (Value* bound = env->find(slotName(p, i)))
+                    if (bound->natBits) dropNativeTags(*bound);
+            continue;
+        }
         if (Value* bound = env->find(slotName(p, i))) {
             if (p.type == "int") {
                 if (bound->t == VT::Int && bound->big() && !bound->big()->fitsLL())
@@ -34494,21 +34598,21 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
                                 rv.readonly = rv.immutableBind = false;
+                                if (!nb && rv.natBits) dropNativeTags(rv);   // a boxed $ takes the value, not the native
                                 // a `$` container itemizes what it holds
                                 if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
                                     rv.itemized = true;
                             }
+                            // a native refuses what it cannot hold BEFORE the store,
+                            // so a caught refusal leaves the old value in place; the
+                            // name the message needs is built only on that path
+                            if (nb && nativeNeedsCheck(rv, nfl))
+                                nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
                             {
                                 ParStripe ws(*this, slot); // torn-copy contract
                                 *slot = rv;
                             }
-                            if (nb) {
-                                // only a Str or an over-wide bigint is refused — test
-                                // that before building the name the message needs
-                                if (rv.t == VT::Str || (rv.t == VT::Int && rv.big()))
-                                    nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
-                                wrapNative(*slot, nb, nsg, nfl);
-                            }
+                            if (nb) wrapNative(*slot, nb, nsg, nfl);
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -34516,6 +34620,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         // whitelisted ops — neutral autoviv, the in-place
                         // ASCII `~=` append, applyArith for the rest
                         Value rhs = eval(a->value.get());
+                        Value before; // what a refused native result puts back
+                        if (nb) before = *slot;
                         if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
                             rhs.readonly = rhs.immutableBind = false;
                             static const char* kOps[] = {"", "", "+", "-", "*", "~"};
@@ -34545,7 +34651,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             }
-                            if (nb) wrapNative(*slot, nb, nsg, nfl);   // arithmetic on a native WRAPS, it does not refuse
+                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get());   // WRAPS an Int, refuses another kind
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -34572,7 +34678,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             ParStripe ws(*this, slot);
                             *slot = std::move(nv);
                         }
-                        if (nb) wrapNative(*slot, nb, nsg, nfl);   // arithmetic on a native WRAPS, it does not refuse
+                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get());   // WRAPS an Int, refuses another kind
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
                         return sink ? Value::any() : *slot;
                     }
@@ -35114,6 +35220,10 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     throwTypedV("X::TypeCheck::Assignment",
                         {{"got", v}, {"expected", Value::typeObj("num")}},
                         "Type check failed in assignment; expected num but got Str (" + typeCheckRepr(v) + ")");
+                if (nb && !isBinding && nativeRefusesKind(v, nf))   // `my num ($a, $b) = 1/2, 2e0`
+                    throwNativeKind(v, nb, nf, ns, tgt->kind == NK::VarExpr
+                                                   ? static_cast<VarExpr*>(tgt)->name : std::string("$x"));
+                if (!nb && !isBinding && v.natBits) dropNativeTags(v);   // see dropNativeTags
                 *lv = v;
                 if (nb && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
                     nativeAssignCheck(*lv, nb, nf, tgt->kind == NK::VarExpr
@@ -38212,6 +38322,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash || rhs.t == VT::Range) &&
                 !rhs.itemized && (targetSigil ? targetSigil : sigil) == '$')
                 rhs.itemized = true;
+            // a native VARIABLE refuses a value of the wrong kind before the
+            // store, so a caught refusal leaves it holding what it held
+            if (nb && a->op == "=" && a->target->kind == NK::VarExpr && nativeNeedsCheck(rhs, nf))
+                nativeAssignCheck(rhs, nb, nf, static_cast<VarExpr*>(a->target.get())->name, ns);
+            if (!nb && a->op == "=" && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
             ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
         }
@@ -38408,6 +38523,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
+    Value before; // what a refused native result puts back
+    if (nb) before = *lv;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
@@ -38551,7 +38668,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // $d` keeps the Duration a Duration (roast's Advent::GrammarProfiler
         // sums `now - $start` into an undefined slot)
         auto temporal = [](const Value& v) { return v.hashKind == "Instant" || v.hashKind == "Duration"; };
-        if ((binop == "+" || binop == "-" || binop == "%") && (temporal(*lv) || temporal(rhs))) {
+        if (binop == "**" && nb && !nf && nativeIntPowNegative(*lv, rhs, a->value.get()))
+            *lv = Value::integer(0);   // `$i **= -1` on a native int (see nativeIntPowNegative)
+        else if ((binop == "+" || binop == "-" || binop == "%") && (temporal(*lv) || temporal(rhs))) {
             Value l0 = *lv;
             Value res = applyArith(binop, l0, rhs);
             tagTemporal(binop, l0, rhs, res);
@@ -38577,7 +38696,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!nm.empty() && nm[0] == '@') { lv->isList = false; lv->s.clear(); lv->itemized = false; }
         }
     }
-    if (nb) wrapNative(*lv, nb, ns, nf);
+    if (nb) nativeCompoundStore(*lv, before, nb, ns, nf, a->target.get());
     return sink ? Value::any() : *lv;
 }
 
@@ -46657,7 +46776,11 @@ Value Interpreter::evalBinary(Binary* b) {
                 const Value* rp = b->fastShape == 1 ? lit : scal(b->rhs.get());
                 // tagTemporal is a no-op unless an operand is Instant/Duration,
                 // and both hashKinds are empty here, so the result needs no tag.
-                if (rp) return applyArith(op, *lp, *rp);
+                if (rp) {
+                    if (op == "**" && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
+                        return Value::integer(0);
+                    return applyArith(op, *lp, *rp);
+                }
             }
             // falling through re-reads only variables and cached literals —
             // neither has side effects, so nothing is evaluated twice
@@ -47003,6 +47126,8 @@ Value Interpreter::evalBinary(Binary* b) {
             if (l.t == VT::Object) l = Value::str(strInStrContext(l));
             if (r.t == VT::Object) r = Value::str(strInStrContext(r));
         }
+        if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+            return Value::integer(0);
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
         return res;
@@ -47988,6 +48113,8 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
+    if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+        return Value::integer(0);
     // operator overloading: a built-in operator on a user object dispatches to a
     // user `sub infix:<op>` if one is in scope (falling back to the built-in when
     // no candidate matches the operands).
