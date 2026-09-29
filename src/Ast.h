@@ -205,6 +205,11 @@ struct VarExpr : Expr {
     // that many scopes out (DeclCheck; S02-literals/heredocs.t).
     unsigned char heredocOuter = 0;
     bool nativeStrRead = false;  // a read of a `my str $x` of the same block: the value goes out marked native
+    // A read of a variable DECLARED as a native int (`my int $x`, `int $p`,
+    // `my uint8 $b`), resolved lexically by the parser: the nearest declaration
+    // of the name wins, so an untyped `is rw` parameter bound to a native is
+    // not one. Integer operators on it are the native, wrapping candidates.
+    bool nativeIntRead = false;
     std::string declScope;       // my / our / state / constant
     std::string declStubType;    // `my ::foo $x`: the type NAME it introduces (value: that bare type)
     std::string declType;        // optional type constraint (ignored at runtime for now)

@@ -2052,6 +2052,94 @@ static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhs
     return e && e->kind == NK::IntLit;
 }
 
+// A native int operand makes an integer operator the NATIVE one, as Rakudo's
+// dispatch picks it: `int.max + 1` wraps to int.min, and the result is native
+// itself, so `($z * 4) div 2` wraps in the middle and gives 0. The other operand
+// must be a native int too, or an integer LITERAL that fits 64 bits: a boxed Int
+// variable, typed or not, takes the Int candidate and grows, as does a literal
+// wider than 64 bits (oracle-checked against Rakudo 2026.09). Answers false for
+// everything it does not decide, and for a zero divisor, which the general path
+// refuses with the right exception.
+// An operand that IS a native int in Rakudo's static sense: a read of a
+// variable declared native int, or a native arithmetic operation (whose result
+// nativeIntArith tagged). Anything else only carries a native's tags.
+static bool nativeIntNode(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
+    if (e->kind == NK::Binary) {
+        const std::string& o = static_cast<const Binary*>(e)->op;
+        return o == "+" || o == "-" || o == "*" || o == "**" || o == "div" || o == "%" || o == "mod";
+    }
+    if (e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        return !u->postfix && u->op == "-" && nativeIntNode(u->operand.get());
+    }
+    return false;
+}
+
+static bool nativeIntArith(const std::string& op, const Value& l, const Value& r,
+                           const Expr* ln, const Expr* rn, Value& out) {
+    auto natInt = [](const Value& v) {
+        return v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64);
+    };
+    auto plainInt = [](const Value& v) {
+        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
+    };
+    auto intLit = [](const Expr* e) {
+        if (e && e->kind == NK::Unary) {
+            auto* u = static_cast<const Unary*>(e);
+            if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;
+            e = u->operand.get();
+        }
+        return e && e->kind == NK::IntLit;
+    };
+    // A native is a STATIC property in Rakudo: the operand names a native
+    // variable, or is itself a native operation. A value that merely carries
+    // the tags — an array element, a routine's return, a list item, the topic
+    // `given` bound — is an Int there, whatever container it was read from.
+    auto natNode = [](const Expr* e) {
+        if (!e) return false;
+        return nativeIntNode(e);
+    };
+    const bool ln8 = natInt(l) && natNode(ln), rn8 = natInt(r) && natNode(rn);
+    if (!ln8 && !rn8) return false;
+    if (!plainInt(l) || !plainInt(r)) return false;
+    if (!(ln8 || intLit(ln)) || !(rn8 || intLit(rn))) return false;
+    const unsigned long long a = (unsigned long long)l.i, b = (unsigned long long)r.i;
+    const long long sa = l.i, sb = r.i;
+    long long x;
+    if (op == "+") x = (long long)(a + b);
+    else if (op == "-") x = (long long)(a - b);
+    else if (op == "*") x = (long long)(a * b);
+    else if (op == "**") {
+        if (sb < 0) return false;                 // nativeIntPowNegative answers that
+        unsigned long long acc = 1, base = a;
+        for (unsigned long long e = (unsigned long long)sb; e; e >>= 1) {
+            if (e & 1) acc *= base;
+            base *= base;
+        }
+        x = (long long)acc;
+    }
+    else if (op == "div" || op == "%" || op == "mod") {
+        if (sb == 0) return false;
+        if (sb == -1) x = op == "div" ? (long long)(0ULL - a) : 0;   // int.min div -1 wraps
+        else if (op == "div") {
+            long long q = sa / sb;
+            if ((sa % sb != 0) && ((sa < 0) != (sb < 0))) q--;
+            x = q;
+        }
+        else {
+            long long m = sa % sb;
+            if (m != 0 && ((m < 0) != (sb < 0))) m += sb;
+            x = m;
+        }
+    }
+    else return false;
+    out = Value::integer(x);
+    out.natBits = 64; out.natSigned = true;
+    return true;
+}
+
 // A compound op on a native WRAPS an Int result rather than refusing it, but a
 // result of the wrong kind (`$i /= 2` is a Rat, `$i += 1.5e0` a Num) is refused
 // as `=` refuses it, and the container keeps what it held before the op.
@@ -4596,6 +4684,10 @@ static Value coerceArray(const Value& v, bool nativeTarget = false) {
         // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
         Value r = Value::array(*v.arr()); r.isList = false;
         decontCopiedElems(*r.arr());   // …as does an eager gather's take-rw
+        // a boxed array's elements are boxed: a native's tags stay behind, or
+        // `@a[1] = 0.5` would truncate and `@a[0] + 1` wrap (see dropNativeTags)
+        if (!nativeTarget)
+            for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
         return r;
     }
     if (v.t == VT::Range) {
@@ -4619,7 +4711,10 @@ static Value coerceArray(const Value& v, bool nativeTarget = false) {
         if (g_objListItems(v, items)) { Value r = Value::array(std::move(items)); r.isList = false; return r; }
     }
     Value a = Value::array();
-    if (v.t != VT::Nil && v.t != VT::Any) a.arr()->push_back(v);
+    if (v.t != VT::Nil && v.t != VT::Any) {
+        a.arr()->push_back(v);
+        if (!nativeTarget && v.natBits) dropNativeTags(a.arr()->back());   // `my @a = $an-int`
+    }
     return a;
 }
 
@@ -4784,7 +4879,11 @@ static Value coerceHash(const Value& v, bool store = false, bool objKeyed = fals
         }
         else if (store) throwHashOddNumber((long long)items.size(), items[i]);
     }
-    if (store) for (auto& kv : *h.hash()) decontCopied(kv.second);
+    if (store)
+        for (auto& kv : *h.hash()) {
+            decontCopied(kv.second);
+            if (kv.second.natBits) dropNativeTags(kv.second);   // `my %h = a => $an-int`
+        }
     if (store) itemizeHashValues(h);
     return h;
 }
@@ -18452,7 +18551,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `$` only, as bindParams does: `-> @inner` binds the array
                 // ITSELF, and `.push` through it mutates the object rather than
                 // assigning to the container, so it stays legal.
-                if (!nm.empty() && nm[0] == '$') markTopic(v, k);
+                if (!nm.empty() && nm[0] == '$') {
+                    markTopic(v, k);
+                    // a readonly loop variable takes the VALUE, not a native's
+                    // container: `for $an-int -> $v { $v + 1 }` is Int arithmetic
+                    if (v.natBits && !fs->rwVars) dropNativeTags(v);
+                }
                 // a SIGILLESS parameter (`-> \v`) is raw by nature: over bare
                 // values there is nothing to write to (`for $bag.kv -> \k, \v`)
                 else if (!nm.empty() && immSrc && (std::isalpha((unsigned char)nm[0]) || nm[0] == '_'))
@@ -20226,7 +20330,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                                   "Cannot unbox " + std::to_string(v.big()->bitLength() + (spec & 1)) +
                                   " bit wide bigint into native integer"};
                           wrapNative(v, spec >> 1, spec & 1);
-                      } }
+                      }
+                      // a boxed parameter takes the VALUE, not the native (see the slow path)
+                      else if (v.natBits && !params[i].isRw && !params[i].isRaw &&
+                               !isNativeTypeName(params[i].type))
+                          dropNativeTags(v); }
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
@@ -21015,8 +21123,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (!bits && p.type == "int") { bits = 64; sign = true; }   // checked, not wrapped (below)
         if (!bits) {
             // an `is copy` parameter is a fresh BOXED container: a native
-            // argument's tags stay behind (see dropNativeTags)
-            if (p.isCopy && !isNativeTypeName(p.type))
+            // argument's tags stay behind (see dropNativeTags). So does a
+            // readonly one: `sub f($x) { $x + 1 }` given a native int.max is
+            // Int arithmetic in Rakudo and answers 2**63, not int.min. Only
+            // `is rw` / `is raw` bind the caller's native container itself.
+            if (!p.isRw && !p.isRaw && !isNativeTypeName(p.type))
                 if (Value* bound = env->find(slotName(p, i)))
                     if (bound->natBits) dropNativeTags(*bound);
             continue;
@@ -46779,6 +46890,10 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (rp) {
                     if (op == "**" && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
                         return Value::integer(0);
+                    if ((lp->natBits || rp->natBits)) {
+                        Value nv;
+                        if (nativeIntArith(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv)) return nv;
+                    }
                     return applyArith(op, *lp, *rp);
                 }
             }
@@ -47128,6 +47243,10 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
             return Value::integer(0);
+        if (l.natBits || r.natBits) {
+            Value nv;
+            if (nativeIntArith(op, l, r, b->lhs.get(), b->rhs.get(), nv)) return nv;
+        }
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
         return res;
@@ -48115,6 +48234,10 @@ Value Interpreter::evalBinary(Binary* b) {
     Value r = eval(b->rhs.get());
     if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
         return Value::integer(0);
+    if (l.natBits || r.natBits) {
+        Value nv;
+        if (nativeIntArith(op, l, r, b->lhs.get(), b->rhs.get(), nv)) return nv;
+    }
     // operator overloading: a built-in operator on a user object dispatches to a
     // user `sub infix:<op>` if one is in scope (falling back to the built-in when
     // no candidate matches the operands).
@@ -50962,6 +51085,15 @@ Value Interpreter::evalUnary(Unary* u) {
         Value out = Value::array(); out.enumName = v.enumName;
         for (auto& e : *v.arr()) out.arr()->push_back(prefixNumeric(u->op, e));
         return out;
+    }
+    // `-$m` on a native int is the native negation: `-int.min` wraps to int.min,
+    // and the result stays native, so `-$c - 2` wraps too (Rakudo 2026.09)
+    if (u->op == "-" && v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64) &&
+        nativeIntNode(u->operand.get()) &&
+        v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty()) {
+        Value nv = Value::integer((long long)(0ULL - (unsigned long long)v.i));
+        nv.natBits = 64; nv.natSigned = true;
+        return nv;
     }
     if (u->op == "+" || u->op == "-") return prefixNumeric(u->op, v);
     if (u->op == "~") {

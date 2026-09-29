@@ -250,6 +250,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       // invalidation rather than two.
                                                       F(io, n.viaPseudoPkg); F(io, n.pseudoPkg);
                                                       ioExpr(io, n.declTypeExpr);
+                                                      F(io, n.nativeStrRead); F(io, n.nativeIntRead);
                                                       n.syncAttrCache(); }  // derived from `name`, not stored
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); F(io, n.pkgSelf); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }

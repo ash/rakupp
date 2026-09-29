@@ -4472,6 +4472,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     long long x = (sign && (u & (1ULL << (bits - 1)))) ? (long long)u - (long long)(1ULL << bits) : (long long)u;
                     return Value::integer(x);
                 }
+                // a boxed array's element is boxed: a native's tags stay behind
+                // (`@a.push($an-int); @a[0] = 2**70` holds the big Int)
+                if (v.natBits && !isNativeTypeName(inv.ofType())) {
+                    v.natBits = 0; v.natSigned = v.natFloat = false;
+                }
                 return v;
             };
             // a stored Nil resets to the element default, as assignment does

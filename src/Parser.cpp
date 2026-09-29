@@ -6897,6 +6897,13 @@ ExprPtr Parser::parsePrimary() {
                 auto ft = scalarDeclTypes_.back().find(raw);
                 if (ft != scalarDeclTypes_.back().end() && ft->second == "str") e->nativeStrRead = true;
             }
+            // …and a variable DECLARED native int, in this block or any around
+            // it: the nearest declaration of the name decides
+            if (raw == e->name && raw.size() > 1 && raw[0] == '$')
+                for (auto fr = nativeIntDecl_.rbegin(); fr != nativeIntDecl_.rend(); ++fr) {
+                    auto it = fr->find(raw);
+                    if (it != fr->end()) { e->nativeIntRead = it->second; break; }
+                }
             // a PACKAGE-qualified variable autovivifies its packages:
             // `$A40::x = 41` makes `A40` a name (its `.WHO` holds `$x`)
             {
@@ -10042,6 +10049,14 @@ void Parser::noteScalarDecls(const Expr* e) {
     auto* ve = static_cast<const VarExpr*>(e);
     if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
     scalarDeclTypes_.back()[ve->name] = ve->declType;
+    nativeIntDecl_.back()[ve->name] = isNativeIntTypeName(ve->declType);
+}
+
+bool Parser::isNativeIntTypeName(const std::string& t) {
+    static const std::set<std::string> k = {
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+    return k.count(t) > 0;
 }
 
 // ---------------- statements ----------------
@@ -10174,6 +10189,9 @@ std::unique_ptr<Block> Parser::parseBlock() {
     size_t opMark = opUndo_.size(); // user operators are lexically scoped
     monkeyScopes_.push_back(0);
     scalarDeclTypes_.emplace_back();
+    nativeIntDecl_.emplace_back();
+    for (auto& pn : pendingParamNative_) nativeIntDecl_.back()[pn.first] = pn.second;
+    pendingParamNative_.clear();
     dynUsed_.emplace_back();
     lexUsed_.emplace_back(); lexDecl_.emplace_back();
     for (auto& pn : pendingParamNames_) lexDecl_.back().insert(pn);
@@ -10201,6 +10219,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     checkPlaceholderOrder(openAt);
     monkeyScopes_.pop_back();
     scalarDeclTypes_.pop_back();
+    if (nativeIntDecl_.size() > 1) nativeIntDecl_.pop_back();
     if (dynUsed_.size() > 1) dynUsed_.pop_back();
     if (lexUsed_.size() > 1) { lexUsed_.pop_back(); lexDecl_.pop_back(); }
     varsPragma_ = savedVarsPragma;
@@ -11506,9 +11525,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     // the parameters are declarations of the block that follows (a read of
     // one there is no outer binding — see noteLexDecl)
     pendingParamNames_.clear();
+    pendingParamNative_.clear();
     std::function<void(const std::vector<Param>&)> addNames = [&](const std::vector<Param>& ps) {
         for (auto& p : ps) {
             if (!p.name.empty()) pendingParamNames_.push_back(p.name);
+            if (p.name.size() > 1 && p.name[0] == '$')
+                pendingParamNative_.emplace_back(p.name, isNativeIntTypeName(p.type));
             if (p.subSig) addNames(*p.subSig);
         }
     };
