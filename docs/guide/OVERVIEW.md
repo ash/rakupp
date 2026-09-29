@@ -32,8 +32,8 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../../rakujs)**) |
 | **Startup** | ~2 ms cold |
-| **Correctness target** | the Roast suite — ~91% of all individual tests pass; ~45% of files fully pass |
-| **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
+| **Correctness target** | the Roast suite — 100.00% of its tests pass (218,421 of 218,422, skip and todo left out); 1,423 of 1,424 files |
+| **Not** | a Rakudo fork, or a transpiler to something else |
 
 ## Goals & philosophy
 
@@ -137,32 +137,28 @@ They make different trade-offs:
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, no third-party libraries | VM-based (MoarVM/JVM), NQP/Raku |
-| Coverage | a growing subset (~45% of Roast) | complete |
+| Roast | 1,423 of 1,424 files, 218,421 of 218,422 tests | the reference the suite is written against |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
-| Grammar-mutation (macros/slangs) | not yet | full |
+| Grammar mutation (slangs) | slang modules run; no macros | full |
 
 On speed, Raku++ starts fast and its `--exe` compiles hot code down to native;
 the tree-walking interpreter trades throughput for simplicity —
 [BENCHMARKS.md](../status/BENCHMARKS.md) has the numbers and methodology, including where
-Rakudo's JIT leads. The one thing Rakudo unambiguously has today is
-**completeness**; Raku++ is a young implementation steadily growing toward the
-same language.
+Rakudo's JIT leads.
 
 ## Status & how it's measured
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~91%** (200,843 / ~219,610) — the headline per-test figure.
-  It counts every test the suite declares, including those in files that abort
-  before running (their `plan N` is read from source, all failing), so parse-error
-  files can't hide.
-- **Files fully passing: ~46%** (676 / 1,464) — the stricter bar; a file counts
-  only if *every* assertion in it passes.
-- **Tests that ran: ~97%** (200,843 / 206,919) — of just the assertions files
-  actually emitted; useful for tracking regressions, but it ignores the ~25k tests
-  in aborting files, so it flatters.
+- **Tests, skip and todo left out: 100.00%** (218,421 / 218,422) — the headline:
+  the tests Roast expects an implementation to pass.
+- **All declared tests: 100.00%** (220,054 / 220,055) — the same with skip and
+  todo counted as passes, and with the tests of a file that aborts read from its
+  source, so a parse error cannot hide them.
+- **Files fully passing: 99.93%** (1,423 / 1,424) — the stricter bar; a file
+  counts only if *every* assertion in it passes.
 
-All three are explained in [ROAST.md](../status/ROAST.md), which also has the per-synopsis
+All three are defined in [COUNTING.md](../status/COUNTING.md); [ROAST.md](../status/ROAST.md) has the per-synopsis
 breakdown. The self-hosted harness prints all of them:
 
 ```sh

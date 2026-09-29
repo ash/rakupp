@@ -1,9 +1,7 @@
 # Raku++ Roadmap
 
 The goal is broad coverage of documented Raku, working as both interpreter and
-(eventually) compiler, validated against Roast. This is necessarily
-incremental — Roast is ~1,460 files covering the entire language. We grow
-coverage milestone by milestone and track it with `tools/run-roast.raku`.
+compiler, validated against Roast and tracked with `tools/run-roast.raku`.
 
 ## Done (MVP core)
 
@@ -54,9 +52,10 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **676 / 1,464 Roast
-files fully pass (~46%)**, **200,843 / 219,610 declared assertions (~91%)** —
-run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
+synopses rather than isolated features. Current standing, at v5.0.0: **100.00%
+of Roast's tests pass** (218,421 / 218,422 with skip and todo left out), and
+**1,423 / 1,424 files** of `spectest.data` pass completely — run the harness for
+live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 
 - **Regex & grammars** (S05) — a CPS backtracking engine, `token`/`rule`/`regex`,
@@ -147,58 +146,25 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
 ## Next
 
 Rakudo remains the reference: every divergence is still judged against it. The
-per-version overview lives in
-[dev/plans/VERSIONS.md](../dev/plans/VERSIONS.md), and what has a written plan
-but no tag is below.
+per-version overview is [dev/plans/VERSIONS.md](../dev/plans/VERSIONS.md). With
+Roast at 100.00%, the work that is planned is:
 
-**The v2.0.0 campaign — ecosystem modules — shipped** (see
-[dev/ecosystem/V2-MODULES-PLAN.md](../dev/ecosystem/V2-MODULES-PLAN.md) for the plan and
-[dev/ecosystem/MODULE-FINDINGS.md](../dev/ecosystem/MODULE-FINDINGS.md) for the batch log):
-**50 of 59** vendored top-50 distributions pass their own `zef` install-time
-suites, `zef` itself runs under rakupp end to end, and the count is measured
-on the honest subtest bar. Of the two remaining DIFFs, `NativeHelpers::Blob`
-is MoarVM-bound by design (out of scope) and `AttrX::Mooish` needs deep
-Rakudo-metamodel emulation — **the next campaign**: a BUILDPLAN-style
-construction hook, persistent `Attribute` MOP objects with
-`get_value`/`set_value`, `^add_method`, and per-instance `does` mixins.
-Alongside it sits the structural debt the pre-2.0 review chose to document
-rather than rush ([dev/findings/REVIEW-2.0.md](../dev/findings/REVIEW-2.0.md)):
-converging the `invokeMethod`/`callCallableRaw` twin (method bodies still
-skip LEAVE phasers and `-->` checks), the three-way Z/X metaop duplication,
-and the regex engine's seven copies of its builtin-class tables.
-
-
-**The documentation-conformance track** runs alongside it, measured by
-[the spec site](https://github.com/ash/raku.online/tree/main/sites/spec): every runnable example in the
-official docs executed on both engines and classified three ways. On current
-`main`, 952 of them are byte-identical on Raku++ and Rakudo (from 835 at v1.2.0),
-leaving 133 where Raku++ is the one that is wrong (and a further 24 in the
-companion operator-behaviour matrix, down from 72). (The `Set`/`Bag`/`Mix`/`Map`
-rows flap by a few either way between runs — Rakudo randomizes hash iteration
-order per process — so read the count with a ±5 band.) The largest single item left there is
-**regex code blocks under backtracking** — `/(\d) { say $0 }/` — which accounts
-for 5 of the 6 remaining `Match` rows. It was attempted once and backed out:
-the engine re-runs blocks while backtracking, so side effects fire repeatedly,
-and a real fix has to defer them to the accepted path. `:exhaustive` matching
-is the same family.
-
-The cheap Roast wins are largely spent; moving the full-pass count now takes
-*whole features* (parse + runtime + dispatch together). Roughly ordered:
-
-1. **The post-reckoning Roast tail** — the Pair-form subtest fix landed for
-   v2.0.0 and re-measured the suite honestly; the newly *visible* failures
-   inside subtest-heavy files are now ordinary, reachable work (`.words`
-   splitting, `Mu.return-rw`, seek/tell shapes, S12/S14 `rw` accessors).
-2. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
-   (a recurring S02 tail).
-3. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
-   -array bounds, `OUR::.<>`-style Stash objects.
-4. **Widen native `--exe` codegen** toward the constructs that still fall back
-   to bundling (roles/packages, symbolic refs, `s///` — see below).
-6. **The v1.0 gate** — reach 90–92% of declared assertions with no
-   architecture changes and no performance regressions, then tag v1.0.
-   Architecture work (grammar-engine LTM/packrat, GIL removal follow-through,
-   `.resume`) comes after.
+- **The errors behind v5 — [V5-PLAN.md](../dev/plans/V5-PLAN.md).** Batches B1–B5,
+  which did not land before the v5.0.0 tag: no module file that compiled under
+  the previous release fails to compile; no crash (the `evalCall` race, the
+  battery's `use` smoke, every program `--cpp` accepts building); the silent
+  wrong answers the survey found; the ecosystem failure clusters; and compiled
+  backends that never disagree with the interpreter.
+- **Speed — [V6-PLAN.md](../dev/plans/V6-PLAN.md).** Every perf-guard kernel at
+  or below Rakudo's time at steady state, memory per value, `--exe` compiling
+  at least 90% of the fully passing Roast files natively, compile and load time
+  halved, and modules in the web editions (#83).
+- **The ecosystem.** Distributions passing their own suites, measured against
+  the 1,791 that Rakudo passes on the same machine through the same harness
+  ([raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)).
+- **Documentation conformance.** Every runnable example in the official docs
+  run on both engines and classified; the figures and the list of divergences
+  are at [raku.online/spec/rules/divergences](https://raku.online/spec/rules/divergences/).
 
 ## Compiler backend
 
@@ -241,8 +207,8 @@ Read the tables for the current split and the per-kernel ratios.
 
 ## How to make progress efficiently
 
-Run `build/rakupp tools/run-roast.raku <synopsis>` to find the cheapest wins:
-files that are *partial* (a single missing builtin/operator) or *no-TAP* with a
-one-line parse error. Fixing parser/runtime gaps tends to unlock files in bulk.
-At the current standing, though, most full-pass gains come from implementing a
-whole feature end to end (see **Next**), not one-line patches.
+`build/rakupp tools/run-roast.raku --failed` lists every Roast file that does
+not fully pass, with the source lines of its failing tests. Beyond Roast, the
+work lists are the module battery (`RELEASING.md` gate 6), the ecosystem sweep,
+[Rakugrid](https://raku.online/grid/) and the semantics sheets in
+[dev/findings/semantics/](../dev/findings/semantics/).

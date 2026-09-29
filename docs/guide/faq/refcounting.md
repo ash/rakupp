@@ -384,7 +384,7 @@ closures, because a closure points at its frame:
 The second shape is one the language creates for you, so the interpreter tries
 to break it: when a routine returns and the closure has not escaped, it cuts the
 closure's link back to the frame (`breakSelfClosures` in `src/Interpreter.cpp`).
-**In 4.0.0 and 4.0.1 that cut is skipped once the inner sub or block has been
+**From 4.0.0 to 5.0.0 that cut is skipped once the inner sub or block has been
 called.** Each call then retains its frame and everything the frame holds.
 
 Measured with 300 calls of a routine whose frame holds a 1 MB string:

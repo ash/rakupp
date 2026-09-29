@@ -8,8 +8,8 @@ name = "rakulang"
 # tools/build-wheel.sh refuses a wheel whose bundled library reports another
 # rk_version(). Bumped with CMakeLists.txt at release time
 # (docs/dev/RELEASING.md). A binding-only fix on the same engine is a
-# post-release: "4.0.1.post1".
-version = "4.0.1"
+# post-release: "5.0.0.post1".
+version = "5.0.0"
 description = "Raku grammars and an embedded Raku++ interpreter for Python, over librakupp"
 readme = "README.md"
 requires-python = ">=3.9"

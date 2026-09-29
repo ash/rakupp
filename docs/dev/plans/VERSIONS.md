@@ -373,7 +373,14 @@ log-parsing grammar driven from Python, against the same grammar run by
 > outcome is in [MODULES-PLAN.md](MODULES-PLAN.md). **Open before tagging
 > v4.0.0:** the release-procedure sweep.
 
-## v5.0.0 — 100% Roast, and the errors behind it (planned 2026-09-26)
+## v5.0.0 — 100% Roast, and the errors behind it (planned 2026-09-26, shipped 2026-09-29)
+
+**Shipped with the Roast number met:** 218,421 of 218,422 tests without
+skip/todo (100.00%), 1,423 of the 1,424 files `spectest.data` lists at Roast
+`1f521d798` (the list lost ten files between planning and the tag). The error
+batches below did not land before the tag and continue in v5.x; the plan is
+unchanged. See the [CHANGELOG](../../../CHANGELOG.md).
+
 
 Chosen by the user on 2026-09-26, from [V5-IDEAS.md](V5-IDEAS.md) and a
 survey taken that day ([findings/survey-2026-09-26/](../findings/survey-2026-09-26/)).

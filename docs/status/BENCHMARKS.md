@@ -1,13 +1,15 @@
 # Raku++ vs Rakudo vs mutsu — speed
 
-A small, honest performance comparison on the subset of Raku that **every**
-engine here runs identically. This is not a claim that Raku++ is "better" —
-Rakudo is the mature, complete, production reference implementation, and Raku++
-is [far behind it on Roast coverage](ROAST.md), and behind
-[mutsu](https://github.com/tokuhirom/mutsu) too. The point is only to give a
-fair picture of where Raku++ — as both a tree-walking interpreter and a native
-compiler — lands against an optimizing VM and against the other from-scratch
-implementation.
+A performance comparison on the subset of Raku that **every** engine here runs
+identically. Rakudo is the production reference implementation, and
+[mutsu](https://github.com/tokuhirom/mutsu) the other from-scratch one; the
+point is where Raku++ — as a tree-walking interpreter and as a native compiler —
+lands against an optimizing VM and against another new engine.
+
+**The tables below are from the 2026-09-20 sitting at `v4.0.1-84`.** v5.0.0 is
+slower than that on the call and construction paths — `fib` about 25% and object
+construction about 24% interpreted — and the [CHANGELOG](../../CHANGELOG.md)
+entry for v5.0.0 has the per-kernel measurement against v4.0.1.
 
 Raku++ can run a program two ways that differ in speed, and this compares both
 against two other engines:

@@ -16,8 +16,9 @@
 - Both an **interpreter and a compiler**: the same binary tree-walks a script
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
-  Raku specification suite: **~91% of all declared tests pass**
-  (200,843 / 219,610); **~46% of files fully pass** (676 / 1,464).
+  Raku specification suite: **100.00% of its tests pass** with skip and todo
+  left out (218,421 of 218,422), and **1,423 of the 1,424 files** of
+  `spectest.data` pass completely.
   Definitions and caveats: [ROAST.md](../status/ROAST.md), [COUNTING.md](../status/COUNTING.md).
 
 ## Language
@@ -92,7 +93,7 @@ no server, with an embeddable in-page playground.
 ## Tooling
 
 - A **self-hosted Roast harness** — written in Raku, run by Raku++ itself
-  (the whole suite in under 30 seconds, [DOGFOODING.md](../status/DOGFOODING.md)).
+  (the whole list in about 40 seconds, [DOGFOODING.md](../status/DOGFOODING.md)).
 - A parse-aware **syntax highlighter** (`--highlight`, HTML + ANSI).
 - `--doc` (POD rendering), `-c` (parse-only check), `--cpp` (show generated C++).
 

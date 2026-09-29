@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (253 subroutines, 738 methods) are in the
+full machine-extracted inventories (254 subroutines, 738 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -453,7 +453,7 @@ say (1,2) X* (3,4);       # → (3 4 6 8)       cross-with-*
 
 ## 5. Built-in subroutines
 
-`rakupp` registers **253** built-in subroutines. Below are the commonly used ones
+`rakupp` registers **254** built-in subroutines. Below are the commonly used ones
 with verified examples, grouped by purpose. The complete alphabetical list is in
 [Appendix A](#appendix-a--all-built-in-subroutines).
 
@@ -560,7 +560,7 @@ say (gather { take $_ for 1..3 });   # → (1 2 3)
 
 ## 6. Methods by receiver
 
-`rakupp` implements **736** methods (full list in [Appendix B](#appendix-b--all-methods)).
+`rakupp` implements **738** methods (full list in [Appendix B](#appendix-b--all-methods)).
 Below are the high-traffic ones grouped by the type they act on.
 
 ### On `Str`

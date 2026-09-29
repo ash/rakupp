@@ -1,5 +1,10 @@
 # Plan: v5.0.0 — 100% Roast, and the errors behind it
 
+**Status, 2026-09-29:** v5.0.0 was tagged on number 1 — Roast at 1,423 of 1,424
+files and 218,421 of 218,422 tests without skip/todo, on the list as it stands
+at Roast `1f521d798`. Batches B0–B5 had not landed; they continue in v5.x
+against the numbers below.
+
 *Written 2026-09-26, before any code. The user chose the next two majors the
 same day, from [V5-IDEAS.md](V5-IDEAS.md) and a survey taken for the purpose —
 speed profiles, the compile path, value size and memory, coverage clusters,

@@ -11,47 +11,43 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v4.0.1** (2026-09-17), a one-fix follow-up to
-**v4.0.0** — *Raku that travels*: the version was reserved for this a month
-before the code, and it collects three things. **Modules travel** — `rakupp install` needs no Rakudo and no zef, and a
-compiled binary carries its modules with a *guarantee*: every mode reports what
-it embedded and what it could not, and `--standalone` refuses to build one that
-would need the disk. **The engine embeds** — one C API, with bindings for C++,
-Go, JavaScript, Python, Rust and Wolfram. **And grammars are the reason to
-care** — a Raku grammar stays a `.raku` file and any host language drives it,
-which is something none of them has an equivalent of. Every release is written
-up in the
-[CHANGELOG](CHANGELOG.md).
+**Status:** current release **v5.0.0** (2026-09-29) — **100.00% of Roast.**
+Of the tests Roast expects an implementation to pass, **218,421 of 218,422**
+pass, and **1,423 of the 1,424 files** in Roast's `spectest.data` pass
+completely. The one test left is a TTY case that Roast marks todo on macOS 14–26
+and that fails on the macOS 27 machine these numbers come from. Rakudo 2026.08,
+measured the same way on the same machine, passes 1,414 of those files
+([ROAST.md](docs/status/ROAST.md)). Every release is written up in the
+[CHANGELOG](CHANGELOG.md), and what each major set out to do is in
+[VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
-**Current focus:** the ecosystem — every distribution in the Raku ecosystem run
-against rakupp, and the engine fixed until real modules install and pass their
-own test suites. **1,006 of 2,529 pass their own test suites**, each one measured
-rather than estimated. For context on what that leaves: every distribution rakupp
-does not pass, re-run **under Rakudo on this machine through our own harness**,
-says **1,791** is what any engine could reach here — **738 cannot pass on this box
-at all**, for want of libgsl, fontconfig or a network — so 1,006 is 56% of what is
-actually reachable. Every distribution, with how it ran, is browsable at
-[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/); the
-59-dist battery in [RELEASING.md](docs/dev/RELEASING.md) is the per-release QA
-gate, an instrument rather than the ecosystem picture.
+**Next:** v6 is about speed ([V6-PLAN.md](docs/dev/plans/V6-PLAN.md)). Beside
+it, the ecosystem: **1,006 of 2,529** distributions pass their own test suites
+(the v4.0.0 board). Rakudo, run on the same machine through the same harness,
+passes 1,791; the other 738 cannot pass there under any engine, for want of
+libgsl, fontconfig or a network. Every distribution, with how it ran, is at
+[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
-**What each release did** is in the [CHANGELOG](CHANGELOG.md), and what each
-*major* set out to do — the number a stranger can re-measure, and the plan
-written before the code — is in
-[docs/dev/plans/VERSIONS.md](docs/dev/plans/VERSIONS.md).
-
-| | v4.0.1 | at v3.0.0 | at v2.0.0 |
+| | v5.0.0 | at v4.0.0 | at v3.0.0 |
 |---|---:|---:|---:|
-| Roast, per individual test — of what the suite declares‡ | **200,843 of ~219,610 (91%)** | 197,191 of 218,772 | 197,090 of ~203,500 |
-| Roast, all-or-nothing — files fully passing, of 1,464 | **676 (46%)** | 594 | 594 |
-| Official documentation examples byte-identical on both engines | **957** | 945 | 952 |
-| Modules — the 59-dist battery, each against its own suite | **50 / 59** | 47 / 59 | 50 / 59 |
-| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529§ | **1,006** | — | — |
-| Local regression suite | **1,021** | 398 | 312 |
+| Roast tests, skip and todo left out‡ | **218,421 of 218,422 (100.00%)** | — | — |
+| Roast tests, every declared test‡ | **220,054 of 220,055 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
+| Roast files fully passing, of 1,424 | **1,423** | 656 | — |
+| Official documentation examples byte-identical on both engines | **1,006** | 957 | 945 |
+| Modules — the 59-dist battery, each against its own suite | **48 / 59** | 49 / 59† | 47 / 59 |
+| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529 | **1,006**§ | 1,006 | — |
+| Local regression suite | **1,147** | 1,020 | 398 |
 
-Dashes mean the measurement did not exist yet.
+Dashes mean the measurement did not exist yet. The v5.0.0 Roast figures are on
+the 1,424 files `spectest.data` lists at Roast `1f521d798`; the older columns
+were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at v3.0.0),
+and 656 is how many of the 1,424 v4.0.0 passed.
 
-§ Warm-store board, 296 dists re-measured — [the board](docs/dev/findings/ecosweep/BOARD-v4.0.0-2026-09-17.md).
+§ The v4.0.0 board; the v5.0.0 sweep is under way.
+
+† v4.0.1, re-measured against Rakudo on 2026-09-29. v4.0.0 published 50 / 59,
+but its runner's reference engine was Raku++ itself (see the v5.0.0
+[CHANGELOG](CHANGELOG.md) entry).
 
 ‡ How these are counted and gated — [COUNTING.md](docs/status/COUNTING.md).
 
@@ -158,7 +154,7 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
 paths), and a `use` that cannot be found or fails to compile is **fatal**.
-How much of the ecosystem runs today: all 2,530 distributions, each with its
+How much of the ecosystem runs today: all 2,529 distributions, each with its
 sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 Full guide: **[MODULES.md](docs/guide/MODULES.md)**.

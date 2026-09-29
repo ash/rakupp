@@ -3,6 +3,204 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.0.0 (2026-09-29) — 100.00% of Roast
+
+**218,421 of Roast's 218,422 tests pass** — every test in the 1,424 files of
+Roast's `spectest.data` except the ones Roast itself marks skip or todo. At two
+decimal places that is 100.00%. With skip and todo counted as passes, as TAP
+counts them, it is 220,054 of 220,055. **1,423 of the 1,424 files pass
+completely.**
+
+| | v4.0.1 | v5.0.0 |
+|---|---:|---:|
+| Roast assertions without skip/todo | — | **218,421 / 218,422 (100.00%)** |
+| Roast assertions, all declared | 200,843 / 219,610 (91.45%)\* | **220,054 / 220,055 (100.00%)** |
+| Roast files fully passing | 656 / 1,424\* | **1,423 / 1,424** |
+| Local regression suite (`t/run.raku`) | 1,021 | **1,147** |
+| Module battery (vs each dist's own run under Rakudo) | 49 / 59\*\* | **48 / 59** |
+| Documentation examples byte-identical on both engines | 957 | **1,006** |
+| Operator divergences | 21 | **14** |
+
+\*v4.0.1 published its figures on the whole checkout of Roast `b2cbe8a42`, 1,464
+files: 676 of them fully passing and 200,843 of 219,610 assertions. 656 is how
+many of the 1,424 files listed today were in its passing list.
+
+\*\*v4.0.1 re-measured against Rakudo; it published 50 / 59 against Raku++
+itself (see "The battery had been comparing Raku++ with itself" below). The one
+distribution between the two columns is JSON::Tiny, whose failing test v4.0.1
+passed without checking it.
+
+**The one failing test** is test 3 of `S16-io/eof.t`, which reads `.eof` on a
+terminal made by `script(1)`. Roast marks it todo on macOS, listing the releases
+by name (`'Sonoma' | 'Sequoia' | 'Tahoe 26'`); the machine of record runs macOS
+27, so the todo does not apply there.
+
+**Roast moved.** This release is measured at `1f521d798` (2026-09-20), 22 commits
+after v4.0.1's `b2cbe8a42`. Roast removed its `:P5` tests, taking the eleven
+`S05-modifier/Perl_*.t` files out of `spectest.data`, and added
+`S32-str/sprintf-a.t`: 1,434 listed files became 1,424. The file-list gate ran
+against v4.0.1's list restricted to the files still listed: **0 regressed, 767
+gained**. Three runs on a quiet machine gave identical lists. On a loaded one,
+`S17-channel/stress.t` (marked `stress slow` in `spectest.data`, 7–12 s alone
+against a 10-second ceiling) can time out with its tests passing.
+
+For scale: Rakudo 2026.08, run through the same harness on the same machine with
+Roast's own fudge applied, passes 1,414 of the same 1,424 files and 218,933 of
+219,096 tests without skip/todo (99.93%).
+
+### How it got there
+
+249 commits since v4.0.1, most of them the Roast campaign:
+
+- **Synopsis by synopsis.** Bursts that each took one area to its ceiling —
+  S02 literals and types, S03 operators (mostly list associativity), S13, S15
+  and 6.d, S19, S29, S32 — and then the long tail file by file from the
+  harness's `--failed` list.
+- **Three tracks on the runtime model.** Scalar containers (a variable bound to
+  a second name shares one cell; containers inside lists, views that alias,
+  holes); a `gather` that suspends instead of running ahead; and one role per
+  parameterization, whose generic statements run once each.
+- **Concurrency.** `hyper for` fans out over threads and `Promise.allof(…).then`
+  waits, which completes S07; a supply block's queue is locked across threads;
+  a worker waiting on a file lock no longer holds its program's exit.
+- **Errors.** A `CATCH` takes its exception without a C++ throw (`catch.t` 37 s
+  → 0.4 s); compile-time refusals, exception attributes and messages from
+  S32-exceptions; the default constructor type-checks every declared attribute
+  type (#110).
+- **Semantics sheets.** Eighteen sheets of behaviour extracted from Rakudo 2026.08
+  (`docs/dev/findings/semantics/`), each item with a probe and Rakudo's output;
+  eight are implemented (Supply, Nil/Any, Str in part, List/Array,
+  Hash/Map/Pair, IO in part, Range, Int/Num/Rat).
+
+### Also in this release
+
+- **Hot loops compiled while the program runs** — `--jit` (through the C++
+  code generator) and `--cnp` (copy-and-patch from machine code built into the
+  binary, no compiler needed). Both are off by default and marked work in
+  progress; see [JIT.md](docs/guide/JIT.md).
+- **The Roast harness** runs what `spectest.data` lists by default (`--all` for
+  the whole checkout), reports the skip/todo-free figure and a by-synopsis
+  table, lists failing files and their failing lines with `--failed`, takes
+  `-j=N`, and fudges the files itself for a foreign engine such as Rakudo. The
+  full list runs in about 40 seconds.
+- **Windows.** The DLL exports its API, the Python wheel ships for Windows, and
+  `.github/workflows/pypi.yml` publishes a release's wheels to PyPI by hand.
+- **YAMLish** parses again (#100); **Raku.js** builds again and runs the
+  showcases in Safari.
+- **`Range.pick` and `.roll`** on an integer range of 1,024 or more elements
+  could return the excluded endpoint — `(^1024).pick` answered 1024 about once
+  in a thousand draws. Found by this release's gate on `S32-list/pick.t`.
+  Regression test: `t/regression/range-pick-excluded-endpoint.raku`.
+- **`--slim` kept the parser out of a program that calls `.AST`**, which parses
+  its invocant at run time; the binary refused with `X::Feature::NotBuilt`
+  where the full build ran. The scan now counts `.AST` as a use of `eval`.
+  Found by this release's slim differential on `t/regression/rakuast-visit.raku`.
+
+### The battery had been comparing Raku++ with itself
+
+Gate 6 runs each battery distribution's own test suite under Raku++ and under
+Rakudo, and a distribution passes when Raku++ passes every file Rakudo does. The
+runner started its reference engine as `raku` — and on the machine of record that
+name has meant Raku++ since 12 September. So v4.0.0's published 50 / 59 and this
+release's first run both compared Raku++ with an older Raku++, and a regression
+could only show up as a difference between two Raku++ builds. The runner (in the
+battery repository) now asks for `rakudo` by name.
+
+Measured against Rakudo, the release candidate had broken eleven distributions
+that v4.0.1 passes. Every one traced to this cycle's Roast work. Ten pass again,
+and the eleventh, JSON::Tiny, is fixed but for one test that v4.0.1 only
+appeared to pass (below). Each fault is pinned in
+`t/regression/battery-regressions-v5.raku`:
+
+- **URI** — an attribute typed by an `our subset` declared in a `unit class`
+  (`has Scheme $.scheme = ''`) was refused at declaration. The check is nominal
+  now, as Rakudo's is: a subset is judged by its base type, and its `where` is
+  not run. HTTP::UserAgent and LWP::Simple came back with it.
+- **IO::Glob, Config** — `$*SPEC ~~ IO::Spec` was False, which the new
+  constructor type check (#110) turned into a refusal. The IO::Spec family now
+  has its ancestry.
+- **XML** — a coercion parameter refused its own target type (`Int(Str)` would
+  not take `5`), and in multi dispatch took an argument that was neither target
+  nor source, so `IO::Path(Str) $src` stole an IO::Handle from the candidate
+  written for it.
+- **Hash::Merge** — `self = …` in a Hash method was refused. On a Hash or an
+  Array it is a store, as in Rakudo; on anything else it is still refused.
+- **Color** — the same subset default as URI.
+- **Cro::Core, Cro::HTTP** — two faults. A named subrule inside a quantified
+  capture group, `( <pchars> | '/' )*`, came back as a List in each occurrence
+  instead of one Match: the quantifier around the capture was counted against
+  the names inside it. And a tag a module builds by hand —
+  `package EXPORT::decode-percents { our &decode-percents = … }`, how Cro::Uri
+  re-exports a dependency's routine — imported nothing: it had only ever worked
+  because every module routine leaked into GLOBAL, which this cycle stopped.
+- **JSON::Tiny** — a module loaded inside a block could no longer see the
+  classes it had loaded itself (`from-json` could not find
+  `JSON::Tiny::Actions`), because "what a block loads stays in it" also hid
+  them from the module's own code. A class declared under `X::` stays visible
+  after the block, as Rakudo installs it into CORE's shared `X` package.
+
+The conformance gate found one more in the same family, in raku.online's own
+report tool: `for %h.kv -> $k, @rows` bound `@rows` to the item container the
+value came in, so a nested `for @rows` ran once, over the whole array, and the
+divergence report came out empty. An `@` or `%` loop parameter binds the array
+or hash itself now, as a sub's parameter does.
+
+One JSON::Tiny test still fails, and it was never a pass: `t/01-parse.t`'s last
+test is `throws-like { use JSON::Tiny; from-json '' }, X::JSON::Tiny::Invalid`.
+Raku++ runs a `use` inside a closure when the closure first runs rather than at
+compile time, so the type name is not yet known where the argument is evaluated.
+v4.0.1 passed the file only because its `throws-like` never checked the type.
+
+### The v5 plan
+
+[V5-PLAN.md](docs/dev/plans/V5-PLAN.md) set five numbers for this major. The
+first, Roast, is met. The error batches behind the other four — the battery
+compile scan, crashes, silent wrong answers, the ecosystem clusters and the
+compiled backends — did not land before this tag, and continue in v5.x.
+
+### Performance: slower than v4.0.1 on calls and construction
+
+The perf gate failed, and it was right. Measured against v4.0.1 built from its
+tag on the same machine and run back to back with this release (`perf-guard`
+kernels, best of three, ms):
+
+| kernel | v4.0.1 | v5.0.0 | |
+|---|---:|---:|---:|
+| `fib` | 301.5 | 377.2 | +25% |
+| `objnew` | 221.6 | 274.4 | +24% |
+| `rats` | 204.4 | 244.0 | +19% |
+| `regexloop` | 103.7 | 123.3 | +19% |
+| `strpass` | 70.5 | 82.6 | +17% |
+| `asg`, `loopsum`, `hash`, `strscan`, `multimeth`, `multiwhere` | | | +13% to +16% |
+| `method`, `attrread`, `privmeth`, `mainnext` | | | +5% to +9% |
+| `subcall` | 153.5 | 146.0 | −5% |
+| `mainwhen` | 193.8 | 91.8 | −53% |
+| `junction` | 342.9 | 123.4 | −64% |
+| `junctionwide` | 676.7 | 18.5 | −97% |
+
+Bisecting it found no single cause. The cost arrived between 22 and 27
+September, inside the Roast campaign, in steps of 3 to 5 percent: a check on
+every named sub call for a declared type of the same name (2a0dd09a), the
+`min`/`max` and multi-aliasing work (2a92d916), and the largest Roast burst
+(a151f859), among others. Two were fixed before the tag:
+
+- **`.new` asked every class whether it does `Rational`**, walking the type's
+  ancestry by name on every construction. The answer is fixed once the class is
+  composed, so it is now asked once per class (`objnew` +56% → +24%).
+- **Every named sub call asked three hash maps** whether a type the program
+  declared shares its name. The registries only grow, so each call site now
+  keeps the answer until one of them does.
+
+The rest is recorded here rather than fixed, and v6 — the speed release —
+starts from it. `tools/perf-baseline.raku` still holds v4.0.0's numbers, so until
+it is re-recorded for v5.0.0 the gate reports these as regressions.
+
+### Not measured for this entry
+
+The whole-ecosystem sweep runs after the tag; its figure goes into the docs
+and onto raku.online/modules/ecosystem when it finishes. Until then the
+ecosystem figure is the v4.0.0 board, 1,006 of 2,529.
+
 ## v4.0.1 (2026-09-17) — `::T:U` constrains, it does not capture
 
 A fix-only release, hours after v4.0.0. A smiley decides which of two things a

@@ -43,29 +43,23 @@ The long-term goal, in order:
 
 ## Status
 
-Raku++ has grown well beyond its initial MVP, but is still an early-stage
-implementation. Against the full Roast suite of **1,464 `.t` files**:
+Against the 1,424 files of Roast's `spectest.data` (Rakudo's own run list, at
+Roast `1f521d798`), as of v5.0.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **676** | **46%** |
-| Partially passing | 668 | 46% |
-| No TAP output (parse error / unimplemented) | 114 | 8% |
-| Timeouts | 13 | 0.9% |
+| **Fully passing** | **1,423** | **99.93%** |
+| Partially passing | 1 | 0.07% |
+| No TAP output (parse error / unimplemented) | 0 | 0% |
+| Timeouts | 0 | 0% |
 
-Two numbers describe where Raku++ stands, and they measure different things:
-
-- **Per-test — ~91% of all declared tests pass (200,843 / ~219,610).** This is the
-  headline: the honest per-test figure, counting every test the suite declares —
-  including those in files that abort before running (their `plan N` is read from
-  source, all failing), so parse-error files can't hide. One subsystem (S15,
-  Unicode) is ~91k of the total. Of just the tests that *do* run, ~97% pass
-  (200,843 / 206,919) — that variant counts only assertions in files that produce
-  TAP, so it flatters by ignoring the ~25k tests in aborting files.
-- **Coverage — 676 / 1,464 files fully pass (~46%).** The stricter all-or-nothing
-  bar: a file counts only if every assertion passes. Eight per cent of the suite
-  produces no TAP at all yet — 117 files where a parse error or an unimplemented
-  construct aborts before any assertion runs.
+- **Tests — 100.00% pass (218,421 / 218,422)** with the tests Roast marks skip
+  or todo left out. Counting those as passes, as TAP does, it is 220,054 of
+  220,055, and that figure includes the tests of any file that aborts before
+  running (read from its source), so a parse error cannot hide them.
+- **Files — 1,423 / 1,424 fully pass.** The one left is `S16-io/eof.t`, whose
+  TTY test Roast marks todo on macOS 14–26 by release name; the machine these
+  figures come from runs macOS 27.
 
 Run the harness (below) for live numbers as features land. See
 [ROADMAP.md](../status/ROADMAP.md) for what's done and what's next,

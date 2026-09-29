@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [RECIPES.md](RECIPES.md) for recipes of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
-Roast standing: measured per individual test, **~91% of all declared tests pass** (200,843 / ~219,610, counting tests in files that abort before running); on the stricter file bar, **676 / 1,464 fully pass (~46%)** (671 partial, 106 no-TAP, 11 timeout). See [COUNTING.md](../status/COUNTING.md) for how these are defined. (The declared denominator grows as parse fixes land: files that previously died before announcing a plan now declare their real, often larger, dynamic plans.)
+Roast standing, at v5.0.0: **100.00% of Roast's tests pass** (218,421 / 218,422, skip and todo left out; 220,054 / 220,055 of all declared tests), and on the stricter file bar **1,423 / 1,424 files fully pass** (1 partial, 0 no-TAP, 0 timeout) on the files Roast's `spectest.data` lists. See [COUNTING.md](../status/COUNTING.md) for how these are defined.
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -81,8 +81,6 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
 - Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
 - Precedence/associativity traits on custom operators: `is tighter(&infix:<+>)` / `is looser(…)` / `is equiv(…)` / `is assoc<left|right|non>`
-- **Gaps:** the word form of a user-defined operator inside a meta-operator (`Zpl`)
-
 ## Control Flow
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
 - `given/when/default`, `with/without`
