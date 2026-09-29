@@ -1059,7 +1059,10 @@ void Lower::stmt(Stmt* s) {
             std::vector<int> ends;
             for (size_t i = 0; i < f->branches.size(); i++) {
                 int nextArm;
-                { TempMark m(*this); nextArm = branch(f->branches[i].first.get(), false); }
+                // `unless COND` runs its block when COND is FALSE, so it skips
+                // the block when COND is true (the flag was ignored, and every
+                // `unless` compiled as an `if`)
+                { TempMark m(*this); nextArm = branch(f->branches[i].first.get(), f->isUnless); }
                 if (bad()) return;
                 // A postfix `STMT if COND` has no block of its own, so a `my` in
                 // it declares in the ENCLOSING scope.
