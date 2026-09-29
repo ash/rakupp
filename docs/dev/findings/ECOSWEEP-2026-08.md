@@ -61,6 +61,7 @@ the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
 - 2026-08-30: 746 of 2,526
 - 2026-09-05: 824 of 2,530
 - 2026-09-12: 860 of 2,529
+- 2026-09-29: 1,019 of 2,547
 - 2026-09-14: 972 of 2,529
 - 2026-09-15: 989 of 2,529
 - 2026-09-17: 1,006 of 2,529
@@ -551,3 +552,29 @@ repaired mid-run and those rows re-measured.
 `build-arm64/rakupp-sweep` (a copy, so binary-relative `rakulib/` and `tools/`
 still resolve) and macOS SIGKILLs an unsigned copy with no message at all —
 `codesign -s - -f` it and check `--version` speaks before launching.
+
+## Sitting seven (2026-09-29, the v5.0.0 release binary): 1,019 of 2,547
+
+The whole index again, on `5.0.0-gccc293b9`: REA of 2026-09-28, **2,548 dists**,
+Test::Selector quarantined as before, so 2,547 measured. Two shards on two
+private stores, each seeded with the 478 modules named by two or more dists
+(468 installed), budget 120 s per dist, `nice -n 10`. The sweep itself took 85
+minutes, against eight hours for the sittings above. Per-dist results:
+[ecosweep/sweep-2548.tsv](ecosweep/sweep-2548.tsv).
+
+| verdict | dists | 2026-09-05 |
+|---|---:|---:|
+| **pass** | **1,019** | 824 |
+| self-fail | 1,175 | 1,268 |
+| dep-fail | 216 | 224 |
+| other | 67 | 67 |
+| timeout | 34 | 42 |
+| build-fail | 24 | 53 |
+| dep-build-fail | 11 | 50 |
+| fetch-fail | 1 | 1 |
+
+The fetch-fail is `bamboo` 0.0.3, whose archive is missing from REA; it fails
+the same way every sitting. The number to compare against is the reachable set:
+Rakudo, run through the same harness on 2026-09-16, passed 1,791 of that day's
+2,529 ([RAKUDO-BASELINE-2026-09-16](ecosweep/RAKUDO-BASELINE-2026-09-16.md)).
+

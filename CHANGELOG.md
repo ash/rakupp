@@ -20,6 +20,7 @@ completely.**
 | Module battery (vs each dist's own run under Rakudo) | 49 / 59\*\* | **48 / 59** |
 | Documentation examples byte-identical on both engines | 957 | **1,006** |
 | Operator divergences | 21 | **14** |
+| Ecosystem distributions passing their own suites | 1,006 of 2,529\*\*\* | **1,019 of 2,547** |
 
 \*v4.0.1 published its figures on the whole checkout of Roast `b2cbe8a42`, 1,464
 files: 676 of them fully passing and 200,843 of 219,610 assertions. 656 is how
@@ -29,6 +30,8 @@ many of the 1,424 files listed today were in its passing list.
 itself (see "The battery had been comparing Raku++ with itself" below). The one
 distribution between the two columns is JSON::Tiny, whose failing test v4.0.1
 passed without checking it.
+
+\*\*\*v4.0.0's warm-store board; v5.0.0's is a fresh sweep of the whole index.
 
 **The one failing test** is test 3 of `S16-io/eof.t`, which reads `.eof` on a
 terminal made by `script(1)`. Roast marks it todo on macOS, listing the releases
@@ -200,11 +203,16 @@ kernel's runs within 4.1% of each other), so the next release is gated against
 these numbers; its `best` column keeps the faster v4.x figures, and every
 `--check` prints the gap as standing debt.
 
-### Not measured for this entry
+### The ecosystem, swept fresh
 
-The whole-ecosystem sweep runs after the tag; its figure goes into the docs
-and onto raku.online/modules/ecosystem when it finishes. Until then the
-ecosystem figure is the v4.0.0 board, 1,006 of 2,529.
+Every distribution in the index (2,548, of which Test::Selector stays
+quarantined) was installed and tested from a store seeded only with the 478
+most-depended-on modules, on the release binary: **1,019 of 2,547 pass their
+own test suites.** The last fresh sweep, on 2026-09-12, gave 860 of 2,529;
+v4.0.0's 1,006 was a warm-store board, a different instrument. Every verdict is
+at [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/), and
+the sweep is written up in
+[ECOSWEEP-2026-08.md](docs/dev/findings/ECOSWEEP-2026-08.md).
 
 ## v4.0.1 (2026-09-17) — `::T:U` constrains, it does not capture
 

@@ -22,10 +22,10 @@ measured the same way on the same machine, passes 1,414 of those files
 [VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
 **Next:** v6 is about speed ([V6-PLAN.md](docs/dev/plans/V6-PLAN.md)). Beside
-it, the ecosystem: **1,006 of 2,529** distributions pass their own test suites
-(the v4.0.0 board). Rakudo, run on the same machine through the same harness,
-passes 1,791; the other 738 cannot pass there under any engine, for want of
-libgsl, fontconfig or a network. Every distribution, with how it ran, is at
+it, the ecosystem: **1,019 of 2,547** distributions pass their own test suites,
+measured by a fresh sweep on v5.0.0. Rakudo, run on the same machine through the
+same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
+there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
 | | v5.0.0 | at v4.0.0 | at v3.0.0 |
@@ -35,7 +35,7 @@ libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 | Roast files fully passing, of 1,424 | **1,423** | 656 | — |
 | Official documentation examples byte-identical on both engines | **1,006** | 957 | 945 |
 | Modules — the 59-dist battery, each against its own suite | **48 / 59** | 49 / 59† | 47 / 59 |
-| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/), of 2,529 | **1,006**§ | 1,006 | — |
+| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,019 of 2,547**§ | 1,006 of 2,529 | — |
 | Local regression suite | **1,147** | 1,020 | 398 |
 
 Dashes mean the measurement did not exist yet. The v5.0.0 Roast figures are on
@@ -43,7 +43,7 @@ the 1,424 files `spectest.data` lists at Roast `1f521d798`; the older columns
 were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at v3.0.0),
 and 656 is how many of the 1,424 v4.0.0 passed.
 
-§ The v4.0.0 board; the v5.0.0 sweep is under way.
+§ A fresh sweep of every distribution in the index on the v5.0.0 release binary, 2026-09-29 ([ECOSWEEP](docs/dev/findings/ECOSWEEP-2026-08.md)); v4.0.0's figure was a warm-store board.
 
 † v4.0.1, re-measured against Rakudo on 2026-09-29. v4.0.0 published 50 / 59,
 but its runner's reference engine was Raku++ itself (see the v5.0.0
@@ -154,7 +154,7 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
 paths), and a `use` that cannot be found or fails to compile is **fatal**.
-How much of the ecosystem runs today: all 2,529 distributions, each with its
+How much of the ecosystem runs today: all 2,547 distributions, each with its
 sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 Full guide: **[MODULES.md](docs/guide/MODULES.md)**.

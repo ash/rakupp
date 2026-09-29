@@ -65,7 +65,7 @@ verify: a fez archive's URL carries its SHA-1 and a mismatch is refused.
 
 Its full option list — version pins, `--dry-run`, `--list`, `uninstall`,
 `reinstall`, `test` — is in [CLI.md](CLI.md#installing-modules). How much of the ecosystem runs today:
-all 2,530 distributions, each with its sweep verdict, are listed at
+all 2,547 distributions, each with its sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
 Under the hood, Raku++ looks for installed modules in the standard locations
