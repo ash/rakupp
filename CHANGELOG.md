@@ -22,9 +22,10 @@ completely.**
 | Operator divergences | 21 | **14** |
 | Ecosystem distributions passing their own suites | 1,006 of 2,529\*\*\* | **1,019 of 2,547** |
 
-\*v4.0.1 published its figures on the whole checkout of Roast `b2cbe8a42`, 1,464
-files: 676 of them fully passing and 200,843 of 219,610 assertions. 656 is how
-many of the 1,424 files listed today were in its passing list.
+\*v4.0.1 published its figures on the whole checkout of Roast commit
+`b2cbe8a42`, 1,464 files: 676 of them fully passing and 200,843 of 219,610
+assertions. 656 is how many of the 1,424 files listed today were in its passing
+list.
 
 \*\*v4.0.1 re-measured against Rakudo; it published 50 / 59 against Raku++
 itself (see "The battery had been comparing Raku++ with itself" below). The one
@@ -38,8 +39,9 @@ terminal made by `script(1)`. Roast marks it todo on macOS, listing the releases
 by name (`'Sonoma' | 'Sequoia' | 'Tahoe 26'`); the machine of record runs macOS
 27, so the todo does not apply there.
 
-**Roast moved.** This release is measured at `1f521d798` (2026-09-20), 22 commits
-after v4.0.1's `b2cbe8a42`. Roast removed its `:P5` tests, taking the eleven
+**Roast moved.** v5.0.0 is measured against Roast commit `1f521d798`
+(2026-09-20); v4.0.1 was measured against Roast commit `b2cbe8a42`, 22 Roast
+commits earlier. In between, Roast removed its `:P5` tests, taking the eleven
 `S05-modifier/Perl_*.t` files out of `spectest.data`, and added
 `S32-str/sprintf-a.t`: 1,434 listed files became 1,424. The file-list gate ran
 against v4.0.1's list restricted to the files still listed: **0 regressed, 767
