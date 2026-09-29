@@ -92,6 +92,9 @@ logs and the reviews. This page is the complete list.
   fixable divergence — `.raku` round-trips, `^^`, `~~ Callable`,
   `when`/`proceed`/`succeed`, `CATCH` in closures — and lifting Roast
   fully-passing from 224 to 249 with no regressions.
+- **[ROAST-SNAPSHOTS.md](ROAST-SNAPSHOTS.md)** *(2026-08-21 → 2026-09-21)* — the
+  dated per-sitting notes ROAST.md carried while the suite was being worked
+  through, moved out at v5.0.0.
 
 ## Knowledge sheets — Rakudo's sources read at the release tag
 
@@ -215,6 +218,10 @@ logs and the reviews. This page is the complete list.
   turned out to be, why the competitor's own answer was the wrong answer both
   times, and the thing they had in common — a large share of both gaps was
   copying rather than computing.
+- **[BENCHMARKS-HISTORY.md](BENCHMARKS-HISTORY.md)** *(2026-07 → 2026-09-20)* —
+  BENCHMARKS.md as it stood before the v5.0.0 sitting: every dated re-snapshot,
+  the campaigns behind each kernel's movement, and the Rosetta and machine
+  corrections.
 
 ## One-off bug reports
 

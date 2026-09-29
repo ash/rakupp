@@ -46,7 +46,7 @@ my $t0 = now;
 note "elapsed: ", (now - $t0).round(0.001), "s";
 ```
 
-Startup is ~2ms, so for anything short you are timing the work, not the launch.
+Startup is ~3 ms, so for anything short you are timing the work, not the launch.
 If elapsed time is dominated by a `run`/`shell` call, a network round trip or
 reading a file, none of the above applies — you are waiting on something else.
 

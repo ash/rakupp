@@ -18,7 +18,7 @@ integer loops at the high. See [compiling.md](compiling.md).
 **It runs in a browser.** The same interpreter compiled to WebAssembly — no
 server, no install: <https://raku.online>.
 
-**It starts in ~2ms.** There is no runtime to boot. That is the difference
+**It starts in ~3 ms.** There is no runtime to boot. That is the difference
 between a Raku script being usable in a shell pipeline and not.
 
 **It ships a static analyser.** `rakupp --lint` reports unused variables,

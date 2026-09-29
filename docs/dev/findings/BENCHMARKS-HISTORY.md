@@ -1,0 +1,1505 @@
+# Benchmark history, to the 2026-09-20 sitting
+
+This is [BENCHMARKS.md](../../status/BENCHMARKS.md) as it stood from its
+2026-09-20 sitting at `v4.0.1-84-ga4291988` until v5.0.0, moved here so that
+BENCHMARKS.md can state the current tables on their own. It keeps every dated
+note the file accumulated — the per-sitting re-snapshots, the campaigns behind
+each kernel's movement, the Rosetta and machine corrections — with that day's
+numbers. None of it describes the engine today. The dashboard at
+[raku.online/spec/dashboard](https://raku.online/spec/dashboard/) charts every
+sitting and release.
+
+## BENCHMARKS.md at the 2026-09-20 sitting
+
+A performance comparison on the subset of Raku that **every** engine here runs
+identically. Rakudo is the production reference implementation, and
+[mutsu](https://github.com/tokuhirom/mutsu) the other from-scratch one; the
+point is where Raku++ — as a tree-walking interpreter and as a native compiler —
+lands against an optimizing VM and against another new engine.
+
+**The tables below are from the 2026-09-20 sitting at `v4.0.1-84`.** v5.0.0 is
+slower than that on the call and construction paths — `fib` about 25% and object
+construction about 24% interpreted — and the [CHANGELOG](../../../CHANGELOG.md)
+entry for v5.0.0 has the per-kernel measurement against v4.0.1.
+
+Raku++ can run a program two ways that differ in speed, and this compares both
+against two other engines:
+
+- **interp** — Raku++ interpreting the source (tree-walk)
+- **native** — Raku++ `--exe`: the program transpiled to C++ and compiled to a
+  native binary (no interpreter inside)
+- **mutsu** — mutsu interpreting the source (Rust bytecode VM + Cranelift JIT,
+  the JIT on by default as it ships)
+- **rakudo** — Rakudo interpreting the source (MoarVM + JIT)
+
+**mutsu is new to this file as of the 2026-08-31 sitting**, which is also the
+first sitting in which every engine on this page is a native arm64 binary. The
+Rakudo column was re-measured that day against from-source builds of 2026.06,
+2026.07 and 2026.08; earlier revisions of this file measured it with an x86_64
+Rakudo under Rosetta 2, so **the Rakudo figures here are not comparable with
+those in any earlier revision** — the Raku++ columns are. The methodology says
+what changed and what it cost.
+
+Raku++ has two other standalone-binary modes — `--bundle` and `--aot` — but both
+*tree-walk* the program, so they run at **`interp` speed** and aren't shown
+separately (`--aot` fib runs at the `interp` row's speed, not the compiled
+one's). `--exe` is the only mode that changes runtime performance, so it's the
+one the `native` column tracks.
+
+(A fourth environment — **[Raku.js](../../../rakujs)**, the interpreter compiled to
+WebAssembly — is measured against `interp` on these same kernels under Node,
+Bun, and the browser in
+[rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md#performance-vs-native-and-node-vs-bun-vs-browser):
+1.3–6.8× slower than native on a clean host, dominated by the `-fexceptions`
+call trampolines. That comparison is still experimental — see the status note
+there.)
+
+> **Re-measured 2026-09-20 on a quiet box; the note that used to stand here is
+> discharged.** Every table below — both kernel tables, `startup`, and the `-O`
+> ladder, which had not been re-taken since 2026-08-24 — comes from one sitting
+> at `v4.0.1-84-ga4291988`, three interleaved passes for the kernels, on a
+> machine whose 1-minute load stayed under 2.5 throughout. The evidence is in
+> the numbers rather than in the claim: `--tsv=`'s median sits within ~1% of the
+> minimum on every kernel, the three passes agree to within 4.6% on every cell
+> but `startup` (9.4%, which is one timer tick on a 3 ms program), and the
+> Rakudo lane held 216.1–218.8 ms on `loopsum` across six separate invocations
+> spanning the hour. **The reference columns moved too, and were not carried
+> forward** — see the methodology, which says what that cost.
+
+### The short version
+
+- **Startup:** ~3 ms on this machine (3.2 ms interpreting, 2.7 ms native) —
+  a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
+  small programs it is instant. mutsu starts in 4.8 ms; Rakudo in 79.1. The
+  two newer engines are on one side of that gap and the reference on the other.
+- **Native (`--exe`) beats Rakudo on sixteen of the seventeen kernels** — from
+  1.5× on `objects` and 2.4× on `rats` to 17.6× on `loopsum`, 29.4× on
+  `strcat` and 33.4× on `bigint`. On the seventeenth, `multiwhere`, it falls
+  2.5× short, and that row is not compiled code at all (see the table's note).
+  Compiling removes interpreter overhead.
+- **The interpreter beats Rakudo on fifteen of the seventeen** and loses two,
+  `objects` (1.4×) and `multiwhere` (2.5×). `fib`, `streq` and `rats` were
+  level against a native arm64 Rakudo at the last two sittings and are now
+  leads — 1.1×, 1.2× and 1.3× — the first time this file has been able to say
+  that of `fib`, which had been Rakudo's for its whole life.
+- **Against mutsu, the interpreter wins sixteen of seventeen and `--exe` wins
+  all seventeen.** The tree-walker loses one, `fib` (1.3×). Compiled, nothing
+  goes their way. See "What mutsu is faster at" — and the next bullet, which is
+  what changed.
+- **`mainwhen` is new to this file**, promoted from the perf gate on 2026-09-20
+  because nothing in `tools/bench/` measured a `given`/`when` at all. It reads
+  **80.5 ms interpreted and 17.3 compiled against Rakudo's 285.2** — 3.5× and
+  16.5×. The reason it is worth its own row is what the backfill found: across
+  v3.26.0, v3.27.0, v3.28.0, v4.0.0 and v4.0.1 the kernel sat flat at 191–198 ms
+  interpreted and 125–129 compiled, and every bit of the drop is in the commits
+  after the last tag — 2.4× interpreted and **7.3× compiled** in one release
+  cycle.
+- **`bigint` WAS the one clear loss, it was predicted, and it is now a lead.**
+  mutsu links `num-bigint`; we hand-rolled ours because we take no
+  dependencies, and at the 2026-08-31 sitting it was 3.5× slower interpreted
+  and 3.3× compiled. `--exe` did not help — the time was inside the runtime's
+  multiply, not the loop around it, which is also why it was fixable without
+  touching the code generator. Two passes on that multiply (eight independent
+  carry chains, and the accumulator multiplied in place) landed the same day
+  that sitting was taken, and this sitting measures the result on
+  this machine: **6.1 ms interpreted and 4.8 compiled against mutsu's 9.1** —
+  from a 3.5× deficit to a 1.5× lead interpreted, and it is the change that
+  takes `--exe` to a clean sweep of the mutsu column.
+- **`objects` is one of the two Rakudo still leads, by 1.4× interpreted** —
+  though `--exe` has now taken the compiled side of it, 156.6 ms against
+  Rakudo's 236.3, where a sitting ago Rakudo led that too. It leads mutsu on
+  the kernel by **3.9×**. It is the only kernel that measures
+  `class`/`has`/method dispatch, the shape most real Raku code is written in,
+  and neither from-scratch engine is close to `spesh`. Adding the kernel is
+  what found it; nothing is profiled yet.
+- Compiling still widens `fib` and `streq`: `--exe` puts them 7.3× and 14.7×
+  ahead of Rakudo (string `eq`/`lt` compile to inline byte-compares — see
+  [internals/DISPATCH.md](../../internals/DISPATCH.md) for the dispatch story),
+  and 5.1× and 28.3× ahead of mutsu.
+- The `loopsum` loop kernel gained most when lexical pads landed; against a
+  native reference it reads **2.4×**. `hashfill`, one of the two kernels with a Perl 5 twin, reads 2.9×
+  this sitting — the kernel is the noisiest in the set (allocation-bound), so
+  the ladder in "vs Perl 5" below is the row to read, not this one.
+- **String building (`~=`) appends in place** in every mode, so `strcat` is
+  O(n) rather than O(n²) — 10.8× ahead of Rakudo and 15.2× ahead of mutsu even
+  interpreted.
+
+### Methodology
+
+- **Machine:** macOS (Darwin 27.0.0, Apple Silicon M3), re-measured 2026-09-20 at
+  `v4.0.1-84-ga4291988` — the SAME
+  machine as every earlier revision of this file, which has since been upgraded
+  from Darwin 24.6; the OS moved under it, the hardware did not. **This is the
+  first sitting in a while taken on a genuinely idle box**, and it is the reason
+  the reference lanes are not carried forward this time. What moved:
+  - **Raku++**, from 84 commits of slab, pool and dispatch work: interpreted
+    −24% (`rats`) to +3% (`strcat`), compiled −29% (`rats`) to +6% (`bigint`),
+    with `regex` −21%/−28% and `objects` −16%/−20%.
+  - **mutsu**, from nothing at all — the binary is the same 0.23.0 at
+    `a093272` — yet it reads 20–30% below its committed column on `regex`
+    (178.0 against 241.4), `objects` (1247.3 against 1588.0), `multiwhere`
+    (24.4 s against 35.0) and `textsplit` (181.9 against 247.2).
+  - **Rakudo**, within ~3% on fifteen of sixteen shared kernels, but
+    `multiwhere` reads 252.0 against a committed 357.4.
+
+  A reference engine cannot get 30% faster without changing, so those committed
+  columns were measuring the box, not the engine — the previous sitting records
+  in the next paragraph that it ran at load 2.5–4. **Tonight's columns replace
+  them rather than being carried forward**, and the rows above are therefore
+  internally consistent but not comparable cell-for-cell with the previous
+  revision's reference numbers. The evidence that this sitting is the clean one:
+  `--tsv=`'s median is within ~1% of the minimum on every kernel, the three
+  passes agree to within 4.6% on every cell except `startup` (9.4%, one timer
+  tick on a 3 ms program), and the Rakudo lane held 216.1–218.8 ms on `loopsum`
+  across six separate harness invocations spread over an hour, five of them
+  driving different release binaries. The `-O` table further down **was** also
+  re-measured this sitting, for the first time since 2026-08-24.
+  The previous sitting's note: the box was **not** idle by the
+  1-min < 2.5 rule during it either (load hovered ~4, `mediaanalysisd`
+  pegging a core); that rule was overridden on evidence rather than waived — a
+  repeatability probe read max/min = 1.028 on `hash` over nine consecutive
+  runs, and `hash` interp itself landed at 18.8 ms against the previous
+  sitting's 18.9 ms. The load was background-QoS work, which Apple Silicon
+  schedules on the efficiency cores and which therefore does not contend with a
+  benchmark on the performance cores. (An earlier
+  2026-08-21 revision carried a sitting taken on a Darwin 25.5 machine whose
+  Raku++ binary was uniformly 1.3–1.5× slower while `perl` and Rakudo were as
+  fast or faster there — not a machine-speed difference, so those rows were
+  replaced rather than kept. See the re-snapshot log at the end.) This sitting
+  is three full harness passes, minimum across all three; the three passes
+  agreed to within 3.5% on every interpreted cell (see above). The harness now **interleaves the
+  engines** — each measured round times every engine once, back to back — so a
+  load spike lands on all lanes instead of one column, and `--tsv=` writes the
+  median alongside the minimum plus the CPU and C++ toolchain the sitting ran
+  on. `--rusage` adds CPU time and peak RSS per lane; the tables below are
+  wall-clock only, and no figure here comes from that mode.
+  The reference engines are the check that this sitting is comparable with
+  the previous one: on the ten kernels both sittings share, Rakudo lands
+  within ±1.6% of its previous row and `perl` within 2%, so the Raku++ movement
+  below is the code, not the machine. The rev named above is the last **code** commit measured, not
+  the commit that records the tables — a write-up commit gets a new SHA every
+  time the branch is rebased, and one sitting was already left naming a SHA
+  that no longer existed. The harness REFUSES
+  a rakupp binary built for another architecture, the same guard perf-guard
+  carries: a stale x86_64 `build/` beside a `build-arm64/` measures under
+  Rosetta at a uniform 1.7–2× penalty, and exactly that nearly shipped in
+  this file at v3.14.0. (Rows are not comparable across doc revisions — absolute times
+  shift a few percent with machine state; the Rakudo column, measured every
+  time, is the fixed yardstick. A per-iteration `std::function` allocation that
+  had crept into the loop path over the v0.7.1→v0.9.0 cycle was found by bisect
+  and removed, restoring the tight-loop kernels to their v0.7.1 speed.)
+- **Raku++:** built `-O3 -DNDEBUG` (CMake Release).
+- **mutsu:** 0.23.0, `cargo build --release` at upstream `a093272`, default
+  features (Cranelift JIT on, as it ships). Native **arm64** — see "The mutsu
+  lane" above for why that needed a second Rust toolchain, and why an x86_64
+  build would have silently flattered every Raku++ row here.
+- **Rakudo:** `rakudo` v2026.08 (MoarVM backend), the oracle era this release
+  verifies against. **The 2026-09-20 sitting measured `/opt/homebrew/bin/rakudo`,
+  the homebrew/core `arm64_sequoia` bottle, not a from-source build** — no
+  from-source arm64 Rakudo survives on this box, and the note below says a
+  bottle and a source build of the same version can differ by up to 12%. In the
+  event it did not: the bottle landed within ±3.6% of the from-source column it
+  replaces on fifteen of sixteen kernels (`multiwhere` is the exception, and it
+  moved 29%), so no step at that boundary is a packaging artefact. Two things
+  make this worth stating rather than assuming. First, the bottle has to be
+  asked for **by path**: `/usr/local/bin` precedes `/opt/homebrew/bin` here.
+  Second, and new since the last sitting, bare `raku` on this machine is
+  **Raku++ itself** — `/usr/local/bin/raku` answers `--version` with
+  `Raku++ 4.0.1-…` and `$*VM.name` with `cpp`. A harness that takes the default
+  `RAKUDO=raku` therefore benchmarks Raku++ against Raku++ and prints suspiciously
+  level rows; always pass `RAKUDO=/opt/homebrew/bin/rakudo`.
+  The previous revision of this file measured v2026.07; the
+  reference column moved a few percent in both directions across the upgrade
+  (`strcat` 179.9 → 166.3 ms, `loopsum` 261.7 → 276.4 ms — **translated-era
+  figures**, roughly twice the native column below, and not comparable with
+  it), which is within ordinary sitting-to-sitting spread, so read the change
+  as noise rather than as Rakudo getting faster or slower.
+- **The Rakudo column is measured against a native arm64 build**, as of the
+  2026-08-31 re-measurement. Every revision of this file *before* that one
+  measured Rakudo with the Intel Homebrew build (`/usr/local`), an **x86_64**
+  binary translated on an arm64 host, because it was the only Rakudo installed
+  here. The reference is now built from source at each era tag — 2026.06,
+  2026.07 and 2026.08, one toolchain for all three — so a step at an era
+  boundary cannot be a packaging artefact.
+
+  **Which arm64 Rakudo it is matters, not just which version.** A from-source
+  build and homebrew/core's `arm64_sequoia` bottle of the *same* v2026.08
+  differ by up to 12% per kernel, in different directions — `fib` 11% faster
+  from source, `strcat` 9% faster, `loopsum` 6% slower — reproduced to within
+  1% across three separate runs. On `fib` that is the difference between
+  Raku++ level and Raku++ 1.1× behind, so the reference build is named here,
+  not just its version. The bottle lives at `/opt/homebrew/bin/rakudo` and has
+  to be asked for by path, since `/usr/local/bin` precedes `/opt/homebrew/bin`
+  on this machine's `$PATH` and bare `raku` still resolves to the x86_64 build.
+
+  **MoarVM has no JIT backend on arm64.** Its JIT sources are x64-only: the
+  generated Makefile consumes `$(JIT_STUB)` (`src/jit/stub.o`) and never
+  `$(JIT_ARCH_X64)`, and the arm64 `libmoar` exports 18 JIT symbols against the
+  x86_64 build's 148, with none of the emit/tile/DynASM machinery. Both the
+  Homebrew bottle and the from-source builds agree. So the reference here runs
+  spesh but no machine code, while the old translated reference ran the full
+  x64 JIT under Rosetta. The two are not the same engine minus a penalty, and
+  an x86_64 `rakudo` column from another machine is not comparable with this
+  one.
+
+  **What translation cost, for the record** — measured on both builds of
+  v2026.08, interleaved, best of 6, on 2026-08-31, and *net* of the missing
+  JIT rather than a pure translation cost:
+
+  | penalty | kernels |
+  |---|---|
+  | 1.7–1.9× | `startup` 1.84×, `strcat` 1.76× |
+  | 1.3–1.7× | `hash` 1.67×, `sortby` 1.55×, `bigint` 1.48×, `textsplit` 1.44×, `regex` 1.42×, `hashfill` 1.37×, `arrayops` 1.35×, `fib` 1.33× |
+  | 1.0–1.3× | `loopsum` 1.26×, `rats` 1.23×, `objects` 1.23×, `arraypush` 1.21×, `sortnums` 1.04×, `streq` 1.00× |
+
+  Mean 1.38×, and per-kernel: `streq` (1.00×) and `sortnums` (1.04×) were free,
+  which is what "net of the missing JIT" looks like — those are kernels where
+  the x64 JIT paid enough to cancel Rosetta's cost. Nothing in the harness
+  catches a mis-built *reference*, because the arch guard inspects `$RAKUPP`
+  only; `tools/run-bench.raku` now records the Rakudo binary it used.
+- **Harness:** [`tools/run-bench.raku`](../../../tools/run-bench.raku) — itself a Raku
+  program, run *by Raku++* (it also runs under Rakudo). It only spawns each
+  engine as a fresh subprocess and times it with `now`, so the language the
+  harness is written in does not bias either contestant.
+- **Timing:** 7 runs per benchmark, first discarded as warm-up, **minimum of the
+  remaining 6** reported (least noisy; the mean was within a few percent). For
+  the `native` column each program is compiled with `--exe` once, then the
+  resulting binary is timed — the compile step is not counted.
+- **Fairness:** the harness runs each program under every engine and compares
+  their stdout **before** timing anything; if `interp`, `native`, or `rakudo`
+  don't emit byte-identical output it flags the row and exits non-zero, so a
+  divergent kernel can't be silently benchmarked. (Rakudo is the reference;
+  every benchmark program is deterministic, so identical output is expected.)
+  A **mutsu** disagreement is reported beside the row but deliberately does not
+  fail the run — this harness gates *our* lanes, and a third-party engine's
+  result is a reference point, not a defect in our suite. In this sitting
+  nothing was flagged: **all four engines produced byte-identical output on all
+  eighteen kernels**, in every one of the three passes and in all five
+  release-artifact runs, so every row below is a like-for-like comparison.
+- **Harness overhead:** spawning + capturing a subprocess adds a small fixed
+  cost per run. On top of that each engine pays its *own* process startup —
+  negligible for Raku++'s native binary, but Rakudo loads a full precompiled
+  runtime, a fixed cost included in every row below. See "How to read this".
+- **Perl 5:** a bench may ship a `.pl` twin (`hashfill` and `textsplit` do); the harness then
+  also times `perl` on it — same spawn-and-capture, same byte-identical-output
+  gate — and prints a `perl` column (`—` for rows without a twin). Override the
+  binary with `PERL=`.
+
+#### The mutsu lane
+
+`tools/run-bench.raku` can also time **[mutsu](https://github.com/tokuhirom/mutsu)**,
+an independent Raku implementation in Rust — a bytecode VM with a Cranelift JIT
+(on by default). It is a genuinely different set of engineering trade-offs from
+either engine already in this table, which is what makes it worth measuring
+against: Rakudo tells us where a mature optimising VM lands, and mutsu tells us
+where a second from-scratch implementation lands.
+
+The lane is **optional and auto-discovered** — `$MUTSU`, then `mutsu` on `PATH`,
+then `$HOME/mutsu/target/release/mutsu`. On a machine with no mutsu the column
+reads `—` and nothing else changes. Rakudo remains the correctness oracle for
+every lane, and a mutsu disagreement is reported beside the row but never turns
+the harness's own gate red: this harness gates *our* lanes, and another
+implementation's result is a reference point, not a defect in our suite.
+
+**The tables below carry the mutsu column as of the 2026-08-31 sitting** — the
+bench-machine sitting the lane was waiting for. mutsu 0.23.0, built from source
+at `a093272` with the release profile and its default features, so the Cranelift
+JIT is compiled in and live: `MUTSU_VM_STATS=1` on the `fib` kernel reports
+`compiles=1 entries=1663980` with `MUTSU_JIT` unset, and zero with
+`MUTSU_JIT=off`. The lane therefore measures mutsu **as it ships**, not an
+interpreter-only configuration of it.
+
+**Building it native took a toolchain that was not on this machine.** The only
+Rust here was the x86_64 Homebrew one (`/usr/local`, host
+`x86_64-apple-darwin`), which has no aarch64 std at all — it cannot produce an
+arm64 binary, and a first build attempt duly failed at the link step *for
+x86_64*. An arm64 Rust plus arm64 `pcre2` and `libffi` (`/opt/homebrew`) were
+installed for this sitting; `file` on the result reads `Mach-O 64-bit
+executable arm64`. This matters more than it sounds: an x86_64 mutsu would have
+run under Rosetta and flattered every row, with nothing in the harness to catch
+it. How much by is not predictable from the Raku++ figure — the penalty turns
+out to be engine- and kernel-dependent (1.0–1.8× on Rakudo, measured; see the
+methodology), so the only safe move is not to translate the binary at all.
+**Check `file` on the mutsu binary before believing any row below**, exactly as
+the harness already does for `$RAKUPP`.
+
+### Pending re-measurement: six changes landed after the 2026-08-31 sitting
+
+**RESOLVED for `bigint` on 2026-09-01.** The tables above are the v3.25.0
+sitting (2026-09-03) on the machine of record, and the two bigint passes ARE
+folded in: `bigint` reads 5.7 ms interpreted and 4.6 compiled there (5.8 and
+4.7 at the v3.24.0 sitting, which this one reproduces within 2%), against the
+60.4 and 45.2 the 2026-08-31 tables carried. The M1 figures below are kept as the
+record of what was predicted, and they under-called it — they projected 7.4 and
+6.2 from a slower box.
+
+The remaining five changes in this section are still unmeasured on this machine.
+
+**The M1 numbers below are not folded into any table.** The rows in
+this file are all measured on the machine named under Methodology, and the work
+described here was done on a different one (Apple M1, Darwin 25.5 — the box this
+file already warns runs a uniformly slower Raku++ binary). Splicing numbers from
+it into these tables would break the one property that makes revisions
+comparable, so the tables stand as measured and the next bench-machine sitting
+picks the changes up. What follows is the M1 before/after for each, from the
+same harness kernels, best of 9:
+
+| kernel | lane | before | after | mutsu (same box) |
+|---|---|---:|---:|---:|
+| bigint   | `--exe` | 45.2 ms | **6.2 ms** | 11.2 ms |
+| bigint   | interp  | 60.4 ms | **7.4 ms** | 11.2 ms |
+| sortnums | `--exe` | 26.4 ms | 22.6 ms | 40.6 ms |
+| loopsum  | `--exe` | 16.5 ms | 15.1 ms | 158.4 ms |
+| fib      | interp  | 447.5 ms | 424.4 ms | 308.7 ms |
+
+The two `bigint` rows are two passes on the same kernel, taken a few hours apart
+on the same box. The first pass (the one-limb multiply below) took it to 11.4 ms
+compiled and 12.6 interpreted — level with mutsu, which is where it stopped
+being a loss. The second pass is what the 6.2 and 7.4 are, and it was measured
+against a purpose-built binary of the commit before it, through
+`tools/run-bench.raku` itself, in one interleaved sitting at load average 2.3:
+
+| kernel | lane | before this pass | after | mutsu, same sitting |
+|---|---|---:|---:|---:|
+| bigint | interp  | 13.0 ms | **7.4 ms** | 11.2 ms |
+| bigint | `--exe` | 11.1 ms | **6.2 ms** | 11.2 ms |
+
+Five other kernels were measured in the same sitting as a control — `loopsum`,
+`fib`, `hash`, `streq`, `rats`, both lanes each — and every one landed within
+±2% of the before-binary, which is this box's run-to-run spread.
+
+Six changes, all described in
+[internals/OPTIMIZATION.md](../../internals/OPTIMIZATION.md) under its list of
+non-`-O` defaults:
+
+- **A one-limb `BigInt` multiply** whose carry stays in a register, with the limb
+  product split off the carry chain. `bigint` is 90% inside that loop by profile;
+  it is the whole 4× above, and it lands in every mode because it is a runtime
+  change rather than a codegen one. It closes the one kernel where mutsu led
+  `--exe`, which is what prompted the work.
+- **Eight carry chains in that loop, and the accumulator multiplied in place.**
+  The one-limb loop was latency-bound on its own carry chain and the interpreter
+  copied the whole magnitude in and out of it twice per step; splitting the
+  magnitude into eight independently-carried segments makes the loop
+  throughput-bound, and mutating the accumulator when the box provably owns it
+  alone removes the copies. Counted with a `malloc` shim over the whole
+  benchmark: 32,163 allocations and 34.0 MB of copying before, 2,297 and 0.13 MB
+  after — of which 74 allocations are one `std::vector` growing geometrically.
+- **`.sort` on an all-native-Int list** orders a flat `(key, index)` array instead
+  of calling `valueCmp` through two random probes into an array of `Value`s.
+- **`applyArith` takes the operator as a `const char*`**, so compiled code stops
+  building a `std::string` per operator to have its first byte read.
+- **The `&name` lexical key of a `Call` is built once** and published on the node,
+  rather than concatenated on each of `fib`'s 1.6 M calls.
+
+Two things measured on that box are worth recording even though they are not
+changes to the engine:
+
+- **`--exe -O` is a large, unmeasured lane.** This file's `native` column is
+  plain `--exe`; the harness never passes `-O`. On the same M1, `-O` takes `fib`
+  from 92.2 to **21.2 ms**, `loopsum` from 15.1 to 8.1, `arrayops` from 84.5 to
+  58.4, and `streq` from 25.6 to 18.1. `-O` is documented as
+  semantics-preserving and opt-in; whether the published column should measure
+  it, both, or stay as it is, is a decision this file has not taken.
+- **Caching `tctx_` in the big dispatch functions is a LOSS.** `_tlv_get_addr` is
+  the top leaf of an interpreted `fib` profile at ~18%, and `execBlock` and
+  `callCallableRaw` already take one resolution per call for exactly that reason.
+  Extending the same cut to `exec`, `eval`, `evalBinary` and `evalUnary` made
+  `fib` *worse* — 425 → 478 ms — because those are dispatch switches whose
+  branches mostly touch `tctx_` zero or one times, so binding the reference at
+  entry pays the thread-local call on every path and holds a register across
+  2 500 lines. Removing the thread-local qualifier outright (unsafe; measured
+  only as a ceiling) buys 12% on `fib` and 21% on `loopsum`, so the cost is real
+  — but it is not recoverable this way.
+
+### Results
+
+Best of 6 timed runs per engine (7 spawned, the first discarded as warm-up),
+taken across three full harness passes and minimised across them; includes
+process startup; lower is better. Rows are ordered most-Raku++-favourable
+first. `startup` has its own section below rather than a row here — it is
+process startup, not a workload.
+
+#### Interpreter vs Rakudo and mutsu
+
+The tree-walker wins on **fifteen of these seventeen kernels** against Rakudo
+and loses two. `streq`, `rats` and `fib` were level at the last two sittings
+and have all three crossed into leads. The losses are `objects` — the only
+kernel that measures `class`/`has`/method dispatch, the shape most real Raku
+code is written in, where Rakudo leads by **1.4×** — and `multiwhere`, at
+**2.5×**, which measures a `where`-constrained multi candidate and is the
+newest thing here to be slow. Neither is a machine artefact; see below.
+
+These are measured against a **native arm64 Rakudo**, which is what changed the
+count from the fourteen-of-fifteen this file reported while the reference ran
+under Rosetta 2 — see the methodology. Unlike the previous two sittings, the
+Rakudo column here was re-measured rather than carried forward, because the
+2026-09-20 sitting found the committed reference numbers had been taken on a
+loaded box; each value is the minimum across three interleaved passes.
+
+Against **mutsu** the interpreter wins sixteen of seventeen and loses one:
+`fib`, by 1.3×. `sortby` and `sortnums`, level two sittings ago, are 1.2× and
+1.3× leads now — the list container's one-pass growth is where
+a sort's temporaries live. Two sittings ago `bigint` was mutsu's largest lead
+(3.5× interpreted); the eight-carry-chain multiply in v3.24.0 turned it into a
+**1.6×** Raku++ lead. `fib` is the one mutsu still holds, and its cause is
+unchanged — see "What mutsu is faster at" below. Bold marks a Raku++ lead; otherwise the
+winning engine is named.
+
+The two rows Rakudo had held for the whole life of this file were reported as
+crossing on 2026-08-22 — `fib` (tiny-body recursion) with the `Value` shrink
+and lexical pads, `streq` (1M string comparisons) with the TARG assignment
+slice. Against a native reference neither crossing holds as a lead: `streq` is level,
+and `fib` — a 1.1× Rakudo lead at the previous sitting — is level too as of
+this one (299.4 against 311.4 ms). Both are tiny-body kernels where a JIT should be
+at its best, and it is worth naming what the reference does here — MoarVM's JIT
+backend is x64-only, so on arm64 it compiles `src/jit/stub.o` and runs with
+spesh but no machine-code JIT.
+
+Variable handling is what moved all of it. Resolving a `my` to a frame slot
+instead of a hash lookup halved `loopsum` (1.5× → 2.4× against Rakudo) and took
+about a quarter off `hash` and `strcat`; deciding a plain `$padvar = EXPR` once
+and skipping the assignment ceremony took a fifth off `streq`. What did *not*
+move, in either change, is `arrayops`, `sortnums` and `bigint` — whose time is
+inside a runtime method rather than in touching variables — and that is the
+clearest sign the wins are where they claim to be.
+
+| Benchmark | Raku++ (interp) | mutsu | Rakudo | vs Rakudo | vs mutsu |
+|---|---:|---:|---:|---|---|
+| bigint | 6.1 ms | 9.1 ms | 160.1 ms | **26.2×** | **1.5×** |
+| strcat | 8.7 ms | 132.5 ms | 94.2 ms | **10.8×** | **15.2×** |
+| sortnums | 22.7 ms | 29.6 ms | 221.2 ms | **9.7×** | **1.3×** |
+| sortby | 25.6 ms | 31.0 ms | 185.2 ms | **7.2×** | **1.2×** |
+| regex | 31.0 ms | 178.0 ms | 203.1 ms | **6.6×** | **5.7×** |
+| hash | 21.0 ms | 38.6 ms | 131.6 ms | **6.3×** | **1.8×** |
+| arrayops | 45.0 ms | 84.4 ms | 209.6 ms | **4.7×** | **1.9×** |
+| textsplit | 49.9 ms | 181.9 ms | 208.1 ms | **4.2×** | **3.6×** |
+| mainwhen | 80.5 ms | 88.8 ms | 285.2 ms | **3.5×** | **1.1×** |
+| hashfill | 101.0 ms | 347.5 ms | 290.4 ms | **2.9×** | **3.4×** |
+| loopsum | 88.1 ms | 119.9 ms | 215.2 ms | **2.4×** | **1.4×** |
+| arraypush | 136.4 ms | 338.9 ms | 298.1 ms | **2.2×** | **2.5×** |
+| rats | 197.7 ms | 329.3 ms | 266.5 ms | **1.3×** | **1.7×** |
+| streq | 225.2 ms | 543.6 ms | 281.5 ms | **1.2×** | **2.4×** |
+| fib | 306.7 ms | 245.1 ms | 348.3 ms | **1.1×** | mutsu 1.3× |
+| objects | 319.4 ms | 1247.3 ms | 236.3 ms | Rakudo 1.4× | **3.9×** |
+| multiwhere | 618.7 ms | 24365.6 ms | 252.0 ms | Rakudo 2.5× | **39.4×** |
+
+**`regex` regressed at v3.6.0 — bisected and fixed after the tag.** On this
+machine the interpreted row was 88.5 ms at v3.14.0 (2026-08-11) and 113.4 ms
+at v3.6.0, +28%, with
+[`tools/bench/regex.raku`](../../../tools/bench/regex.raku) unchanged since the
+initial commit; the native row moved the same way (70.8 → 79.8 ms). Every
+kernel `tools/perf-baseline.raku` does gate got 24–36% *faster* over the same
+span, which is exactly why this slipped through: `regex` is not one of the
+seven gated kernels. A build-at-commit bisect landed on `364c26b` ("the
+POSIX-named character classes are Unicode, not <ctype.h>"): a regex literal
+in a loop is recompiled per iteration, each compile lazily rebuilds its class
+node's 256-entry byteset, and that rebuild now called the per-codepoint class
+predicate (guarded static + slot lookup) 256× where inlined `<ctype.h>` used
+to answer. Two fixes landed: the byteset build folds each class flag to a
+precomputed 128-bit mask (one AND per byte), and the interpreter caches
+compiled `Regex` objects per (post-interpolation pattern, flags) per thread —
+match, substitution and `my regex` subrule bodies all stop re-parsing per
+iteration. Same-machine A/B (Darwin 25.5 box, not the machine of the tables
+above): the kernel went 120.4 → 89.7 ms with the mask fix alone and → 55.8 ms
+with the cache — v3.14.0 measured 108.0 there, so this is well past merely
+undoing the regression. **The tables above carry the fix**: interpreted `regex` reads
+41.1 ms against v3.6.0's 113.4 and v3.14.0's 88.5, and the native row 27.4 ms
+against 79.8 — so the kernel ends up roughly half of what it cost before the
+regression was ever introduced, and `regex` moves from the second-worst
+interpreter row to the fifth-best.
+
+#### Native (`--exe`) vs Rakudo and mutsu
+
+Compiling removes interpreter overhead on top of that — pushing every row
+ahead of Rakudo except one: `multiwhere`, where Rakudo leads by 2.5× and where
+the `--exe` column is not compiled code at all, because codegen declines a
+`where` on a multi candidate and bundles the interpreter instead. **`objects`
+has crossed over this sitting**: 156.6 ms compiled against Rakudo's
+**interpreter** at 236.3, a 1.5× lead where Rakudo led by 1.6× a sitting ago.
+Against mutsu the compiled binary wins **all seventeen**. `bigint` was the sole
+exception two sittings ago, costing 3.3× compiled; v3.24.0's eight-carry-chain
+multiply made it a **1.9×** lead instead, and that single change is what closed
+the sweep. The largest mover this sitting is `mainwhen`, new to the table:
+125.3 ms compiled at v4.0.1 against 17.3 now. The last column is the speed-up
+over interpreting the same program.
+
+| Benchmark | Raku++ (`--exe`) | mutsu | Rakudo | vs Rakudo | vs mutsu | vs interp |
+|---|---:|---:|---:|---|---|---:|
+| bigint | 4.8 ms | 9.1 ms | 160.1 ms | **33.4×** | **1.9×** | 1.3× |
+| strcat | 3.2 ms | 132.5 ms | 94.2 ms | **29.4×** | **41.4×** | 2.7× |
+| loopsum | 12.2 ms | 119.9 ms | 215.2 ms | **17.6×** | **9.8×** | 7.2× |
+| sortnums | 12.6 ms | 29.6 ms | 221.2 ms | **17.6×** | **2.3×** | 1.8× |
+| hash | 7.5 ms | 38.6 ms | 131.6 ms | **17.5×** | **5.1×** | 2.8× |
+| mainwhen | 17.3 ms | 88.8 ms | 285.2 ms | **16.5×** | **5.1×** | 4.7× |
+| streq | 19.2 ms | 543.6 ms | 281.5 ms | **14.7×** | **28.3×** | 11.7× |
+| sortby | 17.7 ms | 31.0 ms | 185.2 ms | **10.5×** | **1.8×** | 1.4× |
+| regex | 19.5 ms | 178.0 ms | 203.1 ms | **10.4×** | **9.1×** | 1.6× |
+| hashfill | 32.5 ms | 347.5 ms | 290.4 ms | **8.9×** | **10.7×** | 3.1× |
+| textsplit | 28.2 ms | 181.9 ms | 208.1 ms | **7.4×** | **6.5×** | 1.8× |
+| fib | 47.6 ms | 245.1 ms | 348.3 ms | **7.3×** | **5.1×** | 6.4× |
+| arraypush | 51.8 ms | 338.9 ms | 298.1 ms | **5.8×** | **6.5×** | 2.6× |
+| arrayops | 44.4 ms | 84.4 ms | 209.6 ms | **4.7×** | **1.9×** | 1.0× |
+| rats | 113.3 ms | 329.3 ms | 266.5 ms | **2.4×** | **2.9×** | 1.7× |
+| objects | 156.6 ms | 1247.3 ms | 236.3 ms | **1.5×** | **8.0×** | 2.0× |
+| multiwhere | 624.6 ms | 24365.6 ms | 252.0 ms | Rakudo 2.5× | **39.0×** | 1.0× |
+
+#### What mutsu is faster at
+
+One row goes the other way, and it is worth more than the sixteen that do not,
+because it names something specific. Two more used to be here and have since
+been reversed; they are kept below, because what they were losing to has not
+stopped being true.
+
+**`fib` — 245.1 ms against our 306.7 interpreted, so 1.3×.** This is the
+Cranelift JIT doing the thing a JIT is for: tiny-body recursion, the same
+function entered 1.66 million times, and by the end it is running compiled
+machine code where we are still walking a tree. It is also the row where our
+two answers to performance separate most clearly — `--exe` compiles the same
+program to 47.6 ms, which is 5.1× *faster than mutsu's JIT*. Ahead-of-time
+beats just-in-time here because the C++ compiler has unlimited time to optimise
+and the program is small enough to hand it whole. The interpreted margin is
+closing from our side rather than mutsu's: it was 1.4× at the 2026-08-31
+sitting, against 352.7 ms interpreted.
+
+**`bigint` was the clearest of the three, and it is now a 1.5× lead.** At the
+2026-08-31 sitting it read 9.1 ms against our 31.4 interpreted and 30.2
+compiled, so 3.5× and 3.3×, and it was the least surprising number in the file:
+mutsu links [`num-bigint`](https://crates.io/crates/num-bigint), a mature,
+widely-used, well-tuned arbitrary-precision library, and Raku++ uses the BigInt
+it hand-rolled in-tree because it takes no third-party dependencies. The
+[implementations FAQ](../../guide/faq/implementations.md) predicted exactly that
+trade before it was measured — "`bigint` is a kernel where a well-tuned
+external library is simply faster than what we hand-rolled".
+
+Two passes on that multiply reversed it, and the tables above carry them:
+**5.7 ms interpreted and 4.6 compiled against mutsu's 9.1.** The prediction was
+a statement about the code we had rather than about hand-rolling as such — a
+base-1e9 magnitude times one limb, eight carry chains deep and written back
+over the accumulator, is not slower than `num-bigint` on this shape. What it
+does not touch is the *general* n×n product, where `num-bigint`'s base-2^64
+limbs are still measured 10× ahead of our base-1e9 ones; base 1e9 is what makes
+decimal output O(n) instead of O(n²), and that trade is
+[kept deliberately](../../internals/OPTIMIZATION.md). The before/after A/B is under
+"Pending re-measurement" above.
+
+Note the shape of the row, which did not change when the lead did: `--exe`
+gains only 1.2× over interpreting, because the time is inside the runtime's own
+multiply and not in interpreting the loop around it. That is the same reason
+`arrayops` is flat under compilation, it is the honest limit of the `--exe`
+answer to performance, and it is why this row was fixable without touching the
+code generator at all.
+
+**`sortnums` was the third, and it is now a 1.2× lead the other way** — 30.4 ms
+against our 25.7 interpreted, where the previous sitting had mutsu 1.1× ahead
+at 33.7. Both engines are calling a library sort on 50,000 integers, so the row
+is mostly a measure of the two sorts; the list container's one-pass growth,
+which is where a sort's temporaries live, is what moved it. `--exe` reads
+14.3 ms.
+
+The pattern in the other direction is just as consistent. mutsu's weakest rows
+here are `strcat` (106.9 ms against our 8.1 — 13.2×, the widest gap in the
+table, and the row where our in-place `~=` append turns an O(n²) into an O(n)),
+`regex` (238.5 ms, 6.3×), `textsplit` (246.3 ms, 4.2×), `hashfill` (392.9 ms,
+3.8×), `objects` (1585.1 ms — its slowest row in the sitting, 3.3× behind our
+interpreter and 7.7× behind Rakudo), `arraypush` (3.0×) and `streq` (609.3 ms,
+2.7×). A bytecode VM removes dispatch overhead; it does not by itself make the
+string, hash, regex and object *runtimes* underneath fast, and that is where
+those kernels spend their time.
+
+**Reading the `vs interp` column:** compiling helps most where a tree-walker
+hurts — `streq` 11.8× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [internals/DISPATCH.md](../../internals/DISPATCH.md)),
+`loopsum` 6.9×, `fib` 5.8× (both re-dispatch a tiny body a huge number of
+times). `streq`'s margin has been NARROWING since lexical pads and the TARG
+slice landed — 18.1× three sittings ago, 12.6× at the last one — and that is
+the gap closing from the interpreter's side, not codegen slowing down. `fib`
+moved the other way this sitting, 4.4× → 5.8×, for the opposite reason: the
+compiled row is what changed, 85.2 → 51.3 ms with the argument-list free list
+under a kernel that is nothing but calls.
+It's a near no-op (1.0–1.8×) for the workloads whose time is spent *inside* runtime
+methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
+`bigint`, which lives almost entirely in `BigInt` multiply. There the driving
+loop is trivial, so removing interpreter overhead changes little. `objects` at
+1.5× is the interesting one in this column: compiling a method call gains about
+as much as compiling a `Rat` loop at 1.6×, which is to say the cost is in the
+dispatcher both modes share, not in the tree-walk around it.
+
+`fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
+to be the one place Rakudo led even the default `--exe`; hot-pathing integer
+arithmetic in the runtime (`applyArith`) closed that gap and put native 6.1×
+ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
+walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
+emits inline plain-`Str` byte-compares and calls builtins through pointers
+resolved once at startup; the interpreter gained a matching char-dispatched
+Str/Str fast path at the top of `applyArith` (909.7 → 562.5 ms — the remaining
+gap to Rakudo is per-node tree-walk cost, not operator dispatch).
+[internals/DISPATCH.md](../../internals/DISPATCH.md) has the measurements.
+
+#### `objects`: the one kernel Rakudo leads — and it leads both of us
+
+Five kernels landed on 2026-08-22 to close value classes the set had never
+measured: `rats` (Rational arithmetic), `objects` (`class`/`has`/method
+dispatch), `arraypush` (eager array mutation), `sortby` (`.sort` with a 1-ary
+key extractor) and `textsplit` (split into fields, reorder, rejoin — the second
+kernel with a `.pl` twin). Their first sitting was taken on an M1/Darwin 25.5
+box; the rows in the tables above are the re-measure on the M3/Darwin 24.6
+benchmarks machine, so they are now directly comparable with every other row.
+
+Four of the five are wins. `objects` is not, and it was the reason to add them:
+
+| | interp | `--exe` | mutsu | Rakudo | |
+|---|---:|---:|---:|---:|---|
+| M1 / Darwin 25.5, first sitting | 568.5 ms | 314.4 ms | — | 254.4 ms | Rakudo 2.2× |
+| M3 / Darwin 24.6, 2026-08-24    | 518.8 ms | 285.1 ms | — | 285.6 ms | Rakudo 1.8× |
+| M3 / Darwin 24.6, these tables  | 479.5 ms | 324.6 ms | 1585.1 ms | 207.2 ms | Rakudo 2.3× |
+
+The first two Rakudo cells were measured under Rosetta 2 and the third against
+a native arm64 build, so only the Raku++ columns are comparable down the table;
+the Rakudo column changes scale at the last row.
+
+**The machine was not the explanation.** The first sitting's note estimated
+that correcting for the box would narrow the gap to "roughly 1.5×"; measured
+against a native arm64 Rakudo it is **2.3×**, so the loss is real and larger
+than the correction predicted — and larger than this file reported while the
+reference was translated. Compiling does not rescue it either: `--exe` at
+324.6 ms does not reach Rakudo's *interpreter* at 207.2, the only row in these
+tables where that is true. The compiled side agrees independently — `methodcalls`
+under `-O` gains 1.0×, i.e. the optimizer has nothing to give a monomorphic
+method call yet, because it is not devirtualized.
+
+**mutsu makes the shape of this much clearer, and it is less a Raku++ defect
+than a Rakudo achievement.** The second from-scratch engine does not merely
+lose this kernel — it loses it by **7.7×** against Rakudo and by 3.3× against
+our tree-walker, its slowest row in the sitting, with the Cranelift JIT
+switched on. So the ranking on the one kernel that measures `class`/`has`/
+method dispatch is Rakudo, then Raku++, then mutsu: both engines built from
+scratch in the last year are a long way behind the mature one. That is a good
+argument that what Rakudo has here is not a small implementation advantage but
+`spesh` — type-specialising dispatch on observed types and inlining through it,
+precisely the optimisation neither newer engine has. It also means our 1.6× is
+the *closest* any from-scratch implementation currently gets, which is worth
+knowing before reading the row as a straightforward deficiency.
+
+It is still unexplained on our side. Nothing here has been profiled, and the
+honest statement remains the one the kernel was added to make: the one hot path
+never covered by a kernel is the one that turns out to be slow. `objects` is
+200k `.new` plus 300k method calls plus 500k attribute reads, and Raku++ is
+behind Rakudo on all of that.
+
+**`textsplit` is where `perl` still wins**, though by less than the first
+sitting suggested: interpreted it is 1.7× behind `perl` here (the M1 sitting
+read 3.7× raw and estimated 2.3× corrected), and compiled it is level with it.
+Set against `hashfill`, whose interpreted row is level with `perl` too,
+text munging rather than hashing is where the perl comparison is closest.
+
+**`rats` answers the question the value census left open.** Moving the `Rat`
+numerator/denominator pair behind the lazily-allocated cold block could have
+taxed a program that mass-creates short-lived `Rat`s and reads each once. That
+shape now has a kernel, in `tools/bench` and in the release gate both, and it
+runs level with Rakudo and 1.5× ahead of mutsu. The exposure was real and is small.
+
+`sortby` and `arraypush` are wins (5.8× and 2.1× over Rakudo interpreted).
+`sortby` exists to keep a win won: `.sort` with a **1-ary key extractor** is
+contractually one key call per element, and calling it inside the comparator
+instead is O(n log n) — an 18.09 s → 0.68 s fix
+([internals/OPTIMIZATION.md](../../internals/OPTIMIZATION.md)) that until now had
+no kernel standing behind it, so a regression would have been invisible.
+
+#### Startup
+
+The harness times eighteen programs in
+[`tools/bench/`](../../../tools/bench), and one of them is not a workload at all:
+[`startup.raku`](../../../tools/bench/startup.raku) is `say "Hello, World!"` and
+nothing else, so the row is process startup and almost nothing but. It has
+always been timed; it gets its own table here because it does not belong in
+the ratio-ordered tables above.
+
+| mode | startup | vs Rakudo |
+|---|---:|---:|
+| Raku++ native `--exe` | 2.7 ms | **29.3×** |
+| Raku++ interp | 3.2 ms | **24.7×** |
+| mutsu | 4.8 ms | **16.5×** |
+| Rakudo | 79.1 ms | — |
+
+A native Raku++ binary has no VM to bring up and no precompiled runtime to
+load; Rakudo's 76 ms is a fixed cost paid by every row in every table on this
+page, its own included. (It was 152.7 ms while the reference ran under Rosetta
+2 — startup was the kernel that paid the largest translation penalty, 1.84×.)
+**mutsu is in the same order of magnitude as us and not Rakudo** — 4.4 ms, so
+1.8× our compiled binary and 1.5× our interpreter, but 17.2× faster to start
+than the reference. That is the clearest
+architectural agreement between the two newer implementations: neither has a
+`CORE.setting` to load, and mutsu chose Cranelift over LLVM specifically to
+keep it that way. The gap that separates the three engines on this row is a
+design decision, not an efficiency difference. For one-liners and CLI glue that difference is the
+whole story — but note it cuts the other way as a *measurement* caveat: on the
+shortest kernels here (`strcat` at 3 ms compiled) startup is most of what is
+being timed, which is why small percentage moves on those rows are usually
+startup and not codegen.
+
+Both Raku++ rows grew ~0.3–0.6 ms when lexical pads landed on 2026-08-22 —
+laying out a pad is a fixed per-process cost — and that is recorded in the
+2026-08-22 re-snapshot notes rather than smoothed away.
+
+#### vs Perl 5: the `hashfill` kernel
+
+Perl 5 is the family yardstick for CLI-scale scripting, so one kernel ships as
+a twin pair — [`tools/bench/hashfill.raku`](../../../tools/bench/hashfill.raku)
+and [`tools/bench/hashfill.pl`](../../../tools/bench/hashfill.pl), the same
+program line for line: fill a 200k-key hash through interpolated string keys
+(`%h{"key$i"} = $i * 2`), sweep `%h.values` into an accumulator, then build a
+string with 50k `~=` appends.
+
+Measured 2026-08-31, all five engines in the same harness run (best of 6,
+startup-inclusive; the `perl` on this machine's PATH is v5.44.0), after the
+`ValueHash` payload, the `Value` shrink and lexical pads landed (see below):
+
+> **This table's `perl` reference cannot be reproduced on the box today, and
+> the rows are left at their 2026-08-31 values rather than restated.** Bare
+> `perl` here now resolves to `/opt/local/bin/perl`, **v5.34.3**, which runs
+> `hashfill.pl` in 49.2 ms against the 103.2 recorded below for v5.44.0 — a
+> different interpreter, not a faster machine, and the PATH surgery of
+> 2026-09-17 is the likely reason the resolution changed. Every ratio in this
+> section is therefore against a perl that is no longer the default one, and a
+> re-measure needs the perl named explicitly (`PERL=…`) before any of it can be
+> compared. The 2026-09-20 sitting's own reading, for the record: Raku++
+> interp 101.0 ms, `--exe` 32.5, against that v5.34.3's 49.2 — so on **this**
+> perl the interpreted row is 2.1× behind rather than level, and compiled is
+> 1.5× ahead rather than 2.7×.
+
+| engine | hashfill | vs perl |
+|---|---:|---:|
+| Raku++ `--exe` | 38.6 ms | **2.7× faster** |
+| Perl 5 | 103.2 ms | — |
+| Raku++ interp | 109.5 ms | 1.1× slower |
+| mutsu | 392.9 ms | 3.8× slower |
+| Rakudo | 284.1 ms | 2.8× slower |
+
+**mutsu lands with Rakudo on this one, not with us**, and it is the kernel
+where that is most striking: the two engines with a real garbage collector sit
+at ~280–395 ms and the two Raku++ modes at 39–110 ms. `hashfill` allocates
+200,000 interpolated string keys and sweeps them, which is exactly the shape
+that makes a collector earn its keep — and exactly the shape refcounting
+without a collector does cheaply, as long as the program makes no cycles. This
+one row is the clearest price/benefit picture of the memory-management choice
+described in the [implementations FAQ](../../guide/faq/implementations.md): we are
+much faster here and we leak cycles; they collect cycles and pay for it here.
+
+`textsplit` is the second kernel with a `.pl` twin, and it is the one perl
+still wins: 34.1 ms against Raku++'s 64.7 interpreted (1.9× behind) and 38.7
+compiled (1.1× behind) at this sitting, and against the 58.0 and 34.6 of the
+2026-09-03 tables above it is 1.7× behind interpreted and level compiled.
+mutsu runs it in 246.3 ms — 7.2× behind perl, and the only engine here that
+Rakudo (184.5 ms, 5.4× behind) is within hailing distance of. Two twins now
+disagree about where the perl comparison stands, which is more informative
+than one agreeing with itself — hashing is level, text munging is not.
+
+The interpreted row is the one to watch: it was 1.6× slower than perl on
+2026-08-21, within 10% on 2026-08-24, and 6% off it at this sitting; the
+2026-09-03 tables above take it to level — 103.2 ms against the 103.2 measured
+for `perl` here, which that later sitting reproduced within 2%. It is a kernel
+built out of exactly the things a scripting language is asked to do —
+interpolated hash keys, a values sweep, and 50k string appends.
+
+Replacing the hash payload's `std::map` with `ValueHash` — an insertion-ordered
+open hash with the key's hash stored, in the perl mold
+([PERL5-TECHNIQUES.md](engines/PERL5-TECHNIQUES.md)) — is what put the
+compiled row ahead of perl. The `hash` kernel moved the same way; the non-hash
+kernels are unchanged within noise.
+
+The harness's `native` column compiles with plain `--exe`; the `-O` codegen
+passes widen the margin further. The full mode ladder below is from the
+2026-08-21 sitting, taken before the `Value` shrink — its absolute rows are
+superseded by the 2026-09-03 kernel tables (plain `--exe` is 35.6 ms there, not
+51.5), so read it for the ordering between the modes, not for the milliseconds
+(best of 5, spawn-inclusive, same machine state throughout, every mode
+byte-identical with perl before timing):
+
+| mode | hashfill | vs perl |
+|---|---:|---:|
+| `--exe -O3` | 47.0 ms | **2.1× faster** |
+| `--exe -O` | 48.2 ms | **2.1× faster** |
+| `--exe` | 51.5 ms | **2.0× faster** |
+| Perl 5 | 100.5 ms | — |
+| interp | 167.2 ms | 1.7× slower |
+
+The row exists because this workload was the measured weak spot: before the
+2026-08-21 change, the native binary spent twice perl's CPU time on it (0.15 s
+vs 0.07 s, timing the program directly). Three fixes closed that: `%h.values`
+(and `.keys`/`.kv`/`.pairs`/`.antipairs`) no longer snapshots the whole hash
+into a Pair list it then discards; assigning a freshly built list into an
+`@`-array steals the list's uniquely-owned buffer instead of copying it
+element-wise; and compiled string interpolation emits literal parts as C
+strings instead of constructing a `Value` per part per evaluation. After them
+the native binary leads perl on both clocks on this machine — 0.06 s of CPU
+against perl's 0.08 s, 0.07 s of wall clock against 0.09 s (timing the
+programs directly, outside the harness).
+
+#### `-O` (the optimizer flag)
+
+The `native` column above is the default `--exe`. Adding **`-O`** enables three
+speculative codegen passes:
+
+1. **direct-arity calls** — a fixed-arity positional sub gets direct `Value`
+   parameters (plus a boxed adapter), skipping the per-call `ValueList` heap
+   allocation;
+2. **inline arithmetic & comparisons** — `+ - * ** % %% < <= > >= == !=` emit
+   inline helpers that do the small-int case as native `int64` (overflow
+   promotes to bignum), and `eq ne lt gt le ge` do the plain-`Str` case as a
+   byte-compare, instead of the string-dispatched `applyArith`;
+3. **guarded native-int expression lanes** — statement-position int assignments
+   (`$x = …`, `$x += …`, `$x++`) and int conditions compute in raw `int64` with
+   runtime tag guards and store into the target's existing box, constructing no
+   `Value` at all; any guard/overflow failure re-runs the boxed form.
+
+(In-place `~=` string building is *not* one of these — it is now the default in
+both the interpreter and `--exe`.) Measured by
+[`tools/run-optbench.raku`](../../../tools/run-optbench.raku) on five showcase kernels
+written to exercise the passes (each program is verified to produce identical
+output all four ways — interp, `--exe`, `--exe -O` and Rakudo as the oracle —
+before timing). Re-measured 2026-09-20 at `v4.0.1-84-ga4291988`, one harness pass, best of 5
+within it, on the same idle box as the kernel tables above; Rakudo v2026.08
+shown for reference:
+
+| Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
+|---|---:|---:|---:|---:|---|
+| sieve       | 792.6 ms | **21.3 ms** | **37.3×** | 1624.3 ms | primes < 200k by trial division — `* <= %%` all laned |
+| intsum      | 106.0 ms | **3.9 ms** | **27.5×** | 782.4 ms | 5M int accumulation — `+=` lane, zero boxing |
+| powmod      | 490.1 ms | **19.3 ms** | **25.4×** | 527.3 ms | 1M `** 3` then `% 1000` — inline pow + mod lane |
+| fibcalls    | 200.3 ms | **61.8 ms** | **3.2×** | 1164.3 ms | fib(32) — direct-arity calls + int-lane condition |
+| arrayidx    | 89.2 ms | **46.1 ms** | **1.9×** | 902.9 ms | 2M `@a[$i]` read-modify-write — no element lane yet |
+| nummath     | 168.0 ms | 145.5 ms | 1.2× | 655.9 ms | Mandelbrot escape count — `Num` math, and the F64 lane does not reach this shape |
+| methodcalls | 128.2 ms | 110.4 ms | 1.2× | 347.7 ms | 1M monomorphic method calls — not devirtualized yet |
+| stringbuild | 5.9 ms | 5.8 ms | 1.0× | 147.5 ms | 400k `~=` appends — in-place O(n) string build |
+| bigmul      | 12.4 ms | 12.3 ms | 1.0× | 795.5 ms | 10000! by `*=` — the bignum compound-assign lane, no `-O` route |
+
+**The bottom three rows are the honest end of the table.** `arrayidx`,
+`nummath` and `methodcalls` were added on 2026-08-22 to name what `-O` does
+*not* do yet: there is no element lane for indexed array access, no lane that
+reaches this shape of `Num` math, and no devirtualization of a monomorphic
+method call. `methodcalls` gaining 1.2× is the compiled-side counterpart of the
+`objects` row in the kernel tables — the optimizer has little to give a method
+call, which is exactly why that kernel is the slowest of ours.
+
+**`nummath` is the row to argue with.**
+[UNBOX-PLAN.md](../plans/UNBOX-PLAN.md) records a floating-point lane
+landing on 2026-09-19 — the first this compiler has ever had — with a 67.7×
+probe on a "300×260 Mandelbrot, `Num` throughout" and a worked row putting a
+1200×1040 Mandelbrot at 40 ms under `--exe -O`. `nummath` *is* a Mandelbrot
+escape count, `Num` throughout, and it gains **1.2×**, which is what it scored
+before that lane existed. The obvious suspect is not the cause: a variant with
+every `my` hoisted out of both loops — so each slot is a candidate for the
+whole loop — compiles, prints the same answer and times identically at
+145 ms. So the lane is real and the kernel's shape does not reach it; which
+gate rejects it is open. Until that is answered, read this row as the measure
+of what `-O` reaches, and UNBOX-PLAN's numbers as the measure of what the lane
+does where it fires.
+
+_Against the previous sitting of this table (2026-08-24), plain `--exe`
+improved on every row and by a lot on three — `fibcalls` 344.4 → 200.3 ms,
+`methodcalls` 200.9 → 128.2, `powmod` 670.1 → 490.1. The story of the sitting
+is `intsum`, whose `-O` row went **16.7 → 3.9 ms** and its gain 6.6× → 27.5×:
+that is the integer unboxing lane landing, worth 4.3× on top of what `-O`
+already did. The gain column moved both ways, as it does whenever both of its
+columns move — `powmod` fell 32.8× → 25.4× and `fibcalls` 5.3× → 3.2× while
+both got faster in milliseconds. Read the milliseconds first._
+
+The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
+<= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a 2.0× lead
+at plain `--exe` (792.6 against Rakudo's 1624.3 ms) to **76×** ahead, and
+`intsum` shed its four per-iteration `Value` constructions — which, since the
+unboxing pass, means 3.9 ms against Rakudo's 782.4, a **201×** lead and the
+widest single figure anywhere in this file. The figures for
+`-O` on the main kernels above — fib 27.3 ms, loopsum 7.1 ms, streq 14.5 ms
+(the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`) — are from an
+earlier sitting and have not been re-measured with this table.
+`stringbuild` gains nothing because in-place append is already the default
+everywhere. It's opt-in, off by default, and produces identical output
+(validated per-program before timing, plus every deterministic example against
+its golden). See [OPTIMIZATION.md](../../internals/OPTIMIZATION.md) for what each pass emits
+and the C++ optimization-level forwarding (`-O3`/`-Os`/`-Ofast`).
+
+#### Real-world: grammar parsing (YAMLish)
+
+The benchmarks above are small kernels. This one is a whole real module doing
+real work: the zef-installed **YAMLish** grammar (unmodified) parsing the Raku
+course's table-of-contents YAML (`_data/toc/en.yaml`, 2576 lines) with
+`load-yamls`. It exercises the backtracking grammar engine — subrules, LTM `|`,
+lookbehind assertions, `:my` side-effects, indentation-parameterised rules, and
+action-method tree building — against the same source under both engines.
+
+Best of 5 runs, wall-clock (`time`), lower is better.
+
+| Workload | Raku++ (interp) | Rakudo | Faster |
+|---|---:|---:|---|
+| load-yamls, one parse per process | 0.54 s | 0.98 s | **Raku++ 1.8×** |
+| load-yamls, 10 parses in-process   | 5.48 s | 6.43 s | **Raku++ 1.2×** |
+
+The single-parse figure is the realistic one — `raku-pages.raku` (the course
+generator) reads the TOC once per invocation, and Raku++ regenerates the entire
+1,483-page course byte-for-byte identically to Rakudo. The gap narrows for
+repeated in-process parses because each `load-yamls` rebuilds and recompiles the
+grammar, so grammar-construction cost isn't amortised across calls; the
+per-parse matching itself is where Raku++'s lead comes from. Getting here took
+targeted work on the match engine — bounding the lookbehind scan window (the
+grammar had an O(N²) start-position rescan), caching per-rule name resolution on
+the compiled AST, resolving tail-position `return` without a C++ exception, and
+non-owning match continuations. An earlier build of this same parse took ~195 s;
+that was an unbounded lookbehind scan on a document this large.
+
+### Parallel scaling (the default since v3.0.0)
+
+`tools/bench/parmap.raku` is the scaling kernel the v3 parallelism campaign
+gated on ([PARALLEL-PLAN.md](../plans/PARALLEL-PLAN.md)): an
+embarrassingly parallel map — each `start` block sums squares over its own
+range, no sharing — with the **total work held constant** while the worker
+count varies. Re-measured 2026-08-09 at the v3.0.0 flip (no env var — this
+is the shipping default now) on the 8-core (4P+4E) reference machine:
+
+| workers | wall | speed-up | at 2026-08-08 |
+|---:|---:|---:|---:|
+| 1 | 996 ms | 1.00× | 1.00× |
+| 2 | 494 ms | 2.02× | 1.86× |
+| 4 | 258 ms | 3.86× | 2.96× |
+| 8 | 192 ms | 5.19× | 3.62× |
+
+The right-hand column is the same kernel one day earlier: the campaign's
+final lock work — the thread-safe worker registry, per-supplier mutexes off
+the shared stripe pool, channel workers that no longer hold or spin on the
+GIL, daemon teardown — bought the difference (3.62× → 5.19× at 8 workers)
+with no change to the kernel. Two honest notes stand. The 8-worker row
+spills onto the efficiency cores, so the marginal gain past 4 full-speed
+cores stays sub-linear — exactly as [ASYNC.md](../../guide/ASYNC.md) advises
+when sizing a fan-out. And the single-thread row is the same speed as GIL
+mode (996 vs 1005 ms measured at the flip): the safety machinery engages
+only while workers are actually live, so a single-threaded program pays a
+few predicted branches and nothing else.
+
+### How to read this
+
+- **The short kernels are startup-inclusive — read them that way.** Every row is
+  a fresh spawn, so each engine's process startup is part of its time. Rakudo
+  loads a full precompiled runtime once per run, a fixed cost that dominates its
+  number on the fastest kernels — so those multipliers are *not* a pure
+  execution-speed comparison. The compute-heavy `-O` kernels and the in-process
+  YAMLish parse (10 parses in one process) are the execution-only picture.
+  Raku++'s own ~2 ms start is a real convenience for scripts, editor tooling, and
+  shelling out in a loop, but it's a convenience, not an execution-speed claim.
+- **Interpreter throughput losses are real, and `--exe` addresses them.** A
+  tree-walker re-dispatches every AST node on every execution; compiling to
+  native code removes that, which is why `loopsum`/`fib` catch or pass Rakudo.
+  What compiling *can't* speed up is time spent inside the runtime's own methods
+  — matching Rakudo there would mean optimizing (or JIT-ing) those, which is
+  further out on the [roadmap](../../status/ROADMAP.md).
+- **This says nothing about coverage.** Rakudo runs essentially all of Roast;
+  Raku++ runs a growing fraction. These benchmarks deliberately use only the
+  overlap. Speed on a subset is not parity — it's just a fair snapshot of the
+  engine's execution model.
+
+### Reproducing
+
+```sh
+./build-arm64/rakupp tools/run-bench.raku    # checks every engine agrees, then times them
+```
+
+The harness compiles each program with `--exe` for the native column; the
+benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
+freely).
+
+The **mutsu** lane is optional and auto-discovered — `$MUTSU`, then `mutsu` on
+`PATH`, then `$HOME/mutsu/target/release/mutsu`. Without one the column reads
+`—` and no other lane changes, so this command reproduces the Raku++ and Rakudo
+rows anywhere. To reproduce the mutsu rows, build it from source and check the
+architecture matches your host before believing the numbers:
+
+```sh
+cargo build --release && file target/release/mutsu
+```
+
+The same check applies to **Rakudo**, which the harness does not verify — its
+arch guard inspects `$RAKUPP` only. On Apple Silicon an Intel Homebrew Rakudo
+runs under Rosetta 2 at a per-kernel cost of 1.0–1.8× (figures in the
+methodology), and `rakudo --version` does not report the architecture:
+
+```sh
+file $(which rakudo)               # want: Mach-O 64-bit executable arm64
+rakudo -e 'say $*KERNEL.hardware'  # want: arm64 — reads x86_64 when translated
+```
+
+_**2026-09-20 re-snapshot at `v4.0.1-84-ga4291988`** (705 / 1,464 Roast files
+fully passing) — the quiet-machine sitting the header note had been asking for
+since the unboxing pass landed, and the first to re-measure the `-O` ladder
+since 2026-08-24. Every table above is this run: three interleaved passes for
+the kernels, best of 5 within one pass for `-O`, minimum across passes, on
+Darwin 27.0.0 / M3. Two things make it unlike the previous two sittings._
+
+_**The box was actually idle, and it showed.** Median within ~1% of minimum on
+every kernel; three passes agreeing to within 4.6% everywhere but `startup`
+(9.4%, one timer tick at 3 ms); the Rakudo lane holding 216.1–218.8 ms on
+`loopsum` across six invocations spanning an hour._
+
+_**The reference lanes were therefore not carried forward.** mutsu — the same
+0.23.0 binary at `a093272`, nothing changed underneath it — read 20–30% below
+its committed column on `regex`, `objects`, `multiwhere` and `textsplit`, and
+Rakudo's `multiwhere` read 252.0 against a committed 357.4. An unchanged engine
+cannot get 30% faster, so those columns had been measuring the load on the box
+rather than the engine, and this sitting replaces them. Rakudo was measured
+against the homebrew arm64 bottle, there being no from-source build left here;
+it landed within ±3.6% of the from-source column on fifteen of sixteen kernels,
+so the substitution is visible in the methodology but not in the trend._
+
+_On our own side, 84 commits of slab, pool and dispatch work moved the
+interpreter −24% (`rats`) to +3% (`strcat`) and the compiled lane −29% to +6%.
+`fib`, `streq` and `rats` crossed from level into leads; `objects` compiled
+crossed ahead of Rakudo. `mainwhen` joined the tables from the perf gate, and
+the five release artifacts re-run the same evening show why it was worth
+promoting: flat at 191–198 ms interpreted from v3.26.0 through v4.0.1, then
+80.5 now._
+
+_Snapshot taken 2026-07-22 with Raku++ 1.0.0 at 583 / 1,462 Roast files fully
+passing, on Darwin 24.6 against Rakudo v2026.06 (kernels: best of 6 harness
+runs; `-O` kernels: best of 5; YAMLish: best of 5, re-measured). The YAMLish
+rows drifted ~8% slower than the 2026-07-20 snapshot (0.50→0.54 s single
+parse) — snapshot-binary bisect shows the cost accreted gradually across the
+90%-campaign legs (5.06 s → 5.21 s → 5.50 s on the 10-parse row, Jul 15 → 19 →
+22), spread over the parse/regex hot paths rather than one change; profiling
+shows no single new hotspot. Tracked as a post-1.0 item._
+
+_**v1.1.0 (2026-07-24) re-run** (598 / 1,462 files fully passing): the
+release-gate benchmark pass found **no regression**. All engines produced
+identical output, and every engine-vs-engine ratio held within a hair of the
+1.0.0 snapshot (strcat 14.1× vs 14.4×, hash 5.7× vs 6.0×, loopsum 1.3× vs 1.4×,
+fib Rakudo-1.9× vs 1.8×). Absolute wall-clock ran ~5% higher uniformly, but the
+measurement machine had heavy background load at the time (macOS `photoanalysisd`
+pegged near 85% of a core, load-avg ~3), which inflates every row equally and
+leaves the ratios intact — so the pristine 1.0.0 absolute numbers above are
+retained pending a quiet-machine re-snapshot. The typed-blob / `.lines` /
+`signal()` / module work in v1.1.0 does not touch these kernels' hot paths._
+
+_**2026-07-29 re-snapshot** (625 / 1,462 files fully passing) — the quiet-machine
+re-measure the v1.1.0 note was waiting for. The tables above are this run. It
+also settles what that note left open: there **is** a real interpreter
+regression since 1.0.0, and it is not measurement noise. Rakudo, measured the
+same evening, is the yardstick and barely moved (fib 465.1 → 465.5 ms, hash
+231.0 → 226.5), while the interpreter slowed:_
+
+| perf-guard kernel | v1.0.0 (Jul 22) | 2026-07-29 | |
+|---|---:|---:|---:|
+| fib     | 816.3 ms | 911.0 ms | **+11.6%** |
+| asg     | 502.0 ms | 527.7 ms | +5.1% |
+| loopsum | 194.4 ms | 205.2 ms | +5.6% |
+| hash    |  39.7 ms |  40.3 ms | +1.5% |
+
+_Measured by running `tools/perf-guard.raku` against the installed 1.0.0 binary
+and against HEAD on the same idle machine, minutes apart. The cost is **not** in
+the v1.2.x conformance work of 2026-07-28/29: a binary kept from the start of
+that session reads 907.8 ms on `fib`, within noise of HEAD's 911.0, so the
+regression predates it and accreted somewhere across the v1.2.x cycle. Same
+shape as the parse-time drift recorded above — gradual, spread across the
+dispatch path, no single new hotspot. Not yet bisected; the snapshot binaries
+that would localise it are the next step._
+
+_**Post-campaign re-run.** The tables above are this run. Three interpreter
+changes landed — see [dev/experiments/PERF-CAMPAIGN.md](../experiments/PERF-CAMPAIGN.md): the method
+invocant passes by const reference, `Env`'s rarely-used containers moved behind a
+lazy pointer, and a call's argument vector is MOVED rather than copied._
+
+| kernel | before campaign | after | |
+|---|---:|---:|---:|
+| fib | 903.3 ms | 744.1 ms | **−17.6%** |
+| streq | 547.2 ms | 509.6 ms | −6.9% |
+| strcat | 13.5 ms | 12.3 ms | −8.9% |
+| hash | 41.0 ms | 38.0 ms | −7.3% |
+| loopsum | 206.0 ms | 197.3 ms | −4.2% |
+
+_`fib` is the call-heavy kernel and moves most — of that, roughly 9 points came
+from the argument-vector move alone. `sortnums` (+2.5%) drifts the other way,
+inside the ±3% the Rakudo column itself shows across these runs._
+
+_The compiled (`--exe`) column is unaffected — `fib` 161.7 → 152.8 ms, `strcat`
+4.4 → 3.9 — which fits a regression in interpreter dispatch rather than in the
+runtime both modes share._
+
+_**2026-07-31 re-snapshot** — the tables above are this run, all three engines
+measured within the same hour. It follows the interpreter **node
+specialization** described in [internals/NODE-SPECIALIZATION.md](../../internals/NODE-SPECIALIZATION.md):
+fast paths in `evalBinary`/`evalIndex` for `$a OP $b`, `$n OP literal` and
+`@a[$i]`, which read variables by pointer instead of copying a 376-byte `Value`
+and skip probes that cannot apply to plain scalars._
+
+_Read the **ratios**, not the absolute times. This machine measured ~4–7% slower
+across the board than the 2026-07-29 snapshot — Rakudo, which is unaffected by
+anything we changed, moved with it (`fib` 456.9 → 482.4 ms, `hash` 226.3 →
+235.0, `regex` 278.8 → 298.9) — so absolute rows shifted for reasons that have
+nothing to do with the change. Against the previous binary, measured directly
+and alternating on the same machine:_
+
+| benchmark | before | after | |
+|---|---:|---:|---:|
+| streq | 538.2 ms | 455.6 ms | **−15.4%** |
+| fib | 781.2 ms | 683.1 ms | **−12.5%** |
+| arrayops | 124.1 ms | 121.8 ms | −1.8% |
+| strcat | 16.6 ms | 16.5 ms | −0.5% |
+| regex | 94.1 ms | 93.7 ms | −0.5% |
+| loopsum | 211.7 ms | 210.9 ms | −0.4% |
+
+_So the two rows Rakudo led both narrowed — `fib` 1.6× → 1.4×, `streq` 1.7× →
+1.5× — and everything else is unchanged, which is expected: `strcat` and `regex`
+spend their time inside runtime methods and string building, not in the operator
+shapes the fast paths cover. The `--exe` columns are unchanged by this work
+(codegen already kept variables in C++ locals); their movement here is the same
+machine drift. The `-O` table was not re-measured this round._
+
+_**2026-08-21 re-snapshot (v3.6.0)** — the tables above are this run: two
+harness passes on the release binary, all engines byte-identical first,
+Darwin 24.6 / Apple Silicon, the same machine as every earlier revision.
+Rakudo is v2026.07 (was v2026.06). `hashfill` joins both tables as the tenth
+kernel — the one with a Perl 5 twin (its own section above carries the perl
+column and the `-O` mode ladder). Against 2026-08-11: every kernel faster
+except `regex`, which regressed 28% interpreted and is flagged under the
+interpreter table; `loopsum` stays a Raku++ interpreter win; compiled
+`hashfill` now leads perl 5 rather than trailing it._
+
+_**On the superseded 2026-08-21 sitting.** An earlier revision of this file
+(commit `6239215`) carried a sitting taken on a second machine — Darwin 25.5
+— which drew every dashboard series sharply upward. Those rows are not a
+machine-speed difference and were replaced, not merged: in that sitting
+`perl` (81.8 vs 90.1 ms) and Rakudo (`strcat` 123.8 vs 172.2 ms) were as fast
+or **faster** than here, while every Raku++ row was 1.3–1.5× **slower** — a
+handicap that lands on our binary alone. The arch guard in
+[`tools/run-bench.raku`](../../../tools/run-bench.raku) cannot catch this case:
+it reads `file -b`, and a universal binary's description contains `arm64`
+whichever slice actually executes. The `hashfill` backfill in the dashboard's
+`bench-backfill.tsv` was measured in that same sitting off
+`rakupp-macos-universal` artifacts and carries the same doubt._
+
+_**2026-08-22 re-snapshot (`v3.6.0-8-g56de2be`)** — the tables above are this
+run: three harness passes on the benchmarks machine (Darwin 24.6, Apple M3),
+minimum across all three, all engines byte-identical before timing. Two
+commits landed since the v3.6.0 sitting — the regex compile cache plus the
+128-bit byteset mask (`1a14c23`), and `Value` shrinking from 344 to 200 bytes
+by moving the cold fields behind a lazy block (`56de2be`). Against the
+2026-08-21 rows:_
+
+| kernel | interp 08-21 → 08-22 | | `--exe` 08-21 → 08-22 | |
+|---|---:|---:|---:|---:|
+| regex    | 113.4 → 44.8 ms | **−60%** | 79.8 → 23.8 ms  | **−70%** |
+| sortnums |  53.2 → 38.8 ms | **−27%** | 35.0 → 23.4 ms  | **−33%** |
+| arrayops | 102.4 → 78.4 ms | **−23%** | 102.6 → 78.5 ms | **−23%** |
+| loopsum  | 199.6 → 192.9 ms | −3%     | 26.5 → 17.0 ms  | **−36%** |
+| streq    | 462.5 → 416.1 ms | −10%    | 44.5 → 32.4 ms  | **−27%** |
+| fib      | 532.6 → 506.0 ms | −5%     | 150.7 → 106.1 ms | **−30%** |
+| hashfill | 178.0 → 161.4 ms | −9%     | 63.7 → 50.4 ms  | **−21%** |
+| hash     |  30.1 → 28.3 ms | −6%      | 10.2 → 8.1 ms   | **−21%** |
+| strcat   |  14.8 → 14.5 ms | −2%      | 2.9 → 2.7 ms    | −7% |
+| bigint   |  30.7 → 32.6 ms | +6%      | 29.3 → 29.7 ms  | +1% |
+
+_Read the deltas knowing the reference engines moved the other way in this
+sitting: Rakudo is 4–7% **slower** here than on 2026-08-21 on every kernel
+(`fib` 443.3 → 459.0, `hash` 213.5 → 222.4, `hashfill` 418.8 → 455.0) and
+`perl` likewise (95.5 → 103.9). The desktop was not fully idle — the same
+ambient load sits on the Raku++ rows too, so the drops above are, if anything,
+understated. `regex` is the one row where a specific fix is being measured;
+the broad `--exe` movement follows the `Value` shrink. `bigint`, whose time is
+almost entirely inside `BigInt` multiply, is the one kernel that drifts the
+wrong way, within the noise the Rakudo column itself shows._
+
+_**2026-08-22 re-snapshot, second sitting of the day (`v3.6.0-12-g363c4b6`)** —
+the tables above are this run: three harness passes on the benchmarks machine
+(Darwin 24.6, Apple M3), minimum across all three, all engines byte-identical
+before timing. One commit landed since the sitting above — `363c4b6`, `Value`
+dropping from 200 to 128 bytes as five payload pointers collapse into one
+tagged slot. Against the earlier 2026-08-22 rows:_
+
+| kernel | interp 08-22a → 08-22b | | `--exe` 08-22a → 08-22b | |
+|---|---:|---:|---:|---:|
+| arrayops |  78.4 → 65.7 ms | **−16%** | 78.5 → 64.8 ms | **−17%** |
+| sortnums |  38.8 → 33.6 ms | **−13%** | 23.4 → 18.5 ms | **−21%** |
+| hashfill | 161.4 → 142.0 ms | **−12%** | 50.4 → 38.1 ms | **−24%** |
+| streq    | 416.1 → 369.5 ms | **−11%** | 32.4 → 20.4 ms | **−37%** |
+| hash     |  28.3 → 25.2 ms | **−11%** | 8.1 → 6.9 ms   | **−15%** |
+| fib      | 506.0 → 456.7 ms | **−10%** | 106.1 → 85.1 ms | **−20%** |
+| strcat   |  14.5 → 13.3 ms | −8%      | 2.7 → 2.6 ms   | −4% |
+| loopsum  | 192.9 → 178.4 ms | −8%     | 17.0 → 13.3 ms | **−22%** |
+| bigint   |  32.6 → 31.2 ms | −4%      | 29.7 → 30.2 ms | +2% |
+| regex    |  44.8 → 43.4 ms | −3%      | 23.8 → 24.6 ms | +3% |
+
+_The reference engines say this one is the code, not the machine: Rakudo moved
+by at most 1.6% on any kernel between the two sittings (`fib` 459.0 → 459.2,
+`hash` 222.4 → 222.9, `hashfill` 455.0 → 454.2) and `perl` by 2.8% (103.9 →
+106.8, i.e. the *wrong* way), while all ten Raku++ interpreter rows dropped
+(3–16%) and eight of the ten compiled rows dropped (4–37%). A smaller `Value` is a cache-footprint change, so
+the kernels that move most are the ones that hold many live values at once —
+`arrayops`, `sortnums`, `hashfill` — and `bigint`/`regex`, whose time sits
+inside one runtime routine, sit still (their +2/+3% on the `--exe` side is
+inside the spread the three passes themselves showed). `fib` interpreted
+crossed Rakudo in this sitting: 456.7 vs 459.2 ms, which the tables call level
+rather than a win. `tools/perf-guard.raku --check` is green against the
+v3.14.0 baseline with 8–30% of headroom on all seven gated kernels._
+
+_**2026-08-22 re-snapshot, third sitting of the day (`v3.6.0-19-g4c0e80b`)** —
+the tables above are this run: three harness passes on the benchmarks machine
+(Darwin 24.6, Apple M3, Apple clang 17.0.0), minimum across all three, engines
+interleaved within each round, all byte-identical before timing. The commit
+that matters is `d1e9082`, lexical pads: a `my` that a resolution pass can
+prove is dominated by its declaration is read and written by frame slot — one
+load, no hashing, no scope-chain walk — and a flat loop keeps one scope instead
+of building a fresh one per iteration. Against the sitting above:_
+
+| kernel | interp 08-22b → 08-22c | | `--exe` 08-22b → 08-22c | |
+|---|---:|---:|---:|---:|
+| loopsum  | 178.4 → 105.2 ms | **−41%** | 13.3 → 13.9 ms | +5% |
+| hash     |  25.2 → 18.1 ms | **−28%**  | 6.9 → 7.3 ms   | +6% |
+| strcat   |  13.3 → 9.6 ms  | **−28%**  | 2.6 → 2.9 ms   | +12% |
+| hashfill | 142.0 → 111.9 ms | **−21%** | 38.1 → 37.2 ms | −2% |
+| streq    | 369.5 → 312.2 ms | **−16%** | 20.4 → 20.3 ms | −1% |
+| regex    |  43.4 → 39.8 ms | −8%       | 24.6 → 24.9 ms | +1% |
+| fib      | 456.7 → 420.9 ms | −8%      | 85.1 → 85.8 ms | +1% |
+| bigint   |  31.2 → 31.6 ms | +1%       | 30.2 → 30.7 ms | +2% |
+| sortnums |  33.6 → 33.8 ms | +1%       | 18.5 → 18.9 ms | +2% |
+| arrayops |  65.7 → 65.4 ms | −0%       | 64.8 → 64.0 ms | −1% |
+
+_The shape is exactly what a variable-access change should draw, which is the
+best evidence that it is one. Everything that spends its time **touching
+variables** moves hard — `loopsum`, `hash`, `strcat`, `hashfill` — and
+everything whose time sits **inside one runtime method** does not move at all:
+`arrayops` (`.grep`/`.map`), `sortnums` (`.sort`) and `bigint` (`BigInt`
+multiply) are flat to within 2%. The `--exe` column is flat by construction:
+codegen already kept variables in C++ locals, so there was nothing there for
+pads to win._
+
+_The `+1` to `+12%` on the small `--exe` rows is **startup**, not codegen.
+Interpreted startup went 2.2 → 2.8 ms and native 2.1 → 2.4 ms — laying out a
+pad is a fixed per-process cost — and every native row here includes process
+startup, so the shortest ones (`strcat` at 2.9 ms, `hash` at 7.3 ms) show that
+0.3 ms as a percentage. It is a real cost and it is recorded rather than
+absorbed; on any kernel that runs longer than a few milliseconds it is repaid
+many times over._
+
+_Reference engines: Rakudo moved by at most 1.2% on any kernel and `perl` is
+4.5% **faster** here (106.8 → 102.0 ms), so the machine was, if anything,
+slightly better this sitting — which understates nothing but does mean the
+interpreter drops of 16–41% are not a fast-box artefact.
+`tools/perf-guard.raku --check` is green against the v3.14.0 baseline with
+17–51% of headroom: `hash` −50.8%, `loopsum` −46.5%, `fib` −35.4%, `asg`
+−34.2%. Two rows crossed in this sitting — interpreted `fib` is a Raku++ win
+at 1.1× rather than the tie it was that morning, and interpreted `hashfill` is
+within 10% of `perl`._
+
+_**2026-08-22 re-snapshot, fourth sitting of the day (`v3.6.0-19-gbbd1249`)** —
+the tables above are this run: three harness passes on the benchmarks machine
+(Darwin 24.6, Apple M3, Apple clang 17.0.0), minimum across all three, engines
+interleaved within each round, all byte-identical before timing. The commit is
+`bbd1249`, the TARG plan's first slice: a plain `$padvar = EXPR` carries a
+decided-once verdict and skips the whole of `evalAssign`'s shape ceremony, and
+the fast arithmetic shapes read the pad directly. Against the sitting above:_
+
+| kernel | interp pads → TARG | | `--exe` pads → TARG | |
+|---|---:|---:|---:|---:|
+| streq    | 312.2 → 248.4 ms | **−20%** | 20.3 → 20.4 ms | +1% |
+| fib      | 420.9 → 394.1 ms | **−6%**  | 85.8 → 85.8 ms | ±0% |
+| arrayops |  65.4 → 64.9 ms  | −1%      | 64.0 → 65.0 ms | +2% |
+| regex    |  39.8 → 39.7 ms  | −0%      | 24.9 → 25.1 ms | +1% |
+| bigint   |  31.6 → 31.5 ms  | −0%      | 30.7 → 31.6 ms | +3% |
+| hash     |  18.1 → 18.2 ms  | +1%      | 7.3 → 7.2 ms   | −1% |
+| hashfill | 111.9 → 112.9 ms | +1%      | 37.2 → 37.4 ms | +1% |
+| sortnums |  33.8 → 34.1 ms  | +1%      | 18.9 → 18.8 ms | −1% |
+| strcat   |   9.6 → 9.7 ms   | +1%      | 2.9 → 3.1 ms   | +7% |
+| loopsum  | 105.2 → 107.6 ms | **+2%**  | 13.9 → 13.9 ms | ±0% |
+
+_**The kernel this commit targets is not in this table.** `asg` — a tight loop
+of scalar assignments — lives in `tools/perf-baseline.raku`, the release gate,
+and it is where the slice lands: 294.3 → 171.4 ms, **−42%**, matching the
+commit's own claim. The gate's string kernels move with it (`strscan` 155.5 →
+136.6, −12%; `strpass` 113.1 → 97.5, −14%), which is what put `streq` −20% in
+the table above. `perf-guard --check` is green with 19–62% of headroom on all
+seven kernels: `asg` −61.7% against the v3.14.0 baseline, `hash` −50.8%,
+`loopsum` −45.7%, `fib` −38.1%._
+
+_**`streq` crossed.** Interpreted, it is 248.4 ms against Rakudo's 284.3 — the
+last of the ten kernels Rakudo held, and the second to fall in one day after
+`fib`. The tree-walker now leads on all ten. Both new margins are thin (1.1×,
+1.2×) and the tables say so rather than calling them wins._
+
+_**`loopsum` is the one row that moved the wrong way**, +2% interpreted (105.2
+→ 107.6 ms), and it is recorded rather than rounded away: the three passes here
+read 107.6/107.6/109.0 against 105.2/105.3/105.4 in the previous sitting, so
+the two do not overlap, and `perf-guard` sees the same +1.4% on its own copy of
+the kernel. It is small next to `asg` −42% and within the gate's tolerance, but
+it is a real cost of the new lane and should be looked at if it grows._
+
+_Reference engines: Rakudo moved by at most 1.6% on any kernel and `perl` by
+2%, so nothing here is a machine effect. The `--exe` column is flat, as it has
+been for both interpreter changes — codegen already kept variables in C++
+locals. The `+7%` on native `strcat` is 0.2 ms on a 3 ms kernel that is mostly
+process startup._
+
+_**2026-08-22, fifth sitting (`v3.6.0-36-g9dfc982`) — the five new kernels fold
+in.** Three harness passes on the benchmarks machine (Darwin 24.6, Apple M3,
+Apple clang 17.0.0), minimum across all three, engines interleaved, all
+byte-identical before timing; three passes of `run-optbench.raku` likewise.
+This is the sitting the previous revision's checklist asked for, and it
+replaces the separately-tabled M1/Darwin 25.5 rows: `rats`, `objects`,
+`arraypush`, `sortby` and `textsplit` are now in the two main tables, and
+`arrayidx`, `nummath` and `methodcalls` in the `-O` table._
+
+_**The `objects` finding survived the re-measure, which was the point of it.**
+The first sitting read Rakudo 2.2× ahead and estimated ~1.5× once the box was
+corrected for; the direct M3 measurement reads **1.8×**, between the two and
+closer to the raw figure. Compiled `--exe` (291.3 ms) is level with Rakudo's
+interpreter (287.5). `methodcalls` gaining 1.0× under `-O` says the same thing
+from the compiled side._
+
+_The ten established kernels barely moved against the `bbd1249` sitting — all
+within ±2% except `loopsum` (107.6 → 97.2 ms, −10%), `strcat` (−6%) and `fib`
+(−5%), which is the dozen commits since. **`streq` went the other way, +2.9%**
+(248.4 → 255.5 ms) with Rakudo flat at 283.4, so the crossing there is thinner
+than it was: 1.1× and worth watching rather than banking._
+
+_The gate: `perf-guard --check` green before anything was re-recorded, every
+one of the seven recorded kernels 33–62% faster than the v3.14.0 baseline
+(`asg` −61.9%, `loopsum` −49.4%, `hash` −48.9%), and `rats` correctly reported
+as "not gated" rather than dividing by a missing baseline._
+
+_**2026-08-24 re-snapshot (v3.7.0, `v3.6.0-85-g6095c4f`)** — the tables above
+are this run, on the same Darwin 24.6 / Apple M3 box as every revision since
+the machine note was added: one harness pass, engines interleaved, all
+byte-identical before timing; `run-optbench.raku` likewise, so **the `-O` table
+is re-measured this round** rather than carried forward. The reason for the
+whole sitting is the oracle: Rakudo moved **v2026.07 → v2026.08** with this
+release, and the reference column is measured every time, so it had to be
+taken again._
+
+_**Rakudo moved a few percent in both directions and none of it is a trend.**
+`strcat`'s reference lane 179.9 → 166.3 ms, `hash` 221.4 → 215.7, against
+`loopsum` 261.7 → 276.4 and `fib` 462.2 → 465.0. `hashfill` is the one wide
+mover — 453.7 → 397.4 ms — and it is the noisiest kernel in the set on both
+sides, which is why its ratio reads 3.2× here against 4.1× last sitting while
+the `--exe` lane barely moved (38.0 → 36.2 ms). Read the perl ladder in "vs
+Perl 5" for that kernel, not the main-table ratio._
+
+_**Raku++'s own lanes are flat**, as they should be: the only engine change
+since the previous sitting is a `$*VM.config` accessor, which no kernel
+touches. Every interp and `--exe` cell is within ±3% of the `9dfc982` sitting
+except `hashfill` interp (110.8 → 122.7 ms) and `objects` interp (507.7 →
+518.8), both inside that kernel's own spread. `perf-guard --check` was green
+before this run, worst kernel +2.8% against a 5% tolerance._
+
+_**A caveat that had never been written down**, now in the methodology above:
+the reference engine is an **x86_64 Rakudo running under Rosetta 2** — the only
+one on this machine — so it pays the same 1.7–2× translation penalty this file
+warns about for a mis-built Raku++ binary. The harness's arch guard inspects
+`$RAKUPP` only and cannot see it. Every earlier revision measured Rakudo the
+same way, so the series is self-consistent and the trends hold; the absolute
+multiples are an upper bound, not a like-for-like result._
+
+_**2026-08-31 re-snapshot at `v3.23.0-45-gb6905bf` — mutsu joins the tables.**
+The tables above are this run: three full harness passes, minimum across all
+three, on the Darwin 24.6 / M3 benchmarks machine, and the first sitting to
+carry a fourth engine. All sixteen kernels produced byte-identical output on
+all four engines, so nothing here is a flagged row._
+
+_**The comparability check passes.** Against the 2026-08-24 sitting the two
+reference lanes barely moved — Rakudo within ±4.3% on every shared kernel,
+`perl` +7.8% on `hashfill` — while the Raku++ lanes moved −11% to +3%. A
+same-direction shift on the reference lanes would have meant the machine; a
+shift confined to ours across 45 commits is code. The widest movers are
+`loopsum` interp (97.3 → 86.2 ms), `hashfill` interp (122.7 → 109.5) and
+`arrayops` interp (64.5 → 59.9), all in our favour. `objects` `--exe` went the
+other way (285.1 → 336.7 ms) and is the one row worth watching next sitting._
+
+_**The box was not idle, and the rule was overridden on evidence rather than
+waived.** `mediaanalysisd` held a core for the whole sitting and the 1-minute
+load sat near 4, against the project's own strict-idle bar of < 2.5. Two
+controls said measure anyway: a repeatability probe read max/min = 1.028 over
+nine consecutive `hash` runs, and `hash` interp came out at 18.8 ms against
+18.9 the previous sitting. Background-QoS work is scheduled on the efficiency
+cores on Apple Silicon, so it inflates load average without contending for the
+performance cores a benchmark runs on. Load average is the wrong instrument
+here; a repeatability probe is the right one, and it is cheap._
+
+_**Building mutsu native needed a toolchain this machine did not have.** The
+only Rust present was the x86_64 Homebrew build with no aarch64 std, so the
+first build failed at the link step for x86_64; arm64 Rust, `pcre2` and
+`libffi` were installed for this sitting. Had that gone unnoticed, mutsu would
+have run under Rosetta and every Raku++ row would have been flattered by the
+same 1.7–2× this file warns about elsewhere — and the harness's arch guard,
+which inspects `$RAKUPP` only, would not have caught it. `file` on the mutsu
+binary is now part of the runbook._
+
+_**mutsu arrived on the day the whole table became like-for-like.** When the
+mutsu lane was written up it was the only engine here architecture-matched with
+ours — both native arm64, against an x86_64 Rakudo under Rosetta — and this note
+said so. The Rakudo re-measurement later the same day closed that gap for every
+column at once, so the narrower claim is obsolete: **every engine on this page is
+now a native arm64 binary**, and no column carries a translation penalty. The
+build trap that produced the caveat is still live for anyone reproducing this —
+see the arm64 note above — it is the recorded numbers that are now clean._
+
+_**2026-08-31, later the same day: the caveat above is fixable after all, and
+the penalty it assumed was too large.** homebrew/core ships an `arm64_sequoia`
+bottle for rakudo/moarvm/nqp at v2026.08 — the exact version this sitting
+measures — so "the ARM prefix has no rakudo formula" was stale, not a
+constraint. It is installed at `/opt/homebrew/bin/rakudo`. Measuring the two
+builds of v2026.08 against each other gives a translation penalty of **1.00× to
+1.84×, mean 1.38×**, not the uniform 1.7–2× this file had assumed by carrying
+the figure over from mis-built Raku++ binaries. Only `startup` (1.84×) and
+`strcat` (1.76×) reach that band; `streq` (1.00×) and `sortnums` (1.04×) are
+free, confirmed on a 12-round re-check against a `strcat` control that held at
+1.76× on both minimum and median. The x86_64 control reproduced this sitting's
+published Rakudo column to within ~1% on every kernel re-timed, which
+established that the two references could be measured against each other. The
+tables were then **re-measured rather than corrected arithmetically** — see the
+next note._
+
+_**2026-08-31: every released build re-measured, each against its own era's
+Rakudo.** All 28 tagged releases ship a `rakupp-macos-universal.tar.gz`, and a
+bare invocation runs its arm64 slice — checked, not assumed: `loopsum` reads
+198 ms bare and under `arch -arm64`, against 337 ms under `arch -x86_64`. Each
+release was run through `tools/run-bench.raku` against a from-source Rakudo
+matching its release date (2026.06 through 2026-07-24, 2026.07 through
+2026-08-21, 2026.08 after): 16 kernels, 453 rows, and every engine agreed on
+output in every row. The interp column reproduced the published one to within
+2.1% worst case, so only the reference side moved.
+
+**The Rakudo column is measured once per RAKUDO release, not once per Raku++
+release.** Measuring it per tag was wrong and it showed: Rakudo cannot change
+between two Raku++ tags cut on the same day, yet the column moved by up to 19%
+on `sortby` — whose lane is bimodal on this machine at ~168/198 ms — and 2–10%
+elsewhere, drawing run-to-run noise as if it were signal. It is now three
+measurements, one per Rakudo release, assigned by date, so the column is a step
+function that changes only on 2026-07-25 and 2026-08-22. Each value is the
+minimum of 80 runs: 20 timed runs after a discarded warm-up, all three Rakudos
+interleaved inside every round, four such passes. Convergence was checked
+rather than assumed — `min(pass A,B)` against an independent `min(pass C,D)`
+moved by at most 1.8%, and by more than 2% on none of the 48 values. Two passes
+alone had disagreed by up to 10%, because they ran as sequential blocks and
+tracked the machine's drift; the minimum over four interleaved passes removes
+it. This also settles `sortby`, which the per-tag measurement had left at
+"5.2–6.1×": the converged floor is the fast mode, and the row reads 5.1×.
+
+The era-to-era *changes* are the sturdiest thing in this file — they reproduced
+to 1–2% across passes even while drift moved absolute levels by 10%. Rakudo
+2026.08 is genuinely ~13% faster than 2026.07 on `hashfill`, ~7% faster on
+`strcat`, and ~6% slower on `loopsum`.
+
+Three things the release series shows that no single sitting could, because
+each happened between sittings: `sortby` interpreted fell from 3.9 s to 60 ms
+at **v1.2.5**; `arraypush` was quadratic until **v1.5.2** and cannot be
+measured before it at all — a single run exceeds 10 s, so those eleven rows are
+recorded as skipped in the sweep data rather than estimated; and **v3.7.0**
+halved `loopsum` and took 43% off compiled `fib`. Two releases also ship
+binaries whose `--version` reports the previous release (v3.20.0 says 3.7.0,
+v3.0.0 says 2.0.0) — distinct builds by hash and size, only the embedded string
+stale, so the sweep keys rows by tag and never by `--version`.
+
+The per-release numbers live in `sites/spec/src/data/bench-backfill.tsv` in the
+raku.online repo, where they replaced a 2026-08-21 sitting taken on the Darwin
+25.5 box (one kernel, 22 tags). `gen-dashboard.raku` merges them as an override
+per engine rather than as gap-fill, because a tag's own committed tables were
+measured on whatever machine that release had. [`tools/rakupp-bench-sweep.sh`](../../../tools/rakupp-bench-sweep.sh) reproduces
+the whole thing on another machine (see
+[dev/BENCH-SWEEP.md](../BENCH-SWEEP.md), and
+`rakupp-bench-sweep.ps1` for Windows); note that on any x86_64 host MoarVM *has* its JIT, so a Rakudo column
+measured there is not comparable with the one above._

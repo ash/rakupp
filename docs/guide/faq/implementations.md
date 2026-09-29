@@ -134,8 +134,8 @@ This page used to predict that `bigint` would be the kernel where a well-tuned
 external library simply beats what we hand-rolled, and for a while it was:
 measured at **3.5× interpreted and 3.3× compiled**, the one kernel of the sixteen
 where mutsu beat both Raku++ modes. Two passes on our own multiply have since
-reversed it — 7.4 ms interpreted and 6.2 compiled against mutsu's 11.2, on the
-box where all three were measured together. The honest version of the prediction
+reversed it: 6.6 ms interpreted and 5.1 compiled against mutsu's 8.6 at the
+v5.0.0 sitting. The honest version of the prediction
 is narrower than the one that was written here: what an off-the-shelf library
 buys you is *everything at once*, not any particular kernel. `num-bigint`'s
 base-2^64 limbs are still about 10× ahead of our base-1e9 ones on a general
@@ -158,8 +158,7 @@ and the whole ecosystem behind `zef`.
 Measured on this machine (macOS Darwin 25.5, Apple M1), 2026-08-31 — rakupp
 3.23.0, mutsu 0.23.0, Rakudo v2026.08 on MoarVM 2026.08. These are start-up and
 footprint figures, which are stable across machines in *shape* if not in exact
-value; the throughput tables — which as of the 2026-08-31 sitting carry a
-mutsu column on all sixteen kernels — live in
+value; the throughput tables, with a mutsu column on all seventeen kernels, are in
 [BENCHMARKS.md](../../status/BENCHMARKS.md) and are measured on a different,
 dedicated box.
 
@@ -183,23 +182,21 @@ newer implementations optimised for from the start.
 ## Coverage
 
 Speed comparisons only mean anything on the subset of the language all three run
-identically, and that subset is set by the least complete implementation. On
-Roast — the official suite, 1,464 files — **Rakudo runs essentially all of it**,
-and it is the oracle both other engines check themselves against.
+identically. On Roast, the official suite, all three have been measured by the
+same harness on the same machine:
 
-Between the two newer implementations, **mutsu is well ahead of Raku++ on
-coverage**. Both rows below were produced by the same harness on the same day,
-same Roast revision, same timeout, same counting rules:
+| | Roast measured | files fully passing | tests |
+|---|---|---:|---:|
+| **Raku++** 5.0.0 | `1f521d798`, the 1,424 files `spectest.data` lists | **1,423** | 218,421 / 218,422 without skip/todo |
+| **Rakudo** 2026.08 | the same | 1,414 | 218,933 / 219,096 without skip/todo |
+| **mutsu** 0.23.0 | `b2cbe8a42`, all 1,464 files, its own fudging (2026-09-21) | 1,428 | 219,526 / 220,916 declared |
 
-| | files fully passing | assertions, all declared |
-|---|---:|---:|
-| **mutsu** 0.23.0 | **1,419 / 1,464 (96.9%)** | **216,807 / 218,173 (99.4%)** |
-| **Raku++** 3.23.0 | 643 / 1,464 (43.9%) | 198,939 / 218,773 (90.0%) |
-
-The shape of that gap is worth reading. Raku++ passes ~90% of assertions almost
-everywhere but leaves a residue in most files, so the all-or-nothing file bar
-stays low; mutsu has cleaned up that tail across nearly every synopsis. Six
-months of very high-tempo development got them there, and it shows.
+The first two rows are one bar. The mutsu row is not — an earlier Roast, the
+whole checkout rather than `spectest.data`, mutsu's own fudging and a 60-second
+ceiling — so read it as all three being near the end of the suite, not as a
+ranking. Past Roast, the difference is the ecosystem: Rakudo passes the test
+suites of 1,791 of 2,529 distributions, Raku++ 1,019 of 2,547
+([raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)).
 
 The rules for comparing any two of these numbers — which is easy to get wrong —
 are in [COUNTING.md](../../status/COUNTING.md). The short version: a Roast figure

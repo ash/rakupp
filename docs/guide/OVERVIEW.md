@@ -31,7 +31,7 @@ official specification test suite. The guiding motto:
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../../rakujs)**) |
-| **Startup** | ~2 ms cold |
+| **Startup** | ~3 ms cold |
 | **Correctness target** | the Roast suite — 100.00% of its tests pass (218,421 of 218,422, skip and todo left out); 1,423 of 1,424 files |
 | **Not** | a Rakudo fork, or a transpiler to something else |
 
@@ -144,7 +144,7 @@ They make different trade-offs:
 On speed, Raku++ starts fast and its `--exe` compiles hot code down to native;
 the tree-walking interpreter trades throughput for simplicity —
 [BENCHMARKS.md](../status/BENCHMARKS.md) has the numbers and methodology, including where
-Rakudo's JIT leads.
+Rakudo leads.
 
 ## Status & how it's measured
 

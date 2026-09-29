@@ -72,7 +72,7 @@ no server, with an embeddable in-page playground.
 
 ## Speed
 
-- **~2 ms cold start** — a tiny native binary with no VM to spin up, fast enough
+- **~3 ms cold start** — a tiny native binary with no VM to spin up, fast enough
   to shell out to in a loop.
 - Competitive interpreter performance and native-compiled hot code; raw
   numbers and methodology in [BENCHMARKS.md](../status/BENCHMARKS.md) and
