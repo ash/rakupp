@@ -318,6 +318,20 @@ there and nowhere else: [#8](https://github.com/ash/rakupp/issues/8) and the
 declared-type loss found while fixing
 [#9](https://github.com/ash/rakupp/issues/9) were both compiler-only.
 
+### 4a. What `--cpp` accepts also compiles
+
+```bash
+rakupp tools/cpp-build-check.raku         # ROAST=/path to name the Roast checkout
+```
+
+Every `.raku` under `examples/` and `t/`, and every fully-passing Roast file on
+the newest `docs/status/roast-lists/vX.Y.Z.list`, goes through `--cpp`. The
+programs it accepts are compiled with `-fsyntax-only` against the runtime's
+headers. A program the code generator refuses falls back to bundling and is
+only counted. One it accepts and the C++ compiler rejects is an `--exe` that
+fails with no fallback: `Inf` and `NaN` literals were ten such programs in
+the 2026-09-26 survey. It runs sequentially, about a second a program.
+
 ### 4b. Slim binaries behave identically (v3.14+)
 
 ```bash
@@ -445,6 +459,30 @@ reads as an equality bug and is not one.
 
 Commit the battery repo with `battery: N/59` in the **subject** — the dashboard
 mines that string and nothing warns when it goes stale.
+
+### 6a. Every battery module still compiles, and none crashes on `use`
+
+```bash
+rakupp tools/battery-scan.raku            # --ref-release=vX.Y.Z or --ref=/path to pick the reference
+rakupp tools/battery-use-smoke.raku
+```
+
+The scan compiles every `lib/` module file of every battery distribution with
+`-c`, under the candidate and under the last release's own downloaded asset
+(fetched once with `gh` into `~/.cache/rakupp-releases`, checked against its
+published sha256). Red is a file the release compiles and the candidate does
+not. rakupp's `-c` parses without loading the `use`d modules, so this is a
+parser gate. It applies to every change that adds a check to the parser: before
+v5, parse-time strictness added while chasing Roast files refused 25 module
+files that the previous release compiled.
+
+The smoke loads every module each distribution's META6.json `provides`, one
+fresh process each. A module that refuses with an error is counted, not judged.
+Red is a process that ends by a signal or does not end within the cap.
+
+Both run sequentially inside the battery's sandbox, with HOME in a scratch
+directory. Exit 2 means they could not judge (no battery, no binary, no release)
+and is never a pass.
 
 ### 6b. An adopter's gate — Raku Koans
 
