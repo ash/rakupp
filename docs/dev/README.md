@@ -90,6 +90,16 @@ Next up:
   arithmetic, why `my int` currently buys nothing, and why the native-math
   change should be typed *expressions* rather than typed *slots*.
 
+- **[plans/TYPES-PLAN.md](plans/TYPES-PLAN.md)** — `--types` and
+  `RAKUPP_TYPES` (planned 2026-09-29): a contract that a variable keeps the
+  type it was declared with or first given, so the engine stores it as a
+  native `long long`, `double` or integer pair instead of a `Value`, and
+  builds a `Value` only at boundaries such as calls and `say`.
+  `--types=check` reports violations without enforcing. Numbers keep their
+  Raku meaning, so `0.1 + 0.2` is `0.3` with the option too. Opens with the
+  measured inversion that comes first: a `my int` loop gets no `--cnp`
+  kernel, so it runs 40× slower than the same loop over `my $`.
+
 The three v3.0.0 pillar plans, smallest first:
 
 - **[plans/CLI-PLAN.md](plans/CLI-PLAN.md)** — a real command-line surface:
