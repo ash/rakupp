@@ -324,6 +324,17 @@ int rk_st_call(F* f, int64_t* r, uint8_t* t) {
     if (rk_cnp_call(f, OP0, OP1)) return RK_CNP_ERR;
     NEXT;
 }
+// Array elements, through the runtime's indexing (see rk_cnp_idxget/idxset).
+int rk_st_idxget(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_idxget(f, OP0, OP1, OP2, OP3)) return RK_CNP_ERR;
+    NEXT;
+}
+int rk_st_idxset(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_idxset(f, OP0, OP1)) return RK_CNP_ERR;
+    NEXT;
+}
 // After a call: the callee raised `last` (1) or `next` (2) — jump to the loop's
 // exit or its next iteration, as the interpreter's loop would have.
 int rk_st_jctl(F* f, int64_t* r, uint8_t* t) {

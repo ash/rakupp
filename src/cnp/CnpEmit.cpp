@@ -63,6 +63,8 @@ void* helperAddr(const char* name) {
         { "rk_cnp_defined", (void*)&rk_cnp_defined },
         { "rk_cnp_natchk",  (void*)&rk_cnp_natchk },
         { "rk_cnp_call",    (void*)&rk_cnp_call },
+        { "rk_cnp_idxget",  (void*)&rk_cnp_idxget },
+        { "rk_cnp_idxset",  (void*)&rk_cnp_idxset },
         { "rk_cnp_loadk",   (void*)&rk_cnp_loadk   },
         { "rk_cnp_move",    (void*)&rk_cnp_move    },
         { "rk_cnp_truthy",  (void*)&rk_cnp_truthy  },

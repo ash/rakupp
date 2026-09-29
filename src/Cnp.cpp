@@ -33,6 +33,15 @@
 namespace rakupp {
 namespace cnp {
 
+// An element store: the register holding the array (an `@name` slot) and one
+// key register per level, `@g[$y][$x]` being two.
+struct IndexSite {
+    int base = 0;
+    std::vector<int> keys;
+    std::vector<char> hash;   // per level: `{…}` (1) or `[…]` (0)
+};
+
+
 // A call in a kernel: the arguments the kernel evaluated go into a scratch
 // scope as `$__cnp_argN`, and `synth` — the call rewritten to read them — is
 // evaluated by the interpreter, so lookup, dispatch and builtins are its own.
@@ -245,6 +254,37 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
     }
 }
 
+int rk_cnp_idxget(RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint64_t isHash) {
+    try {
+        Value v = rtIndexGet(regValue(f, base), regValue(f, key), isHash != 0);
+        setReg(f, dst, v);
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
+int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
+    try {
+        const auto& s = (*static_cast<const std::vector<rakupp::cnp::IndexSite>*>(f->isites))[site];
+        // The array register is a box sharing its element storage with the
+        // variable, so references into it are references into the variable.
+        Value* boxes = static_cast<Value*>(f->boxes);
+        if (f->t[s.base] != RK_T_BOX) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot index into a non-container"};
+        Value* cur = &boxes[s.base];
+        for (size_t i = 0; i + 1 < s.keys.size(); i++)
+            cur = &rtIndexRef(*cur, regValue(f, (uint64_t)s.keys[i]), s.hash[i] != 0);
+        // stored as the interpreter stores an element: Nil resets it to the
+        // default (Any), a container goes in as one item, a native's tags stay
+        // behind, and the stored value is a fresh writable one
+        Value v = regValue(f, val);
+        if (v.t == VT::Nil) v = Value::typeObj("Any");
+        v.readonly = v.immutableBind = false;
+        if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
+        v.natBits = 0; v.natSigned = v.natFloat = false;
+        rtIndexRef(*cur, regValue(f, (uint64_t)s.keys.back()), s.hash.back() != 0) = std::move(v);
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
 int rk_cnp_natchk(RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst) {
     try {
         Value v = regValue(f, reg);
@@ -330,6 +370,7 @@ struct Kernel {
     std::unique_ptr<Code> code;
     std::vector<Value>    consts;
     std::vector<KernelCall> calls;
+    std::vector<IndexSite>  isites;
     size_t                nregs = 0;
     size_t                nops  = 0;
 };
@@ -347,7 +388,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow, call, jctl;
+    int natchk, natchkslow, call, jctl, idxget, idxset;
     bool ok = false;
 };
 
@@ -376,6 +417,7 @@ const StencilIds& ids() {
         v.jtslow = g("rk_st_jtslow"); v.jfslow = g("rk_st_jfslow"); v.jdefslow = g("rk_st_jdefslow");
         v.natchk = g("rk_st_natchk"); v.natchkslow = g("rk_st_natchkslow");
         v.call = g("rk_st_call"); v.jctl = g("rk_st_jctl");
+        v.idxget = g("rk_st_idxget"); v.idxset = g("rk_st_idxset");
         return v;
     }();
     return s;
@@ -411,6 +453,37 @@ struct ColdReq {
 struct Lower {
     std::string err;
     std::vector<KernelCall> calls;
+    std::vector<IndexSite>  isites;
+    // `@a[$i]` / `@g[$y][$x]`: the root array's register and each level's key,
+    // evaluated outermost first, each into a temp of its own
+    std::vector<char> chainHash;   // filled by indexChain, beside `keys`
+    bool indexChain(Index* ix, int& base, std::vector<int>& keys) {
+        if (ix->base->kind == NK::Index) {
+            if (!indexChain(static_cast<Index*>(ix->base.get()), base, keys)) return false;
+        }
+        else { base = expr(ix->base.get()); chainHash.clear(); }
+        if (bad()) return false;
+        int k = temp();
+        exprInto(ix->index.get(), k);
+        if (bad()) return false;
+        keys.push_back(k);
+        chainHash.push_back(ix->isHash ? 1 : 0);
+        return true;
+    }
+    // read the element a chain names, into a fresh register
+    int chainGet(int base, const std::vector<int>& keys) {
+        int cur = base;
+        for (size_t i = 0; i < keys.size(); i++) {
+            int d = temp();
+            emit(ids().idxget, (uint64_t)cur, (uint64_t)keys[i], (uint64_t)d, (uint64_t)chainHash[i]);
+            cur = d;
+        }
+        return cur;
+    }
+    void chainSet(int base, const std::vector<int>& keys, int val) {
+        isites.push_back(IndexSite{base, keys, chainHash});
+        emit(ids().idxset, (uint64_t)(isites.size() - 1), (uint64_t)val);
+    }
     std::vector<Op>      ops;
     std::vector<ColdReq> colds;
     std::vector<Value>   consts;
@@ -619,6 +692,29 @@ int Lower::expr(Expr* e) {
         }
         case NK::Assign: {
             auto* a = static_cast<Assign*>(e);
+            if (a->target->kind == NK::Index) {
+                // an element store: the keys first (Raku evaluates the target's
+                // subscripts before the value), then the value, then the store
+                int base; std::vector<int> keys;
+                if (!indexChain(static_cast<Index*>(a->target.get()), base, keys)) return 0;
+                if (a->op == "=") {
+                    int v = temp();
+                    exprInto(a->value.get(), v);
+                    if (bad()) return 0;
+                    chainSet(base, keys, v);
+                    return v;
+                }
+                std::string op = a->op.substr(0, a->op.size() - 1);
+                int oi = opIndex(op);
+                if (oi < 0) { fail("compound operator '" + a->op + "'"); return 0; }
+                int cur = chainGet(base, keys);
+                int src = expr(a->value.get());
+                if (bad()) return 0;
+                int d = temp();
+                emit(ids().binop, (uint64_t)d, (uint64_t)cur, (uint64_t)src, (uint64_t)oi);
+                chainSet(base, keys, d);
+                return d;
+            }
             if (a->target->kind != NK::VarExpr) { fail("assignment to a non-variable"); return 0; }
             auto* tv = static_cast<VarExpr*>(a->target.get());
             if (a->op == "=") {
@@ -733,6 +829,18 @@ int Lower::expr(Expr* e) {
         case NK::Unary: {
             auto* u = static_cast<Unary*>(e);
             const std::string& op = u->op;
+            if ((op == "++" || op == "--") && u->operand->kind == NK::Index) {
+                int base; std::vector<int> keys;
+                if (!indexChain(static_cast<Index*>(u->operand.get()), base, keys)) return 0;
+                int old = chainGet(base, keys);
+                int one = temp();
+                emit(ids().loadi, (uint64_t)one, (uint64_t)(long long)1);
+                int nv = temp();
+                emit(ids().binop, (uint64_t)nv, (uint64_t)old, (uint64_t)one,
+                     (uint64_t)(op == "++" ? RK_OP_ADD : RK_OP_SUB));
+                chainSet(base, keys, nv);
+                return u->postfix ? old : nv;
+            }
             if (op == "++" || op == "--") {
                 if (u->operand->kind != NK::VarExpr) { fail("++/-- on a non-variable"); return 0; }
                 int r = lookup(static_cast<VarExpr*>(u->operand.get())->name);
@@ -770,6 +878,11 @@ int Lower::expr(Expr* e) {
             if (oi < 0) { fail("prefix operator '" + op + "'"); return 0; }
             emit(ids().unop, (uint64_t)d, (uint64_t)a, (uint64_t)oi);
             return d;
+        }
+        case NK::Index: {
+            int base; std::vector<int> keys;
+            if (!indexChain(static_cast<Index*>(e), base, keys)) return 0;
+            return chainGet(base, keys);
         }
         case NK::Call: {
             auto* c = static_cast<Call*>(e);
@@ -1118,6 +1231,7 @@ Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& 
     k->code = std::move(code);
     k->consts = std::move(L.consts);
     k->calls = std::move(L.calls);
+    k->isites = std::move(L.isites);
     k->nregs = nregs;
     k->nops = L.ops.size();
     return k;
@@ -1145,6 +1259,7 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
     f.abi.written = (void*)&written;
     f.abi.nslots = (int64_t)n;
     f.abi.ctl = 0;
+    f.abi.isites = (void*)&k->isites;
 
     for (size_t i = 0; i < n; i++) setReg(&f.abi, i, *slots[i]);
 

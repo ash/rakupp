@@ -121,6 +121,7 @@ struct Site {
     std::vector<std::string> opKeys;         // routine names that would overload this loop's operators
     std::atomic<bool> opsChecked{false};     // …looked for once, at the first entry
     std::vector<std::string> callNames;      // routines a copy-and-patch kernel calls (TYPES-PLAN N5)
+    std::set<std::string> arrays;            // `@name` slots it indexes, checked plain at entry
 };
 
 // The name a counted `for`'s synthetic condition reads its end bound from. It
@@ -175,6 +176,22 @@ const std::set<std::string>& asgOps() {
 }
 
 // A plain lexical scalar: `$name`, no twigil, not `$_`, not a special.
+// A plain `@name` — copy-and-patch kernels read and index them (never assign
+// the variable itself); checked at entry to be a plain Array.
+bool plainArray(const std::string& n) {
+    if (n.size() < 2 || n[0] != '@') return false;
+    char c = n[1];
+    if (!(std::isalpha((unsigned char)c) || c == '_')) return false;
+    return n.find("::") == std::string::npos;
+}
+
+bool plainHash(const std::string& n) {
+    if (n.size() < 2 || n[0] != '%') return false;
+    char c = n[1];
+    if (!(std::isalpha((unsigned char)c) || c == '_')) return false;
+    return n.find("::") == std::string::npos;
+}
+
 bool plainScalar(const std::string& n) {
     if (n.size() < 2 || n[0] != '$') return false;
     char c = n[1];
@@ -211,6 +228,20 @@ struct Scan {
     // compiled — see the note at the lookup in runIfReady.
     std::set<std::string> opKeys;
     std::set<std::string> callNames;   // copy-and-patch only: checked at entry (is rw / is raw)
+    std::set<std::string> arrays;      // `@name`s the kernel indexes — checked at entry
+    // `@a[$i]`, `@g[$y][$x]`: one scalar index, no adverb, rooted at a plain `@name`
+    bool plainIndex(Expr* e) {
+        if (!e || e->kind != NK::Index) return false;
+        auto* ix = static_cast<Index*>(e);
+        if (ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index) return false;
+        NK k = ix->index->kind;
+        if (k == NK::ListExpr || k == NK::Range || k == NK::Whatever) return false;
+        Expr* b = ix->base.get();
+        if (b->kind == NK::Index) return plainIndex(b);
+        if (b->kind != NK::VarExpr || static_cast<VarExpr*>(b)->declare) return false;
+        const std::string& bn = static_cast<VarExpr*>(b)->name;
+        return ix->isHash ? plainHash(bn) : plainArray(bn);
+    }
     void useOp(const char* kind, const std::string& op) {
         opKeys.insert(std::string("&") + kind + ":<" + op + ">");
     }
@@ -257,6 +288,11 @@ void Scan::expr(Expr* e) {
         case NK::VarExpr: {
             auto* v = static_cast<VarExpr*>(e);
             const bool isCounted = !countedVar.empty() && v->name == countedVar;
+            if ((plainArray(v->name) || plainHash(v->name)) && g_opt.backend == Backend::Cnp && !v->declare) {
+                arrays.insert(v->name);
+                useName(v->name);
+                return;
+            }
             if (!plainScalar(v->name) && !isCounted) { fail("variable " + v->name); return; }
             if (v->declare && declRefused) { fail("a declaration in this loop's header"); return; }
             if (v->declare && declIsSlot) { useName(v->name); return; }
@@ -290,11 +326,16 @@ void Scan::expr(Expr* e) {
             if (a->containerSigil) { fail("a container-sigil assignment"); return; }
             // `$x += $y` is `$x = $x + $y` and consults `infix:<+>`.
             if (a->op.size() > 1) useOp("infix", a->op.substr(0, a->op.size() - 1));
-            if (a->target->kind == NK::VarExpr) written.insert(static_cast<VarExpr*>(a->target.get())->name);
+            if (a->target->kind == NK::VarExpr) {
+                const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
+                if (tn.size() && (tn[0] == '@' || tn[0] == '%')) { fail("an assignment to a whole array or hash"); return; }
+                written.insert(tn);
+            }
             // The VALUE is scanned first, so that `my $x = $x` records the OUTER
             // `$x` as a slot before the declaration shadows it — which is the
             // order Raku evaluates them in and the one the emitter assumes.
             expr(a->value.get());
+            if (a->target->kind == NK::Index) { expr(a->target.get()); return; }   // an element store
             if (a->target->kind != NK::VarExpr) { fail("assignment to a non-variable"); return; }
             expr(a->target.get());
             return;
@@ -315,6 +356,7 @@ void Scan::expr(Expr* e) {
                 // `$x = $x + 1`, so an overloaded `+` changes what they mean.
                 useOp(u->postfix ? "postfix" : "prefix", u->op);
                 useOp("infix", "+");
+                if (u->operand->kind == NK::Index) { expr(u->operand.get()); return; }   // `@a[$i]++`
                 if (u->operand->kind != NK::VarExpr) { fail("++/-- on a non-variable"); return; }
                 written.insert(static_cast<VarExpr*>(u->operand.get())->name);
             }
@@ -325,6 +367,17 @@ void Scan::expr(Expr* e) {
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
             expr(t->cond.get()); expr(t->then.get()); expr(t->els.get());
+            return;
+        }
+        case NK::Index: {
+            // Copy-and-patch only: an element read or store goes through the
+            // runtime's own indexing (rtIndexGet / rtIndexRef), the same the
+            // compiled programs use, into the array itself.
+            if (g_opt.backend != Backend::Cnp) { fail("an index"); return; }
+            if (!plainIndex(e)) { fail("an index of this shape (a slice, an adverb, a hash, or not on a plain @array)"); return; }
+            auto* ix = static_cast<Index*>(e);
+            expr(ix->base.get());
+            expr(ix->index.get());
             return;
         }
         case NK::Call: {
@@ -802,6 +855,7 @@ void examine(Site* s) {
             if (sc.slots[k] == sc.countedVar) { s->counterSlot = (int)k; break; }
     s->opKeys.assign(sc.opKeys.begin(), sc.opKeys.end());
     s->callNames.assign(sc.callNames.begin(), sc.callNames.end());
+    s->arrays = sc.arrays;
     s->slotWritten.clear();
     for (const std::string& n : sc.slots) s->slotWritten.push_back(sc.written.count(n) != 0);
     // ONE exported name, the same in every kernel. It has to be independent of
@@ -1180,6 +1234,18 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
             if (e->layout) if (Value* p = e->padFind(n)) { cell = p->deref(); owner = e; break; }
         }
         if (!cell) return refuse(s, "slot " + n + " is not in scope at kernel entry");
+        // An array the kernel indexes must be a plain one: typed, native,
+        // shaped, lazy or `is default` arrays store differently, and a List is
+        // immutable. Anything else keeps the loop interpreted.
+        if (s->arrays.count(n) && n[0] == '@' &&
+            (cell->t != VT::Array || cell->isList || !cell->ofType().empty() || cell->shape() ||
+             cell->ext() || !cell->hashKind.empty() || cell->elemDefault()))
+            return refuse(s, "array " + n + " is not a plain Array (typed, native, shaped, lazy or a List)");
+        // …and a hash a plain Hash: not a Set/Bag/Map, typed, object-keyed or `is default`
+        if (s->arrays.count(n) && n[0] == '%' &&
+            (cell->t != VT::Hash || !cell->hash() || !cell->hashKind.empty() || cell->objKeyed ||
+             !cell->ofType().empty() || cell->elemDefault()))
+            return refuse(s, "hash " + n + " is not a plain Hash (a Set/Bag/Map, typed or object-keyed)");
         // Only a slot the kernel STORES to has to be a plain container. Every
         // guard below describes what a store must honour — a native width to
         // wrap at, a readonly binding to refuse, a coercion or default to

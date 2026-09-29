@@ -61,6 +61,7 @@ typedef struct RkCnpFrame {
     void*     written;  // const std::vector<bool>* — which of them the kernel stores
     int64_t   nslots;
     int64_t   ctl;
+    void*     isites;   // element-store sites: an array register and its keys
 } RkCnpFrame;
 
 // The signature every stencil has, and therefore the signature of the whole
@@ -97,6 +98,10 @@ int rk_cnp_defined(RkCnpFrame* f, uint64_t a);                          // 0/1, 
 int rk_cnp_natchk (RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst);
 // Call site `site` of the kernel, its result into register `dst`.
 int rk_cnp_call   (RkCnpFrame* f, uint64_t site, uint64_t dst);
+// r[dst] = r[base][r[key]] — the runtime's own indexing (rtIndexGet)
+int rk_cnp_idxget (RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint64_t isHash);
+// element store site `site`: the array register, its keys, r[val] into it
+int rk_cnp_idxset (RkCnpFrame* f, uint64_t site, uint64_t val);
 
 #ifdef __cplusplus
 }
