@@ -204,12 +204,12 @@ longer has to end at a call just because the callee might see a stale
 
 | | | |
 |---|---|---|
-| **N0** | the probe: price native slots plus typed evaluation against `Value` slots, before any engine change | next |
+| **N0** | the probe: price native slots plus typed evaluation against `Value` slots, before any engine change | **DONE** — native storage adds 1.00×; see below |
 | **N1** | the switch: `--types`, `RAKUPP_TYPES`, `on` / `check` / `off`, one parser, `--help` | |
 | **N2** | the rule, checked, on today's `Value` storage: the fixed type, every scalar write path, the messages, `check`'s report | |
 | **N3** | measure: Roast and the module battery with `--types` | |
-| **N4** | native storage in the interpreter for `Int`, `Num` and `Bool`, with typed expression evaluation and the four hard parts | |
-| **N5** | the compiled lanes over native slots: no entry checks, no copies, lanes that continue past calls | |
+| **N4** | native storage in the interpreter for `Int`, `Num` and `Bool`, with typed expression evaluation and the four hard parts | **dropped as a speed phase** by N0: typed evaluation (with guards, outside the option) carries the whole gain |
+| **N5** | the compiled lanes over native slots: no entry checks, no copies, lanes that continue past calls | **v1 landed for `--cnp`**: kernels may call routines (see below) |
 | **N6** | `Rat` stored as two integers | |
 | **N7** | `Str` without the `Value` around it, if N0's numbers say it is worth having | |
 
@@ -227,6 +227,53 @@ loop three ways:
 The second row exists to confirm that native storage alone is a loss, and
 that typed evaluation has to come with it. If the third row's gain in the
 interpreter is small, the order changes: N5 goes before N4.
+
+### N0 — done 2026-09-29: native storage is worth nothing on its own
+
+[`tools/types-n0-probe.cpp`](../../../tools/types-n0-probe.cpp) is a small
+tree-walker over a hand-built tree of the Mandelbrot kernel
+(`tools/bench/types/mandel-*.raku`), evaluated five ways, each printing the
+kernel's checksum. Best of 3, two runs that agreed to within 3%, on a
+working machine (load 2–3):
+
+| | | 300×260 |
+|---|---|---:|
+| A | the real interpreter, `mandel-plain.raku` | 1,740–1,780 ms |
+| B | walker: Value slots, arithmetic through `applyArith` | 325 ms |
+| C | walker: Value slots, typed evaluation, a tag check at every leaf | 68 ms |
+| D | walker: native slots, typed evaluation, no checks | 68 ms |
+| E | walker: native slots, read back through Values | 290 ms |
+| F | the loop written by hand in C++ | 1.9 ms |
+
+```bash
+c++ -std=c++17 -O2 -w -Isrc -Iinclude tools/types-n0-probe.cpp \
+    build/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props,stubs}.a -liconv -o /tmp/n0 && /tmp/n0
+```
+
+What it decides:
+
+- **Native storage adds nothing over guarded typed evaluation: D over C is
+  1.00×.** A well-predicted tag compare at each leaf costs as much as not
+  having one. The four hard parts of N4 (closures, `is rw`, `MY::`/`EVAL`,
+  `.VAR`) would buy no speed. N4 is **dropped as a speed phase**. Under
+  `--types` a variable stays a `Value`, and what the contract buys is
+  correctness and diagnostics, plus the guarantee the compiled tiers can use.
+- **Typed evaluation is the win, and needs no contract:** 4.8× on the
+  arithmetic (B to C). That is NATIVE-MATH phase 4, ordinary engine work
+  with guards at the leaves, and it moves to "outside the option" below.
+- **But arithmetic is only a fifth of the real interpreter's time.** The
+  walker's Value arithmetic is 325 ms of the interpreter's ~1,760, so typed
+  evaluation can take the interpreter from about 1.76 s to about 1.5 s,
+  around 15%. That agrees with NATIVE-MATH-PLAN's own revisit. The other
+  ~1.4 s is statement and loop machinery, which no type work touches.
+- **E is not slower than B** (1.1× faster), contrary to what this plan
+  expected. Boxing on every read costs little next to `applyArith`'s
+  dispatch. It is still no gain.
+- **The compiled tiers are where the speed is.** `--cnp` runs the same
+  kernel in 25 ms, against 68 ms for the best a tree-walker managed here, and
+  the floor is 1.9 ms. So the next phases are the compiled ones: N5 (lanes
+  and kernels that continue past calls, where the contract's guarantee helps)
+  ahead of anything in the interpreter.
 
 ### N1 — the switch
 
@@ -286,6 +333,41 @@ and gains almost nothing.
 
 The lanes drop their entry checks and copies, and continue past calls.
 UNBOX-PLAN found 1 of 701 loops lane-eligible, because any call ends a lane.
+
+### N5 v1 — landed for `--cnp`, 2026-09-29: kernels with calls in them
+
+A copy-and-patch kernel may now contain a call to a named routine with
+positional arguments, `say` and `sqrt` included. It still refuses a call
+through a code value, named arguments, methods, and the routines that act on
+their caller (`EVAL`, `callsame`, `return`, `take`, `temp`, …).
+
+- **Around each call** the kernel writes its variables back to their
+  containers (keeping a native's tags) and reloads them after, so a callee
+  that closes over a loop variable sees it live and may change it, even to
+  another type: registers carry their type at run time.
+- **The call itself** is the interpreter's. The arguments the kernel
+  evaluated are bound in a scratch scope, and the call, rewritten to read
+  them, goes through `evalCall`, so lookup, multi dispatch and the special
+  forms are unchanged. A builtin the program has not shadowed goes straight
+  to its function (`rtCallB`, the route `--exe` calls builtins by).
+- **`last` / `next` raised in a callee** leave or continue the innermost
+  loop, as Rakudo's do (checked: `sub f($i) { last if $i == 2 }` ends the
+  caller's loop). The helper reports them in the frame, and a `jctl` stencil
+  after the call jumps.
+- **A callee with an `is rw` or `is raw` parameter** (any candidate, for a
+  multi) keeps the loop interpreted: the kernel passes values, not
+  containers. This is checked at every kernel entry.
+
+Measured on a working machine: a loop calling `sqrt` went from 0.34 s to
+0.11 s (3×), and a loop calling a small user sub from 0.48 s to 0.37 s
+(1.3×), since that call still runs the interpreter's full call path. Making
+user calls cheaper means compiling the callee too, which is N5's next step.
+The `--jit` backend still refuses calls.
+
+Gates: `t/jit/run.raku --cnp` over its cases, `t/regression` and `examples`
+agrees on 807 programs. One program printed nothing in the PLAIN run once,
+under load, and passes both ways on its own. `t/jit/cases/calls.raku` holds
+the call cases.
 
 ### N6 — `Rat`
 
