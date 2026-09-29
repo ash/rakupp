@@ -186,6 +186,14 @@
   .bval.win { color: var(--accent-2); } .bval.lose { color: var(--accent); }
   .bench.wide .brow { grid-template-columns: 92px 1fr 212px; }
   .bval .ms { color: var(--ink-3); }
+  .btrack.pair { height: 26px; }
+  .btrack.pair .bfill { inset: auto; left: 0; height: 11px; border-radius: 4px 0 0 4px; }
+  .btrack.pair .bfill.interp { top: 1px; background: linear-gradient(90deg, var(--bg-3), var(--ink-3)); }
+  .btrack.pair .bfill.win { top: 13px; }
+  .bench-legend { display: flex; gap: 18px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); margin-top: clamp(10px,1.6vh,16px); }
+  .bench-legend i { display: inline-block; width: 22px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: middle; }
+  .bench-legend .li { background: linear-gradient(90deg, var(--bg-3), var(--ink-3)); }
+  .bench-legend .le { background: linear-gradient(90deg, var(--accent-2-soft), var(--accent-2)); }
   .bench-note { margin-top: 13px; color: var(--ink-3); font-size: 12.5px; font-family: var(--font-mono); line-height: 1.55; }
 
   /* ---- ecosystem diagram ---- */
@@ -389,7 +397,8 @@
     <div class="stage">
       <div class="eyebrow">rakupp prog.raku vs rakupp --exe · same source, same machine, byte-identical output</div>
       <h2>Interpret or compile: <span class="accent-2">what compiling buys</span>.</h2>
-      <div class="bench wide" id="benchBarsModes"></div>
+      <div class="bench-legend"><span><i class="li"></i>interpreted</span><span><i class="le"></i>--exe</span><span>each row scaled to its interpreted time</span></div>
+      <div class="bench wide" id="benchBarsModes" style="margin-top:8px"></div>
       <div class="bench-note">Compiling pays most where a tree-walker re-dispatches a tiny body many times — <code>streq</code>, <code>loopsum</code>, <code>fib</code> — and almost nothing where the time is spent inside a runtime method both modes share: <code>arrayops</code> (<code>.grep</code>/<code>.map</code>/<code>.sum</code>) and <code>bigint</code> (the <code>BigInt</code> multiply). <code>multiwhere</code> is the fallback at work: codegen declines it, so the binary bundles the interpreter. Startup is 3.7 ms interpreted and 3.0 ms compiled; the interpreter covers the whole language, and <code>--exe</code> compiled 773 of the 1,189 fully passing Roast files natively when last counted, bundling the rest.</div>
     </div>
   </section>
@@ -615,10 +624,20 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
   renderBars(document.getElementById('benchBars'), toRows(benchInterp), 25.0);
   renderBars(document.getElementById('benchBarsNative'), toRows(benchNative), 32.3);
   function fmtMs(v) { return v < 100 ? v.toFixed(1) : String(Math.round(v)); }
-  renderBars(document.getElementById('benchBarsModes'), benchModes.map(function (b) {
-    return { name: b[0], val: b[3], cls: 'win',
-      label: '<span class="ms">' + fmtMs(b[1]) + ' → ' + fmtMs(b[2]) + ' ms</span> ' + b[3].toFixed(1) + '×' };
-  }), 16.3);
+  // Paired bars: interpreted on top, --exe below as a share of it. Rows are
+  // scaled to their own interpreted time, because on one axis hash (24 ms)
+  // would be invisible beside multiwhere (695 ms).
+  (function (el) {
+    if (!el) return;
+    el.innerHTML = benchModes.map(function (b) {
+      var pct = Math.max(2, (b[2] / b[1]) * 100);
+      return '<div class="brow"><span class="bname">' + b[0] + '</span>' +
+        '<span class="btrack pair"><span class="bfill interp" style="width:100%"></span>' +
+        '<span class="bfill win" style="width:' + pct + '%"></span></span>' +
+        '<span class="bval win"><span class="ms">' + fmtMs(b[1]) + ' → ' + fmtMs(b[2]) +
+        ' ms</span> ' + b[3].toFixed(1) + '×</span></div>';
+    }).join('');
+  })(document.getElementById('benchBarsModes'));
 
   // build rail
   slides.forEach(function (s, idx) {
