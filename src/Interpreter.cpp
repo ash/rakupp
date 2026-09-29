@@ -1895,12 +1895,18 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
 // `my num $x = 1/2`, `my int $x = 7/2`, `my num $x = $some-int` and
 // `my int $x = 1.5e0` all die at run time as they do in Rakudo — the literal
 // spellings are refused at compile time already. rakupp stored 0.5 and 3.
+//
+// …except from ANOTHER native, which converts: `$an-int-native` into a num is
+// its Num, a native num into an int truncates toward zero (saturating, NaN
+// 0). A value carries a native's tags only when it is one — read from a
+// native, or a native operation's result — since every boxed container drops
+// them (dropNativeTags). Oracle-checked against Rakudo 2026.09.
 static bool nativeRefusesKind(const Value& v, bool isFloat) {
     if (v.isNumeric() && (v.hashKind == "Duration" || v.hashKind == "Instant")) return true;
     switch (v.t) {
         case VT::Rat: case VT::Complex: return true;
-        case VT::Num:                   return !isFloat;
-        case VT::Int: case VT::Bool:    return isFloat;
+        case VT::Num:                   return !isFloat && !(v.natBits && v.natFloat);
+        case VT::Int: case VT::Bool:    return isFloat && !(v.natBits && !v.natFloat);
         default:                        return false;
     }
 }
@@ -2052,6 +2058,99 @@ static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhs
     return e && e->kind == NK::IntLit;
 }
 
+// The native int operation itself, on two machine integers: `+ - * ** div % mod`
+// wrapping at 64 bits (floor division and modulo, as Raku's). False for an
+// operator it does not do, a negative exponent, and a zero divisor — the caller
+// takes the general path, which answers or refuses those. Shared with --cnp,
+// whose cold path wraps a native operation that overflowed.
+bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long& x) {
+    const unsigned long long a = (unsigned long long)sa, b = (unsigned long long)sb;
+    if (op == "+") x = (long long)(a + b);
+    else if (op == "-") x = (long long)(a - b);
+    else if (op == "*") x = (long long)(a * b);
+    else if (op == "**") {
+        if (sb < 0) return false;                 // nativeIntPowNegative answers that
+        unsigned long long acc = 1, base = a;
+        for (unsigned long long e = (unsigned long long)sb; e; e >>= 1) {
+            if (e & 1) acc *= base;
+            base *= base;
+        }
+        x = (long long)acc;
+    }
+    else if (op == "div" || op == "%" || op == "mod") {
+        if (sb == 0) return false;
+        if (sb == -1) x = op == "div" ? (long long)(0ULL - a) : 0;   // int.min div -1 wraps
+        else if (op == "div") {
+            long long q = sa / sb;
+            if ((sa % sb != 0) && ((sa < 0) != (sb < 0))) q--;
+            x = q;
+        }
+        else {
+            long long m = sa % sb;
+            if (m != 0 && ((m < 0) != (sb < 0))) m += sb;
+            x = m;
+        }
+    }
+    else return false;
+    return true;
+}
+
+// ---- natives for the compiling backends (--exe) ----------------------------
+// The code generator decides statically which stores are into natives and which
+// operations are native (Ast.h nativeNumericStatic), and calls these, so that a
+// compiled program converts, checks, wraps and refuses exactly as the
+// interpreter does. A native's container is a Value carrying the width tags:
+// the value returned here carries them too, so a plain C++ assignment of it
+// keeps the variable native.
+static Value nativeStoreValue(const Value& v, int bits, bool sign, bool isFloat,
+                              const std::string& name, bool srcNative) {
+    Value slotLike = isFloat ? Value::number(0) : Value::integer(0);
+    slotLike.natBits = bits; slotLike.natSigned = sign; slotLike.natFloat = isFloat;
+    if (v.t == VT::Nil || v.t == VT::Type) nativeUndefCheck(v, nullptr, &slotLike);
+    Value out = v;
+    out.readonly = out.immutableBind = false;
+    if (!(srcNative && (out.t == VT::Int || out.t == VT::Num)))
+        nativeAssignCheck(out, bits, isFloat, name, sign);
+    wrapNative(out, bits, sign, isFloat);
+    return out;
+}
+Value rtNativeValue(const Value& v, const std::string& type, const std::string& name, bool srcNative) {
+    bool sign = true;
+    bool isFloat = type.rfind("num", 0) == 0;
+    int bits = isFloat ? (type == "num32" ? 32 : 64) : Value::natWidthOfType(type, sign);
+    if (!bits && !isFloat) { bits = 64; sign = true; }   // plain `int`
+    return nativeStoreValue(v, bits, sign, isFloat, name, srcNative);
+}
+Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& name, bool srcNative) {
+    if (!slot.natBits) return v;   // not (or no longer) a native container
+    return nativeStoreValue(v, slot.natBits, slot.natSigned, slot.natFloat, name, srcNative);
+}
+Value rtNativeArith(const char* op, const Value& l, const Value& r) {
+    auto plainInt = [](const Value& v) {
+        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
+    };
+    if (plainInt(l) && plainInt(r)) {
+        long long x;
+        if (rtNativeIntOp(op, l.i, r.i, x)) {
+            Value out = Value::integer(x); out.natBits = 64; out.natSigned = true;
+            return out;
+        }
+        if (std::string(op) == "**" && r.i < 0) return Value::integer(0);   // see nativeIntPowNegative
+    }
+    Value res = applyArith(op, l, r);
+    if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
+    return res;
+}
+Value rtNativeNeg(const Value& v) {
+    if (v.t == VT::Int && !v.big()) {
+        Value out = Value::integer((long long)(0ULL - (unsigned long long)v.i));
+        out.natBits = 64; out.natSigned = true;
+        return out;
+    }
+    if (v.t == VT::Num) { Value out = Value::number(-v.n); out.natBits = 64; out.natFloat = true; return out; }
+    return applyArith("-", Value::integer(0), v);
+}
+
 // A native int operand makes an integer operator the NATIVE one, as Rakudo's
 // dispatch picks it: `int.max + 1` wraps to int.min, and the result is native
 // itself, so `($z * 4) div 2` wraps in the middle and gives 0. The other operand
@@ -2060,23 +2159,6 @@ static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhs
 // wider than 64 bits (oracle-checked against Rakudo 2026.09). Answers false for
 // everything it does not decide, and for a zero divisor, which the general path
 // refuses with the right exception.
-// An operand that IS a native int in Rakudo's static sense: a read of a
-// variable declared native int, or a native arithmetic operation (whose result
-// nativeIntArith tagged). Anything else only carries a native's tags.
-static bool nativeIntNode(const Expr* e) {
-    if (!e) return false;
-    if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
-    if (e->kind == NK::Binary) {
-        const std::string& o = static_cast<const Binary*>(e)->op;
-        return o == "+" || o == "-" || o == "*" || o == "**" || o == "div" || o == "%" || o == "mod";
-    }
-    if (e->kind == NK::Unary) {
-        auto* u = static_cast<const Unary*>(e);
-        return !u->postfix && u->op == "-" && nativeIntNode(u->operand.get());
-    }
-    return false;
-}
-
 static bool nativeIntArith(const std::string& op, const Value& l, const Value& r,
                            const Expr* ln, const Expr* rn, Value& out) {
     auto natInt = [](const Value& v) {
@@ -2105,46 +2187,57 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     if (!ln8 && !rn8) return false;
     if (!plainInt(l) || !plainInt(r)) return false;
     if (!(ln8 || intLit(ln)) || !(rn8 || intLit(rn))) return false;
-    const unsigned long long a = (unsigned long long)l.i, b = (unsigned long long)r.i;
-    const long long sa = l.i, sb = r.i;
     long long x;
-    if (op == "+") x = (long long)(a + b);
-    else if (op == "-") x = (long long)(a - b);
-    else if (op == "*") x = (long long)(a * b);
-    else if (op == "**") {
-        if (sb < 0) return false;                 // nativeIntPowNegative answers that
-        unsigned long long acc = 1, base = a;
-        for (unsigned long long e = (unsigned long long)sb; e; e >>= 1) {
-            if (e & 1) acc *= base;
-            base *= base;
-        }
-        x = (long long)acc;
-    }
-    else if (op == "div" || op == "%" || op == "mod") {
-        if (sb == 0) return false;
-        if (sb == -1) x = op == "div" ? (long long)(0ULL - a) : 0;   // int.min div -1 wraps
-        else if (op == "div") {
-            long long q = sa / sb;
-            if ((sa % sb != 0) && ((sa < 0) != (sb < 0))) q--;
-            x = q;
-        }
-        else {
-            long long m = sa % sb;
-            if (m != 0 && ((m < 0) != (sb < 0))) m += sb;
-            x = m;
-        }
-    }
-    else return false;
+    if (!rtNativeIntOp(op, l.i, r.i, x)) return false;
     out = Value::integer(x);
     out.natBits = 64; out.natSigned = true;
     return true;
+}
+
+// A NUM result of native operands is a native num: `$int-native * $num-native`
+// stored into a native int converts, as Rakudo's native candidates make it.
+// Each operand is a native read or operation, or a literal OF THE OTHER SIDE'S
+// KIND (a Num literal beside a native num, an Int literal beside a native
+// int); at least one is a native. `/` is never a native candidate, nor is a
+// literal of the other kind (`$num + 1`): those are boxed Num arithmetic, and
+// a native int refuses what they give it (oracle-checked, Rakudo 2026.09).
+static bool nativeExprNode(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::VarExpr) {
+        auto* v = static_cast<const VarExpr*>(e);
+        return v->nativeIntRead || v->nativeNumRead;
+    }
+    return e->kind == NK::Binary || e->kind == NK::Unary;
+}
+static bool numLitNode(const Expr* e, bool wantNum) {
+    if (e && e->kind == NK::Unary && !static_cast<const Unary*>(e)->postfix) e = static_cast<const Unary*>(e)->operand.get();
+    if (!e) return false;
+    if (!wantNum) return e->kind == NK::IntLit;
+    return e->kind == NK::NumLit && !static_cast<const NumLit*>(e)->isRat && !static_cast<const NumLit*>(e)->imaginary;
+}
+static void tagNativeNum(const std::string& op, const Value& l, const Value& r,
+                         const Expr* ln, const Expr* rn, Value& res) {
+    if (res.t != VT::Num || res.natBits) return;
+    if (!(op == "+" || op == "-" || op == "*" || op == "**")) return;
+    const bool lnat = l.natBits && nativeExprNode(ln), rnat = r.natBits && nativeExprNode(rn);
+    if (!(lnat || rnat)) return;
+    if (!lnat && !numLitNode(ln, r.natFloat)) return;
+    if (!rnat && !numLitNode(rn, l.natFloat)) return;
+    res.natBits = 64; res.natFloat = true;
+}
+// `$n op= V` is `$n = $n op V`: native when V is a native, or a literal of the
+// target's own kind — so a native of the other kind then CONVERTS into $n.
+static bool compoundSrcNative(const std::string& op, const Value& rhs, const Expr* node, bool targetFloat) {
+    if (!(op == "+" || op == "-" || op == "*" || op == "**")) return false;
+    return (rhs.natBits && nativeExprNode(node)) || numLitNode(node, targetFloat);
 }
 
 // A compound op on a native WRAPS an Int result rather than refusing it, but a
 // result of the wrong kind (`$i /= 2` is a Rat, `$i += 1.5e0` a Num) is refused
 // as `=` refuses it, and the container keeps what it held before the op.
 static void nativeCompoundStore(Value& slot, const Value& before, int bits, bool sign, bool isFloat,
-                                const Expr* target) {
+                                const Expr* target, bool srcNative = false) {
+    if (srcNative && (slot.t == VT::Int || slot.t == VT::Num)) { wrapNative(slot, bits, sign, isFloat); return; }
     if (nativeRefusesKind(slot, isFloat)) {
         Value got = slot;
         slot = before;
@@ -34762,7 +34855,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             }
-                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get());   // WRAPS an Int, refuses another kind
+                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                                                        compoundSrcNative(bop, rhs, a->value.get(), nfl));
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
                         }
@@ -34789,7 +34883,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             ParStripe ws(*this, slot);
                             *slot = std::move(nv);
                         }
-                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get());   // WRAPS an Int, refuses another kind
+                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                                                    compoundSrcNative(bop2, rhs, a->value.get(), nfl));
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
                         return sink ? Value::any() : *slot;
                     }
@@ -38807,7 +38902,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!nm.empty() && nm[0] == '@') { lv->isList = false; lv->s.clear(); lv->itemized = false; }
         }
     }
-    if (nb) nativeCompoundStore(*lv, before, nb, ns, nf, a->target.get());
+    if (nb) nativeCompoundStore(*lv, before, nb, ns, nf, a->target.get(),
+                                compoundSrcNative(binop, rhs, a->value.get(), nf));
     return sink ? Value::any() : *lv;
 }
 
@@ -46893,6 +46989,9 @@ Value Interpreter::evalBinary(Binary* b) {
                     if ((lp->natBits || rp->natBits)) {
                         Value nv;
                         if (nativeIntArith(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv)) return nv;
+                        nv = applyArith(op, *lp, *rp);
+                        tagNativeNum(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv);
+                        return nv;
                     }
                     return applyArith(op, *lp, *rp);
                 }
@@ -47249,6 +47348,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
+        if (l.natBits || r.natBits) tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
         return res;
     }
     if (op == "=:=" || op == "!=:=") {
@@ -48257,6 +48357,11 @@ Value Interpreter::evalBinary(Binary* b) {
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))
         return applyArith(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
                               r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
+    if (l.natBits || r.natBits) {
+        Value res = applyArith(op, l, r);
+        tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
+        return res;
+    }
     return applyArith(op, l, r);
 }
 
@@ -51093,6 +51198,11 @@ Value Interpreter::evalUnary(Unary* u) {
         v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty()) {
         Value nv = Value::integer((long long)(0ULL - (unsigned long long)v.i));
         nv.natBits = 64; nv.natSigned = true;
+        return nv;
+    }
+    if (u->op == "-" && v.natBits && v.natFloat && v.t == VT::Num && nativeExprNode(u->operand.get())) {
+        Value nv = Value::number(-v.n);
+        nv.natBits = 64; nv.natFloat = true;
         return nv;
     }
     if (u->op == "+" || u->op == "-") return prefixNumeric(u->op, v);

@@ -264,7 +264,13 @@ void Scan::expr(Expr* e) {
                 // `state` storage), and the kernel writes the container
                 // directly. Refuse the lot.
                 if (v->declScope != "my" && !v->declScope.empty()) { fail("a " + v->declScope + " declaration"); return; }
-                if (!v->declType.empty() || !v->declCoerce.empty() || v->declDefault ||
+                // …except, for copy-and-patch, a full-width native: `my int $k`
+                // and `my num $t` are registers of that kind, and the lowering
+                // checks and wraps every store to them as the interpreter does
+                const bool cnpNative = g_opt.backend == Backend::Cnp &&
+                    (v->declType == "int" || v->declType == "int64" ||
+                     v->declType == "num" || v->declType == "num64");
+                if ((!v->declType.empty() && !cnpNative) || !v->declCoerce.empty() || v->declDefault ||
                     v->declDynamic || v->declExport || !v->containerIs.empty() ||
                     v->declShape || v->declTypeExpr || v->pkgSymbol || v->viaPseudoPkg) {
                     fail("a declaration with a type or trait"); return;
@@ -1157,7 +1163,15 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // before the synthetic header marked it written, so nothing that this
         // skips can reach a body assignment.
         const bool ownCounter = (int)k == s->counterSlot;
-        if (cell->natBits != 0 || cell->natFloat || (cell->readonly && !ownCounter))
+        // A full-width `int` or `num` is a register of that kind under
+        // copy-and-patch: its lowering wraps native operations and checks every
+        // store as the interpreter does, and the write-back keeps the tags. A
+        // sized native (`int8`, `num32`, `uint`) would have to wrap at another
+        // width, and the C++ backend honours none of it.
+        const bool fullNative = isCnp && cell->natBits == 64 &&
+            ((cell->natFloat) || (!cell->natFloat && cell->natSigned));
+        if ((cell->natBits != 0 && !fullNative) || (cell->natFloat && !fullNative) ||
+            (cell->readonly && !ownCounter))
             return refuse(s, "slot " + n + " is a native or readonly container the kernel would write");
         if (owner->ex) {
             const EnvExtras& x = *owner->ex;

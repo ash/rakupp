@@ -81,6 +81,11 @@ int rk_cnp_move   (RkCnpFrame* f, uint64_t d, uint64_t a);  // the RK_T_BOX case
 int rk_cnp_cmp    (RkCnpFrame* f, uint64_t op, uint64_t a, uint64_t b);  // 0/1, -1 on error
 int rk_cnp_truthy (RkCnpFrame* f, uint64_t a);                          // 0/1, -1 on error
 int rk_cnp_defined(RkCnpFrame* f, uint64_t a);                          // 0/1, -1 on error
+// A store into a native `int` / `num` register left the wrong kind in it:
+// convert what the interpreter accepts (a Bool into an int) into `dst`, or
+// refuse it with the interpreter's exception, leaving `dst` as it was. `kind`
+// is RK_T_INT or RK_T_NUM; `name` is the variable's constant-pool index.
+int rk_cnp_natchk (RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst);
 
 #ifdef __cplusplus
 }
@@ -101,3 +106,7 @@ enum RkCnpOp {
     RK_OP_NEG, RK_OP_PLUS, RK_OP_NOT, RK_OP_SO, RK_OP_BNOT, RK_OP_STR,
     RK_OP__COUNT
 };
+// Or'd into an operator index for a NATIVE int operation: its cold path wraps
+// at 64 bits instead of growing into a big Int (Interpreter nativeIntArith).
+#define RK_OP_NATIVE 0x80
+

@@ -68,3 +68,63 @@ What the table shows:
   faster than its boxed variables, because it really unboxes them.
 - **`mandel-rat` is exact `Rat` arithmetic everywhere,** and no
   configuration has a fast path for it yet (TYPES-PLAN phase N6).
+
+## Declared natives in `--cnp` kernels
+
+Measured 2026-09-29 on the same machine (load around 4), `build-arm64` at
+`7147de44` plus the change that lets `my int` / `my num` variables into
+copy-and-patch kernels (uncommitted at the time), best of 3. Every checksum
+agreed.
+
+| kernel | interp | `--cnp` | `--exe` | `--exe -O` | Rakudo |
+|---|---:|---:|---:|---:|---:|
+| intloop-plain | 1.051 s | 0.093 s | 0.160 s | 0.007 s | 0.699 s |
+| intloop-native | 1.218 s | 0.080 s | 0.160 s | 0.008 s | 0.199 s |
+| numloop-plain | 0.971 s | 0.029 s | 0.190 s | 0.008 s | 0.806 s |
+| numloop-native | 1.137 s | 0.033 s | 0.193 s | 0.008 s | 0.614 s |
+| mandel-plain | 1.700 s | 0.025 s | 0.201 s | 0.006 s | 0.656 s |
+| mandel-native | 1.999 s | 0.027 s | 0.193 s | 0.177 s | 0.205 s |
+| mandel-rat | 0.427 s | 0.235 s | 0.226 s | 0.223 s | 0.702 s |
+
+Against the baseline, `--cnp` on the native kernels:
+
+| kernel | before | after | |
+|---|---:|---:|---:|
+| intloop-native | 1.335 s | 0.080 s | 17× |
+| numloop-native | 1.125 s | 0.033 s | 34× |
+| mandel-native | 1.988 s | 0.027 s | 74× |
+
+A native loop now runs as fast as the plain one, where it used to run
+15–80× slower. The kernels keep native semantics: an `int` operation wraps
+at 64 bits, a store into a native is checked before it lands, and a native
+of the other kind converts. `t/jit/cases/natives.raku` holds the cases, and
+`t/jit/run.raku --cnp` compares them with the interpreter.
+
+Still open: `--exe -O` refuses `mandel-native`'s loop lanes (0.177 s against
+0.006 s for the plain kernel), and the interpreter column is unchanged,
+because a native there is still a full `Value` (TYPES-PLAN phase N4).
+
+## Native semantics in `--exe`
+
+Measured 2026-09-29, same machine (load 4–9, so the `--exe` column is soft),
+after `--exe` learned native semantics (uncommitted at the time), best of 3.
+Every checksum agreed.
+
+| kernel | interp | `--cnp` | `--exe` | `--exe -O` | Rakudo |
+|---|---:|---:|---:|---:|---:|
+| intloop-plain | 1.112 s | 0.094 s | 0.173 s | 0.008 s | 0.735 s |
+| intloop-native | 1.234 s | 0.082 s | 0.267 s | 0.008 s | 0.200 s |
+| numloop-plain | 0.996 s | 0.030 s | 0.192 s | 0.008 s | 0.826 s |
+| numloop-native | 1.158 s | 0.032 s | 0.294 s | 0.008 s | 0.613 s |
+| mandel-plain | 1.765 s | 0.025 s | 0.203 s | 0.006 s | 0.642 s |
+| mandel-native | 2.002 s | 0.028 s | 0.251 s | 0.006 s | 0.204 s |
+| mandel-rat | 0.425 s | 0.235 s | 0.224 s | 0.222 s | 0.706 s |
+
+- **`--exe -O` now runs `mandel-native`'s loops in lanes:** 0.177 s → 0.006 s.
+  A `my int` / `my num` declared inside a lane is a C++ local of that kind.
+- **Plain `--exe` pays for being right about natives,** 0.16–0.19 s → 0.25–0.29 s
+  on the native kernels. It used to compile a `my int` as an ordinary `Int`:
+  no wrapping, no store checks, and a sized native like `int8` did not wrap at
+  all (a loop counting to 300 printed 300 where the interpreter and Rakudo
+  print 44). Every store into a native and every native operation now goes
+  through the interpreter's own conversion, check and wrap.

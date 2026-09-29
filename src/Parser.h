@@ -549,12 +549,13 @@ private:
     std::vector<std::set<std::string>> lexDecl_ = std::vector<std::set<std::string>>(1);
     std::vector<std::string> pendingParamNames_;   // the last signature's names, for its body block
     // …and whether each `$` one is a native int, for nativeIntDecl_
-    std::vector<std::pair<std::string, bool>> pendingParamNative_;
+    std::vector<std::pair<std::string, char>> pendingParamNative_;   // 0 boxed, 'i' int, 'n' num
     // Per block: each `$` name the block declares (parameters included), and
     // whether that declaration is a native int. A read resolves to the NEAREST
     // frame that declares its name — see VarExpr::nativeIntRead.
-    std::vector<std::map<std::string, bool>> nativeIntDecl_ = {{}};
+    std::vector<std::map<std::string, char>> nativeIntDecl_ = {{}};   // 0 boxed, 'i' int, 'n' num
     static bool isNativeIntTypeName(const std::string& t);
+    static char nativeScalarKind(const std::string& t);   // 'i', 'n' or 0
     void noteLexRead(const std::string& n, size_t at);
     void noteLexDecl(const std::string& n, size_t at, int line);
     void noteScalarDecls(const Expr* e);

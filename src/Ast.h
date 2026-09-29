@@ -210,6 +210,7 @@ struct VarExpr : Expr {
     // of the name wins, so an untyped `is rw` parameter bound to a native is
     // not one. Integer operators on it are the native, wrapping candidates.
     bool nativeIntRead = false;
+    bool nativeNumRead = false;  // …and the same for a variable declared `num` / `num64`
     std::string declScope;       // my / our / state / constant
     std::string declStubType;    // `my ::foo $x`: the type NAME it introduces (value: that bare type)
     std::string declType;        // optional type constraint (ignored at runtime for now)
@@ -1202,5 +1203,92 @@ void emitAstProgram(const Program& prog, std::ostream& out,
 struct BundledModule;
 void emitModuleTable(const std::vector<BundledModule>& mods, std::ostream& decls,
                      std::ostream& calls, bool withSources = false);
+
+// An operand that IS a native int in Rakudo's static sense: a read of a
+// variable declared native int, or a native arithmetic operation (whose result
+// nativeIntArith tagged). Anything else only carries a native's tags.
+inline bool nativeIntNode(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
+    if (e->kind == NK::Binary) {
+        const std::string& o = static_cast<const Binary*>(e)->op;
+        return o == "+" || o == "-" || o == "*" || o == "**" || o == "div" || o == "%" || o == "mod";
+    }
+    if (e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        return !u->postfix && u->op == "-" && nativeIntNode(u->operand.get());
+    }
+    return false;
+}
+
+// The same question with no value to look at, for the compiling backends: an
+// integer operator is native when each operand is a native int or an integer
+// literal (at least one of them native), all the way down.
+inline bool nativeIntStatic(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
+    auto intLit = [](const Expr* x) {
+        if (x && x->kind == NK::Unary) {
+            auto* u = static_cast<const Unary*>(x);
+            if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;
+            x = u->operand.get();
+        }
+        return x && x->kind == NK::IntLit;
+    };
+    if (e->kind == NK::Binary) {
+        auto* b = static_cast<const Binary*>(e);
+        const std::string& o = b->op;
+        if (!(o == "+" || o == "-" || o == "*" || o == "**" || o == "div" || o == "%" || o == "mod")) return false;
+        const bool ln = nativeIntStatic(b->lhs.get()), rn = nativeIntStatic(b->rhs.get());
+        return (ln || rn) && (ln || intLit(b->lhs.get())) && (rn || intLit(b->rhs.get()));
+    }
+    if (e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        return !u->postfix && u->op == "-" && nativeIntStatic(u->operand.get());
+    }
+    return false;
+}
+
+// Is `e` a native NUMERIC value (int or num) with no value to look at: a read
+// of a native, or `+ - * **` whose operands are natives or literals of the
+// OTHER side's kind (an Int literal beside a native int, a Num literal beside
+// a native num), at least one a native. `/` is never native. The same rule the
+// interpreter applies (nativeIntArith, tagNativeNum), oracle-checked.
+// `kind` says what the value is: 'i' a native int, 'n' a native num.
+inline bool nativeNumericStatic(const Expr* e, char* kind = nullptr) {
+    if (!e) return false;
+    char k = 0;
+    if (e->kind == NK::VarExpr) {
+        auto* v = static_cast<const VarExpr*>(e);
+        k = v->nativeIntRead ? 'i' : v->nativeNumRead ? 'n' : 0;
+    }
+    else if (e->kind == NK::Binary) {
+        auto* b = static_cast<const Binary*>(e);
+        const std::string& o = b->op;
+        const bool intOnly = o == "div" || o == "%" || o == "mod";
+        if (!(o == "+" || o == "-" || o == "*" || o == "**" || intOnly)) return false;
+        char lk = 0, rk = 0;
+        const bool ln = nativeNumericStatic(b->lhs.get(), &lk), rn = nativeNumericStatic(b->rhs.get(), &rk);
+        auto litOf = [](const Expr* x, char want) {
+            if (x && x->kind == NK::Unary && !static_cast<const Unary*>(x)->postfix)
+                x = static_cast<const Unary*>(x)->operand.get();
+            if (!x) return false;
+            if (want == 'i') return x->kind == NK::IntLit;
+            return x->kind == NK::NumLit && !static_cast<const NumLit*>(x)->isRat &&
+                   !static_cast<const NumLit*>(x)->imaginary;
+        };
+        if (!(ln || rn)) return false;
+        if (!ln && !litOf(b->lhs.get(), rk)) return false;
+        if (!rn && !litOf(b->rhs.get(), lk)) return false;
+        k = (lk == 'n' || rk == 'n') ? 'n' : 'i';
+        if (intOnly && k != 'i') return false;
+    }
+    else if (e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        if (u->postfix || u->op != "-" || !nativeNumericStatic(u->operand.get(), &k)) return false;
+    }
+    if (kind) *kind = k;
+    return k != 0;
+}
 
 } // namespace rakupp

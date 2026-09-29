@@ -6902,7 +6902,11 @@ ExprPtr Parser::parsePrimary() {
             if (raw == e->name && raw.size() > 1 && raw[0] == '$')
                 for (auto fr = nativeIntDecl_.rbegin(); fr != nativeIntDecl_.rend(); ++fr) {
                     auto it = fr->find(raw);
-                    if (it != fr->end()) { e->nativeIntRead = it->second; break; }
+                    if (it != fr->end()) {
+                        e->nativeIntRead = it->second == 'i';
+                        e->nativeNumRead = it->second == 'n';
+                        break;
+                    }
                 }
             // a PACKAGE-qualified variable autovivifies its packages:
             // `$A40::x = 41` makes `A40` a name (its `.WHO` holds `$x`)
@@ -10049,7 +10053,13 @@ void Parser::noteScalarDecls(const Expr* e) {
     auto* ve = static_cast<const VarExpr*>(e);
     if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
     scalarDeclTypes_.back()[ve->name] = ve->declType;
-    nativeIntDecl_.back()[ve->name] = isNativeIntTypeName(ve->declType);
+    nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->declType);
+}
+
+char Parser::nativeScalarKind(const std::string& t) {
+    if (isNativeIntTypeName(t)) return 'i';
+    if (t == "num" || t == "num64") return 'n';
+    return 0;
 }
 
 bool Parser::isNativeIntTypeName(const std::string& t) {
@@ -11530,7 +11540,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         for (auto& p : ps) {
             if (!p.name.empty()) pendingParamNames_.push_back(p.name);
             if (p.name.size() > 1 && p.name[0] == '$')
-                pendingParamNative_.emplace_back(p.name, isNativeIntTypeName(p.type));
+                pendingParamNative_.emplace_back(p.name, nativeScalarKind(p.type));
             if (p.subSig) addNames(*p.subSig);
         }
     };

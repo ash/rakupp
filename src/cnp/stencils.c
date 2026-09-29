@@ -273,6 +273,14 @@ int rk_st_jdef(F* f, int64_t* r, uint8_t* t) {
     SLOW;
 }
 
+// A store into a native register must leave it holding that register's kind:
+// one tag compare on the hot path, the interpreter's check on the cold one.
+int rk_st_natchk(F* f, int64_t* r, uint8_t* t) {
+    (void)r;
+    if (t[OP0] == (uint8_t)OP1) NEXT;
+    SLOW;
+}
+
 // The kernel ran the loop to completion. The trampoline writes the registers
 // back into the interpreter's containers.
 int rk_st_ret(F* f, int64_t* r, uint8_t* t) { (void)f; (void)r; (void)t; return RK_CNP_OK; }
@@ -307,6 +315,12 @@ int rk_st_loadk(F* f, int64_t* r, uint8_t* t) {
 int rk_st_movebox(F* f, int64_t* r, uint8_t* t) {
     (void)r; (void)t;
     if (rk_cnp_move(f, OP0, OP1)) return RK_CNP_ERR;
+    NEXT;
+}
+// natchk's cold half: convert or refuse, through the interpreter.
+int rk_st_natchkslow(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_natchk(f, OP0, OP1, OP2, OP3)) return RK_CNP_ERR;
     NEXT;
 }
 // The boxed lanes of jt / jf / jdef.

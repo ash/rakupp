@@ -3578,13 +3578,28 @@ inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int &&
 inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big(); }
 // --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
 inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
-inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big() && v.enumName.empty(); }
+bool rtNativeIntOp(const std::string& op, long long a, long long b, long long& out);   // see nativeIntArith
+// --exe natives (Interpreter.cpp "natives for the compiling backends")
+Value rtNativeValue(const Value& v, const std::string& type, const std::string& name, bool srcNative);
+Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& name, bool srcNative);
+Value rtNativeArith(const char* op, const Value& l, const Value& r);
+Value rtNativeNeg(const Value& v);
+void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign);
+// A native container is a lane slot only at full width: `int` is an int64 the
+// lane may hold (it bails on overflow to the boxed code, which wraps), but a
+// sized one (`int8`, `uint`) must wrap at its own width on every store.
+inline bool rtIntSlot(const Value& v) {
+    return v.t == VT::Int && !v.big() && v.enumName.empty() &&
+           (!v.natBits || (v.natBits == 64 && v.natSigned && !v.natFloat));
+}
 // -O unboxed LOOP lanes (UNBOX-PLAN.md): the same question for a float slot.
 // `natFloat` is excluded because a num32 container truncates on assignment and a
 // lane writes `.n` directly; `enumName` for the reason rtIntSlot excludes it.
 // Deliberately NOT accepting an Int here: a lane never changes a variable's
 // runtime type, so a slot the lane holds as a double must already BE a Num.
-inline bool rtNumSlot(const Value& v) { return v.t == VT::Num && !v.natFloat && v.enumName.empty(); }
+inline bool rtNumSlot(const Value& v) {
+    return v.t == VT::Num && (!v.natFloat || v.natBits == 64) && v.enumName.empty();   // num, not num32
+}
 // Non-`-O` codegen emits every value-position operator as `applyArith("+", …)`,
 // and the parameter is a std::string — so a one- or two-character literal was
 // built into a temporary on every one of fib's 1.6M calls before the dispatcher

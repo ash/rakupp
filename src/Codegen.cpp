@@ -216,7 +216,8 @@ struct Codegen {
     std::string prefixBuiltin(Unary* u, const std::string& x) {
         if (u->op == "!" || u->op == "not") return "Value::boolean(!RT.boolify(" + x + "))";
         if (u->op == "?")  return "Value::boolean(RT.boolify(" + x + "))";
-        if (u->op == "-")  return "applyArith(\"-\", Value::integer(0), " + x + ")";
+        if (u->op == "-")  return nativeNumericStatic(u) ? "rtNativeNeg(" + x + ")"
+                                                         : "applyArith(\"-\", Value::integer(0), " + x + ")";
         if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
         if (u->op == "~")  return "Value::str((" + x + ").toStr())";
         if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
@@ -1484,6 +1485,9 @@ struct Codegen {
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = optimize_ ? "rtAdd(_o, Value::integer(" + delta + "))"
                                                 : "applyArith(\"+\", _o, Value::integer(" + delta + "))";
+                    if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
+                        add = "rtNativeValueLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
+                              cesc(nv->name) + ", true)";
                     return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
                            "; Value _o=_r; _r=" + add + "; return _o; }())";
                 }
@@ -1491,6 +1495,9 @@ struct Codegen {
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = optimize_ ? "rtAdd(_r, Value::integer(" + delta + "))"
                                                 : "applyArith(\"+\", _r, Value::integer(" + delta + "))";
+                    if (auto* nv = nativeScalarRef(u->operand.get()))
+                        add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                              cesc(nv->name) + ", true)";
                     return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
                            "; _r=" + add + "; return _r; }())";
                 }
@@ -1649,6 +1656,9 @@ struct Codegen {
                 // differently from an interpreted one.
                 if (std::string uf = userOpFn("infix:<" + b->op + ">"); !uf.empty())
                     return "rtUserInfix(" + userOpPtr(uf) + ", " + cesc(b->op) + ", " + L + ", " + R + ")";
+                // a NATIVE operation (Ast.h nativeNumericStatic): wraps at 64 bits,
+                // and its value carries the native tags, as the interpreter's does
+                if (nativeNumericStatic(b)) return "rtNativeArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
                 return std::string(starFn(b)) + "(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
@@ -2376,13 +2386,36 @@ struct Codegen {
     }
 
     // Assigning a list to an @-array materializes a fresh (bracket-gisting) Array.
-    std::string coerceFor(Expr* tgt, const std::string& rhs) {
+    std::string coerceFor(Expr* tgt, const std::string& rhs, Expr* value = nullptr) {
         if (tgt->kind == NK::VarExpr) {
-            const std::string& n = static_cast<VarExpr*>(tgt)->name;
+            auto* v = static_cast<VarExpr*>(tgt);
+            const std::string& n = v->name;
             if (!n.empty() && n[0] == '@') return "rtArrayVal(" + rhs + ")";
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
+            // A store into a NATIVE scalar converts, checks and wraps as the
+            // interpreter's does, and the value comes back carrying the width,
+            // so the plain assignment around it keeps the variable native.
+            if (!n.empty() && n[0] == '$') {
+                const std::string src = value && nativeNumericStatic(value) ? "true" : "false";
+                if (v->declare && isNativeScalarDecl(v->declType))
+                    return "rtNativeValue(" + rhs + ", " + cesc(v->declType) + ", " + cesc(n) + ", " + src + ")";
+                if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
+                    return "rtNativeValueLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+            }
         }
         return rhs;
+    }
+    // A read of a variable declared native int or num (the parser resolved it).
+    static VarExpr* nativeScalarRef(Expr* e) {
+        if (!e || e->kind != NK::VarExpr) return nullptr;
+        auto* v = static_cast<VarExpr*>(e);
+        return !v->declare && (v->nativeIntRead || v->nativeNumRead) ? v : nullptr;
+    }
+    static bool isNativeScalarDecl(const std::string& t) {
+        static const std::set<std::string> k = {
+            "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+            "byte", "num", "num32", "num64"};
+        return k.count(t) > 0;
     }
 
     std::string assign(Assign* a) {
@@ -2394,15 +2427,15 @@ struct Codegen {
                                                                : declVar(dv->name, sh);
             const std::string& nm = static_cast<VarExpr*>(tgt)->name;
             if (nm.size() > 1 && nm[1] == '*') // `my $*X = ..`: dynamics live in the runtime env
-                return "RT.dynVarRef(" + cesc(nm) + ") = " + coerceFor(tgt, exArg(a->value.get()));
+                return "RT.dynVarRef(" + cesc(nm) + ") = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
             if (nm.size() > 1 && nm[0] == '&') codeVars.insert(nm.substr(1));
             if (atTopLevel_ && topVars_.count(nm)) // hoisted to a global: assign it
-                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
+                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
             // the slot already exists: a `my` in expression position, or one a
             // lexical sub captured (see hoistLexicalSubs)
             if (hoisted.count(nm))
-                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
-            return declVar(nm, coerceFor(tgt, exArg(a->value.get())));
+                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
+            return declVar(nm, coerceFor(tgt, exArg(a->value.get()), a->value.get()));
         }
         // List-assignment target: `($a, $b) = …` / `my ($a, $b) = …` — RHS evaluates
         // fully into a temp first (so `($a, $b) = $b, $a` swaps), then assigns by position.
@@ -2458,7 +2491,7 @@ struct Codegen {
             return "RT.methodCall(" + lvalueExpr(ix->base.get()) + ", \"ASSIGN-POS\", ValueList{"
                  + multiDimArgs(ix) + ", " + rhs + "})";
         }
-        if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs);
+        if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
         // the read and the write are AT-POS and ASSIGN-POS around the operator.
@@ -2501,6 +2534,25 @@ struct Codegen {
             return "([&]()->Value{ Value& __r = " + ref + "; __r = " + nv + "; return __r; }())";
         }
         std::string lhs = lvalueExpr(tgt);
+        // `$n op= V` into a native scalar is `$n = $n op V`, stored as any
+        // native store is (see coerceFor): native when V is a native, or a
+        // literal of the target's own kind
+        if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->declare &&
+            (static_cast<VarExpr*>(tgt)->nativeIntRead || static_cast<VarExpr*>(tgt)->nativeNumRead) &&
+            (binop == "+" || binop == "-" || binop == "*" || binop == "**" || binop == "/" ||
+             binop == "div" || binop == "%" || binop == "mod")) {
+            auto* tv = static_cast<VarExpr*>(tgt);
+            Expr* ve = a->value.get();
+            const bool vInt = ve->kind == NK::IntLit;
+            const bool vNum = ve->kind == NK::NumLit && !static_cast<NumLit*>(ve)->isRat &&
+                              !static_cast<NumLit*>(ve)->imaginary;
+            const bool nativeOp = binop != "/" &&
+                (nativeNumericStatic(ve) || (tv->nativeIntRead ? vInt : vNum));
+            std::string val = nativeOp ? "rtNativeArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")"
+                                       : "applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
+            return lhs + " = rtNativeValueLike(" + lhs + ", " + val + ", " + cesc(tv->name) + ", " +
+                   (nativeOp && binop != "div" && binop != "%" && binop != "mod" ? "true" : "false") + ")";
+        }
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
         if (binop == "&&") return lhs + " = RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs;
         if (binop == "//") return lhs + " = !rtIsDefined(" + lhs + ") ? (" + rhs + ") : " + lhs;
@@ -2950,6 +3002,7 @@ struct Codegen {
         if (a->target->kind != NK::VarExpr) return false;
         auto* tv = static_cast<VarExpr*>(a->target.get());
         if (tv->declare) return false;                 // `my $x = …` declares a C++ var
+        if (tv->nativeIntRead || tv->nativeNumRead) return false;   // a native store checks and wraps (coerceFor)
         std::string lv = laneVar(tv);
         if (lv.empty()) return false;
         const std::string& op = a->op;
@@ -3004,6 +3057,11 @@ struct Codegen {
 
     struct ULoop {
         std::map<std::string, LT> slots;   // every lane variable -> its lane type
+        // Locals declared native (`my int $k`, `my num $t`): 'i' or 'n'. A num
+        // one starts F64, so an integer assigned to it converts as Rakudo's
+        // does; an int one that ends F64 would need the truncating store, which
+        // a lane does not do, so the lane is refused then.
+        std::map<std::string, char> natDecl;
         std::set<std::string> written;     // the ones the loop assigns
         // Declared INSIDE the loop (`my $t = …`). These have no box outside the
         // lane at all: they are guarded by nothing, stored back nowhere, and
@@ -3099,11 +3157,17 @@ struct Codegen {
                 if (tv->declare) {
                     if (a->op != "=") { U.fail(); return; }
                     if (!(tv->declScope.empty() || tv->declScope == "my")) { U.fail(); return; }
-                    if (!tv->declType.empty() || !tv->declCoerce.empty() || tv->declDefault ||
+                    const char nk = tv->declType == "int" || tv->declType == "int64" ? 'i'
+                                  : tv->declType == "num" || tv->declType == "num64" ? 'n' : 0;
+                    if ((!tv->declType.empty() && !nk) || !tv->declCoerce.empty() || tv->declDefault ||
                         tv->declDynamic || tv->declExport || !tv->containerIs.empty() ||
                         tv->declShape || tv->declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
                         U.fail(); return;
                     }
+                    // a native in a loop HEADER outlives the lane in a box the
+                    // store-back would replace without its width: not taken
+                    if (nk && U.inHeader) { U.fail(); return; }
+                    if (nk) U.natDecl[nm] = nk;
                     // A declaration that SHADOWS a name the lane already holds
                     // needs two locals for one name, and the emitter has one per
                     // name. This must refuse on ANY name already in the lane,
@@ -3118,7 +3182,7 @@ struct Codegen {
                         if (U.atTopHeader) U.escapeStore.insert(nm);
                     } else U.local.insert(nm);
                 }
-                U.slots.emplace(nm, LT::I64);
+                U.slots.emplace(nm, tv->declare && U.natDecl.count(nm) && U.natDecl[nm] == 'n' ? LT::F64 : LT::I64);
                 U.written.insert(nm);
                 uCollectExpr(a->value.get(), U);
                 return;
@@ -3695,6 +3759,8 @@ struct Codegen {
             if (!changed) break;
         }
         if (!U.ok) return false;
+        for (auto& nd : U.natDecl)
+            if (nd.second == 'i' && U.slots[nd.first] == LT::F64) return false;
 
         // Set up the lane's locals. Order matters only for readability, so the
         // map's own (name) order is used, which makes the emitted C++ stable

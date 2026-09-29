@@ -147,14 +147,60 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
             rtCatAssign(boxes[d], vb);
             return 0;
         }
+        // A native int operation wraps where the general one would grow: the
+        // interpreter's own definition (nativeIntArith), on the two machine ints
+        if (op & RK_OP_NATIVE) {
+            op &= ~(uint64_t)RK_OP_NATIVE;
+            if (f->t[a] == RK_T_INT && f->t[b] == RK_T_INT) {
+                long long x;
+                if (rtNativeIntOp(std::string(kOpNames[op]), f->r[a], f->r[b], x)) {
+                    setReg(f, d, Value::integer(x));
+                    return 0;
+                }
+                // `$i ** -1` on natives is the native candidate: an Int, 0
+                if (op == (uint64_t)RK_OP_POW && f->r[b] < 0) { setReg(f, d, Value::integer(0)); return 0; }
+            }
+        }
         Value va = regValue(f, a), vb = regValue(f, b);
         setReg(f, d, applyArith(std::string(kOpNames[op]), va, vb));
         return 0;
     } catch (...) { stash(f); return 1; }
 }
 
+int rk_cnp_natchk(RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst) {
+    try {
+        Value v = regValue(f, reg);
+        reg = dst;   // the checked value lands in the variable, not the source
+        const bool fromNative = (kind & 0x100) != 0;
+        kind &= 0xff;
+        const bool isFloat = kind == RK_T_NUM;
+        // a native of the other kind converts (the registers carry no tags, so
+        // the lowering said which values are natives)
+        if (fromNative && (v.t == VT::Int || v.t == VT::Num)) {
+            if (isFloat) setReg(f, reg, Value::number(v.toNum()));
+            else setReg(f, reg, Value::integer(v.toInt()));   // toward zero, saturating, NaN 0
+            return 0;
+        }
+        const auto& consts = *static_cast<const std::vector<Value>*>(f->consts);
+        nativeAssignCheck(v, 64, isFloat, consts[name].s.str(), true);
+        // …and what the check accepts is stored as the interpreter stores it
+        if (isFloat) setReg(f, reg, Value::number(v.toNum()));
+        else if (v.t == VT::Int && v.big()) setReg(f, reg, Value::integer((long long)v.big()->toU64Wrap()));
+        else setReg(f, reg, Value::integer(v.toInt()));
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
 int rk_cnp_unop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a) {
     try {
+        // `-$n` on a native int wraps: `-int.min` is int.min
+        if (op & RK_OP_NATIVE) {
+            op &= ~(uint64_t)RK_OP_NATIVE;
+            if (op == (uint64_t)RK_OP_NEG && f->t[a] == RK_T_INT) {
+                setReg(f, d, Value::integer((long long)(0ULL - (unsigned long long)f->r[a])));
+                return 0;
+            }
+        }
         Value v = regValue(f, a);
         // Verbatim from what Codegen emits for the same operators, so that a
         // kernel and a compiled program cannot disagree about them.
@@ -222,6 +268,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
+    int natchk, natchkslow;
     bool ok = false;
 };
 
@@ -248,6 +295,7 @@ const StencilIds& ids() {
         v.jmp = g("rk_st_jmp"); v.jt = g("rk_st_jt"); v.jf = g("rk_st_jf"); v.jdef = g("rk_st_jdef");
         v.ret = g("rk_st_ret");
         v.jtslow = g("rk_st_jtslow"); v.jfslow = g("rk_st_jfslow"); v.jdefslow = g("rk_st_jdefslow");
+        v.natchk = g("rk_st_natchk"); v.natchkslow = g("rk_st_natchkslow");
         return v;
     }();
     return s;
@@ -272,7 +320,7 @@ int cmpOpIndex(int slot) {
 // have meant knowing the index of the op that comes AFTER the one bailing out,
 // which is not known while that one is being emitted.
 struct ColdReq {
-    enum Kind { Binop, BinopImm, CmpBranch, CmpBranchImm, Unop, Movebox, Truthy, Defined } kind;
+    enum Kind { Binop, BinopImm, CmpBranch, CmpBranchImm, Unop, Movebox, Truthy, Defined, NatChk } kind;
     int      hot = -1;            // the op whose guard bails here
     uint64_t a = 0, b = 0, c = 0; // meaning depends on kind
     int      op = 0;              // an RkCnpOp
@@ -332,6 +380,41 @@ struct Lower {
     int constant(const Value& v) {
         consts.push_back(v);
         return (int)consts.size() - 1;
+    }
+
+    // A variable declared native `int` or `num` (the parser resolved it, see
+    // VarExpr::nativeIntRead) is a register of that kind: every store to it is
+    // checked as the interpreter checks one, and its operations wrap.
+    static char natKind(const VarExpr* v) {
+        if (v->declare)
+            return v->declType == "int" || v->declType == "int64" ? 'i'
+                 : v->declType == "num" || v->declType == "num64" ? 'n' : 0;
+        return v->nativeIntRead ? 'i' : v->nativeNumRead ? 'n' : 0;
+    }
+    // Store `src` into the variable `v`'s register `dst`. Into a native the
+    // value is checked FIRST, so a refusal leaves the variable holding what it
+    // held, as the interpreter's does (a CATCH outside reads it). The cold half
+    // converts what the check accepts (a Bool into an int) straight into `dst`
+    // and continues past the move.
+    // `srcNative`: the value is itself a native (Ast.h nativeNumericStatic),
+    // so a native of the other kind CONVERTS into this one, as in Rakudo.
+    void storeChecked(const VarExpr* v, int src, int dst, bool srcNative) {
+        char k = natKind(v);
+        int h = -1;
+        if (k) {
+            const uint64_t tag = k == 'i' ? RK_T_INT : RK_T_NUM;
+            h = emit(ids().natchk, (uint64_t)src, tag);
+            // bit 8 of the kind says "from a native"; the hot compare reads the low byte
+            ColdReq c{ColdReq::NatChk, h, (uint64_t)src, tag | (srcNative ? 0x100u : 0u),
+                      (uint64_t)constant(Value::str(v->name)), 0, 0, 0, false};
+            c.scratch = dst;
+            colds.push_back(c);
+        }
+        if (src != dst) {
+            int m = emit(ids().move, (uint64_t)dst, (uint64_t)src);
+            colds.push_back({ColdReq::Movebox, m, (uint64_t)dst, (uint64_t)src, 0, 0, 0, 0, false});
+        }
+        if (h >= 0) patch(h, here());   // the cold half resumes after the move
     }
 
     // ---- expressions -------------------------------------------------------
@@ -443,8 +526,12 @@ int Lower::expr(Expr* e) {
             if (v->declare) {
                 int r = declare(v->name);
                 // `my $x;` with no initialiser is an undefined Any, and it is
-                // reset on every pass through the declaration.
-                emit(ids().loadk, (uint64_t)r, (uint64_t)constant(Value()));
+                // reset on every pass through the declaration. A native starts
+                // at its zero instead: `my int $k;` is 0, `my num $t;` 0e0.
+                char nk = natKind(v);
+                if (nk == 'i') emit(ids().loadi, (uint64_t)r, 0);
+                else if (nk == 'n') emit(ids().loadn, (uint64_t)r, (uint64_t)d2bits(0.0));
+                else emit(ids().loadk, (uint64_t)r, (uint64_t)constant(Value()));
                 return r;
             }
             return lookup(v->name);
@@ -461,10 +548,7 @@ int Lower::expr(Expr* e) {
                 if (bad()) return 0;
                 int dst = tv->declare ? declare(tv->name) : lookup(tv->name);
                 if (bad()) return 0;
-                if (src != dst) {
-                    int m = emit(ids().move, (uint64_t)dst, (uint64_t)src);
-                    colds.push_back({ColdReq::Movebox, m, (uint64_t)dst, (uint64_t)src, 0, 0, 0, 0, false});
-                }
+                storeChecked(tv, src, dst, nativeNumericStatic(a->value.get()));
                 return dst;
             }
             // Compound assignment. `$x op= V` is `$x = $x op V`, and the
@@ -474,12 +558,22 @@ int Lower::expr(Expr* e) {
             if (bad()) return 0;
             std::string op = a->op.substr(0, a->op.size() - 1);
             long long k = 0;
-            if ((op == "+" || op == "-") && intLit(a->value.get(), k)) {
+            // `$n op= V` on a native int is the native operation when V is a
+            // native int or an integer literal, as `$n = $n op V` would be
+            const bool litV = intLit(a->value.get(), k);
+            const int nat = tv->nativeIntRead && (litV || nativeIntStatic(a->value.get())) ? RK_OP_NATIVE : 0;
+            // Into a native the result goes to a temp first, so that a refused
+            // one (`$i /= 2` is a Rat) leaves the variable as it was.
+            const bool checked = natKind(tv) != 0;
+            const int res = checked ? temp() : dst;
+            if ((op == "+" || op == "-") && litV) {
                 long long delta = op == "+" ? k : -k;
                 int scratch = temp();
-                int h = emit(ids().incr, (uint64_t)dst, (uint64_t)delta, (uint64_t)scratch);
-                colds.push_back({ColdReq::BinopImm, h, (uint64_t)dst, (uint64_t)dst, (uint64_t)delta,
-                                 RK_OP_ADD, scratch, 0, false});
+                int h = checked ? emit(ids().addi, (uint64_t)res, (uint64_t)dst, (uint64_t)delta, (uint64_t)scratch)
+                                : emit(ids().incr, (uint64_t)dst, (uint64_t)delta, (uint64_t)scratch);
+                colds.push_back({ColdReq::BinopImm, h, (uint64_t)res, (uint64_t)dst, (uint64_t)delta,
+                                 RK_OP_ADD | nat, scratch, 0, false});
+                if (checked) storeChecked(tv, res, dst, true);   // native op= integer literal
                 return dst;
             }
             int src = expr(a->value.get());
@@ -488,10 +582,20 @@ int Lower::expr(Expr* e) {
             if (oi < 0) { fail("compound operator '" + a->op + "'"); return 0; }
             int fast = op == "+" ? ids().add : op == "-" ? ids().sub : op == "*" ? ids().mul : -1;
             if (fast >= 0) {
-                int h = emit(fast, (uint64_t)dst, (uint64_t)dst, (uint64_t)src);
-                colds.push_back({ColdReq::Binop, h, (uint64_t)dst, (uint64_t)dst, (uint64_t)src, oi, 0, 0, false});
+                int h = emit(fast, (uint64_t)res, (uint64_t)dst, (uint64_t)src);
+                colds.push_back({ColdReq::Binop, h, (uint64_t)res, (uint64_t)dst, (uint64_t)src, oi | nat, 0, 0, false});
             } else {
-                emit(ids().binop, (uint64_t)dst, (uint64_t)dst, (uint64_t)src, (uint64_t)oi);
+                emit(ids().binop, (uint64_t)res, (uint64_t)dst, (uint64_t)src, (uint64_t)(oi | nat));
+            }
+            // `$n op= V` is native when V is (the target itself is)
+            if (checked) {
+                // native when V is a native, or a literal of the target's kind
+                const bool vNum = a->value->kind == NK::NumLit &&
+                                  !static_cast<NumLit*>(a->value.get())->isRat &&
+                                  !static_cast<NumLit*>(a->value.get())->imaginary;
+                const bool srcNat = (op == "+" || op == "-" || op == "*" || op == "**") &&
+                    (nativeNumericStatic(a->value.get()) || (natKind(tv) == 'i' ? litV : vNum));
+                storeChecked(tv, res, dst, srcNat);
             }
             return dst;
         }
@@ -517,6 +621,7 @@ int Lower::expr(Expr* e) {
             }
             int oi = opIndex(op);
             if (oi < 0) { fail("operator '" + op + "'"); return 0; }
+            const int nat = nativeIntStatic(b) ? RK_OP_NATIVE : 0;
             int cs = cmpSlot(op);
             long long k = 0;
             if ((op == "+" || op == "-") && intLit(b->rhs.get(), k)) {
@@ -526,7 +631,7 @@ int Lower::expr(Expr* e) {
                 long long delta = op == "+" ? k : -k;
                 int h = emit(ids().addi, (uint64_t)d, (uint64_t)a, (uint64_t)delta, (uint64_t)scratch);
                 colds.push_back({ColdReq::BinopImm, h, (uint64_t)d, (uint64_t)a, (uint64_t)delta,
-                                 RK_OP_ADD, scratch, 0, false});
+                                 RK_OP_ADD | nat, scratch, 0, false});
                 return d;
             }
             int a = expr(b->lhs.get());
@@ -538,9 +643,9 @@ int Lower::expr(Expr* e) {
                      : cs >= 0 ? ids().cmp[cs] : -1;
             if (fast >= 0) {
                 int h = emit(fast, (uint64_t)d, (uint64_t)a, (uint64_t)r);
-                colds.push_back({ColdReq::Binop, h, (uint64_t)d, (uint64_t)a, (uint64_t)r, oi, 0, 0, false});
+                colds.push_back({ColdReq::Binop, h, (uint64_t)d, (uint64_t)a, (uint64_t)r, oi | nat, 0, 0, false});
             } else {
-                emit(ids().binop, (uint64_t)d, (uint64_t)a, (uint64_t)r, (uint64_t)oi);
+                emit(ids().binop, (uint64_t)d, (uint64_t)a, (uint64_t)r, (uint64_t)(oi | nat));
             }
             return d;
         }
@@ -551,6 +656,7 @@ int Lower::expr(Expr* e) {
                 if (u->operand->kind != NK::VarExpr) { fail("++/-- on a non-variable"); return 0; }
                 int r = lookup(static_cast<VarExpr*>(u->operand.get())->name);
                 if (bad()) return 0;
+                const int nat = static_cast<VarExpr*>(u->operand.get())->nativeIntRead ? RK_OP_NATIVE : 0;
                 long long delta = op == "++" ? 1 : -1;
                 int old = -1;
                 if (u->postfix) {            // the value is what it held BEFORE
@@ -561,7 +667,7 @@ int Lower::expr(Expr* e) {
                 int scratch = temp();
                 int h = emit(ids().incr, (uint64_t)r, (uint64_t)delta, (uint64_t)scratch);
                 colds.push_back({ColdReq::BinopImm, h, (uint64_t)r, (uint64_t)r, (uint64_t)delta,
-                                 RK_OP_ADD, scratch, 0, false});
+                                 RK_OP_ADD | nat, scratch, 0, false});
                 return u->postfix ? old : r;
             }
             int a = expr(u->operand.get());
@@ -569,7 +675,8 @@ int Lower::expr(Expr* e) {
             int d = temp();
             if (op == "-") {
                 int h = emit(ids().neg, (uint64_t)d, (uint64_t)a);
-                colds.push_back({ColdReq::Unop, h, (uint64_t)d, (uint64_t)a, 0, RK_OP_NEG, 0, 0, false});
+                colds.push_back({ColdReq::Unop, h, (uint64_t)d, (uint64_t)a, 0,
+                                 RK_OP_NEG | (nativeIntStatic(u) ? RK_OP_NATIVE : 0), 0, 0, false});
                 return d;
             }
             if (op == "!" || op == "not") {
@@ -770,6 +877,10 @@ void Lower::finish() {
                 emit(ids().unop, c.a, c.b, (uint64_t)c.op);
                 ops.back().cont = cont;
                 break;
+            case ColdReq::NatChk:
+                emit(ids().natchkslow, c.a, c.b, c.c, (uint64_t)c.scratch);
+                ops.back().cont = target;   // past the move the hot path would have made
+                break;
             case ColdReq::Movebox:
                 emit(ids().movebox, c.a, c.b);
                 ops.back().cont = cont;
@@ -922,7 +1033,15 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
     // The write-back happens on BOTH exits. A loop that dies half way has to
     // leave the same values behind as an interpreted one would, because a CATCH
     // outside is about to read them.
-    for (size_t i = 0; i < n; i++) if (written[i]) *slots[i] = regValue(&f.abi, i);
+    // A native container keeps being native: the register holds the number,
+    // the tags belong to the container.
+    for (size_t i = 0; i < n; i++)
+        if (written[i]) {
+            Value* c = slots[i];
+            const int nb = c->natBits; const bool ns = c->natSigned, nf = c->natFloat;
+            *c = regValue(&f.abi, i);
+            if (nb) { c->natBits = nb; c->natSigned = ns; c->natFloat = nf; }
+        }
 
     if (rc != RK_CNP_OK) {
         // Every RK_CNP_ERR follows a helper that stashed something, so the
