@@ -380,6 +380,11 @@ struct Unary : Expr {
     std::string op;
     bool postfix = false;
     ExprPtr operand;
+    // Which part of evalUnary answers `op` (unaryPath in InterpreterCore.cpp),
+    // decided on the first evaluation and cached here: -1 not yet decided. It
+    // lets `$i++` skip the ~40 arms that each compare `op` to their own spelling.
+    // (A benign same-value race under RAKUPP_PARALLEL, like Binary::simpleOp.)
+    mutable DecidedOnce<signed char> evalPath{-1};
     Unary(): Expr(NK::Unary) {}
 };
 

@@ -20724,7 +20724,34 @@ static Value slipOf(const Value& v) {
     return v;
 }
 
+// Where evalUnary answers an operator (Unary::evalPath). The arms at the top of
+// evalUnary each test `u->op` against their own spelling, so every operator
+// that has none of them — `++`, `--` and the plain prefixes — used to pay ~40
+// string compares before reaching its own code. Decided once per node:
+//   0  one of the arms above the ++/-- one: run the function from the top
+//   1  `++` / `--`: straight to that arm
+//   2  anything else: straight to evaluating the operand
+// EARLY must name every operator an arm above the operand path tests for; one
+// missing from it would skip its own arm. An operator rewritten on a live node
+// (the BEGIN arm evaluates its node as `do`) must stay on the same path.
+static signed char unaryPath(const std::string& op) {
+    static const std::unordered_set<std::string> EARLY = {
+        "return", "return-rw", "last", "next", "redo", "siglit", "symexists",
+        "sym!exists", "capture", "decont", "ctx$", "ctx@", "ctx%", "ctx%{}",
+        "BEGIN", "do", "lazydo", "stmtseq", "try", "require", "once", "quietly",
+        "gather"};
+    if (op.rfind("hyper:", 0) == 0) return 0;
+    if (op.size() >= 3 && op.front() == '[' && op.back() == ']') return 0;
+    if (EARLY.count(op)) return 0;
+    if (op == "++" || op == "--") return 1;
+    return 2;
+}
+
 Value Interpreter::evalUnary(Unary* u) {
+    signed char path = u->evalPath;
+    if (path < 0) u->evalPath = path = unaryPath(u->op);
+    if (path == 1) goto incDec;
+    if (path == 2) goto operand;
     // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
     // nested arrays and hash values (keys kept); ++/-- mutate the elements in
     // place through the shared containers and yield the new values (prefix).
@@ -21692,6 +21719,7 @@ Value Interpreter::evalUnary(Unary* u) {
         arr.extM() = st;
         return arr;
     }
+  incDec:
     if (u->op == "++" || u->op == "--") {
         // Whatever-currying: `++*` / `*--` are WhateverCodes that step their
         // argument — mutating the DRIVER's element when one is aliased
@@ -21949,6 +21977,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return Value::integer(0);
         return u->postfix ? oldv : newv;
     }
+  operand:
     Value v = eval(u->operand.get());
     // Whatever-currying for prefix ops: `~*`, `-*`, `+*`, `?*`, `!*` become a
     // WhateverCode (e.g. `.sort: ~*` sorts by stringification). `^*` is here too,
