@@ -46,7 +46,10 @@ struct IndexSite {
 // scope as `$__cnp_argN`, and `synth` — the call rewritten to read them — is
 // evaluated by the interpreter, so lookup, dispatch and builtins are its own.
 struct KernelCall {
-    std::unique_ptr<Call> synth;
+    std::unique_ptr<Call> synth;          // a sub call, or…
+    std::unique_ptr<MethodCall> msynth;   // …a method call (its invocant is argRegs[0])
+    std::string method;                   // the method's name, for the fast path
+    bool pureMethod = false;              // a side-effect-free builtin method (see isPureMethod)
     std::vector<int> argRegs;
     std::vector<std::string> argNames;
     const BuiltinFn* builtin = nullptr;   // the builtin of that name, looked up on first use
@@ -211,10 +214,24 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
     try {
         auto& cs = (*static_cast<std::vector<rakupp::cnp::KernelCall>*>(f->calls))[site];
         spill();
+        // A side-effect-free builtin METHOD on a value that is not an object
+        // goes straight to the runtime's method dispatch, the route --exe
+        // calls methods by.
+        if (cs.msynth && cs.pureMethod) {
+            Value inv = regValue(f, (uint64_t)cs.argRegs[0]);
+            if (inv.t != VT::Object) {
+                ValueList args;
+                for (size_t k = 1; k < cs.argRegs.size(); k++) args.push_back(regValue(f, (uint64_t)cs.argRegs[k]));
+                Value res = I.methodCall(inv, cs.method, std::move(args));
+                reload();
+                setReg(f, dst, res);
+                return 0;
+            }
+        }
         // A BUILTIN the program has not shadowed goes straight to its function,
         // the route --exe calls builtins by: no scratch scope, no re-dispatch.
         if (!cs.builtinChecked) {
-            cs.builtin = I.builtinPtr(cs.synth->name);
+            cs.builtin = cs.synth ? I.builtinPtr(cs.synth->name) : nullptr;
             cs.builtinChecked = true;
         }
         if (cs.builtin && !saved->find("&" + cs.synth->name)) {
@@ -234,7 +251,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
         Interpreter::tctx_.cur = env;
         Value res;
-        try { res = I.eval(cs.synth.get()); }
+        try { res = cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
         catch (LastEx& e) {
             if (!e.label.empty()) throw;
             Interpreter::tctx_.cur = saved; reload(); f->ctl = 1; return 0;
@@ -594,6 +611,17 @@ struct Lower {
     void finish();
 };
 
+// Builtin methods with no side effect and no view of the caller: on a value
+// that is not an object they go straight to the runtime's method dispatch.
+bool isPureMethod(const std::string& m) {
+    static const std::set<std::string> k = {
+        "elems", "end", "abs", "sqrt", "floor", "ceiling", "round", "truncate", "sign",
+        "Int", "Num", "Str", "Bool", "Rat", "Numeric", "chars", "defined", "exp", "log",
+        "log10", "log2", "sin", "cos", "tan", "atan", "is-prime", "succ", "pred",
+        "uc", "lc", "tc", "fc", "flip", "key", "value", "keys", "values", "min", "max"};
+    return k.count(m) > 0;
+}
+
 // An integer literal small enough to ride in the instruction stream.
 bool intLit(Expr* e, long long& out) {
     if (!e || e->kind != NK::IntLit) return false;
@@ -883,6 +911,49 @@ int Lower::expr(Expr* e) {
             int base; std::vector<int> keys;
             if (!indexChain(static_cast<Index*>(e), base, keys)) return 0;
             return chainGet(base, keys);
+        }
+        case NK::MethodCall: {
+            // As a sub call (see NK::Call): the invocant and the arguments the
+            // kernel evaluated are bound in a scratch scope, the invocant under
+            // its own sigil so that `@a.elems` is still an array's method
+            auto* m = static_cast<MethodCall*>(e);
+            KernelCall cs;
+            cs.msynth = std::make_unique<MethodCall>();
+            cs.msynth->method = m->method;
+            cs.msynth->methodQual = m->methodQual;
+            cs.msynth->line = m->line;
+            cs.method = m->method;
+            cs.pureMethod = isPureMethod(m->method) && m->methodQual.empty();
+            char sig = '$';
+            if (m->inv->kind == NK::VarExpr) {
+                const std::string& in = static_cast<VarExpr*>(m->inv.get())->name;
+                if (!in.empty() && (in[0] == '@' || in[0] == '%')) sig = in[0];
+            }
+            auto bind = [&](Expr* x, const std::string& nm) -> std::unique_ptr<VarExpr> {
+                int r = temp();
+                exprInto(x, r);
+                cs.argRegs.push_back(r);
+                cs.argNames.push_back(nm);
+                auto ve = std::make_unique<VarExpr>(nm);
+                ve->line = m->line;
+                return ve;
+            };
+            cs.msynth->inv = bind(m->inv.get(), std::string(1, sig) + "__cnp_inv");
+            if (bad()) return 0;
+            for (size_t k = 0; k < m->args.size(); k++) {
+                cs.msynth->args.push_back(bind(m->args[k].get(), "$__cnp_arg" + std::to_string(k)));
+                if (bad()) return 0;
+            }
+            int d = temp();
+            calls.push_back(std::move(cs));
+            emit(ids().call, (uint64_t)(calls.size() - 1), (uint64_t)d);
+            if (!loops.empty()) {
+                int hl = emit(ids().jctl, 1);
+                loops.back().breaks.push_back(hl);
+                int hn = emit(ids().jctl, 2);
+                loops.back().continues.push_back(hn);
+            }
+            return d;
         }
         case NK::Call: {
             auto* c = static_cast<Call*>(e);

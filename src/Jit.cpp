@@ -380,6 +380,23 @@ void Scan::expr(Expr* e) {
             expr(ix->index.get());
             return;
         }
+        case NK::MethodCall: {
+            // Copy-and-patch only, as a sub call is: write back, call through the
+            // interpreter, reload. Not the forms that act on the variable or the
+            // caller rather than on a value.
+            auto* m = static_cast<MethodCall*>(e);
+            if (g_opt.backend != Backend::Cnp) { fail("a method call"); return; }
+            if (m->method.empty() || m->methodExpr || m->maybe || m->allMode || m->bang ||
+                m->mutate || m->hyper || m->meta || !m->inv) { fail("a method call of this form"); return; }
+            static const std::set<std::string> deny = {"VAR", "EVAL", "callsame", "nextsame", "WHERE"};
+            if (deny.count(m->method)) { fail("the method ." + m->method); return; }
+            expr(m->inv.get());
+            for (auto& a : m->args) {
+                if (!a || a->kind == NK::Pair) { fail("a method call with a named argument"); return; }
+                expr(a.get());
+            }
+            return;
+        }
         case NK::Call: {
             // Copy-and-patch only (TYPES-PLAN N5): the kernel writes the loop's
             // variables back before the call, runs it through the interpreter,
