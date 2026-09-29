@@ -15,7 +15,8 @@ RAKUPP_HINTS=1 rakupp program.raku
 - **It changes nothing a program computes.** Stdout, results and exit status
   are the same with and without it; only stderr gains the hint lines.
 - **Each hint is printed once per source line,** however many times the line
-  runs.
+  runs. In the REPL every input counts afresh, so repeating an input repeats
+  its hint.
 - **`--hints` sets `RAKUPP_HINTS=1`** in the process environment, as `--color`
   sets `RAKUPP_COLOR`, so a child process started with `run` or
   `Proc::Async` hears it too.

@@ -6880,11 +6880,19 @@ bool rtHintsOn() {
     }();
     return on;
 }
+// What was said already: once per line and kind. The REPL empties it for each
+// input, since every input it evaluates is line 1 again.
+static std::mutex g_hintMu;
+static std::set<std::pair<int, std::string>> g_hintSaid;
+void rtHintsReset() {
+    std::lock_guard<std::mutex> lk(g_hintMu);
+    g_hintSaid.clear();
+}
 void rtHint(const char* kind, const std::string& msg) {
     const int line = g_stmtLineThreaded.load(std::memory_order_relaxed)
                          ? t_stmtLine : g_stmtLine.load(std::memory_order_relaxed);
-    static std::mutex mu;
-    static std::set<std::pair<int, std::string>> said;
+    auto& mu = g_hintMu;
+    auto& said = g_hintSaid;
     std::lock_guard<std::mutex> lk(mu);
     if (!said.insert({line, kind}).second) return;   // once per line and kind
     std::cerr << "hint: line " << line << ": " << msg << "\n";

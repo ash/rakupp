@@ -807,6 +807,7 @@ int replMain(ReplCtx& ctx) {
 
         bool incomplete = false;
         const unsigned long long outBefore = outCounter.bytes();
+        rtHintsReset();   // each input is its own line 1: a hint may be said again
         try {
             Value v = interp->evalString(acc, /*mainlinePH=*/true, &incomplete);
             if (incomplete) continue;                    // nothing ran; ask for more
