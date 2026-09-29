@@ -135,7 +135,7 @@ battery.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build -j 4
 ```
 
 This produces `build/rakupp`. (Re-run the `cmake -S . -B build` configure step
@@ -399,14 +399,14 @@ src/
   Ast.h                  AST node definitions (one NK enum, dispatched in the interpreter).
   Parser.*               Recursive-descent statements + a Pratt expression core.
   Value.*                Runtime value type and coercions (incl. BigInt/Rat number tower).
-  Interpreter.*          Tree-walking evaluator, scopes, calls, control flow.
-  Builtins.cpp           Named builtins, the Test module (TAP), and method dispatch.
+  Interpreter*           Tree-walking evaluator, scopes, calls, control flow (the hot paths in InterpreterCore.cpp).
+  Builtins*.cpp          Named builtins (BuiltinsRegister*), the Test module (TAP), supplies, nqp:: ops, and method dispatch.
   Regex.*                Regex/grammar engine (recursive-descent + backtracking matcher).
   Unicode.* / unicode_*_gen.cpp Graphemes (UAX #29), normalization, UCA collation, names/properties (UCD/UCA 17.0 — see UNICODE.md).
   Runtime.*              Shared entry point (parse + interpret); the static library.
   Codegen.*              Native backend: transpiles the AST to C++ (`--exe`).
   codegen/Js.* / js-rt/  JavaScript backend: AST to JS, plus its runtime (`--target=js`).
-  MethodCall*.cpp        The method-dispatch table, split across three files.
+  MethodCall*.cpp        The rest of the method-dispatch chain, split across five files.
   main.cpp               CLI entry point: the run modes, the compile modes and the tooling subcommands.
 ```
 

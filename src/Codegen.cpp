@@ -15,8 +15,8 @@
 
 namespace rakupp {
 
-std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // Interpreter.cpp
-bool isKnownTypeName(const std::string& n); // Interpreter.cpp
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCore.cpp
+bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 
 namespace {
@@ -1332,7 +1332,7 @@ struct Codegen {
                 // answered Nil where the interpreter and Rakudo both answer -5 —
                 // silently, which is the worst way to be wrong. Resolving them
                 // here would mean a second copy of the interpreter's role-pun,
-                // enum and colonpair handling (Interpreter.cpp's NameTerm eval),
+                // enum and colonpair handling (InterpreterCore.cpp's NameTerm eval),
                 // and that is exactly the drift rtNameTerm exists to prevent —
                 // so this hands the program to the bundling fallback instead.
                 if (!static_cast<NameTerm*>(e)->ofType.empty())
@@ -3966,7 +3966,7 @@ struct Codegen {
     }
 
     // The DISPATCH KEY of a declared method. A private `method !name` is keyed
-    // `!name` — the same key the interpreter registers (Interpreter.cpp: `md->
+    // `!name` — the same key the interpreter registers (InterpreterModules.cpp: `md->
     // isPrivate ? "!" + mdName : mdName`) and the same one a `self!name` call
     // site emits. Keying both under the bare name made a class with `method
     // !foo` AND `method foo` emit one C++ body twice (a redefinition error out
@@ -4199,7 +4199,7 @@ struct Codegen {
         // as `fail`, or an interpreter-evaluated callback. Without it they escaped
         // main() and the binary died with "terminating due to uncaught exception of
         // type rakupp::ReturnEx", where the interpreter answered normally. The
-        // interpreter states the same boundary at Interpreter.cpp:6524.
+        // interpreter states the same boundary in callCallableRaw (InterpreterCore.cpp).
         line(1, "try {");
         bindParams(ps, 2, false);
         emitBody(body);

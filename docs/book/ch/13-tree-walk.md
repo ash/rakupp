@@ -82,7 +82,7 @@ straightforward recursion.
 and a copy:
 
 ```cpp
-// src/Interpreter.cpp — eval(VarExpr), the plain-lexical fast path
+// src/InterpreterCore.cpp — eval(VarExpr), the plain-lexical fast path
 if (Value* p = tctx_.cur->find(ve->name))
     if (!(p->t == VT::Hash && p->hashKind == "Proxy"))
         return *p;

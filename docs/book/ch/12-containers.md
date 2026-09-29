@@ -138,7 +138,7 @@ But `Env` stores `Value`s by value in a map, so two map slots cannot literally
 be the same storage. The alias is faked with a `Proxy`:
 
 ```cpp
-// src/Interpreter.cpp — $y := $x, scalar case
+// src/InterpreterCore.cpp — $y := $x, scalar case
 Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
 (*proxy.hash)["FETCH"] = fetch;    // a builtin Code closing over the owning Env
 (*proxy.hash)["STORE"] = store;
@@ -150,7 +150,7 @@ Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
 and calls `FETCH` instead of returning the hash:
 
 ```cpp
-// src/Interpreter.cpp — reading a variable
+// src/InterpreterCore.cpp — reading a variable
 Value* p = tctx_.cur->find(ve->name);
 if (p) {
     if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
@@ -172,7 +172,7 @@ in Chapter 19 decline any value with a non-empty `hashKind`.
 `shared_ptr` copy already does:
 
 ```cpp
-// src/Interpreter.cpp — @a := @b
+// src/InterpreterCore.cpp — @a := @b
 if (a->op == ":=" && rhs.t == VT::Array) {
     Value b = rhs; b.itemized = false; *lv = b;
 }
@@ -208,7 +208,7 @@ per-scope map. `my Int $x` stores `(Int)` as both the initial value and the
 reset default. Assigning `Nil` walks the chain to find it:
 
 ```cpp
-// src/Interpreter.cpp — $x = Nil restores the container's default
+// src/InterpreterCore.cpp — $x = Nil restores the container's default
 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
     auto di = en->varDefault.find(nm);
     if (di != en->varDefault.end()) { dv = di->second; break; }

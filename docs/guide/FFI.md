@@ -513,7 +513,7 @@ Callbacks going the other way — C calling back into Raku — are not traced.
 ## Implementation
 
 `src/Ffi.h` and `src/Ffi.cpp` hold the loader, the type registry and the
-self-test; `Interpreter::callNative` in `src/Interpreter.cpp` does the
+self-test; `Interpreter::callNative` in `src/InterpreterBinding.cpp` does the
 marshalling for both the interpreter and `--exe`.
 
 One detail worth knowing if you touch it: the calling-convention constant

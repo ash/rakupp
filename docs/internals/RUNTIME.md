@@ -181,7 +181,7 @@ A few tag choices are worth noting because they reuse fields cleverly:
   (`src/Value.h`): it carries the `FatRat` type identity — contagious through
   arithmetic, so any `FatRat` operand makes the result a `FatRat` — and is
   **exempt from the spill**, staying an arbitrary-precision rational forever
-  (`src/Interpreter.cpp`).
+  (`src/InterpreterCore.cpp`).
 - **An `Int`** is a `long long i` until it overflows, then it grows a `BigInt`
   in the cold block, reached as `v.big()`; `Value::bigint` picks inline vs.
   heap automatically (`src/Value.h`).
@@ -215,7 +215,7 @@ static Value matchVal(std::string text, long from, long to) {   // subject + spa
 And the FatRat spill exemption, in `applyArith`:
 
 ```cpp
-// src/Interpreter.cpp — a FatRat operand makes the result a FatRat, exempt from the Num spill
+// src/InterpreterCore.cpp — a FatRat operand makes the result a FatRat, exempt from the Num spill
 bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
 Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
 if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());  // plain Rat: spill
@@ -327,14 +327,14 @@ The three declarators differ only in *which* `Env` holds the slot:
 | Declarator | Storage | Notes |
 |---|---|---|
 | `my` | the current lexical `Env` (`tctx_.cur`) | ordinary lexical |
-| `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/Interpreter.cpp`) |
+| `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/InterpreterModules.cpp`) |
 | `state` | a per-`Callable` `state.env`, created **once** | a `StateSlot` holding the env and its `std::once_flag` (`src/Value.h:303`), whose copy constructor is empty so a cloned `Callable` starts with no state of its own; persists across calls, initialized on first call only |
 
 `our` additionally republishes its variables under a package-qualified global
 name when the package block closes (a `my` package var is skipped):
 
 ```cpp
-// src/Interpreter.cpp — on package-block exit, publish `our` symbols globally
+// src/InterpreterModules.cpp — on package-block exit, publish `our` symbols globally
 if (sigilVar && !ourVars.count(sym)) continue;            // a `my` package var — not published
 qual = std::string(1, sym[0]) + tctx_.pkgPrefix + sym.substr(1);   // e.g. "$Foo::Bar::x"
 global_->define(qual, kv.second);
@@ -420,7 +420,7 @@ slots can't literally be the same storage. Raku++ fakes the alias with a
 **`Proxy`**:
 
 ```cpp
-// $y := $x  —  src/Interpreter.cpp  (scalar case)
+// $y := $x  —  src/InterpreterCore.cpp  (scalar case)
 Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
 // FETCH reads owner->vars["$x"];  STORE writes owner->vars["$x"]
 (*proxy.hash)["FETCH"] = fetch;    // a builtin Code closing over the owning Env
@@ -434,7 +434,7 @@ of `$y` notices the `Proxy` tag and calls its `FETCH` instead of returning the
 hash; a write routes through `STORE`:
 
 ```cpp
-// src/Interpreter.cpp — reading a variable: a Proxy fetches rather than returning itself
+// src/InterpreterCore.cpp — reading a variable: a Proxy fetches rather than returning itself
 Value* p = tctx_.cur->find(ve->name);
 if (p) {
     if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
@@ -451,7 +451,7 @@ Binding chains deref one extra `Proxy` level so `$z := $y := $x` works.
 buffer is exactly what a `shared_ptr` copy already does:
 
 ```cpp
-// @a := @b  —  src/Interpreter.cpp
+// @a := @b  —  src/InterpreterCore.cpp
 if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.itemized = false; *lv = b; }
 ```
 
@@ -467,24 +467,24 @@ that without a separate container object, using flags on the `Value` plus
 per-`Env` side tables:
 
 - **`.VAR`** builds a `Hash` of kind `"Scalar"` reporting the variable's name,
-  value, and default (`src/Interpreter.cpp`).
+  value, and default (`src/InterpreterCore.cpp`).
 - **`is default(v)` / typed defaults** live in `Env::varDefault`
   (`src/Interpreter.h`), a per-scope map. `my Int $x` stores `(Int)` as both
   the initial value and the reset default; `$x = Nil` walks `varDefault` and
-  restores it (`src/Interpreter.cpp`).
+  restores it (`src/InterpreterCore.cpp`).
 - **Type constraints** on a scalar (`my Int $x = 3`) are enforced at assignment
   for the core nominal types, throwing `X::TypeCheck::Assignment` on a mismatch
-  (`src/Interpreter.cpp`).
+  (`src/InterpreterCore.cpp`).
 - **Native integers** (`my int $x`, `my uint8 $b`) carry a bit-width in
   `natBits` (`src/Value.h`) and **wrap on every assignment** — `wrapNative`
-  masks the value to the declared width (`src/Interpreter.cpp`).
+  masks the value to the declared width (`src/InterpreterCore.cpp`).
 - **`readonly`** (`src/Value.h`) marks a value bound to a read-only parameter;
   mutating ops like `s///` check it and die.
 
 These four behaviors, concretely:
 
 ```cpp
-// .VAR  — src/Interpreter.cpp: a Hash tagged "Scalar" describing the container
+// .VAR  — src/InterpreterCore.cpp: a Hash tagged "Scalar" describing the container
 Value sc = Value::makeHash(); sc.hashKind = "Scalar";
 (*sc.hash)["name"]    = Value::str(ivar->name);
 (*sc.hash)["default"] = dv;              // varDefault walked up the Env chain
@@ -527,7 +527,7 @@ bind the parameters.
 the spread and naming rules:
 
 ```cpp
-// src/Interpreter.cpp — evalArgs
+// src/InterpreterCore.cpp — evalArgs
 } else if (a->kind == NK::Unary && ((Unary*)a.get())->op == "|") {    // a Slip: |@a / |%h
     Value v = eval(...);
     if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
@@ -554,7 +554,7 @@ it runs the wrapper stack (each able to `callsame` to the next inner layer);
 otherwise it passes straight through to `callCallableRaw`, the real activation:
 
 ```cpp
-// src/Interpreter.cpp — callCallable
+// src/InterpreterCore.cpp — callCallable
 if (codeVal.code && !codeVal.code->wrappers.empty()) { /* run the wrapper stack, innermost last */ }
 return callCallableRaw(codeVal, std::move(args), rwArgs);   // the common no-wrapper path
 ```
@@ -598,7 +598,7 @@ the common case (all mandatory positional `$` scalars, no named args); the
 general path first splits named from positional, then binds:
 
 ```cpp
-// src/Interpreter.cpp — bindParams
+// src/InterpreterCore.cpp — bindParams
 if (simple) {                                        // all plain positional $ params, no nameds
     for (size_t i = 0; i < params.size(); i++) {
         Value v = i < args.size() ? args[i] : typedDefault(params[i].type, '$');
@@ -620,7 +620,7 @@ The general path covers:
 - **readonly vs. `is rw` vs. `is copy`** — a plain `$` param is marked `readonly`
   unless it's `rw`/`copy`/the invocant:
   `if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;`
-  (`src/Interpreter.cpp`);
+  (`src/InterpreterCore.cpp`);
 - **slurpy** `*@rest` (flattening), `**@rest` (non-flattening), `+@rest`
   (single-arg rule), and `*%named`;
 - **named** params, including `:a(:$b)` aliases and sub-signature destructuring
@@ -637,7 +637,7 @@ duck-typed at the bind boundary. Those checks live in `scoreCandidate`
 
 Because arguments are passed as `Value`s (copies), a mutated `is rw` parameter
 has to be copied *back* into the caller's variable after the call. That is
-`copyOutRw` (`src/Interpreter.cpp`): the call site also passes the argument
+`copyOutRw` (`src/InterpreterCore.cpp`): the call site also passes the argument
 *expressions* (`rwArgs`), and on a normal return each `is rw` param's final value
 is written back by re-resolving its argument expression via `lvalue()`:
 
@@ -664,7 +664,7 @@ loops, `frameTop` hasn't advanced past `curRoutineFrame`, and unwinding is just 
 matter of *stopping* the statement loop:
 
 ```cpp
-// return  —  src/Interpreter.cpp
+// return  —  src/InterpreterCore.cpp
 if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
     tctx_.returning = true; tctx_.returnV = std::move(v);   // set a flag, don't throw
     return Value::any();
@@ -677,7 +677,7 @@ statement and bail out; `callCallableRaw` consumes the flag at the routine
 boundary, adopting `returnV` as the call's result:
 
 ```cpp
-// src/Interpreter.cpp — callCallableRaw statement loop, after each statement
+// src/InterpreterCore.cpp — callCallableRaw statement loop, after each statement
 if (tctx_.returning) {                       // cooperative return reached this frame
     if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
     break;                                   // a bare block just propagates it to its routine
@@ -688,7 +688,7 @@ if (tctx_.returning) {                       // cooperative return reached this 
 `curLoopFrame` — set a flag when the loop is in the same frame, else throw:
 
 ```cpp
-// src/Interpreter.cpp — LastStmt (Next/Redo mirror it)
+// src/InterpreterCore.cpp — LastStmt (Next/Redo mirror it)
 if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {   // curLoopFrame defaults to kNoFrame
     tctx_.loopCtl = 2; return Value::any();  // cooperative last (runLoopBody consumes it)
 }
@@ -706,7 +706,7 @@ activation kind.)
 A `multi sub`/`multi method` is one `Callable` with `isMultiDispatcher = true`
 and a `candidates` vector (`src/Value.h`); each `multi` declaration pushes
 its `Code` onto the dispatcher. At call time `scoreCandidate`
-(`src/Interpreter.cpp`) scores every candidate against the actual arguments
+(`src/InterpreterCore.cpp`) scores every candidate against the actual arguments
 and returns `-1` for "doesn't apply" or a non-negative **specificity** score:
 
 - arity gates first (too few required, or too many for a non-slurpy → `-1`);
@@ -720,7 +720,7 @@ and returns `-1` for "doesn't apply" or a non-negative **specificity** score:
 The per-positional scoring core:
 
 ```cpp
-// src/Interpreter.cpp — scoreCandidate, per positional param
+// src/InterpreterCore.cpp — scoreCandidate, per positional param
 if (subsets_.count(p->type)) { if (!subsetMatches(p->type, pos[i])) return -1; score += 2; }
 else if (!typeMatchesArg(pos[i], p->type)) return -1;              // nominal type gate
 if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;        // :D wants a defined arg
@@ -778,7 +778,7 @@ gives each attribute its default, folds named args into `attrs`, then runs
 `BUILD`/`TWEAK`:
 
 ```cpp
-// src/Builtins.cpp — default construction
+// src/MethodCallPart2.cpp — default construction
 for (auto it = chain.rbegin(); it != chain.rend(); ++it)   // parent-first
     for (auto& at : (*it)->attrs) {
         Value dv = at.hasDefVal ? at.defVal : at.def ? eval(at.def)
@@ -837,7 +837,7 @@ at class declaration**, throwing `X::Comp::AdHoc` if unmet — and the check is
 more generous than a lookup, because a requirement is satisfied four ways:
 
 ```cpp
-// src/Interpreter.cpp — for each name a role requires
+// src/InterpreterModules.cpp — for each name a role requires
 ok = hasImpl(ci, rq, nullptr)      // a non-stub implementation anywhere in the type
   || classOwn.count(rq);           // …or the class's own stub: a deliberate promise
 if (!ok && attrCovers(ci, rq)) ok = true;   // …or a public attribute's accessor,
@@ -901,7 +901,7 @@ type-switched ladder for native values, the `ClassInfo` table for objects — an
 
 ## Closures
 
-`makeClosure` (`src/Interpreter.cpp`) turns a `{ ... }` block or `sub { }`
+`makeClosure` (`src/InterpreterBinding.cpp`) turns a `{ ... }` block or `sub { }`
 into a `Code` value by capturing the **defining** environment:
 
 ```cpp
@@ -913,7 +913,7 @@ code.code->closure = tctx_.cur;     // captured: the scope where the block was w
 Only the environment is *owned* (a `shared_ptr<Env>` copy); the parameter list
 and body are borrowed pointers into the AST, which outlives execution. At call
 time the fresh per-call `Env`'s parent chain runs
-`env → state.env → closure → … → global` (`src/Interpreter.cpp`), so a
+`env → state.env → closure → … → global` (`src/InterpreterCore.cpp`), so a
 free variable in the body resolves through the captured `closure` scope. Because
 the capture is the live `Env` (not a copy of its values), a closure sees and
 mutates the *same* container as its defining scope — real closures, e.g. a
@@ -937,7 +937,7 @@ methods, and the `|`/`&`/`^` infix operators.
 **Autothreading** — distributing an operation over the eigenstates and
 recombining — happens at each place a value is consumed:
 
-- **Operators** (`applyArith`, `src/Interpreter.cpp`): a comparison
+- **Operators** (`applyArith`, `src/InterpreterCore.cpp`): a comparison
   *collapses* to a single `Bool` per the junction type (`any` → "any eigenstate
   true", `all` → "all true", etc.); any other operator produces a **new**
   junction of the per-eigenstate results:
@@ -1017,7 +1017,7 @@ Consumers grow the prefix on demand with `materializeLazy(v, n)`, which calls
 `appendNext` until the prefix has `n` elements or a hard cap of 1,000,000 is hit:
 
 ```cpp
-void Interpreter::materializeLazy(const Value& v, size_t n) {   // src/Interpreter.cpp
+void Interpreter::materializeLazy(const Value& v, size_t n) {   // src/InterpreterBinding.cpp
     auto st = std::static_pointer_cast<LazySeqState>(v.ext);
     while (v.arr->size() < n && v.arr->size() < CAP)
         if (!st->appendNext(*v.arr)) break;
@@ -1029,7 +1029,7 @@ three; `.first(&pred)` pulls one at a time until the predicate matches.
 Operations that need the *end* of an infinite list throw `X::Cannot::Lazy`:
 
 ```cpp
-// src/Builtins.cpp — whole-list ops on an INFINITE lazy source can't complete
+// src/MethodCallTail.cpp — whole-list ops on an INFINITE lazy source can't complete
 if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
     m == "sort" || m == "sum" || m == "min" || m == "max" || m == "join" ||
     m == "Str" || m == "gist")
@@ -1045,7 +1045,7 @@ full materialization.)
 from the source on demand, so `(1..Inf).grep(*.is-prime).head(5)` terminates:
 
 ```cpp
-// .map  —  src/Builtins.cpp
+// .map  —  src/MethodCallTail.cpp
 st->appendNext = [self, src, fn](ValueList& cache) -> bool {
     size_t si = cache.size();
     self->materializeLazy(src, si + 1);            // pull one more from the source
@@ -1067,7 +1067,7 @@ prefix: `[+] 1..Inf` used to come out 50005000 — the sum of 1..10000 — with
 nothing to mark it as partial (issue #19). Every reduce entry point (the `[op]`
 unary, `prefix:<[op]>(…)`, `&prefix:<[op]>`, `rtReduce` for native codegen, and
 `.reduce`) therefore checks its operand with `endlessReduce`
-(`src/Interpreter.cpp`) *before* flattening:
+(`src/InterpreterOperators.cpp`) *before* flattening:
 
 - `+` → the limit of the arithmetic series, which is what `.sum` answers:
   `Inf`, `-Inf`, or `NaN` for `-Inf..Inf`;
@@ -1111,7 +1111,7 @@ A `take` that pushes past the current cap throws `StopGatherEx`
 ```cpp
 auto& coll = *tctx_.gatherStack.back();
 for (auto& x : a) coll.push_back(x);
-if (lim && coll.size() >= lim) throw StopGatherEx{};   // src/Builtins.cpp
+if (lim && coll.size() >= lim) throw StopGatherEx{};   // src/InterpreterCalls.cpp
 ```
 
 So a `gather` producing an infinite stream runs the block only far enough to
@@ -1122,7 +1122,7 @@ satisfy each demand, then stops via the exception, re-entering later for more.
 `5 but Role` and `%h does R` mix a role (or an attribute) into a value at run
 time. For a value that is already an object, the role is composed into a fresh
 anonymous subclass. For a **non-object base** — `5 but Role` — there is no
-`ObjectData` to extend, so `mixinValue` (`src/Interpreter.cpp`) *boxes* it:
+`ObjectData` to extend, so `mixinValue` (`src/InterpreterOperators.cpp`) *boxes* it:
 
 ```cpp
 obj = std::make_shared<ObjectData>();

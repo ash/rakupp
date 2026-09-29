@@ -86,7 +86,7 @@ The default `new` and `bless` share one path. It walks the class chain
 the attribute map, and then runs `BUILD` and `TWEAK`:
 
 ```cpp
-// src/Builtins.cpp — default construction, abridged
+// src/MethodCallPart2.cpp — default construction, abridged
 for (auto it = chain.rbegin(); it != chain.rend(); ++it)      // parent-first
     for (auto& at : (*it)->attrs) {
         Value dv = at.hasDefVal ? at.defVal
@@ -120,7 +120,7 @@ accessor: method lookup runs first, and on a miss `findAttr` supplies the
 attribute. The compiled backend uses the same map through two helpers:
 
 ```cpp
-// src/Interpreter.cpp
+// src/InterpreterBinding.cpp
 Value rtAttrGet(const Value& self, const std::string& name) {
     if (self.t == VT::Object && self.obj) {
         auto it = self.obj->attrs.find(name);
@@ -167,7 +167,7 @@ generous than a lookup, because there are four honest ways to satisfy a
 requirement:
 
 ```cpp
-// src/Interpreter.cpp — for each name a role requires
+// src/InterpreterModules.cpp — for each name a role requires
 ok = hasImpl(ci, rq, nullptr)      // a non-stub implementation anywhere in the type
   || classOwn.count(rq);           // …or the class's own stub: a deliberate promise
 if (!ok && attrCovers(ci, rq)) ok = true;   // …or a public attribute's accessor,
@@ -227,7 +227,7 @@ anonymous subclass. For a **non-object base** there is no `ObjectData` to
 extend, so the value is *boxed*:
 
 ```cpp
-// src/Interpreter.cpp — mixinValue
+// src/InterpreterOperators.cpp — mixinValue
 obj = std::make_shared<ObjectData>();
 obj->boxed = base;          // the original 5 is kept here
 obj->hasBoxed = true;

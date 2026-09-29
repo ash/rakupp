@@ -1043,7 +1043,7 @@ while writing this sheet:
 ## Appendix A — all built-in subroutines
 
 The 254 subroutines registered by `Interpreter::registerBuiltins()`
-(`src/Builtins.cpp`), alphabetically:
+(`src/BuiltinsRegister*.cpp`), alphabetically:
 
 ```
 !!! ... ??? EVAL EVALFILE RUN-MAIN RUN-MAIN-args-to-capture Slip VAR

@@ -18,7 +18,7 @@ third-party libraries. You still need Jupyter itself — that is the frontend.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build -j 4
 build/rakupp --jupyter-install
 ```
 

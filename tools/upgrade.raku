@@ -21,7 +21,7 @@
 # looking for shasum, sha1sum or openssl and finds none of them.
 
 # `Digest::Native` is one of the names the ENGINE answers itself (DATA-PLAN P3:
-# see kDataNativeModules in src/Interpreter.cpp) — so this `use` loads nothing
+# see kDataNativeModules in src/InterpreterModules.cpp) — so this `use` loads nothing
 # and needs nothing installed, which is what the paragraph above promises.
 #
 # It said `Digest::SHA256::Native` until 2026-09-12, which is an ECOSYSTEM

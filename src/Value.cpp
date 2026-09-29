@@ -48,17 +48,17 @@ static PtrCensusDump g_ptrCensusDump;
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
-ObjMethodStrFn g_objMethodStr = nullptr; // installed by Interpreter.cpp (see Value.h)
-TypeDispNameFn g_typeDispName = nullptr; // installed by Interpreter.cpp (see Value.h)
+ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
+TypeDispNameFn g_typeDispName = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.h)
-ForceLazyFn g_forceLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
-MakeTypedExFn g_makeTypedEx = nullptr; // installed by Interpreter.cpp (see Value.h)
-EndlessLazyFn g_endlessLazy = nullptr; // installed by Interpreter.cpp (see Value.h)
+ForceLazyFn g_forceLazy = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
+MakeTypedExFn g_makeTypedEx = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
+EndlessLazyFn g_endlessLazy = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 // Pull a lazy sequence up to n elements (materializeLazy), for the one reader
 // here that needs a bounded number: Bool, which asks for a first element.
-// Installed by Interpreter.cpp beside g_forceLazy.
+// Installed by InterpreterBinding.cpp beside g_forceLazy.
 void (*g_pullLazy)(const Value&, size_t) = nullptr;
-DateFormatFn g_dateFormat = nullptr; // installed by Interpreter.cpp (see Value.h)
+DateFormatFn g_dateFormat = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
 // self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it

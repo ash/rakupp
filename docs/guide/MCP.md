@@ -30,7 +30,7 @@ No shared library is needed — the CLI binary itself serves:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build -j 4
 ```
 
 Register it with an MCP client. Claude Code:

@@ -38,7 +38,7 @@ static bool rxUsesSym(const std::string& pat) {
     return false;
 }
 
-bool isKnownTypeName(const std::string& n); // Interpreter.cpp
+bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 

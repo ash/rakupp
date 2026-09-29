@@ -13,13 +13,13 @@ own — is in Appendix D.
 | what a value *is* | `Value.h` | Chapter 8 |
 | string performance | `Value.h` `CowStr`, `BuiltinsShared.h` | Chapters 9 and 24 |
 | the number tower | `BigInt.cpp`, `IntOps.h`, `Value::rat` | Chapter 11 |
-| scoping, assignment, binding | `Interpreter.cpp` `lvalue`, `evalAssign` | Chapter 12 |
+| scoping, assignment, binding | `InterpreterCore.cpp` `lvalue`, `evalAssign` | Chapter 12 |
 | how lists and argument lists are stored | `ValueVec.h` `RVec`, `Value.h`'s `ValueList` | Chapter 12 |
-| calls and signatures | `Interpreter.cpp` `callCallableRaw`, `bindParams` | Chapter 14 |
+| calls and signatures | `InterpreterCore.cpp` `callCallableRaw`, `bindParams` | Chapter 14 |
 | `return`, `next`, `last`, `when` | the cooperative registers in `ExecContext` | Chapter 15 |
-| a built-in routine | `Builtins.cpp` `registerBuiltins` | Chapter 16 |
-| a built-in **method** | the four `methodCall` segments, **in order** | Chapters 2 and 16 |
-| classes, roles, mixins | `Interpreter.cpp` `ClassDecl` handling, `Value.h` | Chapter 17 |
+| a built-in routine | `BuiltinsRegister*.cpp` `registerBuiltins` | Chapter 16 |
+| a built-in **method** | the six `methodCall` segments, **in order** | Chapters 2 and 16 |
+| classes, roles, mixins | `InterpreterModules.cpp` `ClassDecl` handling, `Value.h` | Chapter 17 |
 | laziness, `gather` | `LazySeqState`, `seqOp`, the gather stack | Chapter 18 |
 | interpreter speed | `evalBinary`, `evalIndex`, the decided-once fields | Chapter 19 |
 | regex syntax | `Regex.cpp` `parseAtom` | Chapter 20 |
@@ -35,7 +35,7 @@ own — is in Appendix D.
 | the parse cache | `AstSerial.cpp` | Chapter 30 |
 | the JavaScript back end | `src/codegen/Js.cpp`, `JsRuntimeSrc.cpp`, `src/js-rt/` | Chapter 31 |
 | the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 32 |
-| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 33 |
+| module loading | `InterpreterModules.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 33 |
 | the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 34 |
 | `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 35 |
 | NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 36 |

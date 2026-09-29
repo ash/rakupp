@@ -178,7 +178,7 @@ overwriting it:
 | Homebrew | `brew upgrade rakupp` |
 | Nix | `nix profile upgrade rakupp` |
 | Guix | `guix upgrade rakupp` |
-| a source checkout | `git pull && cmake --build build` |
+| a source checkout | `git pull && cmake --build build -j 4` |
 
 ## Windows
 
@@ -335,11 +335,17 @@ deleted.
 ```sh
 # Needs a C++17 compiler + CMake → produces build/rakupp
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build -j 4
 
 # Install onto $PATH (binary + the runtime that --exe links against)
 cmake --install build --prefix ~/.local   # → ~/.local/{bin,lib,include/rakupp}
 ```
+
+`-j 4` compiles four files at a time: about 45 s on an Apple M3, where a
+serial build takes three minutes. With the cores and the memory for eight
+compilers, `-j 8` brings it to about 25 s; the floor is the longest single
+file, `src/InterpreterCore.cpp`, at about 20 s. A bare `-j`, with no number,
+starts every compile at once under the default Makefiles generator.
 
 On Windows (MSVC), build from a *Developer Command Prompt* and pass the
 configuration to the build step — the Visual Studio generator is

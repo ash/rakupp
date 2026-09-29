@@ -1,0 +1,19 @@
+# The plan that split src/Builtins.cpp (22,157 lines) into the Builtins*.cpp and
+# MethodCallPart1b/1c.cpp files and BuiltinsParts.h. It splits surgery.raku's
+# OUTPUT, and the line numbers are that output's. From the repository root:
+#
+#   git show SPLIT^:src/Builtins.cpp > /tmp/Builtins.cpp          # SPLIT = the commit that split it
+#   rakupp tools/source-helpers/surgery.raku /tmp/Builtins.cpp /tmp/Builtins.cut.cpp
+#   rakupp tools/source-helpers/split.raku --note-src=Builtins.cpp \
+#       /tmp/Builtins.cut.cpp tools/source-helpers/builtins.plan /tmp/builtins-out
+header BuiltinsParts.h "what the Builtins*.cpp and MethodCallPart1b/1c.cpp files share"
+part Builtins.cpp               1     "helpers (processes, taps, .raku, sprintf, signatures, JSON), methodCall and methodCallInner — the first segment of the method-dispatch chain"
+part MethodCallPart1b.cpp       9284  "segment 1b of the method-dispatch chain"
+part MethodCallPart1c.cpp       10615 "segment 1c of the method-dispatch chain"
+part BuiltinsSupply.cpp         12296 "supplies (taps, delivery, timers, signals, async sockets) and the --exe built-in natives (rtB*)"
+part BuiltinsRegister.cpp       15059 "registerBuiltins, first two pieces: test functions, EVAL, atomics, gather/take, I/O subs"
+part BuiltinsRegister2.cpp      17651 "registerBuiltins, pieces three and four: string and list subs, radix, coercions"
+part BuiltinsRegister3.cpp      19603 "registerBuiltins, the last piece: sleep, signals, NativeCall subs, set operators"
+part BuiltinsNqp.cpp            20764 "the nqp:: ops, interpreted (evalNqpOp) and compiled (rtNqpOp)"
+follow
+inline-max 12

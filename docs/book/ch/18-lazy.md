@@ -69,7 +69,7 @@ a.ext = st;
 Consumers grow the prefix on demand:
 
 ```cpp
-// src/Interpreter.cpp
+// src/InterpreterBinding.cpp
 void Interpreter::materializeLazy(const Value& v, size_t n) {
     auto st = std::static_pointer_cast<LazySeqState>(v.ext);
     while (v.arr->size() < n && v.arr->size() < CAP)
@@ -84,7 +84,7 @@ matches.
 Operations that need the *end* of an infinite list cannot complete, and say so:
 
 ```cpp
-// src/Builtins.cpp
+// src/MethodCallTail.cpp
 if (m == "elems" || m == "end" || m == "pop" || m == "tail" ||
     m == "reverse" || m == "sort" || m == "sum" || m == "min" ||
     m == "max" || m == "join" || m == "Str" || m == "gist")
@@ -102,7 +102,7 @@ source on demand, which is what makes `(1..Inf).grep(*.is-prime).head(5)`
 terminate:
 
 ```cpp
-// src/Builtins.cpp — .map over a lazy source
+// src/MethodCallTail.cpp — .map over a lazy source
 st->appendNext = [self, src, fn](ValueList& cache) -> bool {
     size_t si = cache.size();
     self->materializeLazy(src, si + 1);          // pull one more
@@ -180,7 +180,7 @@ for whatever happened to be materialised. It is drained first, and refused only
 if it will not drain:
 
 ```cpp
-// src/Interpreter.cpp — endlessReduce, the lazy arm
+// src/InterpreterOperators.cpp — endlessReduce, the lazy arm
 auto st = std::static_pointer_cast<LazySeqState>(v.ext);
 const size_t CAP = 1000000;                       // materializeLazy's ceiling
 if (st->appendNext)
@@ -262,7 +262,7 @@ Doubling keeps the re-run cost amortised linear. A `take` that pushes past the
 current cap unwinds the block with an empty marker exception:
 
 ```cpp
-// src/Builtins.cpp — take
+// src/InterpreterCalls.cpp — take
 auto& coll = *tctx_.gatherStack.back();
 for (auto& x : a) coll.push_back(x);
 if (lim && coll.size() >= lim) throw StopGatherEx{};
@@ -300,7 +300,7 @@ junction type; any other operator produces a **new** junction of the
 per-eigenstate results:
 
 ```cpp
-// src/Interpreter.cpp — applyArith
+// src/InterpreterCore.cpp — applyArith
 Value out = Value::array(); out.enumName = j.enumName;
 for (auto& e : *j.arr)
     out.arr->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));

@@ -235,7 +235,7 @@ Two separate costs are visible, and it is worth keeping them apart:
   the picture.
 - **The parallel column.** Contended reaches 2.93×; both of the others clear
   3.4×. Under contention the workers serialise on one cache line and one stripe
-  mutex ([`Interpreter::atomicStripe`](../../src/Interpreter.cpp), a striped
+  mutex ([`Interpreter::atomicStripe`](../../src/InterpreterOperators.cpp), a striped
   `std::recursive_mutex` pool hashed by container address), so part of every
   iteration is spent in a queue.
 

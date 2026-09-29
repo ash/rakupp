@@ -108,7 +108,7 @@ struct NqpOp : Expr {
 and the evaluator handles the lazy forms *before* touching their arguments:
 
 ```cpp
-// src/Builtins.cpp — condensed
+// src/BuiltinsNqp.cpp — condensed
 Value Interpreter::evalNqpOp(NqpOp* n) {
     auto& a = n->args;
     switch (n->op) {                        // lazy forms drive their own args

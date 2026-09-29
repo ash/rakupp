@@ -13,7 +13,7 @@ and knowing which one is in play explains most of the surprises.
 `evalCall` resolves every named call the same way:
 
 ```cpp
-// src/Interpreter.cpp — evalCall, abridged
+// src/InterpreterCore.cpp — evalCall, abridged
 if (Value* f = tctx_.cur->find("&" + c->name))
     return callCallable(*f, std::move(args), &c->args, false, …);
 …
@@ -47,7 +47,7 @@ At call time, `scoreCandidate` scores every candidate against the actual
 arguments, returning `-1` for "does not apply" or a non-negative **specificity**:
 
 ```cpp
-// src/Interpreter.cpp — scoreCandidate, per positional parameter
+// src/InterpreterCore.cpp — scoreCandidate, per positional parameter
 if (subsets_.count(p->type)) {
     if (!subsetMatches(p->type, pos[i])) return -1;
     score += 2;

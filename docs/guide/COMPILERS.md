@@ -35,7 +35,7 @@ runs under Rosetta 2 at roughly **half** native speed. Always pin the arch:
 ```sh
 # Apple Silicon — native arm64
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
-cmake --build build -j
+cmake --build build -j 4
 
 # A universal binary (both arches), as the release ships:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
@@ -77,10 +77,10 @@ Pick whichever you have:
 
 ```sh
 # default (usually GCC)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
 
 # Clang explicitly
-CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
 ```
 
 **Portable binaries:** the Linux release links `libstdc++`/`libgcc` statically,
@@ -137,7 +137,7 @@ carries its own runtime:
 # from a MinGW64 shell (mingw-w64-x86_64-gcc, -cmake, make)
 cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
       "-DCMAKE_EXE_LINKER_FLAGS=-static"
-cmake --build build -j
+cmake --build build -j 4
 ```
 
 A rakupp built this way links a GNU `librakupp_rt.a`, which `cl` cannot link at

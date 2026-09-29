@@ -944,7 +944,7 @@ struct Block : Stmt {
     // 8 = a named sub or a type to hoist (-1 = not yet scanned). A static
     // property of the AST, decided once, so a block with none of them skips
     // the scans and the phaser runners at every entry — for a loop body, at
-    // every iteration. See blockEntryWork in Interpreter.cpp.
+    // every iteration. See blockEntryWork in InterpreterCore.cpp.
     DecidedOnce<signed char> entryWork{-1};
     // -1 = not yet decided, 0 = nothing to do, 1 = this block declares a `my`
     // that a named sub hoisted into it closes over, so the container has to

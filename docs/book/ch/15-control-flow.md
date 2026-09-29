@@ -32,7 +32,7 @@ Every activation bumps `frameTop`. A routine records the value at its own
 entry. So the test is an equality:
 
 ```cpp
-// src/Interpreter.cpp — return
+// src/InterpreterCore.cpp — return
 if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
     tctx_.returning = true; tctx_.returnV = std::move(v);
     return Value::any();                       // set a flag, do not throw
@@ -44,7 +44,7 @@ The statement loops check the flag after each statement and bail out, and
 `callCallableRaw` consumes it at the routine boundary:
 
 ```cpp
-// src/Interpreter.cpp — after each statement in the activation loop
+// src/InterpreterCore.cpp — after each statement in the activation loop
 if (tctx_.returning) {
     if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
     break;               // a bare block just propagates it to its routine
@@ -68,7 +68,7 @@ uint64_t curLoopFrame = kNoFrame;    // frameTop of the innermost native loop
 ```
 
 ```cpp
-// src/Interpreter.cpp — LastStmt
+// src/InterpreterCore.cpp — LastStmt
 if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
     tctx_.loopCtl = 2; return Value::any();
 }

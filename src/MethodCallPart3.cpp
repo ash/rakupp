@@ -724,7 +724,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "AST") {
             // NOT behind the pragma. Measured on 2026.08: Rakudo gates the
             // `RakuAST::` NAMES (`RakuAST::IntLiteral.new` without the pragma
-            // is a compile-time refusal, and Interpreter.cpp's resolution arm
+            // is a compile-time refusal, and InterpreterCore.cpp's resolution arm
             // reproduces that) but not this METHOD — `Q[say 1].AST` answers a
             // StatementList with no pragma in sight. Gating it here as well
             // was stricter than the thing being matched, and it failed a real
@@ -1075,7 +1075,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long i = args.empty() ? 0 : (m == "ASSIGN-POS" ? writeIndexInt(args[0]) : args[0].toInt());
         // A negative index is OUT OF RANGE, not "from the end" — that is what
         // `*-1` is for. The subscript path settled this long ago (see the
-        // X::OutOfRange Failure in Interpreter.cpp's Index arm); this method
+        // X::OutOfRange Failure in InterpreterCore.cpp's Index arm); this method
         // path went on wrapping Python-style, so `@a[-1]` threw while
         // `@a.AT-POS(-1)` cheerfully answered the last element of the same
         // array. EXISTS-POS is the one that does not throw: no such index
@@ -1834,7 +1834,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `$target.IO.symlink($name)` / `.link($name)` — the METHOD forms: the
     // invocant is the TARGET, the argument the new name. (The sub forms live
-    // in Builtins.cpp and take target-then-name; this arm mirrors them.) The
+    // in BuiltinsRegister.cpp and take target-then-name; this arm mirrors them.) The
     // symlink target is absolutized for the same reason the sub form's is: a
     // relative target is read by the OS relative to the LINK's directory, not
     // the cwd, so the raw invocant would dangle whenever the link lands

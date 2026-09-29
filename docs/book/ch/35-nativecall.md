@@ -218,7 +218,7 @@ mode, and `ioctl` reachable at all.
 | a `repr('CStruct')` / `CUnion` class | a pointer to it | pointer |
 | `&callback (…)` | a C function pointer | pointer |
 
-The table lives in `Interpreter.cpp` and `ffi::scalar(width, sign, isFloat)`
+The table lives in `InterpreterBinding.cpp` and `ffi::scalar(width, sign, isFloat)`
 maps into it, deliberately keeping the Raku type names in one place.
 
 Structs are laid out with natural alignment; `.new` allocates zeroed native

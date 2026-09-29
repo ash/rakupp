@@ -26,7 +26,7 @@
 #include <vector>
 
 namespace rakupp {
-std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // Interpreter.cpp
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCore.cpp
 
 namespace {
 using std::string;

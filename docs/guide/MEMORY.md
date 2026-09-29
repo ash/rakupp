@@ -67,7 +67,7 @@ mismatches the interpreter's by-value control-flow catches).
 | wasm, Web Worker | 58 (Chrome 152), 32 (Safari 27) | browser-engine frames | host `RangeError`; the playground re-runs the program on the main thread |
 | wasm, page's main thread | 115 (Chrome 152), 419 (Safari 27) | browser-engine frames | host `RangeError`, reported by the playground |
 
-The interpreter's guard (`DepthGuard`, src/Interpreter.cpp) fires while
+The interpreter's guard (`DepthGuard`, src/InterpreterCore.cpp) fires while
 about **2 MiB of headroom** remains on the current thread's stack, so the
 throw itself unwinds safely instead of the process taking a stack-overflow
 signal. On stacks smaller than 8 MiB the reserve scales down to a quarter of

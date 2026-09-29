@@ -605,7 +605,7 @@ static int exeInfo(const std::string& path) {
 // archive, in the dialect of the chosen compiler. `opt` is the Unix-style
 // optimization flag ("-O2", "-O0", …); it is translated for cl.
 // Does this program host a native extension? `rakupp-ext-load` is the only
-// door in (Builtins.cpp), and a program that opens it must NAME it — through
+// door in (BuiltinsRegister.cpp), and a program that opens it must NAME it — through
 // `&::('rakupp-ext-load')`, the portable spelling EXTENSIONS.md teaches, or as a
 // plain call. A text scan is enough to decide a LINK FLAG: a false positive
 // costs some bytes, and a false negative is caught at run time by the loader's

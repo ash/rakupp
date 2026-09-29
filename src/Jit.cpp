@@ -1069,7 +1069,7 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
     }
     // Which compiler this is decides whether the PCH lane is available.
     // msvcrt spells the pair with an underscore, as every other capture in this
-    // tree already accounts for (see __qx__ in Builtins.cpp).
+    // tree already accounts for (see __qx__ in BuiltinsRegister.cpp).
     {
         std::string probe = shq(g_cxx) + " --version 2>/dev/null";
 #if defined(_WIN32)

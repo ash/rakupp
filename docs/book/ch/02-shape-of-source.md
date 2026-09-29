@@ -5,53 +5,67 @@ later chapter names a file and you want to know what else lives near it.
 
 ## The numbers
 
-`src/` holds about **194,000 lines** of C++. That figure is misleading on its
-own, because **88,000 of them are generated**: the Unicode tables — character
+`src/` holds about **274,000 lines** of C++. That figure is misleading on its
+own, because **93,000 of them are generated**: the Unicode tables — character
 names, properties, collation weights, normalization data, emitted from the
 pinned UCD and UCA 17.0 files in `tools/ucd/` — and the JavaScript runtime,
 which is written as JavaScript in `src/js-rt/` and baked into one C++ file so a
 binary carries the runtime it was built with. Nobody reads those, and nobody
 edits them where they land.
 
-The hand-written implementation is about **106,000 lines**, and it is very
+The hand-written implementation is about **182,000 lines**, and it is very
 unevenly distributed:
 
 | File | Lines | What it is |
 |---|---:|---|
-| `Interpreter.cpp` | 32,036 | the tree walk, calls, dispatch, modules, concurrency |
-| `Builtins.cpp` | 13,655 | named built-ins, `Test`, the head of the method chain |
-| `Parser.cpp` | 8,950 | statements, expressions, declarations, interpolation |
-| `MethodCallPart2.cpp` | 4,857 | the method chain, continued |
-| `Regex.cpp` | 4,230 | the regex and grammar engine |
-| `MethodCallPart3.cpp` | 3,740 | the method chain, continued |
-| `Codegen.cpp` | 3,229 | the `--exe` transpiler |
-| `main.cpp` | 3,095 | the CLI, the compile drivers and the tooling subcommands |
-| `MethodCallTail.cpp` | 3,034 | the method chain, the end of it |
-| `Lexer.cpp` | 2,927 | tokenizer |
-| `codegen/Js.cpp` | 2,759 | the `--target=js` transpiler |
-| `Interpreter.h` | 2,531 | the interpreter's own interface, plus the `rt*` helpers |
-| `Value.cpp` | 1,270 | coercions, comparison, `gist`, `flatten` |
+| `InterpreterCore.cpp` | 28,737 | the hot paths of the tree walk: `eval`, `exec`, operators, assignment, calls |
+| `Parser.cpp` | 16,741 | statements, expressions, declarations, interpolation |
+| `MethodCallPart2.cpp` | 10,222 | the method chain, continued |
+| `Builtins.cpp` | 8,964 | the built-ins' helpers, `methodCall`, the head of the method chain |
+| `Interpreter.cpp` | 7,559 | construction, the mainline run, the precompiled-module cache |
+| `InterpreterModules.cpp` | 7,034 | module loading, `EVAL`, declarations |
+| `MethodCallPart3.cpp` | 6,671 | the method chain, continued |
+| `InterpreterBinding.cpp` | 5,642 | closures, signatures and binding, NativeCall |
+| `Regex.cpp` | 5,428 | the regex and grammar engine |
+| `Lexer.cpp` | 5,017 | tokenizer |
+| `MethodCallTail.cpp` | 4,999 | the method chain, the end of it |
+| `Codegen.cpp` | 4,652 | the `--exe` transpiler |
+| `Interpreter.h` | 4,003 | the interpreter's own interface, plus the `rt*` helpers |
+| `main.cpp` | 3,670 | the CLI, the compile drivers and the tooling subcommands |
 
 Two shapes stand out and both are deliberate.
 
-**`Interpreter.cpp` is enormous.** It is the tree walk, and the tree walk
-touches everything: scopes, calls, operators, assignment, control flow, module
-loading, the FFI marshaller, the concurrency runtime. Splitting it by topic
-would mostly move `#include`s around, because the pieces share the interpreter's
-private state rather than a clean interface.
+**The interpreter is one class in seven files.** The tree walk touches
+everything — scopes, calls, operators, assignment, control flow, module
+loading, the FFI marshaller, the concurrency runtime — and the pieces share the
+interpreter's private state rather than a clean interface, so the files are cut
+for compile time, not by concept. `InterpreterCore.cpp` holds every function
+the `perf-guard` kernels spend their time in, whatever it does, and the
+definition of `tctx_`, the per-thread execution state. The hot functions have to
+share a file: in separate files they no longer inline into each other, and a
+`thread_local` read from a file that does not define it goes through a call on
+every access — measured, that cost 14–35% on the kernels. The other six files
+(`Interpreter`, `…Modules`, `…Binding`, `…Calls`, `…Regex`, `…Operators`) hold
+the rest in source order, and `InterpreterParts.h` declares what they share.
+`tools/source-helpers/` holds the scripts that made the cut, and the plan they
+followed.
 
-**The method dispatcher is split across four files for one reason.** It used to
-be a single 9,138-line function, `methodCallInner`, and that stopped being
-compilable in a reasonable time. It is now four ordered *segments* —
-`Builtins.cpp` holds the head, then `MethodCallPart2`, `MethodCallPart3`,
-`MethodCallTail` — each returning `std::optional<Value>`, where `nullopt` means
-"not handled here, try the next segment".
+**The method dispatcher is split across six files for the same reason.** It used
+to be a single 9,138-line function, `methodCallInner`, and that stopped being
+compilable in a reasonable time. It is now six ordered *segments* —
+`Builtins.cpp` holds the head, then `MethodCallPart1b`, `MethodCallPart1c`,
+`MethodCallPart2`, `MethodCallPart3`, `MethodCallTail` — each returning
+`std::optional<Value>`, where `nullopt` means "not handled here, try the next
+segment". `registerBuiltins`, which fills the built-in routine table, is cut the
+same way: five pieces in the `BuiltinsRegister*.cpp` files, each calling the
+next, so the registrations still run in one order.
 
 The critical property, stated in the source and worth repeating: **these are
 segments, not categories.** The chain is order-sensitive. Later arms
 deliberately catch what earlier ones decline. An arm belongs where its priority
-is, not where it reads nicely. `MethodCallSegment.h` exists so that the four
-files share one include prologue and cannot drift apart.
+is, not where it reads nicely. `MethodCallSegment.h` gives `MethodCallPart2`,
+`MethodCallPart3` and `MethodCallTail` one include prologue, so they cannot
+drift apart; `MethodCallPart1b` and `1c` share `BuiltinsParts.h` with the head.
 
 ## The library boundary
 
@@ -92,8 +106,12 @@ compiling modes produce.
 
 | File | Role |
 |---|---|
-| `Interpreter.{h,cpp}` | the tree walk and nearly everything it reaches |
-| `Builtins.cpp` | the built-in routine table and the method chain's head |
+| `Interpreter.h`, `Interpreter*.cpp` | the tree walk and nearly everything it reaches; `InterpreterCore.cpp` is its hot half |
+| `InterpreterParts.h` | what the `Interpreter*.cpp` files share |
+| `Builtins.cpp` | the built-ins' helpers and the method chain's head |
+| `BuiltinsRegister*.cpp` | the built-in routine table, filled in five pieces |
+| `BuiltinsSupply.cpp`, `BuiltinsNqp.cpp` | supplies and the `--exe` built-in natives; the `nqp::` ops |
+| `BuiltinsParts.h` | what the `Builtins*.cpp` and `MethodCallPart1b/1c.cpp` files share |
 | `MethodCall*.cpp` | the rest of the method chain |
 | `BuiltinsShared.h` | helpers the split forced out of file scope |
 | `Runtime.{h,cpp}` | the shared entry points, and the big-stack thread |

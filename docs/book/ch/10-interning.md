@@ -8,7 +8,8 @@ itself the point.
 ## `MName`: the method name as the dispatcher sees it
 
 Method dispatch on a built-in value is a long ladder of name comparisons in
-`Builtins.cpp` and its three continuation files — roughly 1,640 of them. So the
+`Builtins.cpp` and the five `MethodCallPart*.cpp` files that continue it — roughly
+1,640 of them. So the
 comparison itself is hot.
 
 The path to this fix is worth following, because two plausible diagnoses were

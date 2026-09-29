@@ -24,6 +24,19 @@
 #include <unordered_set>
 #include <vector>
 
+// On a thread_local DECLARATION: its definition is constant-initialized (a
+// scalar or pointer set to a constant, or left to zero). A file that does not
+// define a thread_local cannot see that, so it calls a wrapper function on
+// every access in case the definition needs dynamic initialization. Saying so
+// turns each access into a bare TLS load. The attribute is checked at the
+// definition: one that is not constant-initialized fails to compile, so it
+// cannot lie. (C++20 spells it `constinit`.)
+#if defined(__clang__)
+#define RAKUPP_CONSTINIT [[clang::require_constant_initialization]]
+#else
+#define RAKUPP_CONSTINIT
+#endif
+
 namespace rakupp {
 
 // From Regex.h, which this header does not need in full: the subrule resolver
@@ -65,7 +78,7 @@ const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
 // A custom Real (a `does Real` class with `.Bridge`) numifies through the object
-// itself — `toNum()` answers 0 for one. Defined in Builtins.cpp.
+// itself — `toNum()` answers 0 for one. Defined in BuiltinsSupply.cpp.
 double numValueOf(Interpreter& I, const Value& v);
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.
@@ -115,7 +128,7 @@ Value numifyStrOrThrow(const std::string& in);
 // The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
 Value numifyStrFailure(const std::string& in);
 // An ARMED Failure: payload type + diagnostic, throwing the moment it is used.
-// A negative subscript is out of range (see the definitions in Interpreter.cpp).
+// A negative subscript is out of range (see the definitions in InterpreterBinding.cpp).
 Value negIndexFailure(long long i);            // reads: the armed X::OutOfRange Failure
 // a native element type (`int`, `uint8`, `num32`, `str`, …) — a natively typed array has no containers
 inline bool isNativeElemType(const std::string& ot) {
@@ -152,7 +165,7 @@ inline Value armedFailure(const char* type, const std::string& msg) {
 // evaluation instead of flagged on the value: the sink site compares the count
 // across its own expression, and a later read of a stored Failure raises none.
 // (Thread-local because the count is only ever read on the thread that bumped it.)
-extern thread_local unsigned long long g_subscriptRefusals;
+RAKUPP_CONSTINIT extern thread_local unsigned long long g_subscriptRefusals;
 inline Value refusedSubscript(const char* type, const std::string& msg) {
     ++g_subscriptRefusals;
     return armedFailure(type, msg);
@@ -681,7 +694,7 @@ inline bool rtSlotExists(const Value& v) { return v.t == VT::Type || rtIsDefined
 // ExtApi.cpp. An extension loads as an ordinary distribution (JSON::Native is
 // the reference); the engine answers no module name itself, so a dist's tests
 // exercise the code it ships — docs/guide/EXTENSIONS.md. The JSON::Fast fast
-// path is separate machinery: wrapJsonFastExports (Builtins.cpp) wraps the
+// path is separate machinery: wrapJsonFastExports (InterpreterModules.cpp) wraps the
 // loaded module's own subs and falls back to them when a call is uncovered.
 Value extLoadModule(const std::string& path, std::string& errOut,
                     std::vector<std::pair<std::string, Value>>& subsOut);
@@ -759,7 +772,7 @@ struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
 // Set by `die` (2: die, then throw) and `.throw` (1) just before they raise:
 // the capture that raising makes lists that many setting frames first, and
 // clears it. Zero everywhere else.
-extern thread_local int g_btSettingFrames;
+RAKUPP_CONSTINIT extern thread_local int g_btSettingFrames;
 
 // A Failure hash that REMEMBERS where it was made. A Failure is created in one
 // place and detonates in another, often far away, and until it carries the
@@ -783,7 +796,7 @@ struct RakuError {
     std::shared_ptr<BtRecord> altBt;
     std::string altLabel;
     RakuError() = default;
-    RakuError(Value p, std::string m);            // captures (defined in Interpreter.cpp)
+    RakuError(Value p, std::string m);            // captures (defined in InterpreterBinding.cpp)
     // …and the form that does NOT: a RakuError built only to be converted
     // (failureException -> exceptionFor) never becomes a throw, so walking the
     // stack for it would be pure waste.
@@ -825,14 +838,14 @@ struct HandedError {
 // result is no longer wanted (the mainline has finished). NOT a Raku-visible
 // exception — user CATCH handles RakuError, never this.
 struct WorkerAbortEx {};
-extern thread_local bool t_holdsGil;     // this thread holds gil_ (parallel-mode event workers serialize on it)
-extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
+RAKUPP_CONSTINIT extern thread_local bool t_holdsGil;     // this thread holds gil_ (parallel-mode event workers serialize on it)
+RAKUPP_CONSTINIT extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
 extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
-extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
+RAKUPP_CONSTINIT extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
 // Loop iterations since the running gather probe last read the clock. The probe's
 // budget is checked once per N of them (see gatherProbePoint); approximate is
 // fine, so one counter for all loops on the thread.
-extern thread_local unsigned t_gatherTickCtr;
+RAKUPP_CONSTINIT extern thread_local unsigned t_gatherTickCtr;
 // …and the deadline itself, mirrored out of tctx_.gatherDeadlines.back() (0 when
 // no gather on this thread is probing). The mirror is what the per-iteration
 // check reads: tctx_ is a thread_local of NON-TRIVIAL type, so every access to it
@@ -840,7 +853,7 @@ extern thread_local unsigned t_gatherTickCtr;
 // ~3% on loopsum. A plain scalar thread_local is a bare load. pushGatherFrame /
 // popGatherFrame (and saveCtx/loadCtx, which move the stack between threads' parked
 // contexts) are the only writers, so it cannot drift from the stack.
-extern thread_local long long t_gatherDeadline;
+RAKUPP_CONSTINIT extern thread_local long long t_gatherDeadline;
 // The line of the statement now executing (test diagnostics, callframe, the line
 // a call frame records for its caller). One process-wide value while only the
 // mainline runs Raku code — a plain relaxed store per statement, which is what
@@ -854,7 +867,7 @@ extern thread_local long long t_gatherDeadline;
 // by programs that actually spawn threads.
 extern std::atomic<int> g_stmtLine;          // the shared line, single-threaded runs
 extern std::atomic<bool> g_stmtLineThreaded; // …until a worker exists
-extern thread_local int t_stmtLine;          // …and then, one per thread
+RAKUPP_CONSTINIT extern thread_local int t_stmtLine;          // …and then, one per thread
 // The line the current thread is executing — the read side of RelaxedLine,
 // reachable without an Interpreter instance (RakuError's constructor is a free
 // function as far as the class is concerned).
@@ -936,7 +949,7 @@ struct SupplyTapCtx {
 // the parked thread's stash. Because only one thread runs interpreter code at a
 // time (guarded by the GIL), the live members always reflect the running thread.
 // This is the Stage-1 foundation for real concurrency; nothing swaps yet.
-struct GatherCoro;   // a gather's block running as a coroutine (Interpreter.cpp)
+struct GatherCoro;   // a gather's block running as a coroutine (InterpreterOperators.cpp)
 struct ExecContext {
     std::shared_ptr<Env> cur;
     int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
@@ -1147,7 +1160,7 @@ struct ExecContext {
     const void* dynMethodNode = nullptr;
     std::string dynMethodName;
     // The gather whose block is running on this context, as a coroutine
-    // (GatherCoro in Interpreter.cpp): a `take` into its collector hands control
+    // (GatherCoro in InterpreterOperators.cpp): a `take` into its collector hands control
     // back to the consumer once it has what the consumer asked for. Null on the
     // mainline and on every context that is not a gather's block.
     GatherCoro* curGather = nullptr;
@@ -1266,7 +1279,7 @@ public:
     Value exec(Stmt* s, bool sink = false); // returns last value (for implicit return)
     // The declaration kinds exec hands off, so their locals are not charged to
     // its frame — and through it to the depth of every Raku recursion. See the
-    // definition in Interpreter.cpp for why noinline is load-bearing.
+    // definition in InterpreterModules.cpp for why noinline is load-bearing.
     [[gnu::noinline]] Value execDeclStmt(Stmt* s);
     // The same for eval's construction and lookup shapes — and eval is entered
     // twice per Raku call, so its frame counts double against recursion depth.
@@ -1339,24 +1352,24 @@ public:
     //
     // When set (one-shot), a paramless block's mutated implicit $_ is copied back
     // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
-    static thread_local Value* topicWriteback_;
+    RAKUPP_CONSTINIT static thread_local Value* topicWriteback_;
     // The consumed topicWriteback_, re-exposed to a BUILTIN callable for the
     // duration of its run (builtins have no env for the $_ copy-back) — the
     // `++*` WhateverCode writes the driver's aliased element through it.
-    static thread_local Value* builtinTopicWB_;
+    RAKUPP_CONSTINIT static thread_local Value* builtinTopicWB_;
     // A WhateverCode builtin that steps or assigns its argument (`*++`,
     // `* += 2`) writes argument i back through this: set from the call's
     // argument EXPRESSIONS (`$c($x)` bumps $x), or handed down one-shot by a
     // composed curry (`*++ + *--`) as pendingArgWriter_, re-indexed.
     using ArgWriter = std::function<void(size_t, const Value&)>;
-    static thread_local const ArgWriter* builtinArgWriter_;
-    static thread_local const ArgWriter* pendingArgWriter_;
+    RAKUPP_CONSTINIT static thread_local const ArgWriter* builtinArgWriter_;
+    RAKUPP_CONSTINIT static thread_local const ArgWriter* pendingArgWriter_;
     // one-shot: the next `gather` is the operand of `lazy` — it runs nothing
     // until pulled (no probe)
-    static thread_local bool deferGather_;
+    RAKUPP_CONSTINIT static thread_local bool deferGather_;
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
-    static thread_local bool noAutothread_;
+    RAKUPP_CONSTINIT static thread_local bool noAutothread_;
     // one-shot: the next applyArith does NOT Whatever-curry. Currying is
     // SYNTACTIC on Rakudo — only a literal `*` written in the expression
     // composes — and a Whatever that arrives as a VALUE (a `when` topic, the
@@ -1366,7 +1379,7 @@ public:
     // through smartmatchValue() — and evalBinary raises it for ANY operator at a
     // site where no `*` is written, which is how `my $c = * > 100; $c eqv True`
     // answers False rather than composing one more time.
-    static thread_local bool valueSmartmatch_;
+    RAKUPP_CONSTINIT static thread_local bool valueSmartmatch_;
     // A regex match run on the CALLER's behalf rather than by the caller: an
     // eigenstate of a junction that is collapsing to a Bool, or the pattern
     // `.grep`/`.first` was handed. Rakudo leaves `$/` untouched by those —
@@ -1385,7 +1398,7 @@ public:
     // longest-token match; an ordinary variable's does not (`/ a | b | $y /`
     // with `my $y = 'ab'` matches `a`, with `constant $y` it matches `ab`).
     std::unordered_set<std::string> constantNames_;
-    static thread_local bool matchVarSuppressed_;
+    RAKUPP_CONSTINIT static thread_local bool matchVarSuppressed_;
     struct MatchVarGuard {                 // nests and unwinds correctly
         bool saved;
         MatchVarGuard() : saved(matchVarSuppressed_) { matchVarSuppressed_ = true; }
@@ -1396,7 +1409,7 @@ public:
     // bare block. `start { … }` sets it so `$/` scopes to the worker rather than
     // to the lexical scope every worker closes over — where all of them assigned
     // it into one std::map at once, which is a data race that corrupted the heap.
-    static thread_local bool forceRoutineFrame_;
+    RAKUPP_CONSTINIT static thread_local bool forceRoutineFrame_;
     // The type a declaration is handing to its metaclass's `new_type` hook, if
     // one is running. That hook reaches its base with `callsame`, and the base
     // is `Metamodel::ClassHOW.new_type`, whose job is to CREATE the type — so
@@ -1409,7 +1422,7 @@ public:
     // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),
     // 4 = run NEXT after the body. Phasers run in the invocation env so block
     // params are visible (Base64's LAST reads its $c).
-    static thread_local int loopPhaserCtl_;
+    RAKUPP_CONSTINIT static thread_local int loopPhaserCtl_;
     // depth of live CATCH handlers: .resume outside any handler dies catchably
     // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
     int catchDepth_ = 0;
@@ -1546,7 +1559,7 @@ public:
     // class declared there whose parent parameterization uses one is that
     // class's own instance (`class A is Array[T]` in R[Int] is R::G::A[Int]).
     // (per thread: parameterizations may run in parallel `start` blocks)
-    static thread_local const std::set<std::string>* roleInstNames_;
+    RAKUPP_CONSTINIT static thread_local const std::set<std::string>* roleInstNames_;
     // `has @.a is SomeArray` / `has %.h is SomeHash`: the container class as the
     // scope in view names it (a lexical or package-relative name resolved to its
     // registry name), and — when the attribute declares no type of its own — the
@@ -1654,7 +1667,7 @@ public:
     // The ON-DISK spelling of an IO value: a relative IO::Path resolves against
     // its own captured :CWD, not the process directory (Rakudo's model). Every
     // file OPERATION must go through this — stat'ing the raw string sent
-    // IO::Path.new($f, :CWD($dir)).e to the wrong directory (Builtins.cpp).
+    // IO::Path.new($f, :CWD($dir)).e to the wrong directory (BuiltinsSupply.cpp).
     std::string ioFsPath(const Value& v);
     std::string logicalCwd_; // chdir/indir's logical cwd; empty = getcwd rules
     bool attrWhereOk(const void* whereExpr, const Value& v); // `has $.x where {…}` constraint
@@ -1730,6 +1743,10 @@ public:
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to
     // get it under control (it was 9,138 lines). Each returns nullopt for "not
     // handled here"; they must be called in this order — see MethodCallTail.cpp.
+    std::optional<Value> methodCallPart1b(const Value& inv, const struct MName& m, ValueList& args,
+                                          const std::vector<ExprPtr>* rwArgs);
+    std::optional<Value> methodCallPart1c(const Value& inv, const struct MName& m, ValueList& args,
+                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallPart2(const Value& inv, const struct MName& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallPart3(const Value& inv, const struct MName& m, ValueList& args,
@@ -1829,15 +1846,15 @@ public:
     // What an object contributes when assigned to a `%` container: its own
     // `.list`/`.iterator` (declared or `handles`-delegated), if it has one.
     bool objListItems(const Value& v, ValueList& out);
-    // A Proxy read as a VALUE answers its FETCH. See the definition in Interpreter.cpp.
+    // A Proxy read as a VALUE answers its FETCH. See the definition in InterpreterCalls.cpp.
     Value deproxy(Value v);
-    // `T($v)` coercion — see the definition in Interpreter.cpp.
+    // `T($v)` coercion — see the definition in InterpreterCalls.cpp.
     Value coerceToType(const Value& v, const std::string& type);
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param
     bool isCoercionSubset(const std::string& type) const;
-    // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
+    // Run a Proxy's STORE for `$proxy = v`. See the definition in InterpreterCalls.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
     // Proxies over the places a value can live — an Env variable slot (what
     // `$y := $x` binds), an array element, a hash entry, or a fresh anonymous
@@ -1867,7 +1884,7 @@ public:
     Value makePathProxy(std::shared_ptr<Env> scope, Expr* path);
     // The take core shared by `take` and `take-rw`: push into the innermost
     // gather (honoring its lazy-probe take cap and time budget) or die outside one.
-    // Run one program-init-hoisted INIT phaser. See the definition in Interpreter.cpp.
+    // Run one program-init-hoisted INIT phaser. See the definition in InterpreterCalls.cpp.
     void runHoistedInit(Block* b);
     Value gatherTake(const ValueList& items, const Value& ret);
     // After a take landed in the collector of the gather whose block is running
@@ -1876,11 +1893,11 @@ public:
     void gatherTakeYield(ValueList& coll);
     // `gather BLOCK` as a Seq whose block runs as a coroutine: nothing runs
     // until something pulls, and each pull runs it only as far as the takes
-    // it asked for. See GatherCoro in Interpreter.cpp.
+    // it asked for. See GatherCoro in InterpreterOperators.cpp.
     Value makeGatherSeq(Unary* gu, bool declaredLazy);
     Value evalTakeRw(Call* c); // `take-rw EXPR` — take the STORAGE, not a copy
     Value takeRwSlotProxy(Expr* arg); // its arg → slot Proxy (or non-Proxy Any)
-    // The hash behind `for values %h` — see the definition in Interpreter.cpp.
+    // The hash behind `for values %h` — see the definition in InterpreterCalls.cpp.
     std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
     Value* pairsAliasSource(Expr* listExpr);   // `%h.pairs` over a plain hash variable: the hash
     // The array behind `for @$x` — likewise; the topic aliases its elements.
@@ -1935,7 +1952,7 @@ public:
     bool isContainerElem(const Value& v);    // …is this element one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     std::shared_ptr<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
-    const void* containerId(const Value* slot); // what `=:=` compares (see Interpreter.cpp)
+    const void* containerId(const Value* slot); // what `=:=` compares (see InterpreterCalls.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
     // shared hyper-operator core for every spelling (>>op<<, »op«, >>[&op]<<)
@@ -1952,7 +1969,7 @@ public:
     // one-shot direct rw slots for the NEXT callCallableRaw activation (hyper-with
     // element calls — same consume-at-top pattern, and same thread_local
     // reasoning, as topicWriteback_)
-    static thread_local const std::vector<Value*>* pendingRwSlots_;
+    RAKUPP_CONSTINIT static thread_local const std::vector<Value*>* pendingRwSlots_;
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     // -1 = no match, else specificity. `perParam`, when given, also collects each
@@ -2005,7 +2022,7 @@ public:
     std::unordered_map<const void*, std::shared_ptr<const PadLayout>> padLayouts_;
     // May a reusing loop skip the per-iteration scope clear and overwrite the
     // topic in place? Cached on the Block (flatLoop). See the scan in
-    // Interpreter.cpp for the exact rules.
+    // InterpreterCore.cpp for the exact rules.
     bool flatLoopBody(Block* b);
     // The pad pointer for an annotated reference, or null (not annotated, not
     // live, or running under a frame chain the annotation does not belong to
@@ -2202,7 +2219,7 @@ public:
     Value deprecationReport();
     // thread_local like the call registers above: written per-block / per-
     // statement on every thread (the next TSan reports after the registers)
-    static thread_local bool hoistingSubs_;
+    RAKUPP_CONSTINIT static thread_local bool hoistingSubs_;
     // class/grammar/role declarations already created by a hoist pass, counted so
     // a recursive re-entry of the same statement list stays balanced
     std::unordered_map<const ClassDecl*, int> hoistedTypes_;
@@ -2225,7 +2242,7 @@ public:
     // reuses the caller's) must unwind only the temps IT pushed.
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
-    static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
+    RAKUPP_CONSTINIT static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
     // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
@@ -3173,7 +3190,7 @@ public:
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)
     std::unordered_map<std::string, Value> compiledEnums_; // --exe: enum members by name (registerEnumMember)
     static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
-    static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
+    RAKUPP_CONSTINIT static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
 public:
     Value currentThread();            // `$*THREAD`: the Thread this code runs on
     static long long newThreadId();   // the next Thread id (1 is the initial thread's)
@@ -3442,6 +3459,11 @@ private:
         return !unitStack_.empty() && unitStack_.front() == p;
     }
     void registerBuiltins();
+    // …continued in pieces, each calling the next (split for compile time)
+    void registerBuiltinsPart2();
+    void registerBuiltinsPart3();
+    void registerBuiltinsPart4();
+    void registerBuiltinsPart5();
 
     // asInvocant: we only need this slot to reach INTO the value (an invocant or a
     // subscript base), not to overwrite it — so a read-only attribute is fine
@@ -3538,7 +3560,7 @@ private:
     std::vector<ValueList> expandDimTuples(const Value& root, const ValueList& keys);
     ValueList dimKeysAt(const Value& dv, long long n); // the indices a Range/list dim selects at an n-element level
     Value whateverPos(const Value& code, long long n); // a WhateverCode index against a length: elems once per star
-    // Does a `{…}` subscript name MANY keys? See the definition in Interpreter.cpp.
+    // Does a `{…}` subscript name MANY keys? See the definition in InterpreterOperators.cpp.
     static bool keySubscriptIsSlice(const Expr* ixExpr, const Value& iv);
     Value evalInterp(InterpStr* s);
 
@@ -3694,9 +3716,9 @@ inline Value rtCallB(Interpreter& I, const BuiltinFn* f, const char* name, Value
 // exact original semantics (abs delegates back to methodCall so augment /
 // user objects / junctions keep working; the inline abs is additionally
 // disabled while any `augment` is live).
-Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (Builtins.cpp)
-Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (Builtins.cpp)
-Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (Builtins.cpp)
+Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (BuiltinsSupply.cpp)
+Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (BuiltinsSupply.cpp)
+Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (BuiltinsSupply.cpp)
 inline Value rtBAbs(Interpreter& I, const Value& v) {
     if (v.t == VT::Int && !v.big() && I.builtinExt_.empty() && v.i != std::numeric_limits<long long>::min())
         return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site (-2**63 takes the slow path: its abs is a BigInt)
@@ -3710,7 +3732,7 @@ Value rtBSay(Interpreter& I, const Value& v);      // say/print/put/note, 1-arg 
 Value rtBPrint(Interpreter& I, const Value& v);
 Value rtBPut(Interpreter& I, const Value& v);
 Value rtBNote(Interpreter& I, const Value& v);
-Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping (Builtins.cpp statics)
+Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping (BuiltinsSupply.cpp statics)
 Value rtBLc(Interpreter& I, const Value& v);
 Value rtBChars(Interpreter& I, const Value& v);    // grapheme count
 Value rtBSqrt(Interpreter& I, const Value& v);     // Complex/Object escapes + langRev negatives

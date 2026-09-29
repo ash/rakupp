@@ -83,7 +83,7 @@ inline bool available() { return lib().ok; }
 std::string describe();
 
 // A native scalar by width/signedness, matching ncScalarWidth's answers — so
-// the Raku type-name table stays in ONE place, in Interpreter.cpp. Returns
+// the Raku type-name table stays in ONE place, in InterpreterBinding.cpp. Returns
 // null when the combination has no libffi type (which means "not a scalar").
 Type* scalar(int width, bool sign, bool isFloat);
 

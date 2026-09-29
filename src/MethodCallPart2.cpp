@@ -63,7 +63,7 @@ static long long supplyByArity(const rakupp::Value& c) {
 namespace rakupp {
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
-Value arrayMissingDefaultPublic(const Value& base);   // Interpreter.cpp
+Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
 
 // The per-class step alone, least-derived first down the primary parent chain
 // — what the construction protocol reduces to when no class in the ancestry
@@ -3149,7 +3149,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                   "with a native backend (--exe) and a JavaScript one (--target=js).");
             // The VM's version is THIS binary's release. (The COMPILER's version
             // deliberately answers the Rakudo era instead — see rakuIntrospection
-            // in Builtins.cpp for why that one cannot be ours.)
+            // in InterpreterBinding.cpp for why that one cannot be ours.)
             if (m == "version") { Value v = Value::str(RAKUPP_VERSION); v.hashKind = "Version"; return v; }
             if (m == "gist") return Value::str(name + " (" + RAKUPP_VERSION + ")"); // Systemic.gist: "$name ($version)"
             // The precompilation store keeps SERIALISED ASTs, not bytecode:

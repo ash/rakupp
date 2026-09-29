@@ -168,7 +168,7 @@ Raku caps a plain `Rat`'s denominator at 64 bits. Arithmetic that would produce
 a larger one degrades to `Num`:
 
 ```cpp
-// src/Interpreter.cpp — applyArith, the Rat result
+// src/InterpreterCore.cpp — applyArith, the Rat result
 bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
 Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
 if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());

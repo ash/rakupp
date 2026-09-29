@@ -205,7 +205,7 @@ to load. JSON::Class was the witness.
 
 So: **detect the engine with `.name`, not with `.version`.** The number answers
 what the language does; the name answers who implements it. The era constant is
-`kOracleEra` in `src/Builtins.cpp`, and it moves when the conformance oracle
+`kOracleEra` in `src/Interpreter.h`, and it moves when the conformance oracle
 moves — not when Raku++ is released.
 
 ## The 6.e revision

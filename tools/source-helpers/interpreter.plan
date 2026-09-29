@@ -1,0 +1,23 @@
+# The plan that split src/Interpreter.cpp (59,375 lines) into the Interpreter*.cpp
+# files and InterpreterParts.h. The line numbers are that file's. To produce the
+# split again, from the repository root:
+#
+#   git show SPLIT^:src/Interpreter.cpp > /tmp/Interpreter.cpp    # SPLIT = the commit that split it
+#   rakupp tools/source-helpers/split.raku --note-src=Interpreter.cpp \
+#       /tmp/Interpreter.cpp tools/source-helpers/interpreter.plan /tmp/interp-out
+#
+# hot.txt is hot-profile.raku's list, taken on the unsplit binary. The parts'
+# own descriptions are in the header's opening comment.
+header InterpreterParts.h "what the Interpreter*.cpp files share"
+part Interpreter.cpp            1     "shared helpers, construction, the mainline run, the precompiled-module cache, --exe bundling"
+part InterpreterModules.cpp     9953  "module loading, EVAL, the REPL's hooks, statements and declarations"
+part InterpreterBinding.cpp     19592 "closures, signatures and parameter binding, multi dispatch, NativeCall"
+part InterpreterCalls.cpp       27938 "calls, method invocation, lvalues and the assignment helpers"
+part InterpreterRegex.cpp       42192 "regexes, substitution, grammars and hyperoperators"
+part InterpreterOperators.cpp   46883 "operators, mixins, phasers, gather, reductions and subscripts"
+part InterpreterCore.cpp        0     "the hot paths: every function the perf-guard kernels spend time in, kept together so they inline into each other and reach tctx_ directly"
+hot InterpreterCore.cpp hot.txt 0.05 5
+pin InterpreterCore.cpp thread_local ExecContext Interpreter::tctx_;
+pin InterpreterCore.cpp #if RAKUPP_HAS_INT128
+follow
+inline-max 12

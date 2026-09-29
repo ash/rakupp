@@ -87,7 +87,7 @@ Or unpack a **prebuilt archive** — macOS universal, Linux x86_64 and ARM64
 ```sh
 # Needs a C++17 compiler + CMake → produces build/rakupp
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build -j 4
 ```
 
 `cmake --install build --prefix ~/.local` then installs the binary plus the

@@ -17,7 +17,7 @@ something measurable was in the way.
 `evalArgs` evaluates the argument expressions into one flat `ValueList`:
 
 ```cpp
-// src/Interpreter.cpp — evalArgs, abridged
+// src/InterpreterCore.cpp — evalArgs, abridged
 } else if (a->kind == NK::Unary && ((Unary*)a.get())->op == "|") {
     Value v = eval(…);                                  // a Slip: |@a / |%h
     if (v.t == VT::Array || v.t == VT::Range)
@@ -78,7 +78,7 @@ Value callCallableRaw(const Value& codeVal, ValueList args,
 the next; otherwise it passes straight through:
 
 ```cpp
-// src/Interpreter.cpp — callCallable
+// src/InterpreterCore.cpp — callCallable
 if (codeVal.code && !codeVal.code->wrappers.empty()) { /* run the stack */ }
 return callCallableRaw(codeVal, std::move(args), rwArgs);
 ```
@@ -149,7 +149,7 @@ one thread, so thread-local is not a workaround, it is exactly their semantics.
 and a general path.
 
 ```cpp
-// src/Interpreter.cpp — bindParams
+// src/InterpreterCore.cpp — bindParams
 if (simple) {                       // all plain positional $ params, no nameds
     for (size_t i = 0; i < params.size(); i++) {
         Value v = i < args.size() ? args[i]
@@ -260,7 +260,7 @@ values, and on a normal return each such parameter's final value is written back
 by re-resolving its expression:
 
 ```cpp
-// src/Interpreter.cpp — copyOutRw
+// src/InterpreterCore.cpp — copyOutRw
 if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size())
     if (Value* lv = lvalue((*rwArgs)[pi].get()))
         *lv = env->vars[p.name];

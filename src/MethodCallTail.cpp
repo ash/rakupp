@@ -153,8 +153,8 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
 // the last ~2,200 lines of that chain, moved out verbatim.
 //
 // It is a SEGMENT, not a category. The chain is ORDER-SENSITIVE — an earlier arm
-// shadows a later one — so these arms must keep running after everything left in
-// Builtins.cpp and before the unknown-method fallthrough. Do not reorder them
+// shadows a later one — so these arms must keep running after every earlier segment
+// (methodCallInner through methodCallPart3) and before the unknown-method fallthrough. Do not reorder them
 // against the rest, and add a new arm where its priority belongs, not where it
 // reads nicely.
 //

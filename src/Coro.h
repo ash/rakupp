@@ -19,7 +19,7 @@
 // Is there a native context switch for this target? x86-64 and arm64 use a
 // hand-written one (Coro.cpp) on every ELF and Mach-O system; Windows uses
 // Fibers. Anything else — WebAssembly (Raku.js) among them — keeps the old
-// re-running gather (Interpreter.cpp). `-DRAKUPP_HAVE_CORO=0` forces that form
+// re-running gather (InterpreterOperators.cpp). `-DRAKUPP_HAVE_CORO=0` forces that form
 // anywhere, which is how the fallback gets compiled and tested on a desktop.
 #ifndef RAKUPP_HAVE_CORO
 #  if defined(_WIN32)
