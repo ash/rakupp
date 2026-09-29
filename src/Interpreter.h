@@ -2431,6 +2431,10 @@ public:
     // the modules being loaded (a `use` there is the module's, not a block's)
     std::unordered_map<std::string, std::vector<std::string>> moduleClasses_;
     std::vector<Env*> moduleTopEnvs_;
+    // every module's top-level env, kept for the program's life: code a module
+    // declared sees the packages it loaded, whoever loaded the module itself
+    std::vector<std::shared_ptr<Env>> loadedModuleEnvs_;
+    std::unordered_set<const Env*> loadedModuleEnvSet_;
     bool requireHidden(const std::string& n) {
         if (!needHidden_.empty() && needHidden_.count(n)) {
             bool inUnit = false;
@@ -2442,7 +2446,10 @@ public:
         if (it == requireScoped_.end()) return false;
         auto sp = it->second.lock();
         if (!sp) return true;
-        for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) if (e == sp.get()) return false;
+        // …and code a MODULE declared sees every package: JSON::Tiny loaded in
+        // a test's block still reaches JSON::Tiny::Actions from its from-json
+        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+            if (e == sp.get() || loadedModuleEnvSet_.count(e)) return false;
         return true;
     }
     // Does a TYPE THIS PROGRAM DECLARED carry the name `n`, in scope here?
@@ -2458,15 +2465,25 @@ public:
     // `Int(…)`, and the coercion arms further down evalCall are written for
     // that — so re-ranking those is a separate question from this one.
     //
-    // Cost: this sits on the routine-call path, so the three registry probes
-    // come first and the scope walk only runs for a name one of them knows.
-    // The registries are program-wide, and the walk is what makes the answer
-    // lexical: a `my class` declared in a scope we are not in must not
-    // outrank anything here.
-    bool declaredTypeOutranksRoutine(const std::string& n) {
-        if ((classes_.empty()   || !classes_.count(n)) &&
-            (pkgKind_.empty()   || !pkgKind_.count(n)) &&
-            (enumPairs_.empty() || !enumPairs_.count(n))) return false;
+    // Cost: this sits on the routine-call path, so the registry probe comes
+    // first and the scope walk only runs for a name a registry knows. The
+    // registries are program-wide and only ever grow, so their combined size
+    // is a generation: while it holds, the probe's answer for this call site
+    // holds, and the call site keeps it (fib's 1.6M calls asked three hash
+    // maps each before it did). The walk is what makes the answer lexical: a
+    // `my class` declared in a scope we are not in must not outrank anything
+    // here.
+    bool declaredTypeOutranksRoutine(const Call* c) {
+        const std::string& n = c->name;
+        const uint64_t gen = classes_.size() + pkgKind_.size() + enumPairs_.size();
+        const uint64_t seen = c->typeRegProbe.load(std::memory_order_relaxed);
+        bool known;
+        if ((seen >> 1) == gen) known = seen & 1;
+        else {
+            known = classes_.count(n) || pkgKind_.count(n) || enumPairs_.count(n);
+            c->typeRegProbe.store((gen << 1) | (known ? 1 : 0), std::memory_order_relaxed);
+        }
+        if (!known) return false;
         Value* v = tctx_.cur->find(n);
         return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType.empty()));
     }

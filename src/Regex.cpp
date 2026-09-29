@@ -1049,6 +1049,21 @@ void Regex::countCaptureNames(const Node* n, std::map<std::string, int>& out) {
         return;
     }
     if (n->k == K::Group && !n->capName.empty()) out[n->capName] += 1;
+    // A CAPTURE is a scope of its own: the names inside it belong to its Match,
+    // and a quantifier around it collates the capture, not them. So
+    // `( <pchars> | "/" )*` holds one `<pchars>` per occurrence (Cro::Uri's
+    // fragment reads `$_<pchars>.ast` for each), while `( <a> <a> )*` still
+    // makes `<a>` a list inside every occurrence.
+    if (n->k == K::Group && (n->capIndex >= 0 || !n->capName.empty())) {
+        std::map<std::string, int> scope;
+        for (auto& kd : n->kids) countCaptureNames(kd.get(), scope);
+        for (auto& kv : scope) {
+            if (kv.second < 2) continue;
+            if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+            listNames_->insert(kv.first);
+        }
+        return;
+    }
     std::map<std::string, int> inner;
     for (auto& kd : n->kids) countCaptureNames(kd.get(), inner);
     // a repeating quantifier makes every name under it reachable twice over

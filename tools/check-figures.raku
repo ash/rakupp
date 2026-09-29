@@ -54,12 +54,13 @@ my @docs = <
     docs/guide/OVERVIEW.md
 >.map({ $ROOT.add($_) }).grep(*.e);
 
-# The file denominators the standing figures are stated against: 1,434 is the
-# files Roast's spectest.data lists, the harness's default set, and 1,464 every
-# .t in the checkout (`--all`). A prose figure is a HEADLINE figure only when it
-# is written against one of these; `584 / 1,462` in a history paragraph is a
-# different denominator and not this tool's business.
-constant @FILES = 1434, 1464;
+# The file denominators the standing figures are stated against: the files
+# Roast's spectest.data lists, the harness's default set (1,424 at Roast
+# 1f521d798, 1,434 at b2cbe8a42), and every .t in the checkout, `--all` (1,454
+# and 1,464). A prose figure is a HEADLINE figure only when it is written against
+# one of these; `584 / 1,462` in a history paragraph is a different denominator
+# and not this tool's business.
+constant @FILES = 1424, 1434, 1454, 1464;
 sub is-file-den($den) { @FILES.first(* == $den).defined }
 
 my @sightings;      # [relative-path, line-number, value, how-it-is-written]
@@ -93,7 +94,7 @@ for @docs -> $doc {
         elsif $t.lc.contains('documentation examples byte-identical')
            || $t.lc.contains('documentation examples reproduced exactly') {
             my @cells = $t.split('|');
-            if @cells.elems > 2 && @cells[2] ~~ / (\d+) / {
+            if @cells.elems > 2 && @cells[2].subst(',', '', :g) ~~ / (\d+) / {
                 @examples-seen.push([$rel, $n, (~$0).Int, 'documentation-example cell']);
             }
         }
@@ -102,7 +103,8 @@ for @docs -> $doc {
         elsif $t.lc.contains('files fully passing, of') {
             my @cells = $t.split('|');
             next unless @cells.elems > 2;
-            if @cells[2] ~~ / (\d+) / {
+            # `**1,423**`: the group separator is part of the number
+            if @cells[2].subst(',', '', :g) ~~ / (\d+) / {
                 @sightings.push([$rel, $n, (~$0).Int, 'README comparison row']);
             }
         }
@@ -277,13 +279,13 @@ sub bucket-check(IO::Path $doc, Str $rel --> Int) {
         # the nearest preceding "N / D" pair — the fully-passing count and the
         # denominator the paragraph is quoting
         my $before = $flat.substr(0, $m.from).substr(*- (200 min $m.from));
-        my @pairs = $before.match(/ $<f>=(\d+) \s* '/' \s* $<d>=(\d+ [',' \d+]*) /, :g);
+        my @pairs = $before.match(/ <!after [\d | ',']> $<f>=(\d+ [',' \d+]*) \s* '/' \s* $<d>=(\d+ [',' \d+]*) /, :g);
         unless @pairs {
             say "  $rel: '{~$m<p>} partial' with no fully-passing count near it — not checked";
             next;
         }
         my $pair  = @pairs[*-1];
-        my $fully = (~$pair<f>).Int;
+        my $fully = (~$pair<f>).subst(',', '', :g).Int;
         my $denom = (~$pair<d>).subst(',', '', :g).Int;
         my $sum   = $fully + (~$m<p>).Int + (~$m<n>).Int + (~$m<t>).Int;
         next if $sum == $denom;

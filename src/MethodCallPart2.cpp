@@ -6866,16 +6866,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // `class Foo does Rational[Int,Int] {}` (or a subclass of one):
                 // `.new(nu, de)` is that ratio — box a real Rat so numerator,
                 // denominator, arithmetic and coercions all have it
-                if ((nb.empty() || nb == "Cool" || nb == "Real" || nb == "Numeric" || nb == "Rational") &&
+                if (ci->rationalNew != 0 &&
+                    (nb.empty() || nb == "Cool" || nb == "Real" || nb == "Numeric" || nb == "Rational") &&
                     !ci->findMethod("new")) {
-                    bool rational = false;
-                    for (ClassInfo* c = ci.get(); c && !rational; c = c->parent.get())
-                        for (auto& r : c->doneRoles)
-                            if (r == "Rational" || r.rfind("Rational[", 0) == 0) { rational = true; break; }
-                    if (!rational) rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");
+                    if (ci->rationalNew < 0) {
+                        bool rational = false;
+                        for (ClassInfo* c = ci.get(); c && !rational; c = c->parent.get())
+                            for (auto& r : c->doneRoles)
+                                if (r == "Rational" || r.rfind("Rational[", 0) == 0) { rational = true; break; }
+                        if (!rational) rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");
+                        ci->rationalNew = rational;
+                    }
                     ValueList pos;
-                    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
-                    if (rational && pos.size() <= 2) {
+                    if (ci->rationalNew)
+                        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+                    if (ci->rationalNew && pos.size() <= 2) {
                         auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
                         ValueList na{pos.size() > 0 ? pos[0] : Value::integer(0),
@@ -8369,6 +8374,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Range && (m == "pick" || m == "roll")) {
         long long lo = inv.rFrom(), hi = inv.rTo();
+        // the endpoints the range holds: ^1024 ends at 1023, not 1024
+        if (inv.rExFrom() && lo < LLONG_MAX) lo++;
+        if (inv.rExTo() && hi > LLONG_MIN) hi--;
         // integer spans sample directly — flattening ^2**40 (or ^2**20, 200 times) hangs
         if (hi >= lo && (unsigned long long)(hi - lo) >= 1024) {
             unsigned long long span = (unsigned long long)(hi - lo) + 1; // 0 == full 64-bit width

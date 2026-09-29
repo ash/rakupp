@@ -84,6 +84,8 @@ struct Scan {
         // use — a slim hello binary contains none of it, and a program that
         // touches the namespace keeps its parser instead of finding the stub.
         if (isRakuAstName(n)) use(F_EVAL, n);
+        // …and so is `.AST` itself, which parses its invocant at run time.
+        if (n == "AST") use(F_EVAL, ".AST");
         // The builtin Test module's dynamic loaders: use-ok requires a module
         // AT RUN TIME (a require in sub's clothing — found by the battery leg
         // of the differential: a slim'd 01-load.t threw where full passed),

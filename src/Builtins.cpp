@@ -324,6 +324,13 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Block",     {"Block","Code","Callable","Any","Mu"}},
         {"WhateverCode", {"WhateverCode","Code","Callable","Any","Mu"}},
         {"Code",      {"Code","Callable","Any","Mu"}},
+        // the IO::Spec family: `$*SPEC` is an IO::Spec, so an attribute or a
+        // parameter typed IO::Spec takes it (IO::Glob, Config)
+        {"IO::Spec",         {"IO::Spec","Any","Mu"}},
+        {"IO::Spec::Unix",   {"IO::Spec::Unix","IO::Spec","Any","Mu"}},
+        {"IO::Spec::Win32",  {"IO::Spec::Win32","IO::Spec::Unix","IO::Spec","Any","Mu"}},
+        {"IO::Spec::Cygwin", {"IO::Spec::Cygwin","IO::Spec::Unix","IO::Spec","Any","Mu"}},
+        {"IO::Spec::QNX",    {"IO::Spec::QNX","IO::Spec::Unix","IO::Spec","Any","Mu"}},
         // a built-in encoding IS an Encoding::Builtin, which does the Encoding role
         {"Encoding", {"Encoding","Encoding::Builtin","Any","Mu"}},
         {"Encoding::Builtin", {"Encoding::Builtin","Encoding","Any","Mu"}},

@@ -65,7 +65,9 @@ exit rakujs-check($rakujs) if $rakujs;
 
 my %PICK = pick-rakupp($?FILE.IO.parent.parent);
 require-native(%PICK, :tool<koans-gate>, :verdict<INCONCLUSIVE>);
-my $RAKUPP = %PICK<path>;
+# absolute: each koan runs with its own working directory, where a relative
+# `RAKUPP=build/rakupp` names nothing and every koan reads as failing
+my $RAKUPP = %PICK<path>.IO.absolute;
 
 my $PRELUDE = $KOANS.add('koans').add('_prelude.raku').lines
     .map(*.trim).grep({ $_ && !.starts-with('#') }).join(' ') ~ "\n";

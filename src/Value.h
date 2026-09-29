@@ -1399,6 +1399,10 @@ struct ClassInfo {
     // composition (or its ancestry): that role's hooks run as ROLE
     // constructors, not composed (construction checks this before walking)
     bool roleCtorHooks = false;
+    // whether the class does Rational (`.new(nu, de)` is then a ratio): -1
+    // until the first `.new` asks, then fixed — the answer is a walk of the
+    // type's ancestry, and it cannot change once the class is composed
+    signed char rationalNew = -1;
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
     // so the construction protocol's explicit BUILD/TWEAK walks still find them
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides

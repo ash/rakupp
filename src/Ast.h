@@ -392,6 +392,10 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     // Published once, like closedPat: payload is an immutable heap std::string,
     // derived from `name`, so nothing serialises it — it refills on first use.
     mutable PublishedOnce<const void*> ampName{nullptr};
+    // Whether a type the program declared carries `name`, as of a registry
+    // generation: (generation << 1) | answer. See declaredTypeOutranksRoutine,
+    // which asked three hash maps on every call before this cached it.
+    mutable std::atomic<uint64_t> typeRegProbe{~0ull};
     Call(): Expr(NK::Call) {}
 };
 

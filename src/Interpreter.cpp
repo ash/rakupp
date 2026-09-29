@@ -10420,6 +10420,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 return false;
             };
             moduleTopEnvs_.push_back(moduleEnv.get());
+            if (loadedModuleEnvSet_.insert(moduleEnv.get()).second) loadedModuleEnvs_.push_back(moduleEnv);
             struct TopPop { std::vector<Env*>& v; ~TopPop() { v.pop_back(); } } topPop{moduleTopEnvs_};
             for (auto& st : prog->stmts) {
                 tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
@@ -10476,8 +10477,14 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             const bool nested = saved && saved.get() != global_.get() &&
                                 std::find(moduleTopEnvs_.begin(), moduleTopEnvs_.end(), saved.get()) ==
                                     moduleTopEnvs_.end();
+            // …except what it declares under `X::`: Rakudo installs that into
+            // CORE's own X package, which is shared rather than lexical, so a
+            // test that loads JSON::Tiny inside its throws-like block still
+            // names X::JSON::Tiny::Invalid outside it
             if (nested && !requireForm)
-                for (auto& c : fresh) requireScoped_[c] = saved;
+                for (auto& c : fresh)
+                    if (c.rfind("X::", 0) != 0 && c.find("::X::") == std::string::npos)
+                        requireScoped_[c] = saved;
             moduleClasses_[name] = std::move(fresh);
         }
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
@@ -14283,6 +14290,23 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 requireSymbols(u->module);
+                // A module can build a tag by hand — `package EXPORT::decode-percents
+                // { our &decode-percents = &Cro::ResourceIdentifier::decode-percents }`
+                // (Cro::Uri) — and `use Mod :decode-percents` imports what that
+                // package holds. Only a tag the `use` names, and never over a name
+                // already in scope.
+                if (!u->isNeed && !u->emptyImport && !u->isRequire && global_ && tctx_.cur)
+                    for (auto& tag : u->importArgs) {
+                        if (tag.empty() || std::strchr("&$@%", tag[0]) || tag.find(':') != std::string::npos ||
+                            tag == "DEFAULT" || tag == "ALL" || tag == "MANDATORY") continue;
+                        const std::string pfx = "&EXPORT::" + tag + "::";
+                        for (auto& kv : global_->vars) {
+                            if (kv.first.size() <= pfx.size() || kv.first.compare(0, pfx.size(), pfx) != 0) continue;
+                            std::string bare = "&" + kv.first.substr(pfx.size());
+                            if (bare.find("::") != std::string::npos || tctx_.cur->local(bare)) continue;
+                            tctx_.cur->define(bare, kv.second);
+                        }
+                    }
                 // `use Mod <name:alias>` — import that routine under a second name.
                 // (rakupp imports a module's whole export set; the alias is the part
                 // that has to be honoured, or the name simply is not there.)
@@ -16097,8 +16121,21 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                              if (!pt || pt->kind != NK::StrLit) return false;
                          return true; }()))) {
                     Value dv = eval(a.def.get());
-                    const std::string tgt = resolveAttrTypeAlias(a.type, clsName);
-                    bool fits = typeOrSubsetMatches(dv, tgt);
+                    std::string tgt = resolveAttrTypeAlias(a.type, clsName);
+                    // The check is NOMINAL, as Rakudo's is: a subset's `where`
+                    // is not run at declaration (`has Pos $.x = -1` compiles
+                    // there), so a subset is judged by its base type. And a
+                    // name that resolves to no type at all — an `our subset`
+                    // inside a `unit class`, which URI declares its Scheme as —
+                    // is not one this can prove anything about.
+                    for (int guard = 0; guard < 16; guard++) {
+                        auto it = subsets_.find(tgt);
+                        if (it == subsets_.end()) it = subsets_.find(clsName + "::" + tgt);
+                        if (it == subsets_.end() || it->second.coerce) break;
+                        tgt = it->second.base.empty() ? std::string("Any") : it->second.base;
+                    }
+                    const bool known = subsets_.count(tgt) || classes_.count(tgt) || isKnownTypeName(tgt);
+                    bool fits = !known || typeOrSubsetMatches(dv, tgt);
                     if (!fits && a.coerce) fits = a.coerceFrom.empty() || typeOrSubsetMatches(dv, a.coerceFrom);
                     if (!fits) {
                         const std::string want = a.type + (a.coerce ? "(" + a.coerceFrom + ")" : std::string());
@@ -18298,6 +18335,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
                     (arrayElemSrc || nm != "$_"))
                     v.itemized = true;
+                // …and an `@` or `%` parameter binds the array or hash ITSELF,
+                // not the item container it came in: `for %h.kv -> $k, @rows`
+                // then iterates @rows' elements, as a sub's `@rows` would
+                if (!nm.empty() && (nm[0] == '@' || nm[0] == '%') && (v.t == VT::Array || v.t == VT::Hash))
+                    v.itemized = false;
                 // `$` only, as bindParams does: `-> @inner` binds the array
                 // ITSELF, and `.push` through it mutates the object rather than
                 // assigning to the container, so it stays legal.
@@ -19572,6 +19614,16 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
         std::string t = ptype + (defConstraint == 1 ? ":D" : defConstraint == 2 ? ":U" : "");
         return t + "(" + coerceFrom + ")";
     };
+    // A coercion type accepts its TARGET as well as its source: `Int(Str)`
+    // binds an Int as it is, and XML's `IO::Path(Str) $src` an IO::Path. (A
+    // List is not the Array it would coerce to — that case goes on below.)
+    {
+        const bool definedArg = isDefined(v);
+        if (!(ptype == "Array" && v.t == VT::Array && v.isList && v.hashKind.empty()) &&
+            typeOrSubsetMatches(v, ptype) &&
+            !(defConstraint == 1 && !definedArg) && !(defConstraint == 2 && definedArg))
+            return;
+    }
     // a NESTED from-type, `Str(Rat(Source))`: the argument is a Rat, or a
     // Source coerced to one, before the outer coercion sees it
     if (size_t lp = from.find('('); lp != std::string::npos && from.back() == ')') {
@@ -22417,6 +22469,16 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // parameter were that nominal type: `foo(Int() $)` beats `foo(Cool $)`
             // for 42, while "omg" still goes to Cool
             if (isDefined(pos[i]) && pos[i].t != VT::Nil && typeMatchesArg(pos[i], p->type)) score += 10;
+            // A coercion FROM a named type takes that type or the target, and
+            // nothing else: `IO::Path(Str) $src` leaves an IO::Handle to the
+            // `IO::Handle $src` candidate beside it (XML's open-xml), as in
+            // Rakudo. A nested from-type (`Str(Rat(Src))`) stays permissive.
+            if (!p->coerceFrom.empty() && p->coerceFrom != "Any" && p->coerceFrom != "Mu" &&
+                p->coerceFrom.find('(') == std::string::npos && !isJunction(pos[i])) {
+                std::string from = p->coerceFrom;
+                if (from.size() > 2 && from[from.size() - 2] == ':') from.resize(from.size() - 2);
+                if (!typeOrSubsetMatches(pos[i], p->type) && !typeOrSubsetMatches(pos[i], from)) return -1;
+            }
         }
         else if ((p->sigil == '@' || p->sigil == '%') && !p->type.empty() &&
                  p->type != "Any" && p->type != "Mu" && p->type != "Positional" &&
@@ -34247,10 +34309,15 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
         }
     }
-    // `self = …` — the invocant is not a container
+    // `self = …` — the invocant is not a container, unless it is an Array or
+    // a Hash, where assigning is a STORE into it (Hash::Merge's augmented
+    // `method merge { self = merge-hash(self, …) }`), as in Rakudo
     if (a->target && a->target->kind == NK::SelfTerm && (a->op == "=" || a->op == ":=")) {
         Value sv; if (Value* sp = tctx_.cur->findSelf()) sv = *sp;
-        throwTypedV("X::Assignment::RO", {{"value", sv}}, "Cannot modify an immutable " + sv.typeName());
+        const bool stores = a->op == "=" && isDefined(sv) &&
+            ((sv.t == VT::Array && !sv.isList) || (sv.t == VT::Hash && sv.hashKind.empty()));
+        if (!stores)
+            throwTypedV("X::Assignment::RO", {{"value", sv}}, "Cannot modify an immutable " + sv.typeName());
     }
     // `$*USAGE` is computed, not stored: there is nothing to assign to
     if (a->target && a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->name == "$*USAGE" &&
@@ -52086,7 +52153,7 @@ Value Interpreter::evalCall(Call* c) {
             // which case the BARE spelling is that type's coercion and the
             // routine is reached as `&name(…)` — which arrives with a callee
             // and so never gets here. See declaredTypeOutranksRoutine.
-            if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c->name))) {
+            if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c))) {
                 tctx_.arityCallName = &c->name;
                 return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
             }
