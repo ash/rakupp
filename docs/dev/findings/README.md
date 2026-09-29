@@ -222,6 +222,13 @@ logs and the reviews. This page is the complete list.
   BENCHMARKS.md as it stood before the v5.0.0 sitting: every dated re-snapshot,
   the campaigns behind each kernel's movement, and the Rosetta and machine
   corrections.
+- **[DISPATCH-PROBES.md](DISPATCH-PROBES.md)** *(2026-09-29, at
+  5.0.1-14-geb48f46c)* — where a tree-walker's time goes beyond the operations
+  themselves. A ladder of five walkers on real `Value`s prices quickening,
+  closure compilation, borrowed results and superinstructions. A profile of the
+  engine found ~19% in thread-local-storage reads and ~11% in per-iteration
+  block entry/exit. The second became `Block::entryWork`: −10 to −11% on loop
+  kernels, with Roast, the corpus and the module battery unchanged.
 
 ## One-off bug reports
 
