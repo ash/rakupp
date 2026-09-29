@@ -5812,8 +5812,10 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
     std::string wFix = wIn;
     if (wFix.size() > 2 && wFix.compare(wFix.size() - 2, 2, "\\i") == 0)
         wFix.erase(wFix.size() - 2, 1);
-    // U+2212 MINUS SIGN is a minus here as it is to val(): `<−5>` is IntStr -5
-    if (wFix.compare(0, 3, "\xE2\x88\x92") == 0) wFix.replace(0, 3, "-");
+    // U+2212 MINUS SIGN is a minus here as it is to val(), wherever a sign may
+    // stand: `<−5>` is IntStr -5, `<5−1i>` and `<−5−1i>` are Complex, `<−1/2>`
+    // a Rat. (A word that is no number keeps its spelling: the caller holds it.)
+    for (size_t at; (at = wFix.find("\xE2\x88\x92")) != std::string::npos; ) wFix.replace(at, 3, "-");
     const std::string& w = wFix;
     // `<Inf>`, `<-Inf>` and `<NaN>` are NumStr, as val() makes them. The range
     // spec `<x -Inf Inf>` is how Math::NIntegrate integrates over the whole
@@ -9402,6 +9404,9 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         // word list <v8.OMG vfe.xxx> loses the prefix on the v+digit entries
         // (Cro::Uri's IPvFuture test hosts)
         std::string wt = t.kind == Tok::VersionLit ? "v" + t.text : t.text;
+        // …and an operator the lexer rewrote from Unicode keeps its source
+        // spelling in text2: `c <a−b>` is the word "a−b", not "a-b"
+        if (t.kind == Tok::Op && !t.text2.empty()) wt = t.text2;
         bool sep = words.empty() || t.spaceBefore;
         const bool quoted = qqww && (t.kind == Tok::StrLit || t.kind == Tok::StrInterp);
         if (quoted) {

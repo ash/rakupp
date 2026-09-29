@@ -4689,6 +4689,16 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         //  They are ordinary word characters — `< { } >` is two words — and the
         //  net is no longer needed: an unclosed `<` reports its own runaway at
         //  EOF, which is a better diagnostic than silently resuming.)
+        // An operator spelled in Unicode arrives as its ASCII twin (`−` is `-`,
+        // `×` is `*`, `≤` is `<=`, `…` is `...`). Keep the spelling it had: when
+        // the parser later reads these tokens back as the WORDS of a `<…>` list
+        // it could not know was one — `c <a−b>`, a listop and its argument, where
+        // `<` might have been less-than — the words must be what was written.
+        if (t.kind == Tok::Op && pos_ > tokStart && t.text2.empty()) {
+            bool wide = false;
+            for (size_t k = tokStart; k < pos_ && !wide; k++) wide = (unsigned char)src_[k] >= 0x80;
+            if (wide) t.text2 = src_.substr(tokStart, pos_ - tokStart);
+        }
         t.spaceBefore = spaced;
         out.push_back(std::move(t)); // t is dead after this (heredoc bookkeeping reads `out`)
         if (heredocPending_) { // a q:to/MARKER/ was just lexed
