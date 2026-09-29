@@ -18,11 +18,11 @@ methodology in [COUNTING.md](../../status/COUNTING.md)).
   ~39% of files fully passing.
 - **The plan:** the campaign ran off
   [findings/ROAST-GAPS.md](../findings/ROAST-GAPS.md) (the systematic gap
-  classification) with [100.md](100.md) as the ceiling analysis — 100% does
-  not exist; ~97% is the real ceiling, and the walls past ~92% are projects,
-  not tasks. An independent pre-1.0 review
-  ([findings/REVIEW-1.0.md](../findings/REVIEW-1.0.md)) and five fix waves
-  closed the cycle.
+  classification) with [100.md](100.md) as the ceiling analysis, which argued
+  that 100% did not exist and ~97% was the real ceiling (v5.0.0 reached
+  100.00%; 100.md now says why the argument did not hold). An independent
+  pre-1.0 review ([findings/REVIEW-1.0.md](../findings/REVIEW-1.0.md)) and five fix
+  waves closed the cycle.
 
 ## v1.1.0 — 100% Unicode (shipped 2026-07-24)
 

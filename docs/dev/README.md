@@ -113,8 +113,8 @@ The three v3.0.0 pillar plans, smallest first:
 
 Earlier plans:
 
-- **[plans/100.md](plans/100.md)** — what stands between the current pass rate and
-  100% of Roast, starting with the fact that 100% does not exist.
+- **[plans/100.md](plans/100.md)** — how v5.0.0 reached 100.00% of Roast, and
+  the August ceiling analysis that said it could not.
 - **[plans/PLAN-gil-removal.md](plans/PLAN-gil-removal.md)** — the design doc
   behind PARALLEL-PLAN.md: the three options for removing the GIL, why
   Option 2 (harden the runtime, not every user structure) won, and the

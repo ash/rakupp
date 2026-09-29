@@ -41,35 +41,24 @@ reports; two interpreters in one process, gated.
 
 ## 5. Language surface still missing
 
-*The parallel Roast campaign takes whatever the default set tests; the items
-below stay here only as far as Roast does not reach them.*
+*Roast reached 100.00% in v5.0.0 (1,423 of 1,424 files,
+[100.md](100.md)), so everything here is language Roast does not test.*
 
-On 2026-09-17 Roast stood at 676 of 1,464 files and 200,843 of 219,610
-assertions, measured before the harness applied Roast's own fudge. At HEAD on
-2026-09-26 it was 1,201 of the 1,434 files of `spectest.data`. Rakudo's own ceiling on the raw files is
-~96.9% ([100.md](100.md)). The cheap wins are
-spent — moving the file count now takes whole features. By synopsis, the weakest:
-
-| synopsis | assertions passing |
-|---|---:|
-| S10 packages | 53% |
-| S26 Pod | 66% |
-| S11 modules | 73% |
-| S16 I/O | 75% |
-| S04 blocks, phasers | 83% |
-| S07 iterators | 84% |
-
-- **Macros.** The parser has no `macro` at all. RakuAST is done and is "the
+- **Macros.** The parser has no `macro` at all; Rakudo runs
+  `use experimental :macros` with `quasi`. RakuAST is done and is "the
   reference design for metaprogramming's endgame" (RAKUDO-TECHNIQUES item 3), so
   this is reachable for the first time.
-- **`.resume`** control flow (the `ResumeEx` teardown no longer wedges, the
-  semantics are still unimplemented); **EVAL lexical isolation** (a recurring S02
-  tail); `prefix:<~^>`; the `nqp::` ops the setting-layer code reaches for.
-- **Pod** — `--doc` renders, S26 is at 66%; the `Pod::To::*` family is what the
+- **`.resume` across a routine call.** Resuming continues after the throw when
+  the `CATCH` sits in the block that threw; when the throw is inside a called
+  routine, the call returns an undefined value and the rest of the routine is
+  skipped. **EVAL lexical isolation** (a recurring S02 tail); the `nqp::` ops
+  the setting-layer code reaches for.
+- **`use` inside a closure** runs when the closure first runs, not at compile
+  time (JSON::Tiny's `t/01-parse.t`, last test).
+- **Pod** — `--doc` renders and S26 passes; the `Pod::To::*` family is what the
   ecosystem's documentation tooling runs on.
 
-**The number:** files fully passing; assertions net of the skip/todo shield
-(90.5% today); the per-synopsis table with no cell under 80%.
+**The number:** each item closed with a probe that matches Rakudo.
 
 ## 6. A capability sandbox
 
