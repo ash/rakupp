@@ -122,6 +122,7 @@ struct Site {
     std::atomic<bool> opsChecked{false};     // …looked for once, at the first entry
     std::vector<std::string> callNames;      // routines a copy-and-patch kernel calls (TYPES-PLAN N5)
     std::set<std::string> arrays;            // `@name` slots it indexes, checked plain at entry
+    std::map<std::string, const Callable*> inlined;   // subs compiled in place, checked the same at entry
 };
 
 // The name a counted `for`'s synthetic condition reads its end bound from. It
@@ -919,7 +920,15 @@ void startCompile(Site* s) {
         // file. That is also why the threshold this backend runs at is two
         // orders of magnitude below the C++ one.
         std::string why;
-        cnp::Kernel* k = cnp::compile(s->emit, s->slots, why);
+        // The subs this loop calls that can be compiled in place, resolved in
+        // the scope the loop is running in (this is the interpreter's thread)
+        s->inlined.clear();
+        if (Env* env = Interpreter::tctx_.cur.get())
+            for (const std::string& nm : s->callNames)
+                if (Value* f = env->find("&" + nm))
+                    if (f->t == VT::Code && f->code() && cnp::inlineBody(*f->code(), env))
+                        s->inlined[nm] = f->code();
+        cnp::Kernel* k = cnp::compile(s->emit, s->slots, why, &s->inlined);
         if (!k) {
             s->why = why;
             s->state.store(StFailed, std::memory_order_release);
@@ -1224,6 +1233,14 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
     // passes each one in a scratch variable, so an `is rw` / `is raw`
     // parameter would write into that instead of the caller's variable.
     // Checked every entry (a name can be rebound), candidates of a multi too.
+    // A sub compiled in place must still be the sub this name finds: a
+    // rebinding (`&f = …`, or another loop entering from a scope where `f` is
+    // someone else's) keeps the loop interpreted.
+    for (auto& kv : s->inlined) {
+        const Value* f = env ? env->find("&" + kv.first) : nullptr;
+        if (!f || f->t != VT::Code || f->code() != kv.second)
+            return refuse(s, "the loop compiled " + kv.first + " in place, and the name now finds another routine");
+    }
     for (const std::string& nm : s->callNames) {
         const Value* f = nullptr;
         for (Env* e = env; e && !f; e = e->parent.get()) f = e->find("&" + nm);

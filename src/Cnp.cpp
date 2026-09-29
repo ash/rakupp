@@ -469,6 +469,7 @@ struct ColdReq {
 
 struct Lower {
     std::string err;
+    const std::map<std::string, const Callable*>* inl = nullptr;
     std::vector<KernelCall> calls;
     std::vector<IndexSite>  isites;
     // `@a[$i]` / `@g[$y][$x]`: the root array's register and each level's key,
@@ -957,6 +958,27 @@ int Lower::expr(Expr* e) {
         }
         case NK::Call: {
             auto* c = static_cast<Call*>(e);
+            // A sub compiled in place (see inlineBody): each argument into a
+            // register of its own, the parameters bound to those, the body
+            // lowered as an expression. No call happens at all.
+            if (inl) {
+                auto it = inl->find(c->name);
+                if (it != inl->end() && it->second->params && it->second->params->size() == c->args.size()) {
+                    const Callable& cb = *it->second;
+                    std::map<std::string, int> ps;
+                    for (size_t k = 0; k < c->args.size(); k++) {
+                        int r = temp();
+                        exprInto(c->args[k].get(), r);
+                        if (bad()) return 0;
+                        ps[(*cb.params)[k].name] = r;
+                    }
+                    scopes.push_back(std::move(ps));
+                    auto* body = static_cast<ExprStmt*>((*cb.body)[0].get())->e.get();
+                    int r = expr(body);
+                    scopes.pop_back();
+                    return r;
+                }
+            }
             KernelCall cs;
             cs.synth = std::make_unique<Call>();
             cs.synth->name = c->name;
@@ -1280,9 +1302,67 @@ const char* unavailableReason() {
     return stencilsUnavailableReason();
 }
 
-Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& why) {
+namespace {
+bool inlineExpr(const Expr* e, const std::set<std::string>& params, Env* env) {
+    if (!e) return false;
+    auto overloaded = [&](const std::string& key) { return env && env->find(key); };
+    switch (e->kind) {
+        case NK::IntLit: case NK::BoolLit: return true;
+        case NK::NumLit: return !static_cast<const NumLit*>(e)->imaginary;
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            return !v->declare && params.count(v->name);
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            static const std::set<std::string> ok = {
+                "+", "-", "*", "/", "%", "div", "mod", "**", "<", "<=", ">", ">=", "==", "!=", "&&", "||"};
+            if (!ok.count(b->op) || overloaded("&infix:<" + b->op + ">")) return false;
+            return inlineExpr(b->lhs.get(), params, env) && inlineExpr(b->rhs.get(), params, env);
+        }
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            if (u->postfix || !(u->op == "-" || u->op == "+" || u->op == "!")) return false;
+            if (overloaded("&prefix:<" + u->op + ">")) return false;
+            return inlineExpr(u->operand.get(), params, env);
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return inlineExpr(t->cond.get(), params, env) && inlineExpr(t->then.get(), params, env) &&
+                   inlineExpr(t->els.get(), params, env);
+        }
+        default: return false;
+    }
+}
+}  // namespace
+
+const Expr* inlineBody(const Callable& c, Env* env) {
+    if (c.isMultiDispatcher || c.isMultiCandidate || c.isProto || c.isMethod || c.isBlock ||
+        c.isWhateverCode || c.isRegexRoutine || c.isNative || c.deprecated || !c.retType.empty() ||
+        c.retRw || !c.wrappers.empty() || !c.placeholders.empty() || !c.params || !c.body ||
+        c.body->size() != 1)
+        return nullptr;
+    std::set<std::string> params;
+    for (const Param& p : *c.params) {
+        if (p.name.size() < 2 || p.sigil != '$' || !(std::isalpha((unsigned char)p.name[1]) || p.name[1] == '_'))
+            return nullptr;
+        if (!p.type.empty() || p.typeCapture || p.whereExpr || p.litVal || p.defaultVal || p.subSig ||
+            p.codeSig || p.named || p.slurpy || p.optional || p.isRw || p.isRaw || p.isCopy || p.coerce ||
+            p.defConstraint || !p.userTraits.empty() || !p.shapeDims.empty() || p.invocant)
+            return nullptr;
+        params.insert(p.name);
+    }
+    const Stmt* st = (*c.body)[0].get();
+    if (!st || st->kind != NK::ExprStmt) return nullptr;
+    const Expr* e = static_cast<const ExprStmt*>(st)->e.get();
+    return inlineExpr(e, params, env) ? e : nullptr;
+}
+
+Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& why,
+                const std::map<std::string, const Callable*>* inl) {
     if (!available()) { why = unavailableReason(); return nullptr; }
     Lower L;
+    L.inl = inl;
     L.nNamed = (int)slots.size() + countDecls(loop) + 4;
     if (L.nNamed > (int)kMaxRegs) { why = "too many variables"; return nullptr; }
     L.scopes.push_back({});

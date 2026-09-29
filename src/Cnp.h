@@ -20,12 +20,16 @@
 // the loop simply stays interpreted.
 #include <cstddef>
 #include <string>
+#include <map>
 #include <vector>
 
 namespace rakupp {
 
 struct Stmt;
+struct Expr;
 struct Value;
+struct Callable;
+struct Env;
 class Interpreter;
 
 namespace cnp {
@@ -42,7 +46,15 @@ const char* arch();
 // Lower a loop the eligibility walk has already accepted. Null on refusal,
 // with `why` naming what the lowering could not express. `slots` is the
 // harness's slot list, in order; registers 0..slots.size()-1 mirror it.
-Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& why);
+// `inl`: routines the kernel may compile in place instead of calling (see
+// inlineBody), by name.
+Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& why,
+                const std::map<std::string, const Callable*>* inl = nullptr);
+// A sub a kernel can compile in place: untyped `$` parameters with no traits,
+// defaults or constraints, and a body that is ONE expression over those
+// parameters alone (literals, arithmetic, comparisons, `?? !!`), with no
+// operator the program overloads in `env`. Its body expression, or null.
+const Expr* inlineBody(const Callable& c, Env* env);
 
 // Enter a kernel: bind the registers from the containers, run the loop to
 // completion, write the written ones back. False means the kernel could not be
