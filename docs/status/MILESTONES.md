@@ -52,6 +52,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-09-17 | **v4.0.0** | **Raku that travels** — modules install without Rakudo and travel inside `--exe` binaries; one C API with bindings for six languages; 676 / 1,464 files, 91.5% of declared tests; 1,006 distributions pass their own suites |
 | 2026-09-17 | **v4.0.1** | `::T:U` constrains, it does not capture — a fix-only release, for YAMLish |
 | 2026-09-29 | **v5.0.0** | **100.00% of Roast** — 218,421 of 218,422 tests pass without skip/todo, and 1,423 of the 1,424 files of `spectest.data` |
+| 2026-09-29 | **v5.0.1** | YAMLish loads, and parses in linear time — a fix-only release |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 

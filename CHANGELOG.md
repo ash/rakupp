@@ -3,6 +3,54 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.0.1 (2026-09-29) — YAMLish loads, and parses in linear time
+
+A fix-only release, the same day as v5.0.0. Three engine faults, all reached
+through YAMLish 0.1.3 and the Raku course's 2,653-line table of contents: on
+v5.0.0 the first `use YAMLish` from a fresh precompilation store died, and
+parsing that file did not finish in 60 s. It now takes 0.46 s a process, where
+Rakudo takes 0.86 s ([BENCHMARKS.md](docs/status/BENCHMARKS.md)), and the two
+produce the same data.
+
+- **`::T:U` where no type T exists.** YAMLish declares
+  `load-yaml(Str $input, ::GrammarType:U :$schema = ::Schema::Core, :%tags)`,
+  and nothing declares a `GrammarType`. The smiley form is a constraint that
+  captures nothing, and Rakudo accepts it with T undeclared; v4.0.1 did too.
+  v5.0.0's check for parameters typed with an undeclared name refused it with
+  `X::Parameter::InvalidType`, and because that check runs when a module is
+  compiled, a warm precompilation store hid it and a fresh install hit it. The
+  parameter is exempt now, and only that parameter: T as a later parameter's
+  type is still an invalid typename, and T in the body is still undeclared, as
+  in Rakudo.
+- **An aliased capture is one Match.** `<alias=rule>` answers to both
+  `$<alias>` and `$<rule>`, and the Match builder built it once per key: the
+  rule's action fired twice, `$<alias> === $<rule>` was False, and nested
+  aliases rebuilt every subtree 2^depth times. YAMLish nests them at every
+  level, so a list four deep took 70 s. Both keys now hold the same Match and
+  the action fires once, as in Rakudo.
+- **A lookbehind over one character looks back one character.** A lookbehind
+  tries the start positions within its pattern's width, and a one-character
+  rule such as `<.alnum>` is one to several bytes, so `<!after <.alnum>>`
+  scanned back to the start of the input every time it did not match, and a
+  parse grew with the square of the input. The window is now bounded in
+  characters as well as bytes. Plain regexes had the same fault:
+  `m:g/<!after <.alpha>> a/` over 40,000 words took 70 s and takes 0.02 s.
+
+Roast is unchanged: **218,421 of 218,422** tests without skip/todo and
+**1,423 of 1,424** files, the same file list. Three runs gave 1,422 / 1,423 /
+1,423, the short one dropping `S17-supply/supplier-preserving.t`, a known race
+under load; the union equals v5.0.0's, 0 regressed and 0 gained. Local suite
+1,147 → **1,150**, the new cases being `grammar-alias-built-once`,
+`lookbehind-one-char-window` and `type-capture-smiley-undeclared-name`. Module
+battery **48 / 59**, no verdict changed. perf-guard finds no kernel over
+tolerance, the four optbench modes agree with Rakudo, the slim differential
+shows no difference v5.0.0 does not also show, all 105 Raku Koans pass, and GCC
+16 and the MinGW syntax check are clean. The documentation-example and
+operator-divergence figures are v5.0.0's; that sweep was not re-run.
+
+Left open, as in v4.0.1: Raku++ enforces the smiley, so `sub f(::G:U $x)`
+refuses `f(42)` where Rakudo binds it without complaint.
+
 ## v5.0.0 (2026-09-29) — 100.00% of Roast
 
 **218,421 of Roast's 218,422 tests pass** — every test in the 1,424 files of

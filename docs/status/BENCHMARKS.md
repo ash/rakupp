@@ -228,8 +228,8 @@ the Raku course's table of contents (`_data/toc/en.yaml`, 2,653 lines) with
 `load-yamls`. The grammar exercises parameterised tokens, `|` alternations,
 lookbehinds, `:my` state, aliased captures and action methods. Both engines
 produce the same data, compared as sorted-key JSON. Best of 5, wall-clock, the
-two engines interleaved; measured 2026-09-29 against Rakudo v2026.08 with a
-build newer than `v5.0.0`, which does not finish this parse in 60 s.
+two engines interleaved; measured 2026-09-29 against Rakudo v2026.08. It needs
+`v5.0.1` or later: `v5.0.0` does not finish this parse in 60 s.
 
 | Workload | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
