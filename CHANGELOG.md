@@ -192,8 +192,10 @@ every named sub call for a declared type of the same name (2a0dd09a), the
   keeps the answer until one of them does.
 
 The rest is recorded here rather than fixed, and v6 — the speed release —
-starts from it. `tools/perf-baseline.raku` still holds v4.0.0's numbers, so until
-it is re-recorded for v5.0.0 the gate reports these as regressions.
+starts from it. `tools/perf-baseline.raku` is re-recorded for v5.0.0 (every
+kernel's runs within 4.1% of each other), so the next release is gated against
+these numbers; its `best` column keeps the faster v4.x figures, and every
+`--check` prints the gap as standing debt.
 
 ### Not measured for this entry
 
