@@ -95,6 +95,9 @@ Roast's own fudge applied, passes 1,414 of the same 1,424 files and 218,933 of
   its invocant at run time; the binary refused with `X::Feature::NotBuilt`
   where the full build ran. The scan now counts `.AST` as a use of `eval`.
   Found by this release's slim differential on `t/regression/rakuast-visit.raku`.
+- **A user `infix:<×>` whose body uses `*`** recursed until the stack ran out:
+  the lexer spells `×` as `*`, and the `*` in the operator's own body found the
+  operator again. Found by raku.online's spec verifier.
 
 ### The battery had been comparing Raku++ with itself
 
