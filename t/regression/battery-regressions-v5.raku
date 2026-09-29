@@ -15,6 +15,8 @@
 # …and one the conformance gate found in raku.online's own report tool:
 #   `for %h.kv -> $k, @rows` bound @rows to the item container, so `for @rows`
 #   iterated once, over the whole array
+# …and one raku.online's spec verifier found: `sub infix:<×>($a, $b) { $a * $b }`
+#   recursed, because the lexer spells `×` as `*` and `*` found the user's `×`
 #
 # Contract: exit 0 + last line PASS. Runs unchanged under Rakudo.
 use lib $?FILE.IO.parent.add('lib').Str;
@@ -80,6 +82,12 @@ ck($m[0][1]<chars>.defined, False, '…and absent where that occurrence took the
     my @got;
     for ($x,) -> @r { @got.push: @r.elems }
     ck(@got.List, (3,), '…from an itemized array too');
+}
+
+# raku.online/spec: operators/custom
+{
+    sub infix:<×>($a, $b) { $a * $b }
+    ck(6 × 7, 42, 'a user × whose body uses * multiplies');
 }
 
 if @fail { note "FAILED: " ~ @fail.join('; '); say 'FAIL' } else { say 'PASS' }

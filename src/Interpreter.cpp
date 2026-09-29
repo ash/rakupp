@@ -45617,6 +45617,12 @@ Value* Interpreter::lexInfixLookup(const std::string& op) {
         if (f && f->t == VT::Code && f->code() && !f->code()->name.empty() &&
             (f->code()->isMultiDispatcher || f->code()->isMultiCandidate || f->code()->isProto))
             return nullptr;
+        // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
+        // { $a * $b }` means the built-in `*` there, not itself again (the lexer
+        // spells both `*`, so this is the one place the two can be told apart)
+        if (f && f->t == VT::Code && tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+            tctx_.curRoutineVal->code() == f->code())
+            return nullptr;
         return f;
     }
     static thread_local std::string key;
