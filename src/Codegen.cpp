@@ -156,6 +156,29 @@ struct Codegen {
     std::ostringstream out;
     std::map<std::string, int> userSubs; // sub name -> arity (positional params)
     std::map<std::string, SubDecl*> subDecls_; // …and its declaration, for `&name.signature`
+    std::map<const SubDecl*, std::vector<Param>> phParams_; // see sigOf
+
+    // The parameters a sub BINDS. A sub with no written signature takes the
+    // one its placeholders imply — `sub f { $^b ~ $^a }` is `($a, $b)`, bound
+    // in sorted order, and `$:name` is a named parameter. The body still reads
+    // them under their placeholder names, so that is what they bind as. Kept
+    // beside the AST rather than written into it: a program that later falls
+    // back to bundling hands the interpreter the AST as parsed.
+    const std::vector<Param>& sigOf(const SubDecl* d) {
+        if (!d->params.empty() || d->hadSig) return d->params;
+        auto it = phParams_.find(d);
+        if (it != phParams_.end()) return it->second;
+        std::vector<Param> ps;
+        for (auto& ph : computePlaceholders(d->body)) {
+            if (ph.size() < 3) continue;
+            Param p; p.name = ph; p.sigil = ph[0];
+            if (ph[1] == ':') { p.named = true; p.namedKey = ph.substr(2); }
+            ps.push_back(std::move(p));
+        }
+        // positionals first (still sorted among themselves), then the nameds
+        std::stable_partition(ps.begin(), ps.end(), [](const Param& p) { return !p.named; });
+        return phParams_.emplace(d, std::move(ps)).first->second;
+    }
     std::map<std::string, std::vector<int>> rwSubs; // sub name -> positional indices that are `is rw`
     std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
     bool optimize_ = false;              // -O codegen pass enabled
@@ -789,7 +812,7 @@ struct Codegen {
                     auto* d = static_cast<SubDecl*>(s);
                     if (d->isMethod) break;
                     std::set<std::string> inner; // its own params only — see BlockExpr note
-                    for (auto& p : d->params) if (!p.name.empty()) inner.insert(p.name);
+                    for (auto& p : sigOf(d)) if (!p.name.empty()) inner.insert(p.name);
                     collectMutatedCaptures(d->body, inner, /*inClosure=*/true, out);
                     break; }
                 default: {
@@ -930,7 +953,7 @@ struct Codegen {
     std::string subClosure(SubDecl* d) {
         if (d->isNative) return nativeSubClosure(d);
         std::set<std::string> params;
-        for (auto& p : d->params) if (!p.name.empty()) params.insert(p.name);
+        for (auto& p : sigOf(d)) if (!p.name.empty()) params.insert(p.name);
         checkClosureCapture(d->body, params); // against the OUTER scope's cells
         std::vector<std::string> outerCells = cellsLive_;
         BodyScope __bs{this, /*closure=*/false};
@@ -938,7 +961,7 @@ struct Codegen {
         analyzeCells(d->body, params);
         std::string body = capture([&]() {
             emitCellAliases(0, params);
-            bindParams(d->params, 0, false);
+            bindParams(sigOf(d), 0, false);
             hoistLexicalSubs(d->body, 0);
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
@@ -957,9 +980,8 @@ struct Codegen {
         // a SUB body is a ReturnEx boundary (same rule as bodyDef): without the
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
-        return sigWrap("Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
-                       "} catch (ReturnEx& __r) { return __r.v; } })",
-                       d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u);
+        return subSig("Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
+                      "} catch (ReturnEx& __r) { return __r.v; } })", d);
     }
 
     // The runtime Code object of a compiled routine carries the signature the
@@ -1001,18 +1023,20 @@ struct Codegen {
         for (size_t k = 0; k < phs.size(); k++) names += std::string(k ? ", " : "") + cesc(phs[k]);
         return names;
     }
-    // `&name` of a top-level sub: its closure, carrying the declared signature
-    std::string subRefSig(const std::string& mk, const std::string& nm) {
-        auto it = subDecls_.find(nm);
-        if (it == subDecls_.end()) return mk;
-        SubDecl* d = it->second;
+    // A named sub's closure, carrying the declared signature
+    std::string subSig(const std::string& mk, const SubDecl* d) {
         if (d->params.empty() && !d->hadSig) {
             auto phs = computePlaceholders(d->body);
             if (!phs.empty())
-                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->name = " + cesc(nm) +
+                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->name = " + cesc(d->name) +
                        "; _c.code()->placeholders = {" + placeholderList(phs) + "}; return _c; }())";
         }
-        return sigWrap(mk, d->params, nm, d->retType, d->hadSig ? RSC_HADSIG : 0u);
+        return sigWrap(mk, d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u);
+    }
+    // `&name` of a top-level sub
+    std::string subRefSig(const std::string& mk, const std::string& nm) {
+        auto it = subDecls_.find(nm);
+        return it == subDecls_.end() ? mk : subSig(mk, it->second);
     }
 
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
@@ -4105,7 +4129,7 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
-        bodyDef(mangleSub(d->name), d->params, d->body, fastSubs.count(d->name) > 0);
+        bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0);
     }
 
     // A multi: emit each candidate, then a dispatcher that tries candidates
@@ -4253,11 +4277,12 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (d->name.empty()) throw CodegenError{"an anonymous sub at statement level"};
             if (d->isMulti) { multiCands[d->name].push_back(d); g.multiNames.insert(d->name); }
             else {
-                g.userSubs[d->name] = (int)d->params.size(); g.subDecls_[d->name] = d; subs.push_back(d);
+                const auto& dps = g.sigOf(d);
+                g.userSubs[d->name] = (int)dps.size(); g.subDecls_[d->name] = d; subs.push_back(d);
                 // native subs emit the ValueList bridge only — no fast-sig overload
-                if (optimize && !d->isNative && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
+                if (optimize && !d->isNative && Codegen::simpleSig(dps)) g.fastSubs[d->name] = (int)dps.size();
                 { int pos = 0; std::vector<int> rw;
-                  for (auto& p : d->params) { if (p.named || p.slurpy || p.invocant) continue;
+                  for (auto& p : dps) { if (p.named || p.slurpy || p.invocant) continue;
                       if (p.isRw) rw.push_back(pos); pos++; }
                   if (!rw.empty()) g.rwSubs[d->name] = rw; }
             }
