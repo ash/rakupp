@@ -285,8 +285,8 @@
         <span class="chip"><b>Interpreter</b> + native compiler</span>
         <span class="chip">runs in the <b>browser</b> via WebAssembly</span>
         <span class="chip">installs modules, <b>zef-compatible</b></span>
-        <span class="chip"><b>Zero</b> third-party dependencies</span>
-        <span class="chip mono">v3.28.0</span>
+        <span class="chip"><b>100.00%</b> of Roast's tests</span>
+        <span class="chip mono">v5.0.0</span>
       </div>
     </div>
   </section>
@@ -295,13 +295,13 @@
   <section class="slide" data-sect="What it is">
     <div class="gutter"><div class="num">02<small>/13</small></div><div class="sect">What it is</div></div>
     <div class="stage">
-      <div class="eyebrow">not a Rakudo fork — shares no code with it</div>
+      <div class="eyebrow">a second implementation, with Rakudo as its reference</div>
       <h2>One implementation of the <span class="accent">language</span>,<br>from lexer to native binary.</h2>
       <p class="lede">A hand-written lexer, parser, and tree-walking evaluator for real <strong>Raku</strong> — classes, roles, grammars, regexes, multi-dispatch, junctions, lazy sequences, a bignum tower, Unicode-correct strings, concurrency. It can also <strong>compile</strong> a program to a standalone native executable, and — as <strong>Raku.js</strong> — run client-side in a browser.</p>
       <div class="grid g3">
         <div class="card"><h3><span class="dot"></span>C++17, no deps</h3><p>Hand-rolled bignum, Unicode tables, and regex engine. Builds anywhere CMake and a C++17 compiler run.</p></div>
         <div class="card"><h3><span class="dot t"></span>Interpret <em>or</em> compile</h3><p>The same binary tree-walks a script or transpiles it to C++ and compiles native.</p></div>
-        <div class="card"><h3><span class="dot a"></span>Measured, not claimed</h3><p>Graded test-by-test against Roast, the official Raku specification suite.</p></div>
+        <div class="card"><h3><span class="dot a"></span>Measured, not claimed</h3><p>Graded test by test against <b>Roast</b>, the specification suite the Raku community wrote alongside Rakudo — and checked behaviour by behaviour against Rakudo, the reference compiler.</p></div>
       </div>
     </div>
   </section>
@@ -310,14 +310,14 @@
   <section class="slide" data-sect="Conformance">
     <div class="gutter"><div class="num">03<small>/13</small></div><div class="sect">Conformance</div></div>
     <div class="stage">
-      <div class="eyebrow">graded against Roast · measured on v3.28.0</div>
-      <h2>How much Raku actually runs.</h2>
+      <div class="eyebrow">graded against Roast · measured on v5.0.0 · Roast commit 1f521d798</div>
+      <h2>Every test Roast expects to <span class="accent">pass</span>.</h2>
       <div class="stats">
-        <div class="stat"><div class="n">91<small>%</small></div><div class="l"><b>200,504 / ~219,555</b> individual tests pass, counted against each file's declared <code>plan N</code> — so a file that aborts is charged for every test it never ran.</div></div>
-        <div class="stat t"><div class="n">670<small>/ 1,464</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file has to pass (46%). Up from 594 at v2.0.0, and every one of those 76 files took a real feature, not a tweak.</div></div>
-        <div class="stat a"><div class="n">100<small>%</small></div><div class="l">of <b>S15</b> — Unicode, strings, NFG — <b>91,805 / 91,807</b> assertions. The largest section of the suite, and the finished one: a single file fails two of its own, and nothing else in it does.</div></div>
+        <div class="stat"><div class="n">100.00<small>%</small></div><div class="l"><b>218,421 / 218,422</b> tests pass across the 1,424 files of Roast's <code>spectest.data</code>, counting only the tests Roast expects to pass — nothing skipped, nothing marked todo.</div></div>
+        <div class="stat t"><div class="n">1,423<small>/ 1,424</small></div><div class="l">files pass <b>all or nothing</b>. The one test left reads <code>.eof</code> on a terminal; Roast marks it todo on macOS by release name, and the machine of record runs a release newer than the list.</div></div>
+        <div class="stat a"><div class="n">767</div><div class="l">files moved to fully passing since v4.0.1, with <b>0 regressed</b> — 249 commits, synopsis by synopsis, then the long tail one file at a time.</div></div>
       </div>
-      <p class="lede" style="margin-top:clamp(20px,3vh,32px)">Every release is gated on the full suite with <strong>zero fully-passing-file regressions</strong> — and, since v1.5.0, on <strong>performance</strong> too. Seven gates now, and since v3.22.0 <strong>every gate that can fail is proved to detect a planted defect</strong>. Numbers are measured on each tag, never projected; the whole suite runs in ~3½ minutes through a harness written in Raku and run by Raku++ itself.</p>
+      <p class="lede" style="margin-top:clamp(20px,3vh,32px)">None of this is measurable without <strong>Roast</strong> — years of the Raku community writing down what the language means, test by test. Every release is gated on it with <strong>zero fully-passing-file regressions</strong>, and on <strong>performance</strong> too; the full list runs in about 40 seconds through a harness written in Raku and run by Raku++ itself.</p>
     </div>
   </section>
 
@@ -333,8 +333,8 @@
         <div class="card"><span class="tag">regex</span><h3>Grammars that parse</h3><p>Backtracking engine, Unicode classes, <code>token</code>/<code>rule</code>, <code>.parse</code> with action classes &amp; <code>make</code>.</p></div>
         <div class="card"><span class="tag">signatures</span><h3>multi &amp; proto</h3><p>Type / literal / <code>where</code> constraints, destructuring, coercion types, <code>callsame</code>.</p></div>
         <div class="card"><span class="tag">functional</span><h3>Lazy &amp; higher-order</h3><p>Closures, <code>*</code> WhateverCode, junctions, <code>gather</code>/<code>take</code>, feeds, <code>1,2,*+*...Inf</code>.</p></div>
-        <div class="card"><span class="tag">metaprog</span><h3>Your own operators</h3><p>User ops in all six categories with working precedence traits and meta-operators over them — and <b>RakuAST</b>: <code>.AST</code>, <code>.DEPARSE</code>, <code>.EVAL</code>, <code>visit-children</code>.</p></div>
-        <div class="card"><span class="tag">concurrency</span><h3>Real OS threads</h3><p><code>start</code>/<code>await</code>, <code>Supply</code>/<code>react</code>/<code>whenever</code>, <code>Channel</code>, atomics; true parallelism <b>on by default</b> since v3.0.0 (<code>RAKUPP_GIL=1</code> opts back out).</p></div>
+        <div class="card"><span class="tag">metaprog</span><h3>Your own operators</h3><p>User ops in all six categories with precedence traits and meta-operators over them; <b>RakuAST</b> (<code>.AST</code>, <code>.DEPARSE</code>, <code>.EVAL</code>) and <b>slangs</b>.</p></div>
+        <div class="card"><span class="tag">concurrency</span><h3>Real OS threads</h3><p><code>start</code>/<code>await</code>, <code>Supply</code>/<code>react</code>/<code>whenever</code>, <code>Channel</code>, atomics, <code>hyper for</code> over worker threads; true parallelism <b>on by default</b>.</p></div>
         <div class="card"><span class="tag">unicode</span><h3>Grapheme-correct</h3><p>UAX #29 (emoji ZWJ), NFC/NFD/NFKC/NFKD, UCA collation — generated UCD/UCA 17.0 tables.</p></div>
       </div>
     </div>
@@ -353,7 +353,7 @@
         <div class="run"><code>--exe&nbsp;-o prog</code><span><b>Transpile to C++ and compile native</b> — anything unsupported falls back to <code>--bundle</code> automatically.</span></div>
         <div class="run"><code>Raku.js&nbsp;→&nbsp;WASM</code><span><b>In the browser</b> — same semantics as native, client-side, no server, with an embeddable playground.</span></div>
       </div>
-      <div class="bench-note" style="margin-top:clamp(14px,2.2vh,22px)">Opt-in, off by default: <code>--precomp-modules=on</code> caches the parsed form of everything a program <code>use</code>s — <code>use XML</code> (10 files, 1,110 lines) goes 16.0 ms → 5.7 ms cold-to-warm. Nothing is written to disk until you ask.</div>
+      <div class="bench-note" style="margin-top:clamp(14px,2.2vh,22px)">Opt-in, off by default: <code>--precomp-modules=on</code> caches the parsed form of everything a program <code>use</code>s. New in v5.0.0 and marked work in progress: <code>--jit</code> and <code>--cnp</code> compile hot loops <em>while the program runs</em> — the second by copy-and-patch, with no C++ compiler needed.</div>
     </div>
   </section>
 
@@ -361,10 +361,10 @@
   <section class="slide" data-sect="Speed">
     <div class="gutter"><div class="num">06<small>/13</small></div><div class="sect">Speed</div></div>
     <div class="stage">
-      <div class="eyebrow">interpreter · × vs Rakudo v2026.08 · both native arm64, interleaved on one M3</div>
-      <h2>Fast to start, fast to run.</h2>
+      <div class="eyebrow">interpreter · time relative to Rakudo v2026.08 · both native arm64, one M3, byte-identical output</div>
+      <h2>Startup and throughput, <span class="accent">measured</span>.</h2>
       <div class="bench" id="benchBars"></div>
-      <div class="bench-note"><b>3.0 ms</b> cold start interpreting, 2.5 ms compiled, against Rakudo's 75.6 — a tiny native binary with no VM to spin up. Interpreted, Raku++ leads <span class="accent-2">eleven of the fifteen</span> kernels and is <em>level</em> on three more — <code>fib</code>, <code>streq</code> and <code>rats</code>, all within 5% of a native arm64 Rakudo. It loses one, and that one is on the next slide too.</div>
+      <div class="bench-note"><b>3.7 ms</b> to start interpreting and 3.0 ms compiled, against Rakudo's 81.6 ms — which loads a full VM that then specialises code as it runs, and that is where its leads come from. Interpreted, Raku++ is ahead on thirteen of seventeen kernels; Rakudo leads on <code>fib</code> and <code>streq</code> (1.1×), <code>objects</code> (1.6×) and <code>multiwhere</code> (2.8×). v5.0.0 also interprets 5–40% slower than v4.0.1: the price of the Roast campaign, and where v6 starts.</div>
     </div>
   </section>
 
@@ -372,10 +372,10 @@
   <section class="slide" data-sect="Native">
     <div class="gutter"><div class="num">07<small>/13</small></div><div class="sect">Native</div></div>
     <div class="stage">
-      <div class="eyebrow">rakupp --exe · transpiled to C++, compiled native · × vs Rakudo v2026.08</div>
-      <h2>Compiled, it wins <span class="accent-2">fourteen</span> of fifteen.</h2>
+      <div class="eyebrow">rakupp --exe · transpiled to C++, compiled native · time relative to Rakudo v2026.08</div>
+      <h2>Compiled, the tree-walk <span class="accent-2">goes away</span>.</h2>
       <div class="bench" id="benchBarsNative"></div>
-      <div class="bench-note"><code>--exe</code> strips the tree-walk, and fourteen kernels land <span class="accent-2">1.5× to 35.0×</span> ahead of Rakudo. The fifteenth is <code>objects</code> — <code>class</code>, <code>has</code>, method dispatch, the shape most real Raku is written in — where Rakudo's <code>spesh</code> leads by <span class="accent">1.6×</span>. That kernel is in the set <em>because</em> leaving it out would have hidden it; adding it is what found the problem. Anything the compiler can't lower falls back to bundling automatically.</div>
+      <div class="bench-note">Sixteen of seventeen kernels run <span class="accent-2">1.3× to 32.3×</span> faster than Rakudo once compiled. The closest is <code>objects</code> — <code>class</code>, <code>has</code>, method dispatch — where MoarVM's <code>spesh</code> does the work a native binary gets from its compiler. <code>multiwhere</code> is not compiled at all yet: codegen declines a <code>where</code> on a multi candidate and bundles the interpreter, so Rakudo leads it by <span class="accent">2.8×</span>.</div>
     </div>
   </section>
 
@@ -383,12 +383,12 @@
   <section class="slide" data-sect="The sweep">
     <div class="gutter"><div class="num">08<small>/15</small></div><div class="sect">The sweep</div></div>
     <div class="stage">
-      <div class="eyebrow">every distribution in the ecosystem, run against the engine</div>
+      <div class="eyebrow">every distribution in the ecosystem, swept fresh on the v5.0.0 release binary</div>
       <h2>The whole ecosystem, <span class="accent">as the test</span>.</h2>
       <div class="stats">
-        <div class="stat"><div class="n">824<small>/ 2,530</small></div><div class="l">distributions <b>install and pass their own test suites</b> — the files their authors wrote, not an API probe. 746 one release earlier.</div></div>
-        <div class="stat t"><div class="n">274</div><div class="l">never reached their own tests at all: a <b>dependency failed first</b>. That cohort is the lever, not the long tail.</div></div>
-        <div class="stat a"><div class="n">1,000</div><div class="l">is the standing target, and the plan is ordered by which failures unblock the most dists downstream.</div></div>
+        <div class="stat"><div class="n">1,019<small>/ 2,547</small></div><div class="l">distributions <b>install and pass their own test suites</b> — the files their authors wrote, not an API probe — from a store seeded only with the 478 most depended-on modules. The previous fresh sweep gave 860.</div></div>
+        <div class="stat t"><div class="n">216</div><div class="l">never reached their own tests: a <b>dependency failed first</b>. Fixing one root distribution is the fastest way to move many.</div></div>
+        <div class="stat a"><div class="n">1,791</div><div class="l">is what <b>Rakudo</b> passed of the 2,529 in the previous index, on the same machine through the same harness — the ceiling to read the figure against. The rest need libraries or a network the box does not have.</div></div>
       </div>
       <p class="lede" style="margin-top:clamp(18px,2.8vh,30px);max-width:76ch">The sweep is not a scoreboard — it is <strong>the worklist</strong>. What fails decides what gets built next, and nothing is special-cased for a module: the fixes land in the parser, the runtime and dispatch, which is why chasing one distribution keeps paying out in others. Every distribution, with how it ran, is browsable at <code>raku.online/modules/ecosystem</code>.</p>
     </div>
@@ -484,28 +484,41 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
         <div class="card"><span class="tag">protocols</span><h3>MCP · Jupyter · LSP</h3><p>The interpreter over the <b>Model Context Protocol</b>, so an AI agent gets a Raku session with exact arithmetic and grammars as structured extraction. A <b>Jupyter kernel</b> that speaks ZMTP and signs its own messages: no ZeroMQ, no Python module. And <code>--lsp</code>.</p></div>
         <div class="card"><span class="tag">embedding</span><h3>Six host languages</h3><p><code>librakupp</code> behind a small C ABI, wrapped for <b>Python, JavaScript, Go, Rust, C++ and Wolfram</b>. Each gets the same two things: run Raku, and parse with Raku grammars where the grammar stays a <code>.raku</code> file.</p></div>
       </div>
-      <p class="lede" style="margin-top:clamp(14px,2.2vh,22px);max-width:78ch">Honest note: the <strong>bindings and the MCP server are committed and gated on every push, but not announced</strong> — they are in the repository so they cannot be lost, not because they have settled. Everything else on this slide shipped in a tagged release.</p>
+      <p class="lede" style="margin-top:clamp(14px,2.2vh,22px);max-width:78ch">The C API and its bindings shipped in <strong>v4.0.0</strong>, with Raku grammars callable from every one of those host languages.</p>
     </div>
   </section>
 
   <!-- 14 · ROADMAP -->
   <section class="slide" data-sect="Roadmap">
-    <div class="gutter"><div class="num">12<small>/13</small></div><div class="sect">Roadmap</div></div>
+    <div class="gutter"><div class="num">14<small>/16</small></div><div class="sect">Roadmap</div></div>
     <div class="stage">
-      <div class="eyebrow">honest about the edges</div>
-      <h2>Not there yet.</h2>
+      <div class="eyebrow">v5.x is about errors · v6 is about speed</div>
+      <h2>What comes after <span class="accent">100%</span>.</h2>
       <ul class="plain">
-        <li><span class="m">▹</span><span><b>Slangs</b> — pluggable syntax. There is no grammar object to mix a role into, and nine seams would have to grow one; the plan is written, the emulation route was rejected. <b>RakuAST shipped in v3.28.0</b> and was not the blocker.</span></li>
-        <li><span class="m">▹</span><span><b>C structs passed by value</b>, and callbacks fired from a thread the C library owns. The rest of NativeCall landed: <code>libffi</code> found at run time with nothing to install, plus structs, unions, pointers, callbacks and variadics.</span></li>
-        <li><span class="m">▹</span><span><b>Regex code blocks under backtracking</b> — <code>/(\d) { say $0 }/</code> re-fires its side effects; the fix has to defer them to the accepted path.</span></li>
-        <li><span class="m">▹</span><span><b>1,000 ecosystem distributions</b>, from 824. The lever is the 274 that never ran their own tests at all because a dependency failed first, and the 168-dist network/async cluster inside them.</span></li>
-        <li><span class="m">▹</span><span><b>The <code>objects</code> kernel</b> — Rakudo leads it by 1.6× compiled and 2.3× interpreted, and it measures the shape most real Raku is written in. Method calls and attribute reads stopped allocating in v3.24.0; nothing is profiled beyond that yet.</span></li>
-        <li><span class="m">▹</span><span>A <b>bytecode VM</b>. Walking the AST costs ~115 ns a node against ~5 ns for JIT-compiled bytecode, and that ~23× is most of what separates Raku++ from Rakudo on tight per-character loops. Closing it is a different implementation, not an optimisation.</span></li>
+        <li><span class="m">▹</span><span><b>Code Rakudo runs that Raku++ refuses.</b> Parse-time checks added while chasing Roast files now reject some ecosystem code; the battery compile scan found 25 module files in 12 distributions that compiled before, and the target is none.</span></li>
+        <li><span class="m">▹</span><span><b>Crashes and silent wrong answers</b> — a data race in <code>evalCall</code> under <code>start</code>, and <code>--target=js</code> programs that disagree with the interpreter, 102 of them when the plan was written.</span></li>
+        <li><span class="m">▹</span><span><b>The workloads where Rakudo leads.</b> At ten times the work, <code>objects</code> reads 2.9× and <code>multiwhere</code> 4.8× — spesh doing what spesh is for. v6's first number is every perf-guard kernel at or below Rakudo at steady state, and v5.0.0's own interpreter slowdown is the first thing it pays back.</span></li>
+        <li><span class="m">▹</span><span><b>Memory per value</b>, and <b>compile and load time halved</b> — an <code>--exe</code> hello's translation unit takes 0.93 s today.</span></li>
+        <li><span class="m">▹</span><span><b><code>--exe</code> without falling back</b> on ≥ 90% of the fully passing Roast files; 65% compiled natively when it was last counted.</span></li>
+        <li><span class="m">▹</span><span><b><code>use</code> in the browser</b> — modules in the playground, in embeds and under <code>--target=js</code>.</span></li>
       </ul>
-      <p class="lede">The cheap Roast wins are spent: moving the count now takes whole features — parse, runtime and dispatch together. The v3.26.0 source review reached <strong>three files of eighty-three</strong>, so that is open too.</p>
+      <p class="lede">Each of those is a number a stranger can re-measure, written down before the code — the same way the Roast figure was.</p>
     </div>
   </section>
-
+  <!-- 15 · THANKS -->
+  <section class="slide" data-sect="Thanks">
+    <div class="gutter"><div class="num">15<small>/16</small></div><div class="sect">Thanks</div></div>
+    <div class="stage">
+      <div class="eyebrow">what a second implementation stands on</div>
+      <h2>Built on the work of the <span class="accent">Raku community</span>.</h2>
+      <div class="grid g3">
+        <div class="card"><span class="tag">Roast</span><h3>The specification</h3><p>Every figure on slide 3 exists because Roast does: a test suite that says what Raku means precisely enough for a second engine to be graded against it.</p></div>
+        <div class="card"><span class="tag">Rakudo</span><h3>The reference compiler</h3><p>When Roast is silent, Rakudo answers. Eighteen sheets of its behaviour, each item with a probe; 1,006 documentation examples byte-identical on both; the module battery judged against each distribution's own run under Rakudo.</p></div>
+        <div class="card"><span class="tag">the ecosystem</span><h3>Other people's code</h3><p>2,547 distributions whose authors wrote tests — which turns the whole ecosystem into a test suite — and the documentation at docs.raku.org.</p></div>
+      </div>
+      <p class="lede" style="margin-top:clamp(18px,2.8vh,30px);max-width:76ch">Raku++ shares no code with Rakudo, and it would not exist without it. Thank you to everyone who built the language, its reference compiler, its tests and its modules.</p>
+    </div>
+  </section>
   <!-- 13 · GET IT -->
   <section class="slide" data-sect="Get it">
     <div class="gutter"><div class="num">13<small>/13</small></div><div class="sect">Get it</div></div>
@@ -543,19 +556,21 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
   var bar = document.getElementById('bar');
   var counter = document.getElementById('counter');
 
-  // Benchmark data — docs/status/BENCHMARKS.md, the 2026-09-03 sitting.
-  // Rakudo v2026.08 built from source as NATIVE arm64 (not the translated x86_64
-  // build earlier revisions of that file used), interleaved with Raku++ on one M3.
-  // [name, × vs Rakudo, win|lose]
+  // Benchmark data — docs/status/BENCHMARKS.md, the 2026-09-29 sitting at v5.0.0.
+  // Rakudo v2026.08 as native arm64, interleaved with Raku++ on one M3; ten of
+  // the seventeen kernels, every one where Rakudo leads included.
+  // [name, × between the two, which engine is ahead]
   var benchInterp = [
-    ['bigint', 28.2, 'win'], ['strcat', 10.8, 'win'], ['sortnums', 7.4, 'win'],
-    ['hash', 6.8, 'win'], ['sortby', 5.8, 'win'], ['regex', 4.8, 'win'],
-    ['arrayops', 4.0, 'win'], ['loopsum', 2.7, 'win'], ['objects', 2.3, 'lose']
+    ['bigint', 25.0, 'win'], ['strcat', 9.8, 'win'], ['sortnums', 8.4, 'win'],
+    ['hash', 5.4, 'win'], ['regex', 5.3, 'win'], ['arrayops', 4.0, 'win'],
+    ['loopsum', 2.1, 'win'], ['fib', 1.1, 'lose'], ['objects', 1.6, 'lose'],
+    ['multiwhere', 2.8, 'lose']
   ];
   var benchNative = [
-    ['bigint', 35.0, 'win'], ['strcat', 29.1, 'win'], ['loopsum', 18.6, 'win'],
-    ['hash', 16.7, 'win'], ['sortnums', 13.2, 'win'], ['streq', 11.9, 'win'],
-    ['sortby', 8.5, 'win'], ['fib', 6.1, 'win'], ['objects', 1.6, 'lose']
+    ['bigint', 32.3, 'win'], ['strcat', 27.7, 'win'], ['loopsum', 17.3, 'win'],
+    ['hash', 17.0, 'win'], ['sortnums', 16.5, 'win'], ['streq', 14.4, 'win'],
+    ['fib', 6.5, 'win'], ['rats', 2.1, 'win'], ['objects', 1.3, 'win'],
+    ['multiwhere', 2.8, 'lose']
   ];
   function renderBars(el, rows, maxv) {
     if (!el) return;
@@ -566,16 +581,16 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
         '<span class="bval ' + r.cls + '">' + r.label + '</span></div>';
     }).join('');
   }
-  // Both charts read fastest-first, and the one loss keeps its own colour and
-  // says whose lead it is — a bar that only got longer would hide it.
+  // Where Rakudo is ahead the bar keeps its own colour and says so — a chart
+  // whose bars only got longer would hide it.
   function toRows(data) {
     return data.map(function (b) {
       return { name: b[0], val: b[1], cls: b[2],
         label: (b[2] === 'win' ? 'Raku++ ' : 'Rakudo ') + b[1].toFixed(1) + '×' };
     });
   }
-  renderBars(document.getElementById('benchBars'), toRows(benchInterp), 28.2);
-  renderBars(document.getElementById('benchBarsNative'), toRows(benchNative), 35.0);
+  renderBars(document.getElementById('benchBars'), toRows(benchInterp), 25.0);
+  renderBars(document.getElementById('benchBarsNative'), toRows(benchNative), 32.3);
 
   // build rail
   slides.forEach(function (s, idx) {
