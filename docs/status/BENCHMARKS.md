@@ -223,13 +223,22 @@ output.
 
 ### Real-world: grammar parsing (YAMLish)
 
-**Withdrawn at this sitting.** The row compared a real module, YAMLish, parsing
-the Raku course's 2,653-line table of contents on both engines. With the
-YAMLish installed here, 0.1.3, Raku++ takes 19 s to parse the first 50 lines
-and more than 30 s for the first 100, where Rakudo takes 0.2 s for either;
-v4.0.1 does not finish the whole file in 60 s either. The row returns when that is fixed. The earlier
-measurement, with an earlier YAMLish, is in the
-[history](../dev/findings/BENCHMARKS-HISTORY.md).
+A whole module doing real work: YAMLish 0.1.3 (zef:leont, unmodified) parsing
+the Raku course's table of contents (`_data/toc/en.yaml`, 2,653 lines) with
+`load-yamls`. The grammar exercises parameterised tokens, `|` alternations,
+lookbehinds, `:my` state, aliased captures and action methods. Both engines
+produce the same data, compared as sorted-key JSON. Best of 5, wall-clock, the
+two engines interleaved; measured 2026-09-29 against Rakudo v2026.08 with a
+build newer than `v5.0.0`, which does not finish this parse in 60 s.
+
+| Workload | Raku++ (interp) | Rakudo | Faster |
+|---|---:|---:|---|
+| load-yamls, one parse per process | 0.46 s | 0.86 s | **Raku++ 1.9×** |
+| load-yamls, 10 parses in-process | 4.51 s | 7.16 s | **Raku++ 1.6×** |
+
+The one-parse row includes each engine's startup and module load; the
+ten-parse row is closer to parsing alone. Earlier measurements, with an
+earlier YAMLish, are in the [history](../dev/findings/BENCHMARKS-HISTORY.md).
 
 ## Parallel scaling
 
