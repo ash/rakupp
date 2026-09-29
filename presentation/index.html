@@ -184,6 +184,8 @@
   .bfill.lose { background: linear-gradient(90deg, var(--accent-soft), var(--accent)); }
   .bval { font-family: var(--font-mono); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
   .bval.win { color: var(--accent-2); } .bval.lose { color: var(--accent); }
+  .bench.wide .brow { grid-template-columns: 92px 1fr 212px; }
+  .bval .ms { color: var(--ink-3); }
   .bench-note { margin-top: 13px; color: var(--ink-3); font-size: 12.5px; font-family: var(--font-mono); line-height: 1.55; }
 
   /* ---- ecosystem diagram ---- */
@@ -242,6 +244,8 @@
     .g2, .g3, .g4, .show, .stats, .eco-row { grid-template-columns: 1fr 1fr; }
     .run { grid-template-columns: 1fr; gap: 4px; }
     .brow { grid-template-columns: 64px 1fr 104px; gap: 10px; }
+    .bench.wide .brow { grid-template-columns: 64px 1fr 150px; }
+    .bench.wide .bval { font-size: 11px; }
     .navbtn { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -379,7 +383,17 @@
     </div>
   </section>
 
-  <!-- 8 · THE ECOSYSTEM SWEEP -->
+  <!-- 8 · INTERPRET OR COMPILE -->
+  <section class="slide" data-sect="Interp vs exe">
+    <div class="gutter"><div class="num">08<small>/17</small></div><div class="sect">Interp vs exe</div></div>
+    <div class="stage">
+      <div class="eyebrow">rakupp prog.raku vs rakupp --exe · same source, same machine, byte-identical output</div>
+      <h2>Interpret or compile: <span class="accent-2">what compiling buys</span>.</h2>
+      <div class="bench wide" id="benchBarsModes"></div>
+      <div class="bench-note">Compiling pays most where a tree-walker re-dispatches a tiny body many times — <code>streq</code>, <code>loopsum</code>, <code>fib</code> — and almost nothing where the time is spent inside a runtime method both modes share: <code>arrayops</code> (<code>.grep</code>/<code>.map</code>/<code>.sum</code>) and <code>bigint</code> (the <code>BigInt</code> multiply). <code>multiwhere</code> is the fallback at work: codegen declines it, so the binary bundles the interpreter. Startup is 3.7 ms interpreted and 3.0 ms compiled; the interpreter covers the whole language, and <code>--exe</code> compiled 773 of the 1,189 fully passing Roast files natively when last counted, bundling the rest.</div>
+    </div>
+  </section>
+  <!-- 9 · THE ECOSYSTEM SWEEP -->
   <section class="slide" data-sect="The sweep">
     <div class="gutter"><div class="num">08<small>/15</small></div><div class="sect">The sweep</div></div>
     <div class="stage">
@@ -572,6 +586,15 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
     ['fib', 6.5, 'win'], ['rats', 2.1, 'win'], ['objects', 1.3, 'win'],
     ['multiwhere', 2.8, 'lose']
   ];
+  // The same sitting: interpreter ms, --exe ms, speed-up from compiling.
+  var benchModes = [
+    ['streq', 320.3, 19.6, 16.3], ['loopsum', 104.0, 12.6, 8.3],
+    ['fib', 386.3, 53.4, 7.2], ['mainwhen', 92.8, 21.2, 4.4],
+    ['hash', 24.2, 7.7, 3.1], ['strcat', 9.6, 3.4, 2.8],
+    ['objects', 387.0, 183.3, 2.1], ['regex', 38.5, 21.4, 1.8],
+    ['bigint', 6.6, 5.1, 1.3], ['arrayops', 52.4, 50.0, 1.0],
+    ['multiwhere', 694.8, 694.8, 1.0]
+  ];
   function renderBars(el, rows, maxv) {
     if (!el) return;
     el.innerHTML = rows.map(function (r) {
@@ -591,6 +614,11 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
   }
   renderBars(document.getElementById('benchBars'), toRows(benchInterp), 25.0);
   renderBars(document.getElementById('benchBarsNative'), toRows(benchNative), 32.3);
+  function fmtMs(v) { return v < 100 ? v.toFixed(1) : String(Math.round(v)); }
+  renderBars(document.getElementById('benchBarsModes'), benchModes.map(function (b) {
+    return { name: b[0], val: b[3], cls: 'win',
+      label: '<span class="ms">' + fmtMs(b[1]) + ' → ' + fmtMs(b[2]) + ' ms</span> ' + b[3].toFixed(1) + '×' };
+  }), 16.3);
 
   // build rail
   slides.forEach(function (s, idx) {

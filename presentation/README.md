@@ -5,7 +5,7 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-16-page PDF export — download it and flip through in any PDF viewer (the text
+17-page PDF export — download it and flip through in any PDF viewer (the text
 stays selectable). GitHub's inline blob viewer is unreliable with PDFs, so
 download it rather than expecting a preview. The interactive `index.html` is the
 real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
@@ -35,9 +35,9 @@ pdftoppm -f 7 -l 7 -r 60 -png rakupp-presentation.pdf /tmp/deck-p7   # then look
   rail, or the on-screen arrows.
 - **Theme:** light/dark toggle, top-right (follows the OS setting by default).
 
-Sixteen slides: title → what it is → Roast conformance → language breadth →
-the five ways to run → interpreter speed → native (`--exe`) speed → the
-ecosystem sweep → the projects around it → showcase programs → ecosystem
+Seventeen slides: title → what it is → Roast conformance → language breadth →
+the five ways to run → interpreter speed → native (`--exe`) speed →
+interpreted against compiled → the ecosystem sweep → the projects around it → showcase programs → ecosystem
 modules → dogfooding → the toolbox (RakuAST, `--fmt`, `L10N`, `--target=js`,
 MCP/Jupyter/LSP, the bindings) → roadmap (v5.x errors, v6 speed) → the work it
 stands on (Roast, Rakudo, the ecosystem) → install. Every figure is drawn from
@@ -55,7 +55,7 @@ hand-written, and it drifted.
 from: every feature the documentation currently claims, grouped the way a talk
 uses them, with the figure the repository records beside each one and the source
 file named per section — so a claim on a slide can be traced back to the page it
-came from. It is much longer than sixteen slides on purpose. No build step;
+came from. It is much longer than seventeen slides on purpose. No build step;
 open it in a browser, same light/dark handling as `index.html`.
 
 It carries the limitations too — slangs, the `objects` kernel, the bindings and
