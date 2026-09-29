@@ -609,6 +609,11 @@ struct Param {
     // carry a constraint (`::T Red::Model:U \type`), where `type` is the
     // constraint and this is the name the body reads the bound type back through.
     std::string captureName;
+    // `::T:U $x` / `::T:D` / `::T:_` — the smiley form, a CONSTRAINT that captures
+    // nothing. T need not name any type: Rakudo accepts the parameter with no T
+    // declared anywhere (YAMLish: `::GrammarType:U :$schema`), so the undeclared-
+    // type checks pass it by. Only this parameter: a later `T $y` is still invalid.
+    bool typeMayBeUndeclared = false;
     std::string namedKey; // external name for `:name($var)` (else = var name)
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
     std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers

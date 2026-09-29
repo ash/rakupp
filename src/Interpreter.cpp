@@ -14357,7 +14357,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // while hoisting too: the unit's declared names cover the
                 // types defined further down)
                 for (auto& p : *prms) {
-                        if (!p.type.empty() && !p.typeCapture && !p.coerce && paramTypeUndeclared(p.type)) {
+                        if (!p.type.empty() && !p.typeCapture && !p.typeMayBeUndeclared && !p.coerce && paramTypeUndeclared(p.type)) {
                             bool captured = false;
                             for (auto& q : *prms)
                                 if (q.typeCapture && (q.captureName == p.type || q.type == p.type)) captured = true;
@@ -15965,7 +15965,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // `role ABCD[EFGH] { }` — a role parameter typed with nothing declared
             if (cd->isRole)
                 for (auto& p : cd->roleParams) {
-                    if (p.type.empty() || p.typeCapture || p.coerce || !paramTypeUndeclared(p.type)) continue;
+                    if (p.type.empty() || p.typeCapture || p.typeMayBeUndeclared || p.coerce || !paramTypeUndeclared(p.type)) continue;
                     bool captured = false;
                     for (auto& q : cd->roleParams)
                         if (q.typeCapture && (q.captureName == p.type || q.type == p.type)) captured = true;
@@ -15976,7 +15976,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             for (auto& md : cd->methods) {
                 if (!md) continue;
                 for (auto& p : md->params) {
-                    if (p.type.empty() || p.typeCapture || p.coerce || !paramTypeUndeclared(p.type)) continue;
+                    if (p.type.empty() || p.typeCapture || p.typeMayBeUndeclared || p.coerce || !paramTypeUndeclared(p.type)) continue;
                     bool captured = false;
                     for (auto& q : md->params)
                         if (q.typeCapture && (q.captureName == p.type || q.type == p.type)) captured = true;

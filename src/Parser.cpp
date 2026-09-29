@@ -10896,15 +10896,19 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // whatever came in, and that binding shadows an outer T. `::T:U $x`
             // is an ordinary type CONSTRAINT wearing a definedness smiley — it
             // captures nothing, so an outer T stays visible. Rakudo draws the
-            // line here too, and rejects `::T:U` outright when no T exists.
-            // YAMLish leans on it: `load-yaml(::Grammar:U :$schema)` goes on to
-            // call `Grammar.parse`, meaning the module's own grammar. Capture
-            // that name and the call reaches $schema's type instead, no actions
-            // are attached, and every document parses to its own source text.
+            // line here too — and accepts `::T:U` when no T exists anywhere,
+            // declaring nothing: T in the body, or as a later parameter's type,
+            // is still undeclared. YAMLish leans on both halves: 0.1.3 writes
+            // `::GrammarType:U :$schema` with no GrammarType at all, and 0.1.2's
+            // `load-yaml(::Grammar:U :$schema)` goes on to call `Grammar.parse`,
+            // meaning the module's own grammar. Capture that name and the call
+            // reaches $schema's type instead, no actions are attached, and every
+            // document parses to its own source text.
             if (isOp(":") && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
                 advance(); std::string sm = advance().text;
                 if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
+                p.typeMayBeUndeclared = true;
             }
             else {
                 p.typeCapture = true;
