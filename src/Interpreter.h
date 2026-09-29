@@ -2093,6 +2093,7 @@ public:
     void runStaticPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& unitEnv, bool unitIsLive);
     void seedStaticScope(const void* key, Env* env);
     std::string subsetTypeOfVar(const std::string& nm); // the SUBSET a `my Even $x` was declared with, or ""
+    Value* compoundCheckSlot(struct Assign* a, bool& sameTypeOk); // `$e /= 2` on a constrained $e: its slot, else null
     void subsetMutationCheck(const Expr* target, const Value& nv); // `$x++` / `$x += 1` on a subset-typed $x
     void coerceParam(const struct Param& p, Value& v, const std::string* typeOverride = nullptr,   // bind a `T(F) $x` parameter
                      const std::string* fromOverride = nullptr, int defOverride = -1);

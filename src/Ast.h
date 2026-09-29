@@ -323,6 +323,10 @@ struct Assign : Expr {
     // target (non-declare, no coercion) — eligible for the simple-assign
     // lane, subject to the per-activation slot checks. Decided once.
     DecidedOnce<signed char> simpleSlot{-1};
+    // a compound assignment to a CONSTRAINED `$` variable is type-checked
+    // (Interpreter::compoundCheckSlot): -1 undecided, 0 no, 1 nominal type,
+    // 2 coercion / `where` / subset. Lexical, so decided once.
+    DecidedOnce<signed char> typedCheck{-1};
     // `=$=` / `=@=` / `=%=` — assignment with the container semantics named by the
     // operator rather than by the target's sigil. The parser rewrites `op` to "="
     // and records the sigil here, so every `op == "="` test downstream still holds.

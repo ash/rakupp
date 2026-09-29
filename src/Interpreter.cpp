@@ -34612,7 +34612,39 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         static_cast<VarExpr*>(a->target.get())->declare &&
         static_cast<VarExpr*>(a->target.get())->declScope == "constant";
     Value r;
-    if (!constInit) r = evalAssignInner(a, sink);
+    bool sameTypeOk = false;
+    Value* ctSlot = constInit ? nullptr : compoundCheckSlot(a, sameTypeOk);
+    if (ctSlot) {
+        // the old value, to put back when the check refuses: a plain Int or Num
+        // (the typed accumulator) is kept as its number, anything else whole
+        const VT bt = ctSlot->t;
+        const bool plainNum = (bt == VT::Int || bt == VT::Num) && !ctSlot->p_ && !ctSlot->x_ &&
+                              ctSlot->hashKind.empty() && ctSlot->enumType.empty();
+        const long long bi = ctSlot->i;
+        const double bn = ctSlot->n;
+        Value before;
+        if (!plainNum) before = *ctSlot;
+        r = evalAssignInner(a, sink);
+        const bool unchangedType = sameTypeOk && ctSlot->t == bt &&
+                                   (plainNum ? ctSlot->hashKind.empty() && ctSlot->enumType.empty()
+                                             : isDefined(before) && ctSlot->hashKind == before.hashKind &&
+                                               ctSlot->enumType == before.enumType);
+        if (!unchangedType) {
+            Value nv = *ctSlot;
+            try { enforceTypedAssign(static_cast<VarExpr*>(a->target.get())->name, nv); }
+            catch (...) {
+                if (plainNum) *ctSlot = bt == VT::Int ? Value::integer(bi) : Value::number(bn);
+                else *ctSlot = before;
+                throw;
+            }
+            // a coercion type converted it: `my Int() $c = 1; $c /= 2` holds 0
+            if (nv.t != ctSlot->t || nv.hashKind != ctSlot->hashKind) {
+                *ctSlot = nv;
+                if (!sink) r = nv;
+            }
+        }
+    }
+    else if (!constInit) r = evalAssignInner(a, sink);
     else {
         try { r = evalAssignInner(a, sink); }
         catch (RakuError& e) {
@@ -51665,6 +51697,60 @@ std::string Interpreter::subsetTypeOfVar(const std::string& nm) {
         if (en->local(nm)) break;
     }
     return "";
+}
+
+// A compound assignment to a CONSTRAINED `$` variable — a declared type, a
+// coercion type, a `where` — is checked as `=` is: `my Int $e = 5; $e /= 2`
+// dies with X::TypeCheck::Assignment and keeps the 5, `my Int() $c = 1;
+// $c /= 2` holds 0. Answers the variable's slot when the check is needed, or
+// null: an untyped slot (the pad layout already knows) and a `~=` onto a plain
+// `Str` (whose result is always a Str) cost nothing. `sameTypeOk` is set when
+// only a nominal type is declared, so a result of the value's own type needs
+// no lookup (the old value was checked when it was stored).
+Value* Interpreter::compoundCheckSlot(Assign* a, bool& sameTypeOk) {
+    // Which variable the target names, and how it was declared, are lexical:
+    // decided on the first run and kept on the node (0 none, 1 nominal, 2 deep)
+    signed char v = a->typedCheck;
+    if (v == 0) return nullptr;
+    if (v < 0) {
+        v = 0;
+        const std::string& op = a->op;
+        auto* tv = a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get()) : nullptr;
+        const std::string* nmp = tv ? &tv->name : nullptr;
+        bool eligible = tv && op.size() >= 2 && op.back() == '=' && op[0] != ':' && op[0] != 'R' && !a->userOp &&
+                        !tv->declare && nmp->size() >= 2 && (*nmp)[0] == '$' &&
+                        (ascii::isalpha((unsigned char)(*nmp)[1]) || (*nmp)[1] == '_' || (unsigned char)(*nmp)[1] >= 0x80);
+        if (eligible && tv->padSlot >= 0)
+            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+                if (e->layout) {
+                    if (e->layout->simple[tv->padSlot]) eligible = false;
+                    break;
+                }
+        if (eligible) {
+            const std::string& nm = *nmp;
+            bool typed = false, deep = false;
+            std::string want;
+            for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                const auto& x = en->xr();
+                if (x.varWhere.count(nm) || x.varCoerce.count(nm)) deep = true;
+                auto di = x.varDefault.find(nm);
+                if (di != x.varDefault.end() && di->second.t == VT::Type && !x.varDefaultUntyped.count(nm)) {
+                    typed = true;
+                    want = di->second.s.c_str();
+                }
+                if (typed || deep || en->local(nm)) break;
+            }
+            if (deep) v = 2;
+            else if (typed && !(want == "Str" && op == "~=")) v = subsets_.count(want) ? 2 : 1;
+        }
+        a->typedCheck = v;
+        if (v == 0) return nullptr;
+    }
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    Value* slot = tv->padSlot >= 0 ? padPtr(tv) : nullptr;
+    if (!slot) slot = tctx_.cur->find(tv->name);
+    sameTypeOk = v == 1;
+    return slot;
 }
 
 // A scalar typed with a type the PROGRAM declared (a class, a role, a role's
