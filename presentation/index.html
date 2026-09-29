@@ -20,6 +20,7 @@
     --accent-2-soft: rgba(55,201,187,0.13);
     --accent-3: #f0b23c;
     --accent-3-soft: rgba(240,178,60,0.14);
+    --yellow: #f5d53a; --yellow-soft: rgba(245,213,58,0.14);
     --shadow: 0 24px 60px -20px rgba(0,0,0,0.6);
     --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
@@ -40,6 +41,7 @@
       --accent-2-soft: rgba(15,147,138,0.11);
       --accent-3: #b07714;
       --accent-3-soft: rgba(176,119,20,0.12);
+      --yellow: #d4aa00; --yellow-soft: rgba(212,170,0,0.12);
       --shadow: 0 22px 50px -24px rgba(30,40,70,0.28);
     }
   }
@@ -49,6 +51,7 @@
     --accent: #f0518a; --accent-soft: rgba(240,81,138,0.14);
     --accent-2: #37c9bb; --accent-2-soft: rgba(55,201,187,0.13);
     --accent-3: #f0b23c; --accent-3-soft: rgba(240,178,60,0.14);
+    --yellow: #f5d53a; --yellow-soft: rgba(245,213,58,0.14);
     --shadow: 0 24px 60px -20px rgba(0,0,0,0.6);
   }
   :root[data-theme="light"] {
@@ -57,6 +60,7 @@
     --accent: #d1356e; --accent-soft: rgba(209,53,110,0.10);
     --accent-2: #0f938a; --accent-2-soft: rgba(15,147,138,0.11);
     --accent-3: #b07714; --accent-3-soft: rgba(176,119,20,0.12);
+    --yellow: #d4aa00; --yellow-soft: rgba(212,170,0,0.12);
     --shadow: 0 22px 50px -24px rgba(30,40,70,0.28);
   }
 
@@ -188,11 +192,11 @@
   .bval .ms { color: var(--ink-3); }
   .btrack.pair { height: 26px; }
   .btrack.pair .bfill { inset: auto; left: 0; height: 11px; border-radius: 4px 0 0 4px; }
-  .btrack.pair .bfill.interp { top: 1px; background: linear-gradient(90deg, var(--accent-3-soft), var(--accent-3)); }
+  .btrack.pair .bfill.interp { top: 1px; background: linear-gradient(90deg, var(--yellow-soft), var(--yellow)); }
   .btrack.pair .bfill.win { top: 13px; }
   .bench-legend { display: flex; gap: 18px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); margin-top: clamp(10px,1.6vh,16px); }
   .bench-legend i { display: inline-block; width: 22px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: middle; }
-  .bench-legend .li { background: linear-gradient(90deg, var(--accent-3-soft), var(--accent-3)); }
+  .bench-legend .li { background: linear-gradient(90deg, var(--yellow-soft), var(--yellow)); }
   .bench-legend .le { background: linear-gradient(90deg, var(--accent-2-soft), var(--accent-2)); }
   .bench-note { margin-top: 13px; color: var(--ink-3); font-size: 12.5px; font-family: var(--font-mono); line-height: 1.55; }
 
