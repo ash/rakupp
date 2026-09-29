@@ -63,6 +63,8 @@ compatibility.
   recursion ceiling; see [Pinning a run](#pinning-a-run---seed-and---stack-size).
 - `--color=auto|always|never` — ANSI colour on stderr and in the REPL; see
   [When something dies](#when-something-dies).
+- `--hints` — performance hints on stderr (`RAKUPP_HINTS=1`); see
+  [Performance hints](#performance-hints---hints).
 - `--stagestats`, `--trace`, `--repl-after` — what a run did, as it did it;
   see [Inside a run](#inside-a-run---stagestats---trace-and---repl-after).
 - `--completions=bash|zsh|fish` — a completion script for the shell; see
@@ -382,6 +384,30 @@ and the "declarations are live" line.
 The key that ends a session is the console's, not rakupp's: `^D` on Unix,
 `^Z` on an empty line followed by Enter on Windows. The banner and `\h` name
 whichever one applies where they are printed. `\q` and `exit` work everywhere.
+
+## Performance hints: `--hints`
+
+**`--hints`** runs a program as usual and, on stderr, points out a construct
+that costs far more than it looks, once per source line, with what to write
+instead. It changes nothing the program computes. It is off by default,
+because Rakudo prints nothing there and a program's stderr is part of what it
+does. It sets `RAKUPP_HINTS=1` in the environment, as `--color` sets
+`RAKUPP_COLOR`, so child processes hear it too.
+
+```
+$ rakupp --hints -e 'my $n = 10**4; say (1 + 1/$n) ** $n'
+hint: line 1: an exact Rat raised to 10000: its numerator and denominator run to about 40000 digits each, and the result becomes a Num anyway; write the base with a Num (1e0 instead of 1) to compute in Num directly
+2.718145926825225
+```
+
+| Knob | Meaning |
+|---|---|
+| `--hints` | turn the hints on for this run |
+| `RAKUPP_HINTS=1` | the same, as an environment variable; `0` or empty is off |
+
+The one hint so far, when it fires and what to do about it, is in
+[HINTS.md](HINTS.md). Its static counterpart is the `exact-power` rule of
+`--lint` ([LINT.md](LINT.md)).
 
 ## `--profile`
 

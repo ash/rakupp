@@ -41,6 +41,7 @@ rakupp --lint: 6 warnings, 2 notes in kitchen-sink.raku
 | [numeric-cmp-of-string.raku](numeric-cmp-of-string.raku) | `numeric-cmp-of-string` — `==`/`<`/… against a non-numeric string literal | warning |
 | [unused-parameter.raku](unused-parameter.raku) | `unused-parameter` — a signature parameter that is never used | note |
 | [redundant-return.raku](redundant-return.raku) | `redundant-return` — an explicit `return` as a block's last statement | note |
+| [exact-power.raku](exact-power.raku) | `exact-power` — an exact `Rat` raised to a variable power, which becomes a `Num` the slow way | note |
 
 **Notes vs. warnings.** *Notes* are advisory (an unused parameter is often a
 deliberate callback/dispatch signature; a trailing `return` is a style choice),
