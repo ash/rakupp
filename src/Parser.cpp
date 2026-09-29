@@ -5812,7 +5812,16 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
     std::string wFix = wIn;
     if (wFix.size() > 2 && wFix.compare(wFix.size() - 2, 2, "\\i") == 0)
         wFix.erase(wFix.size() - 2, 1);
+    // U+2212 MINUS SIGN is a minus here as it is to val(): `<−5>` is IntStr -5
+    if (wFix.compare(0, 3, "\xE2\x88\x92") == 0) wFix.replace(0, 3, "-");
     const std::string& w = wFix;
+    // `<Inf>`, `<-Inf>` and `<NaN>` are NumStr, as val() makes them. The range
+    // spec `<x -Inf Inf>` is how Math::NIntegrate integrates over the whole
+    // line, and the words had stayed Str. Inf takes a sign; NaN takes none.
+    if (w == "NaN") return std::make_unique<NumLit>(std::numeric_limits<double>::quiet_NaN());
+    if (w == "Inf" || w == "+Inf" || w == "-Inf")
+        return std::make_unique<NumLit>(w[0] == '-' ? -std::numeric_limits<double>::infinity()
+                                                    : std::numeric_limits<double>::infinity());
     // Complex allomorph <1+3i> / <3i> / <-2.5-1e3i> (the .raku form round-trips via EVAL)
     if (!w.empty() && w.back() == 'i') {
         const char* s = w.c_str();

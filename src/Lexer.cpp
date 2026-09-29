@@ -372,6 +372,36 @@ Lexer::Lexer(std::string src, bool honourFudge)
     scanUserOps();
 }
 
+// A regex's embedded code block (`<!{ $0.Str ~~ / <["']>? $/ }>`) is Raku, so
+// the scanners track its string quotes to keep a `}` in a string from closing
+// it. But the code may hold a regex of its own, and a quote inside that regex's
+// CHARACTER CLASS is a member, not a string opener: Math::NIntegrate's grammar
+// tests a capture against `<["']>`, whose `"` opened a string that ran to the
+// end of the file ("Missing block"). At `<[`, `<-[`, `<+[`, `<?[` or `<![`,
+// copy the class through its `]` — and through any `+[…]` / `-[…]` it is
+// combined with — so no quote, brace or `#` inside it is read as code.
+bool Lexer::skipCodeCharClass(std::string& out) {
+    if (peek() != '<') return false;
+    char op = peek(1);
+    if (!(op == '[' || ((op == '-' || op == '+' || op == '?' || op == '!') && peek(2) == '[')))
+        return false;
+    out += advance();                        // <
+    if (op != '[') out += advance();         // - + ? !
+    for (;;) {
+        out += advance();                    // [
+        while (!eof() && peek() != ']') {
+            if (peek() == '\\') out += advance();
+            if (!eof()) out += advance();
+        }
+        if (!eof()) out += advance();        // ]
+        size_t k = 0;
+        while (peek(k) == ' ' || peek(k) == '\t') k++;
+        if (!((peek(k) == '+' || peek(k) == '-') && peek(k + 1) == '[')) break;
+        for (size_t i = 0; i <= k; i++) out += advance();   // blanks and the set operator
+    }
+    return true;
+}
+
 // A `#` inside a regex opens a comment. `#`( … )` / `#`[ … ]` / `#`{ … }` /
 // `#`< … >` is an EMBEDDED comment that ends at the matching closer (pairs of
 // the same bracket nest, and a run of N openers wants a run of N closers:
@@ -1503,15 +1533,9 @@ Token Lexer::lexNumber() {
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd') &&
         // `0x` with no digit at all is not a radix literal: `:0x` is the pair
         // shorthand x => 0, and `0x` followed by punctuation lexes as 0 then x
-        (ascii::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80) &&
-        // …and `:0out-buffer` is `out-buffer => 0`: straight after a pair's `:`
-        // the digits are a VALUE and the letters its key, so a WORD there
-        // (`out-buffer`, `bstract`) is no radix. `:0x1f` is still hex.
-        !(pos_ > 0 && src_[pos_ - 1] == ':' && [&] {
-            size_t k = 2;
-            while (ascii::isalnum((unsigned char)peek(k)) || peek(k) == '_') k++;
-            return peek(k) == '-' && ascii::isalpha((unsigned char)peek(k + 1));
-        }())) {
+        (ascii::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80)) {
+        // (Straight after a pair's `:` there is no radix at all — `:0dimension`
+        // is dimension => 0; the main loop lexes that form before we get here.)
         char base = peek(1);
         advance(); advance();
         std::string digits;
@@ -2555,6 +2579,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // block delimiter and must not miscount the nesting
             if (blocks && bd > 0) {
                 if (q) { if (ch == q) q = 0; raw += advance(); continue; }
+                if (skipCodeCharClass(raw)) continue;
                 if (ch == '\'' || ch == '"') { q = ch; raw += advance(); continue; }
                 if (ch == '{') bd++;
                 else if (ch == '}') bd--;
@@ -3264,6 +3289,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         if (bd > 0) { // inside an embedded { } code block — it is Raku, so a brace
             // in a string ('}' / "}") is NOT a block delimiter; track quotes too
             if (q) { if (ch == q) q = 0; body += advance(); continue; }
+            if (skipCodeCharClass(body)) continue;
             if (ch == '\'' || ch == '"') { q = ch; body += advance(); continue; }
             // …and a `#` comment runs to the end of the line, braces and all:
             // Template::Mustache's `<?{ # XXX … }>` assertion carries a `}`
@@ -4252,6 +4278,22 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             std::string op = "-";
             if (peek() == '=' && peek(1) != '=') { advance(); op += "="; } // −= compound assign
             t = make(Tok::Op, op);
+        } else if (!inAngle && !spaced && ascii::isdigit((unsigned char)c) && !out.empty() &&
+                   out.back().kind == Tok::Op && out.back().text == ":" && [&] {
+                       size_t k = 1;
+                       while (ascii::isdigit((unsigned char)peek(k))) k++;
+                       return isIdentStart(peek(k)) || unicodeLetterAt(k);
+                   }()) {
+            // `:0dimension` — a pair's `:` then digits then a name is the
+            // name => the digits. The value is `\d+` and nothing more: no radix
+            // prefix, no `_` separator, no exponent. Rakudo reads `:0xab` as
+            // xab => 0, `:0e5` as e5 => 0 and `:1_000th` as _000th => 1, and
+            // Math::NIntegrate passes `:0dimension` to a constructor, which the
+            // `0d` decimal prefix had turned into a malformed radix number.
+            std::string digits;
+            while (ascii::isdigit((unsigned char)peek())) digits += advance();
+            t = make(Tok::IntLit, digits);
+            t.ival = std::strtoll(digits.c_str(), nullptr, 10);
         } else if (inAngle && ascii::isdigit((unsigned char)c)) {
             // inside `< … >` a digit-run is a WORD (`4_2`, `2_a`, `0o777`) — the
             // numeric/underscore validation of real literals must not fire; the
@@ -4444,6 +4486,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
+                if (brace > 0 && skipCodeCharClass(raw)) continue;
                 // A CHARACTER CLASS holds characters, not structure: `<`, `>`, `{`,
                 // `}` and `[` inside one are members and must not move any counter.
                 // Pod::To::HTML writes `/<[ & < > " ' {   ]>/` — the lone `<` left

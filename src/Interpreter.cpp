@@ -2021,6 +2021,10 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
             collectPHExpr(p->value.get(), out); break;
         }
         case NK::ListExpr: for (auto& it : static_cast<const ListExpr*>(e)->items) collectPHExpr(it.get(), out); break;
+        // `{0 <= $^x < 0.3 ?? 0 !! 1}` — a chained comparison's operands carry
+        // placeholders too; without this the block had arity 0 and $^x was Any
+        // (Math::NIntegrate's step-function integrand integrated to 0)
+        case NK::ChainExpr: for (auto& it : static_cast<const ChainExpr*>(e)->operands) collectPHExpr(it.get(), out); break;
         case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) collectPHExpr(it.get(), out); break;
         case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) collectPHExpr(it.get(), out); break;
         case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) collectPHExpr(it.get(), out); break;
@@ -19231,7 +19235,16 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     if (!be->pod.empty()) { code.code()->pod = be->pod; code.code()->podTrail = be->podTrail; code.code()->declLine = be->podLine; }
     // a block knows where it was written: `-> { }.line`
     if (!code.code()->declLine && be->line > 0) code.code()->declLine = be->line;
-    if (be->params.empty()) code.code()->placeholders = computePlaceholders(be->body);
+    if (be->params.empty()) {
+        code.code()->placeholders = computePlaceholders(be->body);
+        // `{ $^a + @_.sum }(1, 2, 3)` — `@_` / `%_` beside the placeholders
+        // take what they leave over, so the bind has to know they are there
+        if (!code.code()->placeholders.empty()) {
+            std::set<std::string> ph2;
+            for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
+            code.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+        }
+    }
     // a WRITTEN signature — `-> {…}`, `sub () {…}` — forbids placeholders
     if (be->isPointy || be->sigParens)
         for (auto& ph : code.code()->placeholders)
@@ -28359,10 +28372,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         const bool namedMode = namedPh || (c.implicitArgs & 2);
         size_t pos = 0, k2 = 0;
         std::set<std::string> usedKeys;
-        if (!namedMode && args.empty())
+        // Each positional placeholder is a REQUIRED parameter, so the count has
+        // to match — short by one as much as by all of them: `{ $^x + $^y }(1)`
+        // had bound $^y to Any and returned a number. Math::NIntegrate evaluates
+        // an integrand inside `try` and reports "Cannot evaluate" when that
+        // bind fails; a 2-D integrand over a 1-D range integrated quietly
+        // instead. Extra arguments are refused too, unless `@_` takes them.
+        const size_t want = c.placeholders.size();
+        if (!namedMode && (args.size() < want || (args.size() > want && !(c.implicitArgs & 1))))
             throw RakuError{Value::typeObj("X::AdHoc"),
-                "Too few positionals passed; expected " + std::to_string(c.placeholders.size()) +
-                " argument" + (c.placeholders.size() == 1 ? "" : "s") + " but got " + std::to_string(args.size())};
+                std::string(args.size() < want ? "Too few" : "Too many") +
+                " positionals passed; expected " + std::to_string(want) +
+                " argument" + (want == 1 ? "" : "s") + " but got " + std::to_string(args.size())};
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             const std::string& pn = c.placeholders[k];
             Value v = Value::any();
