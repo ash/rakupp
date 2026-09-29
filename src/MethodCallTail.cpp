@@ -2416,7 +2416,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (args[0].code()->params && !args[0].code()->params->empty()) {
                         for (auto& pp : *args[0].code()->params)
                             if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
-                    } else req = args[0].code()->placeholders.size();
+                    } else req = args[0].code()->placeholderPos();
                 }
                 if (req > 1)
                     throw RakuError{Value::typeObj("X::AdHoc"),
@@ -2928,7 +2928,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (mapper.t == VT::Code && mapper.code()) {
                 auto* cc = mapper.code();
                 size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
-                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholders.size());
+                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholderPos());
                 comparator = ar >= 2;
             }
             auto cmp = [&](const Value& a, const Value& ak, const Value& b, const Value& bk) {
@@ -3029,7 +3029,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (mapper.t == VT::Code && mapper.code()) {
                 auto* cc = mapper.code();
                 size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
-                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholders.size());
+                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholderPos());
                 comparator = ar >= 2;
             }
             Value best, bestKey; bool started = false;
@@ -3625,7 +3625,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value blk = args[0];
                 size_t arity = blk.code()->params && !blk.code()->params->empty()
                     ? blk.code()->params->size()
-                    : (blk.code()->placeholders.empty() ? (size_t)blk.code()->whateverArity : blk.code()->placeholders.size());
+                    : (blk.code()->placeholders.empty() ? (size_t)blk.code()->whateverArity : blk.code()->placeholderPos());
                 // a 0-arity comparator ((1..10).sort(&rand)) has no candidate
                 if (arity == 0 && blk.code()->params && blk.code()->hadSig)
                     throw RakuError{Value::typeObj("X::TypeCheck::Argument"),

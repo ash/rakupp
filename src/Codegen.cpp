@@ -1052,9 +1052,22 @@ struct Codegen {
         std::string body = capture([&]() {
             emitCellAliases(0, own);
             if (!phs.empty()) { // $^a/$^b placeholders bind positionally, in sorted order
-                for (size_t k = 0; k < phs.size(); k++)
-                    line(0, "Value " + mangleVar(phs[k]) + " = (__a.size() > " + std::to_string(k) +
-                            " ? __a[" + std::to_string(k) + "] : Value::any());");
+                // (a `$:name` one takes the named argument instead, and when one
+                // is there the positional ones skip the named pairs)
+                bool anyNamed = false;
+                for (auto& ph : phs) if (ph.size() > 2 && ph[1] == ':') anyNamed = true;
+                size_t k = 0;
+                for (auto& ph : phs) {
+                    if (ph.size() > 2 && ph[1] == ':')
+                        line(0, "Value " + mangleVar(ph) + " = rtNamed(__a, " + cesc(ph.substr(2)) + ");");
+                    else if (anyNamed)
+                        line(0, "Value " + mangleVar(ph) + " = rtPos(__a, " + std::to_string(k++) + ");");
+                    else {
+                        line(0, "Value " + mangleVar(ph) + " = (__a.size() > " + std::to_string(k) +
+                                " ? __a[" + std::to_string(k) + "] : Value::any());");
+                        k++;
+                    }
+                }
             }
             else if (be->params.empty()) {
                 topic = gensym("v__t");

@@ -1988,8 +1988,18 @@ static std::string privMixinKey(const std::string& name);
 static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
+// The order `$:name` placeholders are first met in, while computePlaceholders
+// is listing them: Rakudo lists the named ones as they appear in the source
+// (`{ $:c ~ $:a }` is `(:$c!, :$a!)`), where the positional ones sort.
+static thread_local std::vector<std::string>* phNamedOrder_ = nullptr;
+
 static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
-    if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
+    if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) { // $^a positional, $:n named
+        if (name[1] == ':' && phNamedOrder_ &&
+            std::find(phNamedOrder_->begin(), phNamedOrder_->end(), name) == phNamedOrder_->end())
+            phNamedOrder_->push_back(name);
+        out.insert(name);
+    }
     else if (name == "@_" || name == "%_") out.insert(name); // implicit slurpies — consumers filter
     else if (name.size() > 2 && name[1] == '!' &&
              (ascii::isalpha((unsigned char)name[2]) || name[2] == '_'))
@@ -2559,10 +2569,20 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
-    for (auto& s : body) collectPHStmt(s.get(), ph);
+    std::vector<std::string> namedOrder;
+    auto* savedOrder = phNamedOrder_;
+    phNamedOrder_ = &namedOrder;
+    try { for (auto& s : body) collectPHStmt(s.get(), ph); }
+    catch (...) { phNamedOrder_ = savedOrder; throw; }
+    phNamedOrder_ = savedOrder;
+    // the positional ones sorted (std::set is), then the named ones in the
+    // order they appear — the order Rakudo's signature lists them in. (The log
+    // also saw names from a nested loop block's own scope; only those `ph`
+    // kept belong to this body.)
     std::vector<std::string> out;
-    for (auto& n : ph) if (n[1] != '!' && n != "@_" && n != "%_") out.push_back(n); // drop $!attr and @_/%_ refs
-    return out; // std::set is sorted
+    for (auto& n : ph) if (n[1] == '^') out.push_back(n); // drop $!attr and @_/%_ refs
+    for (auto& n : namedOrder) if (ph.count(n)) out.push_back(n);
+    return out;
 }
 
 // the first placeholder-ish name (incl. @_) in a body that TAKES NO signature —
@@ -3267,7 +3287,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             }
             if (slurpy)                                 arity = 0;
             else if (gen.code()->whateverArity > 0)       arity = gen.code()->whateverArity;
-            else if (!gen.code()->placeholders.empty())   arity = (long long)gen.code()->placeholders.size();
+            else if (!gen.code()->placeholders.empty())   arity = (long long)gen.code()->placeholderPos();
             else if (gen.code()->params && !gen.code()->params->empty()) arity = (long long)gen.code()->params->size();
         }
         // …and how many of those it cannot do without: a generator handed fewer
@@ -3397,7 +3417,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         long long endArity = 1;
         if (endCode && !endSlurpy && r.code()) {
             if (r.code()->whateverArity > 1) endArity = r.code()->whateverArity;
-            else if (r.code()->placeholders.size() > 1) endArity = (long long)r.code()->placeholders.size();
+            else if (r.code()->placeholderPos() > 1) endArity = (long long)r.code()->placeholderPos();
             else if (r.code()->params && r.code()->params->size() > 1) endArity = (long long)r.code()->params->size();
         }
         auto endAccepts = [&](const Value& v, size_t nBefore) -> bool {
@@ -22233,7 +22253,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // a multi whose only params are placeholders (`multi sub f { $^a² }`):
     // its arity is the placeholder count
     if (positional.empty() && !slurpy && !cand.code()->placeholders.empty()) {
-        if (pos.size() != cand.code()->placeholders.size()) return -1;
+        if (pos.size() != cand.code()->placeholderPos()) return -1;
         return 1;
     }
     if (pos.size() < required) return -1;
@@ -28421,12 +28441,31 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // an integrand inside `try` and reports "Cannot evaluate" when that
         // bind fails; a 2-D integrand over a 1-D range integrated quietly
         // instead. Extra arguments are refused too, unless `@_` takes them.
-        const size_t want = c.placeholders.size();
-        if (!namedMode && (args.size() < want || (args.size() > want && !(c.implicitArgs & 1))))
+        // Only the positional placeholders count: a `$:name` one takes a named
+        // argument, which is not a positional either (`{ $^a + $:k }(1, 2, :k(3))`
+        // is one too many, as in Rakudo).
+        const size_t want = c.placeholderPos();
+        size_t got = args.size();
+        if (namedMode) {
+            got = 0;
+            for (auto& a : args) if (!(namedPh ? a.t == VT::Pair : isNamedArg(a))) got++;
+        }
+        if (got < want || (got > want && !(c.implicitArgs & 1)))
             throw RakuError{Value::typeObj("X::AdHoc"),
-                std::string(args.size() < want ? "Too few" : "Too many") +
+                std::string(got < want ? "Too few" : "Too many") +
                 " positionals passed; expected " + std::to_string(want) +
-                " argument" + (want == 1 ? "" : "s") + " but got " + std::to_string(args.size())};
+                " argument" + (want == 1 ? "" : "s") + " but got " + std::to_string(got)};
+        // …and every `$:name` placeholder is REQUIRED
+        if (namedPh)
+            for (auto& pn : c.placeholders) {
+                if (!(pn.size() > 2 && pn[1] == ':')) continue;
+                const std::string key = pn.substr(2);
+                bool present = false;
+                for (auto& a : args) if (a.t == VT::Pair && a.s == key) { present = true; break; }
+                if (!present)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                                    "Required named parameter '" + key + "' not passed"};
+            }
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             const std::string& pn = c.placeholders[k];
             Value v = Value::any();
@@ -30371,13 +30410,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                                  !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
     }
     else if (!c.placeholders.empty()) {
+        size_t posK = 0;   // the positional ones take the positional args in order
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             const std::string& pn = c.placeholders[k];
             Value v = Value::any();
             if (pn.size() > 2 && pn[1] == ':') { // $:name — from :name(…) pair args
                 std::string key = pn.substr(2);
                 for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal()) { v = *a.pairVal(); break; }
-            } else if (k < args.size()) v = args[k];
+            } else if (posK < args.size()) v = args[posK++];
             // one slot under the bare name — see the main binder
             if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
                 env->define(std::string(1, pn[0]) + pn.substr(2), v);

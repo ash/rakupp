@@ -2550,7 +2550,7 @@ size_t codeArity(const Value& code) {
         for (auto& p : *code.code()->params) if (!p.named && !p.slurpy) n++;
         if (n) return n;
     }
-    if (!code.code()->placeholders.empty()) return code.code()->placeholders.size();
+    if (size_t n = code.code()->placeholderPos()) return n;
     return 1;
 }
 
@@ -4282,6 +4282,7 @@ Value makeSignature(const Callable* c) {
             Param p; p.sigil = ph[0];
             p.name = std::string(1, ph[0]) + ph.substr(2);
             p.named = ph[1] == ':';
+            p.required = p.named;   // `$:name` is a REQUIRED named: `:$name!`
             synth.push_back(std::move(p));
         }
         if (c->implicitArgs & 1) { Param p; p.sigil = '@'; p.name = "@_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }

@@ -56,7 +56,7 @@ static long long supplyByArity(const rakupp::Value& c) {
     if (k->isWhateverCode) return k->whateverArity > 1 ? k->whateverArity : 1;
     long long n = 0;
     if (k->params) { for (auto& pp : *k->params) if (!pp.slurpy && !pp.named && !pp.optional) n++; }
-    else n = (long long)k->placeholders.size();
+    else n = (long long)k->placeholderPos();
     return n ? n : 1;
 }
 
@@ -7894,7 +7894,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // (a DEFAULT makes a parameter optional as surely as `?` does)
                 for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional && !p->defaultVal) n++;
             }
-            else n = (long long)inv.code()->placeholders.size();
+            else n = (long long)inv.code()->placeholderPos();
             return Value::integer(n);
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
@@ -7922,7 +7922,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // one-argument filter down the many-arguments branch.)
                 if (p.slurpy && p.sigil == '%') continue;
                 if (p.slurpy) slurpy = true; else n++;
-            } else n = (long long)inv.code()->placeholders.size();
+            } else n = (long long)inv.code()->placeholderPos();
             return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
         }
         // `&f.callwith(…)` calls it; `&f.nextwith(…)` calls it and RETURNS that

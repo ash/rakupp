@@ -394,7 +394,15 @@ struct Callable {
     };
     StateSlot state;
     BuiltinFn builtin;                             // set => builtin
-    std::vector<std::string> placeholders;         // $^a auto-params (sorted)
+    std::vector<std::string> placeholders;         // $^a auto-params (sorted), then $:n nameds (source order)
+    // How many placeholders are POSITIONAL. A `$:name` one is a required NAMED
+    // parameter: it is in neither the arity nor the count, and no positional
+    // argument binds to it — `{ $:k ~ $^a ~ $^z }` is `($a, $z, :$k!)`, 2 and 2.
+    size_t placeholderPos() const {
+        size_t n = 0;
+        for (auto& p : placeholders) if (p.size() > 1 && p[1] != ':') n++;
+        return n;
+    }
     ValueList candidates;                          // multi-dispatch candidates
     std::shared_ptr<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
                                                    // dispatch group is synthesized; .dispatcher reads it)
