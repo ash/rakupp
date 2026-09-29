@@ -34,7 +34,8 @@ forgetting the reader is not possible; the single visitor handles both.
 **The mutable per-node caches are deliberately not stored.**
 
 ```
-Binary::simpleOp, fastShape, litVal
+Binary::simpleOp, specialArm, fastShape, litVal
+Unary::evalPath
 Index::fastShape, litIdx
 NumLit::cacheN, cacheD
 Block::hoistNeed

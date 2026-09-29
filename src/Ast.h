@@ -353,6 +353,10 @@ struct Binary : Expr {
     // plain operator that goes straight to eval-both-operands + applyArith.
     // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
     mutable DecidedOnce<signed char> simpleOp{-1};
+    // Which of evalBinary's special-cased arms answers `op` (binaryArm in
+    // InterpreterCore.cpp): -1 not yet decided, 0 none — so `~~` and `|` skip
+    // the ~100 string tests of the arms above theirs. Same race note as simpleOp.
+    mutable DecidedOnce<signed char> specialArm{-1};
     // Fast-path SHAPE, decided once from the syntax and cached here: -1 not yet
     // looked at, 0 none, 1 `$var OP literal`, 2 `literal OP $var`,
     // 3 `$var OP $var`. litVal holds the literal's Value for shapes 1 and 2.

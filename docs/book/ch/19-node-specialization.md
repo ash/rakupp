@@ -133,6 +133,9 @@ It is less a cache than a **sticky note on the node**, written the first time
 anyone reads it. The precedent sits directly above it in the same struct:
 `simpleOp` does exactly the same thing for "is this a plain operator, or one of
 the special-cased ones?", also decided once, also from the syntax alone.
+`specialArm` beside it goes one step further for the special-cased ones: which
+arm of `evalBinary` answers this spelling. Without it `~~` passed 82 string
+tests, and `|` 118, on every evaluation before reaching its own code.
 
 ## The guards
 

@@ -4,10 +4,20 @@
 #include "InterpreterParts.h"
 
 namespace rakupp {
+// An operator string against a literal spelling: the length first, then a
+// memcmp of a length the compiler knows. `op == "lit"` means the same, but its
+// cost depends on whether Clang inlines std::operator== at that site; outlined,
+// every compare pays a strlen and a call, and in a function holding a hundred
+// of them that decision moves with every edit anywhere in the function (it
+// cost fib 6% once). This spelling costs the same wherever it lands.
+template <std::size_t N>
+[[gnu::always_inline]] inline bool opEq(const std::string& s, const char (&lit)[N]) {
+    return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+}
 // The operators that compare their operands AS STRINGS.
 static bool isStringCmpOp(const std::string& op) {
-    return op == "eq" || op == "ne" || op == "lt" || op == "gt" ||
-           op == "le" || op == "ge" || op == "leg";
+    return opEq(op, "eq") || opEq(op, "ne") || opEq(op, "lt") || opEq(op, "gt") ||
+           opEq(op, "le") || opEq(op, "ge") || opEq(op, "leg");
 }
 
 bool rtIsDefined(const Value& v) {
@@ -240,7 +250,7 @@ static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhs
     const Expr* e = rhsNode;
     if (e && e->kind == NK::Unary) {
         auto* u = static_cast<const Unary*>(e);
-        if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;   // `-` or U+2212
+        if (u->postfix || (!opEq(u->op, "-") && !opEq(u->op, "\xE2\x88\x92"))) return false;   // `-` or U+2212
         e = u->operand.get();
     }
     return e && e->kind == NK::IntLit;
@@ -253,10 +263,10 @@ static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhs
 // whose cold path wraps a native operation that overflowed.
 bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long& x) {
     const unsigned long long a = (unsigned long long)sa, b = (unsigned long long)sb;
-    if (op == "+") x = (long long)(a + b);
-    else if (op == "-") x = (long long)(a - b);
-    else if (op == "*") x = (long long)(a * b);
-    else if (op == "**") {
+    if (opEq(op, "+")) x = (long long)(a + b);
+    else if (opEq(op, "-")) x = (long long)(a - b);
+    else if (opEq(op, "*")) x = (long long)(a * b);
+    else if (opEq(op, "**")) {
         if (sb < 0) return false;                 // nativeIntPowNegative answers that
         unsigned long long acc = 1, base = a;
         for (unsigned long long e = (unsigned long long)sb; e; e >>= 1) {
@@ -265,10 +275,10 @@ bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long&
         }
         x = (long long)acc;
     }
-    else if (op == "div" || op == "%" || op == "mod") {
+    else if (opEq(op, "div") || opEq(op, "%") || opEq(op, "mod")) {
         if (sb == 0) return false;
-        if (sb == -1) x = op == "div" ? (long long)(0ULL - a) : 0;   // int.min div -1 wraps
-        else if (op == "div") {
+        if (sb == -1) x = opEq(op, "div") ? (long long)(0ULL - a) : 0;   // int.min div -1 wraps
+        else if (opEq(op, "div")) {
             long long q = sa / sb;
             if ((sa % sb != 0) && ((sa < 0) != (sb < 0))) q--;
             x = q;
@@ -302,7 +312,7 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     auto intLit = [](const Expr* e) {
         if (e && e->kind == NK::Unary) {
             auto* u = static_cast<const Unary*>(e);
-            if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;
+            if (u->postfix || (!opEq(u->op, "-") && !opEq(u->op, "\xE2\x88\x92"))) return false;
             e = u->operand.get();
         }
         return e && e->kind == NK::IntLit;
@@ -350,7 +360,7 @@ static bool numLitNode(const Expr* e, bool wantNum) {
 static void tagNativeNum(const std::string& op, const Value& l, const Value& r,
                          const Expr* ln, const Expr* rn, Value& res) {
     if (res.t != VT::Num || res.natBits) return;
-    if (!(op == "+" || op == "-" || op == "*" || op == "**")) return;
+    if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "**"))) return;
     const bool lnat = l.natBits && nativeExprNode(ln), rnat = r.natBits && nativeExprNode(rn);
     if (!(lnat || rnat)) return;
     if (!lnat && !numLitNode(ln, r.natFloat)) return;
@@ -360,7 +370,7 @@ static void tagNativeNum(const std::string& op, const Value& l, const Value& r,
 // `$n op= V` is `$n = $n op V`: native when V is a native, or a literal of the
 // target's own kind — so a native of the other kind then CONVERTS into $n.
 static bool compoundSrcNative(const std::string& op, const Value& rhs, const Expr* node, bool targetFloat) {
-    if (!(op == "+" || op == "-" || op == "*" || op == "**")) return false;
+    if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "**"))) return false;
     return (rhs.natBits && nativeExprNode(node)) || numLitNode(node, targetFloat);
 }
 
@@ -468,9 +478,9 @@ static bool exprYieldsContainer(const Expr* e) {
         // throws, which is the safe direction to be wrong in.
         case NK::Binary: {
             auto* b = static_cast<const Binary*>(e);
-            if (b->op != "//" && b->op != "||" && b->op != "&&" &&
-                b->op != "or" && b->op != "and" &&
-                b->op != "orelse" && b->op != "andthen" && b->op != "notandthen")
+            if (!opEq(b->op, "//") && !opEq(b->op, "||") && !opEq(b->op, "&&") &&
+                !opEq(b->op, "or") && !opEq(b->op, "and") &&
+                !opEq(b->op, "orelse") && !opEq(b->op, "andthen") && !opEq(b->op, "notandthen"))
                 return false;
             return exprYieldsContainer(b->lhs.get()) || exprYieldsContainer(b->rhs.get());
         }
@@ -480,7 +490,7 @@ static bool exprYieldsContainer(const Expr* e) {
         }
         case NK::Unary: {   // `do { … }` is a Unary wrapped around the block
             auto* u = static_cast<const Unary*>(e);
-            return u->op == "do" && exprYieldsContainer(u->operand.get());
+            return opEq(u->op, "do") && exprYieldsContainer(u->operand.get());
         }
         // `do { $p }` / a bare block statement: the tail statement's value is
         // the block's, container and all — a Block does not decontainerize.
@@ -1353,7 +1363,7 @@ int Interpreter::run(Program& prog) {
                 }
                 if (e->kind != NK::Unary) return;
                 auto* u = static_cast<const Unary*>(e);
-                if (u->op != "require") { seeReq(u->operand.get()); return; }
+                if (!opEq(u->op, "require")) { seeReq(u->operand.get()); return; }
                 if (!u->operand || u->operand->kind != NK::StrLit) return;
                 const std::string& nm = static_cast<const StrLit*>(u->operand.get())->v;
                 if (!nm.empty() && ascii::isalpha((unsigned char)nm[0]) && !classes_.count(nm) &&
@@ -1417,7 +1427,7 @@ int Interpreter::run(Program& prog) {
             if (!nm.empty() && hasInit && !staticPhaserVal_.empty() && s->kind == NK::ExprStmt &&
                 global_->local(nm)) {
                 auto* a = static_cast<Assign*>(static_cast<ExprStmt*>(s)->e.get());
-                if (a->kind == NK::Assign && a->op != "=" && a->op != ":=" && a->op.size() > 1 &&
+                if (a->kind == NK::Assign && !opEq(a->op, "=") && !opEq(a->op, ":=") && a->op.size() > 1 &&
                     a->op.back() == '=' && static_cast<VarExpr*>(a->target.get())->declScope == "my" &&
                     static_cast<VarExpr*>(a->target.get())->declType.empty()) {
                     auto* ve = static_cast<VarExpr*>(a->target.get());
@@ -2104,7 +2114,7 @@ static const Expr* forBodyTailVar(const Block* body) {
     const Expr* e = static_cast<const ExprStmt*>(last)->e.get();
     if (e && e->kind == NK::Assign) {
         auto* as = static_cast<const Assign*>(e);
-        if (as->op == ":=") return nullptr;
+        if (opEq(as->op, ":=")) return nullptr;
         e = as->target.get();
     }
     if (!e || e->kind != NK::VarExpr) return nullptr;
@@ -7401,21 +7411,21 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.builtin && rwArgs && !rwArgs->empty() && !args.empty() &&
         c.name.rfind("infix:<", 0) == 0 && c.name.back() == '>') {
         std::string op = c.name.substr(7, c.name.size() - 8);
-        bool isAssign = op == "=" ||
-            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+        bool isAssign = opEq(op, "=") ||
+            (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "!=") &&
+             !opEq(op, "<=") && !opEq(op, ">=") && !opEq(op, "=:=") && !opEq(op, "!==") && !opEq(op, ".=") &&
              // …and the identity/approximation family, which also ENDS in `=`:
              // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
-             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
+             !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
         if (isAssign) {
             // a TYPED variable checks what `&infix:<=>` hands it, as `=` does
-            if (op == "=" && (*rwArgs)[0] && (*rwArgs)[0]->kind == NK::VarExpr && args.size() > 1) {
+            if (opEq(op, "=") && (*rwArgs)[0] && (*rwArgs)[0]->kind == NK::VarExpr && args.size() > 1) {
                 const std::string& vn = static_cast<VarExpr*>((*rwArgs)[0].get())->name;
                 if (!vn.empty() && vn[0] == '$') { Value chk = args[1]; enforceTypedAssign(vn, chk); }
             }
             if (Value* lv = lvalue((*rwArgs)[0].get())) {
                 Value rhs = args.size() > 1 ? args[1] : Value::any();
-                *lv = (op == "=") ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
+                *lv = (opEq(op, "=")) ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
                 return *lv;
             }
         }
@@ -7449,13 +7459,13 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.builtin && args.size() == 1 && c.name.rfind("infix:<", 0) == 0 &&
         c.name.size() > 8 && c.name.back() == '>') {
         std::string op = c.name.substr(7, c.name.size() - 8);
-        bool isAssign = op == "=" ||
-            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+        bool isAssign = opEq(op, "=") ||
+            (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "!=") &&
+             !opEq(op, "<=") && !opEq(op, ">=") && !opEq(op, "=:=") && !opEq(op, "!==") && !opEq(op, ".=") &&
              // …and the identity/approximation family, which also ENDS in `=`:
              // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
-             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
-        if (!isAssign && !isSetOpStr(op) && op != "," && op[0] != 'Z' && op[0] != 'X') {
+             !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
+        if (!isAssign && !isSetOpStr(op) && !opEq(op, ",") && op[0] != 'Z' && op[0] != 'X') {
             static const std::set<std::string> kChaining = {
                 "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
                 "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
@@ -7464,7 +7474,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // the arithmetic ones NUMIFY their one argument (`&infix:<+>("2")`
             // is 2, `&infix:<->(10)` still 10 — see applyReduce)
             // …and `~` STRINGIFIES its one (S32-list/unique.t maps with `&[~]`)
-            if (op == "+" || op == "-" || op == "*" || op == "/" || op == "~") {
+            if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "~")) {
                 ValueList one{args[0]};
                 return applyReduce(op, one);
             }
@@ -8524,8 +8534,8 @@ static bool bindsBareValue(const Expr* e) {
     if (!e) return false;
     if (e->kind == NK::Unary) {
         auto* u = static_cast<const Unary*>(e);
-        if (u->op == "once") return true;
-        if (u->op == "do" && u->operand) {
+        if (opEq(u->op, "once")) return true;
+        if (opEq(u->op, "do") && u->operand) {
             const Expr* x = u->operand.get();
             if (x->kind == NK::BlockExpr) {
                 auto* be = static_cast<const BlockExpr*>(x);
@@ -8655,7 +8665,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
                 if (x->kind == NK::ArrayLit || x->kind == NK::HashLit || x->kind == NK::ListExpr) return true;
                 if (x->kind == NK::Unary) {
                     const std::string& op = static_cast<const Unary*>(x)->op;
-                    return op == "ctx$" || op == "ctx@" || op == "ctx%";
+                    return opEq(op, "ctx$") || opEq(op, "ctx@") || opEq(op, "ctx%");
                 }
                 if (x->kind == NK::VarExpr) {
                     const std::string& n = static_cast<const VarExpr*>(x)->name;
@@ -11072,16 +11082,16 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // plain variables the callee was handed.
     if (e->kind == NK::Binary) {
         auto* b = static_cast<Binary*>(e);
-        if (b->op == "||" || b->op == "or")   return lvalue(boolify(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
-        if (b->op == "&&" || b->op == "and")  return lvalue(boolify(eval(b->lhs.get())) ? b->rhs.get() : b->lhs.get());
-        if (b->op == "//")                    return lvalue(topicDefined(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
+        if (opEq(b->op, "||") || opEq(b->op, "or"))   return lvalue(boolify(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
+        if (opEq(b->op, "&&") || opEq(b->op, "and"))  return lvalue(boolify(eval(b->lhs.get())) ? b->rhs.get() : b->lhs.get());
+        if (opEq(b->op, "//"))                    return lvalue(topicDefined(eval(b->lhs.get())) ? b->lhs.get() : b->rhs.get());
     }
     // `++$x` / `--$x` as a target is the container through the increment (the
     // increment itself ran when the expression was EVALUATED; re-running it here
     // would double-step the rw write-back that is this path's only real caller)
     if (e->kind == NK::Unary) {
         auto* u = static_cast<Unary*>(e);
-        if (u->op == "++" || u->op == "--") return lvalue(u->operand.get());
+        if (opEq(u->op, "++") || opEq(u->op, "--")) return lvalue(u->operand.get());
     }
     // `self{$k} = v` / `self[$i] = v` inside a method mutates the invocant
     if (e->kind == NK::SelfTerm) {
@@ -11224,7 +11234,7 @@ static bool pureSubscript(const Expr* e) {
         case NK::IntLit: case NK::StrLit: case NK::NumLit: case NK::VarExpr: return true;
         case NK::Binary: {
             auto* b = static_cast<const Binary*>(e);
-            return (b->op == "+" || b->op == "-" || b->op == "*") &&
+            return (opEq(b->op, "+") || opEq(b->op, "-") || opEq(b->op, "*")) &&
                    pureSubscript(b->lhs.get()) && pureSubscript(b->rhs.get());
         }
         case NK::Index: {
@@ -11245,7 +11255,7 @@ static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
     switch (e->kind) {
         case NK::Unary: {
             auto* u = static_cast<const Unary*>(e);
-            if (u->op == "do") collectBindTails(u->operand.get(), out);
+            if (opEq(u->op, "do")) collectBindTails(u->operand.get(), out);
             return;
         }
         case NK::Ternary: {
@@ -11333,7 +11343,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // was evaluated, that `@a` was a miss and the literal held a stranger. So
     // when the right side MENTIONS the declared `@`/`%` name, declare first
     // and store through the container the literal already holds.
-    if (a->op == "=" && a->target && a->target->kind == NK::VarExpr) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (ve->declare && ve->declScope == "my" && ve->name.size() > 1 &&
             (ve->name[0] == '@' || ve->name[0] == '%') && a->value) {
@@ -11373,7 +11383,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // whose variables are the enclosing scope's own (S06-other/pairs-as-lvalues.t).
     // A List binds as its Capture: a Pair element is a NAMED argument. A part of
     // a literal `\(…)` that is a plain variable is aliased, so `$a =:= $b` holds.
-    if (a->op == ":=" && a->target && a->target->kind == NK::Unary && a->value &&
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::Unary && a->value &&
         static_cast<Unary*>(a->target.get())->op == "siglit" &&
         static_cast<Unary*>(a->target.get())->operand->kind == NK::BlockExpr) {
         auto* be = static_cast<BlockExpr*>(static_cast<Unary*>(a->target.get())->operand.get());
@@ -11432,7 +11442,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `$CALLER::foo := $other` REBINDS the caller's variable to our container:
     // later writes to $other show through $foo (S02-names/caller.t) — the same
     // shared cell `$y := $x` makes, installed in the slot the symbolic ref names
-    if (a->op == ":=" && a->target && a->target->kind == NK::SymbolicRef && a->value &&
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::SymbolicRef && a->value &&
         a->value->kind == NK::VarExpr) {
         auto* sv = static_cast<VarExpr*>(a->value.get());
         if (sv->name.size() > 1 && sv->name[0] == '$' &&
@@ -11451,7 +11461,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
         }
     }
-    if (a->op == ":=" && a->target) {
+    if (opEq(a->op, ":=") && a->target) {
         // …and through the setting's stash: `CORE::.<&none> := &f`
         if (a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
@@ -11573,9 +11583,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `self = …` — the invocant is not a container, unless it is an Array or
     // a Hash, where assigning is a STORE into it (Hash::Merge's augmented
     // `method merge { self = merge-hash(self, …) }`), as in Rakudo
-    if (a->target && a->target->kind == NK::SelfTerm && (a->op == "=" || a->op == ":=")) {
+    if (a->target && a->target->kind == NK::SelfTerm && (opEq(a->op, "=") || opEq(a->op, ":="))) {
         Value sv; if (Value* sp = tctx_.cur->findSelf()) sv = *sp;
-        const bool stores = a->op == "=" && isDefined(sv) &&
+        const bool stores = opEq(a->op, "=") && isDefined(sv) &&
             ((sv.t == VT::Array && !sv.isList) || (sv.t == VT::Hash && sv.hashKind.empty()));
         if (!stores)
             throwTypedV("X::Assignment::RO", {{"value", sv}}, "Cannot modify an immutable " + sv.typeName());
@@ -11606,11 +11616,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
                     if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
                         tv->name[0] == '$' && tv->declCoerce.empty()) {
-                        if (a->op == "=") cls = 1;
-                        else if (a->op == "+=") cls = 2;
-                        else if (a->op == "-=") cls = 3;
-                        else if (a->op == "*=") cls = 4;
-                        else if (a->op == "~=") cls = 5;
+                        if (opEq(a->op, "=")) cls = 1;
+                        else if (opEq(a->op, "+=")) cls = 2;
+                        else if (opEq(a->op, "-=")) cls = 3;
+                        else if (opEq(a->op, "*=")) cls = 4;
+                        else if (opEq(a->op, "~=")) cls = 5;
                     }
                 }
                 a->simpleSlot = cls;
@@ -11743,7 +11753,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     }
     // `my @a is List` makes the container immutable — reassigning it throws (the
     // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
-    if (a->op == "=" && a->target->kind == NK::VarExpr) {
+    if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (!ve->declare) {
             Value* cur = tctx_.cur->find(ve->name);
@@ -11992,7 +12002,7 @@ static bool assignSpawns(const Assign* a) {
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `@shaped[0] = …` on a 2-D array names a ROW, which is not a container:
     // X::NotEnoughDimensions (only looked for once a shaped array exists)
-    if (g_anyShaped.load(std::memory_order_relaxed) && a->op == "=" && a->target &&
+    if (g_anyShaped.load(std::memory_order_relaxed) && opEq(a->op, "=") && a->target &&
         a->target->kind == NK::Index) {
         auto* ix = static_cast<Index*>(a->target.get());
         if (!ix->isHash && !ix->multiDim && !ix->semicolonSub && ix->base &&
@@ -12017,7 +12027,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // IS a subscript of the source. rakupp's map yields values, not containers;
     // the one shape roast writes through (S32-list/seq.t) is rewritten here to
     // the source once, which means the same thing.
-    if (a->op == "=" && a->target && a->target->kind == NK::Index) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::Index) {
         auto* ix = static_cast<Index*>(a->target.get());
         if (ix->base && ix->base->kind == NK::MethodCall) {
             auto* mc = static_cast<MethodCall*>(ix->base.get());
@@ -12039,7 +12049,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `@a[1, (lazy 3, 4, 5)] = "a" ... *` — a NESTED/LAZY slice assigns (or
     // binds) leaf by leaf, taking only as many values as it has leaves, and
     // answers them in the subscript's own shape
-    if ((a->op == "=" || a->op == ":=") && a->target && a->target->kind == NK::Index) {
+    if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target && a->target->kind == NK::Index) {
         auto* ix = static_cast<Index*>(a->target.get());
         auto lazyCall = [](const Expr* it) -> const Call* {
             if (it && it->kind == NK::Call) {
@@ -12060,7 +12070,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value* bp = lvalue(ix->base.get());
             if (bp && bp->t == VT::Array && bp->arr() && !bp->isList) {
                 const long long size0 = (long long)bp->arr()->size();
-                const bool bind = a->op == ":=";
+                const bool bind = opEq(a->op, ":=");
                 Value rhs = eval(a->value.get());
                 ValueList vals;
                 std::shared_ptr<LazySeqState> st;
@@ -12139,7 +12149,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             tctx_.cur->define(dv->name, typedDefault(dv->declType, dv->name[0]));
     }
     // `@a[0]:v = …` — the :v adverb hands out values, not containers
-    if (a->op == "=" && a->target && a->target->kind == NK::Index &&
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::Index &&
         static_cast<Index*>(a->target.get())->adverb == "v") {
         Value cur = eval(a->target.get());
         if (cur.t == VT::Array && cur.arr() && cur.arr()->size() == 1) cur = (*cur.arr())[0];
@@ -12147,7 +12157,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         "Cannot modify an immutable " + cur.typeName() + " (" + cur.toStr() + ")"};
     }
     // `&a = &b` where `sub a` declared the name: a routine is not a container
-    if (a->op == "=" && a->target && a->target->kind == NK::VarExpr && tctx_.cur) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::VarExpr && tctx_.cur) {
         auto* tv = static_cast<VarExpr*>(a->target.get());
         if (!tv->declare && tv->name.size() > 1 && tv->name[0] == '&') {
             Value* cv = tctx_.cur->find(tv->name);
@@ -12159,12 +12169,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     // Every block has its OWN `$_`, bound to the outer one: `{ $_ := 43 }`
     // rebinds the block's, and the outer `$_` is left as it was
-    if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && tctx_.cur &&
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::VarExpr && tctx_.cur &&
         static_cast<VarExpr*>(a->target.get())->name == "$_" &&
         !static_cast<VarExpr*>(a->target.get())->declare && !tctx_.cur->local("$_")) {
         if (Value* outer = tctx_.cur->find("$_")) tctx_.cur->define("$_", *outer);
     }
-    if (sixE() && a->op == "=" && isDimslipIndex(a->target.get()))
+    if (sixE() && opEq(a->op, "=") && isDimslipIndex(a->target.get()))
         return withDimslipAsMultiDim(static_cast<Index*>(a->target.get()),
                                      [&] { return evalAssignInner(a, sink); });
     // `* *= 2` / `* = 5` / `*.=succ` — a bare `*` on the LEFT of an assignment
@@ -12190,7 +12200,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             struct Restore { std::shared_ptr<Env> v;
                              ~Restore() { Interpreter::tctx_.cur = v; } } r{saved};
             Value rhs = I.eval(rhsE);
-            Value nv = op == "=" ? rhs : I.applyBinOp(op.substr(0, op.size() - 1), cur, rhs);
+            Value nv = opEq(op, "=") ? rhs : I.applyBinOp(op.substr(0, op.size() - 1), cur, rhs);
             if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
             else if (I.builtinArgWriter_) (*I.builtinArgWriter_)(0, nv);
             if (!as.empty()) as[0] = nv;
@@ -12201,7 +12211,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `(1,2)[0] := 3`, `10[0] := 1`, `"Hi"[0] := 1`, `(Int)[0] := 1` — binding
     // into something that is not a container is X::Bind. Only a LITERAL base is
     // judged here (evaluating it twice cannot matter).
-    if (a->op == ":=" && a->target && a->target->kind == NK::Index) {
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::Index) {
         Expr* be = static_cast<Index*>(a->target.get())->base.get();
         if (be && (be->kind == NK::ListExpr || be->kind == NK::IntLit || be->kind == NK::StrLit ||
                    be->kind == NK::NumLit || be->kind == NK::NameTerm || be->kind == NK::InterpStr)) {
@@ -12222,7 +12232,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // (42,), a Seq its List); `%` takes anything Associative (a Bag, a Pair, a
     // Hash literal) and turns a list into a Map; `$` and sigilless decontainerize,
     // so `for $c { … }` iterates the list rather than seeing one item.
-    if (a->op == "=" && a->target && a->target->kind == NK::VarExpr && a->value) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::VarExpr && a->value) {
         auto* cv = static_cast<VarExpr*>(a->target.get());
         const char sg = cv->name.empty() ? 0 : cv->name[0];
         // `my Int constant @c` — a typed @/% constant would be a parameterized
@@ -12282,7 +12292,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // assigning splices into $str. The positions are fixed when it is bound,
     // as in Rakudo (a sibling proxy keeps pointing at the same place when this
     // one changes the string's length).
-    if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && a->value) {
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::VarExpr && a->value) {
         Value proxy;
         if (substrRwProxyOf(a->value.get(), proxy)) {
             Value* lv = lvalue(a->target.get());
@@ -12295,7 +12305,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // or hash — `@slice = <A B C D>` stores A and B there and answers (A B)
     // (S09-subscript/slice.t, S32-hash/slice.t). Only for an index that is
     // pure to evaluate, since a case this declines evaluates it again.
-    if (a->op == ":=" && a->target && a->target->kind == NK::VarExpr && a->value &&
+    if (opEq(a->op, ":=") && a->target && a->target->kind == NK::VarExpr && a->value &&
         a->value->kind == NK::Index) {
         auto* tv = static_cast<VarExpr*>(a->target.get());
         auto* ix = static_cast<Index*>(a->value.get());
@@ -12342,7 +12352,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (lv) {
                 Value rhs = eval(a->value.get());
                 std::string bin = a->op.substr(0, a->op.size() - 1);   // "+=" -> "+"
-                *lv = a->op == "=" ? rhs : applyBinOp(bin, *lv, rhs);
+                *lv = opEq(a->op, "=") ? rhs : applyBinOp(bin, *lv, rhs);
                 return sink ? Value::any() : *lv;
             }
         }
@@ -12352,14 +12362,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // thing's ELEMENTS, so `$R` still holds the same Array afterwards. There was
     // no lvalue for the shape at all: it died "Target is not assignable", which
     // is how LCS::All rebuilds a row (`@($R) = @temp`).
-    if (a->op == "=" && a->target && a->target->kind == NK::Unary) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::Unary) {
         auto* cu = static_cast<Unary*>(a->target.get());
-        if ((cu->op == "ctx@" || cu->op == "ctx%" || cu->op == "ctx%{}") && cu->operand) {
+        if ((opEq(cu->op, "ctx@") || opEq(cu->op, "ctx%") || opEq(cu->op, "ctx%{}")) && cu->operand) {
             Value* lv = nullptr;
             try { lv = lvalue(cu->operand.get()); } catch (RakuError&) {}
             if (lv) {
                 Value rhs = eval(a->value.get());
-                if (cu->op == "ctx@") {
+                if (opEq(cu->op, "ctx@")) {
                     Value arr = coerceArray(rhs);
                     // keep the container the operand already holds, if it holds one
                     if (lv->t == VT::Array && lv->arr()) { *lv->arr() = *arr.arr(); }
@@ -12382,7 +12392,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // dynamic (or closure, which rakupp resolves at call time anyway) can
     // observe the binding mid-initializer, and the unrestricted form put a map
     // probe on every `my $x = …` (perf-guard caught loopsum +12%).
-    if (a->op == "=" && a->target->kind == NK::VarExpr) {
+    if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (ve->declare && ve->declScope == "my" && ve->name.size() > 2 &&
             ve->name[1] == '*' &&
@@ -12397,7 +12407,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // reads the file straight after setting it), and $*OUT / $*ERR have no
     // persistent container at all — every read of the dynamic synthesizes a
     // fresh handle, so a write into that copy would be gone by the next `say`.
-    if (a->op == "=" && a->target->kind == NK::MethodCall) {
+    if (opEq(a->op, "=") && a->target->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(a->target.get());
         if (mc->method == "out-buffer" && mc->args.empty() && !mc->meta && !mc->hyper &&
             !mc->bang && !mc->methodExpr &&
@@ -12413,7 +12423,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
     // NativeCall CStruct field write: `$s.field = v` writes native memory at the
     // field's offset (there is no Value container to hand back as an lvalue).
-    if (a->op == "=" && a->target->kind == NK::MethodCall) {
+    if (opEq(a->op, "=") && a->target->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(a->target.get());
         // The invocant may be a SUBSCRIPT as well as a variable: LinearArray hands
         // back its structs by index, and `$!binds[$col].buffer_length = …` is how
@@ -12487,7 +12497,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // read path already goes through native memory; the write must too.
     // `my @a is Blob = ^10` / `my @b is buf16 = …` — the variable IS a Blob
     // of that type, built from the list (the container trait's constructor)
-    if (a->op == "=" && a->target->kind == NK::VarExpr) {
+    if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
         auto* tv = static_cast<VarExpr*>(a->target.get());
         static const std::set<std::string> blobTypes = {
             "Blob", "Buf", "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
@@ -12542,7 +12552,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return sink ? Value::any() : b;
         }
     }
-    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::VarExpr) {
+    if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (ve->name.size() > 2 && ve->name[0] == '$' && (ve->name[1] == '!' || ve->name[1] == '.')) {
             Value* selfp = tctx_.cur->findSelf();
@@ -12564,7 +12574,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // named destructuring: `my (:@positional, :@named) := %h` — each element
     // binds the RHS hash's value under its bare name (Cro::HTTP::Router
     // classifies signature params this way)
-    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
+    if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::ListExpr) {
         auto* lst0 = static_cast<ListExpr*>(a->target.get());
         bool anyNamed = false;
         for (auto& it : lst0->items)
@@ -12601,7 +12611,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     // …and so does the LIST form `state ($a, @b) = …`
-    if (a->op == "=" && a->target->kind == NK::ListExpr && tctx_.curStateEnv) {
+    if (opEq(a->op, "=") && a->target->kind == NK::ListExpr && tctx_.curStateEnv) {
         auto* tl = static_cast<ListExpr*>(a->target.get());
         bool allState = !tl->items.empty();
         for (auto& it : tl->items) {
@@ -12621,7 +12631,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // Positional list BIND takes the same road as list assign — rakupp
     // approximates := as assignment for containers throughout (as with
     // sigilless ); File::Temp's t/03 does `my (&tempfile, &tempdir) := ...`
-    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
+    if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::ListExpr) {
         auto* tl = static_cast<ListExpr*>(a->target.get());
         // A declaration on the left is in scope for the right side: `(my @a)
         // = [42, @a]` fills @a with an array that holds @a ITSELF — which is
@@ -12646,11 +12656,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         for (auto* ve : early) { (void)lvalue(ve); }
         Value rhs = eval(a->value.get());
         for (auto* ve : early) ve->declare = false;   // restored by Undeclare
-        assignListTarget(tl, rhs, a->op == ":=");
+        assignListTarget(tl, rhs, opEq(a->op, ":="));
         // `my ($a) := \(3)` — a scalar bound to a LITERAL part of a literal
         // capture holds the value itself: no container to assign or step
         // (S02-names-vars/signature.t)
-        if (a->op == ":=" && a->value->kind == NK::Unary &&
+        if (opEq(a->op, ":=") && a->value->kind == NK::Unary &&
             static_cast<Unary*>(a->value.get())->op == "capture") {
             Expr* op = static_cast<Unary*>(a->value.get())->operand.get();
             std::vector<Expr*> parts;
@@ -12673,7 +12683,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (sink) return Value::any();
         // the answer is the LEFT side, filled: `(($a, $b) = 1, 2, 3, 4)` is
         // (1, 2) — only what the targets took passes on
-        bool allVars = a->op == "=" && !tl->items.empty();
+        bool allVars = opEq(a->op, "=") && !tl->items.empty();
         for (auto& it : tl->items)
             if (!it || it->kind != NK::VarExpr || static_cast<VarExpr*>(it.get())->name.size() < 2) { allVars = false; break; }
         if (!allVars) return rhs;
@@ -12782,7 +12792,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // EXCEPT the anonymous `$`: `$ = EXPR` is a plain ASSIGNMENT to an anonymous
         // state slot, re-run on every evaluation (zef's `::($ = $module)` idiom relies
         // on it; only the slot persists — for `$++`-style counters).
-        if (a->op == "=" && ve->declare && ve->declScope == "state" && !ve->stateInParens &&
+        if (opEq(a->op, "=") && ve->declare && ve->declScope == "state" && !ve->stateInParens &&
             tctx_.curStateEnv && tctx_.curStateEnv->vars.count(ve->name) &&
             ve->name.rfind("$anon--state--", 0) != 0)
             return tctx_.curStateEnv->vars[ve->name];
@@ -12837,7 +12847,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // elements: the inner assignment runs, then the outer value distributes
     // over the slots it named (S02-types/array.t, the "hat trick"). Only a
     // subscript whose items are side-effect free is re-read to find them.
-    if (a->op == "=" && a->target && a->target->kind == NK::Assign) {
+    if (opEq(a->op, "=") && a->target && a->target->kind == NK::Assign) {
         auto* in = static_cast<Assign*>(a->target.get());
         std::function<bool(const Expr*)> pure = [&](const Expr* e) -> bool {
             if (!e) return false;
@@ -12848,12 +12858,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                          static_cast<const VarExpr*>(e)->name[0] == '$';
                 case NK::Binary: {
                     auto* b = static_cast<const Binary*>(e);
-                    return (b->op == "-" || b->op == "+") && pure(b->lhs.get()) && pure(b->rhs.get());
+                    return (opEq(b->op, "-") || opEq(b->op, "+")) && pure(b->lhs.get()) && pure(b->rhs.get());
                 }
                 default: return false;
             }
         };
-        auto* ix = in->op == "=" && in->target && in->target->kind == NK::Index
+        auto* ix = opEq(in->op, "=") && in->target && in->target->kind == NK::Index
                      ? static_cast<Index*>(in->target.get()) : nullptr;
         bool ok = ix && !ix->isHash && ix->adverb.empty() && !ix->multiDim && ix->index &&
                   ix->index->kind == NK::ListExpr && ix->base && ix->base->kind == NK::VarExpr;
@@ -12896,7 +12906,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `$s.substr-rw(from, len) = $repl` / `substr-rw($s, from, len) = $repl` — splice
     // the replacement over [from, from+len) CHARACTERS in place. A zero length inserts
     // before that character rather than replacing anything.
-    if (a->op == "=") {
+    if (opEq(a->op, "=")) {
         Expr* invE = nullptr; std::vector<ExprPtr>* srArgs = nullptr; size_t argOfs = 0;
         if (a->target->kind == NK::MethodCall &&
             static_cast<MethodCall*>(a->target.get())->method == "substr-rw") {
@@ -12976,7 +12986,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // an empty Array: the element width was lost, and with it the wraparound.
     // Digest::SHA2 builds its message schedule as `(state buf32 $w)[$j] = …`, where
     // every write is a sum that overflows 32 bits, so every SHA-256 digest was wrong.
-    if (a->op == "=" && a->target->kind == NK::Index) {
+    if (opEq(a->op, "=") && a->target->kind == NK::Index) {
         auto* idx = static_cast<Index*>(a->target.get());
         if (!idx->isHash && !idx->multiDim && idx->adverb.empty()) {
             Value* bp = nullptr;
@@ -13041,7 +13051,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     // `$buf.subbuf-rw(from, len) = $repl` / `subbuf-rw($buf, from, len) = $repl`
     // — splice the replacement bytes over [from, from+len) in place
-    if (a->op == "=") {
+    if (opEq(a->op, "=")) {
         Expr* invE = nullptr; std::vector<ExprPtr>* sbArgs = nullptr; size_t argOfs = 0;
         if (a->target->kind == NK::MethodCall &&
             static_cast<MethodCall*>(a->target.get())->method == "subbuf-rw") {
@@ -13084,7 +13094,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
     }
-    if (a->op == "=" &&
+    if (opEq(a->op, "=") &&
         (a->target->kind == NK::IntLit || a->target->kind == NK::NumLit ||
          a->target->kind == NK::StrLit))
         throwTyped("X::Assignment::RO", {},
@@ -13095,7 +13105,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // package as a non-container and refused, killing the module load (and
     // the whole Test::META chain behind it). The slot is the package-
     // qualified global symbol — the same spelling OUR::name reads resolve to.
-    if ((a->op == ":=" || a->op == "=") && a->target->kind == NK::Index) {
+    if ((opEq(a->op, ":=") || opEq(a->op, "=")) && a->target->kind == NK::Index) {
         auto* ix = static_cast<Index*>(a->target.get());
         if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
             const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
@@ -13107,7 +13117,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
     }
-    if (a->op == ":=") {
+    if (opEq(a->op, ":=")) {
         // Perl-6-level bind diagnostics (roast S32-exceptions/misc2.t)
         if (a->target->kind == NK::Call || a->target->kind == NK::MethodCall)
             throwTyped("X::Bind", {{"target", "a call"}},
@@ -13187,12 +13197,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
     }
-    if (a->op == "=" || a->op == ":=") {
+    if (opEq(a->op, "=") || opEq(a->op, ":=")) {
         // `$carray[$i] = v` on a byte-backed CArray writes the element IN PLACE.
         // The generic lvalue path below replaces any non-Array base with a fresh
         // Array, which would silently discard the native buffer — and then hand a
         // native call the element COUNT where it wanted a pointer.
-        if (a->op == "=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             // Only for a plain variable base: the generic path re-resolves the
             // base itself, so probing anything with side effects (a call, an
@@ -13236,7 +13246,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // write-through on its first test.
         // `%h<a b> := ($foo, $bar)` — a SLICE binds element by element: a
         // variable on the right shares its container, anything else binds as is
-        if (a->op == ":=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, ":=") && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             auto* bv = ix->base ? (ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr) : nullptr;
             if (ix->index && !ix->multiDim && ix->adverb.empty() && bv && !bv->declare &&
@@ -13298,7 +13308,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // (a Proxy-cell, the form element storage already reads through) and the
         // target element shares it: a write through either lands in both, and
         // `=:=` sees one container.
-        if (a->target->kind == NK::Index && a->value->kind == NK::Index && a->op == ":=") {
+        if (a->target->kind == NK::Index && a->value->kind == NK::Index && opEq(a->op, ":=")) {
             auto* tix = static_cast<Index*>(a->target.get());
             auto* six = static_cast<Index*>(a->value.get());
             auto simple = [](Index* x) {
@@ -13330,7 +13340,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
-        if (a->op == ":=" && a->target->kind == NK::Index && a->value->kind == NK::VarExpr) {
+        if (opEq(a->op, ":=") && a->target->kind == NK::Index && a->value->kind == NK::VarExpr) {
             auto* ix = static_cast<Index*>(a->target.get());
             auto* sv = static_cast<VarExpr*>(a->value.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
@@ -13367,7 +13377,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
-        if (a->op == ":=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, ":=") && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() && ix->base->kind == NK::VarExpr) {
                 Value base = eval(ix->base.get());
@@ -13383,7 +13393,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
-        if (a->op == "=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
                 (ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm ||
@@ -13481,7 +13491,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets.
         // A SLICE subscript falls through to the slice branch below, which applies
         // the same rule per key (`$sh<a b> = False, True`).
-        if (a->op == "=" && a->target->kind == NK::Index &&
+        if (opEq(a->op, "=") && a->target->kind == NK::Index &&
             static_cast<Index*>(a->target.get())->isHash &&
             !sliceSubscript(static_cast<Index*>(a->target.get()))) {
             auto* ix = static_cast<Index*>(a->target.get());
@@ -13547,7 +13557,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // multidim slice assignment: @a[*;0;*] = v1,v2,… / %h{*;"b";"c"} = v —
         // expand the star/list dims into concrete per-branch tuples, then
         // distribute the flattened RHS across them in order
-        if (a->op == "=" && a->target->kind == NK::Index &&
+        if (opEq(a->op, "=") && a->target->kind == NK::Index &&
             static_cast<Index*>(a->target.get())->multiDim &&
             static_cast<Index*>(a->target.get())->adverb.empty()) {
             auto* ix = static_cast<Index*>(a->target.get());
@@ -13593,7 +13603,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // slice assignment: %h{K1,K2,…} = v1,v2,… / @a[I1,I2,…] = … distributes the
         // (flattened) RHS across the keys. A slice subscript is a syntactic list, a
         // Range (^$n), or an @-var — a scalar subscript keeps the ordinary path.
-        if (a->op == "=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             // `($foo, 42, $bar, 19)[0, 2] = (23, 24)` — a slice of a LIST
             // LITERAL assigns each picked item's own container, in order
@@ -13772,8 +13782,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // `@a := item, item, …` binds the list AS-IS — a Range/List element stays
         // one element (ListExpr eval would flatten it, which is `=` semantics).
         // `my constant @m = Nil, <a b>, …` binds too: constants are := in disguise.
-        if ((a->op == ":=" ||
-             (a->op == "=" && a->target->kind == NK::VarExpr &&
+        if ((opEq(a->op, ":=") ||
+             (opEq(a->op, "=") && a->target->kind == NK::VarExpr &&
               static_cast<VarExpr*>(a->target.get())->declare &&
               static_cast<VarExpr*>(a->target.get())->declScope == "constant")) &&
             a->target->kind == NK::VarExpr &&
@@ -13797,7 +13807,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // `$y := $x` ALIASES the container: reads and writes on $y reach $x's slot.
         // Implemented as a Proxy over the source's owning Env (Env value slots are
         // node-stable; the shared_ptr keeps the Env alive for escaped closures).
-        if (a->op == ":=" && a->target->kind == NK::VarExpr &&
+        if (opEq(a->op, ":=") && a->target->kind == NK::VarExpr &&
             (a->value->kind == NK::VarExpr || a->value->kind == NK::NameTerm)) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             // (a sigilless source parses as a bare NAME: only its name is read here)
@@ -13896,12 +13906,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // alias. Parsed as a plain `=` to a sigilless declarator, it copied, so
         // both slot arms below accept that spelling alongside `:=`.
         auto sigillessDecl = [](Assign* as) {
-            if (as->op != "=" || as->target->kind != NK::VarExpr) return false;
+            if (!opEq(as->op, "=") || as->target->kind != NK::VarExpr) return false;
             auto* v = static_cast<VarExpr*>(as->target.get());
             return v->declare && !v->name.empty() && v->name[0] != '$' &&
                    v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&';
         };
-        const bool bindsSlot = (a->op == ":=" || sigillessDecl(a));
+        const bool bindsSlot = (opEq(a->op, ":=") || sigillessDecl(a));
         const bool slotTarget = a->target->kind == NK::VarExpr &&
             !static_cast<VarExpr*>(a->target.get())->name.empty() &&
             (static_cast<VarExpr*>(a->target.get())->name[0] == '$' || sigillessDecl(a));
@@ -14095,7 +14105,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // …and an ELEMENT bound to it (`%h<foo> := $pair.value`) holds the same
         // container, so assigning the element writes the Pair's value — and,
         // for `'foo' => my $out`, $out (Getopt::Long's out-parameter idiom)
-        if (a->op == ":=" && a->target->kind == NK::Index && a->value->kind == NK::MethodCall) {
+        if (opEq(a->op, ":=") && a->target->kind == NK::Index && a->value->kind == NK::MethodCall) {
             auto* mc = static_cast<MethodCall*>(a->value.get());
             if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper && !mc->methodExpr) {
                 Value pv = eval(mc->inv.get());
@@ -14139,7 +14149,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         tctx_.bindRawTails = bindTails.empty() ? nullptr : &bindTails;
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
-        if (a->op == "=" && a->target->kind == NK::VarExpr) {
+        if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
             // On a `@` or `%` the coercion is the ELEMENT's, not the container's:
             // `my Int() @a` is Rakudo's Array[Int(Any)]. Coercing the whole right
@@ -14211,14 +14221,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // $*ERR` throws — roast S02-types/array.t). The Index lvalue arm left
         // the constraint behind; Nil is not an assignment but a RESET, and the
         // arm further down turns it into the element default.
-        if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::Index && !tctx_.lastLvalueElemType.empty()) {
+        if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::Index && !tctx_.lastLvalueElemType.empty()) {
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(a->target.get());
             checkElemType(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
         // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
-        if (a->op == "=" && a->target->kind == NK::MethodCall && !tctx_.lastLvalueElemType.empty()) {
+        if (opEq(a->op, "=") && a->target->kind == NK::MethodCall && !tctx_.lastLvalueElemType.empty()) {
             auto* mct = static_cast<MethodCall*>(a->target.get());
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
@@ -14227,7 +14237,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset,
         // checked where the default lands)
-        if (a->op == "=" && a->target->kind == NK::Index && rhs.t != VT::Nil) {
+        if (opEq(a->op, "=") && a->target->kind == NK::Index && rhs.t != VT::Nil) {
             auto* ixt = static_cast<Index*>(a->target.get());
             if (ixt->base && ixt->base->kind == NK::VarExpr) {
                 const std::string& cn = static_cast<VarExpr*>(ixt->base.get())->name;
@@ -14254,21 +14264,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // keeps its old place, after the type check.
         // a SIGILLESS name bound to a bare value names the value itself, and
         // Rakudo refuses it as the typed "immutable T" (`-> \v { v = 22 }`)
-        if (lv->readonly && lv->immutableBind && a->op != ":=" && a->target->kind == NK::NameTerm) {
+        if (lv->readonly && lv->immutableBind && !opEq(a->op, ":=") && a->target->kind == NK::NameTerm) {
             Value iv = *lv; iv.readonly = iv.immutableBind = false;
             throwTypedV("X::Assignment::RO", {{"typename", Value::str(iv.typeName())}, {"value", iv}},
                         "Cannot modify an immutable " + iv.typeName() + " (" + iv.gist() + ")");
         }
-        if (lv->readonly && lv->immutableBind && a->op != ":=")
+        if (lv->readonly && lv->immutableBind && !opEq(a->op, ":="))
             throwNotWritable(*lv);
         // …and a BIND into an immutable List's slot has no container to replace
-        if ((tctx_.lvalueImmutable == "List" || tctx_.lvalueImmutable == "Range") && a->op == ":=" &&
+        if ((tctx_.lvalueImmutable == "List" || tctx_.lvalueImmutable == "Range") && opEq(a->op, ":=") &&
             a->target->kind == NK::Index) {
             tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
             tctx_.lvalueImmutableVal = Value();
             throwTypedV("X::Bind", {}, "Cannot use bind operator with this left-hand side");
         }
-        if (!tctx_.lvalueImmutable.empty() && a->op != ":=") {
+        if (!tctx_.lvalueImmutable.empty() && !opEq(a->op, ":=")) {
             std::string ty = tctx_.lvalueImmutable, gi = tctx_.lvalueImmutableGist;
             Value iv = tctx_.lvalueImmutableVal;
             tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
@@ -14279,14 +14289,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             throwTypedV("X::Assignment::RO", {{"typename", Value::str(ty)}, {"value", iv}},
                         "Cannot modify an immutable " + ty + (gi.empty() ? "" : " (" + gi + ")"));
         }
-        if (lv->readonly && !(a->op == ":=" && a->target->kind == NK::Index))
+        if (lv->readonly && !(opEq(a->op, ":=") && a->target->kind == NK::Index))
             throwNotWritable(*lv);
         // …and the flag does NOT travel with the value. It marks the CONTAINER,
         // so `my $y = $x` copies a readonly parameter's value into a perfectly
         // writable slot of its own.
         rhs.readonly = rhs.immutableBind = false;
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
-        if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
+        if (opEq(a->op, "=") && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
             // The VALUE of `$proxy = v` is the container, so reading it runs FETCH —
             // not whatever STORE happened to return. PDF::COS::Tie's STORE ends on
             // a bookkeeping `$got = 1`, so `my $root = $pdf.Root = {…}` bound the
@@ -14311,7 +14321,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // the object with a plain Hash lost every method the container exists
         // for — DBDish::mysql's Connection.BUILD does exactly this assignment,
         // and `.convert-function` then answered "no such method" on a Hash.
-        if (a->op == "=" && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
+        if (opEq(a->op, "=") && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
             lv->obj()->cls->findMethod("STORE")) {
             // …but only for a %/@ variable. A `$` scalar HOLDS its object rather
             // than BEING a container of that type — `my $v = Hash::Ordered.new(…);
@@ -14381,7 +14391,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // neither the declared type nor a `where` constraint is asked about it:
         // URI's `.port = Nil` (`has Port $.port is rw`, `subset Port of UInt`)
         // died the type check instead of emptying the port.
-        if (a->op == "=" && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
+        if (opEq(a->op, "=") && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
             const std::string& aty = tctx_.lastLvalueAttrType;
             rhs = tctx_.lastLvalueAttrDefault ? eval(const_cast<Expr*>(tctx_.lastLvalueAttrDefault))
                 : (!aty.empty() && aty != "Mu" && aty != "Any")
@@ -14392,7 +14402,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         // …and its `where {…}` constraint: `has Numeric $.lat where { -90 <= $_ <= 90 }`
         // rejects an out-of-range assignment (Date::Event's lat/lon setters)
-        if (a->op == "=" && (a->target->kind == NK::MethodCall || selfAttrTarget) &&
+        if (opEq(a->op, "=") && (a->target->kind == NK::MethodCall || selfAttrTarget) &&
             tctx_.lastLvalueAttrWhere) {
             const void* w = tctx_.lastLvalueAttrWhere;
             tctx_.lastLvalueAttrWhere = nullptr;
@@ -14406,7 +14416,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // Checked as a value it failed against any SUBSET type — `$!prev = Nil` on
         // a `has UInt $.prev` died "expected UInt but got Nil", which is how
         // PDF::IO::Writer clears the previous-xref offset before each body.
-        if (a->op == "=" && rhs.t != VT::Nil &&
+        if (opEq(a->op, "=") && rhs.t != VT::Nil &&
             (a->target->kind == NK::MethodCall || selfAttrTarget) &&
             !tctx_.lastLvalueAttrType.empty()) {
             std::string aty = tctx_.lastLvalueAttrType;
@@ -14451,7 +14461,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // A NATIVE array stores every element there and then, so it cannot
             // take a list that never ends — at either end: `@num = -Inf..0e0` is
             // refused as `0e0..Inf` is, with the action and the array's type
-            if (a->op == "=" && isNativeScalarName(keepType) &&
+            if (opEq(a->op, "=") && isNativeScalarName(keepType) &&
                 (isEndlessLazy(rhs) ||
                  ((rhs.t == VT::Range || rhs.t == VT::Array) && rhs.b) ||   // `lazy 1..100`: finite, still lazy
                  (rhs.t == VT::Range && (endlessLow(rhs) || endlessHigh(rhs)))))
@@ -14460,7 +14470,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             "Cannot initialize a " + lv->typeName() + " with a lazy list");
             // Shaped array assignment (`my @a[2;2] = …`) — the same routine the
             // native backend calls, so a shaped store means one thing in both.
-            if (a->op == "=" && lv->shape() && !lv->shape()->empty()) {
+            if (opEq(a->op, "=") && lv->shape() && !lv->shape()->empty()) {
                 rtShapedStore(*lv, rhs, keepType);
                 return *lv;   // the assignment answers the (reset) array, as any `@a = …` does
             }
@@ -14471,7 +14481,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // URI::Path publishes an immutable segment list, and `is-deeply` against
             // `('x','y','z')` compares the type. Only a non-List Array is demoted,
             // which is what stops the bound items from being flattened together.
-            if (a->op == ":=" && rhs.t == VT::Array) {
+            if (opEq(a->op, ":=") && rhs.t == VT::Array) {
                 *lv = rhs;
                 // …but the `@` sigil says "this name IS the list": binding an
                 // ITEMIZED array ($[…], which is what the slurpy one-arg rule
@@ -14484,13 +14494,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // plain Array threw away the C storage, and the `char**` a native call
             // then received was an ordinary Raku list. (DBDish::Pg binds its
             // parameter array exactly this way, and hands it to PQexecPrepared.)
-            else if (a->op == ":=" && rhs.t == VT::Str &&
+            else if (opEq(a->op, ":=") && rhs.t == VT::Str &&
                      (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" ||
                       rhs.hashKind == "Blob"   || rhs.hashKind == "utf8")) { *lv = rhs; }
             // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
             // it to a plain Array would throw away the class, and with it every
             // method the subclass adds (`.iterator` above all)
-            else if (a->op == ":=" && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls) {
+            else if (opEq(a->op, ":=") && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls) {
                 bool positional = false;
                 for (ClassInfo* c = rhs.obj()->cls.get(); c; c = c->parent.get())
                     if (c->nativeParent == "Array" || c->nativeParent == "List" ||
@@ -14501,7 +14511,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `my @a := 1` — a bind gives the NAME the value itself, and an
             // @-name takes only a Positional: a scalar, a Str, a Hash, an
             // undefined value or a Failure is refused (Rakudo: X::TypeCheck::Binding)
-            else if (a->op == ":=" && rhs.t != VT::Range &&
+            else if (opEq(a->op, ":=") && rhs.t != VT::Range &&
                      !(rhs.t == VT::Type && (rhs.s == "Array" || rhs.s == "List" || rhs.s == "Positional" ||
                                              rhs.s == "Seq" || rhs.s == "Range" || !rhs.ofType().empty())) &&
                      (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Complex ||
@@ -14517,11 +14527,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             // a Blob/Buf assigned to a NATIVE array spreads as its elements
             // (`my uint32 @W = $M`); to an ordinary one it is a single item
-            else if (a->op == "=" && rhs.t == VT::Str && !rhs.itemized &&
+            else if (opEq(a->op, "=") && rhs.t == VT::Str && !rhs.itemized &&
                      (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
                 *lv = coerceArray(rhs, isNativeScalarName(lv->ofType()));
             }
-            else if (a->op == "=" && a->value && a->value->kind == NK::VarExpr &&
+            else if (opEq(a->op, "=") && a->value && a->value->kind == NK::VarExpr &&
                      !static_cast<VarExpr*>(a->value.get())->name.empty() &&
                      static_cast<VarExpr*>(a->value.get())->name[0] == '$' &&
                      rhs.t == VT::Range) {
@@ -14533,7 +14543,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *lv = one;
             }
             // a JUNCTION is one value, not a list: `my @a = any(3, 4)` holds it
-            else if (a->op == "=" && isJunction(rhs)) {
+            else if (opEq(a->op, "=") && isJunction(rhs)) {
                 Value one = Value::array();
                 one.arr()->push_back(rhs);
                 one.ofTypeM() = keepType; one.elemDefaultM() = keepDefault;
@@ -14647,7 +14657,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `my @list is List = …` — the declaration made a List (see the
             // container-trait initialiser); the refill above stores an Array's
             // flags, so put the trait back
-            if (a->op == "=" && a->target->kind == NK::VarExpr && lv->t == VT::Array) {
+            if (opEq(a->op, "=") && a->target->kind == NK::VarExpr && lv->t == VT::Array) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 if (tv->declare && tv->containerIs == "List") lv->isList = true;
             }
@@ -14660,7 +14670,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // and `%h ~~ MyHash` False the moment the declaration carried an
             // initialiser — AccountableBagHash's first assertion, with EERPG
             // waiting behind it. (A class WITH a STORE is handled further up.)
-            if (a->op == "=" && lv->t == VT::Object && lv->obj() && lv->obj()->hasBoxed &&
+            if (opEq(a->op, "=") && lv->t == VT::Object && lv->obj() && lv->obj()->hasBoxed &&
                 lv->obj()->boxed.t == VT::Hash) {
                 Value& box = lv->obj()->boxed;
                 Value nv = coerceHash(rhs, /*store=*/true, box.objKeyed);
@@ -14672,7 +14682,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // write through either is visible through the other. The coercion
             // below copies (which is right for `=`), and that copy is why an
             // aliased hash silently diverged.
-            if (a->op == ":=" && rhs.t == VT::Hash && rhs.hash()) {
+            if (opEq(a->op, ":=") && rhs.t == VT::Hash && rhs.hash()) {
                 // …but a TYPED hash variable binds only a hash typed to match:
                 // `my Int %h := :42foo.Set.Hash` dies, as does any untyped hash
                 // that merely happens to hold Ints (S02-types/set.t)
@@ -14697,13 +14707,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // type exists for. DBDish's statement handles reach their converter
             // exactly this way (`my %Converter := $!parent.Converter`), and the
             // next line calls `.convert-function` on it.
-            if (a->op == ":=" && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
+            if (opEq(a->op, ":=") && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
                 typeOrSubsetMatches(rhs, "Associative"))
                 { *lv = rhs; return sink ? Value::any() : *lv; }
             // A name BOUND to a Map names an immutable container, so assigning a
             // new list of pairs to it is refused outright (sheet HM-14) — it
             // used to replace the Map with a plain Hash and lose the type.
-            if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Map") throwImmutable(*lv);
+            if (opEq(a->op, "=") && lv->t == VT::Hash && lv->hashKind == "Map") throwImmutable(*lv);
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType(); // typed container: `my Int %h` keeps Int
@@ -14739,7 +14749,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // `=` STORES (a Set's pairs land in a plain Hash); `:=` BINDS the
                 // right-hand side itself, so `my %s := set <a b>` stays a Set
                 bool keepObjKeyed = lv->t == VT::Hash && lv->objKeyed;
-                Value nv = coerceHash(rhs, /*store=*/a->op == "=", keepObjKeyed);
+                Value nv = coerceHash(rhs, /*store=*/opEq(a->op, "="), keepObjKeyed);
                 // a typed hash (`my Int %h = a => "x"`) checks every value in
                 if (std::string want = elemTypeOfSpec(keepType); !want.empty() && nv.hash())
                     for (auto& kv : *nv.hash()) {
@@ -14754,7 +14764,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (keepObjKeyed) lv->objKeyed = true; // the shape survives refills
                 // `my %h is Map = …` — the initialiser is the only fill a Map
                 // takes; from here on it is immutable (a re-assignment dies)
-                if (a->op == "=" && a->target->kind == NK::VarExpr && lv->t == VT::Hash) {
+                if (opEq(a->op, "=") && a->target->kind == NK::VarExpr && lv->t == VT::Hash) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
                     if (tv->declare && tv->containerIs == "Map") lv->hashKind = "Map";
                 }
@@ -14785,7 +14795,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
             if (!keepKind.empty() && lv->t == VT::Hash) lv->hashKind = keepKind;
         }
-        else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::Index) {
+        else if (rhs.t == VT::Nil && opEq(a->op, "=") && a->target->kind == NK::Index) {
             // Storing Nil into an ELEMENT restores that element's default, the
             // same rule scalars already followed — `@a[0] = Nil` leaves (Any),
             // not a Nil. (A bare List keeps its Nils; only containers reset.)
@@ -14805,7 +14815,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
             else *lv = Value::typeObj("Any");   // a reset, not a hole (see nilElemDefault)
         }
-        else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
+        else if (rhs.t == VT::Nil && opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
             // …except in a native, which has no undefined value to reset to
             nativeUndefCheck(rhs, a->target.get(), lv);
@@ -14878,7 +14888,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // branch above. A Failure reaches the guard just inside: it soaks
             // into an UNTYPED container, but a typed one has to look at it, and
             // looking at a Failure detonates it.
-            if (a->op == "=" && a->target->kind == NK::VarExpr) {
+            if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
                 nativeUndefCheck(rhs, a->target.get(), lv);
                 static const std::set<std::string> kChecked = {   // UInt: see the twin set
                     "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
@@ -14996,14 +15006,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // ONE element) and renders as `$(1, 2)`. A SIGILLESS name is not a
             // container — `my \b = @a` IS the array, and flat(b, …) flattens it
             // (Cro's CompositeConnector builds its component list that way).
-            if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash || rhs.t == VT::Range) &&
+            if (opEq(a->op, "=") && (rhs.t == VT::Array || rhs.t == VT::Hash || rhs.t == VT::Range) &&
                 !rhs.itemized && (targetSigil ? targetSigil : sigil) == '$')
                 rhs.itemized = true;
             // a native VARIABLE refuses a value of the wrong kind before the
             // store, so a caught refusal leaves it holding what it held
-            if (nb && a->op == "=" && a->target->kind == NK::VarExpr && nativeNeedsCheck(rhs, nf))
+            if (nb && opEq(a->op, "=") && a->target->kind == NK::VarExpr && nativeNeedsCheck(rhs, nf))
                 nativeAssignCheck(rhs, nb, nf, static_cast<VarExpr*>(a->target.get())->name, ns);
-            if (!nb && a->op == "=" && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
+            if (!nb && opEq(a->op, "=") && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
             ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
         }
@@ -15011,13 +15021,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // bigint wider than 64 bits) before wrapping — `my int $x = 2**64`
         // dies as it does in Rakudo; the pad lane above already did this for
         // later assignments. Compound ops keep wrapping.
-        if (nb && a->op == "=" && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
+        if (nb && opEq(a->op, "=") && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
             nativeAssignCheck(*lv, nb, nf, a->target->kind == NK::VarExpr
                                    ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"), ns);
         // (a native ELEMENT store answers what was assigned — `(@u8[0] = -1)`
         // is -1 — while the slot keeps the wrapped value)
         Value nativePassThrough;
-        const bool elemPass = nb && a->op == "=" && a->target->kind == NK::Index && lv->t == VT::Int;
+        const bool elemPass = nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int;
         if (elemPass) nativePassThrough = *lv;
         if (nb) wrapNative(*lv, nb, ns, nf);
         if (elemPass && !sink) { nativePassThrough.natBits = 0; return nativePassThrough; }
@@ -15036,7 +15046,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // Binding something that NAMES a container (`%h<k> := $foo`, Getopt::Long's
         // `%hash{$name} := .value`) aliases that container instead, and writing
         // through the alias is the whole point of it.
-        if (a->op == ":=" && a->target->kind == NK::Index) {
+        if (opEq(a->op, ":=") && a->target->kind == NK::Index) {
             NK rk = a->value->kind;
             if (rk != NK::VarExpr && rk != NK::Index && rk != NK::MethodCall &&
                 rk != NK::Call && rk != NK::SymbolicRef)
@@ -15057,7 +15067,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         return sink ? Value::any() : *lv;
     }
     // `A R= B` is plain assignment with the roles swapped: `B = A`.
-    if (a->op == "R=") {
+    if (opEq(a->op, "R=")) {
         Value v = eval(a->target.get());
         Value* lv = lvalue(a->value.get());
         if (lv->readonly)
@@ -15393,8 +15403,8 @@ static Value setCoerceOne(const std::string& op, const Value& v) {
     // `(-)` and `(+)` coerce to the immutable type even from a mutable operand
     // (`[(-)] SetHash` is a Set, `[(+)] SetHash` a Bag). Derived operator by
     // operator against Rakudo; `(.)` really does answer BagHash from a SetHash.
-    bool keepsFlavour = !(op == "(-)" || op == "\xE2\x88\x96" ||
-                          op == "(+)" || op == "\xE2\x8A\x8E");
+    bool keepsFlavour = !(opEq(op, "(-)") || opEq(op, "\xE2\x88\x96") ||
+                          opEq(op, "(+)") || opEq(op, "\xE2\x8A\x8E"));
     return setWrap(setWeights(v, tier), tier, keepsFlavour && isMutableQuantHash(v));
 }
 bool isJunction(const Value& v) {
@@ -15588,10 +15598,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Distribution::Path / ::Hash / a repository's dist: each reports its own
     // type name, and each does Distribution
     if (r.t == VT::Type && l.t == VT::Hash && l.hashKind == "Distribution" && r.s == "Distribution" &&
-        (op == "~~" || op == "!~~"))
-        return Value::boolean(op == "~~");
+        (opEq(op, "~~") || opEq(op, "!~~")))
+        return Value::boolean(opEq(op, "~~"));
     // two ALLOMORPHS `cmp` by value, then by their strings (valueCmp knows)
-    if (op.size() == 3 && op == "cmp" && l.isAllomorph() && r.isAllomorph())
+    if (op.size() == 3 && opEq(op, "cmp") && l.isAllomorph() && r.isAllomorph())
         return Value::orderVal(valueCmp(l, r));
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -15685,7 +15695,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                                      "<=>", "%", "**", "div", "mod"};
         if (numOps.count(op) && g_revInterp) {
             const Value& pv = l.t == VT::Pair ? l : r;
-            bool real = op == "<" || op == ">" || op == "<=" || op == ">=" || op == "<=>";
+            bool real = opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "<=>");
             std::string meth = real ? "Real" : "Numeric";
             g_revInterp->throwTypedV("X::Multi::NoMatch", {{"capture", pv}},
                         "Cannot resolve caller " + meth + "(Pair:D: ); none of these signatures matches:\n"
@@ -15783,8 +15793,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // compared the Range as a structure, so `2 > (1..4)` came out True. Only the
     // strictly numeric operators: `~~` is membership and `eqv` is structural.
     if ((l.t == VT::Range || r.t == VT::Range) &&
-        (op == "<" || op == "<=" || op == ">" || op == ">=" ||
-         op == "==" || op == "!=" || op == "<=>")) {
+        (opEq(op, "<") || opEq(op, "<=") || opEq(op, ">") || opEq(op, ">=") ||
+         opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
         // counted arithmetically, so an endless range does not materialise
         auto num = [](const Value& v) -> Value {
             if (v.t != VT::Range) return v;
@@ -15808,7 +15818,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
-    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "!===" && op != "=:=" &&
+    if (!opEq(op, "~~") && !opEq(op, "!~~") && !opEq(op, "===") && !opEq(op, "!==") && !opEq(op, "!===") && !opEq(op, "=:=") &&
         ((l.t == VT::Object && l.obj() && l.obj()->hasBoxed) || (r.t == VT::Object && r.obj() && r.obj()->hasBoxed))) {
         Value lu = (l.t == VT::Object && l.obj() && l.obj()->hasBoxed) ? l.obj()->boxed : l;
         Value ru = (r.t == VT::Object && r.obj() && r.obj()->hasBoxed) ? r.obj()->boxed : r;
@@ -15827,7 +15837,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // negated ops (`!%%`, `!eq`, `!before`, …): apply the base op, negate the Bool.
     // A curried base (`* !%% 3` -> WhateverCode) stays curried, negation wrapped in.
-    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!===" && op != "!~~" &&
+    if (op.size() > 1 && op[0] == '!' && !opEq(op, "!=") && !opEq(op, "!===") && !opEq(op, "!~~") &&
         !isSetOpStr(op)) {
         // the boolean infixes have no applyArith arm of their own — they live in
         // applyBinOp, where they can short-circuit — so ask through g_cbInterp
@@ -15886,8 +15896,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return out;
     }
     // junction constructors: 1|2 (any), 1&2 (all), 1^2 (one)
-    if (op == "|" || op == "&" || op == "^") {
-        std::string jt = op == "|" ? "any" : op == "&" ? "all" : "one";
+    if (opEq(op, "|") || opEq(op, "&") || opEq(op, "^")) {
+        std::string jt = opEq(op, "|") ? "any" : opEq(op, "&") ? "all" : "one";
         Value j = Value::array(); j.enumName = jt;
         auto add = [&](const Value& v) { if (v.t == VT::Array && v.enumName == jt) { for (auto& x : *v.arr()) j.arr()->push_back(x); } else j.arr()->push_back(v); };
         add(l); add(r);
@@ -15895,7 +15905,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // container identity takes its operands whole (`Mu \a, Mu \b`): a junction
     // is not threaded but compared as the one object it is
-    if ((op == "=:=" || op == "!=:=") && (isJunction(l) || isJunction(r))) {
+    if ((opEq(op, "=:=") || opEq(op, "!=:=")) && (isJunction(l) || isJunction(r))) {
         bool same = l.t == VT::Array && r.t == VT::Array && isJunction(l) && isJunction(r) &&
                     l.arr() == r.arr();
         return Value::boolean(op[0] == '!' ? !same : same);
@@ -15909,7 +15919,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // eigenstates run outer and the right one's inner; the all/none type (the
     // left's first, else the left's anyway) wraps the other, and two of one
     // kind flatten — `any(a,b,c) ~ all(d,e)` is all(any(ad, ae), any(bd, be), …)
-    if (op == "~" && isJunction(l) && isJunction(r)) {
+    if (opEq(op, "~") && isJunction(l) && isJunction(r)) {
         auto strong = [](const Value& v) { return v.enumName == "all" || v.enumName == "none"; };
         const bool leftOuter = strong(l) || !strong(r);
         Value out = Value::array(); out.enumName = leftOuter ? l.enumName : r.enumName;
@@ -15956,7 +15966,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // included — autothreads into a PRESERVED junction of results, which
         // only boolean context collapses: (5 == 3|5|7).gist is
         // 'any(False, True, False)' (S03-junctions/misc.t)
-        if ((op == "~~" || op == "!~~") && !jleft && !isJunction(l)) {
+        if ((opEq(op, "~~") || opEq(op, "!~~")) && !jleft && !isJunction(l)) {
             // negation applies to the COLLAPSED verdict: `2 !~~ (Int|Str)` is
             // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
             // any(False, True) = True
@@ -15966,29 +15976,29 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (jc.done()) break;
             }
             bool res = jc.verdict();
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         // `ne` and `!=` are NEGATED operators (`!eq`, `!==`): the negation
         // applies to the collapsed verdict, so `'a' ne ('a'|'b')` is plain False
-        if (op == "ne" || op == "!=") {
-            Value pos = applyArith(op == "ne" ? "eq" : "==", l, r);
+        if (opEq(op, "ne") || opEq(op, "!=")) {
+            Value pos = applyArith(opEq(op, "ne") ? "eq" : "==", l, r);
             return Value::boolean(!pos.truthy());
         }
         // …but not against the Junction TYPE (or Mu): a junction simply IS one,
         // so `any(1, 2) ~~ Junction` asks about the junction itself
-        if ((op == "~~" || op == "!~~") && isJunction(l) && r.t == VT::Type && (r.s == "Junction" || r.s == "Mu"))
-            return Value::boolean(op == "~~");
+        if ((opEq(op, "~~") || opEq(op, "!~~")) && isJunction(l) && r.t == VT::Type && (r.s == "Junction" || r.s == "Mu"))
+            return Value::boolean(opEq(op, "~~"));
         // A junction TOPIC collapses too — see the evalBinary arm for why. It
         // threads OUTSIDE a junction matcher, and a regex matcher keeps its
         // junction of Matches.
-        if ((op == "~~" || op == "!~~") && isJunction(l) && r.t != VT::Regex) {
+        if ((opEq(op, "~~") || opEq(op, "!~~")) && isJunction(l) && r.t != VT::Regex) {
             JunctionCollapse jc(l.enumName);        // short-circuits; see Value.h
             for (auto& e : *l.arr()) {
                 jc.feed(eigenMatch(e, r));
                 if (jc.done()) break;
             }
             bool res = jc.verdict();
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         Value out = Value::array(); out.enumName = j.enumName;
         // A negated comparison flips the junction kind (De Morgan): `X != any(…)`
@@ -16013,7 +16023,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // `/../a` all match `a`, and two paths carrying different :CWDs do not. A
     // plain Str on the RIGHT is Str.ACCEPTS instead (text equality), which is
     // why `"a".IO ~~ "./a"` is False while `"./a" ~~ "a".IO` is True.
-    if ((op == "~~" || op == "!~~") && r.t == VT::Str && r.hashKind == "IO" && g_cbInterp &&
+    if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Str && r.hashKind == "IO" && g_cbInterp &&
         (l.t == VT::Str || l.t == VT::Int || l.t == VT::Num ||
          (l.t == VT::Array && l.arr() && l.enumName.empty())) &&   // any Cool: `["foo"] ~~ $path`
         !isJunction(l)) {
@@ -16022,14 +16032,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value rp = r;
         const bool same = g_cbInterp->methodCall(lp, "absolute", ValueList{}).toStr() ==
                           g_cbInterp->methodCall(rp, "absolute", ValueList{}).toStr();
-        return Value::boolean(op == "~~" ? same : !same);
+        return Value::boolean(opEq(op, "~~") ? same : !same);
     }
     if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object) && g_cbInterp &&
-        (op == "~~" || op == "!~~")) {
+        (opEq(op, "~~") || opEq(op, "!~~"))) {
         Value hooked;
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
-    if (op == "..." || op == "...^" || op == "^..." || op == "^...^") { // simple integer sequence (closure/list seeds handled in evalBinary)
+    if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
         // seed, which read as its element count (`[...] 1, 3, 9` answered 3..9):
         // fold through seqOp, the one implementation, as Z/X do through zxOp
@@ -16044,10 +16054,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value out = Value::array(); out.isList = true;
         if (a <= b) { for (long long i = a; i <= b; i++) out.arr()->push_back(Value::integer(i)); }
         else { for (long long i = a; i >= b; i--) out.arr()->push_back(Value::integer(i)); }
-        if (op == "...^" && !out.arr()->empty()) out.arr()->pop_back();
+        if (opEq(op, "...^") && !out.arr()->empty()) out.arr()->pop_back();
         return out;
     }
-    if (op == "Z" || op == "X" ||
+    if (opEq(op, "Z") || opEq(op, "X") ||
         (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) { // zip/cross (+metaop forms)
         // One implementation for all three ladders: zxOp, reached through the
         // same global the NativeCall trampolines use (set in the constructor).
@@ -16062,9 +16072,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // `4 R.. 6` — the range operators reached as VALUES (the reverse metaop, a
     // reduce, `&infix:<..>`). The syntactic form builds a RangeExpr node instead,
     // so this is the only place that needs to say `..` is an operator at all.
-    if (op == ".." || op == "^.." || op == "..^" || op == "^..^")
+    if (opEq(op, "..") || opEq(op, "^..") || opEq(op, "..^") || opEq(op, "^..^"))
         return rtRangeVal(l, r, op.front() == '^', op.back() == '^');
-    if (op == "minmax") { // list infix: a Range spanning both operands' extremes
+    if (opEq(op, "minmax")) { // list infix: a Range spanning both operands' extremes
         // A RANGE contributes its two ENDPOINTS, not its elements: flattening
         // `1..10**17` to find its extremes is the same answer computed by
         // materialising a hundred quadrillion integers.
@@ -16117,15 +16127,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     };
     // `*.abs ~~ Code` does NOT curry: an already-composed WhateverCode on the
     // left of a smartmatch is a VALUE (a bare `*` on the left still curries)
-    bool skipCurry = (op == "~~" || op == "!~~") &&
+    bool skipCurry = (opEq(op, "~~") || opEq(op, "!~~")) &&
                      l.t == VT::Code && l.code() && l.code()->isWhateverCode &&
                      r.t != VT::Whatever;
     // a HyperWhatever on the RIGHT of a smartmatch is the always-matching
     // PATTERN (`@a ~~ **` holds for any list), not a curry
-    if ((op == "~~" || op == "!~~") && r.t == VT::Whatever && r.b) skipCurry = true;
+    if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Whatever && r.b) skipCurry = true;
     // composition COMPOSES Callables — a WhateverCode is one (`&f o *.succ`,
     // Red's `&func o self.last-filter`); only a bare `*` curries it
-    if ((op == "o" || op == "\xE2\x88\x98") && l.t == VT::Code && r.t == VT::Code)
+    if ((opEq(op, "o") || opEq(op, "\xE2\x88\x98")) && l.t == VT::Code && r.t == VT::Code)
         return composeCode(l, r);
     // …and a Whatever that is a VALUE in a smartmatch (valueMatch) never curries:
     // `given * { when Pair {…} }` asks Pair.ACCEPTS(*), which is False, where the
@@ -16185,15 +16195,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
 
     // ---- Date arithmetic ----
-    if (isDateVal(l) && isDateVal(r) && op == "-") return Value::integer(dateDays(l) - dateDays(r));
-    if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-"))
-        return makeDate(dateDays(l) + (op == "+" ? r.toInt() : -r.toInt()), &l);
-    if (isDateVal(r) && l.t == VT::Int && op == "+") return makeDate(dateDays(r) + l.toInt(), &r);
+    if (isDateVal(l) && isDateVal(r) && opEq(op, "-")) return Value::integer(dateDays(l) - dateDays(r));
+    if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (opEq(op, "+") || opEq(op, "-")))
+        return makeDate(dateDays(l) + (opEq(op, "+") ? r.toInt() : -r.toInt()), &l);
+    if (isDateVal(r) && l.t == VT::Int && opEq(op, "+")) return makeDate(dateDays(r) + l.toInt(), &r);
 
     // Range ± n shifts both endpoints, preserving exclusivity: ^9+1 is 1..9,
     // (1..5)+1 is 2..6. n + Range commutes.
-    if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && !r.big() && (op == "+" || op == "-")) {
-        long long d = op == "+" ? r.toInt() : -r.toInt();
+    if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && !r.big() && (opEq(op, "+") || opEq(op, "-"))) {
+        long long d = opEq(op, "+") ? r.toInt() : -r.toInt();
         // an ENDLESS top stays endless: `(1..*) + 5` is 6..Inf
         const bool endless = isEndlessRange(l);
         Value out = Value::range(l.rFrom() + d, endless ? l.rTo() : l.rTo() + d, l.rExFrom(), l.rExTo());
@@ -16202,7 +16212,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // A BIGINT offset does not fit the integer fields: `(2..4) + 2**65` saturated
     // them and the range came back at the int64 floor. Carry the real endpoints.
     if (l.t == VT::Range && r.t == VT::Int && r.big() && !l.rNum() && l.ofType().empty() &&
-        (op == "+" || op == "-")) {
+        (opEq(op, "+") || opEq(op, "-"))) {
         const RangeEnds* re = rangeEnds(l);
         Value lo = re ? re->from : Value::integer(l.rFrom());
         Value hi = re ? re->to   : Value::integer(l.rTo());
@@ -16217,7 +16227,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // …and a Num/Rat shift moves the endpoints in THAT type: `^42 - 2e0` is
     // -2e0..^40e0, not the integer range the Int arm above would build.
     if (l.t == VT::Range && !l.rNum() && l.ofType().empty() &&
-        (r.t == VT::Num || r.t == VT::Rat) && (op == "+" || op == "-")) {
+        (r.t == VT::Num || r.t == VT::Rat) && (opEq(op, "+") || opEq(op, "-"))) {
         const RangeEnds* re = rangeEnds(l);
         Value lo = re ? re->from : Value::integer(l.rFrom());
         Value hi = re ? re->to   : Value::integer(l.rTo());
@@ -16235,14 +16245,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // a non-integer result becomes a fractional range
     if (l.t == VT::Range && !l.rNum() && l.ofType().empty() &&
         (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
-        (op == "*" || op == "/")) {
+        (opEq(op, "*") || opEq(op, "/"))) {
         double f = r.toNum();
-        if (f != 0 || op == "*") {
-            double lo = l.rFrom() * (op == "*" ? f : 1.0 / f);
-            double hi = l.rTo() * (op == "*" ? f : 1.0 / f);
+        if (f != 0 || opEq(op, "*")) {
+            double lo = l.rFrom() * (opEq(op, "*") ? f : 1.0 / f);
+            double hi = l.rTo() * (opEq(op, "*") ? f : 1.0 / f);
             // `*` by an Int keeps an integer range; `/` does not — `(^4) / 2` is
             // 0..^2.0 and yields the Rats 0.0 and 1.0, as Rakudo has it.
-            if (op == "*" && lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
+            if (opEq(op, "*") && lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
                 return Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
             Value out = Value::range((long long)lo, (long long)hi, l.rExFrom(), l.rExTo());
             out.rNumM() = true; out.n = lo; out.imM() = hi;
@@ -16257,11 +16267,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return out;
         }
     }
-    if (r.t == VT::Range && !r.rNum() && r.ofType().empty() && l.t == VT::Int && op == "*") {
+    if (r.t == VT::Range && !r.rNum() && r.ofType().empty() && l.t == VT::Int && opEq(op, "*")) {
         long long f = l.toInt();
         return Value::range(r.rFrom() * f, r.rTo() * f, r.rExFrom(), r.rExTo());
     }
-    if (r.t == VT::Range && (l.t == VT::Int || l.t == VT::Bool) && op == "+") {
+    if (r.t == VT::Range && (l.t == VT::Int || l.t == VT::Bool) && opEq(op, "+")) {
         long long d = l.toInt();
         Value out = Value::range(r.rFrom() + d, isEndlessRange(r) ? r.rTo() : r.rTo() + d, r.rExFrom(), r.rExTo());
         return out;
@@ -16278,35 +16288,35 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // a REAL operand leaves the other side's imaginary part alone (Rakudo's
         // `Complex.new(a + b.re, b.im)`), so a signed zero there survives
         const bool lr = l.t != VT::Complex, rr = r.t != VT::Complex;
-        if (op == "+") return lr ? Value::complex(a.real() + b.real(), b.imag())
+        if (opEq(op, "+")) return lr ? Value::complex(a.real() + b.real(), b.imag())
                             : rr ? Value::complex(a.real() + b.real(), a.imag()) : mk(a + b);
-        if (op == "-") return lr ? Value::complex(a.real() - b.real(), -b.imag())
+        if (opEq(op, "-")) return lr ? Value::complex(a.real() - b.real(), -b.imag())
                             : rr ? Value::complex(a.real() - b.real(), a.imag()) : mk(a - b);
-        if (op == "*") return mk(a * b);
-        if (op == "/") return mk(a / b);
-        if (op == "**") {
+        if (opEq(op, "*")) return mk(a * b);
+        if (opEq(op, "/")) return mk(a / b);
+        if (opEq(op, "**")) {
             // 0 ** 0 == 1+0i by spec (RT #128785; std::pow gives NaN+NaNi via polar log)
             if (b == std::complex<double>(0.0, 0.0)) return mk({1.0, 0.0});
             return mk(std::pow(a, b));
         }
         // eqv is TYPE-aware: an Int is not a Complex, a ComplexStr not an IntStr
-        if (op == "eqv" && (l.t != r.t || l.hashKind != r.hashKind || (l.isAllomorph() && l.s != r.s)))
+        if (opEq(op, "eqv") && (l.t != r.t || l.hashKind != r.hashKind || (l.isAllomorph() && l.s != r.s)))
             return Value::boolean(false);
         // identity and eqv see a signed zero (`<-0-0i> === <0-0i>` is False)
-        if (op == "===" || op == "eqv") {
+        if (opEq(op, "===") || opEq(op, "eqv")) {
             auto same = [](double x, double y) {
                 return (x == y && std::signbit(x) == std::signbit(y)) || (std::isnan(x) && std::isnan(y));
             };
             return Value::boolean(same(a.real(), b.real()) && same(a.imag(), b.imag()));
         }
-        if (op == "==") return Value::boolean(a == b);
-        if (op == "!=") return Value::boolean(a != b);
-        if (op == "=~=" || op == "≅") { // approx-equal in the complex plane
+        if (opEq(op, "==")) return Value::boolean(a == b);
+        if (opEq(op, "!=")) return Value::boolean(a != b);
+        if (opEq(op, "=~=") || opEq(op, "≅")) { // approx-equal in the complex plane
             if (a == b) return Value::boolean(true);
             double scale = std::max(std::abs(a), std::abs(b));
             return Value::boolean(std::abs(a - b) <= 1e-15 * scale);
         }
-        if (op == "cmp") { // by real part, then imaginary part; NaN sorts as More
+        if (opEq(op, "cmp")) { // by real part, then imaginary part; NaN sorts as More
             auto ncmp = [](double x, double y) {
                 if (std::isnan(x)) return std::isnan(y) ? 0 : 1;
                 if (std::isnan(y)) return -1;
@@ -16315,7 +16325,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             int c = ncmp(a.real(), b.real()); if (!c) c = ncmp(a.imag(), b.imag());
             return Value::orderVal(c);
         }
-        if (op == "<" || op == "<=" || op == ">" || op == ">=" || op == "<=>") {
+        if (opEq(op, "<") || opEq(op, "<=") || opEq(op, ">") || opEq(op, ">=") || opEq(op, "<=>")) {
             // arithmetic comparison coerces to Real: ok when |im| is within
             // $*TOLERANCE (relative), so exp(i*π) <=> -1 is Same — else it throws
             double tol = Interpreter::toleranceDyn();
@@ -16341,9 +16351,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // alpha parts sort before numeric (pre-release convention). ----
     if ((l.hashKind == "Version" || r.hashKind == "Version") &&
         l.t == VT::Str && r.t == VT::Str &&
-        (op == "cmp" || op == "==" || op == "!=" || op == "<" || op == "<=" ||
-         op == ">" || op == ">=" || op == "eqv" || op == "before" || op == "after" ||
-         op == "~~" || op == "eq" || op == "ne" || op == "<=>")) {
+        (opEq(op, "cmp") || opEq(op, "==") || opEq(op, "!=") || opEq(op, "<") || opEq(op, "<=") ||
+         opEq(op, ">") || opEq(op, ">=") || opEq(op, "eqv") || opEq(op, "before") || opEq(op, "after") ||
+         opEq(op, "~~") || opEq(op, "eq") || opEq(op, "ne") || opEq(op, "<=>"))) {
         auto parts = [](const std::string& s) {
             std::vector<std::pair<bool, std::string>> out; // {isNumeric, text}
             size_t i = 0;
@@ -16373,7 +16383,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // …and `v1.2-` is "this version or EARLIER"
         bool aMinus = l.s.size() > 1 && l.s.back() == '-';
         bool bMinus = r.s.size() > 1 && r.s.back() == '-';
-        if (op == "~~") {
+        if (opEq(op, "~~")) {
             if (bPlus) { // X ~~ vA+  ⇔  X >= A
                 Value rr = r; rr.s.pop_back();
                 return Value::boolean(applyArith(">=", l, rr).truthy());
@@ -16432,19 +16442,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (!c && aPlus != bPlus) c = aPlus ? 1 : -1; // `v1.0.1+` sorts after `v1.0.1`
         if (!c && aMinus != bMinus) c = aMinus ? -1 : 1; // …and `v1.0.1-` before it
-        if (op == "cmp" || op == "<=>") return Value::orderVal(c);
-        if (op == "==" || op == "eqv" || op == "eq") return Value::boolean(c == 0); // `~~` returned above
-        if (op == "!=" || op == "ne") return Value::boolean(c != 0);
-        if (op == "<"  || op == "before") return Value::boolean(c < 0);
-        if (op == ">"  || op == "after")  return Value::boolean(c > 0);
-        if (op == "<=") return Value::boolean(c <= 0);
+        if (opEq(op, "cmp") || opEq(op, "<=>")) return Value::orderVal(c);
+        if (opEq(op, "==") || opEq(op, "eqv") || opEq(op, "eq")) return Value::boolean(c == 0); // `~~` returned above
+        if (opEq(op, "!=") || opEq(op, "ne")) return Value::boolean(c != 0);
+        if (opEq(op, "<")  || opEq(op, "before")) return Value::boolean(c < 0);
+        if (opEq(op, ">")  || opEq(op, "after"))  return Value::boolean(c > 0);
+        if (opEq(op, "<=")) return Value::boolean(c <= 0);
         return Value::boolean(c >= 0); // >=
     }
     // ---- exact numeric tower: Int (bignum) and Rat ----
     auto isExact = [](const Value& v) { return v.t == VT::Int || v.t == VT::Bool || v.t == VT::Rat; };
     // an undefined operand (Any/Nil/bare type object) numifies to 0 in arithmetic,
     // keeping exactness: `my $a += 0.1` is a Rat, `my Int $x; $x += 5` works
-    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "**") {
+    if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "**")) {
         auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
         if (undef(l) && isExact(r)) return applyArith(op, Value::integer(0), r);
         if (undef(r) && isExact(l)) return applyArith(op, l, Value::integer(0));
@@ -16456,12 +16466,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array ||
          l.t == VT::Hash || r.t == VT::Hash || l.t == VT::Any || r.t == VT::Any ||
          l.t == VT::Type || r.t == VT::Type) && !isSetOpStr(op) &&
-        (op == "+" || op == "-" || op == "*" || op == "/" || op == "**" ||
-         op == "%" || op == "%%" || op == "div" || op == "mod" || op == "gcd" || op == "lcm" ||
+        (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "**") ||
+         opEq(op, "%") || opEq(op, "%%") || opEq(op, "div") || opEq(op, "mod") || opEq(op, "gcd") || opEq(op, "lcm") ||
          // NUMERIC comparisons coerce too (`"a" == "b"` dies); the string ops
          // eq/ne/lt/le/gt/ge and the generic cmp/leg are deliberately absent.
-         op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
-         op == "<=>" || op == "=~=")) {
+         opEq(op, "==") || opEq(op, "!=") || opEq(op, "<") || opEq(op, "<=") || opEq(op, ">") || opEq(op, ">=") ||
+         opEq(op, "<=>") || opEq(op, "=~="))) {
         // …and a LIST numifies to its ELEMENT COUNT, exactly: `(1,2) + (3,4,5)` is
         // Int 5, not Num (a junction is NOT a list here — it autothreads elsewhere).
         auto exactify = [&](const Value& v, Value& out) -> bool {
@@ -16511,7 +16521,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // the whole operation to Int (the exact/inexact paths below) answered 2, -2 and
     // -1. Math::NumberTheory reduces Gaussian integers with
     // `($a.re mod $m) + ($a.im mod $m) * i`, where .re is a Num.
-    if ((op == "mod" || op == "div") &&
+    if ((opEq(op, "mod") || opEq(op, "div")) &&
         (l.t == VT::Rat || r.t == VT::Rat || l.t == VT::Num || r.t == VT::Num) &&
         !(l.t == VT::Num && !std::isfinite(l.n)) && !(r.t == VT::Num && !std::isfinite(r.n))) {
         Value li = Value::integer(0), ri = Value::integer(0);
@@ -16527,7 +16537,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         li = trunc(l); ri = trunc(r);
         if (ri.toInt() == 0 && !ri.big()) return divZeroResult(l, op);
         Value q = applyArith("div", li, ri); // the Int path floors
-        if (op == "div") return q;
+        if (opEq(op, "div")) return q;
         return applyArith("-", l, applyArith("*", q, r));
     }
     if (isExact(l) && isExact(r)) {
@@ -16561,15 +16571,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return n > -LIM && n < LIM && d < LIM;
         };
 #if RAKUPP_HAS_INT128
-        if (anyRat && !fat && (op == "+" || op == "-" || op == "*" || op == "/")) {
+        if (anyRat && !fat && (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/"))) {
             long long n1, d1, n2, d2;
             if (smallParts(l, n1, d1) && smallParts(r, n2, d2) &&
-                d1 != 0 && d2 != 0 && !(op == "/" && n2 == 0)) { // zero-den Rats take the slow path
+                d1 != 0 && d2 != 0 && !(opEq(op, "/") && n2 == 0)) { // zero-den Rats take the slow path
                 __int128 n, d;
-                if (op == "*") { n = (__int128)n1 * n2; d = (__int128)d1 * d2; }
-                else if (op == "/") { n = (__int128)n1 * d2; d = (__int128)d1 * n2; }
+                if (opEq(op, "*")) { n = (__int128)n1 * n2; d = (__int128)d1 * d2; }
+                else if (opEq(op, "/")) { n = (__int128)n1 * d2; d = (__int128)d1 * n2; }
                 else { d = (__int128)d1 * d2;
-                       n = op == "+" ? (__int128)n1 * d2 + (__int128)n2 * d1
+                       n = opEq(op, "+") ? (__int128)n1 * d2 + (__int128)n2 * d1
                                      : (__int128)n1 * d2 - (__int128)n2 * d1; }
                 if (d < 0) { n = -n; d = -d; }
                 // binary gcd — shifts and subtracts instead of ~15 __int128 divisions
@@ -16603,20 +16613,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
         }
 #endif // RAKUPP_HAS_INT128 (small-Rat fast path; MSVC falls through to BigInt)
-        if (op == "+" || op == "-" || op == "*") {
+        if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*")) {
             if (smallInt) {
                 long long a = l.toInt(), b = r.toInt(), res;
-                if (op == "+" && !rakupp::add_ovf(a, b, &res)) return Value::integer(res);
-                if (op == "-" && !rakupp::sub_ovf(a, b, &res)) return Value::integer(res);
-                if (op == "*" && !rakupp::mul_ovf(a, b, &res)) return Value::integer(res);
+                if (opEq(op, "+") && !rakupp::add_ovf(a, b, &res)) return Value::integer(res);
+                if (opEq(op, "-") && !rakupp::sub_ovf(a, b, &res)) return Value::integer(res);
+                if (opEq(op, "*") && !rakupp::mul_ovf(a, b, &res)) return Value::integer(res);
             }
             if (!anyRat) {
 #if RAKUPP_HAS_INT128
                 unsigned __int128 ua, ub;
                 if (valU128(l, ua) && valU128(r, ub)) {
                     constexpr unsigned __int128 UMAX = ~(unsigned __int128)0;
-                    if (op == "+") { if (ua <= UMAX - ub) return boxU128(ua + ub); }
-                    else if (op == "*") { if (!ub || ua <= UMAX / ub) return boxU128(ua * ub); }
+                    if (opEq(op, "+")) { if (ua <= UMAX - ub) return boxU128(ua + ub); }
+                    else if (opEq(op, "*")) { if (!ub || ua <= UMAX / ub) return boxU128(ua * ub); }
                     else if (ua >= ub) return boxU128(ua - ub);   // "-", non-negative
                 }
 #endif
@@ -16626,21 +16636,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 BigInt ta, tb;
                 const BigInt& a = l.toBigRef(ta);
                 const BigInt& b = r.toBigRef(tb);
-                return Value::bigint(op == "+" ? a + b : op == "-" ? a - b : a * b);
+                return Value::bigint(opEq(op, "+") ? a + b : opEq(op, "-") ? a - b : a * b);
             }
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r), n, d;
-            if (op == "*") { n = n1 * n2; d = d1 * d2; }
-            else { d = d1 * d2; n = (op == "+") ? n1 * d2 + n2 * d1 : n1 * d2 - n2 * d1; }
+            if (opEq(op, "*")) { n = n1 * n2; d = d1 * d2; }
+            else { d = d1 * d2; n = (opEq(op, "+")) ? n1 * d2 + n2 * d1 : n1 * d2 - n2 * d1; }
             return mkRat(n, d);
         }
-        if (op == "/") {
+        if (opEq(op, "/")) {
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r);
             if (n2.isZero()) { // 1/0 is a zero-denominator Rat: Num → ±Inf, Str throws
                 Value v = Value::ratZ(n1 * d2, BigInt(0)); v.fatRatM() = fat; return v;
             }
             return mkRat(n1 * d2, d1 * n2);
         }
-        if (op == "**" && (r.t == VT::Int || r.t == VT::Bool)) {
+        if (opEq(op, "**") && (r.t == VT::Int || r.t == VT::Bool)) {
             // Rakudo computes a power whose exponent fits in 32 bits EXACTLY,
             // however long that takes; only a wider exponent is refused, as a
             // Failure — X::Numeric::Overflow, or Underflow for a negative exponent
@@ -16673,7 +16683,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return Value::integer(rem.isZero() ? 1 : -1);
             }
         }
-        if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big()) {
+        if (opEq(op, "**") && (r.t == VT::Int || r.t == VT::Bool) && !r.big()) {
             long long e = r.toInt();
             BigInt bn = getN(l), bd = getD(l);
             // An Int to a negative power is 1 / b**|e|, and when that is below the
@@ -16754,7 +16764,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return armedFailure("X::Numeric::Overflow", "Numeric overflow");
             }
         }
-        if (op == "%" || op == "div" || op == "mod" || op == "%%") {
+        if (opEq(op, "%") || opEq(op, "div") || opEq(op, "mod") || opEq(op, "%%")) {
             // These take INTEGERS, so both sides are coerced first, and the
             // DIVISOR's coercion decides. A non-finite divisor has no Int and
             // counts as zero here — Rakudo reports divide-by-zero for `1 div Inf`
@@ -16770,7 +16780,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (l.t == VT::Num && !std::isfinite(l.n))
                 throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                                 "Cannot convert " + l.toStr() + " to Int"};
-            if (anyRat && (op == "%" || op == "%%")) {
+            if (anyRat && (opEq(op, "%") || opEq(op, "%%"))) {
                 // Rat modulo stays exact: a % b = a - b * floor(a/b)  (10.3 % 3 == 1.3)
                 BigInt an = getN(l), ad = getD(l), bn = getN(r), bd = getD(r);
                 if (bn.isZero()) return divZeroResult(l, op);
@@ -16779,15 +16789,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 BigInt q, rm; BigInt::divmod(N, D, q, rm);
                 if (!rm.isZero() && N.sign < 0) q = q - BigInt(1); // floor, not truncate
                 BigInt rn = an * bd - bn * ad * q;
-                if (op == "%%") return Value::boolean(rn.isZero());
+                if (opEq(op, "%%")) return Value::boolean(rn.isZero());
                 return mkRat(std::move(rn), ad * bd);
             }
-            if (smallInt && op != "div") { // native fast path for small ints (div stays on BigInt for identical rounding)
+            if (smallInt && !opEq(op, "div")) { // native fast path for small ints (div stays on BigInt for identical rounding)
                 long long a = l.toInt(), b = r.toInt();
                 if (b == 0) return divZeroResult(l, op);
-                if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
+                if (b == -1) return opEq(op, "%%") ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
-                if (op == "%%") return Value::boolean(rem == 0); // divisibility is sign-independent
+                if (opEq(op, "%%")) return Value::boolean(rem == 0); // divisibility is sign-independent
                 if (rem != 0 && ((rem < 0) != (b < 0))) rem += b; // sign follows divisor (matches BigInt path)
                 return Value::integer(rem); // % / mod
             }
@@ -16798,16 +16808,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
             // zero, so adjust when the remainder is nonzero and the signs differ.
-            if (op == "div") {
+            if (opEq(op, "div")) {
                 if (!rem.isZero() && ((a.sign < 0) != (b.sign < 0))) q = q - BigInt(1);
                 return Value::bigint(q);
             }
             if (!rem.isZero() && ((rem.sign < 0) != (b.sign < 0))) rem = rem + b; // sign follows divisor
-            if (op == "%%") return Value::boolean(rem.isZero());
+            if (opEq(op, "%%")) return Value::boolean(rem.isZero());
             return Value::bigint(rem);
         }
-        if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
-            op == "<=>" || op == "cmp") { // (`leg` is STRINGWISE — it never lands here)
+        if (opEq(op, "==") || opEq(op, "!=") || opEq(op, "<") || opEq(op, "<=") || opEq(op, ">") || opEq(op, ">=") ||
+            opEq(op, "<=>") || opEq(op, "cmp")) { // (`leg` is STRINGWISE — it never lands here)
             // A zero-denominator Rat is EQUALITY-compared as its Num — `<0/0>` is
             // NaN, so `$z == $z` is False — but ORDERED against everything else
             // by the ordinary cross-multiplication, which is what Rakudo does and
@@ -16821,7 +16831,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // the other branch was never searched, and the k nearest neighbours
             // came back wrong — on 184 of 400 queries, silently, and only here.
             auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD() && v.ratD()->isZero(); };
-            if ((op == "==" || op == "!=" || op == "cmp") && (zeroDen(l) || zeroDen(r)))
+            if ((opEq(op, "==") || opEq(op, "!=") || opEq(op, "cmp")) && (zeroDen(l) || zeroDen(r)))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
             // TWO zero-denominator Rats cross-multiply to `0` against `0`, so every
@@ -16846,12 +16856,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
 #endif
             else c = BigInt::cmp(getN(l) * getD(r), getN(r) * getD(l));
-            if (op == "==") return Value::boolean(c == 0);
-            if (op == "!=") return Value::boolean(c != 0);
-            if (op == "<")  return Value::boolean(c < 0);
-            if (op == "<=") return Value::boolean(c <= 0);
-            if (op == ">")  return Value::boolean(c > 0);
-            if (op == ">=") return Value::boolean(c >= 0);
+            if (opEq(op, "==")) return Value::boolean(c == 0);
+            if (opEq(op, "!=")) return Value::boolean(c != 0);
+            if (opEq(op, "<"))  return Value::boolean(c < 0);
+            if (opEq(op, "<=")) return Value::boolean(c <= 0);
+            if (opEq(op, ">"))  return Value::boolean(c > 0);
+            if (opEq(op, ">=")) return Value::boolean(c >= 0);
             return Value::orderVal(c);
         }
     }
@@ -16859,19 +16869,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     auto bothInt = [&]() {
         return (l.t == VT::Int || l.t == VT::Bool) && (r.t == VT::Int || r.t == VT::Bool);
     };
-    if (op == "+") {
+    if (opEq(op, "+")) {
         if (bothInt()) return Value::integer(l.toInt() + r.toInt());
         return Value::number(l.toNum() + r.toNum());
     }
-    if (op == "-") {
+    if (opEq(op, "-")) {
         if (bothInt()) return Value::integer(l.toInt() - r.toInt());
         return Value::number(l.toNum() - r.toNum());
     }
-    if (op == "*") {
+    if (opEq(op, "*")) {
         if (bothInt()) return Value::integer(l.toInt() * r.toInt());
         return Value::number(l.toNum() * r.toNum());
     }
-    if (op == "/") {
+    if (opEq(op, "/")) {
         double d = r.toNum();
         // An INEXACT divide by zero is a Failure, not an IEEE infinity: only the
         // exact path (two Int/Rat operands) answers the zero-denominator Rat
@@ -16879,7 +16889,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (d == 0.0) return divZeroResult(l, op);
         return Value::number(l.toNum() / d);
     }
-    if (op == "%") {
+    if (opEq(op, "%")) {
         if (l.t == VT::Num || r.t == VT::Num) { // floating modulo: a - b * floor(a/b)
             double a = l.toNum(), b = r.toNum();
             if (b == 0.0) return divZeroResult(l, op);
@@ -16896,7 +16906,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // there, and for the same reason: these take integers, a zero divisor throws,
     // and a non-finite value has no Int at all. Returning 0 for both made
     // `3 div Inf` and `3 div 0e0` answer a confident, wrong 0.
-    if (op == "div" || op == "mod") {
+    if (opEq(op, "div") || opEq(op, "mod")) {
         // The DIVISOR decides first — `Inf div 0` is a divide-by-zero, not a
         // conversion failure, and `Inf div (1/3)` is too because (1/3).Int is 0.
         // Only once the divisor is usable does the dividend's own coercion matter.
@@ -16906,9 +16916,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                             "Cannot convert " + l.toStr() + " to Int"};
         long long b = r.toInt();
-        return Value::integer(op == "div" ? l.toInt() / b : l.toInt() % b);
+        return Value::integer(opEq(op, "div") ? l.toInt() / b : l.toInt() % b);
     }
-    if (op == "**") {
+    if (opEq(op, "**")) {
         double lb = l.toNum(), re = r.toNum();
         double res = std::pow(lb, re);
         if (bothInt() && r.toInt() >= 0 && std::fabs(res) < 9e18)
@@ -16920,7 +16930,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return armedFailure("X::Numeric::Underflow", "Numeric underflow");
         return Value::number(res);
     }
-    if (op == "~") {
+    if (opEq(op, "~")) {
         // Uni ~ Uni concatenates the CODEPOINT buffers (no normalization —
         // that's what .NFC on the result is for); nfc-concat.t's whole plan
         auto uniish = [](const Value& v) {
@@ -16958,7 +16968,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return Value::str(nfcNormalize((undef(l) ? std::string() : l.toStr()) +
                                        (undef(r) ? std::string() : r.toStr())));
     }
-    if (op == "x") {
+    if (opEq(op, "x")) {
         // an UNDEFINED count is a numeric use of it: Rakudo warns and repeats
         // nothing (`'x' x Int`)
         if ((r.t == VT::Type || r.t == VT::Any) && g_revInterp)
@@ -17021,7 +17031,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         for (unsigned char c : base) if (c >= 0x80) { ascii = false; break; }
         return Value::str(ascii ? std::move(out) : nfcNormalize(std::move(out)));
     }
-    if (op == "xx") {
+    if (opEq(op, "xx")) {
         rtXxCountCheck(r); // `NaN`/`-Inf` name no count — see xxRepeat
         // The VALUE path — `infix:<xx>(x, n)` called as a routine, and the
         // metaop fallbacks — reached here with the left side already evaluated,
@@ -17083,7 +17093,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return a;
     }
     // numeric bitwise / shift
-    if (op == "+&" || op == "+|" || op == "+^") {
+    if (opEq(op, "+&") || opEq(op, "+|") || opEq(op, "+^")) {
         if (l.t == VT::Str || r.t == VT::Str) { strictNum(l); strictNum(r); } // reject a non-numeric string
         if (l.big() || r.big()) {
 #if RAKUPP_HAS_INT128
@@ -17098,7 +17108,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         long long a = bitwiseInt(l), b = bitwiseInt(r);
         return Value::integer(op[1] == '&' ? (a & b) : op[1] == '|' ? (a | b) : (a ^ b));
     }
-    if (op == "+<") { // escalate to BigInt when the result would overflow long long
+    if (opEq(op, "+<")) { // escalate to BigInt when the result would overflow long long
         bitwiseInt(l); long long sh = shiftCount(r);
         if (sh < 0) return applyArith("+>", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big() && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
@@ -17116,7 +17126,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         BigInt res = lb * BigInt(2).pow(sh);
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
     }
-    if (op == "+>") {
+    if (opEq(op, "+>")) {
         bitwiseInt(l); long long sh = shiftCount(r);
         if (sh < 0) return applyArith("+<", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big()) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
@@ -17131,18 +17141,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
     }
     // boolean bitwise (return Bool)
-    if (op == "?&") return Value::boolean(l.truthy() && r.truthy());
-    if (op == "?|") return Value::boolean(l.truthy() || r.truthy());
-    if (op == "?^") return Value::boolean(l.truthy() != r.truthy());
+    if (opEq(op, "?&")) return Value::boolean(l.truthy() && r.truthy());
+    if (opEq(op, "?|")) return Value::boolean(l.truthy() || r.truthy());
+    if (opEq(op, "?^")) return Value::boolean(l.truthy() != r.truthy());
     // string bitwise — per-character on codepoints; the longer string's tail is
     // kept for | and ^, dropped for &
-    if (op == "~&" || op == "~|" || op == "~^") {
+    if (opEq(op, "~&") || opEq(op, "~|") || opEq(op, "~^")) {
         std::string a = l.toStr(), b = r.toStr();
         // Blob/Buf extend rightwards for all three; plain Str ~& truncates to the shorter
         bool lBuf = (l.t == VT::Str && !l.hashKind.empty());
         bool rBuf = (r.t == VT::Str && !r.hashKind.empty());
         auto combine = [&](unsigned long long x, unsigned long long y) {
-            return op == "~&" ? (x & y) : op == "~|" ? (x | y) : (x ^ y);
+            return opEq(op, "~&") ? (x & y) : opEq(op, "~|") ? (x | y) : (x ^ y);
         };
         // Rakudo refuses to mix a buffer with a string here, in either order: the
         // operator is defined on bytes for one and on codepoints for the other,
@@ -17176,7 +17186,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // instead of one) and left raw bytes in the string that were not valid
         // UTF-8, so .ords and the printed bytes disagreed.
         std::vector<uint32_t> ca = utf8cp(a), cb = utf8cp(b);
-        size_t n = (op == "~&") ? std::min(ca.size(), cb.size())
+        size_t n = (opEq(op, "~&")) ? std::min(ca.size(), cb.size())
                                 : std::max(ca.size(), cb.size());
         std::string out;
         for (size_t k = 0; k < n; k++)
@@ -17184,7 +17194,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                               k < cb.size() ? cb[k] : 0));
         return Value::str(nfcNormalize(std::move(out)));   // a Str is NFC, whatever the bits made
     }
-    if (op == "gcd" || op == "lcm") {
+    if (opEq(op, "gcd") || opEq(op, "lcm")) {
         // These take INTEGERS: a non-finite operand has no Int, and saturating it
         // to 2**63-1 (which is what toInt() does) turned `0 gcd Inf` into a
         // plausible-looking 9223372036854775807.
@@ -17193,14 +17203,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                                 "Cannot convert " + v->toStr() + " to Int"};
     }
-    if (op == "gcd") {
+    if (opEq(op, "gcd")) {
         // gcd() takes its arguments by value and takes their absolute value
         // itself, so the temporaries move straight in — `.abs()` here copied both
         // magnitudes for nothing.
         if (l.big() || r.big()) return Value::bigint(BigInt::gcd(l.toBig(), r.toBig()));
         long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x);
     }
-    if (op == "lcm") {
+    if (opEq(op, "lcm")) {
         if (l.big() || r.big()) {
             BigInt a = l.toBig(), b = r.toBig();
             a.makeAbs(); b.makeAbs();
@@ -17222,20 +17232,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // An UNDEFINED operand takes no part: `2 min Any` is 2, as the list forms
     // have always had it. (A Failure detonates first — see the guard at the top
     // of applyArith — so `min +'a', +'a'` still throws X::Str::Numeric.)
-    if (op == "min" || op == "max") {
+    if (opEq(op, "min") || opEq(op, "max")) {
         auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil ||
                                                  (v.t == VT::Type && (v.s == "Any" || v.s == "Mu")); };
         if (undef(l) && undef(r)) return l;
         if (undef(l)) return r;
         if (undef(r)) return l;
     }
-    if (op == "min") return valueCmp(l, r) < 0 ? l : r;
-    if (op == "max") return valueCmp(l, r) > 0 ? l : r;
+    if (opEq(op, "min")) return valueCmp(l, r) < 0 ? l : r;
+    if (opEq(op, "max")) return valueCmp(l, r) > 0 ? l : r;
 
     // comparisons -> Bool
-    if (op == "==") return Value::boolean(l.toNum() == r.toNum());
-    if (op == "!=") return Value::boolean(l.toNum() != r.toNum());
-    if (op == "=~=" || op == "≅") {
+    if (opEq(op, "==")) return Value::boolean(l.toNum() == r.toNum());
+    if (opEq(op, "!=")) return Value::boolean(l.toNum() != r.toNum());
+    if (opEq(op, "=~=") || opEq(op, "≅")) {
         // Rakudo's tolerance is RELATIVE, except when one side is exactly zero,
         // where a relative test can never succeed — there it is absolute. That
         // is the whole difference between `1e-17 =~= 0` (True) and
@@ -17249,20 +17259,20 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         double scale = std::max(std::fabs(a), std::fabs(b));
         return Value::boolean(std::fabs(a - b) / scale < tol);
     }
-    if (op == "<")  return Value::boolean(l.toNum() <  r.toNum());
-    if (op == "<=") return Value::boolean(l.toNum() <= r.toNum());
-    if (op == ">")  return Value::boolean(l.toNum() >  r.toNum());
-    if (op == ">=") return Value::boolean(l.toNum() >= r.toNum());
-    if (op == "eq") return Value::boolean(l.toStr() == r.toStr());
-    if (op == "ne") return Value::boolean(l.toStr() != r.toStr());
-    if (op == "lt") return Value::boolean(l.toStr() <  r.toStr());
-    if (op == "gt") return Value::boolean(l.toStr() >  r.toStr());
-    if (op == "le") return Value::boolean(l.toStr() <= r.toStr());
-    if (op == "ge") return Value::boolean(l.toStr() >= r.toStr());
+    if (opEq(op, "<"))  return Value::boolean(l.toNum() <  r.toNum());
+    if (opEq(op, "<=")) return Value::boolean(l.toNum() <= r.toNum());
+    if (opEq(op, ">"))  return Value::boolean(l.toNum() >  r.toNum());
+    if (opEq(op, ">=")) return Value::boolean(l.toNum() >= r.toNum());
+    if (opEq(op, "eq")) return Value::boolean(l.toStr() == r.toStr());
+    if (opEq(op, "ne")) return Value::boolean(l.toStr() != r.toStr());
+    if (opEq(op, "lt")) return Value::boolean(l.toStr() <  r.toStr());
+    if (opEq(op, "gt")) return Value::boolean(l.toStr() >  r.toStr());
+    if (opEq(op, "le")) return Value::boolean(l.toStr() <= r.toStr());
+    if (opEq(op, "ge")) return Value::boolean(l.toStr() >= r.toStr());
     auto orderVal = [](int c) {
         return Value::orderVal(c);
     };
-    if (op == "<=>") {
+    if (opEq(op, "<=>")) {
         // numeric comparison: a non-numeric Str operand cannot coerce
         for (const Value* s : {&l, &r})
             if (s->t == VT::Str && !numifyStr(s->s).isNumeric())
@@ -17275,9 +17285,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // `leg` is the STRING comparison — it stringifies both sides first, so
     // `-4 leg -1` is More where `-4 cmp -1` is Less
-    if (op == "leg") return orderVal(valueCmp(Value::str(l.toStr()), Value::str(r.toStr())));
-    if (op == "cmp") { return orderVal(valueCmp(l, r)); }
-    if (op == "unicmp" || op == "coll") { // UCA collation (DUCET) over the two strings
+    if (opEq(op, "leg")) return orderVal(valueCmp(Value::str(l.toStr()), Value::str(r.toStr())));
+    if (opEq(op, "cmp")) { return orderVal(valueCmp(l, r)); }
+    if (opEq(op, "unicmp") || opEq(op, "coll")) { // UCA collation (DUCET) over the two strings
         auto decode = [](const std::string& str) {
             std::vector<uint32_t> cps;
             for (size_t i = 0; i < str.size(); ) {
@@ -17291,7 +17301,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         };
         // `coll` honours $*COLLATION's levels; `unicmp` always compares in full
         int lv[4] = {1, 1, 1, 1};
-        if (op == "coll" && g_revInterp) {
+        if (opEq(op, "coll") && g_revInterp) {
             Value* cv = Interpreter::findDynamicLenient("$*COLLATION");
             if (cv && cv->t == VT::Hash && cv->hashKind == "Collation" && cv->hash()) {
                 const char* names[4] = {"primary", "secondary", "tertiary", "quaternary"};
@@ -17304,9 +17314,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         int c = uniCollateLevels(decode(l.toStr()), decode(r.toStr()), lv);
         return Value::orderVal(c);
     }
-    if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
-    if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
-    if (op == "eqv") {
+    if (opEq(op, "before")) return Value::boolean(valueCmp(l, r) < 0);
+    if (opEq(op, "after")) return Value::boolean(valueCmp(l, r) > 0);
+    if (opEq(op, "eqv")) {
         // Two Seqs are compared by their values, which a consumed one no
         // longer has (SeqToken); a Seq against anything else is False unread
         if (l.t == VT::Array && r.t == VT::Array && l.s == "Seq" && r.s == "Seq" && g_cbInterp) {
@@ -17336,7 +17346,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // equality), not of `===`. Treating it as negated identity made
     // `1 !== 1.0` True where Rakudo says False. It falls through to the
     // generic negated-operator handler, which applies `==` and negates.
-    if (op == "===" || op == "!===") {
+    if (opEq(op, "===") || opEq(op, "!===")) {
         bool same;
         // the two spellings of Any are one object — see isAnyTypeObject
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
@@ -17439,14 +17449,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Match && l.ext() && r.ext())
             same = l.ext() == r.ext() && l.rFrom() == r.rFrom() && l.rTo() == r.rTo() && l.arr() == r.arr();
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
-        return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
+        return Value::boolean(opEq(op, "===") ? same : !same); // !== and !=== both negate identity
     }
-    if (op == "%%") { // reached with a Num operand only (the exact tower answers Int/Rat above)
+    if (opEq(op, "%%")) { // reached with a Num operand only (the exact tower answers Int/Rat above)
         double b = r.toNum();
         if (b == 0) return divZeroResult(l, op);
         return Value::boolean(std::fmod(l.toNum(), b) == 0); // 4.5e0 %% 2 is False, not "4 %% 2"
     }
-    if (op == "=:=") {
+    if (opEq(op, "=:=")) {
         // container identity — but on TYPE OBJECTS it must discriminate like
         // ===: valueEq treated L =:= Any as True, so JSON::Unmarshal's
         // `@x.of =:= Any` guard always took the untyped branch and typed-array
@@ -17465,12 +17475,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (isRefValue(l) || isRefValue(r)) return Value::boolean(identicalRef(l, r));
         return Value::boolean(l.t == r.t && valueEq(l, r));
     }
-    if (op == "~~" || op == "!~~") {
+    if (opEq(op, "~~") || opEq(op, "!~~")) {
         bool res;
         // a type made by a user metaobject is checked through it (CustomHow.cpp)
         if (g_cbInterp && g_cbInterp->haveCustomHows_.load(std::memory_order_relaxed)) {
             int cm = g_cbInterp->customHowMatch(l, r);
-            if (cm >= 0) return Value::boolean(op == "~~" ? cm == 1 : cm == 0);
+            if (cm >= 0) return Value::boolean(opEq(op, "~~") ? cm == 1 : cm == 0);
         }
         // A CONTAINER smartmatches by what it holds, never by what it is: a
         // bound slot (`%h{$k} := $x`, or the container a `KEY => my $x` pair
@@ -17484,7 +17494,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
-        if (r.t == VT::Whatever) return Value::boolean(op == "~~");
+        if (r.t == VT::Whatever) return Value::boolean(opEq(op, "~~"));
         // against a LIST the elements are compared, so an unpulled gather on
         // either side is read first (against a type or a regex, nothing is)
         if (r.t == VT::Array && r.arr() && !isJunction(r)) { forceLazy(l); forceLazy(r); }
@@ -17496,7 +17506,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 auto it = v.hash()->find(k); return it == v.hash()->end() ? 0LL : it->second.toInt();
             };
             res = f(l, "year") == f(r, "year") && f(l, "month") == f(r, "month") && f(l, "day") == f(r, "day");
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         // list ~~ list where the PATTERN holds a Whatever: `**` matches any RUN of
         // elements (including none), so (1,2,4,8) ~~ (1,**,8) holds, while a
@@ -17523,16 +17533,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return go(i + 1, k + 1);
             };
             res = go(0, 0);
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         // Smartmatching against a MATCH answers that match, not a comparison of its
         // text: `when $_ ~~ $regex` (Abbreviations' test-regex) nests a smartmatch
         // inside a `when`, and the inner Match has to stay truthy for the outer one.
-        if (r.t == VT::Match) return op == "~~" ? r : Value::boolean(!r.truthy());
+        if (r.t == VT::Match) return opEq(op, "~~") ? r : Value::boolean(!r.truthy());
         if (!r.enumType.empty() && r.t == VT::Array) {
             // $val ~~ EnumType : the enum type object is a tagged pair-list
             res = (!l.enumType.empty() && l.enumType == r.enumType) || l.typeName() == r.enumType;
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         // ITERABLE ~~ LIST is ELEMENT-WISE, not deep equality: same length, and each
         // element smartmatched against the pattern in the same position. That is what
@@ -17548,7 +17558,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             auto lazyOne = [](const Value& v) { return v.t == VT::Array && (v.b || seqIsLazy(v)); };
             if (lazyOne(l) || lazyOne(r)) {
                 res = l.t == VT::Array && l.arr() == r.arr();
-                return Value::boolean(op == "~~" ? res : !res);
+                return Value::boolean(opEq(op, "~~") ? res : !res);
             }
             ValueList xs = l.t == VT::Range ? l.flatten() : (l.arr() ? *l.arr() : ValueList{});
             const ValueList& ps = *r.arr();
@@ -17558,7 +17568,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             for (size_t i = 0; res && i < xs.size(); i++)
                 res = g_cbInterp ? matcherAccepts(*g_cbInterp, xs[i], ps[i])
                                  : applyArith("~~", xs[i], ps[i]).truthy();
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         if (r.t == VT::Range) {
             if (l.t == VT::Range) {
@@ -17608,7 +17618,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     bool loOK = r.rExFrom() ? (slo > tlo || (l.rExFrom() && slo >= tlo)) : (slo >= tlo);
                     bool hiOK = r.rExTo()   ? (shi < thi || (l.rExTo()   && shi <= thi)) : (shi <= thi);
                     res = loOK && hiOK;
-                    return Value::boolean(op == "~~" ? res : !res);
+                    return Value::boolean(opEq(op, "~~") ? res : !res);
                 }
                 double llo = endNum(l, false), lhi = endNum(l, true);
                 double rlo = endNum(r, false), rhi = endNum(r, true);
@@ -17674,7 +17684,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (l.t == VT::Str && !l.isAllomorph() && l.hashKind.empty()) {
                     topic = numifyStr(l.s.str());
                     if (topic.t == VT::Any || topic.t == VT::Nil)
-                        return Value::boolean(op != "~~");
+                        return Value::boolean(!opEq(op, "~~"));
                 }
                 // The endpoint OBJECTS where the range kept them: a BIGINT end
                 // does not fit the integer fields, so `2**70 ~~ 0..2**80` and
@@ -17693,7 +17703,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     if (topic.t == VT::Complex) {
                         if (!(std::fabs(topic.im()) < 1e-15) || !std::isfinite(topic.n) ||
                             r.ofType() == "Str")
-                            return Value::boolean(op != "~~");
+                            return Value::boolean(!opEq(op, "~~"));
                         topic = Value::number(topic.n);
                     }
                     double v = topic.toNum();
@@ -17710,11 +17720,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (g_subsetCheck) {
                 bool sres = false;
                 if (g_subsetCheck(r.s, l, sres))
-                    return Value::boolean(op == "~~" ? sres : !sres);
+                    return Value::boolean(opEq(op, "~~") ? sres : !sres);
             }
             // `$x ~~ Foo:D` is the type test AND a definedness test
-            if (r.i == 1 && !isDefined(l)) return Value::boolean(op != "~~");
-            if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
+            if (r.i == 1 && !isDefined(l)) return Value::boolean(!opEq(op, "~~"));
+            if (r.i == 2 && isDefined(l))  return Value::boolean(!opEq(op, "~~"));
             // A SUBSET's type object conforms as its base type: `UInt ~~ Int`
             // and `(subset Pos of Int where * > 0) ~~ Int` are True. Red maps a
             // column's SQL type by dispatching on the attribute's type object,
@@ -17723,7 +17733,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (l.t == VT::Type && l.s != r.s && g_cbInterp &&
                 (l.s == "UInt" || g_cbInterp->subsets_.count(l.s))) {
                 bool sres = g_cbInterp->typeMatchesResolved(l, r.s);
-                if (sres) return Value::boolean(op == "~~");
+                if (sres) return Value::boolean(opEq(op, "~~"));
             }
             // A Pod block is an OBJECT; it is a hash here only as a
             // representation. typeMatchesArg owns what it conforms to — its own
@@ -17732,7 +17742,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // Associative, which no Pod block is.
             if (l.t == VT::Hash && l.hashKind == "Pod") {
                 bool pres = typeMatchesArg(l, r.s);
-                return Value::boolean(op == "~~" ? pres : !pres);
+                return Value::boolean(opEq(op, "~~") ? pres : !pres);
             }
             // `Mu ~~ Any` is False: Any sits BELOW Mu, and the Mu type object
             // conforms only to Mu itself (Getopt::Long branches on exactly
@@ -17968,14 +17978,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         } else {
             res = valueEq(l, r);
         }
-        return Value::boolean(op == "~~" ? res : !res);
+        return Value::boolean(opEq(op, "~~") ? res : !res);
     }
     // ≼ and ≽ were REMOVED in v6.d. Naming the replacement is the difference
     // between a user fixing it in a second and hunting for what the character
     // meant. Thrown here rather than at lex time because that is where Rakudo
     // throws it — a lexer error is not catchable by the `try` around it.
-    if (op == "\xE2\x89\xBC" || op == "\xE2\x89\xBD" || op == "(<+)" || op == "(>+)") {
-        bool sub = op == "\xE2\x89\xBC" || op == "(<+)";
+    if (opEq(op, "\xE2\x89\xBC") || opEq(op, "\xE2\x89\xBD") || opEq(op, "(<+)") || opEq(op, "(>+)")) {
+        bool sub = opEq(op, "\xE2\x89\xBC") || opEq(op, "(<+)");
         throw RakuError{Value::typeObj("X::AdHoc"),
                         op + " was removed in v6.d, please use " +
                         (sub ? "⊆" : "⊇") + " operator instead"};
@@ -17985,7 +17995,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // we are not making, so say what is actually true: there is no such operator.
     // (X::NYI stays for operators Raku DOES define and we have not written yet —
     // conflating the two would hide real gaps behind a misleading message.)
-    if (op == "~<" || op == "~>")
+    if (opEq(op, "~<") || opEq(op, "~>"))
         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                         "Cannot resolve caller infix:<" + op + ">(" + l.typeName() +
                         ", " + r.typeName() + "); no such operator is defined"};
@@ -18783,10 +18793,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
 // Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
 // Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
 void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
-    if (!(op == "+" || op == "-" || op == "%") || !res.isNumeric() || !res.hashKind.empty()) return;
+    if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "%")) || !res.isNumeric() || !res.hashKind.empty()) return;
     bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
     bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
-    if (op == "%") {   // Duration % Real is a Duration; nothing else stays temporal
+    if (opEq(op, "%")) {   // Duration % Real is a Duration; nothing else stays temporal
         if (ld && !ri && !rd) {
             if (res.t == VT::Num && std::isfinite(res.n) && g_revInterp) {
                 Value b = res; b = g_revInterp->methodCall(b, "Rat", ValueList{});
@@ -18798,10 +18808,10 @@ void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& r
     }
     if (!(li || ri || ld || rd)) return;
     // two points in time do not add up to a third
-    if (op == "+" && li && ri)
+    if (opEq(op, "+") && li && ri)
         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                         "Cannot resolve caller infix:<+>(Instant:D, Instant:D)"};
-    if (op == "-") res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
+    if (opEq(op, "-")) res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
     else res.hashKind = (li || ri) ? "Instant" : "Duration";
     // a Duration is a Rat (Rakudo's `has Rat $.tai`): `Duration.new(4.5) - 1e0`
     // is Duration.new(3.5), not a float
@@ -18849,36 +18859,36 @@ bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // a type made by a user metaobject is checked through it (CustomHow.cpp)
-    if (haveCustomHows_.load(std::memory_order_relaxed) && (op == "~~" || op == "!~~")) {
+    if (haveCustomHows_.load(std::memory_order_relaxed) && (opEq(op, "~~") || opEq(op, "!~~"))) {
         int cm = customHowMatch(l, r);
-        if (cm >= 0) return Value::boolean(op == "~~" ? cm == 1 : cm == 0);
+        if (cm >= 0) return Value::boolean(opEq(op, "~~") ? cm == 1 : cm == 0);
     }
     // `$datetime ~~ $date` asks whether the moment falls on that civil day
     // (Rakudo's Date.ACCEPTS(DateTime)), not whether the two are the same value
-    if ((op == "~~" || op == "!~~") && r.t == VT::Hash && r.hashKind == "Date" && r.hash() &&
+    if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Hash && r.hashKind == "Date" && r.hash() &&
         l.t == VT::Hash && l.hashKind == "DateTime" && l.hash()) {
         auto f = [](const Value& v, const char* k) {
             auto it = v.hash()->find(k); return it == v.hash()->end() ? 0LL : it->second.toInt();
         };
         bool same = f(l, "year") == f(r, "year") && f(l, "month") == f(r, "month") && f(l, "day") == f(r, "day");
-        return Value::boolean(op == "~~" ? same : !same);
+        return Value::boolean(opEq(op, "~~") ? same : !same);
     }
     // a bare `Mu.new` / `Any.new` accepts itself (===), and a Mu instance
     // also accepts its own type object: `Mu ~~ Mu.new` is True, `Any ~~ Mu.new`
     // False (S02-types/mu.t)
-    if (r.t == VT::Hash && (r.hashKind == "Mu" || r.hashKind == "Any") && (op == "~~" || op == "!~~")) {
+    if (r.t == VT::Hash && (r.hashKind == "Mu" || r.hashKind == "Any") && (opEq(op, "~~") || opEq(op, "!~~"))) {
         bool ok = (l.t == VT::Hash && l.hash() && l.hash() == r.hash()) ||
                   (r.hashKind == "Mu" && l.t == VT::Type && l.s == "Mu");
-        return Value::boolean(op == "~~" ? ok : !ok);
+        return Value::boolean(opEq(op, "~~") ? ok : !ok);
     }
     // an OBJECT-like built-in (a Promise, a Vow, a Channel, …) smartmatches by
     // identity, as Any.ACCEPTS does — never by comparing its fields as a Hash
-    if (r.t == VT::Hash && !r.hashKind.empty() && r.hash() && (op == "~~" || op == "!~~") &&
+    if (r.t == VT::Hash && !r.hashKind.empty() && r.hash() && (opEq(op, "~~") || opEq(op, "!~~")) &&
         (r.hashKind == "Promise" || r.hashKind == "Vow" || r.hashKind == "Channel" ||
          r.hashKind == "Lock" || r.hashKind == "Semaphore" || r.hashKind == "Tap" ||
          r.hashKind == "Supplier")) {
         bool same = l.t == VT::Hash && l.hash() == r.hash();
-        return Value::boolean(op == "~~" ? same : !same);
+        return Value::boolean(opEq(op, "~~") ? same : !same);
     }
     // `$x ~~ $rx` where the pattern is a Regex VALUE. Matching used to be decided
     // syntactically — at each site that could see a `/…/` literal — so the
@@ -18895,31 +18905,31 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // fell through to the Linux branch and shelled out to xclip; 7 dists sit
     // behind it. A plain-Str left side keeps the ordinary path, and a
     // non-matching string still answers False.
-    if ((op == "~~" || op == "!~~") && r.t == VT::Str && r.hashKind.empty() &&
+    if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Str && r.hashKind.empty() &&
         !r.itemized && l.t == VT::Object && l.obj()) {
         const bool eq = strInStrContext(l) == r.s;
-        return Value::boolean(op == "~~" ? eq : !eq);
+        return Value::boolean(opEq(op, "~~") ? eq : !eq);
     }
-    if (r.t == VT::Regex && (op == "~~" || op == "!~~") && isJunction(l)) {
+    if (r.t == VT::Regex && (opEq(op, "~~") || opEq(op, "!~~")) && isJunction(l)) {
         // a junction topic threads through Regex.ACCEPTS: a junction of Matches
-        if (op == "!~~") return Value::boolean(!applyBinOp("~~", l, r).truthy());
+        if (opEq(op, "!~~")) return Value::boolean(!applyBinOp("~~", l, r).truthy());
         Value out = Value::array(); out.enumName = l.enumName;
         for (auto& e : *l.arr()) out.arr()->push_back(applyBinOp(op, e, r));
         return out;
     }
-    if (r.t == VT::Regex && (op == "~~" || op == "!~~")) {
+    if (r.t == VT::Regex && (opEq(op, "~~") || opEq(op, "!~~"))) {
         // pass the VALUE: an interpolating regex (`rx/ <$_> /`) resolves its
         // vars from the env it closed over — junction autothreading re-enters
         // HERE per eigenstate, and dropping rxVal made `<$_>` read the
         // CALLER's topic (the match subject!), so `any @globs` matched
         // everything (fez's Fez::Util::Glob; issue #37's test leg)
         Value m = regexMatch(rxSubject(l), r.s, &r);
-        if (op == "!~~") return Value::boolean(!m.truthy());
+        if (opEq(op, "!~~")) return Value::boolean(!m.truthy());
         return m;
     }
     // bracket-cited infix (`(1,2) >>[+]<< (3,4)` — the hyper carries the op as
     // `[+]`): the citation means the bare operator; strip once and recurse
-    if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && op != "[=]")
+    if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && !opEq(op, "[=]"))
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
     // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its
     // reduce form. The `&` spelling cannot collide with any infix.
@@ -18943,34 +18953,34 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
                               r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
     // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
     // no thunking here, just the selection semantics
-    if (op == "//") return topicDefined(l) ? l : r;
-    if (op == "||" || op == "or") return l.truthy() ? l : r;
-    if (op == "&&" || op == "and") return l.truthy() ? r : l;
+    if (opEq(op, "//")) return topicDefined(l) ? l : r;
+    if (opEq(op, "||") || opEq(op, "or")) return l.truthy() ? l : r;
+    if (opEq(op, "&&") || opEq(op, "and")) return l.truthy() ? r : l;
     // `Any andthen 2` is Empty, not the undefined left side — see shortCircuitOp,
     // where the thunking form says the same thing.
-    if (op == "andthen" || op == "notandthen") {
-        if (topicDefined(l) == (op == "andthen")) return r;
+    if (opEq(op, "andthen") || opEq(op, "notandthen")) {
+        if (topicDefined(l) == (opEq(op, "andthen"))) return r;
         Value e = Value::array(); e.isList = true; e.s = "Slip"; return e;
     }
-    if (op == "orelse") return topicDefined(l) ? l : r;
-    if (op == "xor" || op == "^^")
+    if (opEq(op, "orelse")) return topicDefined(l) ? l : r;
+    if (opEq(op, "xor") || opEq(op, "^^"))
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
-    if (op == "=>") { // `.key <<=>>> .value` — hyper over the pair op; a non-Str key is kept, as `[=>]` keeps it
+    if (opEq(op, "=>")) { // `.key <<=>>> .value` — hyper over the pair op; a non-Str key is kept, as `[=>]` keeps it
         Value p = Value::pair(l.toStr(), r);
         if (l.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(l);
         return p;
     }
     // the COMMA as an applied operator — `@a >>,<< @b` pairs the two sides up,
     // which is how one Weekly Challenge solution zips two word lists
-    if (op == ",") return Value::list(ValueList{l, r});
+    if (opEq(op, ",")) return Value::list(ValueList{l, r});
     // A FILETEST adverb as a matcher — `$path ~~ :f`, and `where :f` on a parameter,
     // which is checked through this entry point rather than evalBinary's.
-    if ((op == "~~" || op == "!~~") && r.t == VT::Pair && !r.s.empty() &&
+    if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Pair && !r.s.empty() &&
         l.hashKind == "IO") {
         bool actual = false;
         try { actual = boolify(methodCall(l, r.s, {})); } catch (RakuError&) { actual = false; }
         bool want = r.pairVal() ? boolify(*r.pairVal()) : true;
-        return Value::boolean((actual == want) == (op == "~~"));
+        return Value::boolean((actual == want) == (opEq(op, "~~")));
     }
     // zip/cross with an inner op (Z&& / Zand / X~) — one implementation (zxOp)
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
@@ -18978,8 +18988,8 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     }
     // (a RANGE operand contributes its two ends — applyArith's arm knows how;
     // flattening a string range walks its successors, not its extremes)
-    if (op == "minmax" && (l.t == VT::Range || r.t == VT::Range)) return applyArith(op, l, r);
-    if (op == "minmax") { // Range spanning both operands' extremes
+    if (opEq(op, "minmax") && (l.t == VT::Range || r.t == VT::Range)) return applyArith(op, l, r);
+    if (opEq(op, "minmax")) { // Range spanning both operands' extremes
         ValueList a = l.flatten(), bb = r.flatten();
         // the endpoints are the extreme ELEMENTS, kept as they are — `"a" minmax
         // "b"` is "a".."b", not the 0..0 their numification would give
@@ -19079,8 +19089,8 @@ int Interpreter::tryCondBool(Expr* e) {
     const std::string& op = b->op;
     if (op.size() > 2 || op.empty()) return -1;
     // the six Int comparisons only — everything else keeps the full path
-    bool isCmp = op == "<" || op == ">" || op == "<=" || op == ">=" ||
-                 op == "==" || op == "!=";
+    bool isCmp = opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
+                 opEq(op, "==") || opEq(op, "!=");
     if (!isCmp) return -1;
     if (b->fastShape < 0) return -1;  // let evalBinary decide the shape first
     if (b->fastShape == 0) return -1;
@@ -19102,14 +19112,58 @@ int Interpreter::tryCondBool(Expr* e) {
     long long l, r;
     if (!intOf(b->lhs.get(), b->fastShape == 2, l)) return -1;
     if (!intOf(b->rhs.get(), b->fastShape == 1, r)) return -1;
-    bool v = op == "<"  ? l < r  : op == ">"  ? l > r
-           : op == "<=" ? l <= r : op == ">=" ? l >= r
-           : op == "==" ? l == r : l != r;
+    bool v = opEq(op, "<")  ? l < r  : opEq(op, ">")  ? l > r
+           : opEq(op, "<=") ? l <= r : opEq(op, ">=") ? l >= r
+           : opEq(op, "==") ? l == r : l != r;
     return v ? 1 : 0;
+}
+
+// Which special-cased arm of evalBinary answers an operator (Binary::specialArm),
+// in the order the arms appear there; 0 = none, run the function from the top.
+// Every spelling the `special` set in evalBinary lists has an arm here. An
+// R-metaop has none (the R arms decide at run time), nor does anything whose
+// arm is above the fast path (Xxx, X=:= and the other X/Z-prefixed forms).
+static signed char binaryArm(const std::string& op) {
+    static const std::unordered_map<std::string, signed char> ARM = {
+        {"=:=", 1}, {"!=:=", 1},
+        {"~", 2},
+        {"does", 3}, {"but", 3},
+        {"xx", 4},
+        {"==>", 5}, {"<==", 5},
+        {"...", 6}, {"...^", 6}, {"^...", 6}, {"^...^", 6},
+        {"~~", 7}, {"!~~", 7},
+        {"ff", 8}, {"fff", 8}, {"ff^", 8}, {"fff^", 8}, {"^ff", 8}, {"^fff", 8}, {"^ff^", 8}, {"^fff^", 8},
+        {"&&", 9}, {"and", 9}, {"||", 9}, {"or", 9}, {"//", 9}, {"andthen", 9}, {"orelse", 9}, {"notandthen", 9},
+        {"^^", 10}, {"xor", 10},
+        {"&", 11}, {"|", 11}, {"^", 11},
+        {"Z", 12}, {"X", 12}};
+    auto it = ARM.find(op);
+    return it == ARM.end() ? 0 : it->second;
 }
 
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
+    // A special-cased operator goes straight to its own arm (binaryArm): every
+    // test above it asks about some other spelling.
+    {
+        signed char arm = b->specialArm;
+        if (arm < 0) b->specialArm = arm = binaryArm(op);
+        switch (arm) {
+        case 1: goto armEqAddr;
+        case 2: goto armCat;
+        case 3: goto armDoes;
+        case 4: goto armXx;
+        case 5: goto armFeed;
+        case 6: goto armSeq;
+        case 7: goto armSmart;
+        case 8: goto armFf;
+        case 9: goto armLogic;
+        case 10: goto armXor;
+        case 11: goto armJunc;
+        case 12: goto armZX;
+        default: break;
+        }
+    }
     // `LIST Xxx n` / `LIST Zxx n`: the metaop inherits xx's THUNKY left — the
     // lhs EXPRESSION re-evaluates once per replication (Digest::MD5 builds its
     // index table from advancing anonymous $++ states exactly this way), and
@@ -19118,7 +19172,7 @@ Value Interpreter::evalBinary(Binary* b) {
     // through to the generic value-based cross/zip.
     // (…but only a LIST literal on the left is thunked: `$x++ Xxx 0` still
     // runs its left side once, as Rakudo does)
-    if ((op == "Xxx" || op == "Zxx") && b->lhs && b->lhs->kind != NK::ListExpr) {
+    if ((opEq(op, "Xxx") || opEq(op, "Zxx")) && b->lhs && b->lhs->kind != NK::ListExpr) {
         Value lv = eval(b->lhs.get());
         Value rv = eval(b->rhs.get());
         return applyBinOp(op, lv, rv);
@@ -19126,7 +19180,7 @@ Value Interpreter::evalBinary(Binary* b) {
     // `$a, $b X=:= $c, $d` / `Z!=:=`: container identity asks about the SLOTS,
     // which a list of values no longer has, so lists written as variables are
     // compared slot by slot (as the lone infix and the `[=:=]` reduce do)
-    if ((op == "X=:=" || op == "X!=:=" || op == "Z=:=" || op == "Z!=:=") && b->lhs && b->rhs) {
+    if ((opEq(op, "X=:=") || opEq(op, "X!=:=") || opEq(op, "Z=:=") || opEq(op, "Z!=:=")) && b->lhs && b->rhs) {
         auto vars = [](Expr* x, std::vector<Expr*>& out) {
             if (x->kind == NK::VarExpr) { out.push_back(x); return true; }
             if (x->kind != NK::ListExpr) return false;
@@ -19200,7 +19254,7 @@ Value Interpreter::evalBinary(Binary* b) {
             return out;
         }
     }
-    if (op == "Xxx" || op == "Zxx") {
+    if (opEq(op, "Xxx") || opEq(op, "Zxx")) {
         Value rv = eval(b->rhs.get());
         if (rv.t == VT::Int || rv.t == VT::Num) {
             long long n = rv.toInt();
@@ -19256,11 +19310,11 @@ Value Interpreter::evalBinary(Binary* b) {
     // means "look": the operands are evaluated by the general path below, and
     // on a miss that path dispatches a user `multi infix:<+>` over objects,
     // which applyBinOp alone never consults.
-    bool shadowMaybe = b->simpleOp == 1 &&
-        (lexShadowPossible(op) ||
-         (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
-          (op == "*" || op == "/" || op == "-" || op == ">=" || op == "<=" || op == "!=")));
     if (b->simpleOp == 1) {
+        bool shadowMaybe =
+            (lexShadowPossible(op) ||
+             (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
+              (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!="))));
         // Specialised shapes: `$n < 2`, `2 * $n`, `$a + $b` — what hot loops are
         // made of. Each operand that is a plain lexical is read BY POINTER
         // instead of copying a 376-byte Value out of it, each literal comes from
@@ -19306,7 +19360,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // tagTemporal is a no-op unless an operand is Instant/Duration,
                 // and both hashKinds are empty here, so the result needs no tag.
                 if (rp) {
-                    if (op == "**" && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
+                    if (opEq(op, "**") && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
                         return Value::integer(0);
                     if ((lp->natBits || rp->natBits)) {
                         Value nv;
@@ -19389,17 +19443,17 @@ Value Interpreter::evalBinary(Binary* b) {
                     Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
                 };
                 if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
-                    (op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" ||
-                     op == "<=>" || op == "-")) {
+                    (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "==") || opEq(op, "!=") ||
+                     opEq(op, "<=>") || opEq(op, "-"))) {
                     Value diff = applyArith("-", exactInst(l), exactInst(r));
-                    if (op == "-") {
+                    if (opEq(op, "-")) {
                         if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
                         diff.hashKind = "Duration"; return identify(diff);
                     }
                     int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
-                    if (op == "<=>") return Value::orderVal(c);
-                    bool res = op == "<" ? c < 0 : op == ">" ? c > 0 : op == "<=" ? c <= 0
-                             : op == ">=" ? c >= 0 : op == "==" ? c == 0 : c != 0;
+                    if (opEq(op, "<=>")) return Value::orderVal(c);
+                    bool res = opEq(op, "<") ? c < 0 : opEq(op, ">") ? c > 0 : opEq(op, "<=") ? c <= 0
+                             : opEq(op, ">=") ? c >= 0 : opEq(op, "==") ? c == 0 : c != 0;
                     return Value::boolean(res);
                 }
                 auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
@@ -19413,29 +19467,29 @@ Value Interpreter::evalBinary(Binary* b) {
                         (*res.hash())["formatter"] = (*dt.hash())["formatter"];
                     return res;
                 };
-                if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
+                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
                     (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
-                    return moveDT(l, r, op == "-");
-                if (op == "+" && r.hashKind == "DateTime" &&
+                    return moveDT(l, r, opEq(op, "-"));
+                if (opEq(op, "+") && r.hashKind == "DateTime" &&
                     (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
                     return moveDT(r, l, false);
-                if (ldt && rdt && (op == "<" || op == ">" || op == "<=" || op == ">=" ||
-                                   op == "==" || op == "!=" || op == "<=>")) {
+                if (ldt && rdt && (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
+                                   opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
                     double a = dtSec(l), c = dtSec(r);
                     // `<=>` yields an Order, like every other numeric comparison —
                     // this arm handed back a bare Int (-1/0/1) instead
-                    if (op == "<=>") return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
-                    bool res = op == "<" ? a < c : op == ">" ? a > c : op == "<=" ? a <= c
-                             : op == ">=" ? a >= c : op == "==" ? a == c : a != c;
+                    if (opEq(op, "<=>")) return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
+                    bool res = opEq(op, "<") ? a < c : opEq(op, ">") ? a > c : opEq(op, "<=") ? a <= c
+                             : opEq(op, ">=") ? a >= c : opEq(op, "==") ? a == c : a != c;
                     return Value::boolean(res);
                 }
-                if (op == "-" && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
+                if (opEq(op, "-") && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
                     Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
                 }
-                if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
+                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
                     (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
-                    return mkDT(dtSec(l) + (op == "-" ? -r.toNum() : r.toNum()), l);
-                if (op == "+" && r.hashKind == "DateTime" &&
+                    return mkDT(dtSec(l) + (opEq(op, "-") ? -r.toNum() : r.toNum()), l);
+                if (opEq(op, "+") && r.hashKind == "DateTime" &&
                     (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
                     return mkDT(dtSec(r) + l.toNum(), r);
             }
@@ -19445,7 +19499,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // so `multi infix:<+>(Pointer:D \p, Int $o)` — NativeHelpers::Pointer's
         // pointer arithmetic — was never consulted and `+` added the offset to the
         // raw address in BYTES.
-        if ((op == "+" || op == "-") &&
+        if ((opEq(op, "+") || opEq(op, "-")) &&
             ((l.t == VT::Hash && (l.hashKind == "Pointer" || l.hashKind == "CArray")) ||
              (r.t == VT::Hash && (r.hashKind == "Pointer" || r.hashKind == "CArray"))))
             if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
@@ -19457,7 +19511,7 @@ Value Interpreter::evalBinary(Binary* b) {
                     std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
-        if ((op == "+" || op == "-") &&
+        if ((opEq(op, "+") || opEq(op, "-")) &&
             (!l.hashKind.empty() || !r.hashKind.empty())) { // Instant/Duration algebra
             Value res = applyArith(op, l, r);
             tagTemporal(op, l, r, res);
@@ -19465,7 +19519,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // function composition `f ∘ g` / `f o g` → a callable computing f(g(...)).
         // Both operands must BE callable — Rakudo has no candidate for `1 o 2`.
-        if (op == "\xE2\x88\x98" || op == "o") {
+        if (opEq(op, "\xE2\x88\x98") || opEq(op, "o")) {
             auto composable = [](const Value& v) {
                 return v.t == VT::Code || (v.t == VT::Whatever) ||
                        (v.t == VT::Hash && v.hashKind == "Signature");
@@ -19662,7 +19716,7 @@ Value Interpreter::evalBinary(Binary* b) {
             if (l.t == VT::Object) l = Value::str(strInStrContext(l));
             if (r.t == VT::Object) r = Value::str(strInStrContext(r));
         }
-        if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+        if (opEq(op, "**") && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
             return Value::integer(0);
         if (l.natBits || r.natBits) {
             Value nv;
@@ -19673,7 +19727,12 @@ Value Interpreter::evalBinary(Binary* b) {
         if (l.natBits || r.natBits) tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
         return res;
     }
-    if (op == "=:=" || op == "!=:=") {
+    // A plain operator the fast path did not take has no arm below (they all
+    // answer special-cased spellings), except an R-metaop, which the R arms
+    // resolve at run time.
+    if (b->simpleOp == 1 && op[0] != 'R') goto generic;
+  armEqAddr:
+    if (opEq(op, "=:=") || opEq(op, "!=:=")) {
         // …but a written `*` curries first, as it does over every other operator:
         // `(* =:= $x).WHAT` is a WhateverCode on Rakudo. This arm needs the AST
         // (container identity is about SLOTS, not values), so it runs ahead of
@@ -19851,7 +19910,8 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         return swap ? applyBinOp(base, r, l) : applyBinOp(base, l, r);
     }
-    if (op == "~") {
+  armCat:
+    if (opEq(op, "~")) {
         // string concat coerces via .Str; honour a user-defined `method Str`/`gist`
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         if (l.hashKind == "Proxy") l = deproxy(l);
@@ -19864,20 +19924,21 @@ Value Interpreter::evalBinary(Binary* b) {
             return Value::str(strInStrContext(l) + strInStrContext(r));
         return applyArith("~", l, r);
     }
-    if (op == "does" || op == "but") {
+  armDoes:
+    if (opEq(op, "does") || opEq(op, "but")) {
         Value base = eval(b->lhs.get());
         // an OBJECT is mixed into in place, so there is nothing to write back
         const bool baseIsObject = base.t == VT::Object && base.obj();
         // `does` changes the object it is applied to — a TYPE OBJECT (or an
         // undefined `my $foo`) has no object to change; `but` makes a copy and
         // is fine
-        if (op == "does" && (base.t == VT::Type || base.t == VT::Any) &&
+        if (opEq(op, "does") && (base.t == VT::Type || base.t == VT::Any) &&
             !(b->lhs->kind == NK::VarExpr && static_cast<VarExpr*>(b->lhs.get())->name.size() > 1 &&
               std::strchr("@%&", static_cast<VarExpr*>(b->lhs.get())->name[0])))
             throwTypedV("X::Does::TypeObject", {{"type", base}},
                         "Cannot use 'does' operator on a type object " + base.typeName() + ".");
         // `Callable but role { }` — a ROLE's type object has no mixin to make
-        if (op == "but" && base.t == VT::Type &&
+        if (opEq(op, "but") && base.t == VT::Type &&
             (isBuiltinRole(base.s) ||
              (classes_.count(base.s) && classes_[base.s] && classes_[base.s]->isRole)))
             throwTypedV("X::Method::NotFound",
@@ -19921,7 +19982,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // library is there".
                 if (r.code()->nativeSym.empty()) r.code()->nativeSym = r.code()->name;
                 r.code()->mixinsRW().roles.push_back("NativeCall::Native");
-                if (op == "does" && b->lhs->kind == NK::VarExpr)
+                if (opEq(op, "does") && b->lhs->kind == NK::VarExpr)
                     try { if (Value* lv = lvalue(b->lhs.get())) *lv = r; } catch (...) {}
                 return r;
             }
@@ -20018,7 +20079,7 @@ Value Interpreter::evalBinary(Binary* b) {
                         presets.emplace_back(key, pe->value ? eval(pe->value.get())
                                                             : Value::boolean(true));
                     }
-                Value res = mixinValue(std::move(base), Value::typeObj(rn), op == "but");
+                Value res = mixinValue(std::move(base), Value::typeObj(rn), opEq(op, "but"));
                 for (auto& pr : presets) {
                     if (res.t == VT::Object && res.obj()) res.obj()->attrs[pr.first] = pr.second;
                     else if (res.t == VT::Code && res.code()) res.code()->mixinsRW().attrs[pr.first] = pr.second;
@@ -20026,7 +20087,7 @@ Value Interpreter::evalBinary(Binary* b) {
                     // as plain keys of its own map — see mixinValue
                     else if (res.t == VT::Hash && res.hash()) (*res.hash())[pr.first] = pr.second;
                 }
-                if (op == "does" && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
+                if (opEq(op, "does") && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
                     NK k = b->lhs->kind;
                     if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
                         try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
@@ -20042,7 +20103,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // wrongly refuse it.
         // (…onto a plain VALUE, that is: an OBJECT takes a value in place, as
         // a method named after its type — `$o does 'modded'` gives `.Str`)
-        if (op == "does" && rhs.enumName.empty() &&   // an ENUM value mixes in as its role
+        if (opEq(op, "does") && rhs.enumName.empty() &&   // an ENUM value mixes in as its role
             !(base.t == VT::Object && base.obj()) &&
             (rhs.t == VT::Int || rhs.t == VT::Str || rhs.t == VT::Num ||
              rhs.t == VT::Rat || rhs.t == VT::Bool || rhs.t == VT::Complex))
@@ -20069,11 +20130,11 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // (`True but [1, 2]` is ONE value — an Array, giving `.Array` — where
         // the literal list `True but (1, "x")` mixes in each element)
-        Value res = mixinValue(std::move(base), rhs, op == "but",
-                               b->rhs->kind == NK::ListExpr || op == "does");
+        Value res = mixinValue(std::move(base), rhs, opEq(op, "but"),
+                               b->rhs->kind == NK::ListExpr || opEq(op, "does"));
         // `does` mutates the container in place; for a boxed non-object base the
         // mixed value is a fresh object, so write it back to the LHS lvalue.
-        if (op == "does" && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
+        if (opEq(op, "does") && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
             NK k = b->lhs->kind;
             if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
                 try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
@@ -20089,10 +20150,12 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return res;
     }
-    if (op == "xx") return xxRepeat(b->lhs.get(), b->rhs.get());
-    if (op == "==>" || op == "<==") { // feed: source ==> f(args) ==> … ==> my @target
-        Expr* srcE = op == "==>" ? b->lhs.get() : b->rhs.get();
-        Expr* dstE = op == "==>" ? b->rhs.get() : b->lhs.get();
+  armXx:
+    if (opEq(op, "xx")) return xxRepeat(b->lhs.get(), b->rhs.get());
+  armFeed:
+    if (opEq(op, "==>") || opEq(op, "<==")) { // feed: source ==> f(args) ==> … ==> my @target
+        Expr* srcE = opEq(op, "==>") ? b->lhs.get() : b->rhs.get();
+        Expr* dstE = opEq(op, "==>") ? b->rhs.get() : b->lhs.get();
         Value src = eval(srcE);
         // `… ==> plot` — the target written as a BARE NAME, with no argument
         // list of its own. It is the same call as `==> plot()`, and without
@@ -20153,7 +20216,8 @@ Value Interpreter::evalBinary(Binary* b) {
         *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src, /*store=*/true) : src;
         return *lv;
     }
-    if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
+  armSeq:
+    if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) {
         // sequence operator: seed [, closure] ... endpoint|*. A leading `^`
         // excludes the seed, a trailing one the endpoint.
         //
@@ -20210,7 +20274,8 @@ Value Interpreter::evalBinary(Binary* b) {
         return seqOpGroups(std::move(seed), groups, exclEnd,
                            spine.front()->op.front() == '^');
     }
-    if (op == "~~" || op == "!~~") {
+  armSmart:
+    if (opEq(op, "~~") || opEq(op, "!~~")) {
         // a PAIR pattern names a METHOD: `3 ~~ :is-prime` asks 3.is-prime, and
         // the pair's value says what the answer must be (`:!is-prime` for False,
         // `is-prime => 'truthy'` for anything truthy). Only for a non-Associative
@@ -20222,7 +20287,7 @@ Value Interpreter::evalBinary(Binary* b) {
             if (rp.t == VT::Pair && !rp.s.empty()) {
                 Value l = eval(b->lhs.get());
                 bool res = pairAccepts(l, rp);
-                return Value::boolean(op == "~~" ? res : !res);
+                return Value::boolean(opEq(op, "~~") ? res : !res);
             }
         }
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
@@ -20233,7 +20298,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // `* ~~ /rx/` / `* !~~ /rx/` curry into a matcher WhateverCode (the
             // `.grep: * !~~ /1/` idiom) instead of matching the Whatever eagerly.
             if (l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)) {
-                bool neg = (op == "!~~");
+                bool neg = (opEq(op, "!~~"));
                 Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
                 code.code()->isWhateverCode = true; code.code()->whateverArity = 1;
                 code.code()->builtin = [pat, neg](Interpreter& I, ValueList& a) -> Value {
@@ -20254,7 +20319,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 MatchVarGuard noSlash;
                 for (auto& e : *l.arr()) {
                     Value m = regexMatch(rxSubject(e), pat);
-                    if (op == "~~") out.arr()->push_back(m.truthy() ? m : Value::nil());
+                    if (opEq(op, "~~")) out.arr()->push_back(m.truthy() ? m : Value::nil());
                     else out.arr()->push_back(Value::boolean(!m.truthy()));
                 }
                 return out;
@@ -20304,10 +20369,10 @@ Value Interpreter::evalBinary(Binary* b) {
             // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
             // which is exactly what S03-smartmatch/00-sanity.t asks.
             // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
-            if (op == "~~" && m.t == VT::Array && !m.enumName.empty() &&
+            if (opEq(op, "~~") && m.t == VT::Array && !m.enumName.empty() &&
                 (m.enumName == "any" || m.enumName == "all" || m.enumName == "one" || m.enumName == "none"))
                 return Value::boolean(m.truthy());
-            if (op == "~~")
+            if (opEq(op, "~~"))
                 return m.t == VT::Array ? m
                      : m.truthy()       ? m
                      : static_cast<RegexLit*>(b->rhs.get())->isM ? Value::boolean(false)
@@ -20406,7 +20471,7 @@ Value Interpreter::evalBinary(Binary* b) {
               (lTopic.hashKind == "Distro" || lTopic.hashKind == "Kernel" ||
                lTopic.hashKind == "VM")))) {
             const bool ok = strInStrContext(lTopic) == r.s;
-            return Value::boolean(op == "~~" ? ok : !ok);
+            return Value::boolean(opEq(op, "~~") ? ok : !ok);
         }
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
@@ -20419,7 +20484,7 @@ Value Interpreter::evalBinary(Binary* b) {
         };
         if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
             bool ok = fileTest(r);
-            return Value::boolean(op == "~~" ? ok : !ok);
+            return Value::boolean(opEq(op, "~~") ? ok : !ok);
         }
         // A junction TOPIC threads first and COLLAPSES: smartmatch is
         // `matcher.ACCEPTS(topic)`, and a junction topic autothreads through
@@ -20433,7 +20498,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // of Match objects rather than a verdict.
         // …save against the Junction TYPE (or Mu), which a junction simply IS
         if (isJunction(lTopic) && r.t == VT::Type && (r.s == "Junction" || r.s == "Mu"))
-            return Value::boolean(op == "~~");
+            return Value::boolean(opEq(op, "~~"));
         if (isJunction(lTopic) && r.t != VT::Regex && b->lhs->kind != NK::RegexLit) {
             JunctionCollapse jc(lTopic.enumName);   // short-circuits; see Value.h
             for (auto& e : *lTopic.arr()) {
@@ -20446,7 +20511,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (jc.done()) break;
             }
             bool res = jc.verdict();
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         if (isJunction(r)) {
             // …but a WHATEVER topic CURRIES first: `* !~~ (Iterable:D | CArray:D)`
@@ -20487,12 +20552,12 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (jc.done()) break;
             }
             bool res = jc.verdict();
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         if (r.t == VT::Regex) {
             Value m = regexMatch(rxSubject(lTopic), r.s, &r);
             keepMatchOrig(m, lTopic);
-            if (op == "~~") return m.truthy() ? m : Value::nil();
+            if (opEq(op, "~~")) return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());
         }
         // Regex ~~ Hash / Regex ~~ Array : does the regex match any KEY / element
@@ -20504,7 +20569,7 @@ Value Interpreter::evalBinary(Binary* b) {
             } else if (r.arr()) {
                 for (auto& e : *r.arr()) if (regexMatch(rxSubject(e), pat).truthy()) { res = true; break; }
             }
-            return Value::boolean(op == "~~" ? res : !res);
+            return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         if (r.t == VT::Code) {
             // `$x ~~ *.method` / `$x ~~ { … }` / `$x ~~ &c` — call it with $x, match on truthiness
@@ -20513,9 +20578,9 @@ Value Interpreter::evalBinary(Binary* b) {
             Value m = callCallable(r, r.code() ? smartmatchCallArgs(r, lTopic) : ValueList{lTopic},
                                    nullptr, false, /*arityCheck=*/true);
             // a regex Callable (my regex pair {…}) yields its MATCH, like Rakudo
-            if (op == "~~" && m.t == VT::Match) return m;
+            if (opEq(op, "~~") && m.t == VT::Match) return m;
             bool ok = boolify(m);
-            return Value::boolean(op == "~~" ? ok : !ok);
+            return Value::boolean(opEq(op, "~~") ? ok : !ok);
         }
         // The Signature-ACCEPTS, object-ACCEPTS and Numeric-matcher arms that used
         // to sit here now live in applyArith, the bottom every smartmatch path
@@ -20529,8 +20594,9 @@ Value Interpreter::evalBinary(Binary* b) {
             return smartmatchValue(op, lTopic, r);
         return applyArith(op, lTopic, r);
     }
-    if (op == "ff" || op == "fff" || op == "ff^" || op == "fff^" ||
-        op == "^ff" || op == "^fff" || op == "^ff^" || op == "^fff^") {
+  armFf:
+    if (opEq(op, "ff") || opEq(op, "fff") || opEq(op, "ff^") || opEq(op, "fff^") ||
+        opEq(op, "^ff") || opEq(op, "^fff") || opEq(op, "^ff^") || opEq(op, "^fff^")) {
         // Flip-flop: stateful per site. Off it tests the LHS; a hit turns it on
         // (and for `ff` the RHS is tested on the SAME element, so a one-element
         // run works — `fff` is sed-like and waits for the next). On it tests the
@@ -20568,10 +20634,12 @@ Value Interpreter::evalBinary(Binary* b) {
         if (closes && exclLast) return Value::nil();
         return Value::integer(st.seq);
     }
-    if (op == "&&" || op == "and" || op == "||" || op == "or" || op == "//" ||
-        op == "andthen" || op == "orelse" || op == "notandthen")
+  armLogic:
+    if (opEq(op, "&&") || opEq(op, "and") || opEq(op, "||") || opEq(op, "or") || opEq(op, "//") ||
+        opEq(op, "andthen") || opEq(op, "orelse") || opEq(op, "notandthen"))
         return shortCircuitOp(op, b->lhs.get(), b->rhs.get());
-    if (op == "^^" || op == "xor") {
+  armXor:
+    if (opEq(op, "^^") || opEq(op, "xor")) {
         // `^^` has "find the one true value" semantics over the WHOLE chain
         // (list-associative): the single true operand, Nil if more than one is
         // true, the last operand if none is. Flatten `a ^^ b ^^ c` first.
@@ -20593,7 +20661,8 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return haveTrue ? found : last;
     }
-    if (op == "&" || op == "|" || op == "^") {
+  armJunc:
+    if (opEq(op, "&") || opEq(op, "|") || opEq(op, "^")) {
         // A user `sub infix:<|>(*@a)` SHADOWS the junction constructor — and the
         // constructors are LIST-associative, so `1 | 2 | 3 | 4` is ONE call with
         // four operands, not three nested ones. (S03-junctions/boolean-context.t
@@ -20616,7 +20685,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // same constructor is one junction (`1|2|3` is any(1, 2, 3)); a junction
         // operand that came from parentheses or a variable stays whole —
         // `(1|2) & (3&4)` is all(any(1, 2), all(3, 4))
-        if (op == "|" || op == "&" || op == "^") {
+        if (opEq(op, "|") || opEq(op, "&") || opEq(op, "^")) {
             std::vector<Expr*> chain;
             Expr* cur = b;
             while (cur->kind == NK::Binary && static_cast<Binary*>(cur)->op == op &&
@@ -20625,7 +20694,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 cur = static_cast<Binary*>(cur)->lhs.get();
             }
             chain.push_back(cur);
-            Value j = Value::array(); j.enumName = op == "|" ? "any" : op == "&" ? "all" : "one";
+            Value j = Value::array(); j.enumName = opEq(op, "|") ? "any" : opEq(op, "&") ? "all" : "one";
             for (size_t k = chain.size(); k-- > 0;) j.arr()->push_back(evalValueOf(chain[k]));
             return j;
         }
@@ -20633,7 +20702,8 @@ Value Interpreter::evalBinary(Binary* b) {
         Value r = evalValueOf(b->rhs.get());
         return applyArith(op, l, r);
     }
-    if ((op == "Z" || op == "X") && b->lhs->kind == NK::Binary &&
+  armZX:
+    if ((opEq(op, "Z") || opEq(op, "X")) && b->lhs->kind == NK::Binary &&
         static_cast<Binary*>(b->lhs.get())->op == op) {
         // `@a Z @b Z @c` is ONE list-infix chain producing 3-tuples — a pairwise
         // fold would zip tuples-with-a-list and come out mangled. Same for X, and
@@ -20652,9 +20722,10 @@ Value Interpreter::evalBinary(Binary* b) {
         for (Expr* e : chain) items.push_back(eval(e));
         return applyReduce(op, items);
     }
+  generic:
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
-    if (op == "**" && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+    if (opEq(op, "**") && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
         return Value::integer(0);
     if (l.natBits || r.natBits) {
         Value nv;
@@ -20743,7 +20814,7 @@ static signed char unaryPath(const std::string& op) {
     if (op.rfind("hyper:", 0) == 0) return 0;
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']') return 0;
     if (EARLY.count(op)) return 0;
-    if (op == "++" || op == "--") return 1;
+    if (opEq(op, "++") || opEq(op, "--")) return 1;
     return 2;
 }
 
@@ -20758,9 +20829,9 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op.rfind("hyper:", 0) == 0)
         return hyperUnary(u->op.substr(6), eval(u->operand.get()));
     // control-flow in expression position: return/last/next/redo
-    if (u->op == "return" || u->op == "return-rw") {
+    if (opEq(u->op, "return") || opEq(u->op, "return-rw")) {
         // expression-position `return-rw` in lvalue mode: surface the container
-        if (u->op == "return-rw" && u->operand && tctx_.wantLvalue &&
+        if (opEq(u->op, "return-rw") && u->operand && tctx_.wantLvalue &&
             tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
             try { tctx_.lvalueOut = lvalueThroughRw(u->operand.get()); } catch (RakuError&) {}
             if (tctx_.lvalueOut) {
@@ -20824,7 +20895,7 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         throw ReturnEx{v};
     }
-    if (u->op == "last" || u->op == "next" || u->op == "redo") {
+    if (opEq(u->op, "last") || opEq(u->op, "next") || opEq(u->op, "redo")) {
         // The cooperative form — set a flag, return, let the loop see it after
         // the STATEMENT — is only right when the control word IS the statement.
         // As an operand (`my Str $s = %h{$_} // next`, Font::AFM's glyph walk)
@@ -20833,17 +20904,17 @@ Value Interpreter::evalUnary(Unary* u) {
         // catches the exception exactly as it does from a nested block.
         if (tctx_.frameTop == tctx_.curLoopFrame &&
             u == tctx_.curStmtExpr) {
-            tctx_.loopCtl = u->op == "next" ? 1 : u->op == "last" ? 2 : 3; // cooperative
+            tctx_.loopCtl = opEq(u->op, "next") ? 1 : opEq(u->op, "last") ? 2 : 3; // cooperative
             return Value::any();
         }
-        if (u->op == "last") throw LastEx{};
-        if (u->op == "next") throw NextEx{};
+        if (opEq(u->op, "last")) throw LastEx{};
+        if (opEq(u->op, "next")) throw NextEx{};
         throw RedoEx{};
     }
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
         std::string op = u->op.substr(1, u->op.size() - 2);
-        if (op == "=" && u->operand->kind == NK::ListExpr) {
+        if (opEq(op, "=") && u->operand->kind == NK::ListExpr) {
             // [=] $a, $b, $c, 42 — right-to-left chain assignment (needs lvalues)
             auto* le = static_cast<ListExpr*>(u->operand.get());
             if (le->items.empty()) return Value::any();
@@ -20852,7 +20923,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (Value* lvp = lvalue(le->items[k].get())) *lvp = v;
             return v;
         }
-        if ((op == "=:=" || op == "!=:=") && u->operand->kind == NK::ListExpr) {
+        if ((opEq(op, "=:=") || opEq(op, "!=:=")) && u->operand->kind == NK::ListExpr) {
             // container-identity chain over variables ([=:=] $x, $y, $x)
             auto* le = static_cast<ListExpr*>(u->operand.get());
             bool allVars = !le->items.empty();
@@ -21091,13 +21162,13 @@ Value Interpreter::evalUnary(Unary* u) {
         if (sawEndless) return endless;
         return applyReduce(op, items);
     }
-    if (u->op == "siglit") { // :( … ) — a first-class Signature literal
+    if (opEq(u->op, "siglit")) { // :( … ) — a first-class Signature literal
         Value c = eval(u->operand.get()); // the params-only closure
         if (c.t == VT::Code && c.code()) c.code()->isSigLiteral = true;
         ValueList none;
         return methodCall(c, "signature", none);
     }
-    if (u->op == "symexists" || u->op == "sym!exists") { // `::<name>:exists` — namespace probe
+    if (opEq(u->op, "symexists") || opEq(u->op, "sym!exists")) { // `::<name>:exists` — namespace probe
         std::string nm = static_cast<StrLit*>(u->operand.get())->v;
         bool found = tctx_.cur->find(nm) != nullptr || isPseudoChain(nm);
         // a bare word probes the symbol however it would resolve: a routine
@@ -21107,7 +21178,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     (global_ && global_->local(nm));
         return Value::boolean(u->op[3] == 'e' ? found : !found);
     }
-    if (u->op == "capture") { // \(…): a Capture — one item, assoc-indexable on its named parts
+    if (opEq(u->op, "capture")) { // \(…): a Capture — one item, assoc-indexable on its named parts
         // A Capture literal IS the argument list it stands for, so build it the way
         // a call builds its arguments: `k => v` and `|%h` become NAMED parts, `|@a`
         // slips positionally, and a bare `@a` is ONE positional. Evaluating the
@@ -21165,14 +21236,14 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     // the zen slice `$x<>` / `$x[]` / `$x{}` — `.item`'s exact inverse: the value
     // steps out of its item container, so `for $aoa<>` walks the elements
-    if (u->op == "decont") {
+    if (opEq(u->op, "decont")) {
         Value v = eval(u->operand.get());
         if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = false;
         return v;
     }
-    if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%" || u->op == "ctx%{}") {
+    if (opEq(u->op, "ctx$") || opEq(u->op, "ctx@") || opEq(u->op, "ctx%") || opEq(u->op, "ctx%{}")) {
         Value v = eval(u->operand.get());
-        if (u->op == "ctx@") {
+        if (opEq(u->op, "ctx@")) {
             seqUse(v, SeqUse::Cache);   // `@$s` keeps a Seq's values — unless it was read (SeqToken)
             // A Match in list context is its POSITIONAL CAPTURES — `.list` — and
             // that is the same question however the match was reached: `@$/`
@@ -21226,7 +21297,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // …and a Match in hash context is its NAMED captures — `.hash` — which is
         // what `%<x>` reads. Coercing the match itself built a hash of its
         // stringification instead, so `%<x>` came back empty.
-        if (u->op == "ctx%" && v.t == VT::Match) {
+        if (opEq(u->op, "ctx%") && v.t == VT::Match) {
             Value h = Value::makeHash();
             if (v.hash()) *h.hash() = *v.hash();
             return h;
@@ -21234,9 +21305,9 @@ Value Interpreter::evalUnary(Unary* u) {
         // `%(…)` is a hash STORE: an odd number of plain items is the error,
         // not a dropped tail (sheet HM-01)
         // (the `%` context DEcontainerizes: `my @a = %$h` is the hash's pairs)
-        if (u->op == "ctx%") { if (v.t == VT::Hash) { Value h = v; h.itemized = false; return h; }
+        if (opEq(u->op, "ctx%")) { if (v.t == VT::Hash) { Value h = v; h.itemized = false; return h; }
                                return coerceHash(v, /*store=*/true); }
-        if (u->op == "ctx%{}") {                        // :{ ... } object-hash composer
+        if (opEq(u->op, "ctx%{}")) {                        // :{ ... } object-hash composer
             Value h = v.t == VT::Hash && v.hashKind.empty() ? v
                                                            : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
             // Rakudo's `:{ }` is `Hash[Mu,Mu,Any]` — the composer passes a third
@@ -21251,7 +21322,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v; // item context
     }
-    if (u->op == "BEGIN") {
+    if (opEq(u->op, "BEGIN")) {
         // once per NODE: the first evaluation stands in for compile time,
         // every later one reads the cached value (see the parser note)
         {
@@ -21271,7 +21342,7 @@ Value Interpreter::evalUnary(Unary* u) {
         beginCache_.emplace(u, v);
         return v;
     }
-    if (u->op == "do") {
+    if (opEq(u->op, "do")) {
         if (u->operand->kind == NK::BlockExpr) {
             auto* be = static_cast<BlockExpr*>(u->operand.get());
             if (!be->phaser.empty() && !staticPhaserVal_.empty()) {   // ran before the code around it
@@ -21291,7 +21362,7 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         return eval(u->operand.get());
     }
-    if (u->op == "lazydo") {
+    if (opEq(u->op, "lazydo")) {
         Value a = Value::seq();
         auto st = std::make_shared<LazySeqState>();
         Expr* body = u->operand.get();
@@ -21387,7 +21458,7 @@ Value Interpreter::evalUnary(Unary* u) {
         a.extM() = st;
         return a;
     }
-    if (u->op == "stmtseq") {
+    if (opEq(u->op, "stmtseq")) {
         // `$(stmt; stmt; expr)` — statements run in the CURRENT scope (a temp/let
         // inside must register on the enclosing block, not a nested one); the
         // value is the last statement's value
@@ -21397,7 +21468,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 r = exec(s.get(), false);
         return r;
     }
-    if (u->op == "try") {
+    if (opEq(u->op, "try")) {
         // `$!` is the ROUTINE's (or the mainline's), not the block's: a `try`
         // in a bare block sets the one its routine reads afterwards. A scope
         // that already holds its own `$!` on the way up keeps getting it.
@@ -21453,7 +21524,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return Value::nil();
         }
     }
-    if (u->op == "require") {
+    if (opEq(u->op, "require")) {
         // runtime module load with a computed name: `require ::($name)`.
         // Yields the loaded module's type object; throws if nothing loadable was
         // found (so zef's `(try require ::($m)) ~~ Nil` probe sees Nil on failure).
@@ -21529,7 +21600,7 @@ Value Interpreter::evalUnary(Unary* u) {
         throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                         "Could not find " + name + " in the module search path"};
     }
-    if (u->op == "once") {
+    if (opEq(u->op, "once")) {
         // run once per enclosing-routine INSTANCE (a fresh closure clone
         // re-runs it); later hits return the cached first value
         Env* se = tctx_.curStateEnv;
@@ -21541,7 +21612,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (se) se->vars[key] = r;
         return r;
     }
-    if (u->op == "quietly") { // suppress warn() output within the block
+    if (opEq(u->op, "quietly")) { // suppress warn() output within the block
         quietDepth_++;
         try {
             Value r = u->operand->kind == NK::BlockExpr
@@ -21552,7 +21623,7 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         catch (...) { quietDepth_--; throw; }
     }
-    if (u->op == "gather") {
+    if (opEq(u->op, "gather")) {
         const bool deferGather = deferGather_; deferGather_ = false;
 #if RAKUPP_HAVE_CORO
         return makeGatherSeq(u, deferGather);
@@ -21720,7 +21791,7 @@ Value Interpreter::evalUnary(Unary* u) {
         return arr;
     }
   incDec:
-    if (u->op == "++" || u->op == "--") {
+    if (opEq(u->op, "++") || opEq(u->op, "--")) {
         // Whatever-currying: `++*` / `*--` are WhateverCodes that step their
         // argument — mutating the DRIVER's element when one is aliased
         // (`.deepmap(++*)` in roast S03-metaops/hyper.t writes @a in place;
@@ -21732,9 +21803,9 @@ Value Interpreter::evalUnary(Unary* u) {
             code.code()->builtin = [op, post](Interpreter& I, ValueList& a) -> Value {
                 Value cur = a.empty() ? Value::any() : a[0];
                 Value nv = cur.t == VT::Bool
-                    ? Value::boolean(op == "++")
-                    : cur.t == VT::Str ? (op == "++" ? Value::str(strSucc(cur.s)) : cur)
-                    : applyArith(op == "++" ? "+" : "-",
+                    ? Value::boolean(opEq(op, "++"))
+                    : cur.t == VT::Str ? (opEq(op, "++") ? Value::str(strSucc(cur.s)) : cur)
+                    : applyArith(opEq(op, "++") ? "+" : "-",
                                  cur.t == VT::Any ? Value::integer(0) : cur, Value::integer(1));
                 if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
                 else if (I.builtinArgWriter_) (*I.builtinArgWriter_)(0, nv);
@@ -21748,7 +21819,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 Value* lv = lvalue(u->operand.get());
                 if (lv && !lv->readonly && (lv->t == VT::Int || lv->t == VT::Rat || lv->t == VT::Num)) {
                     Value old = *lv;
-                    Value nv = applyArith(u->op == "++" ? "+" : "-", old, Value::integer(1));
+                    Value nv = applyArith(opEq(u->op, "++") ? "+" : "-", old, Value::integer(1));
                     subsetMutationCheck(u->operand.get(), nv);
                     *lv = nv;
                     return u->postfix ? old : nv;
@@ -21783,7 +21854,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     Value k = eval(ix->index.get());
                     std::string key = hashSubKey(k, bp);
                     bool had = bp->hash()->count(key) > 0;
-                    bool now = u->op == "++";
+                    bool now = opEq(u->op, "++");
                     if (now && !had) {
                         Value tv = Value::boolean(true);
                         if (!(k.t == VT::Str && k.hashKind.empty() && k.enumName.empty())) {
@@ -21807,9 +21878,9 @@ Value Interpreter::evalUnary(Unary* u) {
                         Value bv = *bp;                 // methodCall may invalidate bp
                         Value k = eval(ix->index.get());
                         Value old = methodCall(bv, gm, ValueList{k});
-                        Value nv = old.t == VT::Bool ? Value::boolean(u->op == "++")
-                                 : old.t == VT::Str  ? (u->op == "++" ? Value::str(strSucc(old.s)) : old)
-                                 : applyArith(u->op == "++" ? "+" : "-",
+                        Value nv = old.t == VT::Bool ? Value::boolean(opEq(u->op, "++"))
+                                 : old.t == VT::Str  ? (opEq(u->op, "++") ? Value::str(strSucc(old.s)) : old)
+                                 : applyArith(opEq(u->op, "++") ? "+" : "-",
                                               old.t == VT::Any ? Value::integer(0) : old,
                                               Value::integer(1));
                         methodCall(bv, sm, ValueList{k, nv});
@@ -21822,7 +21893,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // plain value, not the container, so `++++$x` matches no candidate.
         if (u->operand->kind == NK::Unary) {
             auto* in = static_cast<Unary*>(u->operand.get());
-            if (in->op == "++" || in->op == "--")
+            if (opEq(in->op, "++") || opEq(in->op, "--"))
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller " + std::string(u->postfix ? "postfix" : "prefix") +
                     ":<" + u->op + ">(Int:D); the following candidates match the type but "
@@ -21840,7 +21911,7 @@ Value Interpreter::evalUnary(Unary* u) {
             default: break;
         }
         // …and neither has a scalar BOUND to a value (`my ($a) := \(3)`)
-        if (u->operand->kind == NK::VarExpr && (u->op == "++" || u->op == "--")) {
+        if (u->operand->kind == NK::VarExpr && (opEq(u->op, "++") || opEq(u->op, "--"))) {
             const std::string& vn = static_cast<VarExpr*>(u->operand.get())->name;
             if (vn.size() > 1 && vn[0] == '$' && tctx_.cur)
                 if (Value* sl = tctx_.cur->find(vn))
@@ -21857,7 +21928,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (lv && lv->t == VT::Hash && lv->hashKind == "Proxy" == false && lv->hashKind == "Pointer") {
             Value old = *lv;
             ValueList none;
-            *lv = methodCall(old, u->op == "++" ? "succ" : "pred", none);
+            *lv = methodCall(old, opEq(u->op, "++") ? "succ" : "pred", none);
             return u->postfix ? old : *lv;
         }
         // `++`/`--` MUTATE, so a readonly container refuses them just as `=` does.
@@ -21881,11 +21952,11 @@ Value Interpreter::evalUnary(Unary* u) {
                 Value oldp = callCallable(fit->second, {});
                 Value newp;
                 if (oldp.t == VT::Str) {
-                    if (u->op == "++") newp = Value::str(strSucc(oldp.s));
+                    if (opEq(u->op, "++")) newp = Value::str(strSucc(oldp.s));
                     else { bool ok; std::string r = strPred(oldp.s, ok); newp = ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range"); }
                 }
-                else if (oldp.t == VT::Bool) newp = Value::boolean(u->op == "++");
-                else newp = applyArith(u->op == "++" ? "+" : "-", oldp, Value::integer(1));
+                else if (oldp.t == VT::Bool) newp = Value::boolean(opEq(u->op, "++"));
+                else newp = applyArith(opEq(u->op, "++") ? "+" : "-", oldp, Value::integer(1));
                 proxyStore(*lv, newp);
                 return u->postfix ? oldp : newp;
             }
@@ -21909,23 +21980,23 @@ Value Interpreter::evalUnary(Unary* u) {
             return false;
         };
         if (lv->t == VT::Bool || (lv->t == VT::Type && lv->s == "Bool")) {
-            newv = Value::boolean(u->op == "++");
+            newv = Value::boolean(opEq(u->op, "++"));
             // postfix on an undefined Bool returns False (the S03 "postfix on
             // undefined returns the type's zero" rule), not the type object
             if (oldv.t == VT::Type) oldv = Value::boolean(false);
-        } else if (strMagic && u->op == "++") {
+        } else if (strMagic && opEq(u->op, "++")) {
             newv = Value::str(strSucc(lv->s));
-        } else if (strMagic && u->op == "--") {
+        } else if (strMagic && opEq(u->op, "--")) {
             bool ok; std::string r = strPred(lv->s, ok);
             newv = ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range");
-        } else if (classHas(u->op == "++" ? "succ" : "pred")) {
-            newv = methodCall(*lv, u->op == "++" ? "succ" : "pred", {});
+        } else if (classHas(opEq(u->op, "++") ? "succ" : "pred")) {
+            newv = methodCall(*lv, opEq(u->op, "++") ? "succ" : "pred", {});
         } else if (lv->t == VT::Type && lv->s == "Num") {
             // an undefined `my Num $v` steps from 0e0 and stays a Num
-            newv = Value::number(u->op == "++" ? 1.0 : -1.0);
+            newv = Value::number(opEq(u->op, "++") ? 1.0 : -1.0);
             oldv = Value::number(0.0);
         } else {
-            newv = applyArith(u->op == "++" ? "+" : "-", *lv, Value::integer(1));
+            newv = applyArith(opEq(u->op, "++") ? "+" : "-", *lv, Value::integer(1));
             if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned, lv->natFloat); // native int wraparound
         }
         // `++` is an assignment, so the container's declared type applies to
@@ -21991,8 +22062,8 @@ Value Interpreter::evalUnary(Unary* u) {
          (v.t == VT::Code && v.code() && v.code()->isWhateverCode &&
           // (a sigilless `\p` holding one is a VALUE too, like a `$p`)
           !(u->operand && (u->operand->kind == NK::VarExpr || u->operand->kind == NK::NameTerm)))) &&
-        (u->op == "~" || u->op == "-" || u->op == "+" || u->op == "?" || u->op == "!" ||
-         u->op == "so" || u->op == "not" || u->op == "+^" || u->op == "^" || u->op == "|")) {
+        (opEq(u->op, "~") || opEq(u->op, "-") || opEq(u->op, "+") || opEq(u->op, "?") || opEq(u->op, "!") ||
+         opEq(u->op, "so") || opEq(u->op, "not") || opEq(u->op, "+^") || opEq(u->op, "^") || opEq(u->op, "|"))) {
         Value inner = v; std::string op = u->op;
         Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
@@ -22004,19 +22075,19 @@ Value Interpreter::evalUnary(Unary* u) {
             // and a user `method Bool`. `.map(~*)` over Text::CSV's CSV::Field
             // was answering the default `Field<0x…>` gist while `~$field` on
             // the very same object answered its text.
-            if (op == "~") return I.prefixStringify(b);
+            if (opEq(op, "~")) return I.prefixStringify(b);
             // …and `+`/`-` are the SAME implementation the direct path runs, not
             // a second one that drifts (prefixNumeric).
-            if (op == "+" || op == "-") return I.prefixNumeric(op, b);
-            if (op == "?" || op == "so") return Value::boolean(I.boolify(b));
-            if (op == "^") return Value::range(0, strictInt(b), false, true);
+            if (opEq(op, "+") || opEq(op, "-")) return I.prefixNumeric(op, b);
+            if (opEq(op, "?") || opEq(op, "so")) return Value::boolean(I.boolify(b));
+            if (opEq(op, "^")) return Value::range(0, strictInt(b), false, true);
             // `|*` — the one-level flattener `@aoa.map(|*)` spreads each inner
             // list with. Evaluated eagerly it slipped the WHATEVER itself, and
             // mapping over that Slip yielded nothing at all: Data::Tree's
             // `flatten` returned only the root and `levels` only the first
             // level, silently, on every tree.
-            if (op == "|") return slipOf(b);
-            if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
+            if (opEq(op, "|")) return slipOf(b);
+            if (opEq(op, "+^")) { // bitwise NOT: -(x+1), exact at any width
                 if (b.big()) {
                     BigInt res = BigInt(0) - (*b.big() + BigInt(1));
                     return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
@@ -22028,7 +22099,7 @@ Value Interpreter::evalUnary(Unary* u) {
         return code;
     }
     // postfix:<i> — multiply by the imaginary unit: (3)i, (2i)i → -2
-    if (u->op == "i" && u->postfix) return postfixI(std::move(v));
+    if (opEq(u->op, "i") && u->postfix) return postfixI(std::move(v));
     // A user-defined prefix operator on an OBJECT outranks the built-in one, as
     // its narrower candidate does in Rakudo — `multi sub prefix:<->(M:D $m)` is
     // more specific than the built-in's Any/Numeric. The user lookup at the foot
@@ -22061,27 +22132,27 @@ Value Interpreter::evalUnary(Unary* u) {
     // prefix `+` / `-` in full — shared with the `+*` / `-*` WhateverCode below,
     // which used to carry its own thinner copy of it (see prefixNumeric)
     // a JUNCTION autothreads the numeric prefixes: `+([1, 2] | 5)` is any(2, 5)
-    if ((u->op == "+" || u->op == "-") && isJunction(v)) {
+    if ((opEq(u->op, "+") || opEq(u->op, "-")) && isJunction(v)) {
         Value out = Value::array(); out.enumName = v.enumName;
         for (auto& e : *v.arr()) out.arr()->push_back(prefixNumeric(u->op, e));
         return out;
     }
     // `-$m` on a native int is the native negation: `-int.min` wraps to int.min,
     // and the result stays native, so `-$c - 2` wraps too (Rakudo 2026.09)
-    if (u->op == "-" && v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64) &&
+    if (opEq(u->op, "-") && v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64) &&
         nativeIntNode(u->operand.get()) &&
         v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty()) {
         Value nv = Value::integer((long long)(0ULL - (unsigned long long)v.i));
         nv.natBits = 64; nv.natSigned = true;
         return nv;
     }
-    if (u->op == "-" && v.natBits && v.natFloat && v.t == VT::Num && nativeExprNode(u->operand.get())) {
+    if (opEq(u->op, "-") && v.natBits && v.natFloat && v.t == VT::Num && nativeExprNode(u->operand.get())) {
         Value nv = Value::number(-v.n);
         nv.natBits = 64; nv.natFloat = true;
         return nv;
     }
-    if (u->op == "+" || u->op == "-") return prefixNumeric(u->op, v);
-    if (u->op == "~") {
+    if (opEq(u->op, "+") || opEq(u->op, "-")) return prefixNumeric(u->op, v);
+    if (opEq(u->op, "~")) {
         // prefix ~ is an OPERATOR, so it autothreads over a junction (Rakudo:
         // `~(1|2)` is any("1", "2")); the .Str METHOD does not, and both engines
         // agree on that split.
@@ -22102,9 +22173,9 @@ Value Interpreter::evalUnary(Unary* u) {
                             "Cannot resolve caller prefix:<~>(Mu:U); none of these signatures matches:\n    (\\a)"};
         return prefixStringify(v); // honour a user Str/gist / Exception .message
     }
-    if (u->op == "!") return Value::boolean(!boolify(v));
-    if (u->op == "?") return Value::boolean(boolify(v));
-    if (u->op == "+^") { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
+    if (opEq(u->op, "!")) return Value::boolean(!boolify(v));
+    if (opEq(u->op, "?")) return Value::boolean(boolify(v));
+    if (opEq(u->op, "+^")) { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
                           // reads +^ of a top-bit-set 64-bit word — ~strictInt
                           // saturated it to LLONG_MIN and the digest was garbage)
         if (v.big()) {
@@ -22113,8 +22184,8 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         return Value::integer(~strictInt(v));
     }
-    if (u->op == "?^") return Value::boolean(!boolify(v));
-    if (u->op == "~^") {
+    if (opEq(u->op, "?^")) return Value::boolean(!boolify(v));
+    if (opEq(u->op, "~^")) {
         // On a Blob/Buf this is the byte-wise complement, and Rakudo implements
         // it: `~^ Buf.new(0x41, 0xFF)` is Buf:0x<BE 00>.
         if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
@@ -22143,7 +22214,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return f;
         }
     }
-    if (u->op == "^") {
+    if (opEq(u->op, "^")) {
         // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
         // type, so the range holds six integers and reports 5.5 as its max.
         if (v.t == VT::Num || v.t == VT::Rat) {
@@ -22174,7 +22245,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
         return r;
     }
-    if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
+    if (opEq(u->op, "|")) { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         return slipOf(v);
     }
@@ -22190,7 +22261,7 @@ Value Interpreter::evalUnary(Unary* u) {
     // died with "Unsupported prefix 'dimslip'". Rakudo answers a Slip of the
     // operand, which is what makes both the chain and `@a[|| @dims]` work off
     // one rule. Data::Translators writes its HTML detector this way.
-    if (u->op == "dimslip") {
+    if (opEq(u->op, "dimslip")) {
         Value v = eval(u->operand.get());
         Value out = Value::array();
         if (v.t == VT::Array && v.arr()) *out.arr() = *v.arr();
@@ -22313,7 +22384,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 // pair is stripped — but a handful of real operators are themselves `<…>`-shaped
 // and must survive verbatim (`&infix:<<=>>` is the three-way comparison, not `=`).
 static bool angleShapedOp(const std::string& op) {
-    return op == "<=>" || op == "<==>" || op == "<->" || op == "<<>>";
+    return opEq(op, "<=>") || opEq(op, "<==>") || opEq(op, "<->") || opEq(op, "<<>>");
 }
 // hyper markers in operator NAMES (&infix:<»+«>, prefix:<-«>) arrive as raw
 // UTF-8 — the lexer only normalizes op tokens — so map them to ASCII >>/<<.
@@ -22372,7 +22443,7 @@ Value* Interpreter::compoundCheckSlot(Assign* a, bool& sameTypeOk) {
                 if (typed || deep || en->local(nm)) break;
             }
             if (deep) v = 2;
-            else if (typed && !(want == "Str" && op == "~=")) v = subsets_.count(want) ? 2 : 1;
+            else if (typed && !(want == "Str" && opEq(op, "~="))) v = subsets_.count(want) ? 2 : 1;
         }
         a->typedCheck = v;
         if (v == 0) return nullptr;
@@ -22589,9 +22660,9 @@ Value Interpreter::evalCall(Call* c) {
         // ever looked at — which is exactly why the value used to vanish.
         if (sixE() && c->callee->kind == NK::Unary) {
             auto* cu = static_cast<const Unary*>(c->callee.get());
-            if ((cu->op == "next" || cu->op == "last") && !cu->operand && c->args.size() == 1) {
+            if ((opEq(cu->op, "next") || opEq(cu->op, "last")) && !cu->operand && c->args.size() == 1) {
                 Value v = eval(c->args[0].get());
-                if (cu->op == "next") throw NextEx{"", v, true};
+                if (opEq(cu->op, "next")) throw NextEx{"", v, true};
                 throw LastEx{"", v, true};
             }
         }
@@ -22958,8 +23029,8 @@ Value Interpreter::evalCall(Call* c) {
         if (with.t == VT::Code && with.code() && with.code()->name.rfind("infix:<", 0) == 0 &&
             with.code()->name.size() > 9) {
             std::string op = with.code()->name.substr(7, with.code()->name.size() - 8);
-            if (op.size() >= 2 && op.back() == '=' && op != "==" && op != "<=" &&
-                op != ">=" && op != "!=" && op != "<=>")
+            if (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "<=") &&
+                !opEq(op, ">=") && !opEq(op, "!=") && !opEq(op, "<=>"))
                 base = op.substr(0, op.size() - 1);
         }
         // a USER callable may mutate its raw/rw params (sub csta(\a,\b) { a = "foo" })
@@ -23003,33 +23074,33 @@ Value Interpreter::evalCall(Call* c) {
         op = normHyperMarkers(op); // infix:<»+«>(…) — the hyper spelling as ASCII
         // `infix:<=>($x, v)` / `infix:<+=>($x, v)` / … — an assignment operator in
         // call form assigns (or metaop-assigns) through its l-value first operand.
-        bool isAssign = op == "=" ||
-            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
-             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=" &&
+        bool isAssign = opEq(op, "=") ||
+            (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "!=") &&
+             !opEq(op, "<=") && !opEq(op, ">=") && !opEq(op, "=:=") && !opEq(op, "!==") && !opEq(op, ".=") &&
              // …and the identity/approximation family, which also ENDS in `=`:
              // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
-             op != "===" && op != "!===" && op != "!=:=" && op != "=~=" && op != "!=~=");
+             !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
         if (isAssign && c->args.size() >= 2) {
             if (Value* lv = lvalue(c->args[0].get())) {
-                *lv = (op == "=") ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
+                *lv = (opEq(op, "=")) ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
                 return *lv;
             }
         }
         // the short-circuit infixes in CALL form take a Callable second operand
         // as their thunk: `infix:<||>(Any, sub { 42 })` is 42
         if (args.size() == 2 && args[1].t == VT::Code && args[1].code() && !args[1].code()->isWhateverCode &&
-            (op == "||" || op == "&&" || op == "//" || op == "^^" || op == "or" || op == "and" ||
-             op == "xor" || op == "orelse" || op == "andthen" || op == "notandthen")) {
+            (opEq(op, "||") || opEq(op, "&&") || opEq(op, "//") || opEq(op, "^^") || opEq(op, "or") || opEq(op, "and") ||
+             opEq(op, "xor") || opEq(op, "orelse") || opEq(op, "andthen") || opEq(op, "notandthen"))) {
             const Value& l = args[0];
-            bool takeLeft = (op == "||" || op == "or") ? boolify(l)
-                          : (op == "&&" || op == "and") ? !boolify(l)
-                          : (op == "//" || op == "orelse") ? isDefined(l)
-                          : (op == "andthen") ? !isDefined(l)
-                          : (op == "notandthen") ? isDefined(l)
+            bool takeLeft = (opEq(op, "||") || opEq(op, "or")) ? boolify(l)
+                          : (opEq(op, "&&") || opEq(op, "and")) ? !boolify(l)
+                          : (opEq(op, "//") || opEq(op, "orelse")) ? isDefined(l)
+                          : (opEq(op, "andthen")) ? !isDefined(l)
+                          : (opEq(op, "notandthen")) ? isDefined(l)
                           : false;
             if (takeLeft) return l;
             Value r = callCallable(args[1], ValueList{});
-            if (op == "^^" || op == "xor") {
+            if (opEq(op, "^^") || opEq(op, "xor")) {
                 if (boolify(l) && boolify(r)) return Value::nil();
                 return boolify(l) ? l : r;
             }
@@ -23044,7 +23115,7 @@ Value Interpreter::evalCall(Call* c) {
         // named argument that folds each tuple — `infix:<X>((1,2),(3,4),
         // :with(&[+]))` is (4, 5, 5, 6), not a left fold with the Pair as an
         // operand. Route them to the n-ary builder and apply :with after.
-        if (op == "Z" || op == "X" || (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
+        if (opEq(op, "Z") || opEq(op, "X") || (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
             Value with; ValueList rows;
             for (auto& v : args) {
                 if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal()) { with = *v.pairVal(); continue; }
@@ -23068,7 +23139,7 @@ Value Interpreter::evalCall(Call* c) {
         // the next one whole — which is what makes that sequence step by 5 from 10
         // and by 25 from 50. `^...` and `^...^` have no infix arm at all (they are
         // rewritten at parse time), so this is also where their call form lives.
-        if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
+        if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) {
             if (args.size() >= 2) {
                 std::vector<ValueList> groups; std::vector<char> ends;
                 for (size_t k = 1; k < args.size(); k++) {
@@ -23088,7 +23159,7 @@ Value Interpreter::evalCall(Call* c) {
         // infixes take a `+@` slurpy, so ONE Iterable or Associative argument
         // spreads into its elements (a Hash into its Pairs) rather than being the
         // single operand it looks like.
-        if ((op == "andthen" || op == "orelse" || op == "notandthen") && args.size() == 1) {
+        if ((opEq(op, "andthen") || opEq(op, "orelse") || opEq(op, "notandthen")) && args.size() == 1) {
             ValueList spread;
             if (args[0].t == VT::Hash && args[0].hash() && args[0].hashKind.empty()) {
                 for (auto& kv : *args[0].hash()) {
@@ -23106,7 +23177,7 @@ Value Interpreter::evalCall(Call* c) {
             }
         }
         if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
-            if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(args); // ⊖ is variadic, not a fold
+            if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(args); // ⊖ is variadic, not a fold
             if (isSetOpStr(op) && !isSetPredicateStr(op))
                 if (auto j = setOpFoldN(op, args)) return *j; // one joint tier over every operand
             Value acc = args[0];
@@ -23127,7 +23198,7 @@ Value Interpreter::evalCall(Call* c) {
                 "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
                 "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
             if (kChaining.count(op)) return Value::boolean(true);
-            if (op == "+" || op == "-" || op == "*" || op == "/") {
+            if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/")) {
                 ValueList one{args[0]};
                 return applyReduce(op, one);
             }
@@ -27068,7 +27139,7 @@ Value Interpreter::eval(Expr* e) {
                             return setCoerceOne(op, a[0]); // one arg coerces
                         }
                         if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
-                            if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(a); // ⊖ is variadic
+                            if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(a); // ⊖ is variadic
                             if (isSetOpStr(op) && !isSetPredicateStr(op))
                                 if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
                             Value acc = a[0];
@@ -27076,9 +27147,9 @@ Value Interpreter::eval(Expr* e) {
                             return acc;
                         }
                         if (a.size() == 1) { // single arg combines with the op's identity
-                            if (op == "+" || op == "-") return I.applyBinOp(op, Value::integer(0), a[0]);
-                            if (op == "*" || op == "/") return I.applyBinOp(op, Value::integer(1), a[0]);
-                            if (op == "~") return I.applyBinOp(op, Value::str(""), a[0]);
+                            if (opEq(op, "+") || opEq(op, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
+                            if (opEq(op, "*") || opEq(op, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
+                            if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
                             return a[0];
                         }
                         // No operands at all: the operator's identity, which is the
@@ -27125,11 +27196,11 @@ Value Interpreter::eval(Expr* e) {
                             if (a.empty()) throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Too few positionals passed; expected 1 argument but got 0"};
                             const Value& v = a[0];
-                            if (op == "!" || op == "not") return Value::boolean(!I.boolify(v));
-                            if (op == "?" || op == "so") return Value::boolean(I.boolify(v));
-                            if (op == "~") return Value::str(I.strInStrContext(v));
-                            if (op == "+") return I.applyBinOp("+", v, Value::integer(0));
-                            if (op == "-") return I.applyBinOp("-", Value::integer(0), v);
+                            if (opEq(op, "!") || opEq(op, "not")) return Value::boolean(!I.boolify(v));
+                            if (opEq(op, "?") || opEq(op, "so")) return Value::boolean(I.boolify(v));
+                            if (opEq(op, "~")) return Value::str(I.strInStrContext(v));
+                            if (opEq(op, "+")) return I.applyBinOp("+", v, Value::integer(0));
+                            if (opEq(op, "-")) return I.applyBinOp("-", Value::integer(0), v);
                             return I.hyperUnary(op, v);
                         };
                         code.code()->placeholders = {"$a"};   // arity 1 for the sequence operator
