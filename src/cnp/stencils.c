@@ -69,6 +69,28 @@ static inline int64_t rk_q(double  x) { union { int64_t i; double d; } u; u.d = 
 #define NUMERIC(tag) ((tag) <= RK_T_NUM)
 #define ASDOUBLE(k, tag) ((tag) == RK_T_INT ? (double)r[k] : rk_d(r[k]))
 
+// ---- the Rat lane (TYPES-PLAN N6) ------------------------------------------
+//
+// A Rat whose numerator and denominator both fit an int64 lives in a register
+// as the pair (r[k], f->den[k]), reduced, denominator positive: exactly what
+// Value::rat builds, so boxing it back gives the same Rat. An Int is the Rat
+// n/1 for this arithmetic. Every step that would overflow goes to the cold
+// path, where applyArith does it exactly (and degrades to a Num where Raku
+// does), so the lane is never approximate.
+#define RATLIKE(tag) ((tag) == RK_T_INT || (tag) == RK_T_RAT)
+#define RDEN(k, tag) ((tag) == RK_T_RAT ? f->den[k] : (int64_t)1)
+static inline uint64_t rk_gcd(uint64_t a, uint64_t b) {
+    while (b) { uint64_t m = a % b; a = b; b = m; }
+    return a;
+}
+// n/d, d > 0, reduced into register k as a Rat
+static inline void rk_setrat(F* f, int64_t* r, uint8_t* t, uint64_t k, int64_t n, int64_t d) {
+    uint64_t an = n < 0 ? (uint64_t)0 - (uint64_t)n : (uint64_t)n;
+    uint64_t g = rk_gcd(an, (uint64_t)d);
+    if (g > 1) { n /= (int64_t)g; d /= (int64_t)g; }
+    r[k] = n; f->den[k] = d; t[k] = RK_T_RAT;
+}
+
 // ============================================================================
 // FAST STENCILS — leaves. No call, no frame.
 // ============================================================================
@@ -87,6 +109,7 @@ int rk_st_loadb(F* f, int64_t* r, uint8_t* t) {   // r[d] = 0/1, as a Bool
 int rk_st_move(F* f, int64_t* r, uint8_t* t) {    // r[d] = r[a]
     uint8_t ta = t[OP1];
     if (ta == RK_T_BOX) SLOW;                     // a Value copy runs a destructor
+    if (ta == RK_T_RAT) f->den[OP0] = f->den[OP1];
     r[OP0] = r[OP1]; t[OP0] = ta; NEXT;
 }
 
@@ -98,7 +121,7 @@ int rk_st_move(F* f, int64_t* r, uint8_t* t) {    // r[d] = r[a]
 // dispatcher. So an interpreted program and a kernel decide overflow,
 // coercion and type errors with exactly the same code.
 
-#define ARITH(name, cop, ovf)                                                  \
+#define ARITH(name, cop, ovf, RATSTEP)                                         \
 int name(F* f, int64_t* r, uint8_t* t) {                                       \
     uint64_t d = OP0, a = OP1, b = OP2;                                        \
     uint8_t ta = t[a], tb = t[b];                                              \
@@ -111,12 +134,48 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
         r[d] = rk_q(ASDOUBLE(a, ta) cop ASDOUBLE(b, tb));                      \
         t[d] = RK_T_NUM; NEXT;                                                 \
     }                                                                          \
+    if (RATLIKE(ta) && RATLIKE(tb)) {                                          \
+        int64_t an = r[a], ad = RDEN(a, ta), bn = r[b], bd = RDEN(b, tb), n, dd; \
+        RATSTEP                                                                \
+        rk_setrat(f, r, t, d, n, dd); NEXT;                                    \
+    }                                                                          \
     SLOW;                                                                      \
 }
-ARITH(rk_st_add, +, __builtin_add_overflow)
-ARITH(rk_st_sub, -, __builtin_sub_overflow)
-ARITH(rk_st_mul, *, __builtin_mul_overflow)
+// a/b ± c/d = (a·d ± c·b) / (b·d)
+#define RAT_ADDSUB(ovf)                                                        \
+    { int64_t x, y;                                                            \
+      if (__builtin_mul_overflow(an, bd, &x) || __builtin_mul_overflow(bn, ad, &y) || \
+          ovf(x, y, &n) || __builtin_mul_overflow(ad, bd, &dd)) SLOW; }
+#define RAT_MUL                                                                \
+    { if (__builtin_mul_overflow(an, bn, &n) || __builtin_mul_overflow(ad, bd, &dd)) SLOW; }
+ARITH(rk_st_add, +, __builtin_add_overflow, RAT_ADDSUB(__builtin_add_overflow))
+ARITH(rk_st_sub, -, __builtin_sub_overflow, RAT_ADDSUB(__builtin_sub_overflow))
+ARITH(rk_st_mul, *, __builtin_mul_overflow, RAT_MUL)
 #undef ARITH
+
+// r[d] = r[a] / r[b]. Two Ints divide to a Rat, as in Raku; a Num on either
+// side is a double division. A zero divisor, a Rat beside a Num, and any
+// overflow go to applyArith, which answers them exactly.
+int rk_st_div(F* f, int64_t* r, uint8_t* t) {
+    uint64_t d = OP0, a = OP1, b = OP2;
+    uint8_t ta = t[a], tb = t[b];
+    if (RATLIKE(ta) && RATLIKE(tb)) {
+        int64_t an = r[a], ad = RDEN(a, ta), bn = r[b], bd = RDEN(b, tb), n, dd;
+        if (bn == 0) SLOW;
+        if (__builtin_mul_overflow(an, bd, &n) || __builtin_mul_overflow(ad, bn, &dd)) SLOW;
+        if (dd < 0) {
+            if (n == INT64_MIN || dd == INT64_MIN) SLOW;
+            n = -n; dd = -dd;
+        }
+        rk_setrat(f, r, t, d, n, dd); NEXT;
+    }
+    if (NUMERIC(ta) && NUMERIC(tb)) {
+        double y = ASDOUBLE(b, tb);
+        if (y == 0.0) SLOW;
+        r[d] = rk_q(ASDOUBLE(a, ta) / y); t[d] = RK_T_NUM; NEXT;
+    }
+    SLOW;
+}
 
 // r[d] = r[a] + imm. `$i + 1` and `$i - 1` are most of the arithmetic in a
 // loop header, and folding the literal into the instruction stream instead of
@@ -131,6 +190,11 @@ int rk_st_addi(F* f, int64_t* r, uint8_t* t) {
         r[d] = z; t[d] = RK_T_INT; NEXT;
     }
     if (ta == RK_T_NUM) { r[d] = rk_q(rk_d(r[a]) + (double)k); t[d] = RK_T_NUM; NEXT; }
+    if (ta == RK_T_RAT) {   // (n + k·den)/den: gcd(n + k·den, den) = gcd(n, den) = 1
+        int64_t kd, z;
+        if (__builtin_mul_overflow(k, f->den[a], &kd) || __builtin_add_overflow(r[a], kd, &z)) SLOW;
+        f->den[d] = f->den[a]; r[d] = z; t[d] = RK_T_RAT; NEXT;
+    }
     SLOW;
 }
 
@@ -145,6 +209,11 @@ int rk_st_incr(F* f, int64_t* r, uint8_t* t) {
         r[d] = z; NEXT;
     }
     if (td == RK_T_NUM) { r[d] = rk_q(rk_d(r[d]) + (double)k); NEXT; }
+    if (td == RK_T_RAT) {
+        int64_t kd, z;
+        if (__builtin_mul_overflow(k, f->den[d], &kd) || __builtin_add_overflow(r[d], kd, &z)) SLOW;
+        r[d] = z; NEXT;
+    }
     SLOW;
 }
 
@@ -157,13 +226,17 @@ int rk_st_neg(F* f, int64_t* r, uint8_t* t) {     // r[d] = -r[a]
         r[d] = z; t[d] = RK_T_INT; NEXT;
     }
     if (ta == RK_T_NUM) { r[d] = rk_q(-rk_d(r[a])); t[d] = RK_T_NUM; NEXT; }
+    if (ta == RK_T_RAT) {
+        if (r[a] == INT64_MIN) SLOW;
+        f->den[d] = f->den[a]; r[d] = -r[a]; t[d] = RK_T_RAT; NEXT;
+    }
     SLOW;
 }
 
 int rk_st_not(F* f, int64_t* r, uint8_t* t) {     // r[d] = !r[a], as a Bool
     uint64_t d = OP0, a = OP1;
     uint8_t ta = t[a];
-    if (ta == RK_T_INT || ta == RK_T_BOOL) { r[d] = (r[a] == 0);       t[d] = RK_T_BOOL; NEXT; }
+    if (ta == RK_T_INT || ta == RK_T_BOOL || ta == RK_T_RAT) { r[d] = (r[a] == 0); t[d] = RK_T_BOOL; NEXT; }
     if (ta == RK_T_NUM)                    { r[d] = (rk_d(r[a]) == 0.0); t[d] = RK_T_BOOL; NEXT; }
     SLOW;
 }
@@ -183,6 +256,10 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
     if (NUMERIC(ta) && NUMERIC(tb)) {                                          \
         r[d] = (ASDOUBLE(a, ta) cop ASDOUBLE(b, tb)); t[d] = RK_T_BOOL; NEXT;  \
     }                                                                          \
+    if (RATLIKE(ta) && RATLIKE(tb)) {                                          \
+        r[d] = ((__int128)r[a] * RDEN(b, tb) cop (__int128)r[b] * RDEN(a, ta)); \
+        t[d] = RK_T_BOOL; NEXT;                                                \
+    }                                                                          \
     SLOW;                                                                      \
 }
 CMPV(rk_st_cmplt, < ) CMPV(rk_st_cmple, <=) CMPV(rk_st_cmpgt, > )
@@ -195,6 +272,9 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
     uint8_t ta = t[a], tb = t[b];                                              \
     if (ta == RK_T_INT && tb == RK_T_INT) { if (r[a] cop r[b]) GOTO; NEXT; }   \
     if (NUMERIC(ta) && NUMERIC(tb)) { if (ASDOUBLE(a, ta) cop ASDOUBLE(b, tb)) GOTO; NEXT; } \
+    if (RATLIKE(ta) && RATLIKE(tb)) {                                          \
+        if ((__int128)r[a] * RDEN(b, tb) cop (__int128)r[b] * RDEN(a, ta)) GOTO; NEXT; \
+    }                                                                          \
     SLOW;                                                                      \
 }
 CMPB(rk_st_jlt, < ) CMPB(rk_st_jle, <=) CMPB(rk_st_jgt, > )
@@ -209,6 +289,7 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
     uint8_t ta = t[a];                                                         \
     if (ta == RK_T_INT) { if (r[a] cop k) GOTO; NEXT; }                        \
     if (ta == RK_T_NUM) { if (rk_d(r[a]) cop (double)k) GOTO; NEXT; }          \
+    if (ta == RK_T_RAT) { if ((__int128)r[a] cop (__int128)k * f->den[a]) GOTO; NEXT; } \
     SLOW;                                                                      \
 }
 CMPBI(rk_st_jlti, < ) CMPBI(rk_st_jlei, <=) CMPBI(rk_st_jgti, > )
@@ -226,6 +307,9 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
     uint8_t ta = t[a], tb = t[b];                                              \
     if (ta == RK_T_INT && tb == RK_T_INT) { if (!(r[a] cop r[b])) GOTO; NEXT; } \
     if (NUMERIC(ta) && NUMERIC(tb)) { if (!(ASDOUBLE(a, ta) cop ASDOUBLE(b, tb))) GOTO; NEXT; } \
+    if (RATLIKE(ta) && RATLIKE(tb)) {                                          \
+        if (!((__int128)r[a] * RDEN(b, tb) cop (__int128)r[b] * RDEN(a, ta))) GOTO; NEXT; \
+    }                                                                          \
     SLOW;                                                                      \
 }
 CMPBN(rk_st_jnlt, < ) CMPBN(rk_st_jnle, <=) CMPBN(rk_st_jngt, > )
@@ -239,6 +323,7 @@ int name(F* f, int64_t* r, uint8_t* t) {                                       \
     uint8_t ta = t[a];                                                         \
     if (ta == RK_T_INT) { if (!(r[a] cop k)) GOTO; NEXT; }                     \
     if (ta == RK_T_NUM) { if (!(rk_d(r[a]) cop (double)k)) GOTO; NEXT; }       \
+    if (ta == RK_T_RAT) { if (!((__int128)r[a] cop (__int128)k * f->den[a])) GOTO; NEXT; } \
     SLOW;                                                                      \
 }
 CMPBNI(rk_st_jnlti, < ) CMPBNI(rk_st_jnlei, <=) CMPBNI(rk_st_jngti, > )
@@ -254,13 +339,13 @@ int rk_st_jmp(F* f, int64_t* r, uint8_t* t) { GOTO; }
 // class may define its own .Bool.
 int rk_st_jt(F* f, int64_t* r, uint8_t* t) {
     uint64_t a = OP0; uint8_t ta = t[a];
-    if (ta == RK_T_INT || ta == RK_T_BOOL) { if (r[a]) GOTO; NEXT; }
+    if (ta == RK_T_INT || ta == RK_T_BOOL || ta == RK_T_RAT) { if (r[a]) GOTO; NEXT; }
     if (ta == RK_T_NUM)                    { if (rk_d(r[a]) != 0.0) GOTO; NEXT; }
     SLOW;
 }
 int rk_st_jf(F* f, int64_t* r, uint8_t* t) {
     uint64_t a = OP0; uint8_t ta = t[a];
-    if (ta == RK_T_INT || ta == RK_T_BOOL) { if (!r[a]) GOTO; NEXT; }
+    if (ta == RK_T_INT || ta == RK_T_BOOL || ta == RK_T_RAT) { if (!r[a]) GOTO; NEXT; }
     if (ta == RK_T_NUM)                    { if (rk_d(r[a]) == 0.0) GOTO; NEXT; }
     SLOW;
 }

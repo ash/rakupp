@@ -27,6 +27,8 @@
 #define RK_T_NUM   1u   // r[k] is the bit pattern of a double
 #define RK_T_BOOL  2u   // r[k] is 0 or 1, and means Bool
 #define RK_T_BOX   3u   // the value is boxes[k]
+#define RK_T_RAT   4u   // a Rat: r[k] the numerator, den[k] the (positive) denominator,
+                        // reduced; both fit an int64 (TYPES-PLAN N6)
 
 // ---- what a stencil returns ------------------------------------------------
 //
@@ -62,6 +64,7 @@ typedef struct RkCnpFrame {
     int64_t   nslots;
     int64_t   ctl;
     void*     isites;   // element-store sites: an array register and its keys
+    int64_t*  den;      // one denominator per register, meaningful under RK_T_RAT
 } RkCnpFrame;
 
 // The signature every stencil has, and therefore the signature of the whole

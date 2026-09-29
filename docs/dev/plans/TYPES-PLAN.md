@@ -210,7 +210,7 @@ longer has to end at a call just because the callee might see a stale
 | **N3** | measure: Roast and the module battery with `--types` | |
 | **N4** | native storage in the interpreter for `Int`, `Num` and `Bool`, with typed expression evaluation and the four hard parts | **dropped as a speed phase** by N0: typed evaluation (with guards, outside the option) carries the whole gain |
 | **N5** | the compiled lanes over native slots: no entry checks, no copies, lanes that continue past calls | **v1 landed for `--cnp`**: kernels may call routines (see below) |
-| **N6** | `Rat` stored as two integers | |
+| **N6** | `Rat` stored as two integers | **landed for `--cnp`**: the Rat lane (see below) |
 | **N7** | `Str` without the `Value` around it, if N0's numbers say it is worth having | |
 
 ### N0 — the probe
@@ -368,6 +368,23 @@ Gates: `t/jit/run.raku --cnp` over its cases, `t/regression` and `examples`
 agrees on 807 programs. One program printed nothing in the PLAIN run once,
 under load, and passes both ways on its own. `t/jit/cases/calls.raku` holds
 the call cases.
+
+### N6 — landed for `--cnp`, 2026-09-29: the Rat lane
+
+A Rat whose numerator and denominator both fit an int64 is a register pair
+in a copy-and-patch kernel (`RK_T_RAT`: the numerator in the register, the
+denominator beside it), reduced and with a positive denominator, exactly as
+`Value::rat` builds one. `+ - * /` and every comparison stay exact on it,
+with cross-multiplication in 128 bits for comparisons. Two Ints divide to a
+Rat, as in Raku. Every overflow, a Rat beside a Num, and a zero divisor go to
+`applyArith`, which answers exactly and degrades to a Num where Raku does,
+so the lane is never approximate.
+
+A million additions of `0.01`, checked exactly every step: 1.18 s
+interpreted, 0.03 s under `--cnp`, 0.69 s under Rakudo. The Parrot-era
+`mandel-rat` gains less, 0.235 s to 0.18 s: squaring doubles a
+denominator's width every step, so within a few iterations its values are
+Nums, as they are in Rakudo.
 
 ### N6 — `Rat`
 

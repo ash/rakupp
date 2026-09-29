@@ -69,13 +69,15 @@ struct Frame {
     std::vector<int64_t> r;
     std::vector<uint8_t> t;
     std::vector<Value>   boxes;
+    std::vector<int64_t> den;   // the Rat lane's denominators
     std::exception_ptr   err;
 
-    explicit Frame(size_t n) : r(n, 0), t(n, RK_T_INT), boxes(n) {
+    explicit Frame(size_t n) : r(n, 0), t(n, RK_T_INT), boxes(n), den(n, 1) {
         abi.r = r.data();
         abi.t = t.data();
         abi.boxes = boxes.data();
         abi.err = &err;
+        abi.den = den.data();
     }
 };
 
@@ -92,6 +94,7 @@ Value regValue(RkCnpFrame* f, uint64_t k) {
         case RK_T_INT:  return Value::integer(f->r[k]);
         case RK_T_NUM:  return Value::number(bits2d(f->r[k]));
         case RK_T_BOOL: return Value::boolean(f->r[k] != 0);
+        case RK_T_RAT:  return Value::rat(BigInt(f->r[k]), BigInt(f->den[k]));
         default:        return static_cast<Value*>(f->boxes)[k];
     }
 }
@@ -111,6 +114,12 @@ void setReg(RkCnpFrame* f, uint64_t k, const Value& v) {
     if (v.enumName.empty() && v.t == VT::Int && !v.big()) { f->r[k] = v.i; f->t[k] = RK_T_INT; }
     else if (v.enumName.empty() && v.t == VT::Num)        { f->r[k] = d2bits(v.n); f->t[k] = RK_T_NUM; }
     else if (v.enumName.empty() && v.t == VT::Bool)       { f->r[k] = v.b ? 1 : 0; f->t[k] = RK_T_BOOL; }
+    // a Rat whose parts fit an int64 rides the Rat lane (a zero denominator,
+    // `1/0`, stays boxed: only applyArith knows what it means)
+    else if (v.enumName.empty() && v.t == VT::Rat && v.hashKind.empty() && v.ratN() && v.ratD() &&
+             v.ratN()->fitsLL() && v.ratD()->fitsLL() && !v.ratD()->isZero()) {
+        f->r[k] = v.ratN()->toLL(); f->den[k] = v.ratD()->toLL(); f->t[k] = RK_T_RAT;
+    }
     else { boxes[k] = v; f->t[k] = RK_T_BOX; return; }
     // Release whatever the register used to hold, so that a loop cannot pin a
     // string or an object it stopped using thousands of iterations ago.
@@ -405,7 +414,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow, call, jctl, idxget, idxset;
+    int natchk, natchkslow, call, jctl, idxget, idxset, div;
     bool ok = false;
 };
 
@@ -435,6 +444,7 @@ const StencilIds& ids() {
         v.natchk = g("rk_st_natchk"); v.natchkslow = g("rk_st_natchkslow");
         v.call = g("rk_st_call"); v.jctl = g("rk_st_jctl");
         v.idxget = g("rk_st_idxget"); v.idxset = g("rk_st_idxset");
+        v.div = g("rk_st_div");
         return v;
     }();
     return s;
@@ -786,7 +796,8 @@ int Lower::expr(Expr* e) {
             if (bad()) return 0;
             int oi = opIndex(op);
             if (oi < 0) { fail("compound operator '" + a->op + "'"); return 0; }
-            int fast = op == "+" ? ids().add : op == "-" ? ids().sub : op == "*" ? ids().mul : -1;
+            int fast = op == "+" ? ids().add : op == "-" ? ids().sub : op == "*" ? ids().mul
+                     : op == "/" ? ids().div : -1;
             if (fast >= 0) {
                 int h = emit(fast, (uint64_t)res, (uint64_t)dst, (uint64_t)src);
                 colds.push_back({ColdReq::Binop, h, (uint64_t)res, (uint64_t)dst, (uint64_t)src, oi | nat, 0, 0, false});
@@ -846,7 +857,7 @@ int Lower::expr(Expr* e) {
             if (bad()) return 0;
             int d = temp();
             int fast = op == "+" ? ids().add : op == "-" ? ids().sub : op == "*" ? ids().mul
-                     : cs >= 0 ? ids().cmp[cs] : -1;
+                     : op == "/" ? ids().div : cs >= 0 ? ids().cmp[cs] : -1;
             if (fast >= 0) {
                 int h = emit(fast, (uint64_t)d, (uint64_t)a, (uint64_t)r);
                 colds.push_back({ColdReq::Binop, h, (uint64_t)d, (uint64_t)a, (uint64_t)r, oi | nat, 0, 0, false});
