@@ -1793,6 +1793,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--stack-size", 1, nullptr, "the stack of the program thread, the recursion ceiling"},
     {"--env-file", 1, "FILE", "load KEY=VALUE lines into the environment"},
     {"--color", 1, "auto always never", "ANSI colour on stderr and in the REPL"},
+    {"--hints", 0, nullptr, "performance hints on stderr (as RAKUPP_HINTS=1)"},
     {"--stagestats", 0, nullptr, "phase timings and module loads on stderr"},
     {"--trace", 0, nullptr, "print each statement as it runs"},
     {"--repl-after", 0, nullptr, "run the program, then open a session on its state"},
@@ -2289,6 +2290,12 @@ int main(int argc, char** argv) {
             // REPL — reads one answer. `auto` is the default: a terminal,
             // unless NO_COLOR is set. A bare --color means always.
             if (a == "--color" || a == "--colour") { putEnv("RAKUPP_COLOR", "1", true); continue; }
+            // --hints: the engine says on stderr when a construct is costing far
+            // more than it looks, and what to write instead. It sets the knob the
+            // environment has, RAKUPP_HINTS=1, as --color does, so a child
+            // process hears it too. Off by default: Rakudo prints nothing there,
+            // and a program's stderr is part of what it does.
+            if (a == "--hints") { putEnv("RAKUPP_HINTS", "1", true); continue; }
             if (a.rfind("--color=", 0) == 0 || a.rfind("--colour=", 0) == 0) {
                 std::string v = a.substr(a.find('=') + 1);
                 if (v == "always") putEnv("RAKUPP_COLOR", "1", true);

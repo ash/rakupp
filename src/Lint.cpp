@@ -331,6 +331,7 @@ struct Linter {
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
                 checkNumericStringCmp(b);
+                checkExactPower(b);
                 walkExpr(b->lhs.get());
                 walkExpr(b->rhs.get());
                 return;
@@ -393,6 +394,46 @@ struct Linter {
             }
             default: return; // literals, Whatever, SelfTerm — no children of interest
         }
+    }
+
+    // An exact Rat raised to a power that is not a small literal:
+    // `(1 + 1/$n) ** $n`. Raku keeps `1/$n` exact, so the power builds its
+    // numerator and denominator in full — (n+1)**n and n**n — and hands back a
+    // Num once the denominator passes 64 bits: minutes of work for one double.
+    // A NOTE, and worded with "if": the linter cannot know `$n` is an Int
+    // (`1/$n` with a Num `$n` is a Num already), and an exact result may be
+    // exactly what the program wants. `--hints` says it at run time, precisely.
+    static bool ratLike(const Expr* e) {
+        if (!e) return false;
+        if (e->kind == NK::NumLit) {
+            auto* n = static_cast<const NumLit*>(e);
+            return n->isRat && !n->imaginary;
+        }
+        if (e->kind == NK::Binary) {
+            auto* b = static_cast<const Binary*>(e);
+            auto numLit = [](const Expr* x) {
+                return x && x->kind == NK::NumLit && !static_cast<const NumLit*>(x)->isRat;
+            };
+            if (numLit(b->lhs.get()) || numLit(b->rhs.get())) return false;   // a Num in it: Num arithmetic
+            if (b->op == "/") return true;
+            if (b->op == "+" || b->op == "-" || b->op == "*")
+                return ratLike(b->lhs.get()) || ratLike(b->rhs.get());
+        }
+        return false;
+    }
+    void checkExactPower(Binary* b) {
+        if (b->op != "**" || !b->lhs || !b->rhs || !ratLike(b->lhs.get())) return;
+        // a small literal exponent is cheap: `(1/3) ** 2`
+        if (b->rhs->kind == NK::IntLit) {
+            auto* il = static_cast<IntLit*>(b->rhs.get());
+            if (il->big.empty() && il->v >= -64 && il->v <= 64) return;
+        }
+        warn(lineOf(b), "exact-power",
+             "if its operands are Ints, this raises an exact Rat to a power that is not a small "
+             "literal: the numerator and denominator are built in full before the result becomes a "
+             "Num, which can take minutes; write the base with a Num (1e0 instead of 1) if a Num is "
+             "what you want (--hints reports it at run time)",
+             'N');
     }
 
     void checkNumericStringCmp(Binary* b) {

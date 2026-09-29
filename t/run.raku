@@ -1313,6 +1313,27 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say "" + 1');
         ok($x == 0, 'lint: "" + 1 is 1 on both engines, not a finding');
 
+        # exact-power: an exact Rat raised to a power that is not a small
+        # literal builds (n+1)**n and n**n in full before becoming a Num. A
+        # NOTE, since `$n` may not be an Int; quiet for a Num base, a small
+        # literal power and an Int base.
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $n = 10; say (1 + 1/$n) ** $n');
+        ok($o.contains('[exact-power]') && $o.contains('1e0'), 'lint: an exact Rat to a variable power is a note');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $n = 10; say (1 + 1e0/$n) ** $n; say (1/3) ** 2; say 2 ** $n');
+        ok(!$o.contains('[exact-power]'), 'lint: a Num base, a small literal power and an Int base are not');
+    }
+
+    # --hints: the same finding at run time, once per line, on stderr only.
+    {
+        my $prog = 'my $n = 10 ** 4; say ((1 + 1/$n) ** $n).^name; say ((1 + 1/$n) ** $n).^name';
+        my ($o, $e, $x) = run-rakupp-err('--hints', '-e', $prog);
+        ok($x == 0 && $o eq "Num\nNum\n" && $e.lines.grep(*.starts-with('hint: line 1: an exact Rat raised to 10000')) == 1,
+           '--hints: one hint for an exact Rat power that becomes a Num, stdout untouched');
+        ($o, $e, $x) = run-rakupp-err('-e', $prog);
+        ok($x == 0 && $o eq "Num\nNum\n" && !$e.contains('hint:'), 'without --hints, nothing on stderr');
+        ($o, $e, $x) = run-rakupp-err('--hints', '-e', 'say (1/3) ** 50; say (1.5 ** 40).^name');
+        ok(!$e.contains('hint:'), '--hints: a small exact power says nothing');
+
         # assignment-in-condition, and the idiom it must stay silent about
         ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $x = 0; if $x = 5 { say 1 }');
         ok($x == 1 && $o.contains('[assignment-in-condition]'),

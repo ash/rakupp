@@ -3579,6 +3579,8 @@ inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big(); }
 // --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
 inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
 bool rtNativeIntOp(const std::string& op, long long a, long long b, long long& out);   // see nativeIntArith
+bool rtHintsOn();                        // --hints / RAKUPP_HINTS
+void rtHint(const char* kind, const std::string& msg);   // a performance hint on stderr, once per line and kind
 // --exe natives (Interpreter.cpp "natives for the compiling backends")
 Value rtNativeValue(const Value& v, const std::string& type, const std::string& name, bool srcNative);
 Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& name, bool srcNative);

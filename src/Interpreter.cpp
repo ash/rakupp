@@ -6868,7 +6868,27 @@ thread_local bool t_holdsGil = false;
 thread_local bool t_isWorker = false;
 std::atomic<int> g_stmtLine{0};
 std::atomic<bool> g_stmtLineThreaded{false};
+
 thread_local int t_stmtLine = 0;
+
+// --hints / RAKUPP_HINTS: performance advice on stderr, off by default. Read
+// once; `RAKUPP_HINTS=0` is off. Each hint is said once per source line.
+bool rtHintsOn() {
+    static const bool on = [] {
+        const char* h = std::getenv("RAKUPP_HINTS");
+        return h && *h && std::string(h) != "0";
+    }();
+    return on;
+}
+void rtHint(const char* kind, const std::string& msg) {
+    const int line = g_stmtLineThreaded.load(std::memory_order_relaxed)
+                         ? t_stmtLine : g_stmtLine.load(std::memory_order_relaxed);
+    static std::mutex mu;
+    static std::set<std::pair<int, std::string>> said;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!said.insert({line, kind}).second) return;   // once per line and kind
+    std::cerr << "hint: line " << line << ": " << msg << "\n";
+}
 thread_local Value t_threadSelf;
 
 long long Interpreter::newThreadId() {
@@ -40854,6 +40874,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // Num; any other is X::Numeric::Overflow. A01-limits/overflow.t needs
             // `1.0000001 ** 10**8` still at work when its two-second timer fires;
             // what fits in the budget grows with a faster multiply.
+            // --hints (RAKUPP_HINTS): an exact Rat power whose answer is bound to
+            // become a Num, and big enough to cost real time, says so once per
+            // line: `(1 + 1/$n) ** $n` builds (n+1)**n and n**n exactly to hand
+            // back one double. Nothing here changes what the power answers.
+            if (anyRat && !fat && rtHintsOn()) {
+                auto log2Of = [](const BigInt& m) -> double {
+                    if (m.isZero() || m.mag.empty()) return 0;
+                    return std::log2((double)m.mag.back()) + (double)(m.mag.size() - 1) * 29.897;
+                };
+                const double k = e >= 0 ? (double)e : -(double)e;
+                const double denBits = log2Of((e >= 0 ? bd : bn).abs());
+                const double partDigits = std::max(log2Of(bn.abs()), log2Of(bd.abs())) * k * 0.30103;
+                if (denBits * k > 64 && partDigits > 10000)
+                    rtHint("exact-power", "an exact Rat raised to " + std::to_string(e) + ": its numerator and denominator run to about " +
+                           std::to_string((long long)partDigits) + " digits each, and the result becomes a Num anyway; "
+                           "write the base with a Num (1e0 instead of 1) to compute in Num directly");
+            }
             static constexpr unsigned long long kPowerBudget = 3000000000ULL;
             unsigned long long budget = kPowerBudget;
             struct BudgetG { unsigned long long* prev; ~BudgetG() { g_bigIntBudget = prev; } } budgetG{g_bigIntBudget};
