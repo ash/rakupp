@@ -17,6 +17,7 @@ namespace rakupp {
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // Interpreter.cpp
 bool isKnownTypeName(const std::string& n); // Interpreter.cpp
+std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 
 namespace {
 
@@ -154,6 +155,7 @@ std::string mangleSub(const std::string& name) {
 struct Codegen {
     std::ostringstream out;
     std::map<std::string, int> userSubs; // sub name -> arity (positional params)
+    std::map<std::string, SubDecl*> subDecls_; // …and its declaration, for `&name.signature`
     std::map<std::string, std::vector<int>> rwSubs; // sub name -> positional indices that are `is rw`
     std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
     bool optimize_ = false;              // -O codegen pass enabled
@@ -955,8 +957,62 @@ struct Codegen {
         // a SUB body is a ReturnEx boundary (same rule as bodyDef): without the
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
-        return "Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
-               "} catch (ReturnEx& __r) { return __r.v; } })";
+        return sigWrap("Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
+                       "} catch (ReturnEx& __r) { return __r.v; } })",
+                       d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u);
+    }
+
+    // The runtime Code object of a compiled routine carries the signature the
+    // source wrote — `&f.signature.params».name`, `.arity`, `.count` — built by
+    // rtSig from a static descriptor table (defaults pre-rendered, as a
+    // `.assuming` residual has them). Without it every closure answered the
+    // positional bridge's `($a, $b)` and a named sub `()`, and Math::NIntegrate,
+    // which matches an integrand's parameter names against its ranges, refused
+    // every compiled call.
+    std::string sigWrap(const std::string& mk, const std::vector<Param>& ps, const std::string& name,
+                        const std::string& retType, unsigned cflags) {
+        std::string tbl = "nullptr";
+        if (!ps.empty()) {
+            std::string rows;
+            for (auto& src : ps) {
+                auto p = signatureParamCopy(src);
+                std::string ak;
+                for (auto& k : p->aliasKeys) ak += (ak.empty() ? "" : " ") + k;
+                unsigned f = (p->named ? RSP_NAMED : 0) | (p->slurpy ? RSP_SLURPY : 0) |
+                             (p->optional ? RSP_OPTIONAL : 0) | (p->required ? RSP_REQUIRED : 0) |
+                             (p->invocant ? RSP_INVOCANT : 0) | (p->pastDoubleSemi ? RSP_PASTSEMI : 0) |
+                             (p->coerce ? RSP_COERCE : 0) | (p->isRw ? RSP_RW : 0) | (p->isCopy ? RSP_COPY : 0) |
+                             (p->hadWhere ? RSP_WHERE : 0) | (p->aliasBoth ? RSP_ALIASBOTH : 0) |
+                             (src.isRaw ? RSP_RAW : 0);
+                rows += "{" + cesc(p->name) + ", " + cesc(p->type) + ", " +
+                        cesc(p->namedKey) + ", " + cesc(p->coerceFrom) + ", " + cesc(p->defaultRaku) + ", " +
+                        cesc(ak) + ", " + std::to_string(f) + "u, " + std::to_string((int)(unsigned char)p->sigil) +
+                        ", " + std::to_string((int)p->slurpyKind) + ", " + std::to_string(p->defConstraint) + "}, ";
+            }
+            tbl = "([]()->const RtSigParam*{ static const RtSigParam __s[] = {" + rows + "}; return __s; }())";
+        }
+        return "rtSig(" + mk + ", " + tbl + ", " + std::to_string(ps.size()) + ", " + cesc(name) + ", " +
+               cesc(retType) + ", " + std::to_string(cflags) + "u)";
+    }
+    // …and a routine with no written signature has the one its placeholders
+    // imply (`sub c { $^a }` is `($a)`), read off the Code's placeholder list.
+    static std::string placeholderList(const std::vector<std::string>& phs) {
+        std::string names;
+        for (size_t k = 0; k < phs.size(); k++) names += std::string(k ? ", " : "") + cesc(phs[k]);
+        return names;
+    }
+    // `&name` of a top-level sub: its closure, carrying the declared signature
+    std::string subRefSig(const std::string& mk, const std::string& nm) {
+        auto it = subDecls_.find(nm);
+        if (it == subDecls_.end()) return mk;
+        SubDecl* d = it->second;
+        if (d->params.empty() && !d->hadSig) {
+            auto phs = computePlaceholders(d->body);
+            if (!phs.empty())
+                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->name = " + cesc(nm) +
+                       "; _c.code()->placeholders = {" + placeholderList(phs) + "}; return _c; }())";
+        }
+        return sigWrap(mk, d->params, nm, d->retType, d->hadSig ? RSC_HADSIG : 0u);
     }
 
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
@@ -1007,14 +1063,24 @@ struct Codegen {
             ? "Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
               "} catch (ReturnEx& __r) { return __r.v; } })"
             : "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
-        // 2+-ary blocks (pointy params or $^a/$^b) must advertise their arity so
-        // sort/map/for feed them the right number of elements per call.
-        size_t nPos = phs.size();
-        if (nPos <= 1) for (auto& p : be->params) if (!p.named && !p.slurpy) nPos++;
-        if (nPos <= 1) return mk;
-        std::string names;
-        for (size_t k = 0; k < nPos; k++) names += std::string(k ? ", " : "") + "\"$^" + std::string(1, char('a' + k)) + "\"";
-        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->placeholders = {" + names + "}; return _c; }())";
+        // A written signature (pointy params, `sub (…)`) rides in as the Code's
+        // params — which is also what tells sort/map/for how many elements to
+        // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
+        // under their real names, in the sorted order they bind.
+        if (!phs.empty())
+            return "([&]()->Value{ Value _c = " + mk + "; _c.code()->placeholders = {" + placeholderList(phs) +
+                   "}; return _c; }())";
+        if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens)) return mk;
+        std::string sc = sigWrap(mk, be->params, "", be->retType,
+                                 (be->isSub ? 0u : (unsigned)RSC_BLOCK) |
+                                 (be->isPointy || !be->params.empty() ? (unsigned)RSC_HADSIG : 0u));
+        // (a 2+-ary one still lists that many placeholders too, for the runtime
+        // paths that count a block's arity by its placeholders alone)
+        std::vector<std::string> arityPhs;
+        for (auto& p : be->params) if (!p.named && !p.slurpy) arityPhs.push_back("$^" + p.name.substr(p.name.empty() ? 0 : 1));
+        if (arityPhs.size() <= 1) return sc;
+        return "([&]()->Value{ Value _c = " + sc + "; _c.code()->placeholders = {" + placeholderList(arityPhs) +
+               "}; return _c; }())";
     }
 
     bool stmtHasRedo(Stmt* s) {
@@ -1096,7 +1162,7 @@ struct Codegen {
                 if (v->name.size() && v->name[0] == '&') { // &sub : a reference to a routine
                     std::string nm = v->name.substr(1);
                     if (userSubs.count(nm))
-                        return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(__a); })";
+                        return subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(__a); })", nm);
                     if (multiNames.count(nm))
                         return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(ValueList(__a)); })";
                     if (codeVars.count(nm)) return mangleVar(v->name); // `my &f = …`
@@ -4187,7 +4253,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (d->name.empty()) throw CodegenError{"an anonymous sub at statement level"};
             if (d->isMulti) { multiCands[d->name].push_back(d); g.multiNames.insert(d->name); }
             else {
-                g.userSubs[d->name] = (int)d->params.size(); subs.push_back(d);
+                g.userSubs[d->name] = (int)d->params.size(); g.subDecls_[d->name] = d; subs.push_back(d);
                 // native subs emit the ValueList bridge only — no fast-sig overload
                 if (optimize && !d->isNative && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
                 { int pos = 0; std::vector<int> rw;

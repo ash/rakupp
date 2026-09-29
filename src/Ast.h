@@ -692,6 +692,21 @@ struct Param {
     mutable DecidedOnce<signed char> acceptClass{-1};
 };
 
+// A compiled routine's signature, as `--exe` describes it: the plain fields of
+// each parameter (defaults pre-rendered), so `&f.signature` reads the names
+// and types the source wrote rather than the closure's positional bridge.
+struct RtSigParam {
+    const char* name; const char* type; const char* namedKey; const char* coerceFrom;
+    const char* defaultRaku; const char* aliasKeys;   // aliasKeys: space-separated
+    unsigned flags; char sigil; char slurpyKind; signed char defConstraint;
+};
+enum : unsigned {
+    RSP_NAMED = 1, RSP_SLURPY = 2, RSP_OPTIONAL = 4, RSP_REQUIRED = 8, RSP_INVOCANT = 16,
+    RSP_PASTSEMI = 32, RSP_COERCE = 64, RSP_RW = 128, RSP_COPY = 256, RSP_WHERE = 512,
+    RSP_ALIASBOTH = 1024, RSP_RAW = 2048,
+};
+enum : unsigned { RSC_BLOCK = 1, RSC_HADSIG = 2 };
+
 struct BlockExpr : Expr {
     std::vector<Param> params; // for pointy blocks / placeholder
     std::vector<StmtPtr> body;

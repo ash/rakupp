@@ -3938,6 +3938,10 @@ Value  rtSlurpyPos(const ValueList& a, size_t from);           // positional arg
 Value  rtSlurpyNamed(const ValueList& a);                      // all named args as a Hash
 Value  rtCoerceHash(const Value& v);                           // pair/kv list → Hash (`my %h = a=>1,…`)
 Value  rtObjHash(const Value& v);                              // `:{ … }` → object hash (keys keep their type)
+// A compiled routine's signature (RtSigParam, Ast.h): attaches the parameter
+// list (built once per `ps` table, program lifetime), the routine's name and
+// its return type to the callable `c`, and returns it.
+Value  rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags);
 
 // IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
 // algorithms. Returns true (and sets `out`) when (cls, m) is handled.

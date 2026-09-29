@@ -25962,6 +25962,49 @@ bool rtHasNamed(const ValueList& a, const std::string& key) {
     for (auto& v : a) if (isNamedArg(v) && v.s == key) return true;
     return false;
 }
+Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
+    if (c.t != VT::Code || !c.code()) return c;
+    // one Param list per descriptor table: every evaluation of the closure
+    // (a fresh Callable each time) borrows the same list, as the AST's would be
+    static std::mutex mu;
+    static std::unordered_map<const RtSigParam*, std::unique_ptr<std::vector<Param>>> built;
+    const std::vector<Param>* list;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto& slot = built[n ? ps : nullptr];
+        if (!slot) {
+            slot = std::make_unique<std::vector<Param>>();
+            slot->reserve(n);
+            for (size_t k = 0; k < n; k++) {
+                const RtSigParam& d = ps[k];
+                Param p;
+                p.name = d.name; p.sigil = d.sigil; p.type = d.type; p.namedKey = d.namedKey;
+                p.coerceFrom = d.coerceFrom; p.defaultRaku = d.defaultRaku;
+                for (const char* q = d.aliasKeys; *q; ) {
+                    const char* e = q; while (*e && *e != ' ') e++;
+                    if (e > q) p.aliasKeys.emplace_back(q, e);
+                    q = *e ? e + 1 : e;
+                }
+                p.named = d.flags & RSP_NAMED; p.slurpy = d.flags & RSP_SLURPY;
+                p.optional = d.flags & RSP_OPTIONAL; p.required = d.flags & RSP_REQUIRED;
+                p.invocant = d.flags & RSP_INVOCANT; p.pastDoubleSemi = d.flags & RSP_PASTSEMI;
+                p.coerce = d.flags & RSP_COERCE; p.isRw = d.flags & RSP_RW; p.isCopy = d.flags & RSP_COPY;
+                p.hadWhere = d.flags & RSP_WHERE; p.aliasBoth = d.flags & RSP_ALIASBOTH;
+                p.isRaw = d.flags & RSP_RAW;
+                p.slurpyKind = d.slurpyKind; p.defConstraint = d.defConstraint;
+                slot->push_back(std::move(p));
+            }
+        }
+        list = slot.get();
+    }
+    Callable* cc = c.code();
+    cc->params = list;
+    if (name && *name) cc->name = name;
+    if (retType && *retType) cc->retType = retType;
+    if (cflags & RSC_BLOCK) cc->isBlock = true;
+    if (cflags & RSC_HADSIG) cc->hadSig = true;
+    return c;
+}
 Value rtSlurpyPos(const ValueList& a, size_t from) {
     Value o = Value::array(); size_t p = 0;
     for (auto& v : a) { if (isNamedArg(v)) continue; if (p >= from) o.arr()->push_back(v); p++; }
