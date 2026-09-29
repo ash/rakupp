@@ -42947,6 +42947,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         for (auto& kv : m.named)
             if (!m.children.count(kv.first))
                 v.hashRef()[kv.first] = mk(kv.second.first, kv.second.second);
+        std::unordered_map<uint64_t, Value> aliasBuilt;   // an alias pair is one Match (ParseNode::aliasId)
         for (auto& kv : m.children) {
             if (isPositionalKey(kv.first)) continue;   // a NUMBER — presented above
             // `%<name>=…` — each occurrence's matched text is a Hash KEY (value undefined)
@@ -42976,7 +42977,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             // as a bare span. `my regex ps { $<pr> = <Grammar::rule> }` matched
             // through `<ps>` produced a Match with an empty .hash, so URI::Path
             // could not tell which alternative had matched.
-            auto childMatch = [&](const ParseNode& c) { return matchFromNode(c, subject, origStr); };
+            auto childMatch = [&](const ParseNode& c) -> Value {
+                if (!c.aliasId) return matchFromNode(c, subject, origStr);
+                auto hit = aliasBuilt.find(c.aliasId);
+                if (hit != aliasBuilt.end()) return hit->second;
+                return aliasBuilt.emplace(c.aliasId, matchFromNode(c, subject, origStr)).first->second;
+            };
             if (!asList) {
                 v.hashRef()[kv.first] = childMatch(kv.second[0]);
             } else {
@@ -43684,12 +43690,20 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
     for (auto& nm : c.named)
         if (!c.kids || !c.kids->count(nm.first))
             cv.hashRef()[nm.first] = span(nm.second.first, nm.second.second);
+    // an alias pair (ParseNode::aliasId) is one Match under two keys
+    std::unordered_map<uint64_t, Value> aliasBuilt;
+    auto child = [&](const ParseNode& g) -> Value {
+        if (!g.aliasId) return matchFromNode(g, subject, orig);
+        auto hit = aliasBuilt.find(g.aliasId);
+        if (hit != aliasBuilt.end()) return hit->second;
+        return aliasBuilt.emplace(g.aliasId, matchFromNode(g, subject, orig)).first->second;
+    };
     if (c.kids) for (auto& ck : *c.kids) {
         if (isPositionalKey(ck.first)) continue;   // a NUMBER — presented above
         bool many = ck.second.size() > 1 || (c.listNames && c.listNames->count(ck.first));
-        if (!many) { cv.hashRef()[ck.first] = matchFromNode(ck.second[0], subject, orig); continue; }
+        if (!many) { cv.hashRef()[ck.first] = child(ck.second[0]); continue; }
         Value a2 = Value::array(); a2.isList = true;
-        for (auto& g : ck.second) a2.arr()->push_back(matchFromNode(g, subject, orig));
+        for (auto& g : ck.second) a2.arr()->push_back(child(g));
         cv.hashRef()[ck.first] = a2;
     }
     return cv;
@@ -44909,6 +44923,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
         }
         Value mv = subMatch(pn.from, pn.to);
+        // `<v=rule>` is ONE capture filed under two keys (ParseNode::aliasId):
+        // build it once, fire its action once, and hand both keys the same Match.
+        std::unordered_map<uint64_t, Value> aliasBuilt;
+        auto buildRule = [&](const ParseNode& child) -> Value {
+            if (!child.aliasId) return build(child);
+            auto hit = aliasBuilt.find(child.aliasId);
+            if (hit != aliasBuilt.end()) return hit->second;
+            return aliasBuilt.emplace(child.aliasId, build(child)).first->second;
+        };
         // Names captured INSIDE a positional group belong to that group's Match,
         // not to this one: `rule array { '{' ( <element> ','?)* '}' }` gives
         // `$0[i]<element>`, and `$/<element>` does not exist (Rakudo scopes a
@@ -44959,7 +44982,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                         consumedByGroup[kv.first]++;
                                         hits.arr()->push_back(child.name.empty()
                                             ? subMatch(child.from, child.to)
-                                            : build(child));
+                                            : buildRule(child));
                                     }
                                 if (hits.arr()->size() == 1) om.hashRef()[kv.first] = (*hits.arr())[0];
                                 else if (!hits.arr()->empty()) om.hashRef()[kv.first] = hits;
@@ -44981,7 +45004,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto buildChild = [&](const ParseNode& child) -> Value {
             if (child.name.empty())
                 return subMatch(child.from, child.to);
-            return build(child);
+            return buildRule(child);
         };
         if (pn.kids) for (auto& kv : *pn.kids) {
             if (isPositionalKey(kv.first)) continue;   // a NUMBER — presented above
@@ -45223,7 +45246,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             std::function<void(const ParseNode&)> walk = [&](const ParseNode& pn) {
                 inTree.insert({pn.name, pn.from, pn.to});
                 if (!pn.actualRule.empty()) inTree.insert({pn.actualRule, pn.from, pn.to});
-                if (pn.kids) for (auto& kv : *pn.kids) for (auto& k : kv.second) walk(k);
+                if (!pn.kids) return;
+                std::unordered_set<uint64_t> seen;   // an alias pair is one subtree: walk it once
+                for (auto& kv : *pn.kids)
+                    for (auto& k : kv.second)
+                        if (!k.aliasId || seen.insert(k.aliasId).second) walk(k);
             };
             walk(tree);
             replayBuild = true;

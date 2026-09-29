@@ -3185,11 +3185,20 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     return classMatch(n, s[pos]) ? pos + 1 : -1; // Class
 }
 
-std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
+Regex::RxWidth Regex::nodeWidth(const Node* n, MState& st) const {
     const long UNB = -1, CAP = 1000000000;
+    // bounded sums and products; any unbounded term makes the whole unbounded
+    auto add = [&](long a, long b) { return (a < 0 || b < 0 || a + b > CAP) ? UNB : a + b; };
+    auto mul = [&](long a, long m) { return (a < 0 || m < 0 || (m > 0 && a > CAP / m)) ? UNB : a * m; };
+    auto most = [&](long a, long b) { return (a < 0 || b < 0) ? UNB : std::max(a, b); };
     switch (n->k) {
-        case K::Lit: return {(long)n->lit.size(), n->imark ? UNB : (long)n->lit.size()}; // :ignoremark may consume trailing marks
-        case K::Any: return {1, 4}; // `.` consumes a whole grapheme — up to 4 bytes per codepoint
+        case K::Lit: { // each codepoint of the literal is at most one character of the input…
+            long cps = 0;
+            for (unsigned char c : n->lit) if ((c & 0xC0) != 0x80) cps++;
+            if (n->icase) cps *= 3; // …or, under :i, up to three: full folding maps ﬃ to "ffi"
+            return {(long)n->lit.size(), n->imark ? UNB : (long)n->lit.size(), cps}; // :ignoremark may consume trailing marks
+        }
+        case K::Any: return {1, 4, 1}; // `.` consumes a whole grapheme — up to 4 bytes per codepoint
         case K::Class:
             // anything that can match beyond ASCII decodes whole codepoints (up to
             // 4 bytes): uprop, cp ranges, cluster members, negation, and the
@@ -3198,66 +3207,91 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
             // a multibyte char (the scan probed only pos-1, a continuation byte).
             if (!n->uprop.empty() || !n->cpRanges.empty() || !n->clusterMembers.empty() ||
                 n->negate || !n->negClassFlags.empty() ||
-                n->classFlags.find_first_of("swadulp") != std::string::npos) return {1, 4};
-            return {1, 1};
+                n->classFlags.find_first_of("swadulp") != std::string::npos) return {1, 4, 1};
+            return {1, 1, 1};
         case K::Seq: {
-            long lo = 0, hi = 0;
+            RxWidth w{0, 0, 0};
             for (auto& kd : n->kids) {
-                auto w = nodeWidth(kd.get(), st);
-                lo += w.first;
-                if (hi >= 0) hi = (w.second < 0 || hi + w.second > CAP) ? UNB : hi + w.second;
+                auto k = nodeWidth(kd.get(), st);
+                w.lo += k.lo; w.hi = add(w.hi, k.hi); w.chars = add(w.chars, k.chars);
             }
-            return {lo, hi};
+            return w;
         }
         case K::Alt: {
-            if (n->kids.empty()) return {0, 0};
-            long lo = -1, hi = 0;
+            if (n->kids.empty()) return {0, 0, 0};
+            RxWidth w{-1, 0, 0};
             for (auto& kd : n->kids) {
-                auto w = nodeWidth(kd.get(), st);
-                lo = lo < 0 ? w.first : std::min(lo, w.first);
-                if (hi >= 0) hi = w.second < 0 ? UNB : std::max(hi, w.second);
+                auto k = nodeWidth(kd.get(), st);
+                w.lo = w.lo < 0 ? k.lo : std::min(w.lo, k.lo);
+                w.hi = most(w.hi, k.hi); w.chars = most(w.chars, k.chars);
             }
-            return {lo, hi};
+            return w;
         }
         case K::Rep: {
-            auto w = nodeWidth(n->kids[0].get(), st);
+            auto k = nodeWidth(n->kids[0].get(), st);
             long mn = n->min > 0 ? n->min : 0;
-            long lo = w.first * mn;
-            long hi = (n->repCode.empty() && n->max >= 0 && w.second >= 0 && w.second * n->max <= CAP)
-                    ? w.second * n->max : UNB;
+            long mx = n->repCode.empty() ? n->max : UNB;   // a runtime count is unbounded
+            RxWidth w{k.lo * mn, mul(k.hi, mx), mul(k.chars, mx)};
             if (n->sep) {
                 auto ws = nodeWidth(n->sep.get(), st);
-                if (mn > 1) lo += ws.first * (mn - 1);
-                if (hi >= 0) hi = (n->max > 1 && (ws.second < 0 || hi + ws.second * (n->max - 1) > CAP)) ? UNB
-                                : (n->max > 1 ? hi + ws.second * (n->max - 1) : hi);
+                if (mn > 1) w.lo += ws.lo * (mn - 1);
+                if (mx > 1) { w.hi = add(w.hi, mul(ws.hi, mx - 1)); w.chars = add(w.chars, mul(ws.chars, mx - 1)); }
             }
-            return {lo, hi};
+            return w;
         }
         case K::Conj: // the match is as long as the last term (all share the start)
-            return n->kids.empty() ? std::make_pair(0L, 0L) : nodeWidth(n->kids.back().get(), st);
+            return n->kids.empty() ? RxWidth{0, 0, 0} : nodeWidth(n->kids.back().get(), st);
         case K::CondRef: { // either branch may run (a missing `no` branch is zero-width)
             auto wy = nodeWidth(n->kids[0].get(), st);
-            auto wn = n->kids.size() > 1 ? nodeWidth(n->kids[1].get(), st) : std::make_pair(0L, 0L);
-            return {std::min(wy.first, wn.first),
-                    (wy.second < 0 || wn.second < 0) ? UNB : std::max(wy.second, wn.second)};
+            auto wn = n->kids.size() > 1 ? nodeWidth(n->kids[1].get(), st) : RxWidth{0, 0, 0};
+            return {std::min(wy.lo, wn.lo), most(wy.hi, wn.hi), most(wy.chars, wn.chars)};
         }
         case K::Group: return nodeWidth(n->kids[0].get(), st);
         case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
         case K::Nop: case K::Code: case K::Look: case K::CapStart: case K::CapEnd:
-            return {0, 0};
+            return {0, 0, 0};
         case K::Subrule:
-            if (n->inlineRx || !n->dynCode.empty()) return {0, UNB}; // a CALLED pattern: any width
+            if (n->inlineRx || !n->dynCode.empty()) return {0, UNB, UNB}; // a CALLED pattern: any width
             if (st.grammar) {
                 if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
                 // one CHARACTER, whose UTF-8 encoding is 1..n bytes — this is only
                 // used to bound a lookbehind window, so an open upper bound is a
-                // wider scan, never a wrong answer
-                if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty()) return {1, UNB};
+                // wider scan, never a wrong answer (`<ident>` shares the class
+                // table but is a whole word)
+                if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty())
+                    return {1, UNB, n->ruleName == "ident" ? UNB : 1};
             }
-            return {0, UNB};
-        case K::VarMatch: return {0, UNB};
+            // …and outside a grammar the built-in classes answer one character
+            // too, as builtinRuleMatch matches them, unless a `my regex` shadows one
+            else if (!(st.lexNames && st.lexNames->count(n->ruleName)) &&
+                     n->ruleName != "word" && !ruleFlag(n->ruleName).empty())
+                return {1, UNB, 1};
+            return {0, UNB, UNB};
+        case K::VarMatch: return {0, UNB, UNB};
     }
-    return {0, UNB};
+    return {0, UNB, UNB};
+}
+
+// Where a match spanning at most `chars` characters and ending at `pos` can
+// start, at the earliest — a lookbehind's window when its byte width is open.
+// Only CR LF joins two ASCII characters into one grapheme; everything else a
+// grapheme can hold besides its one base (prepends, combining marks, ZWJ,
+// variation selectors) is non-ASCII. So each character back is at most a run
+// of non-ASCII bytes plus one ASCII base, and one more non-ASCII run covers
+// the prepends of the last. A whole run is taken where a finer walk could
+// stop inside it: this is a bound, and wider is only slower, never wrong.
+static long charsBack(const std::string& s, long pos, long chars) {
+    auto nonAscii = [&](long p) { return p > 0 && (unsigned char)s[p - 1] >= 0x80; };
+    long p = pos;
+    for (long c = 0; c < chars && p > 0; c++) {
+        while (nonAscii(p)) p--;
+        if (p > 0) {
+            p--;                                              // the ASCII base
+            if (s[p] == '\n' && p > 0 && s[p - 1] == '\r') p--; // CR LF is one character
+        }
+    }
+    while (nonAscii(p)) p--;
+    return p;
 }
 
 static const GrammarHooks::ParamMap kNoParams; // shared empty map for hook calls
@@ -3301,10 +3335,11 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 // its own width of it — bound the scan window (O(width), not O(pos)).
                 if (!n->lookWidthReady) {
                     auto w = nodeWidth(child, st);
-                    n->lookMin = w.first; n->lookMax = w.second; n->lookWidthReady = true;
+                    n->lookMin = w.lo; n->lookMax = w.hi; n->lookChars = w.chars; n->lookWidthReady = true;
                 }
                 long hi = pos - n->lookMin;
-                long lo = n->lookMax < 0 ? 0 : pos - n->lookMax;
+                long lo = n->lookMax >= 0 ? pos - n->lookMax
+                        : n->lookChars >= 0 ? charsBack(st.s, pos, n->lookChars) : 0;
                 if (lo < 0) lo = 0;
                 for (long j = hi; j >= lo && !m; j--) {
                     MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, st.resolver, st.grammar};
@@ -3383,7 +3418,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         auto saved2 = had2 ? st.named[rn] : std::pair<long, long>{-1, -1};
                         st.named[capKey] = {pos, e};
                         ParseNode leaf; leaf.name = rn; leaf.from = pos; leaf.to = e;
-                        if (alsoRuleName) { st.named[rn] = {pos, e}; st.children[rn].push_back(leaf); }
+                        if (alsoRuleName) { leaf.aliasId = newAliasId(); st.named[rn] = {pos, e}; st.children[rn].push_back(leaf); }
                         st.children[capKey].push_back(std::move(leaf)); // <alpha>+ collates into a list
                         if (k(e)) return true;
                         st.children[capKey].pop_back(); if (st.children[capKey].empty()) st.children.erase(capKey);
@@ -3430,7 +3465,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (sub.listNames) leaf.listNames = sub.listNames;
                 if (!sub.listCaps.empty())
                     leaf.listCaps = std::make_shared<const std::set<int>>(sub.listCaps);
-                if (alsoRuleName) { st.named[rn] = {sub.from, sub.to}; st.children[rn].push_back(leaf); }
+                if (alsoRuleName) { leaf.aliasId = newAliasId(); st.named[rn] = {sub.from, sub.to}; st.children[rn].push_back(leaf); }
                 st.children[capKey].push_back(std::move(leaf)); // collates repeated calls into a list
                 if (k(sub.to)) return true;
                 st.children[capKey].pop_back(); if (st.children[capKey].empty()) st.children.erase(capKey);
@@ -4325,7 +4360,7 @@ bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos,
         // `<alias=rule>` records under the rule name too (see the resolver path)
         bool had2 = alsoName && st.named.count(*alsoName);
         auto saved2 = had2 ? st.named[*alsoName] : std::pair<long, long>{-1, -1};
-        if (alsoName) { st.named[*alsoName] = {cf, ct}; st.children[*alsoName].push_back(pn); }
+        if (alsoName) { pn.aliasId = newAliasId(); st.named[*alsoName] = {cf, ct}; st.children[*alsoName].push_back(pn); }
         st.named[capKey] = {cf, ct};
         st.children[capKey].push_back(std::move(pn)); // repeated calls collate into a list
         if (k(end)) return true;
@@ -4918,7 +4953,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         bool hadSpan2 = alsoRule && st.named.count(rn);
         auto savedSpan2 = hadSpan2 ? st.named[rn] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {pn.from, pn.to};
-        if (alsoRule) { st.named[rn] = {pn.from, pn.to}; st.children[rn].push_back(pn); }
+        if (alsoRule) { pn.aliasId = newAliasId(); st.named[rn] = {pn.from, pn.to}; st.children[rn].push_back(pn); }
         st.children[capKey].push_back(std::move(pn));
         if (k(end)) return true;
         st.children[capKey].pop_back();
@@ -4992,7 +5027,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         bool hadSpan2 = alsoRuleName && st.named.count(name);
         auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long,long>{-1,-1};
         st.named[capKey] = {pos, np};
-        if (alsoRuleName) { st.named[name] = {pos, np}; st.children[name].push_back(pn); }
+        if (alsoRuleName) { pn.aliasId = newAliasId(); st.named[name] = {pos, np}; st.children[name].push_back(pn); }
         st.children[capKey].push_back(std::move(pn));
         if (k(np)) return true;
         st.children[capKey].pop_back();
@@ -5042,7 +5077,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         bool hadSpan2 = alsoRuleName && st.named.count(name);
         auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {cf, ct};
-        if (alsoRuleName) { st.named[name] = {cf, ct}; st.children[name].push_back(pn); } // `<alias=rule>` answers to both
+        if (alsoRuleName) { pn.aliasId = newAliasId(); st.named[name] = {cf, ct}; st.children[name].push_back(pn); } // `<alias=rule>` answers to both
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
         if (k(end)) return true;
         st.children[capKey].pop_back();               // backtrack: drop this occurrence

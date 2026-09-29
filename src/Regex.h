@@ -196,6 +196,13 @@ struct ParseNode {
     // capture that captured something itself (-1 = a named capture or a rule,
     // which the parent files under its name instead).
     int capLocal = -1;
+    // Nonzero when this record is one of two keys for ONE capture:
+    // `<alias=rule>` files the match under the alias AND the rule name, and
+    // both records carry the same id, so a builder makes ONE Match and
+    // publishes it under each key — Rakudo's `$<v> === $<rule>`, with the
+    // rule's action fired once. Built per record, the action fired once per
+    // key and nested aliases rebuilt each subtree 2^depth times (YAMLish).
+    uint64_t aliasId = 0;
     std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
     GrammarHooks::NamedMap named;                         // named-capture spans ($<x>)
     std::shared_ptr<const ChildMap> kids;                 // frozen sub-trees (null = leaf); a vector collates repeated captures
@@ -238,6 +245,10 @@ struct RxMatch {
 // too. The prefix cannot collide with a capture NAME: no Raku identifier holds a
 // control character. Presentation reads `ParseNode::capLocal`, not the key.
 inline bool isPositionalKey(const std::string& k) { return !k.empty() && k[0] == '\x01'; }
+
+// A fresh ParseNode::aliasId. Ids only have to differ between the siblings of
+// one frame, which a single thread records, so a per-thread counter will do.
+inline uint64_t newAliasId() { static thread_local uint64_t n = 0; return ++n; }
 
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
 // anchored at `pos`; on success fill `out` (with out.to = end offset) and return true.
@@ -394,8 +405,10 @@ private:
         // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
         bool behind = false;
         // lookbehind scan window = the inner pattern's possible match width, computed
-        // once — bounds the start-position scan to O(width) instead of O(pos)
-        mutable long lookMin = 0, lookMax = -1;
+        // once — bounds the start-position scan to O(width) instead of O(pos).
+        // lookChars: the most CHARACTERS it spans (-1 = unbounded), which still
+        // bounds the window when the byte width does not (see RxWidth)
+        mutable long lookMin = 0, lookMax = -1, lookChars = -1;
         mutable bool lookWidthReady = false;
         // Alt: the declarative-prefix ranking NFA, built once on first use.
         // Cached ON the node (the byteset precedent) — a process compiles
@@ -524,8 +537,13 @@ public:
     struct ObsoleteEscape { std::string seq; };
     struct BadEscape { std::string seq; };      // an unknown `\x` letter escape — a compile error, not the letter
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
-    // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
-    std::pair<long, long> nodeWidth(const Node* n, MState& st) const;
+    // How wide a match of the pattern can be: `lo`/`hi` in BYTES, and `chars`, the
+    // most characters (graphemes) it spans; -1 = unbounded/unknown. A lookbehind
+    // needs `chars` because a one-character rule (`<.alnum>`) is 1..n bytes: with
+    // only the byte bound its window reached back to the start of the input on
+    // every call, which made YAMLish's `<!after <.alnum>>` quadratic.
+    struct RxWidth { long lo, hi, chars; };
+    RxWidth nodeWidth(const Node* n, MState& st) const;
     const Node* root() const { return root_.get(); }
     int ncaps() const { return ncaps_; }
     // The common case: no capture nests inside another, so the flat slots ARE
