@@ -33,6 +33,18 @@
 namespace rakupp {
 namespace cnp {
 
+// A call in a kernel: the arguments the kernel evaluated go into a scratch
+// scope as `$__cnp_argN`, and `synth` — the call rewritten to read them — is
+// evaluated by the interpreter, so lookup, dispatch and builtins are its own.
+struct KernelCall {
+    std::unique_ptr<Call> synth;
+    std::vector<int> argRegs;
+    std::vector<std::string> argNames;
+    const BuiltinFn* builtin = nullptr;   // the builtin of that name, looked up on first use
+    bool builtinChecked = false;
+};
+
+
 namespace {
 
 inline double  bits2d(int64_t x) { double d; std::memcpy(&d, &x, 8); return d; }
@@ -167,6 +179,72 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
     } catch (...) { stash(f); return 1; }
 }
 
+int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
+    Interpreter& I = interpOf(f);
+    auto saved = Interpreter::tctx_.cur;
+    Value** slots = static_cast<Value**>(f->slots);
+    const auto& written = *static_cast<const std::vector<bool>*>(f->written);
+    const size_t n = (size_t)f->nslots;
+    // The callee may see the loop's variables (a sub that closes over one),
+    // so the registers go back to their containers first — keeping a native
+    // container's tags, as the final write-back does — and are reloaded
+    // after, since the callee may have written them.
+    auto spill = [&] {
+        for (size_t i = 0; i < n; i++)
+            if (written[i]) {
+                Value* c = slots[i];
+                const int nb = c->natBits; const bool ns = c->natSigned, nf = c->natFloat;
+                *c = regValue(f, i);
+                if (nb) { c->natBits = nb; c->natSigned = ns; c->natFloat = nf; }
+            }
+    };
+    auto reload = [&] { for (size_t i = 0; i < n; i++) setReg(f, i, *slots[i]); };
+    try {
+        auto& cs = (*static_cast<std::vector<rakupp::cnp::KernelCall>*>(f->calls))[site];
+        spill();
+        // A BUILTIN the program has not shadowed goes straight to its function,
+        // the route --exe calls builtins by: no scratch scope, no re-dispatch.
+        if (!cs.builtinChecked) {
+            cs.builtin = I.builtinPtr(cs.synth->name);
+            cs.builtinChecked = true;
+        }
+        if (cs.builtin && !saved->find("&" + cs.synth->name)) {
+            ValueList args;
+            args.reserve(cs.argRegs.size());
+            for (int r : cs.argRegs) args.push_back(regValue(f, (uint64_t)r));
+            Value res;
+            try { res = rtCallB(I, cs.builtin, cs.synth->name.c_str(), std::move(args)); }
+            catch (LastEx& e) { if (!e.label.empty()) throw; reload(); f->ctl = 1; return 0; }
+            catch (NextEx& e) { if (!e.label.empty()) throw; reload(); f->ctl = 2; return 0; }
+            reload();
+            setReg(f, dst, res);
+            return 0;
+        }
+        auto env = std::make_shared<Env>();
+        env->parent = saved;
+        for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
+        Interpreter::tctx_.cur = env;
+        Value res;
+        try { res = I.eval(cs.synth.get()); }
+        catch (LastEx& e) {
+            if (!e.label.empty()) throw;
+            Interpreter::tctx_.cur = saved; reload(); f->ctl = 1; return 0;
+        }
+        catch (NextEx& e) {
+            if (!e.label.empty()) throw;
+            Interpreter::tctx_.cur = saved; reload(); f->ctl = 2; return 0;
+        }
+        Interpreter::tctx_.cur = saved;
+        reload();
+        setReg(f, dst, res);
+        return 0;
+    } catch (...) {
+        Interpreter::tctx_.cur = saved;
+        stash(f);
+        return 1;
+    }
+}
+
 int rk_cnp_natchk(RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst) {
     try {
         Value v = regValue(f, reg);
@@ -251,6 +329,7 @@ int rk_cnp_move(RkCnpFrame* f, uint64_t d, uint64_t a) {
 struct Kernel {
     std::unique_ptr<Code> code;
     std::vector<Value>    consts;
+    std::vector<KernelCall> calls;
     size_t                nregs = 0;
     size_t                nops  = 0;
 };
@@ -268,7 +347,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow;
+    int natchk, natchkslow, call, jctl;
     bool ok = false;
 };
 
@@ -296,6 +375,7 @@ const StencilIds& ids() {
         v.ret = g("rk_st_ret");
         v.jtslow = g("rk_st_jtslow"); v.jfslow = g("rk_st_jfslow"); v.jdefslow = g("rk_st_jdefslow");
         v.natchk = g("rk_st_natchk"); v.natchkslow = g("rk_st_natchkslow");
+        v.call = g("rk_st_call"); v.jctl = g("rk_st_jctl");
         return v;
     }();
     return s;
@@ -330,6 +410,7 @@ struct ColdReq {
 
 struct Lower {
     std::string err;
+    std::vector<KernelCall> calls;
     std::vector<Op>      ops;
     std::vector<ColdReq> colds;
     std::vector<Value>   consts;
@@ -690,6 +771,39 @@ int Lower::expr(Expr* e) {
             emit(ids().unop, (uint64_t)d, (uint64_t)a, (uint64_t)oi);
             return d;
         }
+        case NK::Call: {
+            auto* c = static_cast<Call*>(e);
+            KernelCall cs;
+            cs.synth = std::make_unique<Call>();
+            cs.synth->name = c->name;
+            cs.synth->parenned = c->parenned;
+            cs.synth->line = c->line;
+            for (size_t k = 0; k < c->args.size(); k++) {
+                // each argument into a temp of its own: a later argument that
+                // writes a variable (`f($i, $i++)`) must not change an earlier one
+                int r = temp();
+                exprInto(c->args[k].get(), r);
+                if (bad()) return 0;
+                std::string nm = "$__cnp_arg" + std::to_string(k);
+                cs.argRegs.push_back(r);
+                cs.argNames.push_back(nm);
+                auto ve = std::make_unique<VarExpr>(nm);
+                ve->line = c->line;
+                cs.synth->args.push_back(std::move(ve));
+            }
+            int d = temp();
+            calls.push_back(std::move(cs));
+            emit(ids().call, (uint64_t)(calls.size() - 1), (uint64_t)d);
+            // a `last` / `next` the callee raised leaves / continues the
+            // innermost loop, as it would the interpreter's
+            if (!loops.empty()) {
+                int hl = emit(ids().jctl, 1);
+                loops.back().breaks.push_back(hl);
+                int hn = emit(ids().jctl, 2);
+                loops.back().continues.push_back(hn);
+            }
+            return d;
+        }
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
             int d = temp();
@@ -1003,6 +1117,7 @@ Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& 
     Kernel* k = new Kernel();
     k->code = std::move(code);
     k->consts = std::move(L.consts);
+    k->calls = std::move(L.calls);
     k->nregs = nregs;
     k->nops = L.ops.size();
     return k;
@@ -1025,6 +1140,11 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
     Frame f(k->nregs);
     f.abi.interp = &I;
     f.abi.consts = (void*)&k->consts;
+    f.abi.calls = (void*)&k->calls;
+    f.abi.slots = (void*)slots;
+    f.abi.written = (void*)&written;
+    f.abi.nslots = (int64_t)n;
+    f.abi.ctl = 0;
 
     for (size_t i = 0; i < n; i++) setReg(&f.abi, i, *slots[i]);
 

@@ -120,6 +120,7 @@ struct Site {
     int counterSlot = -1;
     std::vector<std::string> opKeys;         // routine names that would overload this loop's operators
     std::atomic<bool> opsChecked{false};     // …looked for once, at the first entry
+    std::vector<std::string> callNames;      // routines a copy-and-patch kernel calls (TYPES-PLAN N5)
 };
 
 // The name a counted `for`'s synthetic condition reads its end bound from. It
@@ -209,6 +210,7 @@ struct Scan {
     // each of these, so a program that overloads one cannot have this loop
     // compiled — see the note at the lookup in runIfReady.
     std::set<std::string> opKeys;
+    std::set<std::string> callNames;   // copy-and-patch only: checked at entry (is rw / is raw)
     void useOp(const char* kind, const std::string& op) {
         opKeys.insert(std::string("&") + kind + ":<" + op + ">");
     }
@@ -323,6 +325,29 @@ void Scan::expr(Expr* e) {
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
             expr(t->cond.get()); expr(t->then.get()); expr(t->els.get());
+            return;
+        }
+        case NK::Call: {
+            // Copy-and-patch only (TYPES-PLAN N5): the kernel writes the loop's
+            // variables back before the call, runs it through the interpreter,
+            // and reloads them after, so a callee sees and changes what it would
+            // have. The C++ backend has nowhere to put a call.
+            auto* c = static_cast<Call*>(e);
+            if (g_opt.backend != Backend::Cnp) { fail("a call"); return; }
+            if (c->name.empty() || c->callee) { fail("a call through a code value"); return; }
+            // Routines that act on the CALLER — its frame, its routine, its
+            // dispatch — or evaluate code in it. The kernel's frame is not one.
+            static const std::set<std::string> deny = {
+                "EVAL", "EVALFILE", "callframe", "callsame", "callwith", "nextsame", "nextwith",
+                "samewith", "nextcallee", "lastcall", "return", "return-rw", "take", "take-rw",
+                "succeed", "proceed", "leave", "emit", "done", "require", "caller",
+                "temp", "let", "lazy"};   // (these three take their argument as an EXPRESSION)
+            if (deny.count(c->name) || c->name.find("::") != std::string::npos) { fail("a call to " + c->name); return; }
+            for (auto& a : c->args) {
+                if (!a || a->kind == NK::Pair) { fail("a call with a named argument"); return; }
+                expr(a.get());
+            }
+            callNames.insert(c->name);
             return;
         }
         default: fail("an expression the kernel whitelist does not cover"); return;
@@ -776,6 +801,7 @@ void examine(Site* s) {
         for (size_t k = 0; k < sc.slots.size(); k++)
             if (sc.slots[k] == sc.countedVar) { s->counterSlot = (int)k; break; }
     s->opKeys.assign(sc.opKeys.begin(), sc.opKeys.end());
+    s->callNames.assign(sc.callNames.begin(), sc.callNames.end());
     s->slotWritten.clear();
     for (const std::string& n : sc.slots) s->slotWritten.push_back(sc.written.count(n) != 0);
     // ONE exported name, the same in every kernel. It has to be independent of
@@ -1122,6 +1148,24 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
                     return refuse(s, "the program declares " + key.substr(1) +
                                      ", which shadows an operator this loop uses");
         s->opsChecked.store(true, std::memory_order_release);
+    }
+    // A routine the kernel calls must take its arguments as VALUES: the kernel
+    // passes each one in a scratch variable, so an `is rw` / `is raw`
+    // parameter would write into that instead of the caller's variable.
+    // Checked every entry (a name can be rebound), candidates of a multi too.
+    for (const std::string& nm : s->callNames) {
+        const Value* f = nullptr;
+        for (Env* e = env; e && !f; e = e->parent.get()) f = e->find("&" + nm);
+        if (!f || f->t != VT::Code || !f->code()) continue;   // a builtin, or not a routine
+        auto rwParams = [](const Value& v) {
+            if (v.t != VT::Code || !v.code() || !v.code()->params) return false;
+            for (auto& p : *v.code()->params) if (p.isRw || p.isRaw) return true;
+            return false;
+        };
+        bool bad = rwParams(*f);
+        if (f->code()->isMultiDispatcher)
+            for (auto& c : f->code()->candidates) bad = bad || rwParams(c);
+        if (bad) return refuse(s, "the loop calls " + nm + ", which binds an argument `is rw` or `is raw`");
     }
 
     std::vector<Value*> slots;

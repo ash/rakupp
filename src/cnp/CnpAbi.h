@@ -52,6 +52,15 @@ typedef struct RkCnpFrame {
     void*     consts;   // const Value[] — the kernel's constant pool
     void*     interp;   // Interpreter*
     void*     err;      // std::exception_ptr* — where a helper stashes a throw
+    // Calls (TYPES-PLAN N5). A call writes the loop's variables back to their
+    // containers, runs through the interpreter, and reloads them; a `last` or
+    // `next` the callee raised comes back in `ctl` (1 last, 2 next) for the
+    // jctl stencils after the call to act on.
+    void*     calls;    // the kernel's call sites
+    void*     slots;    // Value** — the containers behind registers 0..nslots-1
+    void*     written;  // const std::vector<bool>* — which of them the kernel stores
+    int64_t   nslots;
+    int64_t   ctl;
 } RkCnpFrame;
 
 // The signature every stencil has, and therefore the signature of the whole
@@ -86,6 +95,8 @@ int rk_cnp_defined(RkCnpFrame* f, uint64_t a);                          // 0/1, 
 // refuse it with the interpreter's exception, leaving `dst` as it was. `kind`
 // is RK_T_INT or RK_T_NUM; `name` is the variable's constant-pool index.
 int rk_cnp_natchk (RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uint64_t dst);
+// Call site `site` of the kernel, its result into register `dst`.
+int rk_cnp_call   (RkCnpFrame* f, uint64_t site, uint64_t dst);
 
 #ifdef __cplusplus
 }

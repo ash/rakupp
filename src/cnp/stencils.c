@@ -317,6 +317,20 @@ int rk_st_movebox(F* f, int64_t* r, uint8_t* t) {
     if (rk_cnp_move(f, OP0, OP1)) return RK_CNP_ERR;
     NEXT;
 }
+// A call, through the interpreter (see rk_cnp_call). Inline, not cold: a call
+// is never the cheap case it would be split out from.
+int rk_st_call(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_call(f, OP0, OP1)) return RK_CNP_ERR;
+    NEXT;
+}
+// After a call: the callee raised `last` (1) or `next` (2) — jump to the loop's
+// exit or its next iteration, as the interpreter's loop would have.
+int rk_st_jctl(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (f->ctl == (int64_t)OP0) { f->ctl = 0; GOTO; }
+    NEXT;
+}
 // natchk's cold half: convert or refuse, through the interpreter.
 int rk_st_natchkslow(F* f, int64_t* r, uint8_t* t) {
     (void)r; (void)t;
