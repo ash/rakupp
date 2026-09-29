@@ -6354,6 +6354,47 @@ void Interpreter::preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts) {
     }
 }
 
+// What execBlock has to do at a block's entry and exit beyond running its
+// statements — the Block::entryWork bits, scanned once. Each bit is the exact
+// condition the step it gates looks for, so a clear bit means that step would
+// have found nothing: the CATCH/CONTROL scan (1), runEnterPhasers' PRE, ENTER
+// and FIRST (2), runLeavePhasers' LEAVE, KEEP, UNDO and POST (4), and
+// hoistSubs' named subs and hoistable types (8), and the search for the
+// statement whose value is the block's (16, below). Only the block's OWN
+// statements count: a nested block does its own entry work when it runs.
+static int blockEntryWork(Block* b) {
+    signed char w = b->entryWork;
+    if (w >= 0) return w;
+    int m = 0;
+    for (auto& s : b->stmts) {
+        if (s->kind == NK::Block) {
+            auto* blk = static_cast<const Block*>(s.get());
+            const std::string& ph = blk->phaser;
+            if (blk->isCatch) m |= 1;
+            if (ph == "PRE" || ph == "ENTER" || ph == "FIRST") m |= 2;
+            if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO" || ph == "POST") m |= 4;
+        }
+        else if (s->kind == NK::SubDecl) {
+            auto* sd = static_cast<const SubDecl*>(s.get());
+            if (!sd->isMethod && !sd->name.empty()) m |= 8;
+        }
+        else if (hoistableTypeDecl(s.get())) m |= 8;
+    }
+    // 16: the LAST statement might not be the block's value, so execBlock has
+    // to look for it. Deliberately wider than the scan it gates — any phaser
+    // block, CATCH or named sub — because isBlockPhaser's answer for an INIT
+    // depends on whether the program-init walk hoisted it, which is run-time.
+    if (!b->stmts.empty()) {
+        const Stmt* s = b->stmts.back().get();
+        if ((s->kind == NK::Block && (static_cast<const Block*>(s)->isCatch ||
+                                      !static_cast<const Block*>(s)->phaser.empty())) ||
+            (s->kind == NK::SubDecl && !static_cast<const SubDecl*>(s)->name.empty()))
+            m |= 16;
+    }
+    b->entryWork = (signed char)m;
+    return m;
+}
+
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
@@ -12138,6 +12179,16 @@ static void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::s
 }
 
 bool gatherCancelling();
+// The `temp`s a scope pushed since `mark`, restored in reverse — its exit's
+// last step, with or without LEAVE phasers before it (see runLeavePhasers).
+static void drainTempRestores(Env* cur, size_t mark) {
+    if (cur && cur->ex && cur->ex->tempRestores.size() > mark) {
+        auto& tr = cur->ex->tempRestores;
+        for (size_t i = tr.size(); i-- > mark; ) tr[i]();
+        tr.resize(mark);
+    }
+}
+
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
@@ -12237,11 +12288,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     // `temp` after the first iteration: `temp %h; %h{$_} = 7 for <A B>` restored
     // over A, then wrote B into the restored container, which then leaked past the
     // scope the temp was supposed to bound.
-    if (tctx_.cur && tctx_.cur->ex && tctx_.cur->ex->tempRestores.size() > tempMark) {
-        auto& tr = tctx_.cur->ex->tempRestores;
-        for (size_t i = tr.size(); i-- > tempMark; ) tr[i]();
-        tr.resize(tempMark);
-    }
+    drainTempRestores(tctx_.cur.get(), tempMark);
     if (leaveErrors.size() > 1) {
         Value list = Value::array(); list.isList = true;
         for (auto& le : leaveErrors) list.arr()->push_back(exceptionFor(le));
@@ -12394,6 +12441,12 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
     // index of the last statement whose value becomes the block's value; earlier
     // statements are always sink (their value is discarded either way).
     size_t lastIdx = b->stmts.size();
+    // What entry and exit have to do beyond the statements, decided once for
+    // this block: most blocks — every phaser-free loop body, at every
+    // iteration — skip the scans and the phaser runners below outright
+    const int entryWork = blockEntryWork(b);
+    if (!(entryWork & 16)) lastIdx = b->stmts.empty() ? 0 : b->stmts.size() - 1;
+    else
     for (size_t i = b->stmts.size(); i-- > 0; ) {
         Stmt* s = b->stmts[i].get();
         if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
@@ -12408,6 +12461,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
     // block must NOT swallow ordinary exceptions as a CATCH would)
     Block* catchBlk = nullptr;
     Block* controlBlk = nullptr;
+    if (entryWork & 1)
     for (auto& s : b->stmts)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) {
             if (static_cast<Block*>(s.get())->phaser == "CONTROL")
@@ -12422,18 +12476,20 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
             : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
         ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
     } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
-    hasNestedSub = hoistSubs(b->stmts);
+    hasNestedSub = (entryWork & 8) && hoistSubs(b->stmts);
     // …and the containers those subs close over, which are lexicals of THIS
     // block and so exist from here on. Only for a block that has such a sub —
     // and not for one running in a scope it does not own (a statement
     // modifier's flattened branch), where a declaration belongs to the
     // enclosing block and pre-making it here would leak.
     if (hasNestedSub && !sharesScope) predeclareSubClosures(b, blockEnv);
-    hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
+    // `my` buried in ternary/nqp branches → block scope (a block already known
+    // to have none does not even make the call)
+    if (b->hoistNeed != 0) hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed);
     // The ENDs this block holds bind to THIS entry — the innermost scope that
     // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
     for (Block* e : b->endsWithin) captureEndScope(e);
-    runEnterPhasers(b->stmts);
+    if (entryWork & 2) runEnterPhasers(b->stmts);
     // The unsuccessful exit: an exception leaves the block. A `take`/`emit`/
     // `done` outside its construct goes to this block's CONTROL first — true
     // when that handled it, and the block then returns Nil having left
@@ -12609,7 +12665,12 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
         // its `$_`, a loop body's too: `for ^10 { POST @a.push($_); 42 }` pushes 42s
         struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
         tcx.leaveResult = &outV;
-        runLeavePhasers(b->stmts, ok, tempMark, tcx.loopCtl ? 0 : 1);
+        if (entryWork & 4) runLeavePhasers(b->stmts, ok, tempMark, tcx.loopCtl ? 0 : 1);
+        else {
+            // no LEAVE/KEEP/UNDO/POST: what runLeavePhasers does without any
+            tcx.leaveReturned = false;
+            drainTempRestores(tcx.cur.get(), tempMark);
+        }
         // `let` undoes itself when the block is left UNSUCCESSFULLY — an
         // undefined (or Failure) value is that, even on a normal exit
         if (!ok && !tcx.loopCtl && !tcx.returning && !sharesScope && tcx.cur && tcx.cur->ex &&

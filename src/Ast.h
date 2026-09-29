@@ -939,6 +939,13 @@ struct Block : Stmt {
     // loop may overwrite the topic in place instead of clearing and
     // re-inserting per iteration. Decided once; see Interpreter::flatLoopBody.
     DecidedOnce<signed char> flatLoop{-1};
+    // Which per-entry work this block's OWN statements ask of execBlock: bit 1
+    // = a CATCH/CONTROL, 2 = a PRE/ENTER/FIRST, 4 = a LEAVE/KEEP/UNDO/POST,
+    // 8 = a named sub or a type to hoist (-1 = not yet scanned). A static
+    // property of the AST, decided once, so a block with none of them skips
+    // the scans and the phaser runners at every entry — for a loop body, at
+    // every iteration. See blockEntryWork in Interpreter.cpp.
+    DecidedOnce<signed char> entryWork{-1};
     // -1 = not yet decided, 0 = nothing to do, 1 = this block declares a `my`
     // that a named sub hoisted into it closes over, so the container has to
     // exist from block ENTRY rather than from the declaration statement. See
