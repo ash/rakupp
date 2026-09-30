@@ -19560,6 +19560,32 @@ static inline bool binaryShadowMaybe(const std::string& op) {
             (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!=")));
 }
 
+// A slot whose Value an Int written into `.i` stays exactly what the full
+// path would store: a plain machine Int, or a full-width signed `int` (a sum
+// that does not overflow is the value the native path stores, and the slot
+// keeps its native tags; a sized or unsigned native wraps on every store, so
+// it keeps the full path) — every other flag at its default, writable.
+static inline bool plainIntSlotValue(const Value& v) {
+    const bool nativeInt = v.natBits == 64 && v.natSigned && !v.natFloat;
+    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && (!v.natBits || nativeInt) &&
+           !v.readonly && !v.itemized && !v.b && !v.isList && !v.objKeyed &&
+           !v.immutableBind && !v.pairValRO && !v.namedArg && (!v.natSigned || nativeInt) &&
+           !v.natFloat && v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+}
+
+// The slot `$n++` may step in place (see evalUnary): a `$` pad variable whose
+// layout calls it simple — untyped and unconstrained, the assignment lane's
+// verdict — holding a plain Int. Null for anything else.
+Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
+    if (ve->declare || ve->padSlot < 0 || ve->name.empty() || ve->name[0] != '$') return nullptr;
+    Env* const cur = tctx_.cur.get();
+    Value* slot = padPtrIn(ve, cur);
+    if (!slot || !plainIntSlotValue(*slot)) return nullptr;
+    for (Env* e = cur; e; e = e->parent.get())
+        if (e->layout) return e->layout->simple[ve->padSlot] ? slot : nullptr;
+    return nullptr;
+}
+
 // `$x = $a op $b` with `+`, `-` or `*` on two machine Ints (task 9, the fused
 // integer leaf): the result written into the slot, where the lane would build
 // an Int, move it in and destroy the temporary. Only for a node compiled to
@@ -19573,16 +19599,7 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     const std::string& op = b->op;
     if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
         return false;
-    // a full-width `int` counts too: a sum that does not overflow is the value
-    // the native path stores, and the slot keeps its native tags (a sized or
-    // unsigned native wraps on every store, so it keeps the full path)
-    const bool nativeInt = slot->natBits == 64 && slot->natSigned && !slot->natFloat;
-    if (slot->t != VT::Int || slot->x_ || slot->pk_ != PK::None || (slot->natBits && !nativeInt) ||
-        slot->readonly || slot->itemized || slot->b || slot->isList || slot->objKeyed ||
-        slot->immutableBind || slot->pairValRO || slot->namedArg || (slot->natSigned && !nativeInt) ||
-        slot->natFloat ||
-        !slot->enumName.empty() || !slot->enumType.empty() || !slot->hashKind.empty() || !slot->s.empty())
-        return false;
+    if (!plainIntSlotValue(*slot)) return false;
     Env* const cur = tctx_.cur.get();
     auto intLeaf = [&](Expr* x, bool isLit) -> const Value* {
         const Value* p;
@@ -22307,6 +22324,26 @@ Value Interpreter::evalUnary(Unary* u) {
     }
   incDec:
     if (opEq(u->op, "++") || opEq(u->op, "--")) {
+        // `$n++` on an untyped pad variable holding a plain Int: step `.i`.
+        // The slot is the assignment lane's (layout->simple: untyped, no
+        // `where`), so the typed-assign check below would find nothing; with
+        // no subset types and no `is rw` links anywhere, nothing else below
+        // applies to it either. An overflow takes the full path (a bignum).
+        if (u->operand->kind == NK::VarExpr && subsets_.empty() && !anyRwLinks_)
+            if (Value* slot = plainIntStepSlot(static_cast<VarExpr*>(u->operand.get()))) {
+                long long z;
+                if (!(opEq(u->op, "++") ? rakupp::add_ovf(slot->i, 1, &z)
+                                        : rakupp::sub_ovf(slot->i, 1, &z))) {
+                    Value old;
+                    if (u->postfix) old = *slot;
+                    {
+                        ParStripe ws(*this, slot);   // torn-copy contract, as the full store
+                        slot->i = z;
+                        slot->n = 0;
+                    }
+                    return u->postfix ? old : *slot;
+                }
+            }
         // Whatever-currying: `++*` / `*--` are WhateverCodes that step their
         // argument — mutating the DRIVER's element when one is aliased
         // (`.deepmap(++*)` in roast S03-metaops/hyper.t writes @a in place;
