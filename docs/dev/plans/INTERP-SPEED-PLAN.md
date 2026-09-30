@@ -284,7 +284,11 @@ Each is its own plan, in V6's order of evidence per cost:
   so most of what the probe's L2 → L3 step removed was gone. What is left
   for handlers is the kinds whose own frame is still large — the next is
   the assignment lane (evalAssign), then evalIndex and evalUnary's hot paths
-  — each judged the same way. It is not the flat threaded loop or register IR V6 measured at a ~4%
+  — each judged the same way. *Measured and not kept:* a second Binary
+  handler for a node with no fast shape (`fib($n-1) + fib($n-2)`), which
+  evaluated the operands and went straight to evalBinary's post-operand
+  arms, lifted into a function of their own: `fib` +1.1%, mean +0.4% — that
+  function's frame is as large as the one it bypassed. It is not the flat threaded loop or register IR V6 measured at a ~4%
   ceiling: those change the loop, this removes the per-node `switch` and its
   shared giant frame.
 
@@ -298,7 +302,17 @@ an int64 lane with the overflow check and stores the Int in place — the
 UNBOX / `--cnp` idea applied per node rather than per loop.
 
 - [ ] Build it on task 8's handlers, for `+ - * < <= > >= == !=` over native
-  and plain Int operands.
+  and plain Int operands. *In part:*
+  - `$x = $a op $b` for `+ - *` (`fusedIntAssign`): into the slot of a plain
+    Int or a full-width signed `int`, for a right side compiled to its fast
+    shape; `asg` −9%, and the kernels counting with `my int $n` −2…−7%.
+  - `$x op= $y` on two machine Ints writes `.i` (`intOpAssignInPlace`, 477dac44).
+  - The six comparisons as a CONDITION: `while`/`loop` had `tryCondBool`
+    (TARG lever B); the ternary takes it now (`fib` −5%), and it refuses a
+    shadowing `infix:<…>` as evalBinary does.
+  - *Not done:* an `if` condition (it needs the condition's value for
+    `else -> $x` and placeholder blocks); comparisons and arithmetic in value
+    position, which still build a Value.
 
 *Done when:* `loopsum` and `streq` have closed half their gap.
 

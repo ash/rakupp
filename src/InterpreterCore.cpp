@@ -11691,7 +11691,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
-                            if (!nb && a->value->kind == NK::Binary &&
+                            if ((!nb || (nb == 64 && nsg && !nfl)) && a->value->kind == NK::Binary &&
                                 fusedIntAssign(static_cast<Binary*>(a->value.get()), slot)) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
                                 return sink ? Value::any() : *slot;
@@ -19510,9 +19510,14 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     const std::string& op = b->op;
     if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
         return false;
-    if (slot->t != VT::Int || slot->x_ || slot->pk_ != PK::None || slot->natBits || slot->readonly ||
-        slot->itemized || slot->b || slot->isList || slot->objKeyed || slot->immutableBind ||
-        slot->pairValRO || slot->namedArg || slot->natSigned || slot->natFloat ||
+    // a full-width `int` counts too: a sum that does not overflow is the value
+    // the native path stores, and the slot keeps its native tags (a sized or
+    // unsigned native wraps on every store, so it keeps the full path)
+    const bool nativeInt = slot->natBits == 64 && slot->natSigned && !slot->natFloat;
+    if (slot->t != VT::Int || slot->x_ || slot->pk_ != PK::None || (slot->natBits && !nativeInt) ||
+        slot->readonly || slot->itemized || slot->b || slot->isList || slot->objKeyed ||
+        slot->immutableBind || slot->pairValRO || slot->namedArg || (slot->natSigned && !nativeInt) ||
+        slot->natFloat ||
         !slot->enumName.empty() || !slot->enumType.empty() || !slot->hashKind.empty() || !slot->s.empty())
         return false;
     Env* const cur = tctx_.cur.get();
@@ -19524,7 +19529,8 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
             Value* q = padPtrIn(ve, cur);
             p = q ? q : cur->find(ve->name);
         }
-        return (p && p->t == VT::Int && !p->big() && !p->natBits && p->hashKind.empty()) ? p : nullptr;
+        return (p && p->t == VT::Int && !p->big() && p->hashKind.empty() &&
+                (!p->natBits || (p->natBits == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
     };
     const Value* lp = intLeaf(b->lhs.get(), b->fastShape == 2);
     if (!lp) return false;
