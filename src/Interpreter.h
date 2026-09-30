@@ -2111,7 +2111,11 @@ public:
     // names (slots 0..k-1); null for the mainline. Returns null when the owner
     // has no slot candidates (or too many for the 64-bit liveness mask).
     std::shared_ptr<const PadLayout> resolvePads(const std::vector<StmtPtr>& stmts,
-                                                 const std::vector<Param>* params);
+                                                 const std::vector<Param>* params,
+                                                 bool withSelf = false);
+    // …and put a Callable's layout on a fresh call frame, resolving it at the
+    // first call. Before any define: the params are the first slots to land.
+    void attachPads(Callable& c, Env& env);
     std::mutex padMu_;
     std::unordered_map<const void*, std::shared_ptr<const PadLayout>> padLayouts_;
     // May a reusing loop skip the per-iteration scope clear and overwrite the

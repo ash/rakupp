@@ -5578,7 +5578,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // A PseudoStash answers its key protocol live (its class methods) and
     // every other Hash method from the snapshot it carries
     if (invIn.t == VT::Object && invIn.obj() && invIn.obj()->cls &&
-        invIn.obj()->cls->name == "PseudoStash" && !invIn.obj()->cls->methods.count(mName) &&
+        opEq(invIn.obj()->cls->name, "PseudoStash") && !invIn.obj()->cls->methods.count(mName) &&
         !mName.empty() && mName[0] != '^' && mName != "WHAT" && mName != "HOW" &&
         mName != "raku" && mName != "gist" && mName != "Str") {
         auto it = invIn.obj()->attrs.find("snap");
@@ -5586,14 +5586,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // …and a path is a NUMBER by its basename: `$dir.add('3.5').Numeric` is 3.5
     // (S32-io/io-path.t; IO::Path.Numeric numifies .basename)
-    if ((mName == "Numeric" || mName == "Rat" || mName == "Num" || mName == "Int" || mName == "FatRat" ||
-         mName == "Real") && args.empty() && invIn.t == VT::Str && invIn.hashKind == "IO") {
+    if (invIn.t == VT::Str && args.empty() &&
+        (opEq(mName, "Numeric") || opEq(mName, "Rat") || opEq(mName, "Num") || opEq(mName, "Int") ||
+         opEq(mName, "FatRat") || opEq(mName, "Real")) && invIn.hashKind == "IO") {
         ValueList none;
         Value base = methodCall(invIn, "basename", none);
         return methodCall(Value::str(base.toStr()), mName, none);
     }
     // .succ / .pred step the BASENAME only (`foo/()`.succ is still `foo/()`)
-    if ((mName == "succ" || mName == "pred") && invIn.t == VT::Str && invIn.hashKind == "IO") {
+    if (invIn.t == VT::Str && (opEq(mName, "succ") || opEq(mName, "pred")) && invIn.hashKind == "IO") {
         std::string full = invIn.toStr();
         auto sl = full.find_last_of(invIn.enumName == "Win32" ? "/\\" : "/");
         std::string head = sl == std::string::npos ? "" : full.substr(0, sl + 1);
@@ -5606,7 +5607,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // `GLOBALish.WHO.merge-symbols($cu.handle.globalish-package)`: the names a
     // `$*REPO.need` kept to its unit become the program's
-    if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && mName == "merge-symbols") {
+    if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && opEq(mName, "merge-symbols")) {
         for (auto& a : args) {
             if (a.t != VT::Hash || !a.hash()) continue;
             auto gu = globalishUnits_.find((const void*)a.hash());
@@ -5683,7 +5684,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // is a real method on Mu, so a user override wins over the forward to `.raku`.
     // The lookup only runs for the literal name "perl", which is rare.
     static const std::string kRaku = "raku";
-    const bool userPerl = mName.size() == 4 && mName == "perl" &&
+    const bool userPerl = opEq(mName, "perl") &&
                           inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
                           inv.obj()->cls->findMethod("perl");
     // `.Stringy` is Mu's string coercion — `self.Str` — and was missing entirely,
@@ -5691,11 +5692,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // request line from. Forwarded the same way `.perl` forwards to `.raku`, with
     // the same escape: a class that defines its own `method Stringy` keeps it.
     static const std::string kStr = "Str";
-    const bool userStringy = mName == "Stringy" &&
+    const bool userStringy = opEq(mName, "Stringy") &&
                              inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
                              inv.obj()->cls->findMethod("Stringy");
-    MName m{(mName == "perl" && !userPerl)      ? kRaku
-          : (mName == "Stringy" && !userStringy) ? kStr
+    MName m{(opEq(mName, "perl") && !userPerl)      ? kRaku
+          : (opEq(mName, "Stringy") && !userStringy) ? kStr
                                                  : mName};
     m.skipOwn = skipOwn;
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };

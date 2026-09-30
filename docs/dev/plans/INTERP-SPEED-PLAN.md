@@ -240,6 +240,28 @@ Dispatch work does not move calls; call setup does
   binding, the call bookkeeping, the statement loop and the exits, and none
   of the rest. The one-shot call registers it has to see are
   `ExecContext` members now (they were six thread_locals). `fib` −22.6%.
+- [x] Method frames take pads. `invokeMethod` never attached the body's
+  `PadLayout` (only `callCallableRaw` did), so every method call put `self`
+  and each parameter into the frame's hash map, and the pooled frame freed
+  the nodes on release. *Done:* `attachPads` on both paths, a `self` slot in
+  a method's layout (reads still go through `Env::selfSlot`), no `%_` hash
+  built for a call with no named argument, and `methodCallInner`'s
+  per-call name tests after the type test that guards them. Interleaved
+  against 3ce93e4d, best of 3: `method` −22.9%, `privmeth` −22.5%,
+  `attrread` −16.3%, `multimeth` −9.3%, `multiwhere` −3.5%, mean −4.0%.
+  Then two more per-call costs: a method with no parameters built an `@_`
+  array on every call (only a body that reads `@_` gets one now,
+  `Callable::atArgsScan`; Rakudo rejects `@_` in a method outright), and an
+  assignment to an attribute walked the whole Env chain four times, for the
+  `where`/smiley/coercion/default tables that only a lexical declaration
+  writes (`$!n = $!n + 1` −29%, `$!n++` −17%, a paramless call −20%, on
+  scratch kernels; perf-guard has no attribute-store kernel). With them,
+  best of 3 against 3ce93e4d: `privmeth` −23.6%, `method` −22.8%,
+  `attrread` −16.8%, `multimeth` −12.0%, mean −4.7%.
+  *Not done:* a call-site cache that skips `methodCall`/`methodCallInner`
+  for a user object. Too many arms in front of the user-object path still
+  apply to one (a Junction argument, custom HOWs, the Seq tag on a
+  `keys`/`values`-named result), so a bypass would have to copy those rules.
 - [ ] Build the redispatch context lazily, only for a body that uses
   `callsame`/`nextsame` (V6 P2).
 - [ ] The multi-dispatch cache (V6 P2, issue #47).

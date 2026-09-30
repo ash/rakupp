@@ -4066,7 +4066,8 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
 // the wrong call's variable. Inline statement blocks cannot cross an
 // activation boundary, so they are safe to enter.
 std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<StmtPtr>& stmts,
-                                                          const std::vector<Param>* params) {
+                                                          const std::vector<Param>* params,
+                                                          bool withSelf) {
     std::lock_guard<std::mutex> lk(padMu_);
     auto hit = padLayouts_.find(&stmts);
     if (hit != padLayouts_.end()) return hit->second;
@@ -4118,6 +4119,9 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                 p.padSlot = ps;                          // TARG C2: the binder
                 p.padOwner = (const void*)layout.get();  // writes slots directly
             }
+    // A method's `self`: a slot no site is annotated with (reads go through
+    // Env::selfSlot), so the per-call define lands in the pad, not the map.
+    if (withSelf) layout->add("self");
     for (auto& s : stmts) {
         std::vector<const VarExpr*> ds;
         declaredVars(s.get(), ds);

@@ -6992,6 +6992,21 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
 // the whole difference between a sub call at ~2x Rakudo and a method call at
 // 5.8x — every method allocated a control block, an Env and its hash buckets, and
 // destroyed them again, per call (DISPATCH-PERF-PLAN.md).
+void Interpreter::attachPads(Callable& c, Env& env) {
+    if (!c.body) return;
+    if (c.padReady != 1) {
+        {
+            auto L = resolvePads(*c.body, c.params, c.isMethod && !c.subAsMethod);
+            std::lock_guard<std::mutex> lk(padMu_);
+            if (c.padReady != 1) c.padLayout = std::move(L);
+        }
+        c.padReady = 1;
+    }
+    if (c.padLayout) {
+        env.layout = c.padLayout;
+        env.pad.resize(c.padLayout->names.size());
+    }
+}
 namespace {
 struct FramePool {
     std::vector<std::shared_ptr<Env>>& free;
@@ -7891,20 +7906,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // so the many places that temporarily re-point tctx_.cur — the rw
     // write-through evaluating the caller's arg in the caller's scope was the
     // one that caught this — stay correct without knowing pads exist.
-    if (c.body) {
-        if (c.padReady != 1) {
-            {
-                auto L = resolvePads(*c.body, c.params);
-                std::lock_guard<std::mutex> lk(padMu_);
-                if (c.padReady != 1) c.padLayout = std::move(L);
-            }
-            c.padReady = 1;
-        }
-        if (c.padLayout) {
-            env->layout = c.padLayout;
-            env->pad.resize(c.padLayout->names.size());
-        }
-    }
+    attachPads(c, *env);
     // a method invoked via .() takes its invocant as the first positional arg
     if (c.isMethod && !args.empty()) {
         env->define("self", args[0]);
@@ -9607,13 +9609,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         stEnv = c.state.env;
     }
     env->parent = stEnv;
+    // Pads, as callCallableRaw takes them: the params bind into slots, and the
+    // body's annotated reads index the frame instead of hashing a name.
+    attachPads(c, *env);
     // …except for a plain SUB installed as a method: a Sub has no invocant, so
     // `self` inside it stays the one its CLOSURE captured. PDF::COS::Tie's
     // generated accessor is `sub (\obj) is rw { obj.rw-accessor(self, :$key) }`,
     // written inside the Attribute's own `compose` — the `self` it passes is
     // that Attribute, and rebinding it to the invocant handed the accessor the
     // object instead ("expected Attribute but got …").
-    if (!c.subAsMethod) env->define("self", self);
+    static const std::string kSelf = "self";   // not a temporary per call
+    if (!c.subAsMethod) env->define(kSelf, self);
     // Parameterized-role value params (role R[$x]/[%h]): a method/submethod of a
     // class that composed such a role must see the bound params in its body. Inject
     // them from the invocant's class MRO (child wins), skipping names the frame will
@@ -9694,17 +9700,26 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 env->define(pn, v);
         }
         env->define("@_", Value::array(args));
-    } else env->define("@_", Value::array(args));
+    } else {
+        // `@_` in a method is a compile-time error in Rakudo; it is kept for a
+        // body that reads it, and no other call pays for an array
+        signed char at = c.atArgsScan;
+        if (at < 0) c.atArgsScan = at = bodyUsesAtUnderscore(&c) ? 1 : 0;
+        if (at) env->define("@_", Value::array(args));
+    }
     // the implicit *%_ EVERY method carries, signature or none: a paramless
     // `method new()` still collects its named args there — DBDish::SQLite's
     // is exactly that shape, stashing attribute inits in %_ and blessing
     // with |%_ (the binder fills %_ itself when real params bound)
-    if (!env->local("%_")) {
+    bool anyNamed = false;
+    for (auto& a : args)
+        if (a.t == VT::Pair && a.namedArg && a.pairVal()) { anyNamed = true; break; }
+    if (anyNamed && !env->local("%_")) {
         Value h = Value::makeHash();
         for (auto& a : args)
             if (a.t == VT::Pair && a.namedArg && a.pairVal())
                 (*h.hash())[a.s.str()] = *a.pairVal();
-        if (!h.hash()->empty()) env->define("%_", std::move(h));
+        env->define("%_", std::move(h));
     }
     auto saved = tcx.cur;
     tcx.cur = env;
@@ -15285,98 +15300,107 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return false;
                 };
                 const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
-                varWhereCheck(nm, rhs);   // `my $x where Int|Num`
-                // `my Int:D $x` takes only a defined value, `my Int:U $x` only
-                // a type object — checked BEFORE the store, so a refused
-                // assignment leaves the old value
-                if (!nm.empty() && nm[0] == '$')
+                // The four per-variable tables below (where, smiley, coerce,
+                // default) are written only by a lexical DECLARATION, so an
+                // attribute (`$!x`, `$.x`) is never in them — and since no Env
+                // holds it either, each walk used to run to the global scope,
+                // probing every frame on the way, for every attribute store.
+                // Its declared type and `where` were checked above.
+                const bool attrTarget = nm.size() > 2 && (nm[1] == '!' || nm[1] == '.');
+                if (!attrTarget) {
+                    varWhereCheck(nm, rhs);   // `my $x where Int|Num`
+                    // `my Int:D $x` takes only a defined value, `my Int:U $x` only
+                    // a type object — checked BEFORE the store, so a refused
+                    // assignment leaves the old value
+                    if (!nm.empty() && nm[0] == '$')
+                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                            auto si = en->xr().varSmiley.find(nm);
+                            if (si != en->xr().varSmiley.end()) {
+                                const bool def = isDefined(rhs);
+                                if ((si->second == 'D' && !def) || (si->second == 'U' && def)) {
+                                    auto di = en->xr().varDefault.find(nm);
+                                    std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
+                                                     ? std::string(di->second.s.c_str()) : std::string("Any");
+                                    want += si->second == 'D' ? ":D" : ":U";
+                                    throwTypedV("X::TypeCheck::Assignment",
+                                        {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+                                        "Type check failed in assignment to " + nm + "; expected " + want +
+                                        " but got " + rhs.typeName() + (def ? " (" + rhs.gist() + ")" : ""));
+                                }
+                                break;
+                            }
+                            if (en->local(nm)) break;
+                        }
+                        // A typed container detonates a Failure rather than storing it:
+                        // the type check has to look at the value. See the twin guard
+                        // in the declaration path.
+                        if (rhs.t == VT::Hash && rhs.hashKind == "Failure") {
+                            for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                                auto dj = en->xr().varDefault.find(nm);
+                                if (dj == en->xr().varDefault.end()) continue;
+                                if (dj->second.t == VT::Type && kChecked.count(dj->second.s) &&
+                                    !en->xr().varDefaultUntyped.count(nm))
+                                    failureDetonate(rhs);
+                                break;
+                            }
+                        }
+                    // A coercion-typed slot converts rather than refuses — see the
+                    // other assignment check for why Git::Blame::File needed it.
                     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                        auto si = en->xr().varSmiley.find(nm);
-                        if (si != en->xr().varSmiley.end()) {
-                            const bool def = isDefined(rhs);
-                            if ((si->second == 'D' && !def) || (si->second == 'U' && def)) {
-                                auto di = en->xr().varDefault.find(nm);
-                                std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
-                                                 ? std::string(di->second.s.c_str()) : std::string("Any");
-                                want += si->second == 'D' ? ":D" : ":U";
-                                throwTypedV("X::TypeCheck::Assignment",
-                                    {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
-                                    "Type check failed in assignment to " + nm + "; expected " + want +
-                                    " but got " + rhs.typeName() + (def ? " (" + rhs.gist() + ")" : ""));
+                        auto ci = en->xr().varCoerce.find(nm);
+                        if (ci != en->xr().varCoerce.end()) {
+                            if (!nm.empty() && nm[0] == '$' && rhs.typeName() != ci->second) {
+                                auto fi = en->xr().varCoerce.find(nm + "\x01from");
+                                rhs = coerceVarValue(rhs, ci->second,
+                                                     fi != en->xr().varCoerce.end() ? fi->second : std::string(), nm);
                             }
                             break;
                         }
                         if (en->local(nm)) break;
                     }
-                    // A typed container detonates a Failure rather than storing it:
-                    // the type check has to look at the value. See the twin guard
-                    // in the declaration path.
-                    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") {
-                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                            auto dj = en->xr().varDefault.find(nm);
-                            if (dj == en->xr().varDefault.end()) continue;
-                            if (dj->second.t == VT::Type && kChecked.count(dj->second.s) &&
-                                !en->xr().varDefaultUntyped.count(nm))
-                                failureDetonate(rhs);
+                    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                        auto di = en->xr().varDefault.find(nm);
+                        if (di != en->xr().varDefault.end()) {
+                            if (en->xr().varDefaultUntyped.count(nm)) break;   // a reset value, no constraint
+                            // a COERCION subset (`subset S of Int()`) converts what
+                            // it is given: `my S $v; $v = "42"` holds 42
+                            if (di->second.t == VT::Type && isDefined(rhs) && !subsets_.empty() &&
+                                isCoercionSubset(std::string(di->second.s.c_str())))
+                                rhs = coerceViaSubset(rhs, std::string(di->second.s.c_str()));
+                            if (di->second.t == VT::Type &&
+                                ((kChecked.count(di->second.s) &&
+                                  (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
+                                                  : !undefOk(di->second.s))) ||
+                                 userTypeRefuses(rhs, di->second.s)))
+                                throwTypedV("X::TypeCheck::Assignment",
+                                    {{"got", rhs},
+                                     {"expected", Value::typeObj(di->second.s)},
+                                     {"symbol", Value::str(nm)}},
+                                    "Type check failed in assignment to " + nm +
+                                    "; expected " + di->second.s + " but got " + rhs.typeName() +
+                                    (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
+                                                    : " " + rhs.gist())); // undef gist has its own parens
+                            // a `Nil`-typed variable holds nothing but Nil
+                            if (di->second.t == VT::Type && di->second.s == "Nil" && rhs.t != VT::Nil)
+                                throwTypedV("X::TypeCheck::Assignment",
+                                    {{"got", rhs}, {"expected", Value::nil()}, {"symbol", Value::str(nm)}},
+                                    "Type check failed in assignment to " + nm + "; expected Nil but got " +
+                                    rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
+                            // a SUBSET-typed variable asks the subset — its base
+                            // type and its `where` — on every assignment:
+                            // `my Int::Odd $b = 3; $b = 4` dies and keeps the 3
+                            if (di->second.t == VT::Type && subsets_.count(std::string(di->second.s.c_str())) &&
+                                isDefined(rhs) && !typeOrSubsetMatches(rhs, std::string(di->second.s.c_str()))) {
+                                const std::string st = di->second.s.c_str();
+                                throwTypedV("X::TypeCheck::Assignment",
+                                    {{"got", rhs}, {"expected", Value::typeObj(st)}, {"symbol", Value::str(nm)}},
+                                    "Type check failed in assignment to " + nm + "; expected " + st +
+                                    " but got " + rhs.typeName() + " (" + typeCheckRepr(rhs) + ")");
+                            }
                             break;
                         }
+                        if (en->local(nm)) break;
                     }
-                // A coercion-typed slot converts rather than refuses — see the
-                // other assignment check for why Git::Blame::File needed it.
-                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                    auto ci = en->xr().varCoerce.find(nm);
-                    if (ci != en->xr().varCoerce.end()) {
-                        if (!nm.empty() && nm[0] == '$' && rhs.typeName() != ci->second) {
-                            auto fi = en->xr().varCoerce.find(nm + "\x01from");
-                            rhs = coerceVarValue(rhs, ci->second,
-                                                 fi != en->xr().varCoerce.end() ? fi->second : std::string(), nm);
-                        }
-                        break;
-                    }
-                    if (en->local(nm)) break;
-                }
-                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                    auto di = en->xr().varDefault.find(nm);
-                    if (di != en->xr().varDefault.end()) {
-                        if (en->xr().varDefaultUntyped.count(nm)) break;   // a reset value, no constraint
-                        // a COERCION subset (`subset S of Int()`) converts what
-                        // it is given: `my S $v; $v = "42"` holds 42
-                        if (di->second.t == VT::Type && isDefined(rhs) && !subsets_.empty() &&
-                            isCoercionSubset(std::string(di->second.s.c_str())))
-                            rhs = coerceViaSubset(rhs, std::string(di->second.s.c_str()));
-                        if (di->second.t == VT::Type &&
-                            ((kChecked.count(di->second.s) &&
-                              (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
-                                              : !undefOk(di->second.s))) ||
-                             userTypeRefuses(rhs, di->second.s)))
-                            throwTypedV("X::TypeCheck::Assignment",
-                                {{"got", rhs},
-                                 {"expected", Value::typeObj(di->second.s)},
-                                 {"symbol", Value::str(nm)}},
-                                "Type check failed in assignment to " + nm +
-                                "; expected " + di->second.s + " but got " + rhs.typeName() +
-                                (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
-                                                : " " + rhs.gist())); // undef gist has its own parens
-                        // a `Nil`-typed variable holds nothing but Nil
-                        if (di->second.t == VT::Type && di->second.s == "Nil" && rhs.t != VT::Nil)
-                            throwTypedV("X::TypeCheck::Assignment",
-                                {{"got", rhs}, {"expected", Value::nil()}, {"symbol", Value::str(nm)}},
-                                "Type check failed in assignment to " + nm + "; expected Nil but got " +
-                                rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
-                        // a SUBSET-typed variable asks the subset — its base
-                        // type and its `where` — on every assignment:
-                        // `my Int::Odd $b = 3; $b = 4` dies and keeps the 3
-                        if (di->second.t == VT::Type && subsets_.count(std::string(di->second.s.c_str())) &&
-                            isDefined(rhs) && !typeOrSubsetMatches(rhs, std::string(di->second.s.c_str()))) {
-                            const std::string st = di->second.s.c_str();
-                            throwTypedV("X::TypeCheck::Assignment",
-                                {{"got", rhs}, {"expected", Value::typeObj(st)}, {"symbol", Value::str(nm)}},
-                                "Type check failed in assignment to " + nm + "; expected " + st +
-                                " but got " + rhs.typeName() + " (" + typeCheckRepr(rhs) + ")");
-                        }
-                        break;
-                    }
-                    if (en->local(nm)) break;
                 }
             }
             // a `$` container ITEMIZES what it holds: `my $t = (1,2)` is one
@@ -23019,13 +23043,18 @@ Value* Interpreter::compoundCheckSlot(Assign* a, bool& sameTypeOk) {
 // (a Code is called) evaluated in the declaring scope with $_ as the value
 void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
     if (nm.empty() || nm[0] != '$') return;
-    for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent) {
+    // Walked by raw pointer: this runs for every scalar assignment, and a
+    // shared_ptr per level was two atomic refcount steps per frame. The owning
+    // pointer is needed only when a constraint is found, to parent its scope.
+    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
         {
             auto wi = en->xr().varWhere.find(nm);
             if (wi != en->xr().varWhere.end()) {
                 if (rhs.t == VT::Nil) return;   // Nil resets to the default
+                std::shared_ptr<Env> owner = tctx_.cur;
+                while (owner.get() != en) owner = owner->parent;
                 auto wenv = std::make_shared<Env>();
-                wenv->parent = en;
+                wenv->parent = owner;
                 wenv->define("$_", rhs);
                 auto saved = tctx_.cur; tctx_.cur = wenv;
                 bool ok;
