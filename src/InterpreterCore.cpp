@@ -19426,11 +19426,15 @@ static inline bool plainScalarLit(const Expr* e) {
 // shapes over plain machine Ints the comparison answers directly. -1 = not
 // taken; the caller falls back to eval+boolify, and nothing here has side
 // effects, so the fallback never double-evaluates.
+static inline bool binaryShadowMaybe(const std::string& op);
 int Interpreter::tryCondBool(Expr* e) {
     if (!e || e->kind != NK::Binary) return -1;
     auto* b = static_cast<Binary*>(e);
     const std::string& op = b->op;
     if (op.size() > 2 || op.empty()) return -1;
+    // a lexical `infix:<…>` declared after this node's shape was decided
+    // would otherwise be passed over (evalBinary makes the same test)
+    if (binaryShadowMaybe(op)) return -1;
     // the six Int comparisons only — everything else keeps the full path
     bool isCmp = opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
                  opEq(op, "==") || opEq(op, "!=");
@@ -27369,7 +27373,11 @@ Value Interpreter::eval(Expr* e) {
         case NK::MethodCall: return evalMethodCallExpr(e); // out of this frame: see there
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
-            return boolify(eval(t->cond.get())) ? eval(t->then.get()) : eval(t->els.get());
+            // `$n < 2 ?? …` over machine Ints answers without building a Bool
+            // (TARG lever B, as `while` has it); -1 is the full path
+            const int fb = tryCondBool(t->cond.get());
+            const bool c = fb >= 0 ? fb != 0 : boolify(eval(t->cond.get()));
+            return c ? eval(t->then.get()) : eval(t->els.get());
         }
         case NK::NqpOp: return evalNqpOp(static_cast<NqpOp*>(e));
         case NK::BlockExpr: {
