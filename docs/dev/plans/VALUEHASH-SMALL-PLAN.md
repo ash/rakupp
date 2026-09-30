@@ -3,7 +3,27 @@
 *Written 2026-09-20. Comes out of
 [PAYLOAD-SLAB-PLAN.md](PAYLOAD-SLAB-PLAN.md)'s allocation census, which went
 looking for the allocator's cost and found most of it somewhere the slab cannot
-reach. No code written yet.*
+reach.*
+
+## Outcome (2026-09-30)
+
+Steps 1–3 done: `ChunkList` in [src/ValueHash.h](../../../src/ValueHash.h)
+(chunks doubling from a first one of 4, the first pointer inline), and an
+object's attribute table reserved from its class chain's `has` count in
+`runAttrDefaults`. Stability is guarded by
+[t/regression/hash-entry-stability.raku](../../../t/regression/hash-entry-stability.raku)
+and was checked in C++ under AddressSanitizer across every first-chunk size.
+
+- **Census, `objects.raku`:** 996 MB → 255 MB allocated (−74%), 2.00M → 1.80M
+  calls; each object's table is one 336-byte chunk.
+- **The first falsifier fired for this benchmark:** its peak RSS did not move
+  (9.3 → 9.2 MB) — every `Point` dies at once and the allocator was recycling
+  the 4 KB block — and neither did its time (+1…3%, interleaved).
+- **Where it pays is a program that KEEPS what it builds:** 100k live
+  two-attribute objects plus 50k small hashes, peak RSS 531 → 175 MB (−67%),
+  time −16%. That is the case the 4 KB block cost for real.
+
+Step 4 (the census's other rows) is open.
 
 ## The measurement
 

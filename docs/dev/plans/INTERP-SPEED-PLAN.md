@@ -255,8 +255,10 @@ Dispatch work does not move calls; call setup does
 
 Each is its own plan, in V6's order of evidence per cost:
 
-- [ ] [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md): a small first chunk
-  instead of the 4,032-byte deque block.
+- [x] [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md): a small first chunk
+  instead of the 4,032-byte deque block. Allocation on `objects` −74%, but
+  its peak RSS and time did not move (the block was churn); a program that
+  keeps 100k objects and 50k small hashes: peak RSS 531 → 175 MB, time −16%.
 - [ ] Inline slots in `Env::vars`, and `make_shared<Env>` on the slab.
 - [ ] Small Rats inline.
 - [ ] [VALUE32-PLAN.md](VALUE32-PLAN.md): a 56-byte `Value`, the endgame.

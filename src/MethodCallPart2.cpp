@@ -922,6 +922,13 @@ void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
         nChain++;
     }
     auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
+    // the attribute table gets one chunk the size the class declares
+    // (VALUEHASH-SMALL-PLAN.md), before anything is stored in it
+    {
+        size_t nAttr = 0;
+        for (size_t i = 0; i < nChain; i++) nAttr += chainAt(i)->attrs.size();
+        od->attrs.reserve(nAttr);
+    }
     // Named args bind DURING the walk, not after it — Rakudo's
     // BUILDALL takes the caller's value for an attribute when one
     // was passed and only otherwise runs the default, so a LATER
