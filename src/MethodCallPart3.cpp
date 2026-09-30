@@ -5286,9 +5286,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (anyAdverb && allKnown) { // the adverbs mean the same thing for a literal needle
             long nsub = 0; Value mres;
-            std::string keep = subj;
+            // no replacement: only the selected matches are wanted, never the SUBJECT as an s/// template (`{ … }` there is code)
             ValueList sargs = args;
-            substSelect(subj, needle, nullptr, sargs, nsub, true, &keep, &mres);
+            substSelect(subj, needle, nullptr, sargs, nsub, true, nullptr, &mres);
             return mres;
         }
         size_t p = subj.find(needle);
@@ -5391,9 +5391,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             if (anyAdverb && allKnown) {
                 long nsub = 0; Value mres;
-                std::string keep = subj;                 // replace each match with itself
+                // no replacement template: the subject is DATA, and a template of the form `{ … }` runs as code
                 ValueList sargs = args;
-                substSelect(subj, pat, nullptr, sargs, nsub, false, &keep, &mres);
+                substSelect(subj, pat, nullptr, sargs, nsub, false, nullptr, &mres);
                 return mres;
             }
             return regexMatch(subj, pat);
@@ -5429,11 +5429,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     (!la.pairVal() || la.pairVal()->truthy())) wantMatch = true;
             if (wantMatch) {
                 long nsub = 0; Value mres;
-                std::string keep = subj;                 // replace each match with itself
+                // no replacement template: the subject is DATA, and a template of the form `{ … }` runs as code
                 ValueList sargs; sargs.push_back(args[rxIdx]);
                 Value g = Value::pair("g", Value::boolean(true)); g.namedArg = true;
                 sargs.push_back(g);
-                substSelect(subj, pat, nullptr, sargs, nsub, false, &keep, &mres);
+                substSelect(subj, pat, nullptr, sargs, nsub, false, nullptr, &mres);
                 long long limit = -1; bool none = false;
                 for (size_t i = 0; i < args.size(); i++)
                     if ((int)i != rxIdx && args[i].t != VT::Pair)
