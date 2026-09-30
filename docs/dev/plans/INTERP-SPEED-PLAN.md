@@ -91,8 +91,27 @@ split has already recovered part of it.
 *Moved after task 6:* tasks 3–6 rework the same paths, so a regression found
 now would mostly be fixed by them anyway. What is left then is measured once.
 
-- [ ] Take task 1's table: which kernels are still slower than v4.0.1.
-- [ ] For each, find the commit by ratio against a fixed reference binary,
+*Measured 2026-09-30,* local arm64 builds of v4.0.1, v5.1.0 and a1be403f,
+interleaved, best of 5. Of the seventeen BENCHMARKS.md programs, a1be403f is
+faster than v4.0.1 on fourteen (`fib` −22%, `loopsum` −39%, `mainwhen` −66%,
+`arraypush` −7%, `objects` −4%, `streq` −4%, …) and level on `sortnums`
+(+0.8%). Two are still slower: `textsplit` +8–10% (v5.1.0: +18%) and
+`multiwhere` +8–9% (v5.1.0: +14%). All nineteen perf-guard kernels but
+`multiwhere` (+4%) are faster than v4.0.1.
+
+Neither has a commit to blame. Both were already there before the file split
+(890424e0: +21% and +17%), and a bisect of v4.0.1..890424e0 by ratio to
+v4.0.1 climbs without a step: `textsplit` 0.99 at 84 of 168 source commits,
+1.03 at 95, 1.07 at 105, 1.08 at 110, 1.12 at 115, 1.16 at 120 — through
+the Roast bursts (1e77393d … b3119f71, 214,524 → 218,150 passing), each of
+which adds its checks to the method-dispatch and assignment paths the two
+programs live in. The profiles agree: the growth is in `methodCall` and its
+segments and in `evalAssignInner`, spread thin. It is the price of those
+fixes; half of it is won back, and the rest waits on method-call-site caching
+(task 3) and the representation work (task 7).
+
+- [x] Take task 1's table: which kernels are still slower than v4.0.1.
+- [x] For each, find the commit by ratio against a fixed reference binary,
   never by an absolute threshold, and fix or explain it.
 
 *Done when:* no kernel interprets slower than on v4.0.1, or the CHANGELOG says
@@ -117,9 +136,15 @@ uses; each item is its own commit.
   (1,828 `m == "…"` compares across the six segments). This is V6 P2's "inline
   caches keyed on type". It is not the hashed chain V6 measured slower than
   the chain: the decision is stored on the call site, not looked up per call.
-  *In part:* the 37 method-name compares in `eval`'s own MethodCall arm, and
-  the `CORE-SETTING-REV` test every variable read made, are `opEq` (a length
-  test first) — they were `strlen` calls; the segments' 1,828 are untouched.
+  *In part:* the 37 method-name compares in `eval`'s own MethodCall arm, the
+  `CORE-SETTING-REV` test every variable read made, `methodCall`'s 58 and
+  the NameTerm arm's, are `opEq` (a length test first) — they were `strlen`
+  calls (6% of the objects benchmark); a class name's CORE-enum and
+  core-type lookups are decided once per node (`objnew` −12%). The segments'
+  1,828 compare through `MName` (length and first 8 bytes) already. What is
+  left is the call-site cache itself: skipping the segments that cannot
+  answer is not safe without auditing, segment by segment, which of their
+  arms depend on the arguments or the invocant's state.
 
 *Done when:* no operator or method-name string compare is left on the path any
 `perf-guard` kernel takes.
