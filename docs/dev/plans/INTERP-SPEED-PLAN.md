@@ -267,6 +267,16 @@ Each is its own plan, in V6's order of evidence per cost:
   cold block and the two `shared_ptr<BigInt>`s — the part that needs the
   172 `ratN()`/`ratD()` sites to stop handing out a `shared_ptr`.
 - [ ] [VALUE32-PLAN.md](VALUE32-PLAN.md): a 56-byte `Value`, the endgame.
+  *Priced again 2026-09-30, after tasks 3–9 took the temporaries out of the
+  hot loops:* the leaf samples in `Value` construction/copy/destruction,
+  vector growth, malloc/free and `shared_ptr` refcounting are 10–17% of
+  `hashfill`, `arraypush`, `loopsum`, `objects`, `fib` and `textsplit`, and
+  25% of `arrayops` (inlined copies not counted). Design A acts on the first
+  two and the refcount's size, not its atomic cost (VALUE32-PLAN measured
+  `Ref` at 1.08× on copying), so its expected gain on these kernels is the
+  plan's 3–12%, and the bigger win is footprint (a million-element array,
+  128 → 56 MB). It stays a campaign of its own: batches in a worktree,
+  gated like REPRESENTATION-PLAN's.
 
 *Done when:* V6's memory table has no row worse and the kernels that allocate
 (`hashfill`, `arraypush`, `objects`) have closed half their gap.
