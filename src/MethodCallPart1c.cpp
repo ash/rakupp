@@ -497,7 +497,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // under the cooperative GIL that means handing off to the workers that
             // could send. With no async engaged nothing ever could, so answer Nil
             // rather than deadlock; likewise once every worker has finished.
-            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_ || t_isWorker)) {
+            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_ || t_poll.isWorker)) {
                 // No wall-clock deadline. A 300 ms cap used to stand in for "blocks
                 // until an item arrives", which made the wait a RACE against the
                 // producer: `start { sleep 0.2; $c.send(...) }` lost it whenever
@@ -520,7 +520,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                       if (!q.empty() || isClosed()) break; }
                     // (a WORKER waits regardless: the main thread may still send —
                     // `start { await $c }` then `$c.send(…)` from the mainline)
-                    if (!t_isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                    if (!t_poll.isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
                     if (gilHeld_) yieldToWorkerFor(0.02);
                     else std::this_thread::sleep_for(std::chrono::milliseconds(2)); // parallel mode: real wait
                 }
@@ -533,7 +533,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 }
                 // another receiver took the item this one woke for: a WORKER
                 // waits again (the mainline keeps its deadlock guard)
-                if (t_isWorker) continue;
+                if (t_poll.isWorker) continue;
                 return Value::nil(); // nothing running that could ever send
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
@@ -550,7 +550,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 auto it = inv.hash()->find("supplyReaders");
                 return it != inv.hash()->end() ? it->second.toInt() : 0;
             };
-            if (!t_isWorker && readers() > 0) {
+            if (!t_poll.isWorker && readers() > 0) {
                 auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
                 while (readers() > 0 && std::chrono::steady_clock::now() < until) {
                     if (gilHeld_) yieldToWorkerFor(0.02);
@@ -661,7 +661,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
     // threadDepth_ so `is-initial-thread` correctly reads False inside the block.
     if (inv.t == VT::Type && inv.s == "Thread") {
-        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0 && !t_isWorker);
+        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0 && !t_poll.isWorker);
         if (m == "start" || m == "run") { // a REAL thread, via the promise machinery
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             Value t = Value::makeHash(); t.hashKind = "Thread";

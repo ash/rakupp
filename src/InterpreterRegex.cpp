@@ -2319,7 +2319,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // in build() strictly by the FINAL tree's spans, so entries left by a probed-but-
     // rejected branch are inert. Copying the whole (O(input)-sized) make queues on every
     // `|` — and `|` is hit O(input) times — was quadratic; skipping it keeps probes O(1).
-    struct GState { std::unordered_map<std::string, Value> vars; };
+    struct GState { VarMap vars; };
     // Shared sentinel meaning "scope was empty at snapshot time" — restoring it just
     // clears whatever the probe added, with no per-probe allocation or map copy. Most
     // LTM `|` probes happen before any `:my` var exists, so this is the common path.

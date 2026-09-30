@@ -1905,7 +1905,7 @@ long long nowMicros() {
 // first take has to be allowed to land however long it takes — so a gather that
 // has taken nothing yet keeps running.
 void Interpreter::gatherProbeCheck() {
-    if (nowMicros() <= t_gatherDeadline) return;
+    if (nowMicros() <= t_poll.gatherDeadline) return;
     if (tctx_.gatherStack.empty() || tctx_.gatherStack.back()->empty()) return;
     throw StopGatherEx{};
 }

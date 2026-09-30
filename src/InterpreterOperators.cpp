@@ -1195,7 +1195,7 @@ static GatherTls& gatherTls() {
         &Interpreter::declaringType_, &Interpreter::loopPhaserCtl_, &Interpreter::pendingRwSlots_,
         &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
         &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,
-        &t_stackTop, &t_stackLimit, &t_gatherDeadline, &t_gatherTickCtr};
+        &t_stackTop, &t_stackLimit, &t_poll.gatherDeadline, &t_poll.gatherTickCtr};
     t_gatherTls = p;
     return *p;
 }

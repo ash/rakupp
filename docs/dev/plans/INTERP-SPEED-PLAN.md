@@ -68,6 +68,11 @@ In order. Each is one commit or a short series, measured on its own.
 
 ### 1. Measure the gap on a quiet machine
 
+*Folded into the other tasks, not run on its own:* each task is judged by an
+interleaved A/B against the build before it, which is the baseline this task
+would have recorded, and task 2 re-measures v4.0.1 once the hot-path tasks
+have landed.
+
 - [ ] Time every [BENCHMARKS.md](../../status/BENCHMARKS.md) kernel as interp
   and as `--exe`, at HEAD and at a local v4.0.1 build, interleaved
   ([perf A/B method](V6-PLAN.md#gates-every-batch)).
@@ -83,6 +88,9 @@ v5.0.0 interprets 17 of 18 kernels slower than v4.0.1 did: `fib` +30%,
 `streq` +41% ([BENCHMARKS.md](../../status/BENCHMARKS.md#v401-to-v500)). The
 split has already recovered part of it.
 
+*Moved after task 6:* tasks 3–6 rework the same paths, so a regression found
+now would mostly be fixed by them anyway. What is left then is measured once.
+
 - [ ] Take task 1's table: which kernels are still slower than v4.0.1.
 - [ ] For each, find the commit by ratio against a fixed reference binary,
   never by an absolute threshold, and fix or explain it.
@@ -96,7 +104,11 @@ The ladder's first rung, −22…−29%. The pattern is the one `Unary::evalPath
 uses; each item is its own commit.
 
 - [ ] **Assignment.** `Assign` caches which arm of `evalAssignInner` handles
-  its operator (104 operator compares in that function today).
+  its operator (104 operator compares in that function today). *In part:*
+  the decided-once pad-slot lane (`Assign::simpleSlot`: `=`, `+=`, `-=`,
+  `*=`, `~=` on a `$` pad variable) now runs first in `evalAssign`, ahead of
+  every compare, and writes Int op= Int over the box
+  (`intOpAssignInPlace`).
 - [ ] **Arithmetic.** `Binary` caches an operator id; `applyArith` gains an
   overload on the id that switches instead of comparing (301 compares today).
   V6 P2 also names `typeMatchesArg`, `coreEnumValue` and `isKnownTypeName`.
@@ -116,13 +128,20 @@ times, `exec` 96.
 
 - [ ] Take `ExecContext& tc = tctx_;` at the top of the hot functions —
   `runLoopBody`, `evalAssign`, `evalAssignInner`, `exec`, `tryCondBool`,
-  `evalBinary`'s operand lambda — and use it throughout.
-- [ ] Prove that a function never outlives a thread switch with `tc`: a gather
-  coroutine swaps the context's contents on the same thread, so the address
-  stays valid. The coroutine and threading Roast files, and the S17 stress
-  files, are the check.
+  `evalBinary`'s operand lambda — and use it throughout. *Done:*
+  `execBlock` (already), `runLoopBody`, the new `execPlainBlock`. *Left:*
+  `evalAssign`, `exec`, `eval`, which are the rest of loopsum's calls.
+- [x] Prove that a function never outlives a thread switch with `tc`: a
+  coroutine resumes only on the thread that started it (`Coro::ownerThread`,
+  checked before every resume in InterpreterOperators.cpp), so the address
+  stays this thread's for as long as the function runs.
+- [x] The loop's own per-iteration thread-locals — worker flag, GIL-yield
+  counter, gather-probe deadline and tick — are one constant-initialized
+  `LoopPoll t_poll`, one access where there were up to four.
 
 *Done when:* `__tls_init`/`_tlv_get_addr` is under 5% of the `loopsum` profile.
+It is 7.4% (from ~8.5% before this task; the loop itself is 23% faster, so
+the absolute cost fell further than the share).
 
 ### 5. Shrink the hot frames
 
@@ -131,6 +150,10 @@ each have a frame over a page, because their rare arms keep locals alive in
 the one frame.
 
 - [ ] Measure each hot function's frame (`-fstack-usage`).
+- [x] `execBlock` first: a block with none of the entry or exit work
+  (`Block::entryWork` is 0 — no phaser, CATCH, named sub, hoisted `my`) runs
+  on `execPlainBlock`, whose frame holds its statement loop and nothing else;
+  the rest runs on `execBlockFull`. Every phaser-free loop body takes it.
 - [ ] Move the rare arms into their own `[[gnu::noinline]]` functions until the
   hot frames are under a page. This is the long-function split, done for speed.
 - [ ] Add a frame-size ceiling to `tools/source-helpers/budget.raku`, so the

@@ -492,7 +492,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     });
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         // GIL not held; slices against a fixed deadline (drift-free, huge/Inf-safe)
         // and wakes early on `done`/`.close` or shutdown.
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
@@ -637,7 +637,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     });
     throttleSpawn();
     addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope, readerDelta]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         // Parallel mode has no GIL discipline; under the GIL this holds the lock
         // and yieldToWorkerFor cycles it (see spawnChannelWhenever — taking it
         // and never releasing made the first channel worker the accidental owner).
@@ -723,7 +723,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     });
     throttleSpawn();
     addWorker(BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         auto stop = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
             if (ctx->done || ctx->doneFired) return true;
@@ -775,7 +775,7 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
     if (secs < 0) secs = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fn, fin, spawnScope]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         bool stopped = false;                                          // GIL not held
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
         for (;;) {
@@ -806,7 +806,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
     if (secs < 0) secs = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         // The full delay is honored (issue #41 capped it at 35 s) — slept in
         // slices against a fixed deadline so shutdown or `done` wakes the worker
         // within ~50 ms, and in double-rep time so a huge/Inf timer can't
@@ -872,7 +872,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
     if (delay < 0) delay = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope, doneCb]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         auto closedNow = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true; // mainline done: stop ticking
             if (ctx && ctx->closed) return true;
@@ -967,7 +967,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         // Parallel mode has no GIL discipline: taking (and never releasing)
         // the lock here made the FIRST channel worker the accidental GIL
         // owner for its whole lifetime — every later channel whenever's
@@ -1080,7 +1080,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
         auto fin = std::make_shared<std::atomic<bool>>(false);
         throttleSpawn();
         addWorker(BigStackThread([self, spawnScope, fin]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             for (;;) {
                 unsigned char c;
                 ssize_t n = ::read(g_sigPipe[0], &c, 1);        // GIL not held
@@ -1890,7 +1890,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         throttleSpawn();
         addWorker(BigStackThread([self, buf, srcDone, quitEx, quitSet, elemsP, secs, delay, spent,
                                   emitCb, doneCb, quitCb, handle, fin, spawnScope]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             auto stopped = [&] {
                 if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
                 std::lock_guard<std::mutex> lk(handle->m); return handle->closed;
@@ -2004,7 +2004,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
         addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             for (;;) {
                 int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
                 if (cfd < 0) break;                              // closed / shutdown
@@ -2069,7 +2069,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
         addWorker(BigStackThread([self, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0, readEnc]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             std::vector<char> buf(65536);
             bool malformed = false;   // bytes that are no UTF-8 at all: the supply QUITs
             // A CHARACTER supply must not split a character. The bytes arrive
@@ -2241,7 +2241,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
         addWorker(BigStackThread([self, st, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, datagram, readEnc, rctx0]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             { std::lock_guard<std::mutex> lk(st->m); st->readerTids.push_back(std::this_thread::get_id()); }
             std::vector<char> buf(65536);
             bool sockClosed = false, tapClosed = false;

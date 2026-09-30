@@ -2910,7 +2910,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             q.l_whence = SEEK_SET; q.l_start = 0; q.l_len = 0;
                             if (::fcntl(pfd, F_GETLK, &q) != 0 || q.l_type == F_UNLCK) break;
                             // a worker whose program has ended stops waiting (see below)
-                            if (t_isWorker && workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
+                            if (t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
                             ::usleep(50000);
                         }
                         gilUnpark(parked);
@@ -2930,7 +2930,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             fl.l_whence = SEEK_SET; fl.l_start = 0; fl.l_len = 0;
             int rc;
             if (nonBlocking) rc = ::fcntl(fd, F_SETLK, &fl);
-            else if (!t_isWorker) {
+            else if (!t_poll.isWorker) {
                 bool parked = gilPark();
                 do { rc = ::fcntl(fd, F_SETLKW, &fl); } while (rc != 0 && errno == EINTR);
                 gilUnpark(parked);

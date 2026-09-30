@@ -502,8 +502,55 @@ inline bool lexShadowPossible(const std::string& op) {
     return m && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
 }
 
+// The hash and the key compare of a scope's variable map. A variable name is
+// short — `$_`, `$i`, `@items` — and the standard ones spend more on being
+// general than on the name: std::hash<std::string> runs the out-of-line
+// murmur loop and the compare calls memcmp through a stub, and a loop body
+// that reads `$_` paid both on every iteration (~6% of loopsum). These read
+// a name of up to 16 bytes as two overlapping words, with no call at all.
+namespace varname {
+inline uint64_t load32(const char* p) { uint32_t w; std::memcpy(&w, p, 4); return w; }
+inline uint64_t load64(const char* p) { uint64_t w; std::memcpy(&w, p, 8); return w; }
+}
+struct VarNameHash {
+    size_t operator()(const std::string& s) const noexcept {
+        const char* p = s.data();
+        const size_t n = s.size();
+        uint64_t a, b;
+        if (n >= 8)      { a = varname::load64(p); b = varname::load64(p + n - 8); }
+        else if (n >= 4) { a = varname::load32(p); b = varname::load32(p + n - 4); }
+        else if (n > 0)  { a = (uint64_t)(unsigned char)p[0] << 16 | (uint64_t)(unsigned char)p[n >> 1] << 8 |
+                               (unsigned char)p[n - 1]; b = 0; }
+        else             { a = b = 0; }
+        // a name longer than 16 bytes has a middle the two words above do not
+        // cover: fold it in, 8 bytes at a time
+        if (n > 16)
+            for (size_t i = 8; i + 8 < n; i += 8) a ^= varname::load64(p + i) * 0x9E3779B97F4A7C15ull;
+        uint64_t h = (a * 0x9E3779B97F4A7C15ull) ^ ((b ^ n) * 0xC2B2AE3D27D4EB4Full);
+        h ^= h >> 29; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 32;
+        return (size_t)h;
+    }
+};
+struct VarNameEq {
+    bool operator()(const std::string& x, const std::string& y) const noexcept {
+        const size_t n = x.size();
+        if (n != y.size()) return false;
+        const char* p = x.data(); const char* q = y.data();
+        if (n >= 8 && n <= 16)
+            return varname::load64(p) == varname::load64(q) && varname::load64(p + n - 8) == varname::load64(q + n - 8);
+        if (n >= 4 && n < 8)
+            return varname::load32(p) == varname::load32(q) && varname::load32(p + n - 4) == varname::load32(q + n - 4);
+        if (n < 4) {
+            for (size_t i = 0; i < n; i++) if (p[i] != q[i]) return false;
+            return true;
+        }
+        return std::memcmp(p, q, n) == 0;
+    }
+};
+using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
+
 struct Env {
-    std::unordered_map<std::string, Value> vars;
+    VarMap vars;
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
     bool staticSeeded = false; // a scope whose first run took its lexicals from a BEGIN-time static env
@@ -839,21 +886,28 @@ struct HandedError {
 // exception — user CATCH handles RakuError, never this.
 struct WorkerAbortEx {};
 RAKUPP_CONSTINIT extern thread_local bool t_holdsGil;     // this thread holds gil_ (parallel-mode event workers serialize on it)
-RAKUPP_CONSTINIT extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
 extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
-RAKUPP_CONSTINIT extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
-// Loop iterations since the running gather probe last read the clock. The probe's
-// budget is checked once per N of them (see gatherProbePoint); approximate is
-// fine, so one counter for all loops on the thread.
-RAKUPP_CONSTINIT extern thread_local unsigned t_gatherTickCtr;
-// …and the deadline itself, mirrored out of tctx_.gatherDeadlines.back() (0 when
-// no gather on this thread is probing). The mirror is what the per-iteration
-// check reads: tctx_ is a thread_local of NON-TRIVIAL type, so every access to it
-// carries an initialization check, and putting one at the top of runLoopBody cost
-// ~3% on loopsum. A plain scalar thread_local is a bare load. pushGatherFrame /
-// popGatherFrame (and saveCtx/loadCtx, which move the stack between threads' parked
-// contexts) are the only writers, so it cannot drift from the stack.
-RAKUPP_CONSTINIT extern thread_local long long t_gatherDeadline;
+// What every loop iteration asks of its thread (safePoint, gatherProbePoint),
+// in ONE thread_local: each thread_local a function names is a call on macOS,
+// so the four as separate variables cost a loop body up to four calls where
+// one struct costs one.
+struct LoopPoll {
+    bool isWorker = false;       // true only on `start`/async worker threads
+    unsigned safePtCtr = 0;      // loop iterations since this worker last yielded the GIL
+    // Loop iterations since the running gather probe last read the clock. The
+    // probe's budget is checked once per N of them (see gatherProbePoint);
+    // approximate is fine, so one counter for all loops on the thread.
+    unsigned gatherTickCtr = 0;
+    // …and the deadline itself, mirrored out of tctx_.gatherDeadlines.back() (0
+    // when no gather on this thread is probing). The mirror is what the
+    // per-iteration check reads: tctx_ is a thread_local of NON-TRIVIAL type, so
+    // every access to it carries an initialization check, and putting one at the
+    // top of runLoopBody cost ~3% on loopsum. pushGatherFrame / popGatherFrame
+    // (and saveCtx/loadCtx, which move the stack between threads' parked
+    // contexts) are the only writers, so it cannot drift from the stack.
+    long long gatherDeadline = 0;
+};
+RAKUPP_CONSTINIT extern thread_local LoopPoll t_poll;
 // The line of the statement now executing (test diagnostics, callframe, the line
 // a call frame records for its caller). One process-wide value while only the
 // mainline runs Raku code — a plain relaxed store per statement, which is what
@@ -1289,6 +1343,12 @@ public:
     // statement loop, takes it as though caught. See execStmtHanding.
     Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false,
                     std::unique_ptr<HandedError>* handOff = nullptr);
+    // execBlock's two halves: a block with no entry or exit work of its own
+    // (no phaser, CATCH, named sub or hoisted `my` — every plain loop body)
+    // runs its statements on the lean path, everything else on the full one.
+    Value execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sink);
+    [[gnu::noinline]] Value execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink,
+                                          std::unique_ptr<HandedError>* handOff);
     // A bare block written as a statement (exec's NK::Block); the rare
     // shapes — a phaser, an END, `{}`, `{*}` — out of its frame.
     [[gnu::noinline]] Value execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff = nullptr);
@@ -2909,11 +2969,11 @@ public:
     // whenever no abort is pending — just a thread-local bool + relaxed atomic,
     // inlined so hot loops pay ~nothing.
     inline void safePoint() {
-        if (!t_isWorker) return; // main-thread loops never park or abort here
+        if (!t_poll.isWorker) return; // main-thread loops never park or abort here
         if (workerAbort_.load(std::memory_order_relaxed)) throw WorkerAbortEx{};
         // Periodically hand the GIL back so a compute-bound worker can't starve the
         // main thread (which may be parked in yieldToWorker waiting for exactly this).
-        if (++t_safePtCtr >= 4096) { t_safePtCtr = 0; workerYield(); }
+        if (++t_poll.safePtCtr >= 4096) { t_poll.safePtCtr = 0; workerYield(); }
     }
     // The gather probe's TIME budget, checked once per loop iteration — because a
     // probe spends it on WORK, not only on takes. `gather for 1..* { take $_ if
@@ -2924,25 +2984,25 @@ public:
     // asks for more gets an unbudgeted re-run. A prefix of NONE is not a probe
     // (gatherTake says why), so a gather that has taken nothing yet runs on.
     inline void gatherProbePoint() {
-        if (!t_gatherDeadline) return;         // nothing probing here (growing runs unbudgeted)
-        if (++t_gatherTickCtr < 256) return;   // reading the clock is the cost, not the check
-        t_gatherTickCtr = 0;
+        if (!t_poll.gatherDeadline) return;         // nothing probing here (growing runs unbudgeted)
+        if (++t_poll.gatherTickCtr < 256) return;   // reading the clock is the cost, not the check
+        t_poll.gatherTickCtr = 0;
         gatherProbeCheck();
     }
     void gatherProbeCheck();  // out-of-line: read the clock, and stop the probe if it is spent
     // One gather activation — collector, take cap, probe deadline — pushed and
-    // popped as a unit so t_gatherDeadline stays in step with the stack.
+    // popped as a unit so t_poll.gatherDeadline stays in step with the stack.
     inline void pushGatherFrame(std::shared_ptr<ValueList> coll, size_t limit, long long deadline) {
         tctx_.gatherStack.push_back(std::move(coll));
         tctx_.gatherLimits.push_back(limit);
         tctx_.gatherDeadlines.push_back(deadline);
-        t_gatherDeadline = deadline;
+        t_poll.gatherDeadline = deadline;
     }
     inline void popGatherFrame() {
         tctx_.gatherStack.pop_back();
         tctx_.gatherLimits.pop_back();
         tctx_.gatherDeadlines.pop_back();
-        t_gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
+        t_poll.gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
     }
     void workerYield(); // out-of-line: brief GIL release so siblings/main make progress
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread

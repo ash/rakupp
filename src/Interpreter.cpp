@@ -4913,7 +4913,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
     c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
-    t_gatherDeadline = 0;   // nothing of this thread's is probing while it is parked
+    t_poll.gatherDeadline = 0;   // nothing of this thread's is probing while it is parked
     c.topicAliases = std::move(tctx_.topicAliases);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.tapStack    = std::move(tctx_.tapStack);
@@ -4934,7 +4934,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
     tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
-    t_gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
+    t_poll.gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
     tctx_.topicAliases = std::move(c.topicAliases);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.tapStack     = std::move(c.tapStack);
@@ -5054,10 +5054,10 @@ void Interpreter::sleepYield(double secs) {
     // returns at once). The deadline arithmetic stays in double-rep time for
     // the same reason; it also keeps a sliced sleep's total duration exact.
     auto sliceUntilAbort = [&](double s) -> bool {       // true: abort observed
-        const double slice = t_isWorker ? 0.05 : 3600.0;
+        const double slice = t_poll.isWorker ? 0.05 : 3600.0;
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
         for (;;) {
-            if (t_isWorker && workerAbort_.load(std::memory_order_relaxed)) return true;
+            if (t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) return true;
             auto now = std::chrono::steady_clock::now();
             if (now >= end) return false;
             double left = std::chrono::duration<double>(end - now).count();
@@ -5104,10 +5104,7 @@ void Interpreter::gilUnpark(bool wasParked) {
     loadCtx(g_gilParkCtx);
 }
 
-// True only on `start`/async worker threads — gates the safe-point abort (defined
-// inline in the header) so the main thread is never unwound.
 thread_local bool t_holdsGil = false;
-thread_local bool t_isWorker = false;
 std::atomic<int> g_stmtLine{0};
 std::atomic<bool> g_stmtLineThreaded{false};
 
@@ -5154,7 +5151,7 @@ long long Interpreter::newThreadId() {
 Value Interpreter::currentThread() {
     if (t_threadSelf.t == VT::Hash) return t_threadSelf;
     Value h = Value::makeHash(); h.hashKind = "Thread";
-    if (t_isWorker) {
+    if (t_poll.isWorker) {
         (*h.hash())["initial"] = Value::boolean(false);
         (*h.hash())["id"] = Value::integer(newThreadId());
         t_threadSelf = h;
@@ -5164,9 +5161,9 @@ Value Interpreter::currentThread() {
     (*h.hash())["id"] = Value::integer(1);
     return h;
 }
-thread_local unsigned t_safePtCtr = 0;
-thread_local unsigned t_gatherTickCtr = 0;
-thread_local long long t_gatherDeadline = 0;
+// Its isWorker is true only on `start`/async worker threads — it gates the
+// safe-point abort (inline in the header) so the main thread is never unwound.
+thread_local LoopPoll t_poll;
 
 // Called from a worker's safe point every few thousand loop iterations: release the
 // GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
@@ -5205,7 +5202,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         throttleSpawn();
         addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
-            t_isWorker = true;
+            t_poll.isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
             tctx_.cur = spawnScope;        // anchor: dynamics visible at the spawn point
             tctx_.dynStack.push_back(spawnScope.get());
@@ -5255,7 +5252,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
     auto spawnScope = tctx_.cur ? tctx_.cur : global_; // dynamics visible at the spawn point
     throttleSpawn();
     addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
@@ -5300,7 +5297,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         auto clock0 = std::chrono::steady_clock::now();
         // Drift-free deadline from the cue's start, slept in slices so shutdown
         // (workerAbort_) and .cancel wake it within ~50 ms instead of holding the
@@ -5484,7 +5481,7 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, w, refold, moments, fin, spawnScope]() mutable {
-        t_isWorker = true;
+        t_poll.isWorker = true;
         for (double at : moments) {
             bool stop = false;                                        // GIL not held
             {
@@ -5529,7 +5526,7 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         parkedReacts_.push_back(ctx);
     }
     auto pred = [&] { return ctx->liveSources <= 0 || ctx->closed || !ctx->deferred.empty() ||
-                             (t_isWorker && ctx->aborted); };
+                             (t_poll.isWorker && ctx->aborted); };
     auto sourcesDone = [&] { return ctx->liveSources <= 0 || ctx->closed; };
     std::unique_lock<std::mutex> lk(ctx->m);
     // A whenever registered from INSIDE a whenever block defers its first
@@ -5552,14 +5549,14 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         if (!gilHeld_) break; // no async emitter can exist → don't hang the loop
         if (parallelMode_) {  // no GIL: wait for an emitter thread to close/drain
             ctx->cv.wait(lk, pred);
-            if (t_isWorker && ctx->aborted && !sourcesDone()) throw WorkerAbortEx{};
+            if (t_poll.isWorker && ctx->aborted && !sourcesDone()) throw WorkerAbortEx{};
             break;
         }
         static thread_local ExecContext parked;
         saveCtx(parked);
         gilYieldNotify();
         ctx->cv.wait(lk, pred);
-        bool aborted = t_isWorker && ctx->aborted && !sourcesDone();
+        bool aborted = t_poll.isWorker && ctx->aborted && !sourcesDone();
         lk.unlock();       // drop ctx->m before reacquiring the GIL (avoids ABBA with emitters)
         gil_.lock();       // restore invariants before unwinding
         loadCtx(parked);

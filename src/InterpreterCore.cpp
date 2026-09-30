@@ -996,6 +996,9 @@ static bool hoistableTypeDecl(const Stmt* s) {
 // hoistSubs' named subs and hoistable types (8), and the search for the
 // statement whose value is the block's (16, below). Only the block's OWN
 // statements count: a nested block does its own entry work when it runs.
+// Bit 32 is not a step but a shape: some statement is a phaser or CATCH
+// block, or a named sub — one the statement loop must skip or treat apart.
+// A block with none of the six bits runs on execPlainBlock.
 static int blockEntryWork(Block* b) {
     signed char w = b->entryWork;
     if (w >= 0) return w;
@@ -1007,10 +1010,12 @@ static int blockEntryWork(Block* b) {
             if (blk->isCatch) m |= 1;
             if (ph == "PRE" || ph == "ENTER" || ph == "FIRST") m |= 2;
             if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO" || ph == "POST") m |= 4;
+            if (blk->isCatch || !ph.empty()) m |= 32;
         }
         else if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
             if (!sd->isMethod && !sd->name.empty()) m |= 8;
+            if (!sd->name.empty()) m |= 32;
         }
         else if (hoistableTypeDecl(s.get())) m |= 8;
     }
@@ -1800,12 +1805,79 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
 }
 
 Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, std::unique_ptr<HandedError>* handOff) {
+    // hoistNeed is -1 until the full path's first run has looked, so a block's
+    // first entry always goes the full way
+    if (!handOff && blockEntryWork(b) == 0 && b->hoistNeed == 0 && b->endsWithin.empty() &&
+        staticEnvs_.empty())
+        return execPlainBlock(b, std::move(scope), sink);
+    return execBlockFull(b, std::move(scope), sink, handOff);
+}
+
+// execBlockFull for a block that has none of its entry or exit work: the same
+// steps in the same order, with each one that would have found nothing left
+// out. Its frame holds what those steps need and no more, which is most of
+// what a plain loop body's iteration used to pay for.
+Value Interpreter::execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
+    ExecContext& tcx = tctx_;
+    auto saved = std::move(tcx.cur);
+    tcx.cur = std::move(scope);
+    Env* blockEnv = tcx.cur.get();
+    const bool sharesScope = blockEnv == saved.get();
+    if (!sharesScope) blockEnv->declStmts = &b->stmts;
+    const size_t tempMark = sharesScope ? SIZE_MAX
+                          : blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
+    // what the unsuccessful exit does, with no LEAVE, UNDO or CATCH to run
+    auto leaveByError = [&](const RakuError* e) {
+        {
+            struct LE { ExecContext& t; const RakuError* p; ~LE() { t.leaveError = p; } } le{tcx, tcx.leaveError};
+            if (e) tcx.leaveError = e;
+            runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
+        }
+        if (!sharesScope && tcx.cur && tcx.cur->ex && !tcx.cur->ex->letRestores.empty()) {
+            for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+            tcx.cur->ex->letRestores.clear();
+        }
+        tcx.cur = std::move(saved);
+    };
+    Value last = Value::nil();
+    const size_t n = b->stmts.size();
+    try {
+        for (size_t i = 0; i < n; i++) {
+            last = exec(b->stmts[i].get(), sink || i + 1 != n);
+            if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break;
+        }
+    } catch (RakuError& e) {
+        leaveByError(&e);
+        throw;
+    } catch (...) {
+        leaveByError(nullptr);
+        throw;
+    }
+    {
+        const Value& outV = tcx.returning ? tcx.returnV : last;
+        const bool ok = !tcx.loopCtl && isDefined(outV) &&
+                        !(outV.t == VT::Hash && outV.hashKind == "Failure");
+        struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
+        tcx.leaveResult = &outV;
+        tcx.leaveReturned = false;
+        drainTempRestores(tcx.cur.get(), tempMark);
+        if (!ok && !tcx.loopCtl && !tcx.returning && !sharesScope && tcx.cur && tcx.cur->ex &&
+            !tcx.cur->ex->letRestores.empty()) {
+            for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
+            tcx.cur->ex->letRestores.clear();
+        }
+    }
+    tcx.cur = std::move(saved);
+    return last;
+}
+
+Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink, std::unique_ptr<HandedError>* handOff) {
     // ONE thread-local resolution for the whole block. `tctx_` is a non-trivial
     // static thread_local, so on macOS every mention of it is a _tlv_get_addr call
     // plus an init guard — the top line of every profile taken for
     // DISPATCH-PERF-PLAN.md — and this function names it thirty-one times.
     ExecContext& tcx = tctx_;
-    auto saved = tcx.cur;
+    auto saved = std::move(tcx.cur);   // moved, not copied: two refcount writes fewer per block
     tcx.cur = std::move(scope);
     if (b && tcx.cur.get() != saved.get()) tcx.cur->declStmts = &b->stmts;   // (see Env::declStmts)
     if (!staticEnvs_.empty() && b && tcx.cur.get() != saved.get()) seedStaticScope(&b->stmts, tcx.cur.get());
@@ -1871,8 +1943,8 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
     struct ControlReg { // registered for the block's whole run, all exits
         ExecContext& t;
         bool on;
-        ControlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
-            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        ControlReg(ExecContext& tc, Block* cb, const std::shared_ptr<Env>& env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, env}); }
         ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
     } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
     hasNestedSub = (entryWork & 8) && hoistSubs(b->stmts);
@@ -1908,7 +1980,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
             if (handled) {
                 runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
                 if (hasNestedSub) breakSelfClosures(tcx.cur);
-                tcx.cur = saved;
+                tcx.cur = std::move(saved);
                 return true;
             }
         }
@@ -1923,7 +1995,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
             tcx.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(tcx.cur);
-        tcx.cur = saved;
+        tcx.cur = std::move(saved);
         return false;
     };
     // A block with a CATCH — or one whose caller takes its errors by hand —
@@ -1970,7 +2042,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
                                 tcx.cur->ex->letRestores.clear();
                             }
                             if (hasNestedSub) breakSelfClosures(tcx.cur);
-                            tcx.cur = saved;
+                            tcx.cur = std::move(saved);
                             return Value::nil();
                         }
                     }
@@ -1998,7 +2070,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
         if (che.handler == controlBlk) {
             runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
             if (hasNestedSub) breakSelfClosures(tcx.cur);
-            tcx.cur = saved;
+            tcx.cur = std::move(saved);
             return Value::nil();
         }
         runLeavePhasers(b->stmts, /*ok=*/false, tempMark);
@@ -2007,7 +2079,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
             tcx.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(tcx.cur);
-        tcx.cur = saved;
+        tcx.cur = std::move(saved);
         throw;
     } catch (...) {
         if (exiting) throw;
@@ -2033,7 +2105,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
                 if (handled) {
                     runLeavePhasers(b->stmts, /*ok=*/true, tempMark);
                     if (hasNestedSub) breakSelfClosures(tcx.cur);
-                    tcx.cur = saved;
+                    tcx.cur = std::move(saved);
                     return Value::nil();
                 }
             }
@@ -2044,7 +2116,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
             tcx.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(tcx.cur);
-        tcx.cur = saved;
+        tcx.cur = std::move(saved);
         throw;
     }
     if (leaving) {   // (the exit is done: see `exiting`)
@@ -2079,7 +2151,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, st
         }
     }
     if (hasNestedSub) breakSelfClosures(tcx.cur);
-    tcx.cur = saved;
+    tcx.cur = std::move(saved);
     return last;
 }
 
@@ -2136,13 +2208,17 @@ static const Expr* forBodyTailVar(const Block* body) {
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
                              bool isFirst, bool isLast, ValueList* collect,
                              const std::function<void()>& rebind) {
+    // One thread-local resolution for the whole iteration (see execBlock): a
+    // coroutine resumes only on the thread that started it, so the reference
+    // stays this thread's for as long as the function runs.
+    ExecContext& tc = tctx_;
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     gatherProbePoint(); // …and lets a gather probe that has stopped TAKING still stop looping
     signed char ph = loopPhaserMask(body);
     const bool hasNext = ph & 1, hasLast = ph & 2, hasFirst = ph & 4;
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
     auto inScope = [&](void (Interpreter::*ph2)(const std::vector<StmtPtr>&)) {
-        auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph2)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
+        auto saved = tc.cur; tc.cur = scope; try { (this->*ph2)(body->stmts); } catch (...) { tc.cur = saved; throw; } tc.cur = saved;
     };
     if (isFirst && hasFirst) { // FIRST {…}: once, before the first iteration; `last` in it breaks the loop
         try { inScope(&Interpreter::runFirstPhasers); }
@@ -2163,12 +2239,12 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     auto noReturn = [&](auto&& fn) {
         try { fn(); }
         catch (ReturnEx&) {
-            if (tctx_.curRoutineFrame != 0) throw; // the enclosing routine consumes it
+            if (tc.curRoutineFrame != 0) throw; // the enclosing routine consumes it
             throw RakuError{Value::typeObj("X::ControlFlow::Return"),
                             "Attempt to return outside of any Routine"};
         }
-        if (tctx_.returning && tctx_.curRoutineFrame == 0) {
-            tctx_.returning = false;
+        if (tc.returning && tc.curRoutineFrame == 0) {
+            tc.returning = false;
             throw RakuError{Value::typeObj("X::ControlFlow::Return"),
                             "Attempt to return outside of any Routine"};
         }
@@ -2179,24 +2255,28 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     // Call sites gate on hasNext, so a phaser-less iteration skips all of it.
     auto nextPhasersEndLoop = [&]() -> bool {
         runNextP();
-        if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; tctx_.givenCtl = 0; return true; }
-        if (tctx_.loopCtl) tctx_.loopCtl = 0; // next/redo in a NEXT phaser: the iteration is over anyway
+        if (tc.loopCtl == 2) { tc.loopCtl = 0; tc.givenCtl = 0; return true; }
+        if (tc.loopCtl) tc.loopCtl = 0; // next/redo in a NEXT phaser: the iteration is over anyway
         return false;
     };
-    auto runLast = [&]() { if (isLast && hasLast) noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); }; // LAST {…}: once, after the last
+    // LAST {…}: once, after the last. The test is forced inline: Clang outlined
+    // the lambda, and every iteration of every loop paid a call and a frame to
+    // learn that it had nothing to do.
+    auto runLastPh = [&]() { noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); };
+    auto runLast = [&]() __attribute__((always_inline)) { if (isLast && hasLast) runLastPh(); };
     // this loop is now the innermost native loop for cooperative next/last/redo
-    uint64_t savedLoopFrame = tctx_.curLoopFrame;
-    tctx_.curLoopFrame = tctx_.frameTop;
-    uint64_t savedGivenFrame = tctx_.curGivenFrame;
-    tctx_.curGivenFrame = tctx_.frameTop;
+    uint64_t savedLoopFrame = tc.curLoopFrame;
+    tc.curLoopFrame = tc.frameTop;
+    uint64_t savedGivenFrame = tc.curGivenFrame;
+    tc.curGivenFrame = tc.frameTop;
     struct LoopGuard {
         ExecContext& t; uint64_t lf, gf;
         // restore both frames; clear a when-flag an exception left unconsumed
         ~LoopGuard() { t.curLoopFrame = lf; t.curGivenFrame = gf; }
-    } lguard{tctx_, savedLoopFrame, savedGivenFrame};
+    } lguard{tc, savedLoopFrame, savedGivenFrame};
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
-              if (tctx_.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
+              if (tc.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
               // LOOP CONTROL FIRST: `when … { last }` sets BOTH flags — the
               // when-match and the `last`. Consuming the when-flag first said
               // "iteration done" and left the loop flag set, so it travelled out
@@ -2204,9 +2284,9 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               // scan ends with `when .not { last }`). The loop control subsumes
               // the when-match, so clear that too. A `when` inside a CATCH is
               // unaffected: the handler consumes its flag before we get here.
-              if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
-                  tctx_.givenCtl = 0;
-                  int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
+              if (tc.loopCtl) { // cooperative next/last/redo from this loop's body
+                  tc.givenCtl = 0;
+                  int ctl = tc.loopCtl; tc.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params — Rakudo re-binds; S04-statements/redo.t needs the refresh to terminate)
                   if (ctl == 1) {
                       // a `last` from a NEXT phaser — cooperative or thrown —
@@ -2230,17 +2310,17 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                   suppressLoopFirst_ = savedSF; return false; // last
               }
               bool whenValue = false;
-              if (tctx_.givenCtl) { // cooperative when-match in this loop's body: the
+              if (tc.givenCtl) { // cooperative when-match in this loop's body: the
                   // iteration is done — like `next`, but the when block's value is
                   // the iteration's value and NEXT/LAST still run (Rakudo; `do for
                   // 1..3 { when 2 { "two" }; "other" }` used to lose the "two")
-                  tctx_.givenCtl = 0; v = std::move(tctx_.givenV); whenValue = true;
+                  tc.givenCtl = 0; v = std::move(tc.givenV); whenValue = true;
               }
               if (collect) {
                   Value cont;
                   // the body ends on an outer variable: the value IS its container
-                  if (tctx_.collectTail && tctx_.collectTailBody == body && !whenValue &&
-                      containerElemFor(tctx_.collectTail, cont))
+                  if (tc.collectTail && tc.collectTailBody == body && !whenValue &&
+                      containerElemFor(tc.collectTail, cont))
                       collect->push_back(std::move(cont));
                   // a Slip (`Empty` from `$x if False`, `slip(…)`) flattens into the loop's values
                   else if (v.t == VT::Array && v.s == "Slip" && !v.itemized && v.arr())
@@ -11299,7 +11379,189 @@ static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
     }
 }
 
+// `$x += $y` (sv 2), `-=` (3), `*=` (4) on two machine Ints, written over the
+// box when nothing overflows. What applyArith's small-Int case would build is
+// an Int that differs from a plain one only in `.i` — the test is rtIntSlot's,
+// which the -O int lanes store through the same way — so moving that whole
+// Value into the slot, as the general path does, was pure copying. False, with
+// the slot untouched, for anything else.
+static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, signed char sv) {
+    if (!rtIntSlot(*slot) || slot->natBits || slot->pk_ != PK::None || !slot->enumType.empty() ||
+        !slot->s.empty() || rhs.t != VT::Int || rhs.big())
+        return false;
+    long long z;
+    if (sv == 2 ? rakupp::add_ovf(slot->i, rhs.i, &z)
+      : sv == 3 ? rakupp::sub_ovf(slot->i, rhs.i, &z)
+                : rakupp::mul_ovf(slot->i, rhs.i, &z))
+        return false;
+    Interpreter::ParStripe ws(I, slot); // torn-copy contract, as the general store
+    slot->i = z;
+    return true;
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
+    // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
+    // readonly-List find, the shape probes of evalAssignInner, the
+    // keepType/varDefault walks — all for machinery this shape provably
+    // does not have. The NODE verdict (decided once) proves the shape; the
+    // per-activation checks prove the SLOT is plain: untyped by the layout
+    // (typedness lives in varDefault, not on the Value), no cold block, no
+    // native width, not readonly, not a Proxy. Anything else falls through
+    // BEFORE the RHS is evaluated, so the full path never re-runs a
+    // side-effecting expression.
+    //
+    // It comes FIRST: the arms below it are binds, declarations, a `self`
+    // target, a user-defined op= and `$*USAGE`, and the verdict rules every
+    // one of them out, so a lane node has nothing to ask of them.
+    {
+        // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
+        // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
+        // path ends in the same applyArith this lane calls).
+        signed char sv = a->simpleSlot;
+        if (sv != 0) {
+            if (sv < 0) {
+                signed char cls = 0;
+                if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
+                    auto* tv = static_cast<VarExpr*>(a->target.get());
+                    if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
+                        tv->name[0] == '$' && tv->declCoerce.empty() && tv->name != "$*USAGE") {
+                        if (opEq(a->op, "=")) cls = 1;
+                        else if (opEq(a->op, "+=")) cls = 2;
+                        else if (opEq(a->op, "-=")) cls = 3;
+                        else if (opEq(a->op, "*=")) cls = 4;
+                        else if (opEq(a->op, "~=")) cls = 5;
+                    }
+                }
+                a->simpleSlot = cls;
+                sv = cls;
+            }
+            if (sv >= 1) {
+                auto* tv = static_cast<VarExpr*>(a->target.get());
+                Value* slot = padPtr(tv);
+                if (slot) {
+                    // per-activation checks: a lane-eligible slot (layout
+                    // verdict: untyped or native-typed — only uppercase types
+                    // are assignment-enforced), plain in every dimension the
+                    // ceremony exists for. Native width is allowed: the wrap
+                    // is applied below exactly as the full path does.
+                    Env* pf = nullptr;
+                    for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
+                        if (e2->layout) { pf = e2; break; }
+                    // An Int past a machine word keeps its magnitude in the cold
+                    // block, so `!slot->x_` sent EVERY bignum accumulator down the
+                    // long path — and `$f *= $_` is the shape that wants the short
+                    // one most. Such a block holds nothing but the magnitude, the
+                    // op= arm below is what the long path reaches anyway (its extra
+                    // machinery is Proxy stores, `is rw` links and infix overloads,
+                    // none of which a plain Int has), and the two shapes the arm
+                    // does care about are excluded by name. Plain `=` keeps the
+                    // strict test: it overwrites the box wholesale and has never
+                    // needed to look inside it.
+                    bool coldOk = !slot->x_ ||
+                                  (sv >= 2 && slot->t == VT::Int && slot->big() &&
+                                   slot->enumName.empty() && slot->natBits == 0);
+                    if (pf->layout->simple[tv->padSlot] &&
+                        coldOk && !slot->readonly && slot->hashKind.empty() &&
+                        slot->t != VT::Object) {
+                        int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
+                        if (sv == 1) {
+                            Value rv = evalValueOf(a->value.get());
+                            if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, a->target.get(), slot);
+                            if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
+                            else {
+                                rv.readonly = rv.immutableBind = false;
+                                if (!nb && rv.natBits) dropNativeTags(rv);   // a boxed $ takes the value, not the native
+                                // a `$` container itemizes what it holds
+                                if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
+                                    rv.itemized = true;
+                            }
+                            // a native refuses what it cannot hold BEFORE the store,
+                            // so a caught refusal leaves the old value in place; the
+                            // name the message needs is built only on that path
+                            if (nb && nativeNeedsCheck(rv, nfl))
+                                nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
+                            {
+                                ParStripe ws(*this, slot); // torn-copy contract
+                                *slot = std::move(rv);
+                            }
+                            if (nb) wrapNative(*slot, nb, nsg, nfl);
+                            if (anyRwLinks_) rwWriteThrough(a->target.get());
+                            return sink ? Value::any() : *slot;
+                        }
+                        // compound: mirror the full path's tail for the
+                        // whitelisted ops — neutral autoviv, the in-place
+                        // ASCII `~=` append, applyArith for the rest
+                        Value rhs = eval(a->value.get());
+                        Value before; // what a refused native result puts back
+                        if (nb) before = *slot;
+                        if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
+                            rhs.readonly = rhs.immutableBind = false;
+                            static const char* kOps[] = {"", "", "+", "-", "*", "~"};
+                            const char* bop = kOps[(int)sv];
+                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
+                                if (sv == 4) *slot = Value::integer(1);       // *= from 1
+                                else if (sv == 5) *slot = Value::str("");     // ~= from ''
+                                else *slot = Value::integer(0);               // +=/-= from 0
+                            }
+                            if (sv == 5 && slot->t == VT::Str && rhs.t == VT::Str &&
+                                rhs.hashKind.empty() && !rhs.itemized) {
+                                bool asciiRhs = true;
+                                for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
+                                ParStripe ws(*this, slot);
+                                if (asciiRhs) slot->s += rhs.s;
+                                else slot->s = nfcNormalize(slot->s + rhs.s);
+                            } else if ((sv == 2 || sv == 3) &&
+                                       (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
+                                // `$t += $d` keeps the Duration a Duration, as `+` does
+                                Value l0 = *slot;
+                                Value nv = applyArith(bop, l0, rhs);
+                                tagTemporal(bop, l0, rhs, nv);
+                                ParStripe ws(*this, slot);
+                                *slot = std::move(nv);
+                            } else if (!(sv <= 4 && !nb && intOpAssignInPlace(*this, slot, rhs, sv)) &&
+                                       !applyArithIntoTry(bop, *slot, rhs)) {
+                                Value nv = applyArith(bop, *slot, rhs);
+                                ParStripe ws(*this, slot);
+                                *slot = std::move(nv);
+                            }
+                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                                                        compoundSrcNative(bop, rhs, a->value.get(), nfl));
+                            if (anyRwLinks_) rwWriteThrough(a->target.get());
+                            return sink ? Value::any() : *slot;
+                        }
+                        // rhs is an Object — a bail here would re-evaluate a
+                        // side-effecting rhs, so mirror the full tail inline:
+                        // overload first, then neutral autoviv, then the
+                        // Str-method-honouring `~`, then applyArith.
+                        std::string bop2(1, "  +-*~"[(int)sv]);
+                        bool overloaded = false;
+                        Value nv;
+                        if (Value* f = tctx_.cur->find("&infix:<" + bop2 + ">"))
+                            try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
+                            catch (RakuError&) {}
+                        if (!overloaded) {
+                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
+                                if (sv == 4) *slot = Value::integer(1);
+                                else if (sv == 5) *slot = Value::str("");
+                                else *slot = Value::integer(0);
+                            }
+                            nv = sv == 5 ? Value::str(strOf(*slot) + strOf(rhs))
+                                         : applyArith(bop2, *slot, rhs);
+                        }
+                        {
+                            ParStripe ws(*this, slot);
+                            *slot = std::move(nv);
+                        }
+                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                                                    compoundSrcNative(bop2, rhs, a->value.get(), nfl));
+                        if (anyRwLinks_) rwWriteThrough(a->target.get());
+                        return sink ? Value::any() : *slot;
+                    }
+                }
+            }
+        }
+    }
     // Which of the container arms can apply is one length test on the operator
     // and one kind test on the target — no string compares up front.
     const bool isBind = a->op.size() == 2 && a->op[0] == ':' && a->op[1] == '=';
@@ -11594,163 +11856,6 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     if (a->target && a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->name == "$*USAGE" &&
         !static_cast<VarExpr*>(a->target.get())->declare)
         throwTypedV("X::Assignment::RO", {{"value", Value::str("$*USAGE")}}, "Cannot modify an immutable Str");
-    // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
-    // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
-    // readonly-List find, the shape probes of evalAssignInner, the
-    // keepType/varDefault walks — all for machinery this shape provably
-    // does not have. The NODE verdict (decided once) proves the shape; the
-    // per-activation checks prove the SLOT is plain: untyped by the layout
-    // (typedness lives in varDefault, not on the Value), no cold block, no
-    // native width, not readonly, not a Proxy. Anything else falls through
-    // BEFORE the RHS is evaluated, so the full path never re-runs a
-    // side-effecting expression.
-    {
-        // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
-        // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
-        // path ends in the same applyArith this lane calls).
-        signed char sv = a->simpleSlot;
-        if (sv != 0) {
-            if (sv < 0) {
-                signed char cls = 0;
-                if (a->target && a->target->kind == NK::VarExpr) {
-                    auto* tv = static_cast<VarExpr*>(a->target.get());
-                    if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
-                        tv->name[0] == '$' && tv->declCoerce.empty()) {
-                        if (opEq(a->op, "=")) cls = 1;
-                        else if (opEq(a->op, "+=")) cls = 2;
-                        else if (opEq(a->op, "-=")) cls = 3;
-                        else if (opEq(a->op, "*=")) cls = 4;
-                        else if (opEq(a->op, "~=")) cls = 5;
-                    }
-                }
-                a->simpleSlot = cls;
-                sv = cls;
-            }
-            if (sv >= 1) {
-                auto* tv = static_cast<VarExpr*>(a->target.get());
-                Value* slot = padPtr(tv);
-                if (slot) {
-                    // per-activation checks: a lane-eligible slot (layout
-                    // verdict: untyped or native-typed — only uppercase types
-                    // are assignment-enforced), plain in every dimension the
-                    // ceremony exists for. Native width is allowed: the wrap
-                    // is applied below exactly as the full path does.
-                    Env* pf = nullptr;
-                    for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
-                        if (e2->layout) { pf = e2; break; }
-                    // An Int past a machine word keeps its magnitude in the cold
-                    // block, so `!slot->x_` sent EVERY bignum accumulator down the
-                    // long path — and `$f *= $_` is the shape that wants the short
-                    // one most. Such a block holds nothing but the magnitude, the
-                    // op= arm below is what the long path reaches anyway (its extra
-                    // machinery is Proxy stores, `is rw` links and infix overloads,
-                    // none of which a plain Int has), and the two shapes the arm
-                    // does care about are excluded by name. Plain `=` keeps the
-                    // strict test: it overwrites the box wholesale and has never
-                    // needed to look inside it.
-                    bool coldOk = !slot->x_ ||
-                                  (sv >= 2 && slot->t == VT::Int && slot->big() &&
-                                   slot->enumName.empty() && slot->natBits == 0);
-                    if (pf->layout->simple[tv->padSlot] &&
-                        coldOk && !slot->readonly && slot->hashKind.empty() &&
-                        slot->t != VT::Object) {
-                        int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
-                        if (sv == 1) {
-                            Value rv = evalValueOf(a->value.get());
-                            if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, a->target.get(), slot);
-                            if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
-                            else {
-                                rv.readonly = rv.immutableBind = false;
-                                if (!nb && rv.natBits) dropNativeTags(rv);   // a boxed $ takes the value, not the native
-                                // a `$` container itemizes what it holds
-                                if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
-                                    rv.itemized = true;
-                            }
-                            // a native refuses what it cannot hold BEFORE the store,
-                            // so a caught refusal leaves the old value in place; the
-                            // name the message needs is built only on that path
-                            if (nb && nativeNeedsCheck(rv, nfl))
-                                nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
-                            {
-                                ParStripe ws(*this, slot); // torn-copy contract
-                                *slot = rv;
-                            }
-                            if (nb) wrapNative(*slot, nb, nsg, nfl);
-                            if (anyRwLinks_) rwWriteThrough(a->target.get());
-                            return sink ? Value::any() : *slot;
-                        }
-                        // compound: mirror the full path's tail for the
-                        // whitelisted ops — neutral autoviv, the in-place
-                        // ASCII `~=` append, applyArith for the rest
-                        Value rhs = eval(a->value.get());
-                        Value before; // what a refused native result puts back
-                        if (nb) before = *slot;
-                        if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
-                            rhs.readonly = rhs.immutableBind = false;
-                            static const char* kOps[] = {"", "", "+", "-", "*", "~"};
-                            const char* bop = kOps[(int)sv];
-                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
-                                if (sv == 4) *slot = Value::integer(1);       // *= from 1
-                                else if (sv == 5) *slot = Value::str("");     // ~= from ''
-                                else *slot = Value::integer(0);               // +=/-= from 0
-                            }
-                            if (sv == 5 && slot->t == VT::Str && rhs.t == VT::Str &&
-                                rhs.hashKind.empty() && !rhs.itemized) {
-                                bool asciiRhs = true;
-                                for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
-                                ParStripe ws(*this, slot);
-                                if (asciiRhs) slot->s += rhs.s;
-                                else slot->s = nfcNormalize(slot->s + rhs.s);
-                            } else if ((sv == 2 || sv == 3) &&
-                                       (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
-                                // `$t += $d` keeps the Duration a Duration, as `+` does
-                                Value l0 = *slot;
-                                Value nv = applyArith(bop, l0, rhs);
-                                tagTemporal(bop, l0, rhs, nv);
-                                ParStripe ws(*this, slot);
-                                *slot = std::move(nv);
-                            } else if (!applyArithIntoTry(bop, *slot, rhs)) {
-                                Value nv = applyArith(bop, *slot, rhs);
-                                ParStripe ws(*this, slot);
-                                *slot = std::move(nv);
-                            }
-                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
-                                                        compoundSrcNative(bop, rhs, a->value.get(), nfl));
-                            if (anyRwLinks_) rwWriteThrough(a->target.get());
-                            return sink ? Value::any() : *slot;
-                        }
-                        // rhs is an Object — a bail here would re-evaluate a
-                        // side-effecting rhs, so mirror the full tail inline:
-                        // overload first, then neutral autoviv, then the
-                        // Str-method-honouring `~`, then applyArith.
-                        std::string bop2(1, "  +-*~"[(int)sv]);
-                        bool overloaded = false;
-                        Value nv;
-                        if (Value* f = tctx_.cur->find("&infix:<" + bop2 + ">"))
-                            try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
-                            catch (RakuError&) {}
-                        if (!overloaded) {
-                            if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
-                                if (sv == 4) *slot = Value::integer(1);
-                                else if (sv == 5) *slot = Value::str("");
-                                else *slot = Value::integer(0);
-                            }
-                            nv = sv == 5 ? Value::str(strOf(*slot) + strOf(rhs))
-                                         : applyArith(bop2, *slot, rhs);
-                        }
-                        {
-                            ParStripe ws(*this, slot);
-                            *slot = std::move(nv);
-                        }
-                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
-                                                    compoundSrcNative(bop2, rhs, a->value.get(), nfl));
-                        if (anyRwLinks_) rwWriteThrough(a->target.get());
-                        return sink ? Value::any() : *slot;
-                    }
-                }
-            }
-        }
-    }
     // `my @a is List` makes the container immutable — reassigning it throws (the
     // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
     if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
