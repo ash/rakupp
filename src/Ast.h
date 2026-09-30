@@ -1055,6 +1055,10 @@ struct IfStmt : Stmt {
     std::unique_ptr<Block> elseBlock; // may be null
     bool isUnless = false;
     bool modifier = false; // `STMT if COND` postfix form — a `my` in STMT declares in the ENCLOSING scope
+    // Whether anything reads a condition's VALUE, not just its truth: a
+    // binder on a branch or on else, or a placeholder (or @_) in a branch body
+    // that receives it. 1 yes, 0 no, -1 not yet decided (see exec's IfStmt arm).
+    mutable DecidedOnce<signed char> condValueUsed{-1};
     IfStmt(): Stmt(NK::IfStmt) {}
 };
 

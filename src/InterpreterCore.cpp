@@ -2455,6 +2455,24 @@ struct TopicAliasFrame {
     ~TopicAliasFrame() { if (v) v->pop_back(); }
 };
 
+// Whether an if/unless/with reads a condition's VALUE rather than only its
+// truth (IfStmt::condValueUsed): a binder on a branch or on its else, or a
+// branch body whose lone placeholder — or implicit @_ — receives the value.
+// These are the only readers of `cv`/`lastCond` in exec's IfStmt arm.
+static bool ifCondValueUsed(const IfStmt* is) {
+    if (!is->thenVar.empty() || !is->elseVar.empty() || !is->elseParams.empty()) return true;
+    for (auto& v : is->branchVars) if (!v.empty()) return true;
+    for (auto& p : is->branchParams) if (!p.empty()) return true;
+    for (auto& br : is->branches) {
+        if (!br.second) continue;
+        if (!computePlaceholders(br.second->stmts).empty()) return true;
+        std::set<std::string> ph2;
+        for (auto& s2 : br.second->stmts) collectPHStmt(s2.get(), ph2);
+        if (ph2.count("@_")) return true;
+    }
+    return false;
+}
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -2666,12 +2684,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::IfStmt: {
             auto* is = static_cast<IfStmt*>(s);
+            if (is->condValueUsed < 0) is->condValueUsed = ifCondValueUsed(is) ? 1 : 0;
+            // nothing below reads a condition's value unless this is set; then
+            // `$c++ if $a eq $b` answers its truth without building a Bool
+            const bool condUsed = is->condValueUsed == 1;
             Value lastCond; // last condition value, for `else -> $x` (no re-eval: side effects)
             for (size_t bi = 0; bi < is->branches.size(); bi++) {
                 auto& br = is->branches[bi];
-                Value cv = eval(br.first.get());
-                lastCond = cv;
-                bool c = boolify(cv);
+                Value cv;
+                bool c;
+                const int fb = condUsed ? -1 : tryCondBool(br.first.get());
+                if (fb >= 0) c = fb != 0;
+                else {
+                    cv = eval(br.first.get());
+                    lastCond = cv;
+                    c = boolify(cv);
+                }
                 if (is->isUnless) c = !c;
                 if (c) {
                     // postfix `STMT if COND`: run STMT in the ENCLOSING scope so a `my`
@@ -2682,11 +2710,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         // placeholder is sitting in this branch body — bind it in a
                         // child scope (a block with a signature is not the bare
                         // `my`-leaks-out form the enclosing scope is there for).
-                        auto ph = computePlaceholders(br.second->stmts);
-                        if (ph.size() == 1) {
-                            auto phs = std::make_shared<Env>(); phs->parent = tctx_.cur;
-                            phs->define(ph[0], cv);
-                            return execBlock(br.second.get(), phs);
+                        if (condUsed) {
+                            auto ph = computePlaceholders(br.second->stmts);
+                            if (ph.size() == 1) {
+                                auto phs = std::make_shared<Env>(); phs->parent = tctx_.cur;
+                                phs->define(ph[0], cv);
+                                return execBlock(br.second.get(), phs);
+                            }
                         }
                         return execBlock(br.second.get(), tctx_.cur);
                     }
@@ -2715,7 +2745,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                 sp->obj()->attrs[bv.substr(2)] = cv;
                     }
                     else if (!bv.empty()) scope->define(bv, cv); // if/elsif EXPR -> $x
-                    else { // a lone $^placeholder in the branch body receives the condition
+                    else if (condUsed) { // a lone $^placeholder in the branch body receives the condition
                         auto ph = computePlaceholders(br.second->stmts);
                         if (ph.size() == 1 && ph[0] != "@_") scope->define(ph[0], cv);
                         else {
@@ -2748,7 +2778,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 return execBlock(is->elseBlock.get(), scope);
             }
-            { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; } // if/unless not taken: Empty
+            // if/unless not taken: Empty — unless the statement is sunk, when
+            // nothing reads the value but the block's success test, to which
+            // an empty Slip and Nil are both undefined; that one allocated a
+            // list for every false `STMT if COND` in a loop
+            if (sink) return Value::nil();
+            { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
         }
         case NK::WhileStmt: {
             auto* ws = static_cast<WhileStmt*>(s);
@@ -19435,12 +19470,40 @@ int Interpreter::tryCondBool(Expr* e) {
     // a lexical `infix:<…>` declared after this node's shape was decided
     // would otherwise be passed over (evalBinary makes the same test)
     if (binaryShadowMaybe(op)) return -1;
-    // the six Int comparisons only — everything else keeps the full path
+    // the six Int comparisons, and the six string ones over two plain Strs —
+    // everything else keeps the full path
     bool isCmp = opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
                  opEq(op, "==") || opEq(op, "!=");
-    if (!isCmp) return -1;
+    const bool strCmp = !isCmp && (opEq(op, "eq") || opEq(op, "ne") || opEq(op, "lt") ||
+                                   opEq(op, "gt") || opEq(op, "le") || opEq(op, "ge"));
+    if (!isCmp && !strCmp) return -1;
     if (b->fastShape < 0) return -1;  // let evalBinary decide the shape first
     if (b->fastShape == 0) return -1;
+    if (strCmp) {
+        // what applyArith answers for two Strs with no tag (a Version is the
+        // only Str arm ahead of it, and it needs a tag): a byte compare of
+        // the strings, which for UTF-8 is code-point order
+        Env* const cur = tctx_.cur.get();
+        auto strOf = [&](Expr* oe, bool lit) -> const Value* {
+            const Value* p;
+            if (lit) p = static_cast<const Value*>(b->litVal.get());
+            else {
+                auto* ve = static_cast<VarExpr*>(oe);
+                Value* q = padPtrIn(ve, cur);
+                p = q ? q : cur->find(ve->name);
+            }
+            return (p && p->t == VT::Str && p->hashKind.empty()) ? p : nullptr;
+        };
+        const Value* lp = strOf(b->lhs.get(), b->fastShape == 2);
+        if (!lp) return -1;
+        const Value* rp = strOf(b->rhs.get(), b->fastShape == 1);
+        if (!rp) return -1;
+        const int c = lp->s.str().compare(rp->s.str());
+        const bool v = opEq(op, "eq") ? c == 0 : opEq(op, "ne") ? c != 0
+                     : opEq(op, "lt") ? c < 0  : opEq(op, "gt") ? c > 0
+                     : opEq(op, "le") ? c <= 0 : c >= 0;
+        return v ? 1 : 0;
+    }
     auto intOf = [&](Expr* oe, bool lit, long long& out) -> bool {
         if (lit) {
             const Value* lv = static_cast<const Value*>(b->litVal.get());
