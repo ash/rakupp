@@ -268,11 +268,23 @@ Each is its own plan, in V6's order of evidence per cost:
 
 −24…−37% on the lean walker, where quickening was already in place.
 
-- [ ] Prototype in the engine for the node kinds the kernels spend time in:
+- [x] Prototype in the engine for the node kinds the kernels spend time in:
   each node compiled once, on first evaluation, into a small handler with its
   slot, operator id and fast path bound; the `switch` stays as the fallback.
+  *Done for one kind (cc2af7fc):* `Expr::handler`, which eval calls ahead of
+  its switch; `Interpreter::binaryFastHandler`, installed by evalBinary on a
+  node that reaches its fast shape.
 - [ ] Judge it against the probe's number with the usual discount before going
-  wider. It is not the flat threaded loop or register IR V6 measured at a ~4%
+  wider. *First reading* (interleaved against a1be403f, best of 7):
+  mean −1.1% — `asg` −6.4%, `mainnext` −6.2%, `hash` −5.5%, `fib` −3.7% —
+  and `objnew` +2.1% (15 runs): every eval now pays the handler test, and a
+  program of method calls and object construction has little for a handler
+  to take. Far from the probe's −24…−37%, which is expected: round 3 had
+  already taken eval's frame from 9.3 to 2.2 KB and moved its big arms out,
+  so most of what the probe's L2 → L3 step removed was gone. What is left
+  for handlers is the kinds whose own frame is still large — the next is
+  the assignment lane (evalAssign), then evalIndex and evalUnary's hot paths
+  — each judged the same way. It is not the flat threaded loop or register IR V6 measured at a ~4%
   ceiling: those change the loop, this removes the per-node `switch` and its
   shared giant frame.
 
