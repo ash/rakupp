@@ -1,14 +1,100 @@
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 namespace rakupp {
 
+// A BigInt's limbs: the part of std::vector<uint32_t> the arithmetic uses, with
+// the first four limbs INLINE. A Rat is two BigInts, and nearly every Rat a
+// program makes (0.01 * 7, 1/3) has a numerator and denominator under 10^36 —
+// so each one used to cost two heap blocks for a limb apiece. Same 24 bytes as
+// the vector; storage moves to the heap only past four limbs.
+class LimbVec {
+    static constexpr uint32_t kInline = 4;
+    union { uint32_t inl_[kInline]; uint32_t* heap_; };
+    uint32_t n_ = 0, cap_ = kInline;
+    bool onHeap() const { return cap_ > kInline; }
+    void grow(size_t want) {
+        size_t nc = cap_ * 2;
+        if (nc < want) nc = want;
+        uint32_t* p = static_cast<uint32_t*>(::operator new(nc * sizeof(uint32_t)));
+        std::memcpy(p, data(), n_ * sizeof(uint32_t));
+        if (onHeap()) ::operator delete(heap_);
+        heap_ = p;
+        cap_ = (uint32_t)nc;
+    }
+public:
+    LimbVec() {}
+    LimbVec(const LimbVec& o) { assignFrom(o.data(), o.n_); }
+    LimbVec(LimbVec&& o) noexcept : n_(o.n_), cap_(o.cap_) {
+        if (o.onHeap()) { heap_ = o.heap_; o.cap_ = kInline; }
+        else std::memcpy(inl_, o.inl_, sizeof inl_);
+        o.n_ = 0;
+    }
+    LimbVec& operator=(const LimbVec& o) { if (this != &o) assignFrom(o.data(), o.n_); return *this; }
+    LimbVec& operator=(LimbVec&& o) noexcept {
+        if (this == &o) return *this;
+        if (onHeap()) ::operator delete(heap_);
+        n_ = o.n_; cap_ = o.cap_;
+        if (o.onHeap()) { heap_ = o.heap_; o.cap_ = kInline; }
+        else std::memcpy(inl_, o.inl_, sizeof inl_);
+        o.n_ = 0;
+        return *this;
+    }
+    ~LimbVec() { if (onHeap()) ::operator delete(heap_); }
+
+    void assignFrom(const uint32_t* p, size_t n) {
+        if (n > cap_) grow(n);
+        std::memmove(data(), p, n * sizeof(uint32_t));
+        n_ = (uint32_t)n;
+    }
+    uint32_t* data() { return onHeap() ? heap_ : inl_; }
+    const uint32_t* data() const { return onHeap() ? heap_ : inl_; }
+    size_t size() const { return n_; }
+    bool empty() const { return n_ == 0; }
+    uint32_t& operator[](size_t i) { return data()[i]; }
+    const uint32_t& operator[](size_t i) const { return data()[i]; }
+    uint32_t& back() { return data()[n_ - 1]; }
+    const uint32_t& back() const { return data()[n_ - 1]; }
+    uint32_t* begin() { return data(); }
+    uint32_t* end() { return data() + n_; }
+    const uint32_t* begin() const { return data(); }
+    const uint32_t* end() const { return data() + n_; }
+    void push_back(uint32_t v) { if (n_ == cap_) grow(n_ + 1); data()[n_++] = v; }
+    void pop_back() { n_--; }
+    void clear() { n_ = 0; }
+    void resize(size_t n, uint32_t v = 0) {
+        if (n > cap_) grow(n);
+        for (size_t i = n_; i < n; i++) data()[i] = v;
+        n_ = (uint32_t)n;
+    }
+    void assign(size_t n, uint32_t v) { n_ = 0; resize(n, v); }
+    // the two positional edits the arithmetic makes: a limb in FRONT (long
+    // division's running remainder) and a run off the front (a shift)
+    void insert(uint32_t* pos, uint32_t v) {
+        const size_t at = (size_t)(pos - data());
+        if (n_ == cap_) grow(n_ + 1);
+        std::memmove(data() + at + 1, data() + at, (n_ - at) * sizeof(uint32_t));
+        data()[at] = v;
+        n_++;
+    }
+    void erase(uint32_t* first, uint32_t* last) {
+        const size_t a = (size_t)(first - data()), b = (size_t)(last - data());
+        std::memmove(data() + a, data() + b, (n_ - b) * sizeof(uint32_t));
+        n_ -= (uint32_t)(b - a);
+    }
+    bool operator==(const LimbVec& o) const {
+        return n_ == o.n_ && std::memcmp(data(), o.data(), n_ * sizeof(uint32_t)) == 0;
+    }
+    bool operator!=(const LimbVec& o) const { return !(*this == o); }
+};
+
 // Arbitrary-precision signed integer. Magnitude stored base 1e9, little-endian.
 struct BigInt {
     int sign = 0;                 // -1, 0, +1
-    std::vector<uint32_t> mag;    // little-endian limbs, base 1e9, no leading zeros
+    LimbVec mag;                  // little-endian limbs, base 1e9, no leading zeros
     static const uint32_t BASE = 1000000000u;
 
     BigInt() {}

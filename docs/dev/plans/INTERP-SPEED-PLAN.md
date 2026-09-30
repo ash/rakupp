@@ -260,7 +260,12 @@ Each is its own plan, in V6's order of evidence per cost:
   its peak RSS and time did not move (the block was churn); a program that
   keeps 100k objects and 50k small hashes: peak RSS 531 → 175 MB, time −16%.
 - [ ] Inline slots in `Env::vars`, and `make_shared<Env>` on the slab.
-- [ ] Small Rats inline.
+- [ ] Small Rats inline. *In part, without touching `Value`:* a BigInt's limbs
+  are a `LimbVec` with four limbs inline (anything under 10^36), and the
+  assignment lane takes a Rat accumulator. `rats` −7% and −7%, `bigint` −7%;
+  the kernel's allocations per iteration 10 → 6. What is left per Rat is its
+  cold block and the two `shared_ptr<BigInt>`s — the part that needs the
+  172 `ratN()`/`ratD()` sites to stop handing out a `shared_ptr`.
 - [ ] [VALUE32-PLAN.md](VALUE32-PLAN.md): a 56-byte `Value`, the endgame.
 
 *Done when:* V6's memory table has no row worse and the kernels that allocate
