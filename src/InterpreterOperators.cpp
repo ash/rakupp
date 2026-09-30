@@ -1066,16 +1066,12 @@ uint64_t Interpreter::lexicalRoutineFrame() {
 #if RAKUPP_HAVE_CORO
 struct GatherRegs {
     ExecContext ctx;
-    Value* topicWriteback = nullptr;
     Value* builtinTopicWB = nullptr;
     const Interpreter::ArgWriter* builtinArgWriter = nullptr;
-    const Interpreter::ArgWriter* pendingArgWriter = nullptr;
-    bool deferGather = false, noAutothread = false, valueSmartmatch = false,
-         matchVarSuppressed = false, forceRoutineFrame = false, hoistingSubs = false,
+    bool deferGather = false, valueSmartmatch = false,
+         matchVarSuppressed = false, hoistingSubs = false,
          suppressLoopFirst = false, fatalTry = false;
     std::string declaringType;
-    int loopPhaserCtl = 0;
-    const std::vector<Value*>* pendingRwSlots = nullptr;
     std::vector<Interpreter::RedispatchCtx> redispatchStack;
     std::vector<Interpreter::ProtoCtx> protoStack;
     std::vector<std::shared_ptr<ReactCtx>> reactStack;
@@ -1151,11 +1147,14 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueElemType, b.lastLvalueElemType);
     swap(a.dynMethodNode, b.dynMethodNode); swap(a.dynMethodName, b.dynMethodName); swap(a.curGather, b.curGather);
     swap(a.ctorCatchSkip, b.ctorCatchSkip); swap(a.ctorCatchDepth, b.ctorCatchDepth);
+    swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
+    swap(a.pendingArgWriter, b.pendingArgWriter); swap(a.noAutothread, b.noAutothread);
+    swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION)
-static_assert(sizeof(ExecContext) == 1432,
+static_assert(sizeof(ExecContext) == 1464,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1166,13 +1165,11 @@ static_assert(sizeof(ExecContext) == 1432,
 // them four times over spent more in those calls than in the swap itself.
 struct GatherTls {
     ExecContext* ctx;
-    Value** topicWriteback; Value** builtinTopicWB;
-    const Interpreter::ArgWriter** builtinArgWriter; const Interpreter::ArgWriter** pendingArgWriter;
-    bool *deferGather, *noAutothread, *valueSmartmatch, *matchVarSuppressed, *forceRoutineFrame,
+    Value** builtinTopicWB;
+    const Interpreter::ArgWriter** builtinArgWriter;
+    bool *deferGather, *valueSmartmatch, *matchVarSuppressed,
          *hoistingSubs, *suppressLoopFirst, *fatalTry;
     std::string* declaringType;
-    int* loopPhaserCtl;
-    const std::vector<Value*>** pendingRwSlots;
     std::vector<Interpreter::RedispatchCtx>* redispatchStack;
     std::vector<Interpreter::ProtoCtx>* protoStack;
     std::vector<std::shared_ptr<ReactCtx>>* reactStack;
@@ -1189,12 +1186,12 @@ static GatherTls& gatherTls() {
     if (GatherTls* p = t_gatherTls) return *p;
     auto* p = new GatherTls{   // one per thread that runs a gather, deliberately never freed
         &Interpreter::tctx_,
-        &Interpreter::topicWriteback_, &Interpreter::builtinTopicWB_,
-        &Interpreter::builtinArgWriter_, &Interpreter::pendingArgWriter_,
-        &Interpreter::deferGather_, &Interpreter::noAutothread_, &Interpreter::valueSmartmatch_,
-        &Interpreter::matchVarSuppressed_, &Interpreter::forceRoutineFrame_,
+        &Interpreter::builtinTopicWB_,
+        &Interpreter::builtinArgWriter_,
+        &Interpreter::deferGather_, &Interpreter::valueSmartmatch_,
+        &Interpreter::matchVarSuppressed_,
         &Interpreter::hoistingSubs_, &Interpreter::suppressLoopFirst_, &t_fatalTry,
-        &Interpreter::declaringType_, &Interpreter::loopPhaserCtl_, &Interpreter::pendingRwSlots_,
+        &Interpreter::declaringType_,
         &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
         &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,
         &t_stackTop, &t_stackLimit, &t_poll.gatherDeadline, &t_poll.gatherTickCtr};
@@ -1204,21 +1201,15 @@ static GatherTls& gatherTls() {
 
 // Swap every register but the ExecContext (identical going in and out).
 static void gatherSwapStatics(const GatherTls& T, GatherRegs& r) {
-    std::swap(*T.topicWriteback, r.topicWriteback);
     std::swap(*T.builtinTopicWB, r.builtinTopicWB);
     std::swap(*T.builtinArgWriter, r.builtinArgWriter);
-    std::swap(*T.pendingArgWriter, r.pendingArgWriter);
     std::swap(*T.deferGather, r.deferGather);
-    std::swap(*T.noAutothread, r.noAutothread);
     std::swap(*T.valueSmartmatch, r.valueSmartmatch);
     std::swap(*T.matchVarSuppressed, r.matchVarSuppressed);
-    std::swap(*T.forceRoutineFrame, r.forceRoutineFrame);
     std::swap(*T.hoistingSubs, r.hoistingSubs);
     std::swap(*T.suppressLoopFirst, r.suppressLoopFirst);
     std::swap(*T.fatalTry, r.fatalTry);
     T.declaringType->swap(r.declaringType);
-    std::swap(*T.loopPhaserCtl, r.loopPhaserCtl);
-    std::swap(*T.pendingRwSlots, r.pendingRwSlots);
     T.redispatchStack->swap(r.redispatchStack);
     T.protoStack->swap(r.protoStack);
     T.reactStack->swap(r.reactStack);

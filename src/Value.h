@@ -320,6 +320,9 @@ struct Callable {
     // (-1 = not yet scanned): 0 lets a call skip every phaser, CATCH and
     // hoisting step (see bodyEntryWork in InterpreterCore.cpp).
     DecidedOnce<signed char> bodyWork{-1};
+    // 1 = a plain sub: every step of a call that its shape rules out can be
+    // left out (Interpreter::callPlainSub); 0 = not; -1 = not yet decided.
+    DecidedOnce<signed char> plainShape{-1};
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.

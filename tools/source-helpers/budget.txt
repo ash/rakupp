@@ -23,7 +23,7 @@ function Interpreter::methodCallPart2 9159
 function Interpreter::methodCallPart3 6255
 function Interpreter::methodCallTail 4894
 function Parser::parsePrimary 3265
-function applyArith 2502
+function applyArithGeneral 2502
 function main 1688
 
 compiler Apple clang version 21.0.0 (clang-2100.3.34.2)

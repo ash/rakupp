@@ -1005,8 +1005,28 @@ struct SupplyTapCtx {
 // time (guarded by the GIL), the live members always reflect the running thread.
 // This is the Stage-1 foundation for real concurrency; nothing swaps yet.
 struct GatherCoro;   // a gather's block running as a coroutine (InterpreterOperators.cpp)
+// A WhateverCode builtin's argument write-back (Interpreter::ArgWriter).
+using CallArgWriter = std::function<void(size_t, const Value&)>;
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // The one-shot registers the NEXT call consumes (callCallableRaw reads and
+    // clears each on entry). They were static thread_locals of the
+    // interpreter, which cost every call a thread-local lookup apiece; here
+    // they ride the context the call path already holds, and a gather's
+    // switch swaps them with the rest of it.
+    //   topicWriteback    a paramless block's mutated implicit $_ is copied
+    //                     back here after the call (`@a.grep({ $_++; True })`)
+    //   pendingRwSlots    hyper element slots for rw parameters (setupRwSlots)
+    //   pendingArgWriter  a composed curry's argument writer, re-indexed
+    //   noAutothread      do NOT autothread junction args (Junction.THREAD)
+    //   loopPhaserCtl     FIRST/NEXT/LAST control from an iterating driver
+    //   forceRoutineFrame a worker's starting block owns its `$/`, as a routine
+    Value* topicWriteback = nullptr;
+    const std::vector<Value*>* pendingRwSlots = nullptr;
+    const CallArgWriter* pendingArgWriter = nullptr;
+    bool noAutothread = false;
+    bool forceRoutineFrame = false;
+    int loopPhaserCtl = 0;
     int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
     // The invocant EXPRESSION of the method call currently being set up, for a
     // candidate whose invocant is declared `is rw` (`multi method push(::?CLASS:U
@@ -1354,6 +1374,16 @@ public:
     // (no phaser, CATCH, named sub or hoisted `my` — every plain loop body)
     // runs its statements on the lean path, everything else on the full one.
     Value execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sink);
+    // exec's `for` arm, out of exec's frame (see the definition)
+    [[gnu::noinline]] Value execForStmt(Stmt* s, bool sink);
+    [[gnu::noinline]] Value execGivenStmt(Stmt* s);   // …and its `given` arm
+    // eval's MethodCall arm and its VarExpr arm past the common read, out of
+    // eval's frame the same way
+    [[gnu::noinline]] Value evalMethodCallExpr(Expr* e);
+    [[gnu::noinline]] Value evalVarExpr(Expr* e);
+    // callCallableRaw's lean half, for a plain sub called plainly (see
+    // plainSubShape and the entry test in callCallableRaw)
+    Value callPlainSub(const Value& codeVal, Callable& c, ValueList& args, bool ownFrame);
     [[gnu::noinline]] Value execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink,
                                           std::unique_ptr<HandedError>* handOff);
     // A bare block written as a statement (exec's NK::Block); the rare
@@ -1417,26 +1447,23 @@ public:
     // The set→consume window is contiguous within one thread, so thread-local
     // is exactly their semantics.
     //
-    // When set (one-shot), a paramless block's mutated implicit $_ is copied back
-    // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
-    RAKUPP_CONSTINIT static thread_local Value* topicWriteback_;
-    // The consumed topicWriteback_, re-exposed to a BUILTIN callable for the
+    // The one-shot registers a CALL consumes (topicWriteback, pendingRwSlots,
+    // pendingArgWriter, noAutothread, loopPhaserCtl, forceRoutineFrame) are
+    // ExecContext members, for the same per-thread reason — see there.
+    //
+    // The consumed topicWriteback, re-exposed to a BUILTIN callable for the
     // duration of its run (builtins have no env for the $_ copy-back) — the
     // `++*` WhateverCode writes the driver's aliased element through it.
     RAKUPP_CONSTINIT static thread_local Value* builtinTopicWB_;
     // A WhateverCode builtin that steps or assigns its argument (`*++`,
     // `* += 2`) writes argument i back through this: set from the call's
     // argument EXPRESSIONS (`$c($x)` bumps $x), or handed down one-shot by a
-    // composed curry (`*++ + *--`) as pendingArgWriter_, re-indexed.
-    using ArgWriter = std::function<void(size_t, const Value&)>;
+    // composed curry (`*++ + *--`) as ExecContext::pendingArgWriter, re-indexed.
+    using ArgWriter = CallArgWriter;
     RAKUPP_CONSTINIT static thread_local const ArgWriter* builtinArgWriter_;
-    RAKUPP_CONSTINIT static thread_local const ArgWriter* pendingArgWriter_;
     // one-shot: the next `gather` is the operand of `lazy` — it runs nothing
     // until pulled (no probe)
     RAKUPP_CONSTINIT static thread_local bool deferGather_;
-    // one-shot: the next callCallable does NOT autothread junction args
-    // (Junction.THREAD passes each eigenstate — junctions included — whole)
-    RAKUPP_CONSTINIT static thread_local bool noAutothread_;
     // one-shot: the next applyArith does NOT Whatever-curry. Currying is
     // SYNTACTIC on Rakudo — only a literal `*` written in the expression
     // composes — and a Whatever that arrives as a VALUE (a `when` topic, the
@@ -1472,11 +1499,6 @@ public:
         ~MatchVarGuard() { matchVarSuppressed_ = saved; }
     };
     Value smartmatchValue(const std::string& op, const Value& l, const Value& r);
-    // one-shot: the next callCallable's activation is a ROUTINE frame even for a
-    // bare block. `start { … }` sets it so `$/` scopes to the worker rather than
-    // to the lexical scope every worker closes over — where all of them assigned
-    // it into one std::map at once, which is a data race that corrupted the heap.
-    RAKUPP_CONSTINIT static thread_local bool forceRoutineFrame_;
     // The type a declaration is handing to its metaclass's `new_type` hook, if
     // one is running. That hook reaches its base with `callsame`, and the base
     // is `Metamodel::ClassHOW.new_type`, whose job is to CREATE the type — so
@@ -1484,12 +1506,6 @@ public:
     // the one being declared, and everything the hook then adds lands on a type
     // nothing else can see. While this is set, the built-in answers it.
     static thread_local std::string declaringType_;
-    // one-shot: loop-phaser control for the next callCallable, set by an
-    // iterating driver (.map over a block with FIRST/NEXT/LAST). Bits:
-    // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),
-    // 4 = run NEXT after the body. Phasers run in the invocation env so block
-    // params are visible (Base64's LAST reads its $c).
-    RAKUPP_CONSTINIT static thread_local int loopPhaserCtl_;
     // depth of live CATCH handlers: .resume outside any handler dies catchably
     // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
     int catchDepth_ = 0;
@@ -2033,10 +2049,6 @@ public:
     Value hyperUnary(const std::string& op, Value v);       // -«(…), --«%h — deep prefix
     Value hyperPostfixApply(const std::string& op, Value v); // @a»++, %h»!, (2,3)»i — deep postfix
     void rwWriteThrough(Expr* target);
-    // one-shot direct rw slots for the NEXT callCallableRaw activation (hyper-with
-    // element calls — same consume-at-top pattern, and same thread_local
-    // reasoning, as topicWriteback_)
-    RAKUPP_CONSTINIT static thread_local const std::vector<Value*>* pendingRwSlots_;
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     // -1 = no match, else specificity. `perParam`, when given, also collects each

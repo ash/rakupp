@@ -152,7 +152,19 @@ the absolute cost fell further than the share).
 each have a frame over a page, because their rare arms keep locals alive in
 the one frame.
 
-- [ ] Measure each hot function's frame (`-fstack-usage`).
+- [x] Measure each hot function's frame (`-fstack-usage`). Over 4 KB (the
+  probe interval) before this task: `exec` 10.1 KB, `evalAssignInner` 9.4,
+  `eval` 9.3, `bindParams` 8.8, `lvalue` 7.3, `applyArith` 6.9,
+  `evalBinary` 6.7, `evalIndex` 6.7, `callCallableRaw` 6.6, `evalUnary` 5.8,
+  `evalCall` 4.5.
+- [x] `exec` 3.5 KB: its `for` and `given` arms are `execForStmt` and
+  `execGivenStmt`. `eval` 2.2 KB: its MethodCall arm is
+  `evalMethodCallExpr`, and its VarExpr arm keeps only the common read
+  (`VarExpr::plainRead`), the rest in `evalVarExpr`. `applyArith` answers
+  Int op Int itself and hands the rest to `applyArithGeneral`.
+- [ ] The rest of the list: `evalAssignInner`, `evalBinary`, `evalIndex`,
+  `evalUnary`, `lvalue`, `evalCall`, and `callCallableRaw`/`bindParams` for
+  the calls that do not take the lean path.
 - [x] `execBlock` first: a block with none of the entry or exit work
   (`Block::entryWork` is 0 — no phaser, CATCH, named sub, hoisted `my`) runs
   on `execPlainBlock`, whose frame holds its statement loop and nothing else;
@@ -181,11 +193,14 @@ Dispatch work does not move calls; call setup does
   guarded thread_local per acquire and per release), the CONTROL register
   and `&?ROUTINE` guard without a `shared_ptr` copy or a thread_local write
   on every call, and `PadLayout::byName` on the inline name hash.
-- [ ] A lean path for a plain sub. What is left of `callCallableRaw`'s own
-  ~20% is spread thin across ~24 KB of code: guards, frame bookkeeping,
-  the arity tally and binding, each a few percent at most. A sub with
-  positional untyped parameters, no traits and `bodyWork` 0 can skip most
-  of them outright, as `execPlainBlock` does for blocks.
+- [x] A lean path for a plain sub. What was left of `callCallableRaw`'s own
+  ~20% was spread thin across ~24 KB of code. *Done:* `callPlainSub`, for a
+  sub whose `Callable::plainShape` is 1 (untyped `$` positionals, no trait,
+  `bodyWork` 0, no CATCH/CONTROL, no `-->`/`is rw`) called with exactly its
+  arity and no named, Junction, Mu or Buf/Blob argument: the frame, the
+  binding, the call bookkeeping, the statement loop and the exits, and none
+  of the rest. The one-shot call registers it has to see are
+  `ExecContext` members now (they were six thread_locals). `fib` −22.6%.
 - [ ] Build the redispatch context lazily, only for a body that uses
   `callsame`/`nextsame` (V6 P2).
 - [ ] The multi-dispatch cache (V6 P2, issue #47).

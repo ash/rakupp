@@ -6909,7 +6909,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) {
                 ValueList one{el};
-                noAutothread_ = true;
+                tctx_.noAutothread = true;
                 out.arr()->push_back(callCallable(args[0], one));
             }
             return out;

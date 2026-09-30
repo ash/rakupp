@@ -3650,18 +3650,12 @@ Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
 // would leave them dangling once it is gone. Whoever builds a short-lived
 // Interpreter saves the target first and puts it back.
 Interpreter* Interpreter::liveTarget() { return g_revInterp; }
-thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
 thread_local const Interpreter::ArgWriter* Interpreter::builtinArgWriter_ = nullptr;
-thread_local const Interpreter::ArgWriter* Interpreter::pendingArgWriter_ = nullptr;
 thread_local bool Interpreter::deferGather_ = false;
-thread_local bool Interpreter::noAutothread_ = false;
 thread_local bool Interpreter::valueSmartmatch_ = false;
 thread_local bool Interpreter::matchVarSuppressed_ = false;
-thread_local bool Interpreter::forceRoutineFrame_ = false;
 thread_local std::string Interpreter::declaringType_;
-thread_local int Interpreter::loopPhaserCtl_ = 0;
-thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
 thread_local bool Interpreter::hoistingSubs_ = false;
 thread_local bool Interpreter::suppressLoopFirst_ = false;
 // Per-thread call-stack state (step 3a — see header).
@@ -5224,7 +5218,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
                 // It is also what the semantics want: a thread's match is its
                 // own. Sharing one `$/` would let one worker read another's
                 // match, which no program could rely on — and Rakudo does not.
-                forceRoutineFrame_ = true;
+                tctx_.forceRoutineFrame = true;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
             catch (const RakuError& e) {

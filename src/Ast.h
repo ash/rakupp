@@ -272,6 +272,10 @@ struct VarExpr : Expr {
             if (name[0] != '$') attrTwin = std::string(1, name[0]) + attrBare;
         }
     }
+    // A READ of this name goes straight to its lookups: no pseudo-package and
+    // none of the spellings eval answers by name first (`CORE-SETTING-REV`,
+    // `&CORE::…`). 1 yes, 0 no, -1 not yet decided (see eval's VarExpr arm).
+    mutable DecidedOnce<signed char> plainRead{-1};
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) { syncAttrCache(); }
 };
 

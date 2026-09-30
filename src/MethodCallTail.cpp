@@ -1051,11 +1051,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     Value v = (*src.arr())[(*spos)++];
                     bool match;
                     if (pred.t == VT::Code) {
-                        self->topicWriteback_ = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
+                        self->tctx_.topicWriteback = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
                         try { match = predAnswerTruthy(*self, self->callCallable(pred, {v}), v); }
-                        catch (LastEx&) { self->topicWriteback_ = nullptr; return false; } // `last` ends the grep
-                        catch (NextEx&) { self->topicWriteback_ = nullptr; continue; }     // `next` skips
-                        catch (RedoEx&) { self->topicWriteback_ = nullptr; (*spos)--; continue; } // `redo` retries
+                        catch (LastEx&) { self->tctx_.topicWriteback = nullptr; return false; } // `last` ends the grep
+                        catch (NextEx&) { self->tctx_.topicWriteback = nullptr; continue; }     // `next` skips
+                        catch (RedoEx&) { self->tctx_.topicWriteback = nullptr; (*spos)--; continue; } // `redo` retries
                         v = (*src.arr())[*spos - 1]; // keep the (possibly mutated) value
                     } else match = self->boolify(self->smartmatchValue("~~", v, pred));   // a Regex, a type, a value
                     if (match) { cache.push_back(v); return true; }
@@ -3740,11 +3740,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 o.arr()->push_back(std::move(r));
             };
             auto leaf = [&](Value& slot) -> Value {
-                topicWriteback_ = &slot; // $_/placeholder mutations alias the node
+                tctx_.topicWriteback = &slot; // $_/placeholder mutations alias the node
                 Value r;
                 try { r = callCallable(fn, ValueList{slot}); }
-                catch (...) { topicWriteback_ = nullptr; throw; }
-                topicWriteback_ = nullptr;
+                catch (...) { tctx_.topicWriteback = nullptr; throw; }
+                tctx_.topicWriteback = nullptr;
                 return r;
             };
             // `next` in the block drops the element and `last` ends the walk, as
@@ -3954,17 +3954,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         throw RakuError{Value::typeObj("X::AdHoc"),
                             "Too few positionals passed; expected " + std::to_string(required) +
                                 " arguments but got " + std::to_string(ca.size())};
-                    if (aliasable) topicWriteback_ = &(*inv.arr())[i]; // $_ mutations alias the element
+                    if (aliasable) tctx_.topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element
                     if (loopPh)
-                        loopPhaserCtl_ = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
+                        tctx_.loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
                     try { r = callCallable(args[0], ca); }
                     // 6.e: `next $v` / `last $v` supply the value for the
                     // iteration they end; a bare next/last still skips or stops.
-                    catch (LastEx& le) { topicWriteback_ = nullptr;
+                    catch (LastEx& le) { tctx_.topicWriteback = nullptr;
                                          if (le.hasVal) out.arr()->push_back(le.val);
                                          break; }
-                    catch (NextEx& ne) { topicWriteback_ = nullptr;
+                    catch (NextEx& ne) { tctx_.topicWriteback = nullptr;
                                          if (ne.hasVal) out.arr()->push_back(ne.val);
                                          continue; }
                     // post-GLR: map keeps each block result as ONE element; only a
@@ -4041,11 +4041,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (mt.t == VT::Code) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
-                    if (aliasable && ar == 1) topicWriteback_ = &(*inv.arr())[gi]; // $_ mutations alias the element
+                    if (aliasable && ar == 1) tctx_.topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element
                     try { match = predAnswerTruthy(*this, callCallable(mt, ca), v); }
-                    catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the grep
-                    catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
-                    catch (RedoEx&) { topicWriteback_ = nullptr; gi -= ar; continue; } // `redo` retries it
+                    catch (LastEx&) { tctx_.topicWriteback = nullptr; break; }   // `last` in the block ends the grep
+                    catch (NextEx&) { tctx_.topicWriteback = nullptr; continue; } // `next` skips the element
+                    catch (RedoEx&) { tctx_.topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
                     if (aliasable && ar == 1) v = (*inv.arr())[gi];
                     // an N-at-a-time block keeps each matching GROUP whole:
                     // `(1,1,2,3).grep({ ($^a + $^b) %% 2 })` is ((1 1),)
