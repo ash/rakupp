@@ -4489,6 +4489,10 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                 hasMain = true;
         if (hasMain)
             g.line(2, "__rakupp_exit = RT.runCompiledMain(&__rakupp_main_entry);");
+        // no MAIN of its own: run one a module exported into it (#112) —
+        // unconditionally, as a module found on disk at run time exports too
+        else
+            g.line(2, "{ int __rc = RT.runImportedMain(); if (__rc > 0) __rakupp_exit = __rc; }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
 

@@ -3214,6 +3214,21 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
     sinkReturnedValue(fn(margs));   // as in the interpreter: MAIN's value is sunk (#73)
     return 0;
 }
+
+// The compiled binary's invoke when the script declares no MAIN: `use M;` may
+// have imported one (`multi sub MAIN(...) is export`), and the interpreter
+// dispatches whatever &MAIN the mainline ends with (#112). That &MAIN is an
+// ordinary interpreted closure with its full Params, so the protocol runs as is.
+int Interpreter::runImportedMain() {
+    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    if (!mainSub && global_) mainSub = global_->find("&MAIN");
+    if (!mainSub || mainSub->t != VT::Code || mainSub == inheritedMainBarrier_) return -1;
+    ValueList margs;
+    int rc = mainProtocol(*mainSub, margs);
+    if (rc >= 0) return rc;
+    sinkReturnedValue(callCallable(*mainSub, margs));
+    return 0;
+}
 // Value-level indexing for native codegen (no AST). Read returns Nil when absent.
 // The default value for a missing element of a (possibly typed) container:
 // a typed container answers its element type object, else Nil.

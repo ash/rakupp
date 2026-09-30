@@ -1786,6 +1786,9 @@ public:
     // here instead, and mainArgEnum reads this after the Env and before CORE.
     void registerEnumMember(const std::string& name, const Value& v) { compiledEnums_[name] = v; }
     int runCompiledMain(Value (*fn)(ValueList&));
+    // --exe: a program with no MAIN of its own still runs one a module
+    // exported into it (#112). -1 when there is none.
+    int runImportedMain();
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
     void rtUse(const std::string& module, const std::string& arg = "",
