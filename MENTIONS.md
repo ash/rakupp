@@ -25,23 +25,27 @@ say something worth quoting.
 
 | Date | Where | Who | What |
 |---|---|---|---|
-| 27 July 2026 | [Rakudo Weekly 2026.28/29/30](https://rakudoweekly.blog/2026/07/27/2026-28-29-30-thank-you/) | Elizabeth Mattijsen | a section of its own, introducing Raku++ to the Raku community |
-| 10 August 2026 | [Rakudo Weekly 2026.32](https://rakudoweekly.blog/2026/08/10/2026-32-dan-floating-hex/) | Elizabeth Mattijsen | the live editor-and-playground on raku.online |
-| 18 August 2026 | [Rakudo Weekly 2026.33](https://rakudoweekly.blog/2026/08/18/2026-33-all-the-way-to-infinity/) | Elizabeth Mattijsen | the v3.14 release post |
+| 27 July 2026 | [Raku Weekly 2026.28/29/30](https://rakuweekly.blog/2026/07/27/2026-28-29-30-thank-you/) | Elizabeth Mattijsen | a section of its own, introducing Raku++ to the Raku community |
+| 10 August 2026 | [Raku Weekly 2026.32](https://rakuweekly.blog/2026/08/10/2026-32-dan-floating-hex/) | Elizabeth Mattijsen | the live editor-and-playground on raku.online |
+| 18 August 2026 | [Raku Weekly 2026.33](https://rakuweekly.blog/2026/08/18/2026-33-all-the-way-to-infinity/) | Elizabeth Mattijsen | the v3.14 release post |
 | August 2026 | [on X](https://x.com/perlancar/status/2090616597169967282) | perlancar | start-up time, and native-compiled Raku++ against Perl 5 |
-| 25 August 2026 | [Rakudo Weekly 2026.34](https://rakudoweekly.blog/2026/08/25/2026-34-yar-by-coke/) | Elizabeth Mattijsen | the [live/](live/) registry, and JSON::Native |
-| 31 August 2026 | [Rakudo Weekly 2026.35](https://rakudoweekly.blog/2026/08/31/2026-35-infinity-revisited/) | Elizabeth Mattijsen | the early-adopters post, the benchmark board, perlancar's remark |
-| 14 September 2026 | [Rakudo Weekly 2026.36/7](https://rakudoweekly.blog/2026/09/14/2026-36-7-multiplicity/) | Elizabeth Mattijsen | CSV::Native |
-| 21 September 2026 | [Rakudo Weekly 2026.38](https://rakudoweekly.blog/2026/09/21/2026-38-italiano-per-favore/) | Elizabeth Mattijsen | the module-manager post, and the three new L10N localizations |
+| 25 August 2026 | [Raku Weekly 2026.34](https://rakuweekly.blog/2026/08/25/2026-34-yar-by-coke/) | Elizabeth Mattijsen | the [live/](live/) registry, and JSON::Native |
+| 31 August 2026 | [Raku Weekly 2026.35](https://rakuweekly.blog/2026/08/31/2026-35-infinity-revisited/) | Elizabeth Mattijsen | the early-adopters post, the benchmark board, perlancar's remark |
+| 14 September 2026 | [Raku Weekly 2026.36/7](https://rakuweekly.blog/2026/09/14/2026-36-7-multiplicity/) | Elizabeth Mattijsen | CSV::Native |
+| 21 September 2026 | [Raku Weekly 2026.38](https://rakuweekly.blog/2026/09/21/2026-38-italiano-per-favore/) | Elizabeth Mattijsen | the module-manager post, and the three new L10N localizations |
 
-## Rakudo Weekly News
+## Raku Weekly News
 
-[Rakudo Weekly News](https://rakudoweekly.blog/), written by Elizabeth
+[Raku Weekly News](https://rakuweekly.blog/), written by Elizabeth
 Mattijsen, is the Raku community's weekly newsletter, and it has carried
 Raku++ from the week of the announcement on.
 
+Until 30 September 2026 it was called *Rakudo Weekly News* and lived at
+rakudoweekly.blog, so every issue listed here went out under that name. The
+old addresses redirect; the links here point at the new domain.
+
 The first one is the one that matters:
-[**2026.28/29/30 Thank you!**](https://rakudoweekly.blog/2026/07/27/2026-28-29-30-thank-you/)
+[**2026.28/29/30 Thank you!**](https://rakuweekly.blog/2026/07/27/2026-28-29-30-thank-you/)
 gave the project a section headed *Andrew's Playground* — the compiler,
 [raku.online](https://raku.online), [the Long Read](LONGREAD.md), the finished
 [Complete Raku Course](https://course.raku.org) and the books, in one place.
@@ -51,27 +55,27 @@ introduction to the community, written by somebody else.
 
 After that it has been steady, roughly a mention per release or per post:
 
-- [**2026.32 Dan Floating Hex**](https://rakudoweekly.blog/2026/08/10/2026-32-dan-floating-hex/)
+- [**2026.32 Dan Floating Hex**](https://rakuweekly.blog/2026/08/10/2026-32-dan-floating-hex/)
   (10 August 2026) — an *Andrew's Corner* on joining an editor to a playground
   in a live manner, linking the [live-coding post](https://andrewshitov.com/2026/08/05/live-coding-in-raku/)
   and the /r/rakulang thread.
-- [**2026.33 All The Way To Infinity**](https://rakudoweekly.blog/2026/08/18/2026-33-all-the-way-to-infinity/)
+- [**2026.33 All The Way To Infinity**](https://rakuweekly.blog/2026/08/18/2026-33-all-the-way-to-infinity/)
   (18 August 2026) — the v3.14 post, as an overview of the most interesting
   parts.
-- [**2026.34 YAR by Coke**](https://rakudoweekly.blog/2026/08/25/2026-34-yar-by-coke/)
+- [**2026.34 YAR by Coke**](https://rakuweekly.blog/2026/08/25/2026-34-yar-by-coke/)
   (25 August 2026) — the [live/](live/) registry of other people's programs
   running unaltered, and the start of modules that use what Raku++ can do,
   [JSON::Native](https://raku.land/zef:ash/JSON::Native) among them, with a
   note on its performance.
-- [**2026.35 Infinity Revisited**](https://rakudoweekly.blog/2026/08/31/2026-35-infinity-revisited/)
+- [**2026.35 Infinity Revisited**](https://rakuweekly.blog/2026/08/31/2026-35-infinity-revisited/)
   (31 August 2026) — the [early adopters](https://andrewshitov.com/2026/08/29/early-raku-adopters/)
   post, the [benchmark board](docs/status/BENCHMARKS.md), and perlancar's
   remark, linked under the heading *First time in ~18 years*. App::Rakus in
   the module list.
-- [**2026.36/7 Multiplicity**](https://rakudoweekly.blog/2026/09/14/2026-36-7-multiplicity/)
+- [**2026.36/7 Multiplicity**](https://rakuweekly.blog/2026/09/14/2026-36-7-multiplicity/)
   (14 September 2026) — [CSV::Native](https://raku.land/zef:ash/CSV::Native)
   in the module list.
-- [**2026.38 Italiano, per favore**](https://rakudoweekly.blog/2026/09/21/2026-38-italiano-per-favore/)
+- [**2026.38 Italiano, per favore**](https://rakuweekly.blog/2026/09/21/2026-38-italiano-per-favore/)
   (21 September 2026) — the issue opens on the week's two posts, the
   [Italian one](https://andrewshitov.com/2026/09/15/raku-la-lingua-dove-posso-parlare-italiano/),
   which gave the issue its title, and the
@@ -86,7 +90,7 @@ perlancar — a prolific CPAN author, and the author of Bencher — starred the
 repository and wrote [on X](https://x.com/perlancar/status/2090616597169967282)
 that he was "genuinely excited to use Perl 6 (Raku) again" for the first time
 in something like eighteen years, naming the millisecond start-up and calling
-native-compiled Raku++ only twice slower than Perl 5. Rakudo Weekly 2026.35
+native-compiled Raku++ only twice slower than Perl 5. Raku Weekly 2026.35
 linked it as *First time in ~18 years*.
 
 It is the most useful thing anyone has written about the project so far,
