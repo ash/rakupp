@@ -155,7 +155,10 @@ if $sibling.e {
     my %declared = 'Data::Native' => 'Data-Native', 'JSON::Native' => 'JSON-Native',
                    'CSV::Native' => 'CSV-Native', 'Digest::Native' => 'Digest-Native',
                    'Compress::Zlib::Native' => 'Compress-Zlib-Native';
-    my $src = $*PROGRAM.parent.parent.parent.add('src/Interpreter.cpp').slurp;
+    # The table has moved between the Interpreter*.cpp units before (the
+    # build-time split put it in InterpreterModules.cpp), so read them all.
+    my $src = $*PROGRAM.parent.parent.parent.add('src').dir
+                  .grep({ .basename ~~ /^ 'Interpreter' .* '.cpp' $/ }).sort.map(*.slurp).join;
     my $drift = 0;
     for %declared.kv -> $mod, $dir {
         my $meta = $sibling.add("$dir/META6.json");
