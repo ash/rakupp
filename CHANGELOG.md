@@ -82,6 +82,17 @@ mainnext, hash, junction, rats, mainwhen, regexloop). BENCHMARKS.md is
 re-measured against **Rakudo 2026.09**, which is faster than 2026.08 on most
 kernels, so several ratios against Rakudo fell while Raku++ got faster.
 
+**The perf baseline stays at v5.0.0's.** `perf-guard --record` refused twice,
+each time on one kernel whose runs spanned past the 5% tolerance (`strpass`
+79.6%, one preempted run; then `junction` 6.4%), and was not forced. The
+minima across the `--check` and both attempts, which is what a record would
+have written, all read faster than the v5.0.0 baseline: `asg` −28%, `loopsum`
+−25%, `mainnext` −21%, `hash` −20%, `junction` −17%, `rats` −15%, `mainwhen`
+−14%, `regexloop` −13%, `strpass` −8%, `strscan` and `method` −7%, `attrread`
+and `subcall` −7%, `junctionwide` −5%, `privmeth` −4%, `multimeth` and `fib`
+−3% to −4%, `objnew` −2%, `multiwhere` −1%. Until a record lands, the gate has
+that much slack on the fastest-moving kernels.
+
 Not re-run for this release: the module battery (48 / 59 at v5.0.1), the
 ecosystem sweep (1,019 of 2,547 at v5.0.0), the documentation-example
 comparison, the slim differential and the second-toolchain build.
