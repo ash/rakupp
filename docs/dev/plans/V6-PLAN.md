@@ -7,6 +7,9 @@ and how much of Raku the native compiler handles without falling back. Beside
 the four, one feature: `use` in the web editions (issue #83, P7). Work starts
 after v5.0.0 is tagged.*
 
+*The interpreter-speed items of P2, P3 and P6 are put in order, with the
+2026-09-30 findings, in [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md).*
+
 *Every figure below comes from the 2026-09-26 survey
 ([../findings/survey-2026-09-26/](../findings/survey-2026-09-26/)). The box was
 carrying a load average of about 3 while it was taken, so the times are ratios

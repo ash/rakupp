@@ -51,6 +51,12 @@ Next up:
   the bytes-per-element table, compile and load time, and `--exe` coverage
   (65% of fully passing `spectest.data` files). It also lists what was measured and not
   pursued.
+- **[plans/INTERP-SPEED-PLAN.md](plans/INTERP-SPEED-PLAN.md)** — **the interpreter at
+  native speed** (planned 2026-09-30): ten tasks in order, from measuring the
+  interp/native gap (7–16× on `fib`, `loopsum`, `streq`) through quickening,
+  `tctx_`, frame size and calls to closure compilation, fused integer leaves and
+  a `--cnp` tier-up for loops. Schedules V6's P2, P3 and P6 items for the
+  interpreter.
 - **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the
