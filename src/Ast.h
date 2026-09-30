@@ -292,6 +292,11 @@ struct NameTerm : Expr {
     // `$?PACKAGE` / `$?MODULE`: the enclosing package ITSELF — a lexical `my package`
     // that no global lookup finds still answers as its type (S10-packages/scope.t)
     bool pkgSelf = false;
+    // Whether `name` is a CORE enum member (coreEnumValue) / a core type name
+    // in evalRareExpr's list — questions of the name alone, asked on every
+    // mention of a class otherwise: 1 yes, 0 no, -1 not yet asked.
+    mutable DecidedOnce<signed char> coreEnum{-1};
+    mutable DecidedOnce<signed char> coreType{-1};
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 

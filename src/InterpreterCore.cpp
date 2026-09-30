@@ -4,16 +4,7 @@
 #include "InterpreterParts.h"
 
 namespace rakupp {
-// An operator string against a literal spelling: the length first, then a
-// memcmp of a length the compiler knows. `op == "lit"` means the same, but its
-// cost depends on whether Clang inlines std::operator== at that site; outlined,
-// every compare pays a strlen and a call, and in a function holding a hundred
-// of them that decision moves with every edit anywhere in the function (it
-// cost fib 6% once). This spelling costs the same wherever it lands.
-template <std::size_t N>
-[[gnu::always_inline]] inline bool opEq(const std::string& s, const char (&lit)[N]) {
-    return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
-}
+// (opEq, the literal compare every hot function here uses, is in Interpreter.h)
 // The operators that compare their operands AS STRINGS.
 static bool isStringCmpOp(const std::string& op) {
     return opEq(op, "eq") || opEq(op, "ne") || opEq(op, "lt") || opEq(op, "gt") ||
@@ -2474,7 +2465,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
     switch (s->kind) {
         case NK::ExprStmt: {
             Expr* e = static_cast<ExprStmt*>(s)->e.get();
-            tctx_.curStmtExpr = e;   // the statement's own expression (see cooperative next/last/redo)
+            ExecContext& tc = tctx_;   // one thread_local read for the arm
+            tc.curStmtExpr = e;   // the statement's own expression (see cooperative next/last/redo)
             if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
             // sink context: an assignment's result is discarded, so don't copy it
             if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
@@ -2488,7 +2480,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto* rl = static_cast<RegexLit*>(e);
                 // (`rx/…/;` too: sunk, the Regex it makes is smartmatched the same way)
                 if (!rl->isM && rl->declKind.empty()) {
-                    Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
+                    Value topic; if (Value* p = tc.cur->find("$_")) topic = *p;
                     return regexMatch(rxSubject(topic), rl->pattern);
                 }
             }
@@ -2496,7 +2488,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto* ve = static_cast<VarExpr*>(e);
                 if (!ve->name.empty()) checkBareSubsetDecl(ve, ve->name[0]);
             }
-            const unsigned long long refusalsBefore = g_subscriptRefusals;
+            // (a thread_local: read only for the statement that can use it)
+            const unsigned long long refusalsBefore = e->kind == NK::Index ? g_subscriptRefusals : 0;
             Value r = eval(e);
             // A SUNK `start` (nobody will await it) hands a death to the
             // scheduler's uncaught_handler, when one is installed
@@ -2550,7 +2543,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto* es = static_cast<ExprStmt*>(s);
             if (es->yieldsContainer < 0) es->yieldsContainer = exprYieldsContainer(e) ? 1 : 0;
             bool contained = es->yieldsContainer == 1 ||
-                             ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
+                             ((e->kind == NK::Call || e->kind == NK::MethodCall) && tc.valContained);
             // …except that a subscript which REFUSED never reached a container:
             // `$str<k>` on a non-Associative is a Failure standing in for the
             // element slot, not the slot itself, so sinking it detonates the way
@@ -2566,7 +2559,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 contained = false;
             // Whatever this statement produced is now the most recent value a
             // caller could sink — record how it arrived for the frame above.
-            tctx_.valContained = contained;
+            tc.valContained = contained;
             // A sunk SEQUENCE STATEMENT whose generator is user code runs until
             // the generator says `last` (Rakudo iterates a sunk Seq, however long
             // that takes): `sub f(--> Empty) { 1, { ++$n; last } ... * }` does
@@ -6772,16 +6765,16 @@ struct DepthGuard {
         char probe;
         char* here = &probe;
 #endif
-        if (!t_stackTop) { t_stackTop = here; t_stackLimit = currentThreadStackSize(); }
+        if (!t_stack.top) { t_stack.top = here; t_stack.limit = currentThreadStackSize(); }
         // used stack grows downward from the recorded top
-        size_t used = (size_t)(t_stackTop - here);
+        size_t used = (size_t)(t_stack.top - here);
         // Stop with ~2 MiB to spare — but on a SMALL stack (a foreign thread,
         // or a native-compiled main before the linker flag existed) a fixed
         // reserve would fire immediately; scale it down to a quarter of the
         // stack so tiny threads still get useful depth before the throw.
         size_t reserve = size_t(2) << 20;
-        if (t_stackLimit < reserve * 4) reserve = t_stackLimit / 4;
-        if (used + reserve >= t_stackLimit || d > 100000) { // hard frame backstop too
+        if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
+        if (used + reserve >= t_stack.limit || d > 100000) { // hard frame backstop too
             --d; throw RakuError{Value::typeObj("X::Recursion"), "Too many levels of recursion"};
         }
     }
@@ -11669,7 +11662,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
             if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
-                Value* slot = padPtr(tv);
+                Env* const cur = tctx_.cur.get();   // one thread_local read for the slot and its frame
+                Value* slot = padPtrIn(tv, cur);
                 if (slot) {
                     // per-activation checks: a lane-eligible slot (layout
                     // verdict: untyped or native-typed — only uppercase types
@@ -11677,7 +11671,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // ceremony exists for. Native width is allowed: the wrap
                     // is applied below exactly as the full path does.
                     Env* pf = nullptr;
-                    for (Env* e2 = tctx_.cur.get(); e2; e2 = e2->parent.get())
+                    for (Env* e2 = cur; e2; e2 = e2->parent.get())
                         if (e2->layout) { pf = e2; break; }
                     // An Int past a machine word keeps its magnitude in the cold
                     // block, so `!slot->x_` sent EVERY bignum accumulator down the
@@ -19686,10 +19680,11 @@ Value Interpreter::evalBinary(Binary* b) {
             // a hashKind has its own handling below and must not come here.
             // Re-checked on EVERY evaluation, so a variable that changes type
             // mid-loop simply stops taking this path.
+            Env* const cur = tctx_.cur.get();   // once for both operands: nothing runs between
             auto scal = [&](Expr* e) -> const Value* {
                 auto* ve = static_cast<VarExpr*>(e);
-                Value* p = padPtr(ve);          // annotated: the slot, no hashing
-                if (!p) p = tctx_.cur->find(ve->name);
+                Value* p = padPtrIn(ve, cur);   // annotated: the slot, no hashing
+                if (!p) p = cur->find(ve->name);
                 return (p && p->hashKind.empty() &&
                         (p->t == VT::Int || p->t == VT::Num ||
                          p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
@@ -26036,7 +26031,7 @@ struct RatLitParts {
             return eval(&tmp);
         }
         case NK::NameTerm: {
-            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) {
+            if (opEq(static_cast<NameTerm*>(e)->name, "Empty") && !classes_.count("Empty")) {
                 // the Empty term: an empty Slip (a user `class Empty` shadows
                 // it). It is a SINGLETON — `Empty === Empty` is True, and `===`
                 // on a list is reference identity, so every mention has to hand
@@ -26046,7 +26041,7 @@ struct RatLitParts {
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
             // `GLOBALish` — the unit's view of GLOBAL, which the program's is
-            if (n == "GLOBALish" && !classes_.count(n) && !(tctx_.cur && tctx_.cur->find(n)))
+            if (opEq(n, "GLOBALish") && !classes_.count(n) && !(tctx_.cur && tctx_.cur->find(n)))
                 return Value::typeObj("GLOBAL");
             // `$?PACKAGE` inside a lexical `my package` names a package no global
             // lookup finds: it is still that package, as a type (scope.t)
@@ -26083,7 +26078,7 @@ struct RatLitParts {
                 return eval(&inner);
             }
             // a bare `CORE-SETTING-REV`: the language revision's letter
-            if (n == "CORE-SETTING-REV" && !classes_.count(n))
+            if (opEq(n, "CORE-SETTING-REV") && !classes_.count(n))
                 return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
             // `MY::A1` / `LEXICAL::A1` — a lexical TYPE through the pseudo-package:
             // MY:: sees the current scope only, LEXICAL:: the whole chain
@@ -26253,30 +26248,34 @@ struct RatLitParts {
                 ty.i = nt->defConstraint;
                 return ty;
             }
-            if (n == "next" || n == "last" || n == "redo") {
+            if (opEq(n, "next") || opEq(n, "last") || opEq(n, "redo")) {
                 if (tctx_.frameTop == tctx_.curLoopFrame) {
-                    tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative
+                    tctx_.loopCtl = opEq(n, "next") ? 1 : opEq(n, "last") ? 2 : 3; // cooperative
                     return Value::any();
                 }
-                if (n == "next") throw NextEx{};
-                if (n == "last") throw LastEx{};
+                if (opEq(n, "next")) throw NextEx{};
+                if (opEq(n, "last")) throw LastEx{};
                 throw RedoEx{};
             }
-            if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
-            if (n == "succeed") { // exit the enclosing given
+            if (opEq(n, "proceed")) throw ProceedEx{};   // leave when, keep matching
+            if (opEq(n, "succeed")) { // exit the enclosing given
                 if (tctx_.frameTop == tctx_.curGivenFrame) {
                     tctx_.givenCtl = 1; tctx_.givenV = Value::any(); return Value::any(); // cooperative
                 }
                 throw BreakGivenEx{};
             }
-            if (n == "Nil") return Value::nil();
-            if (n == "Inf") return Value::number(INFINITY);
-            if (n == "NaN") return Value::number(NAN);
+            if (opEq(n, "Nil")) return Value::nil();
+            if (opEq(n, "Inf")) return Value::number(INFINITY);
+            if (opEq(n, "NaN")) return Value::number(NAN);
             // CORE's enum members — True/False, Order, PromiseStatus, Signal,
             // Endian, SeekType, ProtocolType — from the one list rtNameTerm and
             // the MAIN command-line reader also read.
             // (a lexical of the same name — `constant True = 42` — wins)
-            { Value c; if (coreEnumValue(n, c)) { if (Value* p = tctx_.cur->find(n)) return *p; return c; } }
+            if (nt->coreEnum != 0) {   // (decided once per node: a question of the name alone)
+                Value c;
+                if (coreEnumValue(n, c)) { nt->coreEnum = 1; if (Value* p = tctx_.cur->find(n)) return *p; return c; }
+                nt->coreEnum = 0;
+            }
             static const std::set<std::string> types = {
                 "Int", "Str", "Num", "Bool", "Any", "Mu", "Cool", "Numeric", "Real",
                 "Array", "Hash", "List", "Rat", "Complex", "Nil", "Pair", "Range",
@@ -26286,7 +26285,10 @@ struct RatLitParts {
                 "Version", "Blob", "Buf", "Compiler", "Seq", "IO::Path", "Iterable",
                 "Uni", "NFC", "NFD", "NFKC", "NFKD",
             };
-            if (types.count(n)) return Value::typeObj(n);
+            if (nt->coreType != 0) {
+                if (types.count(n)) { nt->coreType = 1; return Value::typeObj(n); }
+                nt->coreType = 0;
+            }
             // A sigilless term BOUND to a container slot (`my \p = @a[1]`) holds
             // that slot's Proxy. Reading it as an rvalue must FETCH, exactly as
             // the `$`-variable paths do: handing the Proxy itself back let it be
@@ -26441,7 +26443,7 @@ struct RatLitParts {
                 // are simply undeclared, so a 6.d program must not be able to
                 // reach the type — with a Format literal gated in the parser,
                 // Format.new was the remaining way in.
-                if ((n == "Format" || n == "Formatter" || n == "Formatter::Syntax") && !sixE())
+                if ((opEq(n, "Format") || opEq(n, "Formatter") || opEq(n, "Formatter::Syntax")) && !sixE())
                     throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                                     "Undeclared name '" + n + "' (it arrived with 6.e)"};
                 if (!known) {
@@ -26460,7 +26462,7 @@ struct RatLitParts {
                     // the compiler), so nothing ever declares the PACKAGE —
                     // but the name is still a term: NativeLibs re-exports it
                     // ('NativeCall' => NativeCall) and suites probe it.
-                    if (n == "NativeCall") return Value::typeObj("NativeCall");
+                    if (opEq(n, "NativeCall")) return Value::typeObj("NativeCall");
                     // The lenient stub exists for FORWARD REFERENCES: a name the
                     // unit declares further down. A name this unit never declares
                     // is refused — Rakudo refuses it at compile time, and the
@@ -26813,8 +26815,10 @@ Value Interpreter::eval(Expr* e) {
                 pr = !ve->viaPseudoPkg && !opEq(n, "CORE-SETTING-REV") && n.compare(0, 7, "&CORE::") != 0 ? 1 : 0;
                 ve->plainRead = pr;
             }
-            if (pr && !ve->declare && !tctx_.bindRawTails) {
-                if (Value* p = padPtr(ve)) {
+            // (one thread_local read for the three uses below, and only for a plain read)
+            if (pr && !ve->declare)
+            if (ExecContext& tc = tctx_; !tc.bindRawTails) {
+                if (Value* p = padPtrIn(ve, tc.cur.get())) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                         ParStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
                         Value out = *p;
@@ -26824,7 +26828,7 @@ Value Interpreter::eval(Expr* e) {
                 }
                 else if (ve->name.size() > 1 &&
                          (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
-                    if (Value* p = tctx_.cur->find(ve->name)) {
+                    if (Value* p = tc.cur->find(ve->name)) {
                         if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                             ParStripe rs(*this, p);
                             Value out = *p;

@@ -132,8 +132,14 @@ times, `exec` 96.
 - [ ] Take `ExecContext& tc = tctx_;` at the top of the hot functions —
   `runLoopBody`, `evalAssign`, `evalAssignInner`, `exec`, `tryCondBool`,
   `evalBinary`'s operand lambda — and use it throughout. *Done:*
-  `execBlock` (already), `runLoopBody`, the new `execPlainBlock`. *Left:*
-  `evalAssign`, `exec`, `eval`, which are the rest of loopsum's calls.
+  `execBlock` (already), `runLoopBody`, `execPlainBlock`, `callPlainSub`,
+  exec's expression-statement arm, eval's inline variable read, the
+  assignment lane and evalBinary's fast shape (`padPtrIn` takes the scope
+  the caller already read). The recursion guard's two thread_locals are one
+  `StackBounds t_stack`; exec reads the subscript-refusal counter only for
+  a subscript statement. `redispatchStack_` is still a guarded
+  thread_local read on every call: it has 65 uses and an element type
+  nested in `Interpreter`, so it did not move with the call registers.
 - [x] Prove that a function never outlives a thread switch with `tc`: a
   coroutine resumes only on the thread that started it (`Coro::ownerThread`,
   checked before every resume in InterpreterOperators.cpp), so the address
@@ -164,7 +170,15 @@ the one frame.
   Int op Int itself and hands the rest to `applyArithGeneral`.
 - [ ] The rest of the list: `evalAssignInner`, `evalBinary`, `evalIndex`,
   `evalUnary`, `lvalue`, `evalCall`, and `callCallableRaw`/`bindParams` for
-  the calls that do not take the lean path.
+  the calls that do not take the lean path. *Measured:* these have no
+  dominant arm. Clang's frame layout (`-Rpass-analysis=stack-frame-layout`)
+  shows the largest single object at 456–608 bytes against 4.3–9 KB, dozens
+  of 128-byte Value temporaries across many rare arms. Moving one block out
+  of `evalBinary` (its X/Z metaops, then its DateTime arm) changed its frame
+  by 0 and 48 bytes; a small front answering its fast shape, the general
+  path behind it, made `fib` 4–5% SLOWER (two calls where there was one).
+  What is left needs each function split into a hot half and a rare half,
+  not a block at a time.
 - [x] `execBlock` first: a block with none of the entry or exit work
   (`Block::entryWork` is 0 — no phaser, CATCH, named sub, hoisted `my`) runs
   on `execPlainBlock`, whose frame holds its statement loop and nothing else;

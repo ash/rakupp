@@ -5282,7 +5282,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // (BuildFailureEx, from the hook runner). The catch is armed once per
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
     // and every other method pays one short string compare, no TLS access.
-    if (m.size() >= 3 && m.size() <= 5 && (m == "new" || m == "bless")) {
+    if (m.size() >= 3 && m.size() <= 5 && (opEq(m, "new") || opEq(m, "bless"))) {
         ExecContext& t = tctx_;
         if (!t.ctorCatchSkip) {
             t.ctorCatchSkip = true;
@@ -5297,17 +5297,17 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // TYPE it is: `day.gist` is (day), `.raku` day, and `.Str` the empty string
     // with the uninitialized warning any type object gives (Rakudo)
     if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty() &&
-        (m == "gist" || m == "raku" || m == "perl" || m == "Str") && args.empty() && isEnumTypeObject(inv)) {
+        (opEq(m, "gist") || opEq(m, "raku") || opEq(m, "perl") || opEq(m, "Str")) && args.empty() && isEnumTypeObject(inv)) {
         const std::string tn = inv.enumType.str();
-        if (m == "gist") return Value::str("(" + tn + ")");
-        if (m == "raku" || m == "perl") return Value::str(tn);
+        if (opEq(m, "gist")) return Value::str("(" + tn + ")");
+        if (opEq(m, "raku") || opEq(m, "perl")) return Value::str(tn);
         warnUninit("Use of uninitialized value of type " + tn + " in string context.\n"
                    "Methods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.");
         return Value::str("");
     }
     // `$cool.printf` / `.sprintf` on a user class that `is Cool`: the object's
     // OWN .Str is the format, as Cool's methods are written (`self.Str`)
-    if ((m == "printf" || m == "sprintf") && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+    if ((opEq(m, "printf") || opEq(m, "sprintf")) && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
         !inv.obj()->cls->findMethodForCall(m)) {
         bool cool = false;
         for (ClassInfo* c = inv.obj()->cls.get(); c && !cool; c = c->parent.get()) cool = c->nativeParent == "Cool";
@@ -5330,7 +5330,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     }
     // `.^roles` of a CORE numeric or string type: the roles its class does
     // (`42.2.^roles.grep(Rational)`, Rakudo's lists, most specific first)
-    if (m == "^roles" && args.empty()) {
+    if (opEq(m, "^roles") && args.empty()) {
         std::string tn = inv.t == VT::Type ? inv.s.str() : inv.typeName();
         const std::vector<const char*>* rl = nullptr;
         static const std::vector<const char*> kRat{"Rational", "Real", "Numeric"};
@@ -5349,7 +5349,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     }
     // `.squish` of an ENDLESS source stays lazy: it is a grep that remembers
     // the previous key (`squish 1..Inf` is lazy, as Rakudo's is)
-    if (m == "squish" &&
+    if (opEq(m, "squish") &&
         ((inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL) ||
          (inv.t == VT::Array && inv.arr() && inv.ext() &&
           std::static_pointer_cast<LazySeqState>(inv.ext())->infinite))) {
@@ -5391,13 +5391,13 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             return v.t == VT::Int || v.t == VT::Whatever || v.t == VT::Code || v.t == VT::Bool ||
                    (v.t == VT::Type && (v.s == "Int" || v.s == "Whatever"));
         };
-        if (m == "splice" && inv.t == VT::Array && !inv.isList && npos >= 1) {
+        if (opEq(m, "splice") && inv.t == VT::Array && !inv.isList && npos >= 1) {
             ValueList pa; for (auto& x : args) if (!(x.t == VT::Pair && x.namedArg)) pa.push_back(x);
             if (!intish(pa[0]) || (pa.size() >= 2 && !intish(pa[1]))) noMatch(inv.typeName() + ", …");
         }
-        else if (m == "protect" && inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async"))
+        else if (opEq(m, "protect") && inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async"))
             noMatch(inv.s.str() + ", …");
-        else if (m == "new" && inv.t == VT::Type) {
+        else if (opEq(m, "new") && inv.t == VT::Type) {
             const std::string tn = inv.s.str();
             if (tn == "Proc::Async" && npos == 0 && !classes_.count(tn)) noMatch("Proc::Async");
             else if (tn == "Junction" && !classes_.count(tn)) {
@@ -5412,22 +5412,22 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                       !(nnamed == 2)))) noMatch("Pair");
             else if (tn == "Int" && !classes_.count(tn) && npos > 1) noMatch("Int");
         }
-        else if ((m == "subst" || m == "match") && inv.t == VT::Str && inv.hashKind.empty()) {
-            if (npos == 0 || (m == "match" && (args[0].t == VT::Nil || args[0].t == VT::Any))) noMatch("Str, …");
+        else if ((opEq(m, "subst") || opEq(m, "match")) && inv.t == VT::Str && inv.hashKind.empty()) {
+            if (npos == 0 || (opEq(m, "match") && (args[0].t == VT::Nil || args[0].t == VT::Any))) noMatch("Str, …");
         }
-        else if ((m == "words" || m == "lines") && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) && npos > 1)
+        else if ((opEq(m, "words") || opEq(m, "lines")) && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) && npos > 1)
             noMatch(inv.typeName() + ", …");
-        else if (m == "printf" && inv.t == VT::Hash && inv.hash() && inv.hash()->count("std") && npos == 0)
+        else if (opEq(m, "printf") && inv.t == VT::Hash && inv.hash() && inv.hash()->count("std") && npos == 0)
             noMatch("IO::Handle");
     }
     // an ENUM type's `.^language-revision` — the revision it was declared under
-    if (inv.t == VT::Array && !inv.enumType.empty() && m == "language-revision" && args.empty()) {
+    if (inv.t == VT::Array && !inv.enumType.empty() && opEq(m, "language-revision") && args.empty()) {
         auto it = enumLangRev_.find(inv.enumType);
         int r = it != enumLangRev_.end() ? it->second : langRev_;
         return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
     }
     // `X::NYI.die` — throwing wants an exception INSTANCE, not its type object
-    if (inv.t == VT::Type && (m == "fail" || m == "die" || m == "throw" || m == "rethrow" || m == "resume") &&
+    if (inv.t == VT::Type && (opEq(m, "fail") || opEq(m, "die") || opEq(m, "throw") || opEq(m, "rethrow") || opEq(m, "resume")) &&
         (inv.s == "Exception" || inv.s.rfind("X::", 0) == 0))
         throwTypedV("X::Parameter::InvalidConcreteness",
             {{"expected", Value::typeObj(std::string(inv.s.c_str()))}, {"got", inv},
@@ -5436,7 +5436,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             "Invocant of method '" + m + "' must be an object instance of type '" + std::string(inv.s.c_str()) +
             "', not a type object of type '" + std::string(inv.s.c_str()) + "'.  Did you forget a '.new'?");
     // `Mu.new(1)` — the default constructor takes named arguments only
-    if (m == "new" && inv.t == VT::Type && inv.s == "Mu")
+    if (opEq(m, "new") && inv.t == VT::Type && inv.s == "Mu")
         for (auto& a : args)
             if (!(a.t == VT::Pair && a.namedArg))
                 throwTypedV("X::Constructor::Positional", {{"type", Value::typeObj("Mu")}},
@@ -5469,7 +5469,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         // whole, as its gist (`$*OUT.say: (1, 2).all` is one line, `all(1, 2)`),
         // not once per eigenstate (roast S16-io/print.t)
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle" &&
-            (m == "say" || m == "print" || m == "note" || m == "put")) break;
+            (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
         Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
         for (auto& e : *args[ai].arr()) {
@@ -5481,7 +5481,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `.sort(:k)` is the one member of this family that answers a LIST — it
     // reports positions, not a re-ordered sequence (List-Array sheet LA-35).
     bool sortK = false;
-    if (!args.empty() && m == "sort")
+    if (!args.empty() && opEq(m, "sort"))
         for (auto& av : args)
             if (av.t == VT::Pair && av.namedArg && av.s == "k")
                 sortK = !av.pairVal() || av.pairVal()->truthy();
@@ -5490,15 +5490,15 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // Rakudo 2026.08 — map/grep/sort/list/unique answer Empty, while
     // reverse/flat/values/kv/Seq answer a plain empty Seq and .List answers ().
     if (inv.t == VT::Array && inv.arr() && inv.arr()->empty() && inv.s == "Slip" &&
-        (m == "map" || m == "grep" || m == "sort" || m == "list" || m == "unique"))
+        (opEq(m, "map") || opEq(m, "grep") || opEq(m, "sort") || opEq(m, "list") || opEq(m, "unique")))
         return emptySlipSingleton();
     Value r = methodCallInner(inv, m, std::move(args), rwArgs, skipOwn);
     if (r.t == VT::Array && r.isList && r.s.empty() && !sortK &&
-        (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
-         m == "antipairs" || m == "invert" ||
-         m == "reverse" || m == "rotate" || m == "sort" || m == "unique" || m == "squish" ||
-         m == "head" || m == "tail" || m == "skip" || m == "rotor" || m == "batch" ||
-         m == "toggle" || m == "collate" || m == "repeated") &&
+        (opEq(m, "kv") || opEq(m, "keys") || opEq(m, "values") || opEq(m, "pairs") ||
+         opEq(m, "antipairs") || opEq(m, "invert") ||
+         opEq(m, "reverse") || opEq(m, "rotate") || opEq(m, "sort") || opEq(m, "unique") || opEq(m, "squish") ||
+         opEq(m, "head") || opEq(m, "tail") || opEq(m, "skip") || opEq(m, "rotor") || opEq(m, "batch") ||
+         opEq(m, "toggle") || opEq(m, "collate") || opEq(m, "repeated")) &&
         !kvFamilyAnswersList(inv, m))
         r.s = "Seq";
     // …and when the answer is a List, say so even if an inner delegation

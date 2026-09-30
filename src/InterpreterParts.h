@@ -1026,16 +1026,18 @@ bool typeMatchesArg(const Value& arg, const std::string& type);
 // block's own inner calls run as usual.
 RAKUPP_CONSTINIT extern thread_local bool t_fatalTry;
 
-// Per-thread stack accounting for the recursion guard. `t_stackTop` is a byte
+// Per-thread stack accounting for the recursion guard. `t_stack.top` is a byte
 // address near the top of this thread's stack (set once, lazily, from the first
-// guarded frame); `t_stackLimit` is that thread's usable stack size. The main
+// guarded frame); `t_stack.limit` is that thread's usable stack size. The main
 // interpreter runs on a 1 GiB stack (Runtime.cpp) and workers on 256 MiB
 // (BigStackThread) — a headroom check fits both, where a fixed frame count
 // cannot. We stop with X::Recursion while ~2 MiB of stack remains, so the throw
 // unwinds cleanly instead of the process taking SIGSEGV/SIGBUS (the latter
 // wedging kill-proof under Rosetta).
-RAKUPP_CONSTINIT extern thread_local char* t_stackTop;
-RAKUPP_CONSTINIT extern thread_local size_t t_stackLimit;
+// Both in one thread_local, so a guarded frame pays one thread-local lookup,
+// not two.
+struct StackBounds { char* top = nullptr; size_t limit = 0; };
+RAKUPP_CONSTINIT extern thread_local StackBounds t_stack;
 
 
 // Does this expression contain a literal `*` (Whatever) term — walking only

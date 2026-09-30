@@ -39,6 +39,18 @@
 
 namespace rakupp {
 
+// A string against a literal spelling: the length first, then a memcmp of a
+// length the compiler knows. `s == "lit"` means the same, but its cost depends
+// on whether Clang inlines std::operator== at that site; outlined, every
+// compare pays a strlen and a call, and in a function holding a hundred of
+// them that decision moves with every edit anywhere in the function (it cost
+// fib 6% once, and method dispatch 6% of the objects benchmark). This
+// spelling costs the same wherever it lands.
+template <std::size_t N>
+[[gnu::always_inline]] inline bool opEq(const std::string& s, const char (&lit)[N]) {
+    return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+}
+
 // From Regex.h, which this header does not need in full: the subrule resolver
 // a compiled pattern calls for `<NAME>`, and the match-time callbacks into the
 // interpreter. (An identical alias in both headers is one type, not two.)
@@ -2107,10 +2119,13 @@ public:
     // live, or running under a frame chain the annotation does not belong to
     // — the derive-and-compare rule from PADS-PLAN.md, shared by every fast
     // path that wants a slot).
-    Value* padPtr(const VarExpr* ve) {
+    Value* padPtr(const VarExpr* ve) { return padPtrIn(ve, tctx_.cur.get()); }
+    // …from a scope the caller already holds (one thread_local read for
+    // several lookups)
+    static Value* padPtrIn(const VarExpr* ve, Env* cur) {
         int ps = ve->padSlot;
         if (ps < 0) return nullptr;
-        for (Env* pf = tctx_.cur.get(); pf; pf = pf->parent.get()) {
+        for (Env* pf = cur; pf; pf = pf->parent.get()) {
             if (!pf->layout) continue;
             if ((const void*)pf->layout.get() == ve->padOwner &&
                 ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1))

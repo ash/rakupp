@@ -1194,7 +1194,7 @@ static GatherTls& gatherTls() {
         &Interpreter::declaringType_,
         &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
         &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,
-        &t_stackTop, &t_stackLimit, &t_poll.gatherDeadline, &t_poll.gatherTickCtr};
+        &t_stack.top, &t_stack.limit, &t_poll.gatherDeadline, &t_poll.gatherTickCtr};
     t_gatherTls = p;
     return *p;
 }
@@ -1269,8 +1269,8 @@ void GatherCoro::entry(void* p) {
     ExecContext& t = Interpreter::tctx_;
     // the recursion guard measures THIS stack from here on (on Windows a fresh
     // fiber's top is not known yet, and the guard notes it at its first frame)
-    t_stackTop = g->co.stackTop();
-    t_stackLimit = g->co.stackUsable();
+    t_stack.top = g->co.stackTop();
+    t_stack.limit = g->co.stackUsable();
     t.curGather = g;
     t.cur = g->env;
     t.pkgPrefix = g->pkgPrefix;

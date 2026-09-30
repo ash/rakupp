@@ -1394,16 +1394,15 @@ void Interpreter::throwIfAmbiguous(const Callable& c, const Value* best, const V
 // block's own inner calls run as usual.
 thread_local bool t_fatalTry = false;
 
-// Per-thread stack accounting for the recursion guard. `t_stackTop` is a byte
+// Per-thread stack accounting for the recursion guard. `t_stack.top` is a byte
 // address near the top of this thread's stack (set once, lazily, from the first
-// guarded frame); `t_stackLimit` is that thread's usable stack size. The main
+// guarded frame); `t_stack.limit` is that thread's usable stack size. The main
 // interpreter runs on a 1 GiB stack (Runtime.cpp) and workers on 256 MiB
 // (BigStackThread) — a headroom check fits both, where a fixed frame count
 // cannot. We stop with X::Recursion while ~2 MiB of stack remains, so the throw
 // unwinds cleanly instead of the process taking SIGSEGV/SIGBUS (the latter
 // wedging kill-proof under Rosetta).
-thread_local char* t_stackTop = nullptr;
-thread_local size_t t_stackLimit = 0;
+thread_local StackBounds t_stack;
 // Where this frame sits on the stack. AddressSanitizer's use-after-return mode
 // moves locals onto heap-allocated "fake" frames, so a local's address says
 // nothing about stack depth there; the frame address still does.
