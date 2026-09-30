@@ -2051,6 +2051,19 @@ section('--slim: levels, features, directives');
     }
 }
 
+section('the source size budget (tools/source-helpers/budget.raku)');
+# A full build takes as long as its slowest file. The budget fails when a source
+# file, a function or a widely included header grows past its recorded ceiling,
+# which is how a 59,000-line Interpreter.cpp would have been noticed at 20,000.
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('tools/source-helpers/budget.raku').Str,
+                "--root={$ROOT}", :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    ok($p.exitcode == 0, 'no source file, function or header is over its size ceiling');
+    diag($_) for $out.lines.grep(*.contains('over:'));
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";

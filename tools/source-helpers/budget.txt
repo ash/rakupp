@@ -1,0 +1,32 @@
+# Ceilings for budget.raku: lines per source file and per function, and lines
+# per header after `c++ -E`. Written by `budget.raku --record`, which keeps this
+# comment and rewrites the rest. A named ceiling is the size when recorded plus
+# headroom; a commit that raises one says why. See budget.raku for the rules.
+
+default file 10000
+default function 1500
+
+file src/InterpreterCore.cpp 29703
+file src/MethodCallPart2.cpp 10529
+file src/Parser.cpp 17244
+
+function Interpreter::eval 2529
+function Interpreter::evalAssignInner 3490
+function Interpreter::evalBinary 1665
+function Interpreter::evalIndex 2029
+function Interpreter::exec 1832
+function Interpreter::execDeclStmt 3548
+function Interpreter::lvalue 1595
+function Interpreter::methodCallInner 3502
+function Interpreter::methodCallPart1c 1728
+function Interpreter::methodCallPart2 9159
+function Interpreter::methodCallPart3 6255
+function Interpreter::methodCallTail 4894
+function Parser::parsePrimary 3265
+function applyArith 2502
+function main 1688
+
+compiler Apple clang version 21.0.0 (clang-2100.3.34.2)
+preprocessed src/BuiltinsParts.h 90762
+preprocessed src/Interpreter.h 82470
+preprocessed src/InterpreterParts.h 98696

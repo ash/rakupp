@@ -48,7 +48,9 @@ every access — measured, that cost 14–35% on the kernels. The other six file
 (`Interpreter`, `…Modules`, `…Binding`, `…Calls`, `…Regex`, `…Operators`) hold
 the rest in source order, and `InterpreterParts.h` declares what they share.
 `tools/source-helpers/` holds the scripts that made the cut, and the plan they
-followed.
+followed; `budget.raku` there fails `t/run.raku` when a source file, a function
+or a widely included header grows past its recorded ceiling, so the next
+59,000-line file is noticed long before it is one.
 
 **The method dispatcher is split across six files for the same reason.** It used
 to be a single 9,138-line function, `methodCallInner`, and that stopped being
