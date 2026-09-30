@@ -33,6 +33,7 @@ say something worth quoting.
 | 31 August 2026 | [Raku Weekly 2026.35](https://rakuweekly.blog/2026/08/31/2026-35-infinity-revisited/) | Elizabeth Mattijsen | the early-adopters post, the benchmark board, perlancar's remark |
 | 14 September 2026 | [Raku Weekly 2026.36/7](https://rakuweekly.blog/2026/09/14/2026-36-7-multiplicity/) | Elizabeth Mattijsen | CSV::Native |
 | 21 September 2026 | [Raku Weekly 2026.38](https://rakuweekly.blog/2026/09/21/2026-38-italiano-per-favore/) | Elizabeth Mattijsen | the module-manager post, and the three new L10N localizations |
+| 29 September 2026 | [Raku Weekly 2026.39](https://rakuweekly.blog/2026/09/29/2026-39-mainstreamed/) | Elizabeth Mattijsen | the v5.0.0 post: 100.00% of Roast |
 
 ## Raku Weekly News
 
@@ -83,6 +84,13 @@ After that it has been steady, roughly a mention per release or per post:
   covering v4.0.0. The three new localizations — `L10N::UK`, `L10N::LV` and
   `L10N::RU` — are in the new-module list, and got a sentence of their own in
   the opening about Raku programs written in those natural languages.
+- [**2026.39 Mainstreamed**](https://rakuweekly.blog/2026/09/29/2026-39-mainstreamed/)
+  (29 September 2026) — an *Andrew's Corner* on the
+  [v5.0.0 post](https://andrewshitov.com/2026/09/29/raku-v5-0-0-reaches-100-00-of-roast/):
+  Raku++ at 100.00% of Roast, and so able to call itself an implementation
+  of the Raku Programming Language. The issue's closing words put it next to
+  RakuAST becoming Rakudo's default as one of the week's two headlines —
+  Raku++ reaching parity with Rakudo spectest-wise.
 
 ## perlancar, August 2026
 
