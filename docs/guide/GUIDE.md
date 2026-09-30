@@ -44,22 +44,22 @@ The long-term goal, in order:
 ## Status
 
 Against the 1,424 files of Roast's `spectest.data` (Rakudo's own run list, at
-Roast `1f521d798`), as of v5.0.0:
+Roast `1f749e338`), as of v5.1.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **1,423** | **99.93%** |
-| Partially passing | 1 | 0.07% |
+| **Fully passing** | **1,424** | **100.00%** |
+| Partially passing | 0 | 0% |
 | No TAP output (parse error / unimplemented) | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-- **Tests — 100.00% pass (218,421 / 218,422)** with the tests Roast marks skip
-  or todo left out. Counting those as passes, as TAP does, it is 220,054 of
+- **Tests — 100.00% pass (218,420 / 218,420)** with the tests Roast marks skip
+  or todo left out. Counting those as passes, as TAP does, it is 220,055 of
   220,055, and that figure includes the tests of any file that aborts before
   running (read from its source), so a parse error cannot hide them.
-- **Files — 1,423 / 1,424 fully pass.** The one left is `S16-io/eof.t`, whose
-  TTY test Roast marks todo on macOS 14–26 by release name; the machine these
-  figures come from runs macOS 27.
+- **Files — 1,424 / 1,424 fully pass.** v5.0.0's one partial file,
+  `S16-io/eof.t`, passes since Roast `1f749e338` marks its TTY test todo on
+  every macOS rather than on macOS 14–26 by name.
 
 Run the harness (below) for live numbers as features land. See
 [ROADMAP.md](../status/ROADMAP.md) for what's done and what's next,

@@ -53,6 +53,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-09-17 | **v4.0.1** | `::T:U` constrains, it does not capture — a fix-only release, for YAMLish |
 | 2026-09-29 | **v5.0.0** | **100.00% of Roast** — 218,421 of 218,422 tests pass without skip/todo, and 1,423 of the 1,424 files of `spectest.data` |
 | 2026-09-29 | **v5.0.1** | YAMLish loads, and parses in linear time — a fix-only release |
+| 2026-09-30 | **v5.1.0** | **Every file of Roast passes** (1,424 / 1,424, on Roast `1f749e338`) — the interpreter up to 29% faster on sixteen of eighteen kernels, native `int`/`num` semantics, `--cnp` kernels that call and index, `--hints` |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -246,6 +247,13 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   extracted from Rakudo's behaviour, eight of them implemented. The test left is the
   TTY case in `S16-io/eof.t`, which Roast marks todo on macOS 14–26 by release
   name; the machine of record runs macOS 27.
+- **Sep 30 — v5.1.0.** Roast `1f749e338` marks that TTY test todo on every
+  macOS, and on it all **1,424 of 1,424** files pass (218,420 / 218,420 without
+  skip/todo). On v5.0.0's Roast the figures are v5.0.0's, the same file list.
+  The release is otherwise the first speed work toward v6 — per-node work taken
+  off the tree-walker's hot path, native `int`/`num` semantics in every tier,
+  `--cnp` kernels that call routines and methods and index arrays and hashes —
+  and a build that compiles in 23 s instead of 61.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

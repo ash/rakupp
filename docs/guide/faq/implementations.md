@@ -187,11 +187,11 @@ same harness on the same machine:
 
 | | Roast measured | files fully passing | tests |
 |---|---|---:|---:|
-| **Raku++** 5.0.0 | `1f521d798`, the 1,424 files `spectest.data` lists | **1,423** | 218,421 / 218,422 without skip/todo |
+| **Raku++** 5.1.0 | `1f521d798`, the 1,424 files `spectest.data` lists | **1,423** | 218,421 / 218,422 without skip/todo |
 | **Rakudo** 2026.08 | the same | 1,414 | 218,933 / 219,096 without skip/todo |
 | **mutsu** 0.23.0 | `b2cbe8a42`, all 1,464 files, its own fudging (2026-09-21) | 1,428 | 219,526 / 220,916 declared |
 
-The first two rows are one bar. The mutsu row is not — an earlier Roast, the
+The first two rows are one bar: Roast `1f521d798`, whose todo for the TTY test in `S16-io/eof.t` names macOS releases up to 26, which this macOS 27 machine is not. Roast `1f749e338` marks it todo on every macOS, and there Raku++ 5.1.0 passes all 1,424 files. The mutsu row is not — an earlier Roast, the
 whole checkout rather than `spectest.data`, mutsu's own fudging and a 60-second
 ceiling — so read it as all three being near the end of the suite, not as a
 ranking. Past Roast, the difference is the ecosystem: Rakudo passes the test

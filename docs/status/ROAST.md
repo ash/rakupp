@@ -10,30 +10,44 @@ two ever disagree.
 
 ## Current standing
 
-**Headline: 100.00% of Roast's tests pass** — 218,421 of 218,422 with the tests Roast marks skip or todo left out, and all declared tests (220,054 / 220,055) with those counted as passes, as TAP counts them.
+**Headline: 100.00% of Roast's tests pass** — 218,420 of 218,420 with the tests Roast marks skip or todo left out, and all declared tests (220,055 / 220,055) with those counted as passes, as TAP counts them. **Every one of the 1,424 files passes.**
 
-Measured 2026-09-28 on the v5.0.0 release build, against Roast `1f521d798`
-(2026-09-20) and the 1,424 files its `spectest.data` lists: three runs on a
-quiet machine, identical file lists. On a loaded one, `S17-channel/stress.t` —
-marked `stress slow` in `spectest.data`, 7–12 s alone against the 10-second
-ceiling — can time out with its tests passing.
+Measured 2026-09-30 on the v5.1.0 release build, against Roast `1f749e338`
+(2026-09-29) and the 1,424 files its `spectest.data` lists: three runs, two of
+them 1,424 / 1,424. The third lost `S17-promise/nonblocking-await.t` to a
+crash at test 6 (see [the note below](#the-one-file-that-flaps)). On a loaded
+machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
+s alone against the 10-second ceiling — can also time out with its tests
+passing.
 
 Full suite — **1,424 files** (Roast's `spectest.data`):
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **1,423** | **99.93%** |
-| Partially passing | 1 | 0.07% |
+| **Fully passing** | **1,424** | **100.00%** |
+| Partially passing | 0 | 0% |
 | No TAP output | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-**The one test that fails** is test 3 of `S16-io/eof.t`, `.eof on TTY STDIN
-works right`. It runs the child under `script(1)` to give it a terminal, and
-macOS `script` breaks it; Roast therefore marks it todo on macOS, but by release
-*name* — `$*DISTRO.desc eq 'Sonoma' | 'Sequoia' | 'Tahoe 26'`. The machine of
-record runs macOS 27, which that list does not name, so the todo does not apply
-and the test counts as a failure. Rakudo reports the same `<unknown>` release
-name on this machine.
+**What changed since v5.0.0 is Roast, not the engine.** v5.0.0's one failing
+test was test 3 of `S16-io/eof.t`, `.eof on TTY STDIN works right`: it runs the
+child under `script(1)`, macOS `script` breaks it, and Roast marked it todo on
+macOS by release *name*, a list that did not include macOS 27. Roast
+`1f749e338` ("Fudge tests for MacOS generally") marks it todo on every macOS,
+and gives `S32-io/out-buffering.t` a todo on macOS as well, which is why the
+skip/todo-free count is one test smaller than v5.0.0's. Against v5.0.0's Roast,
+`1f521d798`, v5.1.0 gives v5.0.0's figures exactly — 1,423 / 1,424 files,
+218,421 / 218,422 — with the same file list, in three runs of three.
+
+### The one file that flaps
+
+`S17-promise/nonblocking-await.t` crashes with SIGSEGV now and then, part-way
+through its "Deep Promise tree" subtest: once in three full runs here, and once
+in 40 runs of the file alone. It is not new: 150 runs each, interleaved, gave 3
+crashes on v5.1.0 and 2 on the v5.0.1 release binary. Every run that finishes
+passes all 28 tests. The
+cause is not yet found; `t/race/evalcall.raku` reproduces a crash of the same
+kind (6 in 1,000 runs) in a smaller program.
 
 ### How a file is classified
 
@@ -69,7 +83,7 @@ and todo left out, from the by-synopsis table the harness prints.
 | S13 | Overloading | 5 / 5 | 81 / 81 | 76 / 76 |
 | S14 | Roles | 24 / 24 | 413 / 413 | 407 / 407 |
 | S15 | Unicode / strings / NFG | 81 / 81 | 91,807 / 91,807 | 91,738 / 91,738 |
-| S16 | I/O | 36 / 37 | 765 / 766 | 747 / 748 |
+| S16 | I/O | 37 / 37 | 766 / 766 | 747 / 747 |
 | S17 | Concurrency (supply/promise/async) | 95 / 95 | 1,567 / 1,567 | 1,538 / 1,538 |
 | S19 | Command-line | 7 / 7 | 24 / 24 | 18 / 18 |
 | S22 | Package format | 1 / 1 | 19 / 19 | 19 / 19 |
@@ -77,13 +91,13 @@ and todo left out, from the by-synopsis table the harness prints.
 | S26 | Documentation (POD) | 27 / 27 | 832 / 832 | 771 / 771 |
 | S28 | Special variables | 3 / 3 | 8 / 8 | 8 / 8 |
 | S29 | Builtins & context | 14 / 14 | 465 / 465 | 462 / 462 |
-| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,455 / 46,455 | 46,293 / 46,293 |
+| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,455 / 46,455 | 46,292 / 46,292 |
 | integration | Cross-feature programs | 119 / 119 | 1,401 / 1,401 | 1,382 / 1,382 |
 | 6.c | v6.c language snapshot | 18 / 18 | 1,041 / 1,041 | 964 / 964 |
 | 6.d | v6.d language snapshot | 18 / 18 | 20,310 / 20,310 | 20,310 / 20,310 |
 | APPENDICES | — | 6 / 6 | 57 / 57 | 53 / 53 |
 | MISC / t | — | 3 / 3 | 9 / 9 | 9 / 9 |
-| Total | — | 1,423 / 1,424 | 220,054 / 220,055 | 218,421 / 218,422 |
+| Total | — | 1,424 / 1,424 | 220,055 / 220,055 | 218,420 / 218,420 |
 
 S15 (Unicode, grapheme and normalization tables) holds 91,807 of the 220,055
 declared tests, and the `sprintf` conversion files hold most of 6.d's 20,310,
@@ -96,7 +110,7 @@ The harness scores whatever binary runs it, so other engines can be measured on
 the same bar (see [COUNTING.md](COUNTING.md#measuring-another-engine)).
 
 **Rakudo** 2026.08, run through the same harness on the same machine against the
-same 1,424 files — with Roast's own `fudge` applied, as Rakudo's spectest does —
+same 1,424 files at Roast `1f521d798` — with Roast's own `fudge` applied, as Rakudo's spectest does —
 passes **1,414** files and 218,933 of 219,096 tests without skip/todo (99.93%).
 Raku++ passes all ten files Rakudo does not, six of them S05 regex tests Roast
 gained after Rakudo 2026.08 was released; Rakudo passes one that Raku++ does not,

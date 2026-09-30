@@ -3,6 +3,95 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.1.0 (2026-09-30) — every file of Roast, and a faster tree-walker
+
+**All 1,424 files of Roast's `spectest.data` pass**, and all 218,420 of its
+tests with skip and todo left out (220,055 of 220,055 counting them as passes),
+on Roast `1f749e338`. That last file is Roast's doing, not the engine's: v5.0.0's
+one failing test, the TTY case in `S16-io/eof.t`, was todo on macOS 14–26 by
+release name, and `1f749e338` ("Fudge tests for MacOS generally") makes it todo
+on every macOS. On v5.0.0's Roast, `1f521d798`, v5.1.0 gives v5.0.0's figures
+exactly — 1,423 / 1,424 files, 218,421 / 218,422 — with the same file list in
+three runs of three.
+
+The rest is the first speed work toward v6, a few correctness fixes, and tools.
+
+### Faster
+
+- **The tree-walker does less per node.** A block does its entry and exit work
+  — the CATCH search, phaser runners, sub hoisting — only when it has some
+  (c23ec4a8), and a unary or binary operator decides once per node where its
+  code is, instead of comparing its spelling against every other operator on
+  each evaluation (60ee962b, 622b301f). Against v5.0.0, both local builds, the
+  interpreter is faster on sixteen of eighteen kernels: `arrayops` −29%,
+  `loopsum` −23%, `streq` −19%, `hash` −18%, `sortby` and `mainwhen` −16%,
+  `strcat` −14%, `hashfill` and `rats` −11%; `fib` −2%, `objects` +1%,
+  `multiwhere` +2%. The call path, where v5.0.0's cost against v4.0.1 lies, is
+  not yet touched. [BENCHMARKS.md](docs/status/BENCHMARKS.md) has the table.
+- **`--cnp` kernels reach real loops.** A copy-and-patch kernel may now call
+  routines and methods (`@a.elems`, `.push`, user methods), index plain arrays
+  and hashes (reads, stores, `op=`, `++`), compile a one-expression sub in
+  place, and keep small Rats exact in registers. A loop calling a small sub
+  went 0.49 s → 0.02 s; a million exact additions of 0.01, 1.18 s → 0.03 s.
+  `unless` had been compiled as `if` in every kernel (da54f34f).
+- **Declared natives are fast.** A `my int` / `my num` loop gets a `--cnp`
+  kernel and an `--exe -O` lane, where it used to be refused and ran 15-80×
+  slower than the same loop over plain variables.
+- **The build takes 23 s at `-j8`, not 61.** `Interpreter.cpp` (59,375 lines)
+  and `Builtins.cpp` are split into seven and eight files, with the hot
+  functions kept together, and a size budget in `t/run.raku` fails when a file,
+  function or core header grows past its ceiling.
+
+### Behaves like Rakudo
+
+- **Native `int` and `num`.** Integer arithmetic on a native int wraps at 64
+  bits; a store of the other numeric kind converts, and a Rat, Complex or boxed
+  number of the wrong kind is refused before the store — in the interpreter,
+  `--cnp` and `--exe` alike.
+- **A compound assignment is type-checked**, as `=` is: `my Int $e = 5;
+  $e /= 1` dies with X::TypeCheck::Assignment and keeps 5.
+- **A named placeholder (`$:x`) is a required named parameter**, not a
+  positional, and placeholder arity is enforced both ways.
+- **`.match(:g)` and `.comb(:match)` no longer run the subject as code.** A
+  subject shaped `{ … }` was evaluated once per match, in the caller's scope.
+- **Math::NIntegrate loads and its suite matches Rakudo**: a quote inside a
+  character class inside a regex code block, `:0dimension`, placeholders inside
+  a chained comparison, and `<Inf>` as a NumStr. A listop's angle words keep
+  their Unicode spelling (`c <a−b>`).
+- **`--exe` keeps a routine's signature** — parameter names, arity, return
+  type — and compiles a named sub that takes its arguments as placeholders.
+
+### New
+
+- **`--hints`** (`RAKUPP_HINTS=1`) prints performance hints on stderr, off by
+  default. The first: an exact Rat power that will build huge integers and
+  come back as a Num, with `1e0` as the fix; `--lint` gains the matching
+  `exact-power` rule. [HINTS.md](docs/guide/HINTS.md).
+- **Release instruments**: `tools/battery-scan.raku` (every battery module
+  compiled under the candidate and the last release), `tools/battery-use-smoke.raku`,
+  `tools/cpp-build-check.raku`, and the opt-in race repro `t/race/evalcall.raku`.
+
+### Gates
+
+Roast as above, three runs on each Roast revision. The local suite is 1,167 of
+1,167; its one failure on the first run was the suite itself: the interface
+table check read `src/Interpreter.cpp`, which the build split had emptied of
+that table, and it now reads every `Interpreter*.cpp`. perf-guard finds no
+kernel slower than the v5.0.0 baseline and eight 10-27% faster (asg, loopsum,
+mainnext, hash, junction, rats, mainwhen, regexloop). BENCHMARKS.md is
+re-measured against **Rakudo 2026.09**, which is faster than 2026.08 on most
+kernels, so several ratios against Rakudo fell while Raku++ got faster.
+
+Not re-run for this release: the module battery (48 / 59 at v5.0.1), the
+ecosystem sweep (1,019 of 2,547 at v5.0.0), the documentation-example
+comparison, the slim differential and the second-toolchain build.
+
+One of the three Roast runs on `1f749e338` lost `S17-promise/nonblocking-await.t`
+to a SIGSEGV at test 6. It is not new: run alone 150 times each, interleaved,
+v5.1.0 crashed 3 times and the v5.0.1 release binary twice. Every run that
+finishes passes all 28 tests. The cause is not yet found
+([ROAST.md](docs/status/ROAST.md#the-one-file-that-flaps)).
+
 ## v5.0.1 (2026-09-29) — YAMLish loads, and parses in linear time
 
 A fix-only release, the same day as v5.0.0. Three engine faults, all reached
