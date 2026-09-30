@@ -3569,6 +3569,7 @@ private:
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
+    static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
     // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the
     // two operands arrive as AST nodes; `Rxx` hands them over the other way round.
     Value xxRepeat(Expr* item, Expr* count);

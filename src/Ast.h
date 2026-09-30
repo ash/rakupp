@@ -93,7 +93,17 @@ struct Node {
 };
 using NodePtr = std::unique_ptr<Node>;
 
-struct Expr : Node { using Node::Node; };
+class Interpreter;
+struct Value;
+struct Expr : Node {
+    using Node::Node;
+    // INTERP-SPEED-PLAN task 8: a handler this node was compiled to once its
+    // shape was decided, which eval calls instead of switching on the kind —
+    // in a frame of its own, sized for the one thing it does. Null (the
+    // switch) until then, and for every node no handler exists for.
+    using EvalFn = Value (*)(Interpreter&, Expr*);
+    mutable DecidedOnce<EvalFn> handler{nullptr};
+};
 using ExprPtr = std::unique_ptr<Expr>;
 
 struct Stmt : Node {

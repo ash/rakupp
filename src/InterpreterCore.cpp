@@ -19479,6 +19479,53 @@ static signed char binaryArm(const std::string& op) {
     return it == ARM.end() ? 0 : it->second;
 }
 
+// The handler a Binary node is compiled to (Expr::handler) once evalBinary
+// has seen it reach its fast shape — `$n < 2`, `$n - 1`, `$a + $b` — which
+// every evaluation of that node then does: nothing evalBinary tests ahead of
+// its fast shape can answer such a node (its special arms and metaop forms are
+// decided by the operator and the operand KINDS, which do not change). This
+// is evalBinary's fast shape, in a frame sized for it; whatever the shape
+// cannot answer this time — a shadowing `infix:<…>` now in scope, an operand
+// that no longer holds a plain scalar — goes to evalBinary, which re-reads
+// only variables and cached literals.
+Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
+    auto* b = static_cast<Binary*>(e);
+    const std::string& op = b->op;
+    const bool shadowMaybe =
+        lexShadowPossible(op) ||
+        (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
+         (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!=")));
+    if (!shadowMaybe) {
+        Env* const cur = tctx_.cur.get();
+        auto scal = [&](Expr* x) -> const Value* {
+            auto* ve = static_cast<VarExpr*>(x);
+            Value* p = padPtrIn(ve, cur);
+            if (!p) p = cur->find(ve->name);
+            return (p && p->hashKind.empty() &&
+                    (p->t == VT::Int || p->t == VT::Num ||
+                     p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
+        };
+        const Value* lit = static_cast<const Value*>(b->litVal.get());
+        const Value* lp = b->fastShape == 2 ? lit : scal(b->lhs.get());
+        if (lp) {
+            const Value* rp = b->fastShape == 1 ? lit : scal(b->rhs.get());
+            if (rp) {
+                if (opEq(op, "**") && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
+                    return Value::integer(0);
+                if (lp->natBits || rp->natBits) {
+                    Value nv;
+                    if (nativeIntArith(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv)) return nv;
+                    nv = applyArith(op, *lp, *rp);
+                    tagNativeNum(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv);
+                    return nv;
+                }
+                return applyArith(op, *lp, *rp);
+            }
+        }
+    }
+    return I.evalBinary(b);
+}
+
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
     // A special-cased operator goes straight to its own arm (binaryArm): every
@@ -19675,6 +19722,8 @@ Value Interpreter::evalBinary(Binary* b) {
             b->fastShape = sh;
         }
         if (!shadowMaybe && b->fastShape > 0) {
+            // this node always reaches here: compile it (see binaryFastHandler)
+            if (!(Expr::EvalFn)b->handler) b->handler = &Interpreter::binaryFastHandler;
             // the named lexical, but only while it holds a plain scalar: a
             // Proxy, a Junction, a DateTime, an undefined value or anything with
             // a hashKind has its own handling below and must not come here.
@@ -26745,6 +26794,9 @@ Value Interpreter::eval(Expr* e) {
                 pendingSubscripts_.erase(pendingSubscripts_.begin() + i);
                 return v;
             }
+    // a node compiled to a handler runs it (Expr::handler); the switch is the
+    // fallback for everything else
+    if (Expr::EvalFn h = e->handler) return h(*this, e);
     switch (e->kind) {
         case NK::IntLit: {
             auto* il = static_cast<IntLit*>(e);
