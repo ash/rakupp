@@ -2819,6 +2819,8 @@ Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
 // >>.method for native codegen: apply to each top-level element (structure-
 // preserving, no deep flatten) — mirrors the interpreter's hyper method call.
 Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args) {
+    // `».(args)` keeps the interpreter's shape and descent rules
+    if (opEq(m, kHyperInvoke)) return I.hyperMethodEach(inv, m, args, false);
     Value out = Value::array();
     if (inv.t == VT::Array && inv.arr())
         for (auto& el : *inv.arr()) out.arr()->push_back(I.methodCall(el, m, args));

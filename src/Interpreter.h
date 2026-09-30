@@ -1242,6 +1242,7 @@ struct ExecContext {
     std::string lastLvalueAttrType;
     const void* lastLvalueAttrWhere = nullptr; // the attr's `where {…}` Expr, checked beside the type
     const Expr* lastLvalueAttrDefault = nullptr; // the attr's `is default(…)`: what `.attr = Nil` resets to
+    const ClassAttr* lastLvalueAttr = nullptr;    // …and the attribute itself: its name and `:D`/`:U` smiley
     // `@a[0] = v` / `%h<k> = v` — the ELEMENT type of the container the
     // subscript reached, recorded by the Index lvalue arm so the assignment can
     // enforce it (`my Int @a; @a[1] = $*ERR` throws; roast S02-types/array.t)

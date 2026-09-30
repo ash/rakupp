@@ -3995,6 +3995,7 @@ static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std
 // Is the class named `pkg` declared `is hidden`? Installed by InterpreterBinding.cpp,
 // which owns the class registry (a method of a hidden class has no implicit *%_)
 bool (*g_pkgIsHidden)(const std::string&) = nullptr;
+bool (*g_pkgIsRole)(const std::string&) = nullptr;
 
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
@@ -4078,9 +4079,8 @@ Value makeSignature(const Callable* c) {
         // count 2 / arity 1 — the invocant is a required positional like any
         // other, and code that asks how many arguments a method takes subtracts
         // one for it (`$method.signature.count - 1`, which is how Path::Finder
-        // decides whether a matcher takes a value or a list). It is still not
-        // RENDERED here: the Callable does not know the class it was declared
-        // in, so `Mu $:` would be a worse answer than leaving it out.
+        // decides whether a matcher takes a value or a list). It is rendered
+        // below, ahead of the rest.
         if (p.invocant) { count++; arity++; continue; }
         if (!first) { std::string sep = p.pastDoubleSemi && !prevPastSemi ? ";; " : ", "; sig += sep; rsig += sep; }
         else if (p.pastDoubleSemi) { sig += ";; "; rsig += ";; "; }   // `(;; $x)`: nothing before the `;;`
@@ -4108,6 +4108,26 @@ Value makeSignature(const Callable* c) {
             const char* sep = first ? "" : ", ";
             sig += std::string(sep) + "*%_"; rsig += std::string(sep) + "*%_";
         }
+    }
+    // …and the INVOCANT leads it: `method m($x)` of class A is `(A $: $x, *%_)`
+    // in Rakudo's spelling `(A $:: $x, *%_)` — the class it was declared in
+    // (`::?CLASS` is that class), its smiley, and its name, `$` when it has
+    // none. An anonymous method's is Mu. A ROLE's method is left without one:
+    // its invocant is whichever class composes it, which the Callable does
+    // not know, and the role's own name would be a wrong answer.
+    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->hasPrimed &&
+        !(g_pkgIsRole && !c->pkg.empty() && g_pkgIsRole(c->pkg))) {
+        const Param* ip = nullptr;
+        for (const Param* pp : ps) if (pp->invocant) { ip = pp; break; }
+        std::string ty = ip && !ip->type.empty() && ip->type != "::?CLASS" ? ip->type
+                       : !c->pkg.empty() ? c->pkg : std::string("Mu");
+        if (ip && ip->defConstraint) ty += ip->defConstraint == 1 ? ":D" : ":U";
+        const std::string inv = ty + " " + (ip && !ip->name.empty() ? ip->name : std::string("$")) + ":";
+        auto lead = [&](std::string& s) {
+            const std::string rest = s.substr(1);
+            s = "(" + inv + (rest.empty() || rest[0] == ')' ? "" : ": ") + rest;
+        };
+        lead(sig); lead(rsig);
     }
     // a declared return type is part of the signature's rendering: `($x --> Int)`
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)

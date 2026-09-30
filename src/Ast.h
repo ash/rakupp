@@ -470,6 +470,11 @@ inline const std::string& callAmpName(const Call* c) {
 // (the flat-scan guard missed $path.EVALFILE, Lint missed the method form).
 inline bool nameEvalsCode(const std::string& n) { return n == "EVAL" || n == "EVALFILE"; }
 
+// The "method" of a hyper INVOCATION, `@c».(args)`: a MethodCall with this
+// name and `hyper` set calls each element rather than naming a method on it
+// (hyperMethodEach). The leading \x01 keeps it out of any user's namespace.
+inline constexpr const char kHyperInvoke[] = "\x01invoke";
+
 struct MethodCall : Expr {
     bool fatalExempt = false; // see Call::fatalExempt
     ExprPtr inv;

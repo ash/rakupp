@@ -4062,18 +4062,17 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isKind(Tok::LParen)) {
                 advance();
                 if (hyperNext) { // @a».() — invoke each element as a callable
+                    // A hyper like any other (kHyperInvoke names the invocation,
+                    // see hyperMethodEach), not a `.map`: the answer keeps the
+                    // invocant's shape — an Array stays an Array, a Hash its
+                    // keys — and nested lists are descended into, as Rakudo's
+                    // `».()` does.
                     hyperNext = false;
                     auto mc2 = std::make_unique<MethodCall>();
                     mc2->inv = std::move(base);
-                    mc2->method = "map";
-                    auto blk = std::make_unique<BlockExpr>();
-                    auto es = std::make_unique<ExprStmt>();
-                    auto ci = std::make_unique<Call>();
-                    ci->callee = std::make_unique<VarExpr>("$_");
-                    ci->args = parseCallArgs();
-                    es->e = std::move(ci);
-                    blk->body.push_back(std::move(es));
-                    mc2->args.push_back(std::move(blk));
+                    mc2->method = kHyperInvoke;
+                    mc2->hyper = true;
+                    mc2->args = parseCallArgs();
                     base = std::move(mc2);
                     continue;
                 }

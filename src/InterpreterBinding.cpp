@@ -1531,8 +1531,16 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         return !nodal && ((v.t == VT::Array && v.arr()) ||
                           (v.t == VT::Hash && v.hash() && v.hashKind.empty()));
     };
+    const bool invoke = opEq(m, kHyperInvoke);   // `».(args)`: call each element
     auto each = [&](const Value& el) -> Value {
         if (descends(el)) return hyperMethodEach(el, m, args, maybe);
+        if (invoke) {
+            if (el.t == VT::Code && el.code()) return callCallable(el, args);
+            // Rakudo binds each element to a `&code` parameter first
+            throwTypedV("X::TypeCheck::Binding::Parameter", {{"got", el}},
+                        "Type check failed in binding to parameter '&code'; expected Callable but got " +
+                        el.typeName() + (isDefined(el) ? " (" + typeCheckRepr(el) + ")" : ""));
+        }
         if (!maybe) return methodCall(el, m, args);
         // `».?name`: an element without the method answers Nil, not a death
         try { return methodCall(el, m, args); }
@@ -1955,6 +1963,15 @@ static bool pkgIsHiddenImpl(const std::string& p) {
     return it != g_revInterp->classes_.end() && it->second && it->second->hidden;
 }
 static const bool g_pkgIsHiddenInstalled = ((g_pkgIsHidden = &pkgIsHiddenImpl), true);
+// …and whether it is a ROLE: a role method's invocant is whatever class composes
+// it, which its Callable does not know
+extern bool (*g_pkgIsRole)(const std::string&);
+static bool pkgIsRoleImpl(const std::string& p) {
+    if (!g_revInterp) return false;
+    auto it = g_revInterp->classes_.find(p);
+    return it != g_revInterp->classes_.end() && it->second && it->second->isRole;
+}
+static const bool g_pkgIsRoleInstalled = ((g_pkgIsRole = &pkgIsRoleImpl), true);
 extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
 static void pullLazyImpl(const Value& v, size_t n) { if (g_cbInterp) g_cbInterp->materializeLazy(v, n); }
 static const bool g_pullLazyInstalled = ((g_pullLazy = &pullLazyImpl), true);

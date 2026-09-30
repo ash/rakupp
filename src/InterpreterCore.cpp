@@ -9653,9 +9653,18 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // positionals"), and `namedArg` already records which is which. Crediting
     // every pair toward the positional count — which this check used to do —
     // is what let `XYX(:a)` bind a named argument to a required positional.
-    if (c.params && !c.params->empty() && !c.isMultiDispatcher && !c.subAsMethod) {
+    //
+    // …and a method with NO parameters takes no positional either (`method
+    // m { … }` is `(A $: *%_)`), unless its body reads the placeholders or
+    // `@_` that Raku++ still binds for one. The counts include the invocant,
+    // as Rakudo's do: `A.m(1)` passes 2 where 1 is expected.
+    const bool noSig = !c.params || c.params->empty();
+    if (noSig && c.placeholders.empty() && c.atArgsScan < 0)
+        c.atArgsScan = bodyUsesAtUnderscore(&c) ? 1 : 0;
+    if ((!noSig || (c.placeholders.empty() && c.atArgsScan == 0 && c.body)) &&
+        !c.isMultiDispatcher && !c.subAsMethod) {
         int reqPos = 0, maxPos = 0; bool unbounded = false;
-        for (auto& p : *c.params) {
+        if (!noSig) for (auto& p : *c.params) {
             if (p.invocant || p.named) continue;
             if (p.slurpy && p.sigil == '%') continue;
             if (p.slurpy && p.sigil == '$' && !p.subSig) { maxPos++; continue; }
@@ -9666,16 +9675,16 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         if (!unbounded) {
             int given = 0;
             for (auto& a : args) if (!isNamedArg(a)) given++;
-            if (reqPos > 0 && given < reqPos)
+            if (given < reqPos || given > maxPos) {
+                // `expected 2 arguments`, `2 or 3 arguments`, `1 to 3 arguments`
+                const int lo = reqPos + 1, hi = maxPos + 1;
+                std::string want = std::to_string(lo);
+                if (hi == lo + 1) want += " or " + std::to_string(hi);
+                else if (hi > lo) want += " to " + std::to_string(hi);
                 throw RakuError{Value::typeObj("X::AdHoc"),
-                    "Too few positionals passed; expected " + std::to_string(reqPos) +
-                    " argument" + (reqPos == 1 ? "" : "s") + " but got " +
-                    std::to_string(given)};
-            if (given > maxPos)
-                throw RakuError{Value::typeObj("X::AdHoc"),
-                    "Too many positionals passed; expected " + std::to_string(maxPos) +
-                    " argument" + (maxPos == 1 ? "" : "s") + " but got " +
-                    std::to_string(given)};
+                    std::string(given < reqPos ? "Too few" : "Too many") + " positionals passed; expected " +
+                    want + " argument" + (hi == 1 ? "" : "s") + " but got " + std::to_string(given + 1)};
+            }
         }
     }
     if (c.params && !c.params->empty()) {
@@ -10199,10 +10208,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // must throw on a value outside the subset — HTTP::Request)
                 tcx.lastLvalueAttrType.clear();
                 tcx.lastLvalueAttrWhere = nullptr;
+                tcx.lastLvalueAttr = nullptr;
                 if (ve->name[0] == '$' && selfp->obj()->cls)
                     for (ClassInfo* ci = selfp->obj()->cls.get(); ci; ci = ci->parent.get())
                         for (auto& at : ci->attrs)
                             if (at.name == ve->attrBare) {
+                                if (at.sigil == '$') tcx.lastLvalueAttr = &at;
                                 if (at.sigil == '$' && !at.type.empty() &&
                                     (ascii::isupper((unsigned char)at.type[0]) || isNativeTypeName(at.type)))
                                     tcx.lastLvalueAttrType = at.type;
@@ -11340,10 +11351,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                                 "Cannot modify an immutable '" + to + "'"};
                         tcx.lastLvalueAttrType.clear();
                         tcx.lastLvalueAttrWhere = nullptr;
+                        tcx.lastLvalueAttr = nullptr;
                         if (target->sigil == '$') {
                             if (!target->type.empty() && ascii::isupper((unsigned char)target->type[0]))
                                 tcx.lastLvalueAttrType = target->type;
                             tcx.lastLvalueAttrWhere = target->where;
+                            tcx.lastLvalueAttr = target;
                         }
                         return &d->obj()->attrs[to];
                     }
@@ -11388,10 +11401,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             tcx.lastLvalueAttrType.clear();
             tcx.lastLvalueAttrWhere = nullptr;
             tcx.lastLvalueAttrDefault = nullptr;
+            tcx.lastLvalueAttr = nullptr;
             for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                 for (auto& at : ci->attrs)
                     if (at.name == mcName) {
                         g_lvAttrSigil = at.sigil;
+                        if (at.sigil == '$') tcx.lastLvalueAttr = &at;
                         if (at.sigil == '$' && !at.type.empty() &&
                             (ascii::isupper((unsigned char)at.type[0]) || isNativeTypeName(at.type)))
                             tcx.lastLvalueAttrType = at.type;
@@ -14572,6 +14587,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
         tctx_.lastLvalueAttrDefault = nullptr;
+        tctx_.lastLvalueAttr = nullptr;
         // `$y := :$y` — the right side can itself make $y a cell (the Pair
         // holds $y's container), so the name is detached again NOW, after it
         // ran: the bind replaces the name's slot and never writes into the
@@ -14784,14 +14800,41 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // neither the declared type nor a `where` constraint is asked about it:
         // URI's `.port = Nil` (`has Port $.port is rw`, `subset Port of UInt`)
         // died the type check instead of emptying the port.
+        // What an attribute store's refusals say: the attribute by its `$!`
+        // name (however it was reached — `.x = …` too, as Rakudo reports it),
+        // and the value refused, as the variable checks show it.
+        const ClassAttr* const lvAttr =
+            opEq(a->op, "=") && (a->target->kind == NK::MethodCall || selfAttrTarget)
+                ? tctx_.lastLvalueAttr : nullptr;
+        tctx_.lastLvalueAttr = nullptr;
+        auto attrTarget = [&]() -> std::string {
+            return lvAttr ? " to $!" + lvAttr->name : std::string();
+        };
+        auto gotRepr = [](const Value& v) {
+            return v.typeName() + " (" + (isDefined(v) ? typeCheckRepr(v) : v.typeName()) + ")";
+        };
+        // A `:D` attribute cannot reset to an undefined default, and a `:U`
+        // one holds only type objects (a native one has neither to check).
+        auto checkAttrSmiley = [&](const Value& v, const std::string& aty) {
+            if (!lvAttr || !lvAttr->defConstraint || isNativeTypeName(lvAttr->type)) return;
+            const bool def = isDefined(v);
+            if ((lvAttr->defConstraint == 1) == def) return;
+            const std::string want = (aty.empty() ? std::string("Any") : aty) +
+                                     (lvAttr->defConstraint == 1 ? ":D" : ":U");
+            throwTypedV("X::TypeCheck::Assignment",
+                        {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", Value::str("$!" + lvAttr->name)}},
+                        "Type check failed in assignment" + attrTarget() + "; expected " + want +
+                        " but got " + gotRepr(v));
+        };
         if (opEq(a->op, "=") && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
-            const std::string& aty = tctx_.lastLvalueAttrType;
+            const std::string aty = tctx_.lastLvalueAttrType;
             rhs = tctx_.lastLvalueAttrDefault ? eval(const_cast<Expr*>(tctx_.lastLvalueAttrDefault))
                 : (!aty.empty() && aty != "Mu" && aty != "Any")
                       ? Value::typeObj(aty) : Value::any();
             tctx_.lastLvalueAttrDefault = nullptr;
             tctx_.lastLvalueAttrType.clear();
             tctx_.lastLvalueAttrWhere = nullptr;
+            checkAttrSmiley(rhs, aty);
         }
         // …and its `where {…}` constraint: `has Numeric $.lat where { -90 <= $_ <= 90 }`
         // rejects an out-of-range assignment (Date::Event's lat/lon setters)
@@ -14801,9 +14844,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             tctx_.lastLvalueAttrWhere = nullptr;
             if (!attrWhereOk(w, rhs))
                 throwTypedV("X::TypeCheck::Assignment", {{"got", rhs}},
-                            "Type check failed in assignment; the value does not "
-                            "satisfy the attribute's where constraint");
+                            "Type check failed in assignment" + attrTarget() +
+                            "; expected <anon> but got " + gotRepr(rhs));
         }
+        if (rhs.t != VT::Nil) checkAttrSmiley(rhs, lvAttr ? lvAttr->type : std::string());
         // …but NIL is not a store: it RESETS the slot to the attribute's own
         // default, which the arm further down turns into the declared type object.
         // Checked as a value it failed against any SUBSET type — `$!prev = Nil` on
@@ -14841,8 +14885,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             { rep = kv.first; break; }
                 throwTypedV("X::TypeCheck::Assignment",
                             {{"got", rhs}, {"expected", Value::typeObj(aty)}},
-                            "Type check failed in assignment; expected " + rep +
-                            " but got " + rhs.typeName());
+                            "Type check failed in assignment" + attrTarget() + "; expected " + rep +
+                            " but got " + gotRepr(rhs));
             }
         }
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
@@ -15230,6 +15274,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 if (at.defaultTrait) dv = eval(const_cast<Expr*>(at.defaultTrait));
                                 else if (!at.type.empty() && at.type != "Mu" && at.type != "Any")
                                     dv = Value::typeObj(at.type);
+                                // …which a `:D` attribute cannot take undefined
+                                if (at.defConstraint == 1 && !isDefined(dv) && !isNativeTypeName(at.type)) {
+                                    const std::string want = (at.type.empty() ? std::string("Any") : at.type) + ":D";
+                                    throwTypedV("X::TypeCheck::Assignment",
+                                        {{"got", dv}, {"expected", Value::typeObj(want)}, {"symbol", Value::str("$!" + an)}},
+                                        "Type check failed in assignment to $!" + an + "; expected " + want +
+                                        " but got " + dv.typeName() + " (" + dv.typeName() + ")");
+                                }
                                 done = true; break;
                             }
                         if (done) break;
