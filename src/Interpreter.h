@@ -437,6 +437,54 @@ struct EnvExtras {
     std::set<std::string> varValueBound;
 };
 
+// The hash and the key compare of a scope's variable map (and of a pad
+// layout's name table, which every plain parameter's bind consults). A variable name is
+// short — `$_`, `$i`, `@items` — and the standard ones spend more on being
+// general than on the name: std::hash<std::string> runs the out-of-line
+// murmur loop and the compare calls memcmp through a stub, and a loop body
+// that reads `$_` paid both on every iteration (~6% of loopsum). These read
+// a name of up to 16 bytes as two overlapping words, with no call at all.
+namespace varname {
+inline uint64_t load32(const char* p) { uint32_t w; std::memcpy(&w, p, 4); return w; }
+inline uint64_t load64(const char* p) { uint64_t w; std::memcpy(&w, p, 8); return w; }
+}
+struct VarNameHash {
+    size_t operator()(const std::string& s) const noexcept {
+        const char* p = s.data();
+        const size_t n = s.size();
+        uint64_t a, b;
+        if (n >= 8)      { a = varname::load64(p); b = varname::load64(p + n - 8); }
+        else if (n >= 4) { a = varname::load32(p); b = varname::load32(p + n - 4); }
+        else if (n > 0)  { a = (uint64_t)(unsigned char)p[0] << 16 | (uint64_t)(unsigned char)p[n >> 1] << 8 |
+                               (unsigned char)p[n - 1]; b = 0; }
+        else             { a = b = 0; }
+        // a name longer than 16 bytes has a middle the two words above do not
+        // cover: fold it in, 8 bytes at a time
+        if (n > 16)
+            for (size_t i = 8; i + 8 < n; i += 8) a ^= varname::load64(p + i) * 0x9E3779B97F4A7C15ull;
+        uint64_t h = (a * 0x9E3779B97F4A7C15ull) ^ ((b ^ n) * 0xC2B2AE3D27D4EB4Full);
+        h ^= h >> 29; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 32;
+        return (size_t)h;
+    }
+};
+struct VarNameEq {
+    bool operator()(const std::string& x, const std::string& y) const noexcept {
+        const size_t n = x.size();
+        if (n != y.size()) return false;
+        const char* p = x.data(); const char* q = y.data();
+        if (n >= 8 && n <= 16)
+            return varname::load64(p) == varname::load64(q) && varname::load64(p + n - 8) == varname::load64(q + n - 8);
+        if (n >= 4 && n < 8)
+            return varname::load32(p) == varname::load32(q) && varname::load32(p + n - 4) == varname::load32(q + n - 4);
+        if (n < 4) {
+            for (size_t i = 0; i < n; i++) if (p[i] != q[i]) return false;
+            return true;
+        }
+        return std::memcmp(p, q, n) == 0;
+    }
+};
+using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
+
 // The pad slot table for one pad OWNER — the main program's mainline, or a
 // Callable body (PADS-PLAN.md). Built once per BODY (two Callables sharing a
 // body — .assuming wrappers — must agree on slot numbers, because the slot
@@ -451,7 +499,7 @@ struct PadLayout {
     // type-enforced today), so the simple-assign lane may store into it
     // without the typed-container ceremony. Parallel to `names`.
     std::vector<uint8_t> simple;
-    std::unordered_map<std::string, int> byName;
+    std::unordered_map<std::string, int, VarNameHash, VarNameEq> byName;
     int add(const std::string& n, bool simpleSlot = false) {
         auto it = byName.find(n);
         if (it != byName.end()) {
@@ -501,53 +549,6 @@ inline bool lexShadowPossible(const std::string& op) {
     uint64_t m = g_lexShadowMask.load(std::memory_order_relaxed);
     return m && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
 }
-
-// The hash and the key compare of a scope's variable map. A variable name is
-// short — `$_`, `$i`, `@items` — and the standard ones spend more on being
-// general than on the name: std::hash<std::string> runs the out-of-line
-// murmur loop and the compare calls memcmp through a stub, and a loop body
-// that reads `$_` paid both on every iteration (~6% of loopsum). These read
-// a name of up to 16 bytes as two overlapping words, with no call at all.
-namespace varname {
-inline uint64_t load32(const char* p) { uint32_t w; std::memcpy(&w, p, 4); return w; }
-inline uint64_t load64(const char* p) { uint64_t w; std::memcpy(&w, p, 8); return w; }
-}
-struct VarNameHash {
-    size_t operator()(const std::string& s) const noexcept {
-        const char* p = s.data();
-        const size_t n = s.size();
-        uint64_t a, b;
-        if (n >= 8)      { a = varname::load64(p); b = varname::load64(p + n - 8); }
-        else if (n >= 4) { a = varname::load32(p); b = varname::load32(p + n - 4); }
-        else if (n > 0)  { a = (uint64_t)(unsigned char)p[0] << 16 | (uint64_t)(unsigned char)p[n >> 1] << 8 |
-                               (unsigned char)p[n - 1]; b = 0; }
-        else             { a = b = 0; }
-        // a name longer than 16 bytes has a middle the two words above do not
-        // cover: fold it in, 8 bytes at a time
-        if (n > 16)
-            for (size_t i = 8; i + 8 < n; i += 8) a ^= varname::load64(p + i) * 0x9E3779B97F4A7C15ull;
-        uint64_t h = (a * 0x9E3779B97F4A7C15ull) ^ ((b ^ n) * 0xC2B2AE3D27D4EB4Full);
-        h ^= h >> 29; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 32;
-        return (size_t)h;
-    }
-};
-struct VarNameEq {
-    bool operator()(const std::string& x, const std::string& y) const noexcept {
-        const size_t n = x.size();
-        if (n != y.size()) return false;
-        const char* p = x.data(); const char* q = y.data();
-        if (n >= 8 && n <= 16)
-            return varname::load64(p) == varname::load64(q) && varname::load64(p + n - 8) == varname::load64(q + n - 8);
-        if (n >= 4 && n < 8)
-            return varname::load32(p) == varname::load32(q) && varname::load32(p + n - 4) == varname::load32(q + n - 4);
-        if (n < 4) {
-            for (size_t i = 0; i < n; i++) if (p[i] != q[i]) return false;
-            return true;
-        }
-        return std::memcmp(p, q, n) == 0;
-    }
-};
-using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
 
 struct Env {
     VarMap vars;
@@ -1038,6 +1039,12 @@ struct ExecContext {
     // Per-thread because ExecContext is (`static thread_local tctx_`).
     std::deque<ValueList> nqpArgs;
     size_t nqpDepth = 0;
+    // The thread's pool of reusable call frames (PooledFrame in
+    // InterpreterCore.cpp). Here rather than in a thread_local of its own
+    // because both call paths already hold this context: a separate
+    // thread_local cost every call two guarded lookups. Scratch, like nqpArgs:
+    // no swap or park moves it (any frame in it is as good as any other).
+    std::vector<std::shared_ptr<Env>> framePool;
     Env* curStateEnv = nullptr;
     std::vector<std::shared_ptr<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx

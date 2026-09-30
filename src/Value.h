@@ -316,6 +316,10 @@ struct Callable {
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
     DecidedOnce<signed char> hoistNeed{-1};        // see Interpreter::hoistExprDecls (-1 = undecided)
+    // The body's entry and exit work, as Block::entryWork has it for a block
+    // (-1 = not yet scanned): 0 lets a call skip every phaser, CATCH and
+    // hoisting step (see bodyEntryWork in InterpreterCore.cpp).
+    DecidedOnce<signed char> bodyWork{-1};
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.

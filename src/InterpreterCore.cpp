@@ -999,11 +999,9 @@ static bool hoistableTypeDecl(const Stmt* s) {
 // Bit 32 is not a step but a shape: some statement is a phaser or CATCH
 // block, or a named sub — one the statement loop must skip or treat apart.
 // A block with none of the six bits runs on execPlainBlock.
-static int blockEntryWork(Block* b) {
-    signed char w = b->entryWork;
-    if (w >= 0) return w;
+static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
     int m = 0;
-    for (auto& s : b->stmts) {
+    for (auto& s : stmts) {
         if (s->kind == NK::Block) {
             auto* blk = static_cast<const Block*>(s.get());
             const std::string& ph = blk->phaser;
@@ -1023,14 +1021,30 @@ static int blockEntryWork(Block* b) {
     // to look for it. Deliberately wider than the scan it gates — any phaser
     // block, CATCH or named sub — because isBlockPhaser's answer for an INIT
     // depends on whether the program-init walk hoisted it, which is run-time.
-    if (!b->stmts.empty()) {
-        const Stmt* s = b->stmts.back().get();
+    if (!stmts.empty()) {
+        const Stmt* s = stmts.back().get();
         if ((s->kind == NK::Block && (static_cast<const Block*>(s)->isCatch ||
                                       !static_cast<const Block*>(s)->phaser.empty())) ||
             (s->kind == NK::SubDecl && !static_cast<const SubDecl*>(s)->name.empty()))
             m |= 16;
     }
+    return m;
+}
+static int blockEntryWork(Block* b) {
+    signed char w = b->entryWork;
+    if (w >= 0) return w;
+    const int m = stmtsEntryWork(b->stmts);
     b->entryWork = (signed char)m;
+    return m;
+}
+// The same bits for a routine's body, decided once on its Callable: callCallableRaw
+// skips hoistSubs, the ENTER and LEAVE runners and the scans for the value
+// statement when they would find nothing.
+static int bodyEntryWork(Callable& c) {
+    signed char w = c.bodyWork;
+    if (w >= 0) return w;
+    const int m = c.body ? stmtsEntryWork(*c.body) : 0;
+    c.bodyWork = (signed char)m;
     return m;
 }
 
@@ -2533,7 +2547,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // `silently({ $actual = RunProc.new.run('not-exists') })` is how
             // App::RaCoCo checks a failing command, and sinking through the
             // container killed the test instead.
-            bool contained = exprYieldsContainer(e) ||
+            auto* es = static_cast<ExprStmt*>(s);
+            if (es->yieldsContainer < 0) es->yieldsContainer = exprYieldsContainer(e) ? 1 : 0;
+            bool contained = es->yieldsContainer == 1 ||
                              ((e->kind == NK::Call || e->kind == NK::MethodCall) && tctx_.valContained);
             // …except that a subscript which REFUSED never reached a container:
             // `$str<k>` on a non-Associative is a Failure standing in for the
@@ -6931,7 +6947,8 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
     e->ex->letRestores.clear();
 }
 
-// A per-thread pool of call frames — see the note at its first user. It lives at
+// A per-thread pool of call frames — see the note at its first user; the frames
+// themselves are the thread's ExecContext::framePool. It lives at
 // file scope because BOTH call paths need it: subs come through callCallableRaw,
 // methods through invokeMethod, and only the first one had it. That asymmetry was
 // the whole difference between a sub call at ~2x Rakudo and a method call at
@@ -6939,7 +6956,7 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
 // destroyed them again, per call (DISPATCH-PERF-PLAN.md).
 namespace {
 struct FramePool {
-    std::vector<std::shared_ptr<Env>> free;
+    std::vector<std::shared_ptr<Env>>& free;
     std::shared_ptr<Env> acquire() {
         if (free.empty()) return std::make_shared<Env>();
         auto e = std::move(free.back());
@@ -6961,14 +6978,14 @@ struct FramePool {
         free.push_back(std::move(e));
     }
 };
-thread_local FramePool g_framePool;
 // Hands out a pooled frame that returns itself on scope exit. A frame anything
 // captured — a closure, an rwLink, a stateEnv chain — fails the use_count test in
 // release() and is simply dropped instead of reused.
 struct PooledFrame {
+    FramePool pool;
     std::shared_ptr<Env> env;
-    PooledFrame() : env(g_framePool.acquire()) {}
-    ~PooledFrame() { g_framePool.release(std::move(env)); }
+    explicit PooledFrame(ExecContext& t) : pool{t.framePool}, env(pool.acquire()) {}
+    ~PooledFrame() { pool.release(std::move(env)); }
 };
 } // namespace
 // `$h{$k}` / `@a[$i]` / `%h<a>` over a variable: ONE element, named by a
@@ -7617,7 +7634,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // and the first-insert rehash. A frame whose use_count proves nobody kept
     // it is reset and reused; one anything captured — a closure, an rwLink, a
     // stateEnv chain — stays out of the pool for good.
-    PooledFrame frame_;
+    PooledFrame frame_{tcx};
     auto& env = frame_.env;
     // Break the leak cycle a nested named sub would form (see breakSelfClosures).
     // The guard fires only when hoistSubs (below) reported a nested sub, and
@@ -7975,15 +7992,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // from either restores instead of leaking dynStack / bleeding scope.)
     // &?BLOCK / &?ROUTINE resolve lazily via these frame pointers (no per-call defines)
     struct MagicalGuard {
-        ExecContext& t; const Value* savedB; const Value* savedR; const Value* savedRx;
+        ExecContext& t; const Value* savedB; const Value* savedR; const Value* savedRx = nullptr;
+        bool rx = false;   // g_rxRoutine is a thread_local: touched only when it changes
         MagicalGuard(ExecContext& tc, const Value* cv, bool routine)
-            : t(tc), savedB(tc.curBlockVal), savedR(tc.curRoutineVal), savedRx(g_rxRoutine) {
+            : t(tc), savedB(tc.curBlockVal), savedR(tc.curRoutineVal) {
             t.curBlockVal = cv;
             if (routine) t.curRoutineVal = cv;
             // a named regex's code blocks run out of its body: they see it as &?ROUTINE
-            if (cv->t == VT::Code && cv->code() && cv->code()->isRegexRoutine) g_rxRoutine = cv;
+            if (cv->t == VT::Code && cv->code() && cv->code()->isRegexRoutine) {
+                rx = true; savedRx = g_rxRoutine; g_rxRoutine = cv;
+            }
         }
-        ~MagicalGuard() { t.curBlockVal = savedB; t.curRoutineVal = savedR; g_rxRoutine = savedRx; }
+        ~MagicalGuard() { t.curBlockVal = savedB; t.curRoutineVal = savedR; if (rx) g_rxRoutine = savedRx; }
     } magicalGuard{tcx, &codeVal, !c.isBlock};
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
@@ -8011,7 +8031,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     Value last = Value::nil();   // a body with no value is Nil — see execBlock's seed
     env->declStmts = c.body;   // what it declares (see Env::declStmts; a pooled Env is reused, so always)
     env->callEnv = true;       // …and it is an activation: a backtrace walk for its blocks stops here
-    if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
+    // what the body asks of a call beyond its statements, decided once (see
+    // bodyEntryWork): 0 for most routines, which then skip each step below
+    const int bodyWork = bodyEntryWork(c);
+    if (c.body && (bodyWork & 8)) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
     if (c.body) hoistExprDecls(*c.body, tcx.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
     // (which statement, if any, is a static property — this used to rescan the
@@ -8038,8 +8061,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // ~Nil }` must SEE the warning rather than let it reach stderr.
     struct CtlReg {
         ExecContext& t; bool on;
-        CtlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
-            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        CtlReg(ExecContext& tc, Block* cb, const std::shared_ptr<Env>& env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, env}); }
         ~CtlReg() { if (on) t.controlHandlers.pop_back(); }
     } ctlReg{tcx, c.controlScan == 1 ? static_cast<Block*>((Stmt*)c.controlBlkCache) : nullptr, tcx.cur};
     // `.resume` in the body's CATCH carries on at the statement after the one
@@ -8060,7 +8083,7 @@ resumeBody:
                 suppressLoopFirst_ = savedSF;
                 if (lpc & 1) runFirstPhasers(*c.body);
             }
-            else if (c.body) runEnterPhasers(*c.body);
+            else if (c.body && (bodyWork & 2)) runEnterPhasers(*c.body);
         }
         if (c.body) {
             size_t nst = c.body->size();
@@ -8068,7 +8091,8 @@ resumeBody:
             // phasers / CATCH blocks don't count; everything before it runs in
             // sink context, so a discarded object with a `sink` method has it
             // called (Rakudo semantics). One reverse scan, ~free for short bodies.
-            size_t lastReal = nst;
+            size_t lastReal = (bodyWork & 32) || nst == 0 ? nst : nst - 1;
+            if (bodyWork & 32)
             for (size_t k = nst; k-- > 0; ) {
                 auto* s = (*c.body)[k].get();
                 if (isBlockPhaser(s)) continue;
@@ -8078,18 +8102,18 @@ resumeBody:
             // …except that a CATCH/CONTROL written LAST is the routine's last
             // statement in Rakudo: what precedes it is sunk — a Failure there
             // throws, into that very CATCH — and the routine answers Nil
-            const bool trailingCatch = isRoutine && trailingCatchBlock(*c.body);
+            const bool trailingCatch = isRoutine && (bodyWork & 32) && trailingCatchBlock(*c.body);
             if (trailingCatch) lastReal = nst;
             bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = resumeAt; i < nst; i++) {
                 runningStmt = i;
                 auto* s = (*c.body)[i].get();
-                if (isBlockPhaser(s)) {
+                if ((bodyWork & 32) && isBlockPhaser(s)) {
                     if (i + 1 == nst && tcx.cur)
                         if (Value* ev = tcx.cur->local("\x01enter-tail")) last = *ev;
                     continue;
                 }
-                if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
+                if ((bodyWork & 32) && s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 // Tail-position `return X` yields exactly X as the call result — evaluate
                 // it directly instead of throwing+unwinding a ReturnEx (the hot path for
                 // the many one-line accessor/action methods a grammar parse calls).
@@ -8293,7 +8317,13 @@ resumeBody:
     if (c.body) {
         struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
         tcx.leaveResult = &last;
-        runLeavePhasers(*c.body, isDefined(last) && !(last.t == VT::Hash && last.hashKind == "Failure"), 0, 1);
+        if (bodyWork & 4)
+            runLeavePhasers(*c.body, isDefined(last) && !(last.t == VT::Hash && last.hashKind == "Failure"), 0, 1);
+        else {
+            // no LEAVE/KEEP/UNDO/POST: what runLeavePhasers does without any
+            tcx.leaveReturned = false;
+            drainTempRestores(tcx.cur.get(), 0);
+        }
         // `LEAVE return 1` overrides what a normally-leaving routine returns
         // (S06-advanced/return-prioritization.t)
         if (tcx.leaveReturned) {
@@ -9315,7 +9345,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     // The pooled frame, exactly as callCallableRaw takes one — this allocation is
     // what made a method call cost more than twice a sub call.
-    PooledFrame frame_;
+    PooledFrame frame_{tcx};
     auto& env = frame_.env;
     // `state` vars in a method body (or a for-body executed inline within it)
     // live in the method's own persistent env, spliced into the lookup chain —
@@ -9519,7 +9549,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // `method t { my $auth = … if $cond; $auth ~= … }` died "not declared"
     // whenever the condition was false (rakupp issue #13's follow-up).
     bool hasNestedSub = false;
-    if (c.body) hasNestedSub = hoistSubs(*c.body); // a method body's nested named subs are visible before their declaration (Template::Mustache's get-template)
+    const int bodyWork = bodyEntryWork(c);   // decided once, as for a sub (see callCallableRaw)
+    if (c.body && (bodyWork & 8)) hasNestedSub = hoistSubs(*c.body); // a method body's nested named subs are visible before their declaration (Template::Mustache's get-template)
     // A nested sub's closure points at this frame and the frame holds the sub:
     // a cycle the pool cannot reclaim — break it on exit, as the sub path does
     // (300k calls of a method with a helper sub leaked ~1.7 KB each).
@@ -9550,8 +9581,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>((Stmt*)c.catchBlkCache) : nullptr;
     struct CtlReg { // as in callCallable: a method body's CONTROL is registered too
         ExecContext& t; bool on;
-        CtlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
-            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        CtlReg(ExecContext& tc, Block* cb, const std::shared_ptr<Env>& env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, env}); }
         ~CtlReg() { if (on) t.controlHandlers.pop_back(); }
     } ctlReg{tcx, c.controlScan == 1 ? static_cast<Block*>((Stmt*)c.controlBlkCache) : nullptr, tcx.cur};
     // ENTER/LEAVE/KEEP/UNDO in a method body are PHASERS, not statements. This
@@ -9594,20 +9625,21 @@ resumeMethodBody:
             // The statement whose value becomes the method's result; everything
             // before it runs in SINK context, so a discarded object's `sink` runs
             // (the sub path has always done this; a method body never did).
-            size_t lastReal = nst;
+            size_t lastReal = (bodyWork & 32) || nst == 0 ? nst : nst - 1;
+            if (bodyWork & 32)
             for (size_t k = nst; k-- > 0; ) {
                 auto* s = (*c.body)[k].get();
                 if (isBlockPhaser(s)) continue;
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 lastReal = k; break;
             }
-            const bool trailingCatch = trailingCatchBlock(*c.body);   // as the sub path
+            const bool trailingCatch = (bodyWork & 32) && trailingCatchBlock(*c.body);   // as the sub path
             if (trailingCatch) lastReal = nst;
             bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = resumeAt; i < nst; i++) {
                 runningStmt = i;
                 auto* s = (*c.body)[i].get();
-                if (isBlockPhaser(s)) {
+                if ((bodyWork & 32) && isBlockPhaser(s)) {
                     if (i + 1 == nst && tcx.cur)
                         if (Value* ev = tcx.cur->local("\x01enter-tail")) last = *ev;
                     continue;
@@ -9616,7 +9648,7 @@ resumeMethodBody:
                 // skip it in normal flow and this one ran it inline, so it fired
                 // with no exception in hand ($_ was Any) and its value became the
                 // method's.
-                if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
+                if ((bodyWork & 32) && s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 if (i + 1 == nst && s->kind == NK::ReturnStmt) { // tail return: no unwind
                     auto* r = static_cast<ReturnStmt*>(s);
                     if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
@@ -22685,23 +22717,26 @@ Value Interpreter::evalCall(Call* c) {
     // by the bare name reached the shadow, so each one called itself until the
     // stack gave out. The angle spelling `CORE::<&chdir>` was already handled;
     // this is the qualified one.
-    if (c->name.compare(0, 6, "CORE::") == 0 && c->name.size() > 6)
+    // (a plain name — every call to a program's own routine — is none of the
+    // forms tested by name below, decided once per node)
+    const bool special = callSpecialName(c);
+    if (special && c->name.compare(0, 6, "CORE::") == 0 && c->name.size() > 6)
         if (const Value* bref = builtinRef(c->name.substr(6))) {
             ValueList as = evalArgs(c->args);
             return callCallable(*bref, std::move(as), &c->args);
         }
     // temp/let take their argument by EXPRESSION — the generic args pre-eval
     // would run a `temp $a = 23` assignment before the snapshot is taken
-    if ((c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
+    if (special && (c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
         !tctx_.cur->find(callAmpName(c)))
         return evalTempLet(c);
     // take-rw also needs its argument by EXPRESSION: the pre-eval would hand it
     // a detached COPY, and the whole point is taking the storage itself
-    if (c->name == "take-rw" && c->args.size() == 1 && !tctx_.cur->find("&take-rw"))
+    if (special && c->name == "take-rw" && c->args.size() == 1 && !tctx_.cur->find("&take-rw"))
         return evalTakeRw(c);
     // `lazy gather { … }` runs NOTHING until pulled: `my @a = 1, |(lazy gather
     // { $n++ })` leaves $n alone (S02-types/array.t). A plain gather probes.
-    if (c->name == "lazy" && !c->callee && c->args.size() == 1 && c->args[0]->kind == NK::Unary &&
+    if (special && c->name == "lazy" && !c->callee && c->args.size() == 1 && c->args[0]->kind == NK::Unary &&
         static_cast<Unary*>(c->args[0].get())->op == "gather" && !tctx_.cur->find("&lazy")) {
         deferGather_ = true;
         Value v;
@@ -22713,7 +22748,7 @@ Value Interpreter::evalCall(Call* c) {
     ValueList args = evalArgs(c->args);
     // Whatever-curry over USER-DEFINED infixes: `* quack 5` / `5 quack *` /
     // `* quack *` build a WhateverCode, exactly like built-in binaries
-    if (c->name.rfind("infix:<", 0) == 0 && args.size() == 2) {
+    if (special && c->name.rfind("infix:<", 0) == 0 && args.size() == 2) {
         auto isW = [](const Value& v) {
             return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
         };
@@ -22852,7 +22887,7 @@ Value Interpreter::evalCall(Call* c) {
     if (!c->name.empty()) {
         // bare `::` — the current-scope stash: a Hash of every visible symbol
         // (innermost binding wins), for `::.keys` / `::{'$var'}` introspection
-        if (c->name == "__stash__") {
+        if (special && c->name == "__stash__") {
             Value h = Value::makeHash(); h.hashKind = "Stash";
             for (Env* en = tctx_.cur.get(); en; en = en->parent.get())
                 en->forEachVar([&](const std::string& n, Value& v) {
@@ -22866,7 +22901,7 @@ Value Interpreter::evalCall(Call* c) {
         // if they used separate locks, cas vs $x⚛++ on the same variable would
         // not be mutually atomic. Recursive, because cas's code form runs user
         // code under the stripe and that code may touch the same variable.
-        if (c->name == "cas" && c->args.size() >= 2 && !tctx_.cur->find("&cas")) {
+        if (special && c->name == "cas" && c->args.size() >= 2 && !tctx_.cur->find("&cas")) {
             Value* lv = nullptr;
             try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
             if (lv) {
@@ -22920,7 +22955,7 @@ Value Interpreter::evalCall(Call* c) {
                 throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable value"};
         }
         // undefine($x) resets its argument container to the type's undefined value
-        if (c->name == "undefine" && !c->args.empty() && !tctx_.cur->find("&undefine")) {
+        if (special && c->name == "undefine" && !c->args.empty() && !tctx_.cur->find("&undefine")) {
             // deprecated from 6.d: reported with the others as the program ends (MISC/misc.t)
             if (langRev_ >= 1)
                 noteDeprecation("Sub", "undefine", "GLOBAL", "assignment of Nil (or of Empty, for an Array or a Hash)", c->line);
@@ -22957,7 +22992,7 @@ Value Interpreter::evalCall(Call* c) {
         // atomic ops on an `atomicint` container. Under the GIL these are plain
         // read-modify-write (the lock already serialises them); they take the
         // container by reference, so operate on its lvalue.
-        if (c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find(callAmpName(c))) {
+        if (special && c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find(callAmpName(c))) {
             if (Value* lv = lvalue(c->args[0].get())) {
                 // REAL atomicity (the GIL used to be the only serialization —
                 // in parallel mode these lost updates: 12,540 of 20,000 in the
@@ -26567,7 +26602,7 @@ Value Interpreter::eval(Expr* e) {
                     tctx_.bindRawTails->end())
                 tctx_.tailVarSlot = tctx_.cur->find(ve->name);
             // `CORE::<CORE-SETTING-REV>` — the language revision's letter
-            if (ve->name == "CORE-SETTING-REV" && !tctx_.cur->find(ve->name))
+            if (opEq(ve->name, "CORE-SETTING-REV") && !tctx_.cur->find(ve->name))
                 return Value::str(langRev_ == 0 ? "c" : langRev_ == 1 ? "d" : "e");
             // `$OUR::x` inside a package is THAT package's variable — found
             // under its qualified name, and never a same-named outer lexical
@@ -27900,11 +27935,11 @@ Value Interpreter::eval(Expr* e) {
             // SetHash/BagHash/MixHash a weight of 0 deletes the key (quanthash.t).
             // Our `.values` is a list of copies, so the shape is walked here, one
             // key at a time, with each slot's topic written back after the block.
-            if ((mc->method == "map" || mc->method == "grep") && mc->args.size() == 1 && !mc->meta &&
+            if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->args.size() == 1 && !mc->meta &&
                 !mc->hyper && !mc->methodExpr && mc->inv && mc->inv->kind == NK::MethodCall && mc->args[0] &&
                 mc->args[0]->kind == NK::BlockExpr) {
                 auto* vm = static_cast<MethodCall*>(mc->inv.get());
-                if (vm->method == "values" && vm->args.empty() && !vm->meta && !vm->hyper && !vm->methodExpr &&
+                if (opEq(vm->method, "values") && vm->args.empty() && !vm->meta && !vm->hyper && !vm->methodExpr &&
                     vm->inv && vm->inv->kind == NK::VarExpr) {
                     auto* ve = static_cast<VarExpr*>(vm->inv.get());
                     Value* hv = !ve->declare && !ve->name.empty() && (ve->name[0] == '%' || ve->name[0] == '$')
@@ -27939,7 +27974,7 @@ Value Interpreter::eval(Expr* e) {
                                     else if (slot.toNum() == 0.0) h->erase(k);
                                     else (*h)[k] = slot;
                                 }
-                                if (mc->method == "map") {
+                                if (opEq(mc->method, "map")) {
                                     if (r.t == VT::Array && r.isList && r.s == "Slip")
                                         for (auto& x : *r.arr()) out.arr()->push_back(x);
                                     else out.arr()->push_back(r);
@@ -27956,7 +27991,7 @@ Value Interpreter::eval(Expr* e) {
             // `my $node-value := do with $stream { … } else { $node.value }` is
             // how PDF's serializer registers an empty dictionary node and fills
             // it in afterwards. Without the alias every object it wrote was `null`.
-            if (tctx_.bindRawTails && mc->method == "value" && mc->args.empty() &&
+            if (tctx_.bindRawTails && opEq(mc->method, "value") && mc->args.empty() &&
                 !mc->meta && !mc->hyper && !mc->methodExpr && mc->inv &&
                 std::find(tctx_.bindRawTails->begin(), tctx_.bindRawTails->end(),
                           (const void*)e) != tctx_.bindRawTails->end()) {
@@ -28031,15 +28066,15 @@ Value Interpreter::eval(Expr* e) {
             // it: an anonymous `[1, 2].name` is the generic "element", which is
             // what the value-level arm still answers.
             if (mc->inv && mc->inv->kind == NK::VarExpr && mc->args.empty() && !mc->allMode &&
-                !mc->meta && !mc->hyper && !mc->methodExpr && mc->method == "name") {
+                !mc->meta && !mc->hyper && !mc->methodExpr && opEq(mc->method, "name")) {
                 const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
                 if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%')) return Value::str(vn);
             }
             // …and `@a.VAR.name` / `%h.VAR.name` / `&c.VAR.name` ask the same
             if (mc->inv && mc->inv->kind == NK::MethodCall && mc->args.empty() && !mc->allMode &&
-                !mc->meta && !mc->hyper && !mc->methodExpr && mc->method == "name") {
+                !mc->meta && !mc->hyper && !mc->methodExpr && opEq(mc->method, "name")) {
                 auto* vm = static_cast<MethodCall*>(mc->inv.get());
-                if (vm->method == "VAR" && vm->args.empty() && vm->inv && vm->inv->kind == NK::VarExpr) {
+                if (opEq(vm->method, "VAR") && vm->args.empty() && vm->inv && vm->inv->kind == NK::VarExpr) {
                     const std::string& vn = static_cast<VarExpr*>(vm->inv.get())->name;
                     if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%' || vn[0] == '&'))
                         return Value::str(vn);
@@ -28047,7 +28082,7 @@ Value Interpreter::eval(Expr* e) {
             }
             {
                 Expr* dynInv = nullptr;
-                if (mc->method == "dynamic" && mc->args.empty() && mc->inv) {
+                if (opEq(mc->method, "dynamic") && mc->args.empty() && mc->inv) {
                     // A BARE `$s.dynamic` decontainerizes first and asks the HELD
                     // value, so it is the Hash's/Array's own flag (False) — only
                     // `$s.VAR.dynamic` asks the Scalar. For @ and % the value IS
@@ -28058,11 +28093,11 @@ Value Interpreter::eval(Expr* e) {
                     }
                     else if (mc->inv->kind == NK::MethodCall) {
                         auto* inner = static_cast<MethodCall*>(mc->inv.get());
-                        if (inner->method == "VAR" && inner->args.empty() && inner->inv &&
+                        if (opEq(inner->method, "VAR") && inner->args.empty() && inner->inv &&
                             inner->inv->kind == NK::VarExpr) dynInv = inner->inv.get();
                         // an ELEMENT's container is dynamic when its aggregate is:
                         // `my @a is dynamic; @a[0].VAR.dynamic` is True
-                        else if (inner->method == "VAR" && inner->args.empty() && inner->inv &&
+                        else if (opEq(inner->method, "VAR") && inner->args.empty() && inner->inv &&
                                  inner->inv->kind == NK::Index) {
                             Expr* b = static_cast<Index*>(inner->inv.get())->base.get();
                             if (b && b->kind == NK::VarExpr) {
@@ -28330,7 +28365,7 @@ Value Interpreter::eval(Expr* e) {
                 // on the bare method name.
             }
             // $/.make(v) attaches the ast to the MATCH ITSELF (not a copy)
-            if (inv.t == VT::Match && !mc->meta && mc->method == "make") {
+            if (inv.t == VT::Match && !mc->meta && opEq(mc->method, "make")) {
                 ValueList margs = evalArgs(mc->args);
                 Value v = margs.empty() ? Value::any() : margs[0];
                 if (Value* lv = lvalue(mc->inv.get())) lv->setPairVal(std::make_shared<Value>(v));
@@ -28350,7 +28385,7 @@ Value Interpreter::eval(Expr* e) {
             // the Pair where it is kept takes a private, read-only copy of the
             // value, so a later `$v = …` no longer shows through, and the answer
             // is that value (Rakudo's Pair.freeze)
-            if (inv.t == VT::Pair && mc->method == "freeze" && mc->args.empty() && !mc->meta && !mc->hyper) {
+            if (inv.t == VT::Pair && opEq(mc->method, "freeze") && mc->args.empty() && !mc->meta && !mc->hyper) {
                 auto freezeOne = [](Value& p) {
                     Value v = p.pairVal() ? *p.pairVal() : Value::any();
                     v.readonly = v.immutableBind = false;
@@ -28372,11 +28407,11 @@ Value Interpreter::eval(Expr* e) {
             // Buf.append/.push/.prepend/.unshift/.pop/.shift mutate the byte string
             // through the invocant's container
             if (inv.t == VT::Str && inv.hashKind == "Buf" && !mc->meta &&
-                (mc->method == "append" || mc->method == "push" ||
-                 mc->method == "prepend" || mc->method == "unshift" ||
-                 mc->method == "pop" || mc->method == "shift" ||
-                 mc->method == "reallocate")) {
-                if (mc->method == "reallocate") { // grow (zero-fill) or truncate in place
+                (opEq(mc->method, "append") || opEq(mc->method, "push") ||
+                 opEq(mc->method, "prepend") || opEq(mc->method, "unshift") ||
+                 opEq(mc->method, "pop") || opEq(mc->method, "shift") ||
+                 opEq(mc->method, "reallocate"))) {
+                if (opEq(mc->method, "reallocate")) { // grow (zero-fill) or truncate in place
                     ValueList wargs = evalArgs(mc->args);
                     size_t n = wargs.empty() ? 0 : (size_t)wargs[0].toInt();
                     Value* lvr = nullptr;   // a temporary invocant has no slot: reallocate the copy
@@ -28390,7 +28425,7 @@ Value Interpreter::eval(Expr* e) {
                     }
                     Value out = inv; out.s.resize(n, '\0'); return out;
                 }
-                if (mc->method == "pop" || mc->method == "shift") {
+                if (opEq(mc->method, "pop") || opEq(mc->method, "shift")) {
                     Value* lv = nullptr; try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
                     Value* tgt = lv ? lv : nullptr;
                     std::string& s = tgt ? tgt->s.mut() : inv.s.mut();
@@ -28402,7 +28437,7 @@ Value Interpreter::eval(Expr* e) {
                     int ew = inv.blobElemSize();
                     if ((int)s.size() < ew) ew = (int)s.size();
                     long long word = 0;
-                    if (mc->method == "pop") {
+                    if (opEq(mc->method, "pop")) {
                         size_t at = s.size() - (size_t)ew;
                         for (int bi = ew - 1; bi >= 0; bi--) word = (word << 8) | (unsigned char)s[at + bi];
                         s.resize(at);
@@ -28435,7 +28470,7 @@ Value Interpreter::eval(Expr* e) {
                     }
                 };
                 for (auto& a : wargs) collect(a);
-                bool front = mc->method == "prepend" || mc->method == "unshift";
+                bool front = opEq(mc->method, "prepend") || opEq(mc->method, "unshift");
                 Value* lvp = nullptr;                       // a temporary `Buf.new.push(…)`
                 try { lvp = lvalue(mc->inv.get()); } catch (RakuError&) {}   // has none: the copy below
                 if (Value* lv = lvp) {
@@ -28464,7 +28499,7 @@ Value Interpreter::eval(Expr* e) {
             // std::string rather than behind a shared_ptr the way an Array's do — so
             // unlike Array.splice it cannot mutate through a copy and needs the
             // invocant's own slot, exactly as the write-* mutators above do.
-            if (mc->method == "splice" && !mc->meta && !mc->methodExpr &&
+            if (opEq(mc->method, "splice") && !mc->meta && !mc->methodExpr &&
                 inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
                 if (inv.hashKind == "Blob")
                     throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
@@ -28503,8 +28538,8 @@ Value Interpreter::eval(Expr* e) {
             // SLOTS, and the mutator autothreads over them, vivifying each one
             if (inv.t == VT::Array && isJunction(inv) && !mc->meta && !mc->methodExpr &&
                 mc->inv->kind == NK::Index &&
-                (mc->method == "push" || mc->method == "append" ||
-                 mc->method == "unshift" || mc->method == "prepend")) {
+                (opEq(mc->method, "push") || opEq(mc->method, "append") ||
+                 opEq(mc->method, "unshift") || opEq(mc->method, "prepend"))) {
                 auto* ix = static_cast<Index*>(mc->inv.get());
                 if (ix->isHash && ix->index && !ix->multiDim && ix->adverb.empty()) {
                     Value key = eval(ix->index.get());
@@ -28537,8 +28572,8 @@ Value Interpreter::eval(Expr* e) {
             if ((inv.t == VT::Any ||
                  (inv.t == VT::Type && (inv.s == "Array" || inv.s.str().rfind("Array[", 0) == 0))) &&
                 !mc->meta && !mc->methodExpr &&
-                (mc->method == "push" || mc->method == "append" ||
-                 mc->method == "unshift" || mc->method == "prepend")) {
+                (opEq(mc->method, "push") || opEq(mc->method, "append") ||
+                 opEq(mc->method, "unshift") || opEq(mc->method, "prepend"))) {
                 if (Value* lv = lvalue(mc->inv.get())) {
                     // an unwritten slot READS as the element type (`Array[Int]`
                     // for `my Array of Int @x`): vivify THAT, not a plain Array
@@ -28561,7 +28596,7 @@ Value Interpreter::eval(Expr* e) {
             // `$s.subst-mutate(…)` substitutes IN PLACE and answers the Match —
             // it needs the invocant's slot, so it is handled here rather than in
             // the value-only method dispatcher.
-            if (mc->method == "subst-mutate" && !mc->meta && !mc->methodExpr && !mc->args.empty()) {
+            if (opEq(mc->method, "subst-mutate") && !mc->meta && !mc->methodExpr && !mc->args.empty()) {
                 Value* lv = nullptr;
                 try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
                 if (lv) {
@@ -28592,11 +28627,11 @@ Value Interpreter::eval(Expr* e) {
             // `.DEFINITE` as a literal identifier is a metamodel macro: it always
             // reports concreteness and never a user-declared DEFINITE method. The
             // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.
-            if (mc->method == "DEFINITE" && !mc->methodExpr && !mc->meta)
+            if (opEq(mc->method, "DEFINITE") && !mc->methodExpr && !mc->meta)
                 return Value::boolean(isDefined(inv));
             // `.VAR` on a $-variable: a Scalar container record answering
             // .^name (Scalar), .name ($x), .default; other methods hit the value.
-            if (mc->method == "VAR" && !mc->methodExpr && !mc->meta &&
+            if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta &&
                 mc->inv->kind == NK::VarExpr) {
                 auto* ivar = static_cast<VarExpr*>(mc->inv.get());
                 // `$!a.VAR` — the attribute's container: its `is default` value
@@ -28648,7 +28683,7 @@ Value Interpreter::eval(Expr* e) {
             }
             // `%h<a>.VAR` / `@a[0].VAR` — an element of a mutable Hash or Array
             // lives in a Scalar container (a Map's or List's does not)
-            if (mc->method == "VAR" && !mc->methodExpr && !mc->meta && mc->inv->kind == NK::Index) {
+            if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta && mc->inv->kind == NK::Index) {
                 auto* ix = static_cast<Index*>(mc->inv.get());
                 if (ix->index && ix->adverb.empty() && !ix->multiDim && ix->base &&
                     ix->base->kind == NK::VarExpr) {
@@ -28707,7 +28742,7 @@ Value Interpreter::eval(Expr* e) {
             // sift-down builds a path of aliases into the heap this way and then
             // shifts values down it; with the value instead, every write landed
             // in a copy and `pop` answered an unordered heap.
-            if ((mc->method == "BIND-POS" || mc->method == "BIND-KEY") &&
+            if ((opEq(mc->method, "BIND-POS") || opEq(mc->method, "BIND-KEY")) &&
                 !mc->meta && !mc->methodExpr && mc->args.size() >= 2)
                 args[1] = containerOfExpr(mc->args[1].get());
             // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
@@ -28724,10 +28759,10 @@ Value Interpreter::eval(Expr* e) {
             // Array in place (Raku semantics), so the mutation persists in the container.
             if ((inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) &&
                 (mc->inv->kind == NK::Index || mc->inv->kind == NK::VarExpr) &&
-                (mc->method == "push" || mc->method == "append" ||
-                 mc->method == "unshift" || mc->method == "prepend" ||
-                 mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY" ||
-                 mc->method == "ASSIGN-POS" || mc->method == "BIND-POS") &&
+                (opEq(mc->method, "push") || opEq(mc->method, "append") ||
+                 opEq(mc->method, "unshift") || opEq(mc->method, "prepend") ||
+                 opEq(mc->method, "ASSIGN-KEY") || opEq(mc->method, "BIND-KEY") ||
+                 opEq(mc->method, "ASSIGN-POS") || opEq(mc->method, "BIND-POS")) &&
                 // …but a TYPED slot whose class defines the method ITSELF dispatches
                 // there. `my BinaryHeap::MinHeap $h; $h.push(…)` has to reach
                 // BinaryHeap's own `::?CLASS:U $_ is rw:` candidate, which
@@ -28740,7 +28775,7 @@ Value Interpreter::eval(Expr* e) {
                     auto cit = classes_.find(resolveClassAlias(inv.s));
                     return cit != classes_.end() && cit->second->findMethod(mc->method);
                 }())) {
-                bool hashy = mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY";
+                bool hashy = opEq(mc->method, "ASSIGN-KEY") || opEq(mc->method, "BIND-KEY");
                 try {
                     if (Value* slot = lvalue(mc->inv.get())) {
                         if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type)
@@ -28838,7 +28873,7 @@ Value Interpreter::eval(Expr* e) {
             if (mc->bang) checkPrivatePermission(mc->method);
             // `.WHAT` is a MACRO: a user `method WHAT` does not change what it
             // answers (only the quoted `."WHAT"()` form reaches the method)
-            if (mc->method == "WHAT" && !mc->methodExpr && !mc->bang && !mc->meta && !mc->hyper &&
+            if (opEq(mc->method, "WHAT") && !mc->methodExpr && !mc->bang && !mc->meta && !mc->hyper &&
                 !mc->allMode && !mc->maybe && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
                 inv.obj()->cls->findMethod("WHAT"))
                 return methodCall(inv, "WHAT", {}, nullptr, /*skipOwn=*/true);
@@ -28861,7 +28896,7 @@ Value Interpreter::eval(Expr* e) {
             const std::string& mname = (mc->bang || mc->meta) ? prefixed : mc->method;
             // `$stash.^ver` — a pseudo-stash is its revision's CORE class (6.e's,
             // or 6.c's for 6.c and 6.d), which only the instance knows
-            if (mc->meta && mc->method == "ver" && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+            if (mc->meta && opEq(mc->method, "ver") && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
                 inv.obj()->cls->name == "PseudoStash") {
                 auto rit = inv.obj()->attrs.find("\x01rev");
                 Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");

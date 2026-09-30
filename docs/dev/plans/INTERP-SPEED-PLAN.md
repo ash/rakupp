@@ -117,6 +117,9 @@ uses; each item is its own commit.
   (1,828 `m == "…"` compares across the six segments). This is V6 P2's "inline
   caches keyed on type". It is not the hashed chain V6 measured slower than
   the chain: the decision is stored on the call site, not looked up per call.
+  *In part:* the 37 method-name compares in `eval`'s own MethodCall arm, and
+  the `CORE-SETTING-REV` test every variable read made, are `opEq` (a length
+  test first) — they were `strlen` calls; the segments' 1,828 are untouched.
 
 *Done when:* no operator or method-name string compare is left on the path any
 `perf-guard` kernel takes.
@@ -166,9 +169,23 @@ the one frame.
 Dispatch work does not move calls; call setup does
 ([DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md)).
 
-- [ ] Routine bodies run their ENTER/LEAVE work from the call path on a
+- [x] Routine bodies run their ENTER/LEAVE work from the call path on a
   statement vector, so `Block::entryWork` (c23ec4a8, −10% on loops) never
-  reached them. Apply it there.
+  reached them. Apply it there. *Done:* `Callable::bodyWork` (the same scan,
+  `stmtsEntryWork`) gates hoistSubs, the ENTER and LEAVE runners, the
+  value-statement scans and the per-statement phaser tests, in
+  `callCallableRaw` and `invokeMethod` both.
+- [x] Per-call constants off the call path: `Call::specialName` (evalCall's
+  ten name tests decided once), `ExprStmt::yieldsContainer` (exec's AST walk
+  per statement), the frame pool in `ExecContext::framePool` (it was a
+  guarded thread_local per acquire and per release), the CONTROL register
+  and `&?ROUTINE` guard without a `shared_ptr` copy or a thread_local write
+  on every call, and `PadLayout::byName` on the inline name hash.
+- [ ] A lean path for a plain sub. What is left of `callCallableRaw`'s own
+  ~20% is spread thin across ~24 KB of code: guards, frame bookkeeping,
+  the arity tally and binding, each a few percent at most. A sub with
+  positional untyped parameters, no traits and `bodyWork` 0 can skip most
+  of them outright, as `execPlainBlock` does for blocks.
 - [ ] Build the redispatch context lazily, only for a body that uses
   `callsame`/`nextsame` (V6 P2).
 - [ ] The multi-dispatch cache (V6 P2, issue #47).

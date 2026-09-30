@@ -415,8 +415,24 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
     // generation: (generation << 1) | answer. See declaredTypeOutranksRoutine,
     // which asked three hash maps on every call before this cached it.
     mutable std::atomic<uint64_t> typeRegProbe{~0ull};
+    // Whether `name` is one of the forms evalCall answers by NAME before any
+    // routine lookup (`CORE::…`, temp, let, take-rw, lazy, `infix:<…>`,
+    // __stash__, cas, undefine, `atomic-…`): 1 yes, 0 no, -1 not yet decided.
+    // See callSpecialName; a plain call skips every one of those compares.
+    mutable DecidedOnce<signed char> specialName{-1};
     Call(): Expr(NK::Call) {}
 };
+
+inline bool callSpecialName(const Call* c) {
+    signed char v = c->specialName;
+    if (v >= 0) return v;
+    const std::string& n = c->name;
+    const bool s = n.compare(0, 6, "CORE::") == 0 || n.compare(0, 7, "infix:<") == 0 ||
+                   n.compare(0, 7, "atomic-") == 0 || n == "temp" || n == "let" || n == "take-rw" ||
+                   n == "lazy" || n == "__stash__" || n == "cas" || n == "undefine";
+    c->specialName = s ? 1 : 0;
+    return s;
+}
 
 // `&name` for a Call, built at most once per node (see Call::ampName). A caller
 // on the losing side of the race frees its own copy and uses the winner's.
@@ -746,6 +762,9 @@ struct BlockExpr : Expr {
 // ---- Statements ----
 struct ExprStmt : Stmt {
     ExprPtr e;
+    // exprYieldsContainer(e), which exec asks after every evaluation and which
+    // reads nothing but the AST: 1 yes, 0 no, -1 not yet decided
+    DecidedOnce<signed char> yieldsContainer{-1};
     ExprStmt(): Stmt(NK::ExprStmt) {}
 };
 
