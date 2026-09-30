@@ -11691,6 +11691,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
+                            if (!nb && a->value->kind == NK::Binary &&
+                                fusedIntAssign(static_cast<Binary*>(a->value.get()), slot)) {
+                                if (anyRwLinks_) rwWriteThrough(a->target.get());
+                                return sink ? Value::any() : *slot;
+                            }
                             Value rv = evalValueOf(a->value.get());
                             if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, a->target.get(), slot);
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
@@ -19479,6 +19484,59 @@ static signed char binaryArm(const std::string& op) {
     return it == ARM.end() ? 0 : it->second;
 }
 
+// Whether a lexical `&infix:<op>` might shadow the built-in `op` — evalBinary's
+// own test (its `shadowMaybe`), for the paths that answer its fast shape
+// without it.
+static inline bool binaryShadowMaybe(const std::string& op) {
+    return lexShadowPossible(op) ||
+           (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
+            (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!=")));
+}
+
+// `$x = $a op $b` with `+`, `-` or `*` on two machine Ints (task 9, the fused
+// integer leaf): the result written into the slot, where the lane would build
+// an Int, move it in and destroy the temporary. Only for a node compiled to
+// its fast shape (so nothing but that shape could answer it), no shadowing
+// infix, no overflow, and a slot that is a plain Int with every flag at its
+// default — then the Value the lane would store differs from the slot in
+// `.i` alone. False, with nothing evaluated and the slot untouched, otherwise.
+bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
+    if (!pendingSubscripts_.empty() || (Expr::EvalFn)b->handler != &Interpreter::binaryFastHandler)
+        return false;
+    const std::string& op = b->op;
+    if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
+        return false;
+    if (slot->t != VT::Int || slot->x_ || slot->pk_ != PK::None || slot->natBits || slot->readonly ||
+        slot->itemized || slot->b || slot->isList || slot->objKeyed || slot->immutableBind ||
+        slot->pairValRO || slot->namedArg || slot->natSigned || slot->natFloat ||
+        !slot->enumName.empty() || !slot->enumType.empty() || !slot->hashKind.empty() || !slot->s.empty())
+        return false;
+    Env* const cur = tctx_.cur.get();
+    auto intLeaf = [&](Expr* x, bool isLit) -> const Value* {
+        const Value* p;
+        if (isLit) p = static_cast<const Value*>(b->litVal.get());
+        else {
+            auto* ve = static_cast<VarExpr*>(x);
+            Value* q = padPtrIn(ve, cur);
+            p = q ? q : cur->find(ve->name);
+        }
+        return (p && p->t == VT::Int && !p->big() && !p->natBits && p->hashKind.empty()) ? p : nullptr;
+    };
+    const Value* lp = intLeaf(b->lhs.get(), b->fastShape == 2);
+    if (!lp) return false;
+    const Value* rp = intLeaf(b->rhs.get(), b->fastShape == 1);
+    if (!rp) return false;
+    long long z;
+    if (op[0] == '+' ? rakupp::add_ovf(lp->i, rp->i, &z)
+      : op[0] == '-' ? rakupp::sub_ovf(lp->i, rp->i, &z)
+                     : rakupp::mul_ovf(lp->i, rp->i, &z))
+        return false;
+    ParStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+    slot->i = z;
+    slot->n = 0;
+    return true;
+}
+
 // The handler a Binary node is compiled to (Expr::handler) once evalBinary
 // has seen it reach its fast shape — `$n < 2`, `$n - 1`, `$a + $b` — which
 // every evaluation of that node then does: nothing evalBinary tests ahead of
@@ -19491,11 +19549,7 @@ static signed char binaryArm(const std::string& op) {
 Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
     auto* b = static_cast<Binary*>(e);
     const std::string& op = b->op;
-    const bool shadowMaybe =
-        lexShadowPossible(op) ||
-        (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
-         (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!=")));
-    if (!shadowMaybe) {
+    if (!binaryShadowMaybe(op)) {
         Env* const cur = tctx_.cur.get();
         auto scal = [&](Expr* x) -> const Value* {
             auto* ve = static_cast<VarExpr*>(x);
