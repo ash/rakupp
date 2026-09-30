@@ -310,9 +310,16 @@ UNBOX / `--cnp` idea applied per node rather than per loop.
   - The six comparisons as a CONDITION: `while`/`loop` had `tryCondBool`
     (TARG lever B); the ternary takes it now (`fib` −5%), and it refuses a
     shadowing `infix:<…>` as evalBinary does.
-  - *Not done:* an `if` condition (it needs the condition's value for
-    `else -> $x` and placeholder blocks); comparisons and arithmetic in value
-    position, which still build a Value.
+  - An `if`/`unless` condition whose value nothing reads
+    (`IfStmt::condValueUsed`: no branch or else binder, no placeholder)
+    takes `tryCondBool` too, which now also answers `eq ne lt gt le ge` on
+    two untagged Strs; a sunk if that is not taken no longer allocates the
+    empty Slip it returns. `streq` −23%.
+  - `$n++`/`$n--` on an untyped pad variable holding a plain Int steps `.i`
+    (`plainIntStepSlot`). `streq` another −37% (216 → 106 ms over the two),
+    `regexloop` −13%.
+  - *Not done:* comparisons and arithmetic in value position, which still
+    build a Value; element and attribute targets (`@a[$i]++`, `$!n++`).
 
 *Done when:* `loopsum` and `streq` have closed half their gap.
 
