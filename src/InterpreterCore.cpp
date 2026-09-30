@@ -11718,9 +11718,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // does care about are excluded by name. Plain `=` keeps the
                     // strict test: it overwrites the box wholesale and has never
                     // needed to look inside it.
+                    // …and a Rat keeps its numerator and denominator there, with
+                    // the same argument: `$t += $r` over Rats is an accumulator
+                    // too, and the op= arm's applyArith is where the long path
+                    // ends. Nothing else may ride in the block (a handle, a
+                    // shape, a type annotation).
                     bool coldOk = !slot->x_ ||
                                   (sv >= 2 && slot->t == VT::Int && slot->big() &&
-                                   slot->enumName.empty() && slot->natBits == 0);
+                                   slot->enumName.empty() && slot->natBits == 0) ||
+                                  (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
+                                   slot->natBits == 0 && !slot->ext() && !slot->shape() &&
+                                   slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey());
                     if (pf->layout->simple[tv->padSlot] &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
