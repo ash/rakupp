@@ -567,6 +567,26 @@ loops are refused for what is in the BODY — interpolated strings, whole-array
 assignments, `-> @row` loop variables, expressions the lowering does not
 cover — so the next step for reach is there, not in more loop sources.
 
+### Loop bodies, 2026-10-01
+
+With the loop sources widened, the corpus's loops were refused for their
+bodies. A kernel body may now also hold an interpolated string (the
+interpreter's own `interpolate()` over the parts, as a call when a part is an
+object, since its `.Str` may be the user's), a chained comparison (a `chain`
+stencil per link, the interpreter's own `chainLink`, so an object operand is
+bridged as it is there), a `my @x` declaration (a `newarr` stencil: a fresh
+Array per pass), a `-> @row` loop variable in a `for @a` (a register move,
+which is the bind the interpreter's `for` makes) and a `for` nested over a
+numeric range (`jit::nestedForLoop`: `^N` or an Int-literal start, so the
+range is numeric whatever N holds — a kernel cannot fall back half way).
+Refusals now name the node kind (`--cnp=verbose`).
+
+Across the 42 runnable programs: 19 sites eligible (17 at the start of the
+day), 15 programs enter a kernel (14), 1,647 kernel entries (77) —
+`examples/life.raku` alone enters 1,597, though at no gain in time, its
+kernels being small and entered per row. What still refuses: closures
+(`.map({ … })` in a body), `[+]`, whole-array assignment, `given`, `return`.
+
 ### What P4 needs before the flags go
 
 The end state is no flag at all: hot loops tier up because that is what the

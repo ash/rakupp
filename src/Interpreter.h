@@ -1927,6 +1927,8 @@ public:
     // dispatch only, so a built-in qualifier reaches the built-in behaviour.
     Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
                      bool skipOwn = false);
+    Value interpolate(ValueList& vals);   // evalInterp over evaluated parts (and a --cnp kernel's)
+    bool chainLink(const std::string& op, const Value& prev, const Value& next);   // one link of `a < b < c`
     Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs,
                           bool skipOwn = false);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to

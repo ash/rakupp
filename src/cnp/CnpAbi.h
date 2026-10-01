@@ -108,6 +108,11 @@ int rk_cnp_idxset (RkCnpFrame* f, uint64_t site, uint64_t val);
 // r[dst] = r[base].elems — a plain array's length read directly, anything
 // else through the method (a `for @a` kernel's bound, asked every iteration)
 int rk_cnp_alen   (RkCnpFrame* f, uint64_t base, uint64_t dst);
+// r[dst] = a fresh empty Array — `my @x;` in a kernel, once per pass
+int rk_cnp_newarr (RkCnpFrame* f, uint64_t dst);
+// r[d] = one link of a chained comparison, `r[a] OP r[b]`, as a Bool — the
+// chain's own rule (Interpreter::chainLink), which bridges an object operand
+int rk_cnp_chain  (RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b);
 
 #ifdef __cplusplus
 }

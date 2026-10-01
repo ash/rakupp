@@ -3721,7 +3721,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (__jg.site && jit::isReady(__jg.site)) {
                     if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
                     kframe->define(jit::arrayForIndexSlot(), Value::integer((long long)i));
-                    kframe->define(var, Value::any());
+                    kframe->define(var, var[0] == '@' ? Value::array() : Value::any());
                     if (jit::runIfReady(__jg.site, *this, kframe.get())) return forResult();
                 }
                 if (__jg.site) jit::tick(__jg.site);
@@ -19502,6 +19502,22 @@ static bool numFastArith(const std::string& op, const Value& l, const Value& r, 
     }
 }
 
+// One link of a chained comparison (`a < b < c`): the chain's own rule, and a
+// --cnp kernel's (rk_cnp_chain). A .Bridge/.Numeric object compares through
+// its bridged value, and a STRING op compares an object by its own `method
+// Str`; everything else is applyArith.
+bool Interpreter::chainLink(const std::string& op, const Value& prev, const Value& next) {
+    Value pc = prev, nc = next;
+    if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(op)) {
+        pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
+    }
+    else if ((pc.t == VT::Object || nc.t == VT::Object) && isStringCmpOp(op)) {
+        if (pc.t == VT::Object) pc = Value::str(strOf(pc));
+        if (nc.t == VT::Object) nc = Value::str(strOf(nc));
+    }
+    return applyArith(op, pc, nc).truthy();
+}
+
 // The handler a Binary node is compiled to (Expr::handler) once evalBinary
 // has seen it reach its fast shape — `$n < 2`, `$n - 1`, `$a + $b` — which
 // every evaluation of that node then does: nothing evalBinary tests ahead of
@@ -27661,17 +27677,7 @@ Value Interpreter::eval(Expr* e) {
                     prev = next;
                     continue;
                 }
-                // a .Bridge/.Numeric object compares through its bridged value
-                Value pc = prev, nc = next;
-                if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(ch->ops[k])) {
-                    pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
-                }
-                // …and a STRING op compares an object by its own `method Str`
-                else if ((pc.t == VT::Object || nc.t == VT::Object) && isStringCmpOp(ch->ops[k])) {
-                    if (pc.t == VT::Object) pc = Value::str(strOf(pc));
-                    if (nc.t == VT::Object) nc = Value::str(strOf(nc));
-                }
-                if (!applyArith(ch->ops[k], pc, nc).truthy()) return Value::boolean(false);
+                if (!chainLink(ch->ops[k], prev, next)) return Value::boolean(false);
                 prev = next;
             }
             return Value::boolean(true);

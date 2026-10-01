@@ -135,6 +135,11 @@ const char* kCountedForEnd = "$__jit_for_end";
 // The index a `for @a` kernel walks (synthArrayLoop): a slot the kernel owns,
 // as a counted `for`'s loop variable is.
 const char* kArrayForIdx = "$__jit_for_idx";
+// The operator of synthArrayLoop's `@row = @a[$i]` for a `-> @row` loop
+// variable: a BIND, which the interpreter's `for` does (no copy, no list
+// assignment). Spelled so no program can write it; the walk admits it for the
+// bound variable only, and the lowering moves the element into its register.
+const char* kBindOp = "\x01bind";
 const char* countedForEndSlot() { return kCountedForEnd; }
 const char* arrayForIndexSlot() { return kArrayForIdx; }
 
@@ -203,6 +208,15 @@ bool plainScalar(const std::string& n) {
     if (!(std::isalpha((unsigned char)c) || c == '_')) return false;  // excludes $*x $!x $.x $?x $/ $0
     if (n == "$_") return false;                                      // the topic is frame state, not a lexical
     return n.find("::") == std::string::npos;
+}
+
+LoopStmt* nestedForLoopImpl(ForStmt* fs);   // below: a nested `for` as the loop it lowers as
+
+// The node kind's name, for a refusal that has no better one.
+static const char* nkName(NK k) {
+    static const char* const n[] = {"IntLit", "NumLit", "StrLit", "InterpStr", "BoolLit", "VarExpr", "ListExpr", "Assign", "Binary", "Unary", "Call", "MethodCall", "Index", "Ternary", "Range", "Pair", "BlockExpr", "ArrayLit", "HashLit", "NameTerm", "RegexLit", "SubstLit", "ChainExpr", "SymbolicRef", "AllomorphLit", "NqpOp", "ExprStmt", "VarDecl", "SubDecl", "IfStmt", "WhileStmt", "ForStmt", "LoopStmt", "Block", "ReturnStmt", "LastStmt", "NextStmt", "RedoStmt", "UseStmt", "EmptyStmt", "GivenStmt", "WhenStmt", "RepeatStmt", "Whatever", "ClassDecl", "SelfTerm", "EnumDecl", "NamedRegexDecl", "SubsetDecl"};
+    const size_t i = (size_t)k;
+    return i < sizeof n / sizeof *n ? n[i] : "?";
 }
 
 struct Scan {
@@ -281,14 +295,33 @@ void Scan::expr(Expr* e) {
     switch (e->kind) {
         case NK::IntLit: case NK::NumLit: case NK::BoolLit: return;
         case NK::StrLit: return;
+        case NK::ChainExpr: {
+            // `a < b < c` — copy-and-patch only, and only over the plain
+            // comparisons (rk_cnp_chain): a user `is assoc<chain>` operator,
+            // a smartmatch or a Whatever curries or calls instead
+            auto* ch = static_cast<ChainExpr*>(e);
+            static const std::set<std::string> kOk = {"<", "<=", ">", ">=", "==", "!=",
+                                                      "eq", "ne", "lt", "gt", "le", "ge"};
+            if (g_opt.backend != Backend::Cnp) { fail("a chained comparison"); return; }
+            for (auto& o : ch->ops) if (!kOk.count(o)) { fail("operator '" + o + "' in a chain"); return; }
+            for (auto& o : ch->operands) { expr(o.get()); if (!err.empty()) return; }
+            return;
+        }
         case NK::InterpStr: {
             // `"even"` is an InterpStr, not a StrLit — every double-quoted
             // string in Raku is an interpolation that happens to have nothing
             // to interpolate. One with a variable or an expression in it would
             // stringify at run time, which can reach a user-written .Str, so
-            // only the all-literal case is taken.
-            for (auto& part : static_cast<InterpStr*>(e)->parts)
-                if (!part || part->kind != NK::StrLit) { fail("an interpolated string"); return; }
+            // the C++ backend takes only the all-literal case. Copy-and-patch
+            // runs the interpolation as a call (rk_cnp_call), with the loop's
+            // variables written back around it whenever a part is an object.
+            for (auto& part : static_cast<InterpStr*>(e)->parts) {
+                if (!part) { fail("an interpolated string"); return; }
+                if (part->kind == NK::StrLit) continue;
+                if (g_opt.backend != Backend::Cnp) { fail("an interpolated string"); return; }
+                expr(part.get());
+                if (!err.empty()) return;
+            }
             return;
         }
         case NK::VarExpr: {
@@ -296,11 +329,19 @@ void Scan::expr(Expr* e) {
             const bool isCounted = (!countedVar.empty() && v->name == countedVar) ||
                                    (!boundVar.empty() && v->name == boundVar);
             if ((plainArray(v->name) || plainHash(v->name)) && g_opt.backend == Backend::Cnp && !v->declare) {
-                arrays.insert(v->name);
+                // a `my @x` of the kernel's own is a register, not a container
+                // to check at entry
+                if (!declaredHere(v->name)) arrays.insert(v->name);
                 useName(v->name);
                 return;
             }
-            if (!plainScalar(v->name) && !isCounted) { fail("variable " + v->name); return; }
+            // …and copy-and-patch may declare one: a bare `my @x`, a fresh
+            // empty Array each time the declaration runs (rk_cnp_newarr)
+            const bool cnpArrayDecl = v->declare && plainArray(v->name) && g_opt.backend == Backend::Cnp;
+            // (and a nested `for`'s `$_`, a local of the kernel: nestedForLoop)
+            const bool localTopic = v->name == "$_" && g_opt.backend == Backend::Cnp &&
+                                    (v->declare || declaredHere(v->name));
+            if (!plainScalar(v->name) && !isCounted && !cnpArrayDecl && !localTopic) { fail("variable " + v->name); return; }
             if (v->declare && declRefused) { fail("a declaration in this loop's header"); return; }
             if (v->declare && declIsSlot) { useName(v->name); return; }
             if (v->declare) {
@@ -329,6 +370,15 @@ void Scan::expr(Expr* e) {
         }
         case NK::Assign: {
             auto* a = static_cast<Assign*>(e);
+            if (a->op == kBindOp) {   // synthArrayLoop's `-> @row` (see kBindOp)
+                if (a->target->kind != NK::VarExpr || static_cast<VarExpr*>(a->target.get())->name != boundVar) {
+                    fail("a bind the JIT did not make"); return;
+                }
+                written.insert(boundVar);
+                expr(a->value.get());
+                expr(a->target.get());
+                return;
+            }
             if (!asgOps().count(a->op)) { fail("assignment operator '" + a->op + "'"); return; }
             if (a->containerSigil) { fail("a container-sigil assignment"); return; }
             // `$x += $y` is `$x = $x + $y` and consults `infix:<+>`.
@@ -427,7 +477,7 @@ void Scan::expr(Expr* e) {
             callNames.insert(c->name);
             return;
         }
-        default: fail("an expression the kernel whitelist does not cover"); return;
+        default: fail(std::string("an expression the kernel whitelist does not cover (") + nkName(e->kind) + ")"); return;
     }
 }
 
@@ -493,6 +543,21 @@ void Scan::stmt(Stmt* s) {
             block(w->body.get(), true);
             return;
         }
+        case NK::ForStmt: {
+            // a nested `for` over a numeric range (nestedForLoop), copy-and-patch only
+            auto* fs = static_cast<ForStmt*>(s);
+            LoopStmt* lp = g_opt.backend == Backend::Cnp ? nestedForLoopImpl(fs) : nullptr;
+            if (!lp) { fail("a nested `for` of this shape"); return; }
+            const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+            Scan pre;
+            pre.scopes.push_back({var});
+            pre.block(fs->body.get(), true);
+            if (pre.err.empty() && pre.written.count(var)) {
+                fail("an assignment to a nested `for`'s loop variable, which it binds read-only"); return;
+            }
+            stmt(lp);
+            return;
+        }
         case NK::LoopStmt: {
             auto* l = static_cast<LoopStmt*>(s);
             if (!s->label.empty()) { fail("a labelled loop"); return; }
@@ -510,7 +575,7 @@ void Scan::stmt(Stmt* s) {
             scopes.pop_back();
             return;
         }
-        default: fail("a statement the kernel whitelist does not cover"); return;
+        default: fail(std::string("a statement the kernel whitelist does not cover (") + nkName(s->kind) + ")"); return;
     }
 }
 
@@ -812,7 +877,7 @@ LoopStmt* synthArrayLoop(ForStmt* fs, const std::string& var, const std::string&
     idx->index.reset(mkVar(kArrayForIdx));
     auto* asg = new Assign();
     asg->line = fs->line;
-    asg->op = "=";
+    asg->op = var[0] == '@' ? kBindOp : "=";
     asg->target.reset(mkVar(var));
     asg->value.reset(idx);
     auto* st = new ExprStmt();
@@ -827,6 +892,79 @@ LoopStmt* synthArrayLoop(ForStmt* fs, const std::string& var, const std::string&
     lp->cond.reset(cond);
     lp->incr.reset(incr);
     lp->body.reset(body);
+    return lp;
+}
+
+// A `for` NESTED in a copy-and-patch kernel's body:
+//
+//     for ^N -> $j { BODY }          for LIT ..^ N -> $j { BODY }
+//
+// lowers as `loop (my $j = LO, my $e = HI; $j < $e; $j++) { BODY }` (`<=` for
+// an inclusive end), the shape the lowering already takes. Only where the
+// range is NUMERIC whatever HI holds at run time, because a kernel cannot fall
+// back to the interpreter half way: `^N` numifies N, and an Int literal start
+// makes the range numeric; `'a' .. 'e'` and a Num start keep the loop
+// interpreted. HI is evaluated once, as the range is; the loop variable is a
+// read-only binding, so a body that writes it is refused by the walk. Leaked
+// and cached per node like synthCountedLoop's (BODY is borrowed); null cached
+// for a shape that does not qualify.
+LoopStmt* nestedForLoopImpl(ForStmt* fs) {
+    static std::mutex mu;
+    static std::map<const ForStmt*, LoopStmt*> cache;
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = cache.find(fs);
+    if (it != cache.end()) return it->second;
+    LoopStmt* lp = nullptr;
+    const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+    Expr* lo = nullptr; Expr* hi = nullptr; bool exTo = false;
+    if (fs->list && fs->list->kind == NK::Unary) {
+        auto* u = static_cast<Unary*>(fs->list.get());
+        if (u->op == "^" && !u->postfix) { hi = u->operand.get(); exTo = true; }
+    } else if (fs->list && fs->list->kind == NK::Range) {
+        auto* r = static_cast<RangeExpr*>(fs->list.get());
+        if (!r->exFrom && r->from && r->from->kind == NK::IntLit &&
+            static_cast<IntLit*>(r->from.get())->big.empty()) {
+            lo = r->from.get(); hi = r->to.get(); exTo = r->exTo;
+        }
+    }
+    const bool shapeOk = hi && fs->label.empty() && !fs->asExpr && !fs->modifier && !fs->destructure &&
+                         !fs->rwVars && fs->params.empty() && fs->vars.size() <= 1 && fs->body &&
+                         (var == "$_" || plainScalar(var));
+    if (shapeOk) {
+        auto mkVar = [&](const std::string& n, bool decl) {
+            auto* v = new VarExpr(n);
+            v->line = fs->line;
+            if (decl) { v->declare = true; v->declScope = "my"; }
+            return v;
+        };
+        const std::string endName = "$__jit_end_" + std::to_string((unsigned long long)(uintptr_t)fs);
+        auto* init = new ListExpr();
+        init->line = fs->line;
+        auto* a1 = new Assign(); a1->line = fs->line; a1->op = "=";
+        a1->target.reset(mkVar(var, true));
+        if (lo) { auto* l = new IntLit(static_cast<IntLit*>(lo)->v); l->line = fs->line; a1->value.reset(l); }
+        else { auto* z = new IntLit(0); z->line = fs->line; a1->value.reset(z); }
+        auto* a2 = new Assign(); a2->line = fs->line; a2->op = "=";
+        a2->target.reset(mkVar(endName, true));
+        a2->value.reset(hi);                    // BORROWED, as the body is
+        init->items.emplace_back(a1);
+        init->items.emplace_back(a2);
+        auto* cond = new Binary();
+        cond->op = exTo ? "<" : "<=";
+        cond->line = fs->line;
+        cond->lhs.reset(mkVar(var, false));
+        cond->rhs.reset(mkVar(endName, false));
+        auto* incr = new Unary();
+        incr->op = "++"; incr->postfix = true; incr->line = fs->line;
+        incr->operand.reset(mkVar(var, false));
+        lp = new LoopStmt();
+        lp->line = fs->line;
+        lp->init.reset(init);
+        lp->cond.reset(cond);
+        lp->incr.reset(incr);
+        lp->body.reset(fs->body.get());         // BORROWED
+    }
+    cache[fs] = lp;
     return lp;
 }
 
@@ -885,7 +1023,7 @@ void examine(Site* s) {
             sc.fail("a loop shape the JIT does not take");
         else if (overArray && g_opt.backend != Backend::Cnp)
             sc.fail("a `for` over an array, which only copy-and-patch takes");
-        else if (overArray && var != "$_" && !plainScalar(var))
+        else if (overArray && var != "$_" && !plainScalar(var) && !plainArray(var))
             sc.fail("loop variable " + var);
         else if (overArray) {
             const std::string arr = static_cast<VarExpr*>(fs->list.get())->name;
@@ -1070,6 +1208,9 @@ void startCompile(Site* s) {
 }
 
 }  // namespace
+
+// (see nestedForLoopImpl)
+LoopStmt* nestedForLoop(ForStmt* fs) { return nestedForLoopImpl(fs); }
 
 // ---- the public surface ----------------------------------------------------
 

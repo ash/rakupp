@@ -158,6 +158,23 @@ regex, a `for`, `return`, `die`, a phaser, `state`, a closure. `--jit=verbose`
 names the construct that refused each loop, which is also the work queue for
 widening the list.
 
+`--cnp` takes more than that list. Its kernels may also:
+
+- call routines and methods with positional arguments (the loop's variables are
+  written back to their containers around each call and reloaded after it),
+  and compile a small sub in place instead of calling it;
+- index plain arrays and hashes, read and store elements, and take `@a.elems`;
+- interpolate strings (`"$x-{$y + 1}"`), through the interpreter's own
+  interpolation;
+- use chained comparisons (`0 <= $x < $n`), each link by the chain's own rule;
+- declare `my @x` (a fresh empty Array each time the declaration runs) and
+  `my int $i` / `my num $x`;
+- nest a `for` over a numeric range (`for ^$n -> $j`, `for 1 ..^ $n`), and bind a
+  `-> @row` loop variable in a `for` over an array.
+
+`--cnp=verbose` names the node kind when a body holds something none of these
+cover.
+
 A `for` **around** an eligible loop, where the outer `for` is not itself a
 candidate, costs nothing: it is not refused, so the inner loop still tiers up
 and is re-entered once per outer iteration.

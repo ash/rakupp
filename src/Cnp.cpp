@@ -18,6 +18,7 @@
 // holding them unboxed from entry to exit is unobservable. Every widening of
 // the whitelist has to answer that again.
 #include "Cnp.h"
+#include "Jit.h"
 #include "Ast.h"
 #include "Interpreter.h"
 #include "Value.h"
@@ -48,6 +49,7 @@ struct IndexSite {
 struct KernelCall {
     std::unique_ptr<Call> synth;          // a sub call, or…
     std::unique_ptr<MethodCall> msynth;   // …a method call (its invocant is argRegs[0])
+    std::unique_ptr<InterpStr> isynth;    // …or an interpolation, every part in argRegs
     std::string method;                   // the method's name, for the fast path
     bool pureMethod = false;              // a side-effect-free builtin method (see isPureMethod)
     std::vector<int> argRegs;
@@ -222,6 +224,20 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
     auto reload = [&] { for (size_t i = 0; i < n; i++) setReg(f, i, *slots[i]); };
     try {
         auto& cs = (*static_cast<std::vector<rakupp::cnp::KernelCall>*>(f->calls))[site];
+        // An interpolation whose parts are no objects reaches no user code
+        // (only an object can carry a .Str of its own), so it needs neither
+        // the write-back nor the reload a call has: the interpreter's own
+        // interpolate() over the part values, directly.
+        if (cs.isynth) {
+            ValueList vals;
+            vals.reserve(cs.argRegs.size());
+            bool plain = true;
+            for (int r : cs.argRegs) {
+                vals.push_back(regValue(f, (uint64_t)r));
+                if (vals.back().t == VT::Object) plain = false;
+            }
+            if (plain) { setReg(f, dst, I.interpolate(vals)); return 0; }
+        }
         spill();
         // A side-effect-free builtin METHOD on a value that is not an object
         // goes straight to the runtime's method dispatch, the route --exe
@@ -243,7 +259,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
             cs.builtin = cs.synth ? I.builtinPtr(cs.synth->name) : nullptr;
             cs.builtinChecked = true;
         }
-        if (cs.builtin && !saved->find("&" + cs.synth->name)) {
+        if (cs.builtin && cs.synth && !saved->find("&" + cs.synth->name)) {
             ValueList args;
             args.reserve(cs.argRegs.size());
             for (int r : cs.argRegs) args.push_back(regValue(f, (uint64_t)r));
@@ -260,7 +276,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
         Interpreter::tctx_.cur = env;
         Value res;
-        try { res = cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
+        try { res = cs.isynth ? I.eval(cs.isynth.get()) : cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
         catch (LastEx& e) {
             if (!e.label.empty()) throw;
             Interpreter::tctx_.cur = saved; reload(); f->ctl = 1; return 0;
@@ -284,6 +300,21 @@ int rk_cnp_idxget(RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint
     try {
         Value v = rtIndexGet(regValue(f, base), regValue(f, key), isHash != 0);
         setReg(f, dst, v);
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
+int rk_cnp_newarr(RkCnpFrame* f, uint64_t dst) {
+    try {
+        setReg(f, dst, rtTypedDefault("", '@'));   // what the interpreter's `my @x` starts as
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
+int rk_cnp_chain(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b) {
+    try {
+        const bool ok = interpOf(f).chainLink(std::string(kOpNames[op]), regValue(f, a), regValue(f, b));
+        setReg(f, d, Value::boolean(ok));
         return 0;
     } catch (...) { stash(f); return 1; }
 }
@@ -429,7 +460,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow, call, jctl, idxget, idxset, div, alen;
+    int natchk, natchkslow, call, jctl, idxget, idxset, div, alen, chain, newarr;
     bool ok = false;
 };
 
@@ -461,6 +492,8 @@ const StencilIds& ids() {
         v.idxget = g("rk_st_idxget"); v.idxset = g("rk_st_idxset");
         v.div = g("rk_st_div");
         v.alen = g("rk_st_alen");
+        v.chain = g("rk_st_chain");
+        v.newarr = g("rk_st_newarr");
         return v;
     }();
     return s;
@@ -720,14 +753,36 @@ int Lower::expr(Expr* e) {
             return d;
         }
         case NK::InterpStr: {
-            // The whitelist only admits one with nothing to interpolate.
-            std::string s;
-            for (auto& p : static_cast<InterpStr*>(e)->parts) {
-                if (!p || p->kind != NK::StrLit) { fail("an interpolated string"); return 0; }
-                s += static_cast<StrLit*>(p.get())->v;
+            auto* is = static_cast<InterpStr*>(e);
+            bool allLit = true;
+            for (auto& p : is->parts) if (!p || p->kind != NK::StrLit) { allLit = false; break; }
+            if (allLit) {
+                std::string s;
+                for (auto& p : is->parts) s += static_cast<StrLit*>(p.get())->v;
+                int d = temp();
+                emit(ids().loadk, (uint64_t)d, (uint64_t)constant(Value::str(s)));
+                return d;
+            }
+            // Each part into a register, then the interpreter's interpolate()
+            // over them, as a call (rk_cnp_call): a part that is an object may
+            // run a user .Str, which may see the loop's variables.
+            KernelCall cs;
+            cs.isynth = std::make_unique<InterpStr>();
+            cs.isynth->line = is->line;
+            for (size_t k = 0; k < is->parts.size(); k++) {
+                int r = temp();
+                exprInto(is->parts[k].get(), r);
+                if (bad()) return 0;
+                const std::string nm = "$__cnp_arg" + std::to_string(k);
+                cs.argRegs.push_back(r);
+                cs.argNames.push_back(nm);
+                auto ve = std::make_unique<VarExpr>(nm);
+                ve->line = is->line;
+                cs.isynth->parts.push_back(std::move(ve));
             }
             int d = temp();
-            emit(ids().loadk, (uint64_t)d, (uint64_t)constant(Value::str(s)));
+            calls.push_back(std::move(cs));
+            emit(ids().call, (uint64_t)(calls.size() - 1), (uint64_t)d);
             return d;
         }
         case NK::VarExpr: {
@@ -738,7 +793,8 @@ int Lower::expr(Expr* e) {
                 // reset on every pass through the declaration. A native starts
                 // at its zero instead: `my int $k;` is 0, `my num $t;` 0e0.
                 char nk = natKind(v);
-                if (nk == 'i') emit(ids().loadi, (uint64_t)r, 0);
+                if (v->name[0] == '@') emit(ids().newarr, (uint64_t)r);
+                else if (nk == 'i') emit(ids().loadi, (uint64_t)r, 0);
                 else if (nk == 'n') emit(ids().loadn, (uint64_t)r, (uint64_t)d2bits(0.0));
                 else emit(ids().loadk, (uint64_t)r, (uint64_t)constant(Value()));
                 return r;
@@ -772,7 +828,10 @@ int Lower::expr(Expr* e) {
             }
             if (a->target->kind != NK::VarExpr) { fail("assignment to a non-variable"); return 0; }
             auto* tv = static_cast<VarExpr*>(a->target.get());
-            if (a->op == "=") {
+            // `=`, and the `-> @row` bind a `for @a` kernel makes (Jit.cpp
+            // kBindOp): a register move shares the element's storage, which
+            // is what a bind is
+            if (a->op == "=" || a->op == "\x01bind") {
                 // The VALUE first, so that `my $x = $x` reads the OUTER `$x`
                 // before the declaration shadows it — Raku's own order, and the
                 // one the eligibility walk assumed.
@@ -831,6 +890,33 @@ int Lower::expr(Expr* e) {
                 storeChecked(tv, res, dst, srcNat);
             }
             return dst;
+        }
+        case NK::ChainExpr: {
+            // `a < b < c`: each operand once, left to right, each link the
+            // chain's own rule (rk_cnp_chain), False at the first that fails
+            // without evaluating what follows it
+            auto* ch = static_cast<ChainExpr*>(e);
+            int d = temp();
+            int prev = temp();
+            exprInto(ch->operands[0].get(), prev);
+            if (bad()) return 0;
+            std::vector<int> outs;
+            for (size_t k = 0; k < ch->ops.size(); k++) {
+                int oi = opIndex(ch->ops[k]);
+                if (oi < 0) { fail("operator '" + ch->ops[k] + "'"); return 0; }
+                int next = temp();
+                exprInto(ch->operands[k + 1].get(), next);
+                if (bad()) return 0;
+                emit(ids().chain, (uint64_t)oi, (uint64_t)d, (uint64_t)prev, (uint64_t)next);
+                if (k + 1 < ch->ops.size()) {
+                    int skip = emit(ids().jf, (uint64_t)d);
+                    colds.push_back({ColdReq::Truthy, skip, (uint64_t)d, 0, 0, 0, 0, 0, false});
+                    outs.push_back(skip);
+                }
+                prev = next;
+            }
+            for (int s : outs) patch(s, here());
+            return d;
         }
         case NK::Binary: {
             auto* b = static_cast<Binary*>(e);
@@ -1212,6 +1298,11 @@ void Lower::stmt(Stmt* s) {
         case NK::Block:     block(static_cast<Block*>(s), true); return;
         case NK::WhileStmt:
         case NK::LoopStmt:  loopStmt(s, false); return;
+        case NK::ForStmt: {   // a nested `for` over a numeric range (jit::nestedForLoop)
+            if (LoopStmt* lp = jit::nestedForLoop(static_cast<ForStmt*>(s))) { loopStmt(lp, false); return; }
+            fail("a nested `for` of this shape");
+            return;
+        }
         default: fail("a statement the lowering has no stencil for"); return;
     }
 }
@@ -1323,6 +1414,10 @@ int countDecls(Stmt* s) {
         case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s);
                              return countDecls(l->init.get()) + countDecls(l->cond.get()) +
                                     countDecls(l->incr.get()) + countDecls(l->body.get()); }
+        case NK::ForStmt: {   // as the loop it lowers as (jit::nestedForLoop)
+            LoopStmt* l = jit::nestedForLoop(static_cast<ForStmt*>(s));
+            return l ? countDecls(l) : 0;
+        }
         default: return 0;
     }
 }

@@ -363,18 +363,24 @@ std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok) {
 }
 
 Value Interpreter::evalInterp(InterpStr* s) {
-    // Evaluate the parts first: a JUNCTION part autothreads the WHOLE string —
-    // `my $j = 1|2; "v=$j"` is any("v=1", "v=2") in Rakudo, not "v=12".
-    // Interpolation is concatenation, and infix ~ already autothreads; gluing the
-    // eigenstates together instead silently produced text no engine would print.
     ValueList vals;
     vals.reserve(s->parts.size());
+    for (auto& p : s->parts) vals.push_back(eval(p.get()));
+    return interpolate(vals);
+}
+
+// An interpolation over parts already evaluated — evalInterp's, and a --cnp
+// kernel's (rk_cnp_call), so the two cannot answer differently.
+// Evaluate the parts first: a JUNCTION part autothreads the WHOLE string —
+// `my $j = 1|2; "v=$j"` is any("v=1", "v=2") in Rakudo, not "v=12".
+// Interpolation is concatenation, and infix ~ already autothreads; gluing the
+// eigenstates together instead silently produced text no engine would print.
+Value Interpreter::interpolate(ValueList& vals) {
     bool anyJ = false;
-    for (auto& p : s->parts) {
-        vals.push_back(eval(p.get()));
-        anyJ = anyJ || isJunction(vals.back());
+    for (size_t vi = 0; vi < vals.size(); vi++) {
+        anyJ = anyJ || isJunction(vals[vi]);
         // a binary buffer has no string form: `"Foo: $buf"` is X::Buf::AsStr
-        const Value& bv = vals.back();
+        const Value& bv = vals[vi];
         if (bv.t == VT::Str && (bv.hashKind == "Buf" || bv.hashKind == "Blob") &&
             bv.enumName != "utf8" && bv.enumName != "utf16" && bv.enumName != "utf32")
             throwTyped("X::Buf::AsStr", {{"method", "Str"}},

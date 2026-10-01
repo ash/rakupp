@@ -415,6 +415,18 @@ int rk_st_idxget(F* f, int64_t* r, uint8_t* t) {
     if (rk_cnp_idxget(f, OP0, OP1, OP2, OP3)) return RK_CNP_ERR;
     NEXT;
 }
+// `my @x;` (see rk_cnp_newarr)
+int rk_st_newarr(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_newarr(f, OP0)) return RK_CNP_ERR;
+    NEXT;
+}
+// a chained comparison's link (see rk_cnp_chain)
+int rk_st_chain(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_chain(f, OP0, OP1, OP2, OP3)) return RK_CNP_ERR;
+    NEXT;
+}
 // `@a.elems` with no call around it (see rk_cnp_alen)
 int rk_st_alen(F* f, int64_t* r, uint8_t* t) {
     (void)r; (void)t;
