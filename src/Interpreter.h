@@ -1800,6 +1800,7 @@ public:
         return it == builtins_.end() ? nullptr : &it->second;
     }
     Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
+    Value seqDropSeed(Value seq); // `^...`: the sequence without its first element, lazy or not
     void sinkValue(const Value& r);                 // sink a discarded value: Failure detonates, a failed Proc throws
     void sinkReturnedValue(const Value& r);         // ...and a routine's returned value (MAIN's): also runs a user `sink`
     // `...` is list-associative: `1 ... 5 ... 1` and `'A'...'Z', 'a'...'z'` are ONE

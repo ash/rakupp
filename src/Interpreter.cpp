@@ -2137,6 +2137,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         }
         bool endCode = (r.t == VT::Code);
         bool infinite = (r.t == VT::Whatever) || (r.t == VT::Num && std::isinf(r.n));
+        // `-Inf` is unbounded too, but DOWNWARDS: it picks .pred for a lone
+        // seed (`3 ... -Inf` is 3 2 1 0 …), where `*` and `Inf` pick .succ
+        const bool negInf = r.t == VT::Num && std::isinf(r.n) && r.n < 0;
         double endVal = (infinite || endCode) ? 0 : r.toNum();
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // (1...5).WHAT is (Seq)
         for (auto& s : seed) out.arr()->push_back(s);
@@ -2266,7 +2269,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     for (size_t k = 0; k < seed.size(); k++) { if (k) dedFrom += ","; dedFrom += seed[k].toStr(); }
                 }
             } else if (seed.size() == 2 && numericWindow) step = seed[1].toNum() - seed[0].toNum();
-            else if (!infinite && !endCode && out.arr()->back().toNum() > endVal) step = -1;
+            else if (!endCode && (infinite ? negInf : out.arr()->back().toNum() > endVal)) step = -1;
             if (deduceFailed && !infinite && !endCode)
                 seqDeduceThrow(dedFrom); // a bounded endpoint needs the step NOW
         }
@@ -2349,6 +2352,11 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // A NEGATIVE geometric ratio alternates sign, so the endpoint is compared by
         // MAGNITUDE — Rakudo's `1, -2, 4 ... 10` is (1 -2 4 -8) and `... 3` is (1 -2).
         bool seqMagnitude = geometric && ratio < 0;
+        // seeds already climbing can never come down to `-Inf`: Rakudo's
+        // `1, 3 ... -Inf` is empty, as `5, 3 ... 10` is
+        if (negInf && !hasGen && !deduceFailed && seed.size() >= 2 && numericWindow &&
+            !seqMagnitude && (geometric ? ratio > 1 : step > 0))
+            { out.arr()->clear(); return out; }
         // A DEDUCED sequence has a travel direction, so it can tell when a value has
         // gone past the endpoint. A generator closure has none (Rakudo runs `5, 4,
         // { $_ - 1 } ... 10` forever), and neither does a constant step/ratio.
@@ -2656,6 +2664,33 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         return out;
     }
     return Value::array();
+}
+// `^...` drops the seed. An eager sequence simply loses its first element, but
+// a LAZY one's array is the generator's own cache — the value it steps from —
+// so erasing from it left `3 ^... *` nothing to step from (an empty Seq) and
+// `1, *+1 ^... *` a generator called with no arguments. Read it through a view
+// that skips the seed instead.
+Value Interpreter::seqDropSeed(Value seq) {
+    if (seq.t != VT::Array || !seq.arr()) return seq;
+    if (!seq.ext()) {
+        if (!seq.arr()->empty()) seq.arr()->erase(seq.arr()->begin());
+        return seq;
+    }
+    auto inner = std::make_shared<Value>(seq);
+    auto innerSt = std::static_pointer_cast<LazySeqState>(seq.ext());
+    auto pos = std::make_shared<size_t>(1);
+    auto st = std::make_shared<LazySeqState>();
+    st->infinite = innerSt->infinite;
+    st->seqUserGen = innerSt->seqUserGen;
+    st->appendNext = [inner, innerSt, pos](ValueList& cache) -> bool {
+        while (*pos >= inner->arr()->size())
+            if (!innerSt->appendNext(*inner->arr())) return false;
+        cache.push_back((*inner->arr())[(*pos)++]);
+        return true;
+    };
+    Value out = Value::array(); out.isList = true; out.s = seq.s;
+    out.extM() = st;
+    return out;
 }
 // `'aa' .. 'bb'` — a MULTI-character string range, as an eager list.
 //

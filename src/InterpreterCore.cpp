@@ -16185,8 +16185,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (g_cbInterp) {
             Value sq = g_cbInterp->seqOp(l, r, op.back() == '^');
             // a leading `^` drops the seed — the same trim evalBinary does
-            if (op.front() == '^' && sq.t == VT::Array && sq.arr() && !sq.arr()->empty())
-                sq.arr()->erase(sq.arr()->begin());
+            if (op.front() == '^') sq = g_cbInterp->seqDropSeed(std::move(sq));
             return sq;
         }
         long long a = l.toInt(), b = r.toInt();
@@ -20918,8 +20917,7 @@ Value Interpreter::evalBinary(Binary* b) {
             Value l = eval(b->lhs.get());
             Value r = eval(b->rhs.get());
             Value out = seqOp(std::move(l), std::move(r), op.back() == '^');
-            if (op.front() == '^' && out.t == VT::Array && out.arr() && !out.arr()->empty())
-                out.arr()->erase(out.arr()->begin());
+            if (op.front() == '^') out = seqDropSeed(std::move(out));
             // the sequence operator makes a Seq, and a Seq is read once
             // (SeqToken): `my \s = 1,2,4...16; s».abs; s».abs` dies as Rakudo's does
             if (out.t == VT::Array && out.isList && out.s == "Seq" && !out.seqTok())
