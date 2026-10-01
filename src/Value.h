@@ -712,30 +712,30 @@ struct Value {
     // alone at the front of the old layout cost 8 bytes of pure padding).
     VT t = VT::Any;
     PK pk_ = PK::None;    // what the payload slot p_ holds (see MatchData above)
-    bool b : 1 = false;
-    bool isList : 1 = false;  // VT::Array that is a List/Seq (gists with parens)
-    bool itemized : 1 = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
-    bool objKeyed : 1 = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
+    bool b : 1;
+    bool isList : 1;  // VT::Array that is a List/Seq (gists with parens)
+    bool itemized : 1; // $[...] / $(...): a single scalar item that does NOT flatten in list context
+    bool objKeyed : 1; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
                            // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
-    bool readonly : 1 = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
+    bool readonly : 1; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     // …and WHY it is readonly, because Rakudo words the two refusals
     // differently: a readonly CONTAINER is "Cannot assign to a readonly
     // variable or a value", while a raw binding to something that has no
     // container at all — the `$_` of `for 1..3` — is "Cannot assign to an
     // immutable value". Only read alongside `readonly`, which is always set
     // with it, so every existing check still fires; it picks the message.
-    bool immutableBind : 1 = false;
+    bool immutableBind : 1;
     // A PAIR whose value is not a container: `a => 1` binds a VALUE, `a => $x`
     // binds $x's container, and only the second can be written through
     // (`$p.value = 5`). Sheet HM-18. It sits HERE rather than in the cold block
     // because a pair literal is the common case and the flag is set on almost
     // every one — a cold-block write would allocate for each, which measured
     // +4.5% on the object benchmark (two named arguments per construction).
-    bool pairValRO : 1 = false;
-    bool namedArg : 1 = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
-    bool natSigned : 1 = false;
-    bool natFloat : 1 = false; // native float container (num32): truncates to float32 on assignment
-    int natBits : 8 = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
+    bool pairValRO : 1;
+    bool namedArg : 1; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
+    bool natSigned : 1;
+    bool natFloat : 1; // native float container (num32): truncates to float32 on assignment
+    int natBits : 8;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     // The tag block (VALUE32-PLAN design A, batch 3): `t` and `pk_` stay
     // whole bytes, then the ten flags and `natBits` as bit-fields — 5 bytes
     // where they took 16. `pk_` as a 3-bit field cost the method kernels
@@ -928,7 +928,12 @@ struct Value {
     bool& fatRatM() { return xw().fatRat; }
 
 
-    Value() : t(VT::Any) {}
+    // The bit-fields are set here rather than with `= false` at their
+    // declarations: a default member initializer on a bit-field is C++20,
+    // and MSVC refuses it under /std:c++17 (clang and gcc accept it).
+    Value() : t(VT::Any), b(false), isList(false), itemized(false), objKeyed(false),
+              readonly(false), immutableBind(false), pairValRO(false), namedArg(false),
+              natSigned(false), natFloat(false), natBits(0) {}
 
     static Value nil() { Value v; v.t = VT::Nil; return v; }
     static Value any() { Value v; v.t = VT::Any; return v; }

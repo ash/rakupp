@@ -1779,9 +1779,15 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     };
     // LAST {…}: once, after the last. The test is forced inline: Clang outlined
     // the lambda, and every iteration of every loop paid a call and a frame to
-    // learn that it had nothing to do.
+    // learn that it had nothing to do. MSVC has no lambda attribute for it
+    // (no __attribute__, and __forceinline does not fit a lambda), so it
+    // leaves the choice to the optimiser there.
     auto runLastPh = [&]() { noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); };
+#if defined(_MSC_VER) && !defined(__clang__)
+    auto runLast = [&]() { if (isLast && hasLast) runLastPh(); };
+#else
     auto runLast = [&]() __attribute__((always_inline)) { if (isLast && hasLast) runLastPh(); };
+#endif
     // this loop is now the innermost native loop for cooperative next/last/redo
     uint64_t savedLoopFrame = tc.curLoopFrame;
     tc.curLoopFrame = tc.frameTop;
@@ -19726,12 +19732,17 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
         case NK::StrLit: out = Value::str(static_cast<StrLit*>(e)->v); return true;
         case NK::VarExpr: {
             // the slot itself, looked at before anything reads through it: a
-            // bound cell or a Proxy (whose FETCH may run code) declines
+            // bound cell or a Proxy (whose FETCH may run code) declines. The
+            // look and the copy sit under one stripe (torn-copy contract, as
+            // in evalVarExpr): another thread may store an Array into this
+            // slot between the checks and `out = *p`.
             auto* ve = static_cast<VarExpr*>(e);
             Env* const cur = tctx_.cur.get();
             const Value* p = padPtrIn(ve, cur);
             if (!p) p = cur->find(ve->name);
-            if (!p || p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
+            if (!p) return false;
+            ParStripe rs(*this, p);
+            if (p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
                 !p->enumName.empty() || !p->enumType.empty() || p->isList || p->itemized)
                 return false;
             if (p->t != VT::Int && p->t != VT::Num && p->t != VT::Str && p->t != VT::Bool) return false;

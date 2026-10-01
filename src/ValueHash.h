@@ -29,6 +29,8 @@
 // friends) keep their semantics when copied into a payload.
 #pragma once
 
+#include "IntOps.h"
+
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -58,7 +60,7 @@ class ChunkList {
     // cap0 * (2^k - 1): k = floor(log2(i / cap0 + 1))
     void locate(size_t i, size_t& k, size_t& o) const {
         const size_t q = (i >> shift_) + 1;
-        k = 63 - (size_t)__builtin_clzll((unsigned long long)q);
+        k = 63 - (size_t)clzll((unsigned long long)q);
         o = i - (((size_t(1) << k) - 1) << shift_);
     }
     T* chunk(size_t k) const { return k == 0 ? first_ : more_[k - 1]; }
