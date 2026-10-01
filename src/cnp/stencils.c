@@ -415,6 +415,12 @@ int rk_st_idxget(F* f, int64_t* r, uint8_t* t) {
     if (rk_cnp_idxget(f, OP0, OP1, OP2, OP3)) return RK_CNP_ERR;
     NEXT;
 }
+// `@a.elems` with no call around it (see rk_cnp_alen)
+int rk_st_alen(F* f, int64_t* r, uint8_t* t) {
+    (void)r; (void)t;
+    if (rk_cnp_alen(f, OP0, OP1)) return RK_CNP_ERR;
+    NEXT;
+}
 int rk_st_idxset(F* f, int64_t* r, uint8_t* t) {
     (void)r; (void)t;
     if (rk_cnp_idxset(f, OP0, OP1)) return RK_CNP_ERR;

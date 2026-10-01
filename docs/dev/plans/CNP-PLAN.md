@@ -534,9 +534,38 @@ One binary, no compiler and no rakupp on the machine running it.
 | **P0** | the ABI, the stencils, the extractor, the patcher, the lowering, `--cnp`, the gate | **DONE** |
 | **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **fixed** (the GOT slot held value − 4); Mach-O verified and ungated 2026-10-01; ELF waits on a Linux CI run of the gate |
 | **P2** | arena allocation, so kernels share pages instead of taking one each | |
-| **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | **in part**: element reads and stores, calls, methods, inlined small subs, the Rat lane (2026-09-29). Next: loop sources — `for @array`, `.kv`, the statement modifier, `.map` |
+| **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | **in part**: element reads and stores, calls, methods, inlined small subs, the Rat lane (2026-09-29); `for @array` (2026-10-01, see below). Next: `.kv`, the statement modifier, `.map` — and the bodies, which are now the limit |
 | | *and*: re-read read-only slots per iteration instead of refusing a threaded program outright, if the measured cost of one inline reload turns out to be worth the generality | |
 | **P4** | make it the default and retire `--jit` | |
+
+### `for @array`, 2026-10-01
+
+`for @a -> $x { BODY }` (and the topic form) tiers up as
+`loop (; $i < @a.elems; $i++) { $x = @a[$i]; { BODY } }`
+(`jit::synthArrayLoop`). The interpreter's array path walks the real storage
+by index and asks for its size every iteration, so the kernel asks the same
+question, through a new `alen` stencil rather than a method call (a call
+writes every slot back around it, and the first draft ran 2.5× slower than
+the interpreter for that). A body that names the array at all is refused: a
+write through it is where the two disagree (the interpreter stores the `$_`
+alias back after the body, over the body's own store), and a push is a change
+of the walk. A routine the body calls may still grow the array; the per-
+iteration size is what keeps that right, and `t/cnp/cases/for-over-array.raku`
+does it.
+
+Giving `for @a` a site exposed an older fault in how a trip is attributed:
+the outermost eligible loop on the thread's loop stack took it, and since
+kernels may call routines that included a loop whose body only CALLS the sub
+holding the hot loop. Its kernel ran the call through the interpreter, so the
+hot loop lost its own (`examples/roman.raku`: 31 kernel entries to 1). A
+site now takes a trip only for a loop written inside its body.
+
+A `for @a` whose body is all arithmetic runs 2× faster than interpreted
+(0.33 → 0.16 s over two million elements). Across the 42 runnable programs in
+`examples/` and `tools/bench/` it moves no program into a kernel: their array
+loops are refused for what is in the BODY — interpolated strings, whole-array
+assignments, `-> @row` loop variables, expressions the lowering does not
+cover — so the next step for reach is there, not in more loop sources.
 
 ### What P4 needs before the flags go
 

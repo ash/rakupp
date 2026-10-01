@@ -288,6 +288,21 @@ int rk_cnp_idxget(RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint
     } catch (...) { stash(f); return 1; }
 }
 
+int rk_cnp_alen(RkCnpFrame* f, uint64_t base, uint64_t dst) {
+    try {
+        if (f->t[base] == RK_T_BOX) {
+            const Value& b = static_cast<Value*>(f->boxes)[base];
+            if (b.t == VT::Array && b.arr() && !b.ext() && b.hashKind.empty() && b.enumName.empty()) {
+                setReg(f, dst, Value::integer((long long)b.arr()->size()));
+                return 0;
+            }
+        }
+        ValueList none;
+        setReg(f, dst, interpOf(f).methodCall(regValue(f, base), "elems", none));
+        return 0;
+    } catch (...) { stash(f); return 1; }
+}
+
 int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
     try {
         const auto& s = (*static_cast<const std::vector<rakupp::cnp::IndexSite>*>(f->isites))[site];
@@ -414,7 +429,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow, call, jctl, idxget, idxset, div;
+    int natchk, natchkslow, call, jctl, idxget, idxset, div, alen;
     bool ok = false;
 };
 
@@ -445,6 +460,7 @@ const StencilIds& ids() {
         v.call = g("rk_st_call"); v.jctl = g("rk_st_jctl");
         v.idxget = g("rk_st_idxget"); v.idxset = g("rk_st_idxset");
         v.div = g("rk_st_div");
+        v.alen = g("rk_st_alen");
         return v;
     }();
     return s;
@@ -925,10 +941,23 @@ int Lower::expr(Expr* e) {
             return chainGet(base, keys);
         }
         case NK::MethodCall: {
+            auto* m = static_cast<MethodCall*>(e);
+            // `@a.elems`: a length, not a call — no write-back of every slot
+            // around it (rk_cnp_alen; a `for @a` kernel asks it per iteration)
+            if (m->method == "elems" && m->args.empty() && m->methodQual.empty() && !m->methodExpr &&
+                !m->meta && !m->hyper && !m->bang && !m->maybe && !m->allMode && !m->mutate &&
+                m->inv && m->inv->kind == NK::VarExpr &&
+                static_cast<VarExpr*>(m->inv.get())->name.size() > 1 &&
+                static_cast<VarExpr*>(m->inv.get())->name[0] == '@') {
+                int base = expr(m->inv.get());
+                if (bad()) return 0;
+                int d = temp();
+                emit(ids().alen, (uint64_t)base, (uint64_t)d);
+                return d;
+            }
             // As a sub call (see NK::Call): the invocant and the arguments the
             // kernel evaluated are bound in a scratch scope, the invocant under
             // its own sigil so that `@a.elems` is still an array's method
-            auto* m = static_cast<MethodCall*>(e);
             KernelCall cs;
             cs.msynth = std::make_unique<MethodCall>();
             cs.msynth->method = m->method;

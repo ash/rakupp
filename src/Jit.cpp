@@ -132,7 +132,11 @@ struct Site {
 // itself would bind to the bound instead of its own variable — which is why it
 // is spelled like nothing anyone writes.
 const char* kCountedForEnd = "$__jit_for_end";
+// The index a `for @a` kernel walks (synthArrayLoop): a slot the kernel owns,
+// as a counted `for`'s loop variable is.
+const char* kArrayForIdx = "$__jit_for_idx";
 const char* countedForEndSlot() { return kCountedForEnd; }
+const char* arrayForIndexSlot() { return kArrayForIdx; }
 
 namespace {
 
@@ -253,6 +257,7 @@ struct Scan {
     // frame, because the whitelist admits no calls. So here, and only here, the
     // topic IS a lexical. Empty for every other loop shape.
     std::string countedVar;
+    std::string boundVar;     // a `for @a` kernel's loop variable, `$_` included (synthArrayLoop)
 
     void fail(const std::string& m) { if (err.empty()) err = m; }
     bool declaredHere(const std::string& n) const {
@@ -288,7 +293,8 @@ void Scan::expr(Expr* e) {
         }
         case NK::VarExpr: {
             auto* v = static_cast<VarExpr*>(e);
-            const bool isCounted = !countedVar.empty() && v->name == countedVar;
+            const bool isCounted = (!countedVar.empty() && v->name == countedVar) ||
+                                   (!boundVar.empty() && v->name == boundVar);
             if ((plainArray(v->name) || plainHash(v->name)) && g_opt.backend == Backend::Cnp && !v->declare) {
                 arrays.insert(v->name);
                 useName(v->name);
@@ -769,6 +775,61 @@ LoopStmt* synthCountedLoop(ForStmt* fs, const std::string& var) {
     return lp;
 }
 
+// `for @a -> $x { BODY }` is
+//
+//     loop (; $i < @a.elems; $i++) { $x = @a[$i]; { BODY } }
+//
+// with `$i` the hidden kArrayForIdx. The interpreter's array path walks the
+// real storage by index and asks for the size again every iteration, so a
+// body that pushes keeps it going; `@a.elems` in the condition is that same
+// question, and the element is read where the interpreter reads it, at the
+// top of each iteration. BODY is its own block, so its `my`s stay scoped as
+// they are. Leaked like synthCountedLoop's node, for the same reason: the
+// body block is borrowed.
+LoopStmt* synthArrayLoop(ForStmt* fs, const std::string& var, const std::string& arr) {
+    auto mkVar = [&](const std::string& n) {
+        auto* v = new VarExpr(n);
+        v->line = fs->line;
+        return v;
+    };
+    auto* elems = new MethodCall();
+    elems->line = fs->line;
+    elems->inv.reset(mkVar(arr));
+    elems->method = "elems";
+    auto* cond = new Binary();
+    cond->op = "<";
+    cond->line = fs->line;
+    cond->lhs.reset(mkVar(kArrayForIdx));
+    cond->rhs.reset(elems);
+    auto* incr = new Unary();
+    incr->op = "++";
+    incr->postfix = true;
+    incr->line = fs->line;
+    incr->operand.reset(mkVar(kArrayForIdx));
+    auto* idx = new Index();
+    idx->line = fs->line;
+    idx->base.reset(mkVar(arr));
+    idx->index.reset(mkVar(kArrayForIdx));
+    auto* asg = new Assign();
+    asg->line = fs->line;
+    asg->op = "=";
+    asg->target.reset(mkVar(var));
+    asg->value.reset(idx);
+    auto* st = new ExprStmt();
+    st->line = fs->line;
+    st->e.reset(asg);
+    auto* body = new Block();
+    body->line = fs->line;
+    body->stmts.emplace_back(st);
+    body->stmts.emplace_back(fs->body.get());   // BORROWED — see synthCountedLoop
+    auto* lp = new LoopStmt();
+    lp->line = fs->line;
+    lp->cond.reset(cond);
+    lp->incr.reset(incr);
+    lp->body.reset(body);
+    return lp;
+}
+
 // ---- eligibility + emission (interpreter thread) ---------------------------
 
 // Walk a candidate loop and, if it passes, emit its kernel source. Runs on the
@@ -815,9 +876,52 @@ void examine(Site* s) {
         // range of machine integers. What is left to ask about is the BINDING.
         auto* fs = static_cast<ForStmt*>(loop);
         const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+        // `for @a`: the interpreter installs a site for it from its array path
+        // only, and only for copy-and-patch (see synthArrayLoop)
+        const bool overArray = fs->list && fs->list->kind == NK::VarExpr &&
+                               plainArray(static_cast<VarExpr*>(fs->list.get())->name);
         if (!loop->label.empty() || fs->asExpr || fs->modifier || fs->destructure ||
             fs->rwVars || !fs->params.empty() || fs->vars.size() > 1)
             sc.fail("a loop shape the JIT does not take");
+        else if (overArray && g_opt.backend != Backend::Cnp)
+            sc.fail("a `for` over an array, which only copy-and-patch takes");
+        else if (overArray && var != "$_" && !plainScalar(var))
+            sc.fail("loop variable " + var);
+        else if (overArray) {
+            const std::string arr = static_cast<VarExpr*>(fs->list.get())->name;
+            // The loop variable is a read-only binding (`$_` an alias the body
+            // may write through): a body that writes it is refused, and so is
+            // one that writes the array's own name — the walk is by index
+            // over storage a rebinding would swap out.
+            Scan pre;
+            pre.scopes.push_back({});
+            pre.boundVar = var;
+            pre.block(fs->body.get(), true);
+            const bool mentionsArr = pre.arrays.count(arr) ||
+                std::find(pre.slots.begin(), pre.slots.end(), arr) != pre.slots.end();
+            if (!pre.err.empty())
+                sc.fail(pre.err);
+            else if (pre.written.count(var))
+                sc.fail("an assignment to the loop variable, which a `for` binds read-only");
+            // The body may not name the array at all. A write through it is
+            // where the two disagree: the interpreter aliases `$_` to the
+            // element and stores it back after the body, over anything the
+            // body stored there itself; a kernel reads the element once. And a
+            // push or a splice is a change of the walk itself.
+            else if (mentionsArr)
+                sc.fail("a body that uses the array the loop walks");
+            else {
+                LoopStmt* lp = synthArrayLoop(fs, var, arr);
+                sc.countedVar = kArrayForIdx;
+                sc.boundVar = var;
+                sc.declRefused = true;
+                sc.expr(lp->cond.get());
+                sc.headerExpr(lp->incr.get());
+                sc.declRefused = false;
+                sc.block(lp->body.get(), true);
+                if (sc.err.empty()) { s->emit = lp; s->countedFor = true; }
+            }
+        }
         else if (var != "$_" && !plainScalar(var))
             sc.fail("loop variable " + var);
         // The topic form, `for 1 .. N { … $_ … }`, is the copy-and-patch
@@ -1118,6 +1222,34 @@ void popLoop(Site* s) {
         if (t_stack[i] == s) { t_stack.erase(t_stack.begin() + i); return; }
 }
 
+// Whether `inner` is written inside `outer`'s body — reached through
+// statements only. A loop in a routine the outer loop CALLS is not: an outer
+// kernel runs that call through the interpreter and subsumes nothing in it.
+static bool stmtContains(const Stmt* st, const Stmt* inner);
+static bool blockContains(const Block* b, const Stmt* inner) {
+    if (!b) return false;
+    for (auto& x : b->stmts) if (stmtContains(x.get(), inner)) return true;
+    return false;
+}
+static bool stmtContains(const Stmt* st, const Stmt* inner) {
+    if (!st) return false;
+    if (st == inner) return true;
+    switch (st->kind) {
+        case NK::Block: return blockContains(static_cast<const Block*>(st), inner);
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(st);
+            for (auto& br : i->branches) if (blockContains(br.second.get(), inner)) return true;
+            return blockContains(i->elseBlock.get(), inner); }
+        case NK::WhileStmt: return blockContains(static_cast<const WhileStmt*>(st)->body.get(), inner);
+        case NK::RepeatStmt: return blockContains(static_cast<const RepeatStmt*>(st)->body.get(), inner);
+        case NK::ForStmt: return blockContains(static_cast<const ForStmt*>(st)->body.get(), inner);
+        case NK::LoopStmt: return blockContains(static_cast<const LoopStmt*>(st)->body.get(), inner);
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(st);
+            return blockContains(g->body.get(), inner) || blockContains(g->elseBody.get(), inner); }
+        case NK::WhenStmt: return blockContains(static_cast<const WhenStmt*>(st)->body.get(), inner);
+        default: return false;
+    }
+}
+
 void tick(Site* s) {
     if (!s) return;
     int st = s->state.load(std::memory_order_acquire);
@@ -1127,10 +1259,18 @@ void tick(Site* s) {
     // Hot. Pick the OUTERMOST eligible candidate on this thread's loop stack —
     // in a nest the inner loop is what trips and the outer one is what is worth
     // compiling, because an outer kernel subsumes every loop inside it. An
-    // outer loop that is NOT eligible (it contains a call, say) is skipped, and
-    // the search falls through to the loop that actually tripped.
+    // outer loop that is NOT eligible is skipped, and the search falls through
+    // to the loop that actually tripped.
+    //
+    // …and so is one the tripping loop is not written inside. Since kernels
+    // may call routines (TYPES-PLAN N5), a loop whose body only CALLS the sub
+    // holding the hot loop is eligible too, and it took the trip: its kernel
+    // ran the call through the interpreter, so the hot loop lost the kernel
+    // it had (examples/roman.raku: 31 kernel entries down to 1, once `for @a`
+    // got a site of its own).
     Site* target = nullptr;
     for (Site* c : t_stack) {
+        if (c != s && !stmtContains(c->loop, s->loop)) continue;
         int cs = c->state.load(std::memory_order_acquire);
         if (cs == StNew) { examine(c); cs = c->state.load(std::memory_order_acquire); }
         if (cs == StEligible) { target = c; break; }

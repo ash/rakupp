@@ -3707,7 +3707,24 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 return forResult();
             }
             TopicAliasFrame taf(tctx_, rw, var, arr); // take-rw's view of the aliasing
+            // --cnp: `for @a` over a plain `@` lexical tiers up from here, as
+            // the Int-Range path's `for` does (jit::synthArrayLoop): its kernel
+            // walks the same storage by index from the iteration it is entered
+            // at, asking for the size each time as this loop does. The frame
+            // holds the index and the loop variable; built once, refilled.
+            const VarExpr* srcVar = fs->list->kind == NK::VarExpr ? static_cast<VarExpr*>(fs->list.get()) : nullptr;
+            jit::LoopGuard __jg(jit::on() && !live && !fixedWalk && !col && srcVar &&
+                                srcVar->name.size() > 1 && srcVar->name[0] == '@'
+                                    ? jit::siteFor(s) : nullptr);
+            std::shared_ptr<Env> kframe;
             for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
+                if (__jg.site && jit::isReady(__jg.site)) {
+                    if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
+                    kframe->define(jit::arrayForIndexSlot(), Value::integer((long long)i));
+                    kframe->define(var, Value::any());
+                    if (jit::runIfReady(__jg.site, *this, kframe.get())) return forResult();
+                }
+                if (__jg.site) jit::tick(__jg.site);
                 const size_t pi = P(i);
                 if (flat && topic && scope.use_count() == 1) {
                     ParStripe es(*this, arr.get());
@@ -19759,35 +19776,6 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     if (!declLaneRhs(a->value.get(), rv)) return nullptr;
     rv.readonly = rv.immutableBind = false;
     return &de->define(tv->name, std::move(rv));
-}
-
-// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
-// nothing on it that lvalue's declaration arm or the full path's store would
-// act on — no type, coercion, default, `where`, smiley, trait, shape or
-// container type — and a right side declLaneRhs can evaluate.
-bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
-    // (`$` and a letter or underscore: no twigil, no special variable)
-    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->stateInParens ||
-        !v->declStubType.empty() || !v->declType.empty() || !v->declCoerce.empty() ||
-        v->declDefault || v->declDynamic || v->declExport || v->declSmiley || v->declWhereExpr ||
-        v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
-        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped ||
-        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
-        return false;
-    if (!rhs) return false;
-    switch (rhs->kind) {
-        case NK::IntLit: return static_cast<const IntLit*>(rhs)->big.empty();
-        case NK::NumLit: { auto* n = static_cast<const NumLit*>(rhs);
-                           return !n->isRat && !n->imaginary; }
-        case NK::StrLit: return true;
-        case NK::VarExpr: { auto* ve = static_cast<const VarExpr*>(rhs);
-                            return plainLexVar(ve) && ve->name[0] == '$' && !ve->nativeStrRead &&
-                                   !ve->nativeIntRead && !ve->nativeNumRead; }
-        case NK::Binary: { auto* b = static_cast<const Binary*>(rhs);
-                           return typedOpArith(b->op) || typedOpCmp(b->op); }
-        default: return false;
-    }
 }
 
 // The right side of a declaration-lane node, as a plain Int, Num, Str or

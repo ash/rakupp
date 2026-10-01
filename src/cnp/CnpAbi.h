@@ -105,6 +105,9 @@ int rk_cnp_call   (RkCnpFrame* f, uint64_t site, uint64_t dst);
 int rk_cnp_idxget (RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint64_t isHash);
 // element store site `site`: the array register, its keys, r[val] into it
 int rk_cnp_idxset (RkCnpFrame* f, uint64_t site, uint64_t val);
+// r[dst] = r[base].elems — a plain array's length read directly, anything
+// else through the method (a `for @a` kernel's bound, asked every iteration)
+int rk_cnp_alen   (RkCnpFrame* f, uint64_t base, uint64_t dst);
 
 #ifdef __cplusplus
 }

@@ -132,6 +132,7 @@ bool isReady(Site* s);
 // See the comment on it in Jit.cpp: a `for` over an Int Range is lowered as the
 // C-style loop it already is, and that loop needs its limit from somewhere.
 const char* countedForEndSlot();
+const char* arrayForIndexSlot();   // the index slot a `for @a` kernel walks
 
 // A kernel is published for this site: bind its slots against `env` and run it.
 // Returns true when the kernel ran the loop to completion and the interpreter

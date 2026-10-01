@@ -666,10 +666,10 @@ phases.
 - **It does not tier up threaded code**, for the reason in §7(c). That is a real
   functional gap against `--jit`, which does not hoist.
 - **It reaches the most common loop shape, not the most common loop sources.**
-  Only `while`, `until`, the C-style `loop` and a `for` over a Range of integers
-  are counted at all. A `for` over an array, over `.kv`, over a lazy sequence or
-  as a statement modifier is not refused — it is never examined — and neither is
-  any `.map`.
+  Only `while`, `until`, the C-style `loop`, a `for` over a Range of integers
+  and a `for` over a plain `@array` are counted at all. A `for` over `.kv`, over
+  a lazy sequence or an expression, or as a statement modifier is not refused —
+  it is never examined — and neither is any `.map`.
 - **It is not more general than `--jit`.** The stencils (71 since the
   2026-09-29 widening) are the ceiling.
 - **It is not a speculating JIT.** No type feedback and no deopt path: the tags

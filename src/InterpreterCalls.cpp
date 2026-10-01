@@ -3293,4 +3293,38 @@ bool Interpreter::blockTakesAtArgs(Callable& c) {
 }
 
 
+// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
+// nothing on it that lvalue's declaration arm or the full path's store would
+// act on — no type, coercion, default, `where`, smiley, trait, shape or
+// container type — and a right side declLaneRhs can evaluate.
+bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
+    // (`$` and a letter or underscore: no twigil, no special variable)
+    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->stateInParens ||
+        !v->declStubType.empty() || !v->declType.empty() || !v->declCoerce.empty() ||
+        v->declDefault || v->declDynamic || v->declExport || v->declSmiley || v->declWhereExpr ||
+        v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
+        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped ||
+        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
+        return false;
+    if (!rhs) return false;
+    switch (rhs->kind) {
+        case NK::IntLit: return static_cast<const IntLit*>(rhs)->big.empty();
+        case NK::NumLit: { auto* n = static_cast<const NumLit*>(rhs);
+                           return !n->isRat && !n->imaginary; }
+        case NK::StrLit: return true;
+        case NK::VarExpr: { auto* ve = static_cast<const VarExpr*>(rhs);   // a plain `$` lexical
+                            return !ve->declare && ve->name.size() > 1 && ve->name[0] == '$' &&
+                                   (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
+                                   !ve->nativeStrRead && !ve->nativeIntRead && !ve->nativeNumRead; }
+        case NK::Binary: {   // an operator declLaneRhs computes: `+ - * / %` or a comparison
+            const std::string& op = static_cast<const Binary*>(rhs)->op;
+            if (op.size() == 1) return std::strchr("+-*/%<>", op[0]) != nullptr;
+            return op.size() == 2 && op[1] == '=' && std::strchr("<>=!", op[0]) != nullptr;
+        }
+        default: return false;
+    }
+}
+
+
 } // namespace rakupp

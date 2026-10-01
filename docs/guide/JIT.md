@@ -25,7 +25,8 @@ pointed at one loop instead of a whole program.
 ## What happens
 
 1. **Counting.** Every `while`, `until`, C-style `loop`, and `for` over a
-   **Range of integers** counts its iterations. Nothing else does — a `for` over
+   **Range of integers** counts its iterations, and so — under `--cnp` only —
+   does a `for` over a plain `@array`. Nothing else does — a `for` over
    anything else, a `.map` and a `repeat` have no counter, so they are never
    candidates however hot they get. How much that leaves out is measured in
    [How much of a program it reaches](#how-much-of-a-program-it-reaches) below.
@@ -106,9 +107,10 @@ than exact loop counts:
 | `loop (…)` | 43 | yes |
 | `repeat` | 26 | no |
 
-A `for` over an array, over `.kv`, over a lazy sequence or written as a
-statement modifier (`$f *= $_ for 1 .. 10000`) is still not a candidate, and
-neither is any `.map`. So the honest summary is that the most common *shape* is
+Under `--cnp`, a `for` over a plain `@array` is a candidate too (its body may
+not use the array itself). A `for` over `.kv`, over a lazy sequence, over an
+expression or written as a statement modifier (`$f *= $_ for 1 .. 10000`) is
+still not a candidate, and neither is any `.map`. So the honest summary is that the most common *shape* is
 now reachable and the most common *sources* are not.
 
 Both spellings of a counted `for` tier up, and the same arithmetic written three
@@ -139,9 +141,10 @@ built.
 ## What tiers up
 
 A `while`, `until` or C-style `loop`, unlabelled, not in expression position —
-or a `for` over a Range of integers, unlabelled, not in expression position, not
-a statement modifier, with one loop variable and no destructuring — whose body
-contains only:
+or a `for` over a Range of integers (or, under `--cnp`, over a plain `@array`
+whose body does not use that array), unlabelled, not in expression position,
+not a statement modifier, with one loop variable and no destructuring — whose
+body contains only:
 
 - integer, number and plain string literals;
 - plain `$` scalars with no twigil (not `$_`, not `$*dyn`, not `$!attr`);
