@@ -614,7 +614,24 @@ file) and an interleaved perf-guard A/B against the commit before it.
      +0.5% mean; `multimeth` +3% is time inside the SYSTEM allocator's `free`
      (it reads the clock there), on `scoreCandidate`'s own vectors, not on any
      payload — left to look at with the field order.
-5. *Not yet:* `x_` folds into kind-specific bodies (one allocation per Rat).
+5. **`x_` out of the struct: measured 2026-10-01, NOT pursued.** The cheap form
+   of it: the cold block rides in the payload slot of a Value with no payload
+   and in the `i`/`n` word of one that has (a flag says which). The audit
+   build, extended to log any `i`/`n` access on a payload-carrying Value,
+   found exactly one user over Roast, the corpus, t/regression and the battery
+   (`Pair.freeze` keeping its WHICH in `i`), so the layout was safe. It
+   built and passed Roast at 72 bytes, and cost **+1.8% mean** for 4-10% less
+   memory (a million-element array 164 → 149 MB). Padded back to 80 it cost
+   +2.7%: the cost is the mechanism, not the size. Two parts, measured
+   apart: the hand-written copy/move/destroy that take and drop the word's
+   count (`fib`, `method` ~2%), and the extra branch in every cold-block
+   lookup on the arithmetic path (`asg` ~4% with the special members
+   defaulted). 64 would add the `natBits` recode on top of the same
+   machinery. Reverted; **design A stops at 80 bytes**. What would reopen
+   it: a representation in which the cold block does not need a per-Value
+   pointer at all (kind-specific bodies for Rat/Range/Complex/bignum, and a
+   per-body home for a container's `ofType`/`elemDefault`/`shape`), which is
+   a semantic change to how copies share those, not a layout change.
 
 **Landed at 80 bytes (2026-10-01).** With batches 1–4 the live fields are 73
 bytes: `i`/`n` 8 + `CowStr` 32 + three names 12 + tag block 5 + `p_` 8 + `x_`
@@ -622,8 +639,8 @@ bytes: `i`/`n` 8 + `CowStr` 32 + three names 12 + tag block 5 + `p_` 8 + `x_`
 measured **−2.6% mean** on perf-guard (every kernel level or faster, `objnew`
 −6.3%) and a third less memory — a million-element array 258 → 164 MB, a
 200k-key hash 118 → 82 MB, 200k small arrays 199 → 130 MB, `hashfill` 100 →
-69 MB. `sizeof(Value) == 80` is asserted. 64 needs batch 5 (`x_` out of the
-struct) and the 3-bit `natBits` code, and its field order measured.
+69 MB. `sizeof(Value) == 80` is asserted. Batch 5 (below) measured the step to
+72 a net loss, so 80 is where design A ends.
 
 **B versus C is one measurement, not a preference.** They differ by 7x on
 section D and by ~1,500 sites of blast radius, in opposite directions. Decide
