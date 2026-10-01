@@ -1996,18 +1996,41 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
           if (::getsockname(lfd, (sockaddr*)&ba, &bl) == 0) asyncSockName(ba, boundHost, boundPort); }
         engageGil();
         auto handle = std::make_shared<TapHandle>();
-        handle->closers.push_back([lfd] { ::shutdown(lfd, SHUT_RDWR); ::close(lfd); });
+        // Closing the tap closes the listener — but a connection the kernel has
+        // already COMPLETED belongs to the tap, as it does under Rakudo, whose
+        // event loop accepts eagerly. Shutting the listener down dropped any the
+        // worker had not yet taken off the backlog: under load the client's
+        // `connect` had succeeded, its writes and close had gone through, and
+        // the tap's callback never ran (S32-io/IO-Socket-Async.t's "both
+        // receivers finished" hung in about one full Roast sweep in ten run
+        // beside another). So the closer first takes what is waiting —
+        // non-blocking, since the worker may take the same connection first —
+        // and the worker delivers those after its accept loop ends.
+        struct Pending { std::mutex m; std::vector<int> fds; };
+        auto pending = std::make_shared<Pending>();
+        handle->closers.push_back([lfd, pending] {
+#ifdef _WIN32
+            u_long nb = 1; ioctlsocket(lfd, FIONBIO, &nb);
+#else
+            ::fcntl(lfd, F_SETFL, ::fcntl(lfd, F_GETFL) | O_NONBLOCK);
+#endif
+            for (;;) {
+                int cfd = ::accept(lfd, nullptr, nullptr);
+                if (cfd < 0) break;
+                std::lock_guard<std::mutex> lk(pending->m);
+                pending->fds.push_back(cfd);
+            }
+            ::shutdown(lfd, SHUT_RDWR); ::close(lfd);
+        });
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         Interpreter* self = this;
         const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
-        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc]() mutable {
+        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending]() mutable {
             t_poll.isWorker = true;
-            for (;;) {
-                int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
-                if (cfd < 0) break;                              // closed / shutdown
+            auto deliver = [&](int cfd) {
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);           // fresh registers
                 tctx_.cur = spawnScope;
@@ -2021,6 +2044,19 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                     catch (...) {}
                 }
                 self->gilYieldNotify();
+            };
+            for (;;) {
+                int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
+                if (cfd < 0) break;                              // closed / shutdown
+                deliver(cfd);
+            }
+            // what the closer took off the backlog: delivered, unless the
+            // program is going away, when they are only closed
+            std::vector<int> late;
+            { std::lock_guard<std::mutex> lk(pending->m); late.swap(pending->fds); }
+            for (int cfd : late) {
+                if (self->workerAbort_.load(std::memory_order_relaxed)) ::close(cfd);
+                else deliver(cfd);
             }
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
