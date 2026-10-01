@@ -2,6 +2,12 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#if defined(__APPLE__)
+#include <dispatch/dispatch.h>
+#include <dlfcn.h>
+#elif defined(__linux__)
+#include <sys/inotify.h>
+#endif
 
 namespace rakupp {
 
@@ -490,23 +496,40 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
     });
+    // its place among this activation's timers: by deadline, then by creation
+    auto end = std::chrono::steady_clock::now() +
+               std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                   std::chrono::duration<double>(std::isfinite(secs) && secs < 1e9 ? secs : 1e9));
+    std::pair<double, long long> slot;
+    {
+        std::lock_guard<std::mutex> lk(ctx->timerM);
+        slot = {std::chrono::duration<double>(end.time_since_epoch()).count(), ++ctx->timerSeq};
+        ctx->timerOrder.insert(slot);
+    }
     throttleSpawn();
-    addWorker(BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
+    addWorker(BigStackThread([self, end, slot, fireW, fin, spawnScope, ctx]() mutable {
         t_poll.isWorker = true;
+        auto stopped = [&] { return ctx->done || ctx->doneFired || self->workerAbort_.load(std::memory_order_relaxed); };
         // GIL not held; slices against a fixed deadline (drift-free, huge/Inf-safe)
         // and wakes early on `done`/`.close` or shutdown.
-        auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
-        while (!ctx->done && !ctx->doneFired && !self->workerAbort_.load(std::memory_order_relaxed)) {
+        while (!stopped()) {
             auto now = std::chrono::steady_clock::now();
             if (now >= end) break;
             double left = std::chrono::duration<double>(end - now).count();
             std::this_thread::sleep_for(std::chrono::duration<double>(left < 0.05 ? left : 0.05));
+        }
+        // a timer due no later than this one, made before it, fires first
+        while (!stopped()) {
+            { std::lock_guard<std::mutex> lk(ctx->timerM);
+              if (ctx->timerOrder.empty() || *ctx->timerOrder.begin() == slot) break; }
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
         }
         self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
         self->tctx_.cur = spawnScope;
         self->tctx_.dynStack.push_back(spawnScope.get());
         ValueList none; try { self->callCallable(fireW, none); } catch (...) {}
+        { std::lock_guard<std::mutex> lk(ctx->timerM); ctx->timerOrder.erase(slot); }   // the next one's turn
         self->gilYieldNotify();
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
@@ -1224,15 +1247,191 @@ void Interpreter::replayPreserved(const Value& sup, Value& tapRec) {
         }
     }
 }
-// `$path.IO.watch` rides an interval ticker: this wraps the block a tick
-// would run so that it runs only when the file's size or modification time
-// has moved since the last look, with an IO::Notification-shaped event.
+// The platform's own notifier, as Rakudo's libuv uses it: inotify on Linux (a
+// file or a directory), FSEvents for a directory on macOS. The notifier's
+// events wait in `pending` until the ticker takes them, so delivery rides the
+// same supply machinery as every other source. Where none starts, the stat
+// poller in watchFilter stands in.
+struct NativeWatch {
+    std::mutex m;
+    std::vector<std::pair<std::string, bool>> pending;   // (entry name, renamed?)
+    std::string real;                                    // the path as the notifier spells it
+#if defined(__linux__)
+    int fd = -1;
+#elif defined(__APPLE__)
+    void* stream = nullptr;
+    dispatch_queue_t queue = nullptr;
+#endif
+    ~NativeWatch();
+    void take(std::vector<std::pair<std::string, bool>>& out);
+};
+
+#if defined(__APPLE__)
+// CoreServices is opened at run time (as libssl and libffi are), so no link line
+// learns a new framework. The declarations are FSEvents' C ABI.
+namespace {
+struct FSCtx { long version; void* info; void* retain; void* release; void* copyDescription; };
+using FSCallback = void (*)(const void*, void*, size_t, void*, const uint32_t*, const uint64_t*);
+struct FSApi {
+    bool ok = false;
+    void* (*CFStringCreateWithCString)(void*, const char*, uint32_t) = nullptr;
+    void* (*CFArrayCreate)(void*, const void**, long, const void*) = nullptr;
+    void (*CFRelease)(const void*) = nullptr;
+    const void* typeArrayCallBacks = nullptr;
+    void* (*Create)(void*, FSCallback, FSCtx*, void*, uint64_t, double, uint32_t) = nullptr;
+    void (*SetDispatchQueue)(void*, dispatch_queue_t) = nullptr;
+    unsigned char (*Start)(void*) = nullptr;
+    void (*Stop)(void*) = nullptr;
+    void (*Invalidate)(void*) = nullptr;
+    void (*Release)(void*) = nullptr;
+};
+const FSApi& fsEventsApi() {
+    static const FSApi api = [] {
+        FSApi a;
+        void* h = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_LAZY);
+        if (!h) return a;
+        auto sym = [h](const char* n) { void* p = dlsym(h, n); return p ? p : dlsym(RTLD_DEFAULT, n); };
+        a.CFStringCreateWithCString = reinterpret_cast<decltype(a.CFStringCreateWithCString)>(sym("CFStringCreateWithCString"));
+        a.CFArrayCreate = reinterpret_cast<decltype(a.CFArrayCreate)>(sym("CFArrayCreate"));
+        a.CFRelease = reinterpret_cast<decltype(a.CFRelease)>(sym("CFRelease"));
+        a.typeArrayCallBacks = sym("kCFTypeArrayCallBacks");
+        a.Create = reinterpret_cast<decltype(a.Create)>(sym("FSEventStreamCreate"));
+        a.SetDispatchQueue = reinterpret_cast<decltype(a.SetDispatchQueue)>(sym("FSEventStreamSetDispatchQueue"));
+        a.Start = reinterpret_cast<decltype(a.Start)>(sym("FSEventStreamStart"));
+        a.Stop = reinterpret_cast<decltype(a.Stop)>(sym("FSEventStreamStop"));
+        a.Invalidate = reinterpret_cast<decltype(a.Invalidate)>(sym("FSEventStreamInvalidate"));
+        a.Release = reinterpret_cast<decltype(a.Release)>(sym("FSEventStreamRelease"));
+        a.ok = a.CFStringCreateWithCString && a.CFArrayCreate && a.CFRelease && a.typeArrayCallBacks &&
+               a.Create && a.SetDispatchQueue && a.Start && a.Stop && a.Invalidate && a.Release;
+        return a;
+    }();
+    return api;
+}
+// libuv's reading of an FSEvents record (src/unix/fsevents.c): only the watched
+// directory's own entries, never the directory itself; a create, remove or
+// rename is a rename, and a modification of a file is a change.
+void fsEventsCallback(const void*, void* info, size_t n, void* paths, const uint32_t* flags, const uint64_t*) {
+    constexpr uint32_t kRenamed  = 0x100 | 0x200 | 0x800;                     // Created | Removed | Renamed
+    constexpr uint32_t kModified = 0x400 | 0x1000 | 0x2000 | 0x4000 | 0x8000; // InodeMeta | Modified | FinderInfo | Owner | Xattr
+    constexpr uint32_t kIsDir = 0x20000;
+    auto* w = static_cast<NativeWatch*>(info);
+    char** ps = static_cast<char**>(paths);
+    for (size_t i = 0; i < n; i++) {
+        std::string p = ps[i];
+        const std::string& r = w->real;
+        if (p.size() < r.size() || p.compare(0, r.size(), r) != 0) continue;
+        if (p.size() > r.size() && p[r.size()] != '/') continue;
+        std::string rest = p.substr(r.size());
+        if (!rest.empty() && rest[0] == '/') rest.erase(0, 1);
+        if (rest.empty() || rest.find('/') != std::string::npos) continue;
+        bool renamed = true;
+        if (!(flags[i] & kRenamed) && ((flags[i] & kModified) || !(flags[i] & kIsDir))) renamed = false;
+        std::lock_guard<std::mutex> lk(w->m);
+        w->pending.push_back({rest, renamed});
+    }
+}
+}
+#endif
+
+NativeWatch::~NativeWatch() {
+#if defined(__linux__)
+    if (fd >= 0) ::close(fd);
+#elif defined(__APPLE__)
+    const FSApi& a = fsEventsApi();
+    if (stream) { a.Stop(stream); a.Invalidate(stream); a.Release(stream); }
+    if (queue) {
+        dispatch_sync_f(queue, nullptr, [](void*) {});   // a callback still running finishes first
+        dispatch_release(queue);
+    }
+#endif
+}
+
+void NativeWatch::take(std::vector<std::pair<std::string, bool>>& out) {
+#if defined(__linux__)
+    // libuv's inotify reading: an attribute or content change is a change,
+    // anything else (create, delete, move, the watch itself going) a rename
+    alignas(struct inotify_event) char buf[8192];
+    for (;;) {
+        ssize_t n = ::read(fd, buf, sizeof buf);
+        if (n <= 0) break;
+        for (char* p = buf; p < buf + n;) {
+            auto* e = reinterpret_cast<struct inotify_event*>(p);
+            std::string name = e->len ? std::string(e->name) : std::string();
+            out.push_back({name, (e->mask & ~(uint32_t)(IN_ATTRIB | IN_MODIFY)) != 0});
+            p += sizeof(struct inotify_event) + e->len;
+        }
+    }
+#endif
+    std::lock_guard<std::mutex> lk(m);
+    for (auto& e : pending) out.push_back(std::move(e));
+    pending.clear();
+}
+
+static std::shared_ptr<NativeWatch> startNativeWatch(const std::string& path, bool isDir) {
+#if defined(__linux__)
+    (void)isDir;
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0) return nullptr;
+    const uint32_t mask = IN_ATTRIB | IN_CREATE | IN_MODIFY | IN_DELETE | IN_DELETE_SELF |
+                          IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO;
+    if (inotify_add_watch(fd, path.c_str(), mask) < 0) { ::close(fd); return nullptr; }
+    auto w = std::make_shared<NativeWatch>();
+    w->fd = fd;
+    return w;
+#elif defined(__APPLE__)
+    if (!isDir) return nullptr;   // a file is watched by the poller, which matches libuv's kqueue
+    const FSApi& a = fsEventsApi();
+    if (!a.ok) return nullptr;
+    char rp[PATH_MAX];
+    if (!::realpath(path.c_str(), rp)) return nullptr;
+    auto w = std::make_shared<NativeWatch>();
+    w->real = rp;
+    void* s = a.CFStringCreateWithCString(nullptr, rp, 0x08000100 /* UTF-8 */);
+    if (!s) return nullptr;
+    const void* one[1] = {s};
+    void* paths = a.CFArrayCreate(nullptr, one, 1, a.typeArrayCallBacks);
+    FSCtx ctx{0, w.get(), nullptr, nullptr, nullptr};
+    // as libuv asks: 50 ms latency, no deferral, one record per file
+    if (paths) w->stream = a.Create(nullptr, fsEventsCallback, &ctx, paths,
+                                    0xFFFFFFFFFFFFFFFFULL /* since now */, 0.05, 0x02 | 0x10);
+    if (paths) a.CFRelease(paths);
+    a.CFRelease(s);
+    if (!w->stream) return nullptr;
+    w->queue = dispatch_queue_create("rakupp.watch", DISPATCH_QUEUE_SERIAL);
+    a.SetDispatchQueue(w->stream, w->queue);
+    if (!a.Start(w->stream)) return nullptr;
+    return w;
+#else
+    (void)path; (void)isDir;
+    return nullptr;
+#endif
+}
+
+// `$path.IO.watch` rides an interval ticker: this wraps the block a tick would
+// run so that it runs once per IO::Notification::Change since the last look.
+// A file reports itself; a directory reports its entries (not recursively).
+double watchInterval(const Value& sup) {
+    return sup.t == VT::Hash && sup.hash() && sup.hash()->count("dir") ? 0.05 : 0.01;
+}
 Value watchFilter(const Value& sup, const Value& blk) {
-    const std::string path = sup.t == VT::Hash && sup.hash() && sup.hash()->count("path")
-                           ? sup.hash()->at("path").toStr() : std::string();
-    auto sig = [](const std::string& p) {
+    using Sig = std::pair<long long, long long>;
+    using Snap = std::map<std::string, Sig>;
+    using Changes = std::vector<std::pair<std::string, bool>>;   // (entry name, renamed?)
+    const bool isDir = sup.t == VT::Hash && sup.hash() && sup.hash()->count("dir");
+    auto field = [&](const char* k) {
+        return sup.t == VT::Hash && sup.hash() && sup.hash()->count(k) ? sup.hash()->at(k).toStr() : std::string();
+    };
+    const std::string path = field("path");
+    std::string evPath = field("evpath");
+    if (evPath.empty()) evPath = path;
+    // Without a notifier: compare what a stat sees from one tick to the next.
+    // Something appearing or disappearing is FileRenamed, a new size or mtime
+    // FileChanged; a subdirectory counts only by presence, as its mtime moves
+    // with contents that belong to a watch of their own.
+    auto sig = [](const std::string& p, bool dirsByPresence) {
         struct stat st{};
-        if (::stat(p.c_str(), &st) != 0) return std::pair<long long, long long>(-1, -1);
+        if (::stat(p.c_str(), &st) != 0) return Sig(-1, -1);
+        if (dirsByPresence && S_ISDIR(st.st_mode)) return Sig(-2, -2);
 #if defined(__APPLE__)
         long long mt = (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
 #elif defined(_WIN32)
@@ -1240,19 +1439,50 @@ Value watchFilter(const Value& sup, const Value& blk) {
 #else
         long long mt = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
 #endif
-        return std::pair<long long, long long>((long long)st.st_size, mt);
+        return Sig((long long)st.st_size, mt);
     };
-    auto last = std::make_shared<std::pair<long long, long long>>(sig(path));
+    auto snap = [path, isDir, sig]() {
+        Snap s;
+        if (!isDir) { s[""] = sig(path, false); return s; }
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+            std::string name = it->path().filename().string();
+            s[name] = sig(path + "/" + name, true);
+        }
+        return s;
+    };
+    std::shared_ptr<NativeWatch> native = startNativeWatch(path, isDir);
+    auto last = std::make_shared<Snap>(native ? Snap() : snap());
+    auto changesSince = [last, snap, native]() {
+        Changes changes;
+        if (native) { native->take(changes); return changes; }
+        Snap now = snap();
+        if (now == *last) return changes;
+        // what went away first: a rename reports its old name, then its new one
+        for (auto& [name, s] : *last)
+            if (!now.count(name)) changes.push_back({name, true});
+        for (auto& [name, s] : now) {
+            auto it = last->find(name);
+            if (it == last->end() || (it->second.first == -1) != (s.first == -1)) changes.push_back({name, true});
+            else if (it->second != s) changes.push_back({name, false});
+        }
+        *last = std::move(now);
+        return changes;
+    };
     Value cb; cb.t = VT::Code; cb.setCode(makePayload<Callable>());
-    cb.code()->builtin = [last, blk, path, sig](Interpreter& I2, ValueList&) -> Value {
-        auto now = sig(path);
-        if (now == *last || blk.t != VT::Code) return Value::any();
-        *last = now;
-        Value ev = Value::makeHash();
-        (*ev.hash())["path"] = Value::str(path);
-        (*ev.hash())["event"] = Value::str("FileChanged");
-        ValueList one{ev};
-        return I2.callCallable(blk, one);
+    cb.code()->builtin = [blk, evPath, changesSince](Interpreter& I2, ValueList&) -> Value {
+        if (blk.t != VT::Code) return Value::any();
+        Value r = Value::any();
+        for (auto& [name, renamed] : changesSince()) {
+            Value ev;
+            coreEnumValue(renamed ? "FileRenamed" : "FileChanged", ev);
+            Value pp = Value::pair("path", Value::str(name.empty() ? evPath : evPath + "/" + name));
+            Value pe = Value::pair("event", ev);
+            pp.namedArg = pe.namedArg = true;
+            ValueList one{I2.methodCall(Value::typeObj("IO::Notification::Change"), "new", ValueList{pp, pe})};
+            r = I2.callCallable(blk, one);
+        }
+        return r;
     };
     return cb;
 }
@@ -1939,7 +2169,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
     if (h.count("kind") && h.at("kind").toStr() == "watch") {
         auto handle = std::make_shared<TapHandle>();
         std::shared_ptr<ReactCtx> rctx = reactStack_.empty() ? nullptr : reactStack_.back();
-        return spawnIntervalWhenever(0.01, 0, watchFilter(s, emitCb), rctx, handle, doneCb);
+        return spawnIntervalWhenever(watchInterval(s), 0, watchFilter(s, emitCb), rctx, handle, doneCb);
     }
     // Supply.interval(N) tapped directly (.tap, or inside a supply {…} block):
     // each tap gets its OWN ticker; the returned Tap's handle stops it on .close.

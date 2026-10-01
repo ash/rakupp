@@ -6,6 +6,34 @@
 namespace rakupp {
 static long long g_spawnedSeq = 0;
 
+// IO::Notification, as Rakudo's CORE declares it: the events IO::Path.watch
+// emits, which user code also builds (Cro's recursive watcher re-emits its own).
+static const char* const kIoNotificationSrc = R"RAKUNOTIFY(
+class IO::Notification {
+    method watch-path(Str() $path, :$scheduler) { $path.IO.watch }
+}
+class IO::Notification::Change {
+    has $.path;
+    has $.event;
+    multi method gist(IO::Notification::Change:D:) { "$!path: $!event" }
+    # a value type: two reports of the same change are the same (`.unique`)
+    multi method WHICH(IO::Notification::Change:D:) {
+        ValueObjAt.new("IO::Notification::Change|$!event|$!path")
+    }
+}
+)RAKUNOTIFY";
+
+void Interpreter::loadIoNotification() {
+    if (notificationLoading_ || classes_.count("IO::Notification::Change")) return;
+    notificationLoading_ = true;
+    auto saved = tctx_.cur;
+    tctx_.cur = global_;
+    try { evalString(kIoNotificationSrc); }
+    catch (...) { tctx_.cur = saved; notificationLoading_ = false; throw; }
+    tctx_.cur = saved;
+    notificationLoading_ = false;
+}
+
 // Segment 1c of the method-dispatch chain, split out of methodCallInner for
 // compile time. The chain is ORDER-SENSITIVE (an earlier arm shadows a later
 // one), so these arms run after the ones above and before methodCallPart2. nullopt = "not handled here".
@@ -17,6 +45,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         auto* cs = static_cast<CueState*>(inv.ext().get());
         if (m == "cancel")    { if (cs) cs->cancelled.store(true); return Value::boolean(true); }
         if (m == "cancelled") return Value::boolean(cs && cs->cancelled.load());
+    }
+    if (inv.t == VT::Type && (inv.s == "IO::Notification" || inv.s == "IO::Notification::Change") &&
+        !classes_.count("IO::Notification::Change") && !notificationLoading_) {
+        loadIoNotification();
+        if (classes_.count("IO::Notification::Change")) return methodCall(inv, m, args, rwArgs);
     }
     // IO::CatHandle is Raku source (CatHandleSrc.cpp), compiled at first use
     if (inv.t == VT::Type && inv.s == "IO::CatHandle" && !classes_.count("IO::CatHandle") &&
@@ -1416,11 +1449,23 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // record :cwd so the run happens in the right directory — zef's tar
             // extract runs `tar -zxvf <basename>` with :cwd(archive dir)
             std::string cwd;
-            for (auto& a : args)
+            std::vector<std::string> envKV; bool haveEnv = false;
+            for (auto& a : args) {
                 if (a.t == VT::Pair && a.s == "cwd" && a.pairVal()) {
                     cwd = a.pairVal()->toStr();
                     (*pr.hash())["cwd"] = Value::str(cwd);
                 }
+                // :ENV — the child's ENTIRE environment (Cro hands its services
+                // their host and port this way)
+                else if (a.t == VT::Pair && a.s == "ENV" && a.pairVal()) {
+                    std::map<std::string, std::string> env;
+                    if (envPairsFrom(*a.pairVal(), env)) {
+                        haveEnv = true;
+                        for (auto& kv : env) envKV.push_back(kv.first + "=" + kv.second);
+                    }
+                }
+            }
+            if (!haveEnv) syncEnvToProcess();   // the child sees `%*ENV<X> = …` made before it
             // The process spawns HERE — Rakudo's .start means "running from this
             // moment", not "run when awaited" (#29: a fire-and-forget daemon must
             // exist without an await, and outlive us). The promise stays Planned;
@@ -1465,7 +1510,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 // tapped after it, and must not have lost the output meanwhile
                 io.captureOut = !outBound && (tapped("taps") || inv.hash()->count("used-stdout"));
                 io.captureErr = !errBound && (tapped("taps-err") || inv.hash()->count("used-stderr"));
-                SpawnedChild sc = spawnChildStart(argvv, cwd, nullptr, io);
+                SpawnedChild sc = spawnChildStart(argvv, cwd, haveEnv ? &envKV : nullptr, io);
 #if !defined(_WIN32)
                 // the child holds its dup2'd copies of the bind ends; ours must
                 // go now, or a bound reader would never see EOF
@@ -1493,6 +1538,23 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                       tok = ++g_spawnedSeq; g_spawned[tok] = sc; }
                     (*inv.hash())["spawn-token"] = Value::integer(tok);
                 }
+            }
+            // Inside a supply block nothing will realize the promise while the
+            // block keeps working — Cro's runner starts a long-lived service,
+            // relays its output through `whenever $proc.stdout.lines` and goes
+            // on watching files. So the process is driven as Rakudo drives it:
+            // a worker feeds the taps as output arrives (the GIL parked while
+            // it waits) and keeps a real promise with the Proc when it exits.
+            if (!tctx_.tapStack.empty() && inv.hash()->count("spawn-token")) {
+                Value lazyP = pr;
+                Value drive; drive.t = VT::Code; drive.setCode(makePayload<Callable>());
+                drive.code()->builtin = [lazyP](Interpreter& I2, ValueList&) mutable -> Value {
+                    I2.runProcPromise(lazyP, 0);
+                    Value procv = (*lazyP.hash())["proc"];
+                    procv.hashKind = "Proc";
+                    return procv;
+                };
+                return spawnPromise(drive);
             }
             return pr;
         }

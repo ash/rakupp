@@ -2346,7 +2346,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // autothreads a junction element, which is what Rakudo does.
             if (items.empty()) return Value::integer(0);
             Value acc = Value::integer(0);
-            for (auto& v : items) acc = applyArith("+", acc, v);
+            for (auto& v : items) {
+                if (v.t == VT::Any || v.t == VT::Nil) warnUninitNum(v);   // 0, with Rakudo's warning
+                acc = applyArith("+", acc, v);
+            }
             return acc;
         }
         // `.^enum_value_list` — the members themselves, in declaration order —

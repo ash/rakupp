@@ -561,8 +561,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     // `+Any` / `-Int`: an undefined value used as a number is 0, with Rakudo's
     // warning (naming where it happened — the routine and the line)
     if ((op == "+" || op == "-") && (v.t == VT::Any || (v.t == VT::Type && v.s != "IterationEnd")))
-        warnUninit("Use of uninitialized value of type " + (v.t == VT::Any ? std::string("Any") : v.typeName()) +
-                   " in numeric context");
+        warnUninitNum(v);
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((op == "+" || op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
@@ -1157,11 +1156,12 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
     swap(a.pendingArgWriter, b.pendingArgWriter); swap(a.noAutothread, b.noAutothread);
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
+    swap(a.uninitName, b.uninitName);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
-static_assert(sizeof(ExecContext) == 1312,
+static_assert(sizeof(ExecContext) == 1336,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1471,6 +1471,107 @@ bool gatherCancelling() { return false; }
 void Interpreter::warnUninit(const std::string& msg) {
     // …with the line it happened on, as `warn` shows it (Rakudo does both)
     if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n" << warnFrame();
+}
+void Interpreter::warnUninitStr(const Value& v) {
+    if (v.t == VT::Nil) { warnUninit("Use of Nil in string context"); return; }
+    const std::string& nm = tctx_.uninitName;
+    warnUninit("Use of uninitialized value " + (nm.empty() ? std::string() : nm + " ") + "of type " +
+               v.typeName() + " in string context.\n"
+               "Methods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.");
+}
+void Interpreter::warnUninitNum(const Value& v) {
+    if (v.t == VT::Nil) { warnUninit("Use of Nil in numeric context"); return; }
+    const std::string& nm = tctx_.uninitName;
+    warnUninit("Use of uninitialized value " + (nm.empty() ? std::string() : nm + " ") + "of type " +
+               v.typeName() + " in numeric context");
+}
+// An undefined operand of an infix, as Rakudo meets it: a numeric operator
+// warns in numeric context (naming the container for the arithmetic and
+// comparison operators, not for the integer and bitwise ones; `mod` twice),
+// and the numeric TYPE objects are not numbers at all — `Int + 1` dies; a
+// string comparison warns in string context; infix `~` converts the operand
+// here, as an `element` when it was read from a container, so `Int ~ "x"` is
+// "x" with the warning.
+void Interpreter::uninitBinaryOperands(Binary* b, const std::string& op, Value& l, Value& r) {
+    static const std::set<std::string> kNumNamed = {
+        "+", "-", "*", "/", "%", "**", "==", "!=", "<", ">", "<=", ">=", "<=>", "gcd", "lcm",
+        "\u00D7", "\u00F7", "\u2212", "\u2264", "\u2265", "\u2260"};
+    static const std::set<std::string> kNumBare = {"div", "mod", "+&", "+|", "+^", "+<", "+>"};
+    static const std::set<std::string> kStrNamed = {"eq", "ne", "lt", "gt", "le", "ge", "leg", "cmp"};
+    static const std::set<std::string> kNotANumber = {"Int", "UInt", "Num", "Rat", "FatRat", "Bool", "Real"};
+    auto side = [&](Value& v, Expr* e, const Value& other) {
+        if (!uninitOperand(v)) return;
+        if (op == "~") {
+            UninitNameScope nm(*this, uninitNameOf(e).empty() ? std::string() : std::string("element"));
+            v = Value::str(strOf(v));
+            return;
+        }
+        if (op == "x" || op == "xx") {   // the repeated string; an undefined COUNT warns where it is used
+            if (op == "x" && &v == &l) {
+                UninitNameScope nm(*this, uninitNameOf(e));
+                v = Value::str(strOf(v));
+            }
+            return;
+        }
+        const bool named = kNumNamed.count(op) != 0;
+        if (named || kNumBare.count(op)) {
+            if (v.t == VT::Type && kNotANumber.count(std::string(v.s.c_str())) && other.t != VT::Type)
+                throwTypedV("X::Numeric::Uninitialized", {{"type", v}},
+                            "Use of uninitialized value of type " + std::string(v.s.c_str()) + " in numeric context");
+            UninitNameScope nm(*this, named ? uninitNameOf(e) : std::string());
+            warnUninitNum(v);
+            if (op == "mod") warnUninitNum(v);
+            return;
+        }
+        if (kStrNamed.count(op)) {
+            UninitNameScope nm(*this, uninitNameOf(e));
+            warnUninitStr(v);
+        }
+    };
+    side(l, b->lhs.get(), r);
+    side(r, b->rhs.get(), l);
+}
+// Rakudo names the CONTAINER an undefined value was read from: a variable, an
+// element of an array or a hash (`@a[2]`, `%h{'k'}`), an attribute. A parameter
+// bound read-only has no container of its own, and its value is unnamed.
+std::string Interpreter::uninitNameOf(Expr* e) {
+    if (!e) return "";
+    if (e->kind == NK::VarExpr) {
+        const std::string& n = static_cast<VarExpr*>(e)->name;
+        if (n.size() < 2 || (n[0] != '$' && n[0] != '@' && n[0] != '%')) return "";
+        if (n[1] == '.') return "";   // `$.x` is a method call: its value has no container here
+        // an `is rw` parameter IS the caller's container, and is named after it
+        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+            if (!en->local(n)) continue;
+            if (!en->ex) break;
+            auto oi = en->ex->rwOrigin.find(n);
+            if (oi != en->ex->rwOrigin.end()) return oi->second;
+            auto it = en->ex->rwLinks.find(n);
+            if (it == en->ex->rwLinks.end()) break;
+            auto saved = tctx_.cur;
+            tctx_.cur = it->second.second;
+            std::string outer;
+            try { outer = uninitNameOf(it->second.first); } catch (...) {}
+            tctx_.cur = saved;
+            return outer;
+        }
+        if (tctx_.cur)
+            if (Value* p = tctx_.cur->find(n))
+                if (p->readonly) return "";
+        return n;
+    }
+    if (e->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(e);
+        if (!ix->base || ix->base->kind != NK::VarExpr || ix->multiDim || !ix->adverb.empty()) return "";
+        const std::string& bn = static_cast<VarExpr*>(ix->base.get())->name;
+        if (bn.size() < 2 || (bn[0] != '@' && bn[0] != '%')) return "";
+        if (!ix->index) return bn;   // the zen slice `@a[]` is the array itself
+        const NK k = ix->index->kind;
+        if (k != NK::IntLit && k != NK::StrLit && k != NK::VarExpr) return "";   // nothing re-evaluated that could do something
+        const std::string key = eval(ix->index.get()).toStr();
+        return ix->isHash ? bn + "{'" + key + "'}" : bn + "[" + key + "]";
+    }
+    return "";
 }
 bool Interpreter::runControlWarn(const std::string& msg) {
     if (tctx_.controlHandlers.empty()) return false;
@@ -1859,7 +1960,8 @@ std::string Interpreter::strOf(const Value& v) {
         // …and a Proxy ELEMENT is read the same way (URI::Query hands back a list
         // of Proxy containers so the list itself stays immutable).
         for (auto& e : *v.arr())
-            if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy")) { anyObj = true; break; }
+            if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy") ||
+                uninitOperand(e)) { anyObj = true; break; }   // (an undefined element warns, naming the array)
         if (anyObj) {
             std::string out;
             for (size_t k = 0; k < v.arr()->size(); k++) { if (k) out += " "; out += strOf((*v.arr())[k]); }
@@ -1877,9 +1979,7 @@ std::string Interpreter::strOf(const Value& v) {
     // Any other type object has no string form: Rakudo warns (S32-basics/warn.t
     // asserts the first sentence of this message) and yields "". It was silent.
     if (v.t == VT::Type || v.t == VT::Any) {
-        std::string msg = "Use of uninitialized value of type " + v.typeName() +
-            " in string context.\nMethods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.";
-        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        warnUninitStr(v);   // naming its container, and where it happened
         return "";
     }
     // Nil has its own, shorter wording, and it fires wherever Nil reaches
@@ -1887,8 +1987,7 @@ std::string Interpreter::strOf(const Value& v) {
     // of a list being joined (Nil-Any sheet NA-08, NA-41). `.gist` and `.raku`
     // still answer "Nil" silently — they never come through here.
     if (v.t == VT::Nil) {
-        static const std::string msg = "Use of Nil in string context";
-        if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
+        warnUninitStr(v);
         return "";
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -1898,7 +1997,8 @@ std::string Interpreter::strOf(const Value& v) {
         // invokeMethod alone establishes no dispatcher — "nextsame is not in
         // the dynamic scope of a dispatcher" came out of `~$obj` while a plain
         // `$obj.Str` was fine.
-        for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
+        // (never .gist: an object with only a gist still stringifies as Type<id>)
+        for (const char* nm : {"Str", "Stringy"}) // ~$o uses .Stringy, print uses .Str
             if (v.obj()->cls->findMethod(nm))
                 return invokeMethodChain(nm, v.obj()->cls.get(), v, {}, nullptr).toStr();
         // …or an attribute that `handles <Str>` answers it

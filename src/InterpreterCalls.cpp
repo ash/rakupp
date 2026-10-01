@@ -366,6 +366,18 @@ Value Interpreter::evalInterp(InterpStr* s) {
     ValueList vals;
     vals.reserve(s->parts.size());
     for (auto& p : s->parts) vals.push_back(eval(p.get()));
+    // An undefined part warns naming where it came from (`$u`, `@a[2]`), as does
+    // an array with an undefined element (`@a`): converted here, with its
+    // expression in hand, and handed on as the "" it stands for.
+    for (size_t i = 0; i < vals.size(); i++) {
+        const Value& v = vals[i];
+        bool undefEl = false;
+        if (v.t == VT::Array && v.arr() && v.enumName.empty())
+            for (auto& el : *v.arr()) if (el.t == VT::Any || el.t == VT::Type) { undefEl = true; break; }
+        if (!(v.t == VT::Any || v.t == VT::Type || undefEl)) continue;
+        UninitNameScope nm(*this, uninitNameOf(s->parts[i].get()));
+        vals[i] = Value::str(strInStrContext(v));
+    }
     return interpolate(vals);
 }
 

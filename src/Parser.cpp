@@ -6663,13 +6663,19 @@ ExprPtr Parser::parsePrimary() {
                 peek().kind == Tok::LBrace && !peek().spaceBefore &&
                 peek(2).kind == Tok::Var && peek(3).kind == Tok::RBrace) {
                 std::string sig = cur().text;
-                throw ParseError("Unsupported use of " + sig + "{" + peek(2).text +
-                                 "} as " + sig + " dereference. In Raku please use: " +
-                                 sig + "(" + peek(2).text + ").",
+                const std::string v = peek(2).text;
+                const std::string repl = sig == "@" ? "@(" + v + ") for hard ref or @::(" + v + ") for symbolic ref"
+                                                    : sig + "(" + v + ")";
+                throw ParseError("Unsupported use of " + sig + "{" + v + "}. In Raku please use: " + repl + ".",
                                  cur().line, "X::Obsolete",
-                                 {{"old", sig + "{" + peek(2).text + "}"},
-                                  {"replacement", sig + "(" + peek(2).text + ")"}});
+                                 {{"old", sig + "{" + v + "}"}, {"replacement", repl}});
             }
+            // `@{name}` — Perl 5's braced variable name: Raku's is `@name`
+            if (cur().text == "@" && peek().kind == Tok::LBrace && !peek().spaceBefore &&
+                peek(2).kind == Tok::Ident && peek(3).kind == Tok::RBrace)
+                throw ParseError("Unsupported use of @{" + peek(2).text + "}. In Raku please use: @" +
+                                 peek(2).text + ".", cur().line, "X::Obsolete",
+                                 {{"old", "@{" + peek(2).text + "}"}, {"replacement", "@" + peek(2).text}});
             // sigil contextualizer glued to a variable: `@$x` == @($x), `%$h` == %($h)
             if (cur().text.size() == 1 &&
                 (cur().text[0] == '@' || cur().text[0] == '%' || cur().text[0] == '$') &&
@@ -6692,15 +6698,16 @@ ExprPtr Parser::parsePrimary() {
             if (cur().text == "$" && peek().kind == Tok::LBrace && !peek().spaceBefore) {
                 // Perl-5 `${a}` (a single bareword inside) is obsolete Raku
                 if (peek(2).kind == Tok::Ident && peek(3).kind == Tok::RBrace)
-                    throw ParseError("Unsupported use of ${" + peek(2).text + "}; in Raku please use :key or $()",
-                                     cur().line, "X::Obsolete", {{"old", "${" + peek(2).text + "}"}});
+                    throw ParseError("Unsupported use of ${" + peek(2).text + "}. In Raku please use: $" +
+                                     peek(2).text + ".", cur().line, "X::Obsolete",
+                                     {{"old", "${" + peek(2).text + "}"}, {"replacement", "$" + peek(2).text}});
                 // …and `${$x}`, the Perl 5 hard DEREFERENCE, which Raku spells `$($x)`
                 if (peek(2).kind == Tok::Var && peek(3).kind == Tok::RBrace)
                     throw ParseError("Unsupported use of ${" + peek(2).text + "}. In Raku please use: $(" +
                                      peek(2).text + ") for hard ref or $::(" + peek(2).text + ") for symbolic ref.",
                                      cur().line, "X::Obsolete",
                                      {{"old", "${" + peek(2).text + "}"},
-                                      {"replacement", "$(" + peek(2).text + ")"}});
+                                      {"replacement", "$(" + peek(2).text + ") for hard ref or $::(" + peek(2).text + ") for symbolic ref"}});
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = "ctx$"; u->operand = parsePrimary();
@@ -8954,6 +8961,12 @@ ExprPtr Parser::parsePrimary() {
                 peek(1).spaceBefore)
                 listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip;
                                    // and `Nil !! Any` (space after !!) is a ternary else-marker, not `Nil(!!Any)`
+            // A TYPE name is no listop: `Int ~ "x"` and even `Int ~"x"` are the
+            // infix on the type object (Rakudo), not the coercion `Int(~"x")`
+            if (listopOk && cur().kind == Tok::Op &&
+                (cur().text == "~" || cur().text == "+" || cur().text == "-") &&
+                (isKnownTypeName(name) || declClassDecls_.count(name)))
+                listopOk = false;
             // `foo < 1` (space after `<`) is infix less-than, not the word-list `foo(< 1 >)` —
             // UNLESS a matching `>` actually closes a word-list first (`is < foo bar >, exp`).
             if (listopOk && cur().kind == Tok::Op && cur().text == "<" && peek(1).spaceBefore) {
@@ -9983,21 +9996,24 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // ${ ... } (same quote-aware scan)
                 j++;
                 std::string inner = scanInterpBlock(raw, j);
-                // …but `"${$x}"` and `"@{$x}"` are the Perl 5 DEREFERENCES, which
-                // Raku refuses by name wherever they are written — inside a string
-                // as much as outside one.
-                {
+                // …but `"${…}"` and `"@{…}"` are Perl 5 — a dereference, or a
+                // variable name in braces — and Raku refuses both by name wherever
+                // they are written, inside a string as much as outside one. A
+                // bare name is `{$name}` in Raku; anything else `$(…)` or `$::(…)`.
+                if (sig == '$' || sig == '@') {
                     std::string t = inner;
                     while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
                     while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
-                    bool bareVar = t.size() > 1 && (t[0] == '$' || t[0] == '@' || t[0] == '%') &&
-                                   t.find_first_of(" \t()[]{}.<>+-*/~,;") == std::string::npos;
-                    if (bareVar)
-                        throw ParseError("Unsupported use of " + std::string(1, sig) + "{" + t +
-                                         "}. In Raku please use: " + std::string(1, sig) + "(" + t + ").",
-                                         0, "X::Obsolete",
-                                         {{"old", std::string(1, sig) + "{" + t + "}"},
-                                          {"replacement", std::string(1, sig) + "(" + t + ")"}});
+                    bool word = !t.empty() && (ascii::isalpha((unsigned char)t[0]) || t[0] == '_');
+                    for (char ch : t)
+                        if (!(ascii::isalnum((unsigned char)ch) || ch == '_' || ch == '-')) { word = false; break; }
+                    const std::string s1(1, sig);
+                    const std::string old = s1 + "{" + (word ? t : inner) + "}";
+                    const std::string repl = word ? "{" + s1 + t + "}"
+                                                  : s1 + "(" + inner + ") for hard ref or " + s1 + "::(" + inner + ") for symbolic ref";
+                    throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
+                                     pos_ > 0 ? toks_[pos_ - 1].line : cur().line, "X::Obsolete",
+                                     {{"old", old}, {"replacement", repl}});
                 }
                 flush();
                 try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); }

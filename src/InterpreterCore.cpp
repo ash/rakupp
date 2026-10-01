@@ -557,6 +557,14 @@ bool coreEnumValue(const std::string& n, Value& out) {
                                 : key == "SeekFromCurrent"   ? 1 : 2);
         out.enumType = "SeekType"; return true;
     }
+    // enum FileChangeEvent <FileChanged FileRenamed> — the kind of an
+    // IO::Notification::Change, which `IO::Path.watch` emits
+    if (n == "FileChangeEvent::FileChanged" || n == "FileChanged" ||
+        n == "FileChangeEvent::FileRenamed" || n == "FileRenamed") {
+        std::string key = n.rfind("FileChangeEvent::", 0) == 0 ? n.substr(17) : n;
+        out = Value::enumVal(key, key == "FileChanged" ? 0 : 1);
+        out.enumType = "FileChangeEvent"; return true;
+    }
     // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
     // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
     // passes PROTO_TCP straight into setsockopt(2); without the enum the
@@ -8518,6 +8526,11 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     if (!sameBoundValue(*craw->deref(), *praw)) return false;
     *praw = Value::cellHolder(craw->promoteToCell());
     env->x().rwCelled.insert(p.name);
+    {   // the original variable, through a chain of rw parameters
+        std::string origin = an;
+        if (own->ex) { auto oi = own->ex->rwOrigin.find(an); if (oi != own->ex->rwOrigin.end()) origin = oi->second; }
+        env->x().rwOrigin[p.name] = std::move(origin);
+    }
     return true;
 }
 
@@ -11432,6 +11445,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         // whitelisted ops — neutral autoviv, the in-place
                         // ASCII `~=` append, applyArith for the rest
                         Value rhs = eval(a->value.get());
+                        // an undefined value appended (`$s ~= $u`) warns as the `~` operand it is
+                        if (sv == 5 && __builtin_expect(uninitOperand(rhs), 0)) {
+                            UninitNameScope nm(*this, uninitNameOf(a->value.get()).empty() ? std::string() : std::string("element"));
+                            rhs = Value::str(strOf(rhs));
+                        }
                         Value before; // what a refused native result puts back
                         if (nb) before = *slot;
                         if (rhs.t != VT::Object) { // an Object rhs may carry an infix overload — full tail handles it
@@ -15266,6 +15284,33 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!lv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
+            // an `@` or `%` container ASSIGNS what it is given, as `=` does:
+            // `state @colors ||= <green yellow>` holds a mutable Array (Cro's
+            // `cro run` shifts colours off one), not the List literal itself
+            const bool arrayTarget = lv->t == VT::Array && lv->arr() && !lv->isList && !lv->itemized &&
+                                     lv->hashKind.empty() && exprIsArrayContainer(a->target.get());
+            const bool hashTarget = lv->t == VT::Hash && lv->hash() && !lv->itemized &&
+                                    (lv->hashKind.empty() || lv->hashKind == "Hash") &&
+                                    a->target->kind == NK::VarExpr &&
+                                    static_cast<VarExpr*>(a->target.get())->name.rfind('%', 0) == 0;
+            if (arrayTarget) {
+                ValueList items;
+                forceLazy(rhs);
+                if (rhs.t == VT::Range) items = rhs.flatten();
+                else if (rhs.t == VT::Array && rhs.arr() && !rhs.itemized) items = *rhs.arr();
+                else items.push_back(rhs);
+                ParStripe ws(*this, lv);
+                lv->arr()->swap(items);
+                return sink ? Value::any() : *lv;
+            }
+            if (hashTarget) {
+                Value h = rhs.t == VT::Hash && !rhs.itemized ? rhs : methodCall(rhs, "Hash", ValueList{});
+                if (h.t == VT::Hash && h.hash()) {
+                    ParStripe ws(*this, lv);
+                    *lv->hash() = *h.hash();
+                    return sink ? Value::any() : *lv;
+                }
+            }
             { ParStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : itemize(*lv);
@@ -15439,6 +15484,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (Value* f = tctx_.cur->find("&infix:<" + binop + ">"))
             try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
             catch (RakuError&) {}
+    // an undefined value appended (`$s ~= $u`) warns as the operand of `~` it is
+    if (!overloaded && binop == "~" && uninitOperand(rhs)) {
+        UninitNameScope nm(*this, uninitNameOf(a->value.get()).empty() ? std::string() : std::string("element"));
+        rhs = Value::str(strOf(rhs));
+    }
     // An undefined target autovivifies with the operator's NEUTRAL element:
     // `my $x; $x *= 2` is 1*2 == 2, `+=` starts from 0, `~=` from ''.
     if (!overloaded && (lv->t == VT::Any || lv->t == VT::Nil || lv->t == VT::Type)) {
@@ -17108,11 +17158,14 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             out.ofTypeM() = l.ofType().empty() ? r.ofType() : l.ofType();
             return identify(out);
         }
-        // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
-        // — except IterationEnd, which is a sentinel with a real name
+        // an undefined operand stringifies to "", with Rakudo's warning (`Any ~
+        // $x` is $x) — except IterationEnd, which is a sentinel with a real name.
+        // A written `~` names the operand before it gets here (evalBinary);
+        // this is a reduction's or a metaop's, which names nothing.
         auto undef = [](const Value& v) {
-            return (v.t == VT::Any || v.t == VT::Nil ||
-                    (v.t == VT::Type && v.s != "IterationEnd"));
+            bool u = v.t == VT::Any || v.t == VT::Nil || (v.t == VT::Type && v.s != "IterationEnd");
+            if (u && g_revInterp && Interpreter::uninitOperand(v)) g_revInterp->warnUninitStr(v);
+            return u;
         };
         return Value::str(nfcNormalize((undef(l) ? std::string() : l.toStr()) +
                                        (undef(r) ? std::string() : r.toStr())));
@@ -20128,6 +20181,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // Costs a type check on the eager path and the AST walk only when an
         // operand really is one.
         if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
+        if (__builtin_expect(uninitOperand(l) || uninitOperand(r), 0)) uninitBinaryOperands(b, op, l, r);
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -20654,6 +20708,7 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         if (l.hashKind == "Proxy") l = deproxy(l);
         if (r.hashKind == "Proxy") r = deproxy(r);
+        if (__builtin_expect(uninitOperand(l) || uninitOperand(r), 0)) uninitBinaryOperands(b, op, l, r);
         // …but an operand that IS-A Str is a Str:D, so Rakudo binds the Str:D
         // candidate and concatenates its VALUE — per operand, even when the
         // other side is a plain object. `("bb" but R) ~ Plain.new` is "bbplain",
@@ -21651,6 +21706,16 @@ Value Interpreter::evalUnary(Unary* u) {
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
         std::string op = u->op.substr(1, u->op.size() - 2);
+        // `[~]` over a list that reads any container: every undefined value it
+        // meets is an `element` to Rakudo; a list of literals names nothing
+        std::optional<UninitNameScope> catNm;
+        if (opEq(op, "~") && u->operand) {
+            bool reads = u->operand->kind == NK::VarExpr || u->operand->kind == NK::Index;
+            if (u->operand->kind == NK::ListExpr)
+                for (auto& it : static_cast<ListExpr*>(u->operand.get())->items)
+                    if (it && (it->kind == NK::VarExpr || it->kind == NK::Index)) { reads = true; break; }
+            if (reads) catNm.emplace(*this, "element");
+        }
         if (opEq(op, "=") && u->operand->kind == NK::ListExpr) {
             // [=] $a, $b, $c, 42 — right-to-left chain assignment (needs lvalues)
             auto* le = static_cast<ListExpr*>(u->operand.get());
@@ -21897,6 +21962,12 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         (void)pushFlat;
         if (sawEndless) return endless;
+        // an arithmetic reduction meets each undefined value in numeric context
+        // (`[+] 1, $u` warns, naming nothing — the list holds values, not containers)
+        if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "**")) {
+            UninitNameScope nm(*this, std::string());
+            for (auto& x : items) if (x.t == VT::Any || x.t == VT::Nil) warnUninitNum(x);
+        }
         return applyReduce(op, items);
     }
     if (opEq(u->op, "siglit")) { // :( … ) — a first-class Signature literal
@@ -22914,7 +22985,13 @@ Value Interpreter::evalUnary(Unary* u) {
         nv.natBits = 64; nv.natFloat = true;
         return nv;
     }
-    if (opEq(u->op, "+") || opEq(u->op, "-")) return prefixNumeric(u->op, v);
+    const bool undefOperand = v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil ||
+                              (v.t == VT::Array && v.arr() && v.enumName.empty());
+    if (opEq(u->op, "+") || opEq(u->op, "-")) {
+        if (!undefOperand) return prefixNumeric(u->op, v);
+        UninitNameScope nm(*this, uninitNameOf(u->operand.get()));   // the warning names `$u`
+        return prefixNumeric(u->op, v);
+    }
     if (opEq(u->op, "~")) {
         // prefix ~ is an OPERATOR, so it autothreads over a junction (Rakudo:
         // `~(1|2)` is any("1", "2")); the .Str METHOD does not, and both engines
@@ -22934,7 +23011,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Type && v.s == "Mu" && u->operand && u->operand->kind == NK::NameTerm)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller prefix:<~>(Mu:U); none of these signatures matches:\n    (\\a)"};
-        return prefixStringify(v); // honour a user Str/gist / Exception .message
+        if (!undefOperand) return prefixStringify(v); // honour a user Str/gist / Exception .message
+        UninitNameScope nm(*this, uninitNameOf(u->operand.get()));
+        return prefixStringify(v);
     }
     if (opEq(u->op, "!")) return Value::boolean(!boolify(v));
     if (opEq(u->op, "?")) return Value::boolean(boolify(v));
@@ -23722,6 +23801,15 @@ Value Interpreter::evalCall(Call* c) {
                 auto rit = builtinRefs_.find(c->name);
                 if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->wrappers.empty())
                     return callCallable(rit->second, std::move(args));
+            }
+            // `abs($u)` / `floor($u)` of an undefined value: 0, with the numeric
+            // warning — abs binds the container raw and names it, floor does not
+            if (__builtin_expect(args.size() == 1 && args[0].t == VT::Any, 0) &&
+                (c->name == "abs" || c->name == "floor")) {
+                UninitNameScope nm(*this, c->name == "abs" && !c->args.empty() ? uninitNameOf(c->args[0].get())
+                                                                              : std::string());
+                warnUninitNum(args[0]);
+                return Value::integer(0);
             }
             return it->second(*this, args);
         }
@@ -28653,6 +28741,47 @@ Value Interpreter::evalVarExpr(Expr* e) {
 // is the largest over its arms: every expression eval evaluated paid for
 // these locals, over a page of them, and so a stack probe. A method call is
 // costly enough that one more call is lost in it.
+// The method calls whose "uninitialized value" warning names a container —
+// tested on every call, so the method name is screened by its first letter.
+bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
+    const std::string& m = mc->method;
+    if (m.empty() || mc->meta || mc->hyper || mc->maybe || mc->bang || mc->mutate ||
+        !mc->methodQual.empty() || mc->methodExpr || !mc->inv)
+        return false;
+    if (inv.t == VT::Any || inv.t == VT::Type) {
+        if (m[0] != 'S' && m[0] != 'N' && m[0] != 'I') return false;
+        return mc->args.empty() && (m == "Str" || m == "Numeric" || m == "Int") && uninitOperand(inv);
+    }
+    if (inv.t == VT::Array && inv.arr() && (m[0] == 'j' || m[0] == 's') && (m == "join" || m == "sum")) {
+        for (auto& el : *inv.arr()) if (uninitOperand(el)) return true;
+    }
+    return false;
+}
+Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
+    const std::string& m = mc->method;
+    if (inv.t != VT::Array) {
+        // (a type object's .Numeric/.Int is a candidate of its own, which names nothing)
+        UninitNameScope nm(*this, inv.t == VT::Any || m == "Str" ? uninitNameOf(mc->inv.get()) : std::string());
+        if (m == "Str" && (inv.t == VT::Any || !classes_.count(std::string(inv.s.c_str())))) {
+            warnUninitStr(inv);
+            return Value::str("");
+        }
+        if (inv.t == VT::Any) { warnUninitNum(inv); return Value::integer(0); }
+        return methodCall(inv, m, ValueList{});
+    }
+    std::string name;
+    if (m == "join" && mc->inv->kind == NK::VarExpr) name = uninitNameOf(mc->inv.get());
+    else if (m == "sum" && mc->inv->kind == NK::ListExpr) {
+        auto& items = static_cast<ListExpr*>(mc->inv.get())->items;
+        if (items.size() == inv.arr()->size())
+            for (size_t k = 0; k < items.size(); k++)
+                if (uninitOperand((*inv.arr())[k])) { name = uninitNameOf(items[k].get()); break; }
+    }
+    UninitNameScope nm(*this, std::move(name));
+    ValueList args = evalArgs(mc->args);
+    return methodCall(inv, m, std::move(args), &mc->args);
+}
+
 Value Interpreter::evalMethodCallExpr(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
     // `%h.values.map({ $_ = 0 })` — Rakudo's `.values` hands out the hash's
@@ -28863,6 +28992,10 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                  !static_cast<RegexLit*>(mc->inv.get())->isM)
         ? regexLitValue(static_cast<RegexLit*>(mc->inv.get()))
         : eval(mc->inv.get());
+    // `.Str`/`.Numeric`/`.Int` of an undefined value, `@a.join` and `($u, 1).sum`
+    // over an undefined element: Rakudo's warning names the container. Taken out
+    // of line (uninitMethodCall) so this frame carries nothing for the rare case.
+    if (__builtin_expect(uninitMethodShape(mc, inv), 0)) return uninitMethodCall(mc, inv);
     // Offer the invocant EXPRESSION to the callee's binder: a candidate
     // whose invocant is `is rw` links it like an rw parameter and writes
     // assignments back into the caller's variable (see setupRwLinks).

@@ -7,6 +7,7 @@
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #include <fcntl.h>   // AT_FDCWD, for the statx(2) birth time below
+#include <unistd.h>
 #endif
 #include <sys/stat.h>
 #include <chrono>
@@ -22,6 +23,15 @@
 
 namespace rakupp {
 class Interpreter;
+// A `:w`/`:a` file handle's descriptor: `.close` closes it, and so does the
+// last Value holding it, for a handle that is dropped unclosed
+struct WriteFd {
+    int fd;
+    explicit WriteFd(int f) : fd(f) {}
+#if !defined(_WIN32)
+    ~WriteFd() { if (fd >= 0) ::close(fd); }
+#endif
+};
 // A custom Real numifies through its own `.Bridge`/`.Numeric` — see BuiltinsSupply.cpp.
 double numValueOf(Interpreter& I, const Value& v);
 

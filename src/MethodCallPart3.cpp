@@ -1751,18 +1751,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!statOrFailure(ioFsPath(inv), inv.toStr(), st, fail)) return fail;
         return Value::integer((long long)(m == "user" ? st.st_uid : st.st_gid));
     }
-    if (m == "watch" && inv.hashKind == "IO" && args.empty()) {   // the file's changes, as a Supply
-        // (a FILE only: a directory's events — creations, renames, removals —
-        // need the platform's notifier, which this poller is not)
-        {
-            struct stat wst{};
-            if (::stat(ioFsPath(inv).c_str(), &wst) == 0 && S_ISDIR(wst.st_mode))
-                throwTyped("X::NYI", {{"feature", "watching a directory"}},
-                           "Watching a directory is not yet implemented. Sorry.");
-        }
+    if (m == "watch" && inv.hashKind == "IO" && args.empty()) {   // a file's or a directory's changes, as a Supply
+        loadIoNotification();   // the event class, compiled here and not on a ticker thread
         Value sup = Value::makeHash(); sup.hashKind = "Supply";
         (*sup.hash())["kind"] = Value::str("watch");
         (*sup.hash())["path"] = Value::str(ioFsPath(inv));
+        (*sup.hash())["evpath"] = Value::str(methodCall(inv, "absolute", ValueList{}).toStr());
+        struct stat wst{};
+        if (::stat(ioFsPath(inv).c_str(), &wst) == 0 && S_ISDIR(wst.st_mode))
+            (*sup.hash())["dir"] = Value::boolean(true);
         return sup;
     }
     if (m == "mkdir" && inv.hashKind == "IO") { // $path.IO.mkdir($mode) / (:$mode) — create the directory and parents (a bare Str has no mkdir)
@@ -3297,9 +3294,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 fhAppendToFile(inv.hashS(), pending);
             }
             else if (write) {
-                std::ofstream out((*inv.hash())["path"].toStr(),
-                                  std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
-                if (out) out << buf;
+                std::string pending = buf;                // through the handle's descriptor
+                (*inv.hash())["buffer"] = Value::str("");
+                fhAppendToFile(inv.hashS(), pending);
+            }
+            {   // the descriptor closes NOW, however many copies of the handle remain
+                auto wf = inv.hash()->find("wfd");
+                if (wf != inv.hash()->end()) {
+                    if (auto* w = static_cast<WriteFd*>(wf->second.ext().get()); w && w->fd >= 0) {
+#if !defined(_WIN32)
+                        ::close(w->fd);
+#endif
+                        w->fd = -1;
+                    }
+                    inv.hash()->erase(wf);
+                }
             }
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
             (*inv.hash())["closed"] = Value::boolean(true);  // .opened is False from here, and reads throw

@@ -997,7 +997,9 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
             else if (op == "unique" || op == "squish") {
                 Value asF = step.hash()->count("as") ? (*step.hash())["as"] : Value::nil();
                 Value key = asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v;
-                std::string ks = key.toStr();
+                // identity is `===`: 1, "1" and <1> are three values, and an
+                // object answers its own WHICH (a value type's is its content)
+                std::string ks = key.t == VT::Object ? methodCall(key, "WHICH", ValueList{}).toStr() : whichOf(key);
                 if (op == "unique") {
                     // S-35: `:expires($n)` lets a key through again once $n seconds
                     // have passed since it was last EMITTED, so the seen-set
@@ -2945,6 +2947,7 @@ static std::string fixedFromShortest(double av, int prec) {
     throw RakuError{ex, msg};
 }
 
+extern Interpreter* g_revInterp;
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev) {
     std::string out;
     size_t ai = 0;                 // the IMPLICIT cursor
@@ -3015,6 +3018,10 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // formats from its exact decimal digits, not a saturated toInt()
                 Value av = nextArg();
                 if (isJunction(av)) sprintfBadType(conv, av, fmt);
+                if ((av.t == VT::Any || av.t == VT::Nil) && g_revInterp) {   // 0, warning of an `element`
+                    Interpreter::UninitNameScope nm(*g_revInterp, av.t == VT::Nil ? std::string() : std::string("element"));
+                    g_revInterp->warnUninitNum(av);
+                }
                 if (av.t == VT::Int && av.big()) { out += fmtBigDec(av.big()->toString(), flags, width, prec); break; }
                 if (av.t == VT::Rat && av.ratN() && av.ratD() && !av.ratD()->isZero()) {
                     BigInt q, r; BigInt::divmod(*av.ratN(), *av.ratD(), q, r);
@@ -3133,7 +3140,16 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // outside the interpreter, where only the raw rendering was
                 // reachable and `sprintf("%s", $obj)` printed Class<address>.
                 std::string sv;
-                if (sa.t == VT::Any || sa.t == VT::Nil) sv = "";
+                // an undefined value: "" with the uninitialized warning — which
+                // Rakudo's `%s` gives TWICE, naming nothing
+                if (Interpreter::uninitOperand(sa)) {
+                    if (g_revInterp) {
+                        Interpreter::UninitNameScope nm(*g_revInterp, std::string());
+                        g_revInterp->warnUninitStr(sa);
+                        g_revInterp->warnUninitStr(sa);
+                    }
+                    sv = "";
+                }
                 else if (!(g_userStr && g_userStr(sa, sv))) sv = sa.toStr();
                 // Width/precision count characters (codepoints), not bytes, so multibyte
                 // text pads correctly: sprintf("%8s","🦋🦋🦋") → "     🦋🦋🦋".
@@ -4481,8 +4497,9 @@ long long Interpreter::fhOutBuffer(const Value& h) {
         const std::string which = st->second.toStr();
         return which == "in" ? g_stdInOutBuffer : rtStdOutBuffer(which == "err");
     }
+    // a file handle nobody sized writes through, as Rakudo's does (it reports 1)
     auto it = h.hash()->find("out-buffer");
-    return it == h.hash()->end() ? kDefaultOutBuffer : it->second.toInt();
+    return it == h.hash()->end() ? 1 : it->second.toInt();
 }
 
 // Can this handle's pending bytes reach a file at all? An IN-MEMORY handle —
@@ -4537,6 +4554,37 @@ void Interpreter::fhAppendToFile(const PRef<ValueMap>& h, const std::string& s) 
         return;
     }
     bool wrote = (*h)["wrote"].truthy();   // earlier bytes are already out there
+#if !defined(_WIN32)
+    {   // One descriptor for the handle's life, as Rakudo keeps: each write is a
+        // single write(2), so the bytes are in the file as soon as they are
+        // written. Reopening the path per write cost 28x (200k lines: 4.25 s).
+        int fd = -1;
+        auto fi = h->find("wfd");
+        if (fi != h->end() && fi->second.ext()) fd = static_cast<WriteFd*>(fi->second.ext().get())->fd;
+        else {
+            const std::string path = (*h)["path"].toStr();
+            int flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | ((mode == "a" || wrote) ? 0 : O_TRUNC);
+            fd = ::open(path.c_str(), flags, 0666);
+            if (fd >= 0) {
+                Value fv = Value::integer(fd);
+                fv.extM() = std::make_shared<WriteFd>(fd);   // closed when the handle goes
+                (*h)["wfd"] = fv;
+            }
+        }
+        if (fd >= 0) {
+            const char* p = s.data();
+            size_t left = s.size();
+            while (left > 0) {
+                ssize_t n = ::write(fd, p, left);
+                if (n < 0) { if (errno == EINTR) continue; break; }
+                p += n; left -= (size_t)n;
+            }
+            (*h)["wrote"] = Value::boolean(true);
+            if (!s.empty()) h->erase("wpos");
+            return;
+        }
+    }
+#endif
     std::ofstream out((*h)["path"].toStr(),
                       std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
     if (out) out << s;
@@ -4578,7 +4626,7 @@ void Interpreter::fhWrite(const Value& h, const std::string& s) {
     {   // Room for it: hold it back. This is the ONLY branch a buffered handle
         // takes, and it is the hot one.
         Value& buf = (*m)["buffer"];
-        if (size < 0 || (size > 0 && (long long)(buf.s.size() + s.size()) <= size)) {
+        if (size < 0 || (size > 1 && (long long)(buf.s.size() + s.size()) <= size)) {
             buf = Value::str(buf.s + s);
             return;
         }
@@ -4587,7 +4635,7 @@ void Interpreter::fhWrite(const Value& h, const std::string& s) {
     if (!pending.empty()) { (*m)["buffer"] = Value::str(""); fhAppendToFile(m, pending); }
     // A write at least a bufferful on its own has nothing to gain from the
     // buffer and goes straight out; a smaller remainder starts the next one.
-    if (size == 0 || (long long)s.size() >= size) { if (!s.empty()) fhAppendToFile(m, s); }
+    if (size <= 1 || (long long)s.size() >= size) { if (!s.empty()) fhAppendToFile(m, s); }
     else (*m)["buffer"] = Value::str(s);
 }
 
@@ -8365,6 +8413,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             {"PromiseStatus", {"Planned", "Kept", "Broken"}},
             {"Endian", {"NativeEndian", "LittleEndian", "BigEndian"}},
             {"SeekType", {"SeekFromBeginning", "SeekFromCurrent", "SeekFromEnd"}},
+            {"FileChangeEvent", {"FileChanged", "FileRenamed"}},
             {"ProtocolType", {"PROTO_TCP", "PROTO_UDP"}},
             {"ProtocolFamily", {"PF_UNSPEC", "PF_INET", "PF_INET6", "PF_LOCAL", "PF_UNIX", "PF_MAX"}},
         };

@@ -2857,7 +2857,7 @@ const std::set<std::string>& coreTypeNames() {
         // registered elsewhere, a methodCall-handled namespace, a sentinel) —
         // the old always-lenient fallback had been quietly covering them.
         "Dateish", "Format", "Formatter", "Formatter::Syntax", "IterationEnd", "Lock::Async", "Lock::Soft", "Signal",
-        "Systemic", "Endian", "SeekType", "ProtocolFamily", "ProtocolType", "PromiseStatus", "Encoding", "Encoding::Builtin", "ValueObjAt", "Telemetry", "RaceSeq",
+        "Systemic", "Endian", "SeekType", "FileChangeEvent","ProtocolFamily", "ProtocolType", "PromiseStatus", "Encoding", "Encoding::Builtin", "ValueObjAt", "Telemetry", "RaceSeq",
         // REPL — Rakudo's read-eval-print object, which the sandbox pattern
         // drives directly (methodCallInner answers it; see the REPL block there)
         "REPL",

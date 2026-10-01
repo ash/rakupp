@@ -1385,6 +1385,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             tapSupply(inv, emitCb, doneCb, quitCb);
             return p;
         }
+        // .stable / .delayed are timer-driven for every kind of Supply, so they
+        // are Rakudo's own shape — a supply block with a Promise.in per value —
+        // written in Raku and compiled on first use. Cro's `cro run` debounces
+        // its file watcher with .stable(1).
+        if ((m == "stable" || m == "delayed") && !args.empty() && args[0].t != VT::Pair) {
+            if (!args[0].truthy()) return inv;   // a time of 0 is the Supply itself
+            Value& code = m == "stable" ? supplyStableCode_ : supplyDelayedCode_;
+            if (code.t != VT::Code) {
+                auto saved = tctx_.cur;
+                tctx_.cur = global_;
+                try {
+                    code = evalString(m == "stable"
+                        ? "(-> $s, $time { supply { my $gen = 0; whenever $s -> \\v { my $mine = ++$gen; "
+                          "whenever Promise.in($time) { emit v if $gen == $mine } } } })"
+                        : "(-> $s, $time { supply { whenever $s -> \\v { "
+                          "whenever Promise.in($time) { emit v } } } })");
+                }
+                catch (...) { tctx_.cur = saved; throw; }
+                tctx_.cur = saved;
+            }
+            ValueList ca{inv, args[0]};
+            return callCallable(code, ca);
+        }
         // on-demand (block-holding) supply: .tap wires it for real; everything
         // else drains it eagerly (legacy value semantics) and continues below.
         // Inside a react block the legacy eager tap is kept (its whenever/done
@@ -1411,6 +1434,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.hash()->count("block")) {
             if (m == "live") return Value::boolean(false);
             if (m == "Supply") return inv;
+            // the combinators subscribe to each source when tapped; draining the
+            // block first never returns for a supply that does not end (Cro's
+            // `$service.metadata-changed.merge($service.source-changed)`)
+            if (m == "merge" || m == "zip" || m == "zip-latest") {
+                ValueList a2; a2.push_back(inv); for (auto& a : args) a2.push_back(a);
+                return methodCall(Value::typeObj("Supply"), m, a2, rwArgs);
+            }
             if ((m == "tap" || m == "act") && (reactStack_.empty() || !tctx_.tapStack.empty())) {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
@@ -2504,10 +2534,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                       m == "rotate" || m == "sum" ||
                       m == "batch" || m == "lines" || m == "words" || m == "flat" ||
                       m == "classify" || m == "categorize" || m == "start" || m == "schedule-on" ||
-                      m == "stable" || m == "delayed" || m == "migrate" || m == "on-demand")) {
+                      m == "migrate" || m == "on-demand")) {
             // Delegate list-transform semantics to the Array method dispatcher, then re-wrap.
             Value arr = Value::array(); *arr.arr() = vals(); arr.isList = true;
-            if (m == "start" || m == "schedule-on" || m == "stable" || m == "delayed" ||
+            if (m == "start" || m == "schedule-on" ||
                 m == "migrate" || m == "on-demand" || m == "batch") return inv; // scheduling no-ops
             Value r = methodCall(arr, m, args, rwArgs);
             if (r.t == VT::Array) return mkSupply(*r.arr());
@@ -8761,7 +8791,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 uc = cit->second.get();
         }
         if (zk != zeroKind.end() || uc) {
-            warnUninit("Use of uninitialized value of type " + inv.s.str() + " in numeric context");
+            warnUninitNum(inv);   // naming the container when the call site knows it
             if (uc) { ValueList none; return methodCall(inv, "new", none); }
             int k = zk->second;
             if (k == 4 && m == "Real") k = 1;

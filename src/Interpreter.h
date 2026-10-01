@@ -421,6 +421,9 @@ struct EnvExtras {
     // the parameter and the argument are one container, so there is no link to
     // write through and nothing to copy out on return.
     std::set<std::string> rwCelled;
+    // …and the caller's variable such a parameter IS, for the messages that
+    // name a container: `sub f($x is rw) { "$x" }; f($v)` warns about `$v`
+    std::map<std::string, std::string> rwOrigin;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
     std::vector<std::function<void()>> letRestores;  // `let $x` restorations, run ONLY on unsuccessful (exception) exit
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
@@ -1055,6 +1058,13 @@ struct SupplyTapCtx {
     // run-time error) from S-64 (the same call during a whenever's delivery:
     // the supply ends, quietly).
     bool inBody = false;
+    // `whenever Promise.in(…)` timers due at the same moment fire in the order
+    // they were made, as Rakudo's scheduler queue runs them: each is a thread
+    // of its own, and the GIL alone would let them overtake one another
+    // (`Supply.from-list(7, 8).delayed(0.1)` came out 8 7). (deadline, seq)
+    std::mutex timerM;
+    std::set<std::pair<double, long long>> timerOrder;
+    long long timerSeq = 0;
 };
 
 // Per-thread execution "registers": the state that belongs to a single thread
@@ -1071,6 +1081,11 @@ struct GatherCoro;   // a gather's block running as a coroutine (InterpreterOper
 using CallArgWriter = std::function<void(size_t, const Value&)>;
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // What an "uninitialized value" warning names: the container the value
+    // came from (`$u`, `@a[2]`, `%h{'k'}`), `element` for an operand of infix
+    // `~`, or nothing. Set by the site that converts a value it can name
+    // (UninitNameScope), read where the warning is made.
+    std::string uninitName;
     // The one-shot registers the NEXT call consumes (callCallableRaw reads and
     // clears each on entry). They were static thread_locals of the
     // interpreter, which cost every call a thread-local lookup apiece; here
@@ -1822,6 +1837,9 @@ public:
     // $*ARGFILES, made once per @*ARGS (see its resolver)
     Value argFilesCache_; std::string argFilesKey_; std::mutex argFilesMu_;
     bool catHandleLoading_ = false; // IO::CatHandle's Raku source is being compiled (first use)
+    bool notificationLoading_ = false; // …and IO::Notification's
+    void loadIoNotification();
+    Value supplyStableCode_, supplyDelayedCode_;   // Supply.stable / .delayed, compiled on first use
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
@@ -1962,6 +1980,31 @@ public:
     // The one-liner behind every "Use of uninitialized value …" that is raised
     // outside strOf: run the CONTROL handler, else print, unless `quietly`.
     void warnUninit(const std::string& msg);
+    // "Use of uninitialized value[ NAME] of type T in string/numeric context" —
+    // the name is the one the converting site set (tctx_.uninitName)
+    void warnUninitStr(const Value& v);
+    void warnUninitNum(const Value& v);
+    std::string uninitNameOf(Expr* e);   // the container an expression reads, as Rakudo names it
+    // an undefined built-in value as an operator meets it (Any, Nil, Int, Str, …)
+    static bool uninitOperand(const Value& v) {
+        if (v.t == VT::Any || v.t == VT::Nil) return true;
+        if (v.t != VT::Type) return false;
+        static const char* const kBuiltin[] = {
+            "Any", "Cool", "Str", "Numeric", "Complex", "Int", "UInt", "Num", "Rat", "FatRat", "Bool", "Real"};
+        const char* n = v.s.c_str();
+        for (const char* b : kBuiltin) if (std::strcmp(n, b) == 0) return true;
+        return false;
+    }
+    void uninitBinaryOperands(struct Binary* b, const std::string& op, Value& l, Value& r);
+    bool uninitMethodShape(const struct MethodCall* mc, const Value& inv);
+    [[gnu::noinline]] Value uninitMethodCall(const struct MethodCall* mc, const Value& inv);
+    struct UninitNameScope {
+        Interpreter& I; std::string saved;
+        UninitNameScope(Interpreter& in, std::string name) : I(in), saved(std::move(in.tctx_.uninitName)) {
+            I.tctx_.uninitName = std::move(name);
+        }
+        ~UninitNameScope() { I.tctx_.uninitName = std::move(saved); }
+    };
     // .gist, honouring a user-defined `method gist` (for say/note). skipUser
     // bypasses that method — the built-in behind it, which is where `self.Mu::gist`
     // and a `method gist { callsame }` both have to land (else either re-enters the

@@ -1285,6 +1285,39 @@ void Interpreter::registerBuiltins() {
 // registerBuiltins, continued. Split for compile time: each piece ends by
 // calling the next, so the registrations run in the original order (a later
 // one of the same name still replaces an earlier one).
+// `:env` as Rakudo takes it — `.hash` of whatever was passed, not only a
+// bare Hash. A Hash contributes its pairs, a Pair itself, and a list folds
+// left to right with later keys winning, which is what makes
+// `:env(%*ENV, K => V)` "the parent's environment plus one". Loose elements
+// pair up consecutively, as `.hash` does everywhere else (the general
+// coercion is the list -> Hash branch in MethodCallTail.cpp).
+//
+// False means "no environment can be read out of this", and the caller then
+// leaves the child inheriting — which is what no :env at all does.
+bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out) {
+    if (v.t == VT::Hash && v.hash()) {
+        for (auto& kv : *v.hash()) out[kv.first] = kv.second.toStr();
+        return true;
+    }
+    if (v.t == VT::Pair) {
+        out[v.s] = v.pairVal() ? v.pairVal()->toStr() : "";
+        return true;
+    }
+    if (v.t == VT::Array && v.arr()) {
+        const ValueList& items = *v.arr();
+        for (size_t i = 0; i < items.size(); i++) {
+            if (envPairsFrom(items[i], out)) continue;      // a Hash, a Pair or a nested list
+            if (i + 1 >= items.size())
+                throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"),
+                                "Odd number of elements found where hash initializer expected"};
+            std::string key = items[i].toStr();             // sequenced: ++i must not run before the key
+            out[key] = items[++i].toStr();
+        }
+        return true;
+    }
+    return false;
+}
+
 void Interpreter::registerBuiltinsPart2() {
     auto& B = builtins_;
     // (the EVAL moves the current line into its own text: a failure is reported
@@ -1622,39 +1655,6 @@ void Interpreter::registerBuiltinsPart2() {
             ValueList none;
             I.methodCall(sink, "flush", none);
         }
-    };
-    // `:env` as Rakudo takes it — `.hash` of whatever was passed, not only a
-    // bare Hash. A Hash contributes its pairs, a Pair itself, and a list folds
-    // left to right with later keys winning, which is what makes
-    // `:env(%*ENV, K => V)` "the parent's environment plus one". Loose elements
-    // pair up consecutively, as `.hash` does everywhere else (the general
-    // coercion is the list -> Hash branch in MethodCallTail.cpp).
-    //
-    // False means "no environment can be read out of this", and the caller then
-    // leaves the child inheriting — which is what no :env at all does.
-    static const std::function<bool(const Value&, std::map<std::string, std::string>&)> envPairsFrom =
-        [](const Value& v, std::map<std::string, std::string>& out) -> bool {
-        if (v.t == VT::Hash && v.hash()) {
-            for (auto& kv : *v.hash()) out[kv.first] = kv.second.toStr();
-            return true;
-        }
-        if (v.t == VT::Pair) {
-            out[v.s] = v.pairVal() ? v.pairVal()->toStr() : "";
-            return true;
-        }
-        if (v.t == VT::Array && v.arr()) {
-            const ValueList& items = *v.arr();
-            for (size_t i = 0; i < items.size(); i++) {
-                if (envPairsFrom(items[i], out)) continue;      // a Hash, a Pair or a nested list
-                if (i + 1 >= items.size())
-                    throw RakuError{Value::typeObj("X::Hash::Store::OddNumber"),
-                                    "Odd number of elements found where hash initializer expected"};
-                std::string key = items[i].toStr();             // sequenced: ++i must not run before the key
-                out[key] = items[++i].toStr();
-            }
-            return true;
-        }
-        return false;
     };
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
@@ -2195,8 +2195,8 @@ void Interpreter::registerBuiltinsPart2() {
             if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
             if (mode == "update") mode = "rw"; // `:mode<rw>, :create, :exclusive` creates it
         }
-        // TRY the open, do not assume it. The handle carries no OS descriptor —
-        // every read and write reopens the path — so nothing later in the program
+        // TRY the open, do not assume it. A read handle carries no OS descriptor —
+        // every read reopens the path — so nothing later in the program
         // is in a position to notice that the file could never be opened at all.
         // Without this, `open("/no/such/dir/f", :w)` handed back a live handle,
         // every write through it was dropped, and the program heard about it at
@@ -2212,6 +2212,7 @@ void Interpreter::registerBuiltinsPart2() {
         // X::IO::Exists, X::IO::Exclusive, X::IO::Open — none of which exist in
         // Rakudo at all) reads better and silently escapes every such CATCH.
         // A DIRECTORY is the one exception: Rakudo has a real type for it.
+        int openedFd = -1;
         {
             struct stat st;
             if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { // Rakudo's own type and wording
@@ -2228,6 +2229,17 @@ void Interpreter::registerBuiltinsPart2() {
                 std::ifstream probe(path);
                 if (!probe) err = errno;
             }
+#if !defined(_WIN32)
+            // :w and :a hold the descriptor every write goes through, opened
+            // once here as Rakudo's is (a second open at the first write
+            // truncated again, and a watcher saw it)
+            if (!err && (mode == "w" || mode == "a")) {
+                openedFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC |
+                                                (mode == "w" ? O_TRUNC : 0), 0666);
+                if (openedFd < 0) err = errno;
+            }
+            else
+#endif
             if (!err && mode != "r") { // :w truncates; :a, :rw and :update keep what is there
                 std::ofstream create(path, mode == "w" ? std::ios::trunc : std::ios::app);
                 if (!create) err = errno;                  // and the file exists from here on, as Rakudo's does
@@ -2245,6 +2257,11 @@ void Interpreter::registerBuiltinsPart2() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        if (openedFd >= 0) {
+            Value fv = Value::integer(openedFd);
+            fv.extM() = std::make_shared<WriteFd>(openedFd);
+            (*h.hash())["wfd"] = fv;
+        }
         if (rwAppend) (*h.hash())["rwappend"] = Value::boolean(true);
         // :bin — the handle reads BYTES, so `seek`/`tell` are byte offsets
         // rather than the line-boundary emulation a text handle gets

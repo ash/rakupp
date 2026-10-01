@@ -191,6 +191,8 @@ void arrayOpArgs(const std::string& op, const ValueList& a, bool oneArray); // t
 // reads the terminal. `run 'stty', '-echo'` hung there forever — which is how
 // `fez login` came to echo the password and then wedge (issue #72) — and so did
 // every interactive child, `less` and `vi` and a `sudo` password prompt included.
+// `:env` / `:ENV` as Rakudo takes it: the `.hash` of whatever was passed (BuiltinsRegister.cpp)
+bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out);
 SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::string& cwd,
                                     const std::vector<std::string>* envKV, const SpawnStdio& io,
                                     bool ownPgroup = false);
@@ -369,6 +371,7 @@ static inline int signalNumberOf(const Value& v) {
 // `$path.IO.watch` rides an interval ticker: this wraps the block a tick
 // would run so that it runs only when the file's size or modification time
 // has moved since the last look, with an IO::Notification-shaped event.
+double watchInterval(const Value& sup);
 Value watchFilter(const Value& sup, const Value& blk);
 static inline double numArg(Interpreter& I, ValueList& a) {
     return a.empty() ? 0 : numValueOf(I, a[0]);

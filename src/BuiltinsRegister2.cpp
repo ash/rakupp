@@ -1137,7 +1137,7 @@ void Interpreter::registerBuiltinsPart4() {
             // that keeps this activation open until done/close stops it.
             if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash()->count("kind") &&
                 (*src.hash())["kind"].toStr() == "watch")
-                return I.spawnSupplyInterval(0.01, 0, watchFilter(src, I.wrapSupplyChain(src, blk)), ctx);
+                return I.spawnSupplyInterval(watchInterval(src), 0, watchFilter(src, I.wrapSupplyChain(src, blk)), ctx);
             if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash()->count("kind") &&
                 (*src.hash())["kind"].toStr() == "interval") {
                 double iv = src.hash()->count("interval") ? (*src.hash())["interval"].toNum() : 1;
@@ -1356,7 +1356,7 @@ void Interpreter::registerBuiltinsPart4() {
             if (s.t == VT::Hash && s.hashKind == "Supply" &&
                 s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "watch") {
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
-                return I.spawnIntervalWhenever(0.01, 0, watchFilter(s, I.wrapSupplyChain(s, blk)), ctx, nullptr);
+                return I.spawnIntervalWhenever(watchInterval(s), 0, watchFilter(s, I.wrapSupplyChain(s, blk)), ctx, nullptr);
             }
             if (s.t == VT::Hash && s.hashKind == "Supply" &&
                 s.hash()->count("kind") && (*s.hash())["kind"].toStr() == "interval") {
@@ -1648,20 +1648,28 @@ void Interpreter::registerBuiltinsPart4() {
                     if (rctx) {
                         auto rec = tapRec.hashS();
                         Value closeCb; closeCb.t = VT::Code; closeCb.setCode(makePayload<Callable>());
-                        closeCb.code()->builtin = [rec](Interpreter& I2, ValueList&) -> Value {
+                        closeCb.code()->builtin = [rec, sup](Interpreter& I2, ValueList&) -> Value {
                             // its own flag: `done` inside the whenever marks the
                             // tap `closed` from the emit fan-out, and the hooks
                             // would then never run
-                            if ((*rec)["on-closed"].truthy()) return Value::any();
-                            (*rec)["on-closed"] = Value::boolean(true);
-                            (*rec)["closed"] = Value::boolean(true);
-                            (*rec)["ended"] = Value::boolean(true);
-                            auto cit = rec->find("closers");
-                            if (cit != rec->end() && cit->second.arr()) {
-                                ValueList hooks = *cit->second.arr();
-                                for (auto& h : hooks)
-                                    if (h.t == VT::Code) { ValueList na; try { I2.callCallable(h, na); } catch (...) {} }
+                            ValueList hooks;
+                            {   // under the supplier's lock, as the fan-out reads
+                                // these keys: a producer on another thread may be
+                                // emitting this very moment, and an unlocked insert
+                                // into the record let it miss `closed` and deliver
+                                // past `done` (Roast supplier-preserving.t)
+                                std::unique_lock<std::recursive_mutex> lk;
+                                if (sup.t == VT::Hash && sup.hash())
+                                    lk = std::unique_lock<std::recursive_mutex>(supplierMutex(sup.hash()));
+                                if ((*rec)["on-closed"].truthy()) return Value::any();
+                                (*rec)["on-closed"] = Value::boolean(true);
+                                (*rec)["closed"] = Value::boolean(true);
+                                (*rec)["ended"] = Value::boolean(true);
+                                auto cit = rec->find("closers");
+                                if (cit != rec->end() && cit->second.arr()) hooks = *cit->second.arr();
                             }
+                            for (auto& h : hooks)
+                                if (h.t == VT::Code) { ValueList na; try { I2.callCallable(h, na); } catch (...) {} }
                             return Value::any();
                         };
                         std::lock_guard<std::mutex> lk(rctx->m);
@@ -1691,10 +1699,37 @@ void Interpreter::registerBuiltinsPart4() {
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                     Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                     Value blkCopy = blk;
-                    emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                    std::weak_ptr<ReactCtx> bodyCtx = rctx;
+                    emitW.code()->builtin = [blkCopy, bodyCtx](Interpreter& I2, ValueList& args) -> Value {
+                        // The body belongs to the REACT, though the value arrives
+                        // inside the supply's emit (on whatever thread fed it): its
+                        // `done` ends the react, not the supply delivering to it.
+                        auto c = bodyCtx.lock();
+                        decltype(I2.tctx_.tapStack) delivering;
+                        delivering.swap(I2.tctx_.tapStack);
+                        if (c) I2.reactStack_.push_back(c);
+                        struct Restore {
+                            Interpreter& I; decltype(I2.tctx_.tapStack)& d; bool pushed;
+                            ~Restore() { if (pushed) I.reactStack_.pop_back(); I.tctx_.tapStack.swap(d); }
+                        } restore{I2, delivering, (bool)c};
+                        // …and a react that closes ends the activation delivering
+                        // to it: its CLOSE phasers run and its next emit unwinds
+                        // it (Roast syntax.t: a supply looping on `emit` until
+                        // CLOSE says stop)
+                        auto endDelivering = [&] {
+                            if (!c || delivering.empty()) return;
+                            { std::lock_guard<std::mutex> lk(c->m); if (!c->closed) return; }
+                            auto src = delivering.back();
+                            src->done = true;
+                            src->clearQueue();
+                            src->doneFired = true;
+                            I2.closeTapHandle(src->tap);
+                        };
                         ValueList one = args;
-                        try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
-                        return Value::any();
+                        Value r = Value::any();
+                        try { r = I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                        endDelivering();
+                        return r;
                     };
                     // The producer is a live react source until it says done or
                     // quits: an on-demand block whose own whenevers keep ticking
@@ -1736,7 +1771,15 @@ void Interpreter::registerBuiltinsPart4() {
                         release();
                         return Value::any();
                     };
-                    return I.tapSupply(s, emitW, doneW, quitW);
+                    // the subscription ends with the react: `done` closes the tap,
+                    // and the supply's CLOSE phasers run then (Cro's runner kills
+                    // the services it started from one, on Ctrl-C)
+                    Value tap = I.tapSupply(s, emitW, doneW, quitW);
+                    if (rctx && tap.ext()) {
+                        std::lock_guard<std::mutex> lk(rctx->m);
+                        rctx->extTaps.push_back(std::static_pointer_cast<TapHandle>(tap.ext()));
+                    }
+                    return tap;
                 }
                 {   // from-list: drain AFTER the react body (deferred activation,
                     // issue #18); LAST phasers fire when the list is exhausted or
