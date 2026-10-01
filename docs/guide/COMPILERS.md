@@ -178,6 +178,7 @@ does not work from a static executable).
 | **Windows**, MSVC build | Windows only (static CRT) | Windows only (the output is `/MT` too) | the same |
 | **Windows**, MinGW build | Windows only (`-static`) | the MinGW DLLs beside it or on `PATH`: `libstdc++-6`, `libgcc_s_seh-1`, `libwinpthread-1` | Windows only |
 | **OpenBSD** | the OpenBSD release it was built on | the same | the same — no effect |
+| **Linux** riscv64 | no archive: built from source, it needs the glibc of the machine that built it | the same, and that machine's libstdc++ | that glibc |
 
 Two things decide the Linux numbers, and neither is the machine that runs
 `--exe`:

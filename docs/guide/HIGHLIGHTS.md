@@ -82,8 +82,11 @@ no server, with an embeddable in-page playground.
 
 - **macOS** (one universal binary: Apple Silicon + Intel), **Linux** x86_64
   and ARM64 (static libstdc++, glibc 2.28+), **Windows** x64 (static CRT — no
-  redistributable needed). What a compiled program needs, per platform:
-  [COMPILERS.md](COMPILERS.md#what-runs-where).
+  redistributable needed), **OpenBSD** x86-64. What a compiled program
+  needs, per platform: [COMPILERS.md](COMPILERS.md#what-runs-where).
+- **Linux on RISC-V** (riscv64) builds from source with no
+  architecture-specific code, and is built and tested on real RISC-V hardware
+  in CI. It has no release archive yet.
 - Prebuilt archives on [GitHub Releases](https://github.com/ash/rakupp/releases);
   macOS also via `brew install ash/rakupp/rakupp`.
 - CI builds and smoke-tests all three on every push.

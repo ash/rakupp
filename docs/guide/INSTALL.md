@@ -65,6 +65,15 @@ or newer, so there is no dependency to satisfy first. What each platform's
 binary needs at run time — and what the programs it compiles need — is one
 table in [COMPILERS.md](COMPILERS.md#what-runs-where).
 
+On **RISC-V** (riscv64) there is no archive yet, and the one-liner says so
+and prints the commands to [build from source](#build-from-source). The tree
+builds there with no architecture-specific code, and CI builds and tests it
+on real RISC-V hardware. Two things differ from x86-64 and ARM64: `gather`
+uses the portable fallback instead of the hand-written coroutine switch, so
+its block runs further ahead of the consumer than it does elsewhere, and
+`--cnp` has no native stencils for the architecture, so its kernels run
+interpreted.
+
 Two Linux cases have a route of their own rather than an archive:
 [**Nix**](#nix--nixos), which cannot run a generic Linux binary at all, and
 [**Guix**](#gnu-guix-linux), which has a channel.
