@@ -299,9 +299,9 @@ public:
     // A shared_ptr to `v`, the Value of one of THIS hash's entries, that keeps
     // the entry alive whatever later happens to the hash (see gen_). The first
     // call moves the entries into their own generation; nothing is relocated.
-    std::shared_ptr<Value> aliasOf(Value& v) {
+    PRef<Value> aliasOf(Value& v) {
         if (!gen_) { gen_ = std::make_shared<ChunkList<Entry>>(std::move(own_)); own_.clear(); }
-        return std::shared_ptr<Value>(gen_, &v);
+        return makeValueAlias(gen_, &v);
     }
 
     iterator find(const std::string& key) {

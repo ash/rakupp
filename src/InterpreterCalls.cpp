@@ -753,7 +753,7 @@ Value* Interpreter::pairsAliasSource(Expr* listExpr) {
     return hv;
 }
 
-std::shared_ptr<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
+PRef<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     if (!listExpr) return nullptr;
     Expr* hashArg = nullptr;
     if (listExpr->kind == NK::Call) {
@@ -890,7 +890,7 @@ bool Interpreter::immutableQuantSource(const Expr* e) {
 // that here is the container/binding refactor, not a list of method names.
 // Plain `for @a.grep(…)` does not alias today either, so stopping at the
 // identity views keeps the two consistent.
-std::shared_ptr<ValueList> Interpreter::valuesArrayAlias(Expr* listExpr) {
+PRef<ValueList> Interpreter::valuesArrayAlias(Expr* listExpr) {
     if (!listExpr) return nullptr;
     Expr* arrArg = nullptr;
     if (listExpr->kind == NK::Call) {
@@ -925,7 +925,7 @@ std::shared_ptr<ValueList> Interpreter::valuesArrayAlias(Expr* listExpr) {
 // topic aliases its elements the same way `for @a` does — Color clips a colour
 // tuple in place with `clip-to 0, $_, 255 for @$rgb`. The list-context operator
 // itself copies (`@(…)` decontainerises), so the loop has to reach the container.
-std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
+PRef<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
     // `for @b[*] { $_ = 9 }`: the whole slice names every slot of THAT array,
     // holes included, so the topic aliases each one as `for @b` does
     if (listExpr && listExpr->kind == NK::Index) {
@@ -966,7 +966,7 @@ std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
 // elements (Rakudo's reverse returns the containers, holes included), so the
 // loop walks the real storage backwards. Only the plain no-argument call on
 // an `@`-variable.
-std::shared_ptr<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
+PRef<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
     if (!listExpr || listExpr->kind != NK::MethodCall) return nullptr;
     auto* mc = static_cast<MethodCall*>(listExpr);
     if (mc->method != "reverse" || !mc->args.empty() || mc->hyper || mc->meta || mc->methodExpr ||
@@ -981,7 +981,7 @@ std::shared_ptr<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
 // `@a.grep(PRED)` over a real Array: the array's storage and the positions of
 // the elements the predicate keeps, in order — the containers grep hands back.
 // The predicate is evaluated ONCE and called per element, as grep does.
-std::shared_ptr<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>>
+std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>>
 Interpreter::grepArrayView(Expr* e) {
     Expr* pred = nullptr;
     Expr* src = peelGrepFilter(e, pred);
@@ -990,7 +990,7 @@ Interpreter::grepArrayView(Expr* e) {
     if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
     Value* av = tctx_.cur->find(sv->name);
     if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return nullptr;
-    auto view = std::make_shared<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>>();
+    auto view = std::make_shared<std::pair<PRef<ValueList>, std::vector<size_t>>>();
     view->first = av->arrS();
     Value pv = eval(pred);
     for (size_t i = 0; i < view->first->size(); i++)
@@ -1149,7 +1149,7 @@ void Interpreter::coerceElems(Value& v, const std::string& ct, char sigil) {
     if (sigil == '%') {
         if (v.t == VT::Hash && v.hash()) { for (auto& kv : *v.hash()) one(kv.second); return; }
         if (v.t == VT::Pair) {
-            if (Value* pv = v.pairVal()) { auto nv = std::make_shared<Value>(*pv); one(*nv); v.setPairVal(nv); }
+            if (Value* pv = v.pairVal()) { auto nv = makePayload<Value>(*pv); one(*nv); v.setPairVal(nv); }
             return;
         }
         if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) coerceElems(e, ct, '%'); return; }
@@ -1203,7 +1203,7 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
         return taking;
     };
     auto dispatch = [&](const char* name, ValueList cands) {
-        Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+        Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
         disp.code()->name = name;
         disp.code()->isMultiDispatcher = true;
         disp.code()->isMethod = true;
@@ -1380,7 +1380,7 @@ const void* Interpreter::containerId(const Value* slot) {
 // its storage slot is promoted on first use (Value::promoteToCell), and a slot
 // an older bind already made a Proxy-cell answers with that cell. Null for a
 // slot holding any other Proxy — a user's, or an env-slot alias.
-std::shared_ptr<Value> Interpreter::varCell(Env* owner, const std::string& name) {
+PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
     Value* raw = owner ? owner->localRaw(name) : nullptr;
     if (!raw) return nullptr;
     if (raw->isCell()) return raw->cellS();
@@ -1398,7 +1398,7 @@ std::shared_ptr<Value> Interpreter::varCell(Env* owner, const std::string& name)
 // over it holds the value, read-only, and `*boundToValue` says so. (Sharing
 // that slot handed its readonly mark to whatever copied the Pair's value —
 // `C.new(q => $v)` left the attribute unassignable.)
-std::shared_ptr<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
+PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     if (e && e->kind == NK::Assign) {
         auto* as = static_cast<const Assign*>(e);
         if (as->op != "=" || !as->target || as->target->kind != NK::VarExpr ||
@@ -1567,7 +1567,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         return p ? I.deproxy(*p) : Value::str("");
     };
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
         Value s = cur(I);
         if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed;
@@ -1575,7 +1575,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         if (len >= 0) sa.push_back(Value::integer(len));
         return I.methodCall(s, "substr", sa);
     };
-    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
     store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
         Value nv = sa.empty() ? Value::str("") : sa.back();
         Value out = I.spliceStr(cur(I), from, len, nv);
@@ -1694,11 +1694,11 @@ static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out) {
 // The container a Pair's value lives in, as a Proxy. `pairVal` is shared by
 // every copy of the pair, so a write through this reaches the pair wherever it
 // is held — which is what `$p.value = v` and `my $v := $p.value` both mean.
-Value Interpreter::makePairCellProxy(std::shared_ptr<Value> cell) {
+Value Interpreter::makePairCellProxy(PRef<Value> cell) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
-    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
     static const std::vector<Param> kTwoPair(2);
     store.code()->params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
     store.code()->builtin = [cell](Interpreter&, ValueList& sa) -> Value {
@@ -1710,12 +1710,12 @@ Value Interpreter::makePairCellProxy(std::shared_ptr<Value> cell) {
     return proxy;
 }
 
-Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx) {
+Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
     // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a
     // builtin never binds its params, so they cost nothing else.
     static const Value kFetch = [] {
-        Value f; f.t = VT::Code; f.setCode(std::make_shared<Callable>());
+        Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
         f.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
             if (a.empty() || !a[0].hash()) return Value::any();
             return I.slotProxyRead(a[0]);
@@ -1723,7 +1723,7 @@ Value Interpreter::makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx
         return f;
     }();
     static const Value kStore = [] {
-        Value st; st.t = VT::Code; st.setCode(std::make_shared<Callable>());
+        Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
         st.code()->params = &kTwo;
         st.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
@@ -1787,7 +1787,7 @@ Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
     return nv;
 }
 
-Value Interpreter::makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key) {
+Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
         [h, key](Interpreter& I, ValueList&) -> Value {
@@ -1805,7 +1805,7 @@ Value Interpreter::makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::str
 }
 
 Value Interpreter::makeCellProxy(const Value& init) {
-    auto cell = std::make_shared<Value>(init);
+    auto cell = makePayload<Value>(init);
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
         [cell](Interpreter&, ValueList&) -> Value { return *cell; },
@@ -2919,7 +2919,7 @@ static const bool g_objMethodStrInstalled = ((g_objMethodStr = &objMethodStrHook
 // — Rakudo's `f |g |args`); the composition takes what g takes (a 2-ary g maps
 // two at a time) and returns what f returns.
 Value composeCode(const Value& fV, const Value& gV) {
-    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
     bool slip = false;
     if (fV.t == VT::Code && g_revInterp) {
         ValueList none;

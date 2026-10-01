@@ -628,7 +628,7 @@ static Value builtinCanStub(const std::string& mn, bool isGrammar) {
         "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
     if (!universal.count(mn) && !(isGrammar && (mn == "parse" || mn == "subparse")))
         return Value::nil();
-    Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+    Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
     stub.code()->name = mn; stub.code()->isMethod = true;
     std::string mnc = mn;
     stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
@@ -836,7 +836,7 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
     if (inv.hash()->count("split") && (*inv.hash())["split"].toStr() == "lines") {
         bool chomp = !inv.hash()->count("split-chomp") || (*inv.hash())["split-chomp"].truthy();
-        Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+        Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
         Value lineCb = cb;
         auto carry = std::make_shared<std::string>(); // the tail of the last chunk
         w.code()->builtin = [lineCb, chomp, carry](Interpreter& I, ValueList& a) -> Value {
@@ -896,7 +896,7 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     }
 }
 
-void Interpreter::runAttrDefaults(const std::shared_ptr<ObjectData>& od,
+void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                                   const std::shared_ptr<ClassInfo>& ci,
                                   ValueList& args) {
     // attr defaults evaluate with `self` in scope, so a default
@@ -1292,7 +1292,7 @@ static const MacDistro& macDistro() {
 void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
     if (cand.t == VT::Code && cand.code() && !cand.code()->isMethod &&
         !cand.code()->subAsMethod) {
-        auto clone = std::make_shared<Callable>(*cand.code());
+        auto clone = makePayload<Callable>(*cand.code());
         clone->subAsMethod = true;
         Value c2; c2.t = VT::Code; c2.setCode(std::move(clone));
         cand = std::move(c2);
@@ -1302,7 +1302,7 @@ void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
         it->second.code()->isMultiDispatcher)
         it->second.code()->candidates.push_back(cand);
     else {
-        Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+        Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
         disp.code()->name = mname;
         disp.code()->isMultiDispatcher = true;
         disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
@@ -1376,11 +1376,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (!broke) (*ph)["result"] = v;
                 for (auto& f : fire) f();
             };
-            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             emitCb.code()->builtin = [last](Interpreter&, ValueList& a) -> Value { if (!a.empty()) *last = a[0]; return Value::any(); };
-            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
             doneCb.code()->builtin = [settle, last](Interpreter&, ValueList&) -> Value { settle(false, *last); return Value::any(); };
-            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
             quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value { settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any(); };
             tapSupply(inv, emitCb, doneCb, quitCb);
             return p;
@@ -1456,17 +1456,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                     }
                 };
-                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
                 emitCb.code()->builtin = [ch](Interpreter&, ValueList& a) -> Value {
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                     if (!a.empty()) (*ch)["queue"].arr()->push_back(a[0]);
                     return Value::any();
                 };
-                Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+                Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
                 doneCb.code()->builtin = [settle](Interpreter&, ValueList&) -> Value {
                     settle(false, Value::any()); return Value::any();
                 };
-                Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+                Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
                 quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value {
                     settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
                 };
@@ -1511,10 +1511,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // enough that a tap which arrives after the result still sees it.
         if (!listy && m == "start" && !args.empty() && args[0].t == VT::Code) {
             Value code = args[0];
-            Value mapper; mapper.t = VT::Code; mapper.setCode(std::make_shared<Callable>());
+            Value mapper; mapper.t = VT::Code; mapper.setCode(makePayload<Callable>());
             mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
-                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
                 body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
                     ValueList one{v}; return I2.callCallable(code, one);
                 };
@@ -1557,15 +1557,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // (a list-backed source has every value in hand, so the started
             // blocks can be awaited where their results are asked for)
             Value code = args[0];
-            Value mapper; mapper.t = VT::Code; mapper.setCode(std::make_shared<Callable>());
+            Value mapper; mapper.t = VT::Code; mapper.setCode(makePayload<Callable>());
             mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
-                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
                 body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
                     ValueList one{v}; return I2.callCallable(code, one);
                 };
                 Value pr = I.spawnPromise(body);
-                Value blk; blk.t = VT::Code; blk.setCode(std::make_shared<Callable>());
+                Value blk; blk.t = VT::Code; blk.setCode(makePayload<Callable>());
                 blk.code()->builtin = [pr](Interpreter& I2, ValueList&) -> Value {
                     Value p = pr; ValueList na;
                     Value r = I2.methodCall(p, "result", na);   // waits; raises if broken
@@ -1634,7 +1634,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value o = Value::array(); o.isList = true;
             if (m == "Seq") o.s = "Seq";
             auto cell = o.arrS();
-            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
                 if (!a.empty()) cell->push_back(a[0]);
                 return Value::any();
@@ -1647,14 +1647,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto out = makePayload<ValueList>();
             auto fin = std::make_shared<int>(0);          // 0 running, 1 done, 2 quit
             auto err = std::make_shared<Value>();
-            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             emitCb.code()->builtin = [out](Interpreter&, ValueList& a) -> Value {
                 if (!a.empty()) out->push_back(a[0]);
                 return Value::any();
             };
-            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
             doneCb.code()->builtin = [fin](Interpreter&, ValueList&) -> Value { if (!*fin) *fin = 1; return Value::any(); };
-            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
             quitCb.code()->builtin = [fin, err](Interpreter&, ValueList& a) -> Value {
                 if (!*fin) { *fin = 2; *err = a.empty() ? Value::any() : a[0]; }
                 return Value::any();
@@ -1841,7 +1841,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*c.hash())["closed"] = Value::boolean(false);
             (*c.hash())["supplier"] = (*inv.hash())["supplier"];
             Value tapRec = Value::makeHash();
-            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             emitCb.code()->builtin = [qarr](Interpreter&, ValueList& a) -> Value {
                 if (!a.empty()) qarr->push_back(a[0]);
                 return Value::any();
@@ -1872,9 +1872,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                 }
             };
-            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
             doneCb.code()->builtin = [settle](Interpreter&, ValueList&) -> Value { settle(false, Value::any()); return Value::any(); };
-            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
             quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value {
                 settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
             };
@@ -2117,17 +2117,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*out.hash())["supplier"] = sup;
             // subscribe NOW: the events start flowing into a Supplier that so
             // far has no taps, and are dropped
-            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+            Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             Value supCopy = sup;
             emitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
                 ValueList one{a.empty() ? Value::any() : a[0]};
                 Value s2 = supCopy; return I.methodCall(s2, "emit", one);
             };
-            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+            Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
             doneCb.code()->builtin = [supCopy](Interpreter& I, ValueList&) -> Value {
                 ValueList na; Value s2 = supCopy; return I.methodCall(s2, "done", na);
             };
-            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+            Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
             quitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
                 ValueList one{a.empty() ? Value::any() : a[0]};
                 Value s2 = supCopy; try { return I.methodCall(s2, "quit", one); } catch (...) { return Value::any(); }
@@ -2527,7 +2527,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // wait are the ones the answer is drawn from
                 Value seen = Value::array(); seen.isList = true;
                 auto cell = seen.arrS();
-                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
                 emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) cell->push_back(a[0]);
                     return Value::any();
@@ -2558,19 +2558,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // out: done gives its last value, and a QUIT — a `die` in a
             // whenever — is thrown, which is what `await supply {…}` reports
             if (!listy && inv.hash()->count("block")) {
-                auto cell = std::make_shared<ValueList>();
+                auto cell = makePayload<ValueList>();
                 auto state = std::make_shared<std::atomic<int>>(0);   // 1 done, 2 quit
                 auto quitV = std::make_shared<Value>();
-                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(std::make_shared<Callable>());
+                Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
                 emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) cell->push_back(a[0]);
                     return Value::any();
                 };
-                Value doneCb; doneCb.t = VT::Code; doneCb.setCode(std::make_shared<Callable>());
+                Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
                 doneCb.code()->builtin = [state](Interpreter&, ValueList&) -> Value {
                     int z = 0; state->compare_exchange_strong(z, 1); return Value::any();
                 };
-                Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+                Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
                 quitCb.code()->builtin = [state, quitV](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) *quitV = a[0];
                     state->store(2); return Value::any();
@@ -2782,7 +2782,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // construction seeds with the attribute's type object, so the
             // thunk calls the method on that type (Red's timestamp columns)
             std::string seedType = ca->type.empty() ? std::string("Any") : ca->type;
-            Value thunk; thunk.t = VT::Code; thunk.setCode(std::make_shared<Callable>());
+            Value thunk; thunk.t = VT::Code; thunk.setCode(makePayload<Callable>());
             thunk.code()->isMethod = true;
             thunk.code()->name = "build";
             thunk.code()->builtin = [def, declEnv, seedType](Interpreter& I, ValueList& a) -> Value {
@@ -3523,7 +3523,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // passes its result along). Both are `.then` with that choice made.
         if ((m == "andthen" || m == "orelse") && !args.empty() && args[0].t == VT::Code) {
             Value cb = args[0]; const bool isAnd = m == "andthen";
-            Value wrap; wrap.t = VT::Code; wrap.setCode(std::make_shared<Callable>());
+            Value wrap; wrap.t = VT::Code; wrap.setCode(makePayload<Callable>());
             wrap.code()->builtin = [cb, isAnd](Interpreter& I, ValueList& a) -> Value {
                 Value p = a.empty() ? Value::any() : a[0];
                 const bool kept = I.methodCall(p, "status", ValueList{}).toStr() == "Kept";
@@ -4740,7 +4740,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find("code");
             if (m == "code") {
                 if (it != inv.hash()->end()) return it->second;
-                Value u; u.t = VT::Code; u.setCode(std::make_shared<Callable>());
+                Value u; u.t = VT::Code; u.setCode(makePayload<Callable>());
                 u.code()->name = "<unit>";        // the mainline is not a routine
                 return u;
             }
@@ -5211,7 +5211,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Seq is `Seq.new()`, and this is what EVALing that gives back (SeqToken)
         if (inv.s == "Seq" && args.empty()) {
             Value v = Value::array(); v.isList = true; v.s = "Seq";
-            auto tok = makePayload<SeqToken>();
+            auto tok = makeSlabShared<SeqToken>();
             tok->state = kSeqConsumed;
             v.setSeqTok(std::move(tok));
             return v;
@@ -5850,7 +5850,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (rit == c->rules.end()) continue;
                     std::string pat = rit->second;
                     std::string kind = c->ruleKind.count(mn) ? c->ruleKind[mn] : "regex";
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                     code.code()->name = mn;
                     code.code()->isMethod = true;
                     code.code()->isRegexRoutine = true;
@@ -5884,7 +5884,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& a : c->attrs)
                         if (a.pub && a.name == mn) {
                             Value code; code.t = VT::Code;
-                            code.setCode(std::make_shared<Callable>());
+                            code.setCode(makePayload<Callable>());
                             code.code()->name = mn; code.code()->isMethod = true;
                             code.code()->retRw = a.rw;   // `.rw` answers for an `is rw` accessor
                             code.code()->builtin = [mn](Interpreter& I, ValueList& av) -> Value {
@@ -5910,7 +5910,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!c->nativeParent.empty()) { nativeBase = c->nativeParent; break; }
                     if (fromBuiltin && isContainerMethodName(mn)) {
                         Value code; code.t = VT::Code;
-                        code.setCode(std::make_shared<Callable>());
+                        code.setCode(makePayload<Callable>());
                         code.code()->name = mn; code.code()->isMethod = true;
                         code.code()->builtin = [mn, nativeBase](Interpreter& I, ValueList& av) -> Value {
                             if (av.empty()) return Value::any();
@@ -5991,7 +5991,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // `&sub` may still be called as a sub elsewhere.
                     if (add.t == VT::Code && add.code() && !add.code()->isMethod &&
                         !add.code()->subAsMethod) {
-                        auto clone = std::make_shared<Callable>(*add.code());
+                        auto clone = makePayload<Callable>(*add.code());
                         clone->subAsMethod = true;
                         Value m2; m2.t = VT::Code; m2.setCode(std::move(clone));
                         add = std::move(m2);
@@ -6001,7 +6001,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // it dies, as in Rakudo
                     if (add.t == VT::Array || add.t == VT::Hash || add.t == VT::Str || add.t == VT::Int) {
                         const std::string what = add.typeName();
-                        Value bad; bad.t = VT::Code; bad.setCode(std::make_shared<Callable>());
+                        Value bad; bad.t = VT::Code; bad.setCode(makePayload<Callable>());
                         bad.code()->name = args[0].toStr();
                         bad.code()->isMethod = true;
                         bad.code()->builtin = [what](Interpreter&, ValueList&) -> Value {
@@ -6251,7 +6251,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get()) {
                         const ClassAttr* at = c2->findAttr(mn);
                         if (at && at->pub) {
-                            Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                            Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                             stub.code()->name = mn; stub.code()->isMethod = true;
                             std::string mnc = mn;
                             stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
@@ -6329,7 +6329,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!at.pub || c->methods.count(at.name)) continue;
                         if (local && !seen.insert(at.name).second) continue;
                         if (names) { out.arr()->push_back(Value::str(at.name)); continue; }
-                        Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                        Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                         stub.code()->name = at.name; stub.code()->isMethod = true;
                         std::string an = at.name;
                         stub.code()->retType = at.type.empty() ? "" : at.type;
@@ -7702,7 +7702,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku")
             { /* fall through to the generic paths below with the Whatever value */ }
         else {
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         std::string mc = m; ValueList ar = args;
         code.code()->builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
             Value arg = a.empty() ? Value::any() : a[0];
@@ -7746,7 +7746,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "assuming") { // partial application: &f.assuming(a,b)(c) == f(a,b,c)
             Value orig = inv; ValueList pre = args;
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->builtin = [orig, pre](Interpreter& I, ValueList& a) -> Value {
                 // a `*` in the priming is a hole: the call's next positional
                 // fills it, so `f.assuming(*, 2)(1)` calls `f(1, 2)`
@@ -7987,7 +7987,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "has-loop-phasers") return Value::boolean(any);
             if (!found) return Value::nil();
             static std::vector<Param> noParams;
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->params = &noParams;
             code.code()->body = &found->stmts;
             code.code()->closure = inv.code()->closure;
@@ -8926,7 +8926,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             static const std::set<std::string> dateOnly = { "succ", "pred" };
             bool isDT = inv.hashKind == "DateTime";
             if (dateish.count(mn) || (isDT ? timeOnly.count(mn) : dateOnly.count(mn))) {
-                Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                 stub.code()->name = mn; stub.code()->isMethod = true;
                 std::string mnc = mn;
                 stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
@@ -8958,7 +8958,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (ClassInfo* c2 = ci; c2; c2 = c2->parent.get()) {
                 const ClassAttr* at = c2->findAttr(mn);
                 if (at && at->pub) {
-                    Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                    Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->name = mn; stub.code()->isMethod = true;
                     std::string mnc = mn;
                     stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
@@ -9013,7 +9013,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // 0 = a side-effectful name that must not be probed (no stub —
                 // the permissive answer this fallback has always given)
                 if (probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
-                    Value stub; stub.t = VT::Code; stub.setCode(std::make_shared<Callable>());
+                    Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->name = mn; stub.code()->isMethod = true;
                     std::string mnc = mn;
                     stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
@@ -9581,20 +9581,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "iterator") { // S07: make an Iterator over this value's elements
         // A HyperSeq/RaceSeq hands out ONE iterator: a second `.iterator`, from
         // this thread or any other racing it, is X::Seq::Consumed (Rakudo #4413).
-        // Keyed by the shared element buffer every copy of the value holds.
+        // Marked on the shared element buffer every copy of the value holds —
+        // its body's flags, set once atomically, so the second taker sees it.
         if (inv.t == VT::Array && (inv.s == "HyperSeq" || inv.s == "RaceSeq") && inv.arr()) {
-            static std::mutex mu;
-            static std::map<const void*, std::weak_ptr<ValueList>> taken;
-            std::lock_guard<std::mutex> lk(mu);
-            for (auto t = taken.begin(); t != taken.end();)
-                t = t->second.expired() ? taken.erase(t) : std::next(t);
-            auto hit = taken.find(inv.arr());
-            if (hit != taken.end())
+            auto buf = inv.arrS();
+            if (buf.body()->pflags_.fetch_or(kPayHyperIterTaken, std::memory_order_acq_rel) & kPayHyperIterTaken)
                 throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(inv.s.str())}},
                             "The iterator of this Seq is already in use/consumed by another Seq\n"
                             "(you might solve this by adding .cache on usages of the Seq, or\n"
                             "by assigning the Seq into an array)");
-            taken[inv.arr()] = inv.arrS();
         }
         Value it = Value::makeHash(); it.hashKind = "Iterator";
         Value items = Value::array();
@@ -9698,7 +9693,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // rewrote $p. Copy the cell: the clone owns its own value.
         if (inv.t == VT::Pair) {
             Value nv = inv;
-            nv.setPairVal(std::make_shared<Value>(inv.pairVal() ? *inv.pairVal() : Value::any()));
+            nv.setPairVal(makePayload<Value>(inv.pairVal() ? *inv.pairVal() : Value::any()));
             return nv;
         }
         // A MATCH is a distinct object after cloning too — mdW() copies the body
@@ -9710,7 +9705,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // the state holder empty; see Value.h.)
         if (inv.t == VT::Code && inv.code()) {
             Value nv = inv;
-            nv.setCode(std::make_shared<Callable>(*inv.code()));
+            nv.setCode(makePayload<Callable>(*inv.code()));
             return nv;
         }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself

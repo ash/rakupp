@@ -17,6 +17,7 @@
 
 #include "IStr.h"
 #include "SlabPool.h"
+#include "Ref.h"
 #include "ValueVec.h"
 
 namespace rakupp {
@@ -43,7 +44,7 @@ struct Value;
 // Because the promoted body is immutable, it is also the right place to cache
 // the two string properties the scanning ops recompute per character (see
 // asciiState/nGraphemes below).
-struct StrBody {
+struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
     std::string text;
     // All -1 until computed, then 0/1. Racing threads may each compute one of
     // these, but the text is immutable so they compute the same answer — the
@@ -72,14 +73,14 @@ struct StrBody {
 class CowStr {
     // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
     std::string s_;
-    std::shared_ptr<const StrBody> p_;
+    Ref<const StrBody> p_;   // 8 bytes: CowStr is 32 where it was 40
     // Below this, a copy is a couple of words and sharing would cost more than
     // it saves (an allocation per string). Above it, copying is the thing we are
     // here to avoid.
     static constexpr size_t kPromote = 23;
 
     void take(std::string x) {
-        if (x.size() >= kPromote) { p_ = std::make_shared<const StrBody>(std::move(x)); s_.clear(); }
+        if (x.size() >= kPromote) { p_ = makeRef<const StrBody>(std::move(x)); s_.clear(); }
         else { s_ = std::move(x); p_.reset(); }
     }
 
@@ -104,7 +105,7 @@ public:
     // The shared body, when the string is promoted (null for inline smalls).
     // NativeHelpers::Blob's pointer-to retains it so a pointer handed to C
     // outlives the Value copy it was taken from.
-    std::shared_ptr<const StrBody> bodyPtr() const { return p_; }
+    Ref<const StrBody> bodyPtr() const { return p_; }
 
     // Force the shared body even below kPromote. A Buf built by `allocate` (or
     // `Buf.new`) is a NATIVE BUFFER: its address is handed to C, which writes
@@ -112,7 +113,7 @@ public:
     // must outlive the call. Left inline, a short buffer could only give C a
     // pointer to a temporary COPY — mysql_stmt_bind_result filled memory no one
     // read, and the copy was recycled underneath the driver.
-    void promote() { if (!p_) { p_ = std::make_shared<const StrBody>(std::move(s_)); s_.clear(); } }
+    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); } }
 
     // Write access that KEEPS the shared body. A Buf is a reference-semantics
     // container in Raku — `my $c = $b; $c[0] = 9` is visible through `$b` — and
@@ -414,7 +415,7 @@ struct Callable {
         return n;
     }
     ValueList candidates;                          // multi-dispatch candidates
-    std::shared_ptr<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
+    PRef<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
                                                    // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
@@ -534,7 +535,7 @@ struct SeqToken { std::atomic<unsigned char> state{kSeqUnread}; };
 // The block is COPY-ON-WRITE: copying a Value shares it (one shared_ptr copy,
 // where these fields used to cost ~148 inline bytes), and every write goes
 // through xw(), which clones a shared block first. Reads never allocate.
-struct ValueExt {
+struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     double im = 0; // imaginary part for VT::Complex (real part is Value::n)
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
     std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
@@ -590,9 +591,9 @@ inline const ValueExt emptyValueExt{};
 // Pointer-in-body keeps both behaviours exactly as they were when the three
 // were separate members.
 struct MatchData {
-    std::shared_ptr<ValueList> pos;  // positional captures ($0, $1, …)
-    std::shared_ptr<ValueMap> named; // named captures ($<x>)
-    std::shared_ptr<Value> made;     // .made / .ast (was parked in pairVal)
+    PRef<ValueList> pos;  // positional captures ($0, $1, …)
+    PRef<ValueMap> named; // named captures ($<x>)
+    PRef<Value> made;     // .made / .ast (was parked in pairVal)
     // A grammar CURSOR: the `self` a `<.method>` subrule call hands its method
     // (Interpreter.h's GrammarCursor). Null on every ordinary Match.
     std::shared_ptr<void> cursor;
@@ -609,46 +610,123 @@ struct MatchData {
 // hold a Proxy over such a shared Value — the form their readers deproxy.)
 enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell };
 
+#ifdef RAKUPP_IN_AUDIT
+// VALUE32-PLAN design A, batch 1: may `i` and `n` share one slot? This build
+// answers it. The two stay SEPARATE (behaviour is unchanged), each write
+// records which of them was written last, and a read of the OTHER one logs its
+// caller when the shared slot would have answered different bits from the ones
+// actually stored — exactly the reads a union would change. Compiled out of
+// every normal build; see tools/in-audit.md.
+void inAuditHit(void* caller, void* writer, int which);   // Value.cpp: counted, dumped at exit
+struct InAuditN;
+struct InAuditI {
+    long long v = 0; unsigned char last = 0;   // last: 1 = i written last, 2 = n
+    void* wr = nullptr;                        // …and who wrote it
+    inline InAuditN& sib();
+    [[gnu::noinline]] long long get() const;
+    [[gnu::noinline]] void put(long long x);
+    operator long long() const { return get(); }
+    InAuditI& operator=(long long x) { put(x); return *this; }
+    InAuditI& operator=(const InAuditI& o) = default;
+    InAuditI& operator+=(long long x) { put(get() + x); return *this; }
+    InAuditI& operator-=(long long x) { put(get() - x); return *this; }
+    InAuditI& operator*=(long long x) { put(get() * x); return *this; }
+    InAuditI& operator/=(long long x) { put(get() / x); return *this; }
+    InAuditI& operator%=(long long x) { put(get() % x); return *this; }
+    InAuditI& operator&=(long long x) { put(get() & x); return *this; }
+    InAuditI& operator|=(long long x) { put(get() | x); return *this; }
+    InAuditI& operator^=(long long x) { put(get() ^ x); return *this; }
+    InAuditI& operator<<=(long long x) { put(get() << x); return *this; }
+    InAuditI& operator>>=(long long x) { put(get() >> x); return *this; }
+    InAuditI& operator++() { put(get() + 1); return *this; }
+    InAuditI& operator--() { put(get() - 1); return *this; }
+    long long operator++(int) { long long o = get(); put(o + 1); return o; }
+    long long operator--(int) { long long o = get(); put(o - 1); return o; }
+};
+struct InAuditN {
+    double v = 0; unsigned char last = 0;
+    void* wr = nullptr;
+    inline InAuditI& sib();
+    [[gnu::noinline]] double get() const;
+    [[gnu::noinline]] void put(double x);
+    operator double() const { return get(); }
+    InAuditN& operator=(double x) { put(x); return *this; }
+    InAuditN& operator=(const InAuditN& o) = default;
+    InAuditN& operator+=(double x) { put(get() + x); return *this; }
+    InAuditN& operator-=(double x) { put(get() - x); return *this; }
+    InAuditN& operator*=(double x) { put(get() * x); return *this; }
+    InAuditN& operator/=(double x) { put(get() / x); return *this; }
+    InAuditN& operator++() { put(get() + 1); return *this; }
+    InAuditN& operator--() { put(get() - 1); return *this; }
+    double operator++(int) { double o = get(); put(o + 1); return o; }
+    double operator--(int) { double o = get(); put(o - 1); return o; }
+};
+// the pair sits together, i then n, so each finds the other by address
+struct InAuditPair { InAuditI i; InAuditN n; };
+inline InAuditN& InAuditI::sib() { return reinterpret_cast<InAuditPair*>(this)->n; }
+inline InAuditI& InAuditN::sib() {
+    return reinterpret_cast<InAuditPair*>(reinterpret_cast<char*>(this) - offsetof(InAuditPair, n))->i;
+}
+#endif
+
 struct Value {
-    long long i = 0;
-    double n = 0;
+#ifdef RAKUPP_IN_AUDIT
+    InAuditI i;
+    InAuditN n;
+#else
+    // ONE word for the two: an Int's `i` and a Num's `n` (a Complex's real
+    // part, a fractional Range's endpoint) are never both live on one Value
+    // (VALUE32-PLAN design A, batch 1; the RAKUPP_IN_AUDIT build above is
+    // how that was checked). Writing one replaces the other, so nothing may
+    // "clear" the inactive one after setting the live one.
+    union {
+        long long i = 0;
+        double n;
+    };
+#endif
     CowStr s; // also holds type name for VT::Type, key for VT::Pair
     // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/... — a secondary type
-    // tag drawn from a closed vocabulary, so it is INTERNED (IStr.h): 8 bytes
+    // tag drawn from a closed vocabulary, so it is INTERNED (IStr.h): 4 bytes
     // and a trivial copy, where a std::string was 24 bytes with a constructor
     // and a destructor run on every Value copy.
     IStr hashKind;
+    // (beside hashKind, in the half of the 8 bytes it no longer needs)
+    IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
     // The tag and every one-byte flag sit TOGETHER so they pack into two
     // 8-byte words instead of scattering padding through the struct (t+b
     // alone at the front of the old layout cost 8 bytes of pure padding).
     VT t = VT::Any;
-    bool b = false;
-    bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
-    bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
-    bool objKeyed = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
+    PK pk_ = PK::None;    // what the payload slot p_ holds (see MatchData above)
+    bool b : 1 = false;
+    bool isList : 1 = false;  // VT::Array that is a List/Seq (gists with parens)
+    bool itemized : 1 = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
+    bool objKeyed : 1 = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
                            // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
-    bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
+    bool readonly : 1 = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     // …and WHY it is readonly, because Rakudo words the two refusals
     // differently: a readonly CONTAINER is "Cannot assign to a readonly
     // variable or a value", while a raw binding to something that has no
     // container at all — the `$_` of `for 1..3` — is "Cannot assign to an
     // immutable value". Only read alongside `readonly`, which is always set
     // with it, so every existing check still fires; it picks the message.
-    // Free: it lands in the padding this block already had (sizeof stays 128).
-    bool immutableBind = false;
+    bool immutableBind : 1 = false;
     // A PAIR whose value is not a container: `a => 1` binds a VALUE, `a => $x`
     // binds $x's container, and only the second can be written through
     // (`$p.value = 5`). Sheet HM-18. It sits HERE rather than in the cold block
     // because a pair literal is the common case and the flag is set on almost
     // every one — a cold-block write would allocate for each, which measured
     // +4.5% on the object benchmark (two named arguments per construction).
-    // Free: it lands in the padding before natBits, as immutableBind does.
-    bool pairValRO = false;
-    bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
-    bool natSigned = false;
-    bool natFloat = false; // native float container (num32): truncates to float32 on assignment
-    PK pk_ = PK::None;    // what the payload slot p_ holds (see MatchData above)
-    int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
+    bool pairValRO : 1 = false;
+    bool namedArg : 1 = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
+    bool natSigned : 1 = false;
+    bool natFloat : 1 = false; // native float container (num32): truncates to float32 on assignment
+    int natBits : 8 = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
+    // The tag block (VALUE32-PLAN design A, batch 3): `t` and `pk_` stay
+    // whole bytes, then the ten flags and `natBits` as bit-fields — 5 bytes
+    // where they took 16. `pk_` as a 3-bit field cost the method kernels
+    // 3-4% (every payload accessor tests it); as a byte the batch measured
+    // −1.5% mean. A 64-byte layout has 32 bits here, so `natBits` (only
+    // ever 0/8/16/32/64) would become a 3-bit code then.
 #ifdef RAKUPP_PTR_CENSUS
     // The census that sized the cold block; see tools/ptr-census.md. Compiled
     // out of every normal build.
@@ -659,9 +737,8 @@ struct Value {
                (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
-    std::shared_ptr<void> p_;        // THE payload slot; pk_ says what it holds
-    std::shared_ptr<ValueExt> x_;    // the cold block above; null on almost every Value
-    IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
+    PayRef p_;                       // THE payload slot; pk_ says what it holds (8 bytes: batch 4)
+    Ref<ValueExt> x_;                // the cold block above; null on almost every Value
     IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
 
     // Payload access. Readers return RAW pointers (null when the slot holds a
@@ -669,46 +746,50 @@ struct Value {
     // the old members did. On a Match, arr()/hash()/pairVal() resolve into the
     // combined body — positionals, nameds, .made — which is what the three
     // members held on a Match before the slot existed.
-    MatchData* md() const { return pk_ == PK::Match ? static_cast<MatchData*>(p_.get()) : nullptr; }
+    // The object in the slot's body, as kind T — the caller has checked pk_.
+    template <class T> T* pv() const {
+        return BodyOf<T>::obj(static_cast<typename BodyOf<T>::type*>(p_.get()));
+    }
+    MatchData* md() const { return pk_ == PK::Match ? pv<MatchData>() : nullptr; }
     ValueList* arr() const {
-        if (pk_ == PK::List) return static_cast<ValueList*>(p_.get());
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->pos.get();
+        if (pk_ == PK::List) return pv<ValueList>();
+        if (pk_ == PK::Match) return pv<MatchData>()->pos.get();
         return nullptr;
     }
     ValueMap* hash() const {
-        if (pk_ == PK::Hash) return static_cast<ValueMap*>(p_.get());
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->named.get();
+        if (pk_ == PK::Hash) return pv<ValueMap>();
+        if (pk_ == PK::Match) return pv<MatchData>()->named.get();
         return nullptr;
     }
-    Callable* code() const { return pk_ == PK::Code ? static_cast<Callable*>(p_.get()) : nullptr; }
-    ObjectData* obj() const { return pk_ == PK::Obj ? static_cast<ObjectData*>(p_.get()) : nullptr; }
+    Callable* code() const { return pk_ == PK::Code ? pv<Callable>() : nullptr; }
+    ObjectData* obj() const { return pk_ == PK::Obj ? pv<ObjectData>() : nullptr; }
     Value* pairVal() const {
-        if (pk_ == PK::PairV) return static_cast<Value*>(p_.get());
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->made.get();
+        if (pk_ == PK::PairV) return pv<Value>();
+        if (pk_ == PK::Match) return pv<MatchData>()->made.get();
         return nullptr;
     }
     // Ownership readers — the shared_ptr itself, for sites that alias a payload
     // into another Value. On a Match these hand out the body's own pointers, so
     // sharing semantics are identical to the old separate members.
-    std::shared_ptr<ValueList> arrS() const {
-        if (pk_ == PK::List) return std::static_pointer_cast<ValueList>(p_);
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->pos;
+    PRef<ValueList> arrS() const {
+        if (pk_ == PK::List) return PRef<ValueList>::fromSlot(p_);
+        if (pk_ == PK::Match) return pv<MatchData>()->pos;
         return nullptr;
     }
-    std::shared_ptr<ValueMap> hashS() const {
-        if (pk_ == PK::Hash) return std::static_pointer_cast<ValueMap>(p_);
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->named;
+    PRef<ValueMap> hashS() const {
+        if (pk_ == PK::Hash) return PRef<ValueMap>::fromSlot(p_);
+        if (pk_ == PK::Match) return pv<MatchData>()->named;
         return nullptr;
     }
-    std::shared_ptr<Callable> codeS() const {
-        return pk_ == PK::Code ? std::static_pointer_cast<Callable>(p_) : nullptr;
+    PRef<Callable> codeS() const {
+        return pk_ == PK::Code ? PRef<Callable>::fromSlot(p_) : nullptr;
     }
-    std::shared_ptr<ObjectData> objS() const {
-        return pk_ == PK::Obj ? std::static_pointer_cast<ObjectData>(p_) : nullptr;
+    PRef<ObjectData> objS() const {
+        return pk_ == PK::Obj ? PRef<ObjectData>::fromSlot(p_) : nullptr;
     }
-    std::shared_ptr<Value> pairValS() const {
-        if (pk_ == PK::PairV) return std::static_pointer_cast<Value>(p_);
-        if (pk_ == PK::Match) return static_cast<MatchData*>(p_.get())->made;
+    PRef<Value> pairValS() const {
+        if (pk_ == PK::PairV) return PRef<Value>::fromSlot(p_);
+        if (pk_ == PK::Match) return pv<MatchData>()->made;
         return nullptr;
     }
     // Writers. Setting a payload REPLACES whatever kind the slot held — which
@@ -718,24 +799,24 @@ struct Value {
     // clone when the body is shared — replacing one copy's pointer never
     // touched another copy's before, and must not now.
     MatchData& mdW() {
-        if (p_.use_count() > 1) p_ = makePayload<MatchData>(*static_cast<MatchData*>(p_.get()));
-        return *static_cast<MatchData*>(p_.get());
+        if (p_.use_count() > 1) p_ = makePayload<MatchData>(*pv<MatchData>()).slot();
+        return *pv<MatchData>();
     }
-    void setArr(std::shared_ptr<ValueList> x) {
+    void setArr(PRef<ValueList> x) {
         if (pk_ == PK::Match) { mdW().pos = std::move(x); return; }
-        p_ = std::move(x); pk_ = p_ ? PK::List : PK::None;
+        p_ = x.slot(); pk_ = p_ ? PK::List : PK::None;
     }
-    void setHash(std::shared_ptr<ValueMap> x) {
+    void setHash(PRef<ValueMap> x) {
         if (pk_ == PK::Match) { mdW().named = std::move(x); return; }
-        p_ = std::move(x); pk_ = p_ ? PK::Hash : PK::None;
+        p_ = x.slot(); pk_ = p_ ? PK::Hash : PK::None;
     }
-    void setCode(std::shared_ptr<Callable> x) { p_ = std::move(x); pk_ = p_ ? PK::Code : PK::None; }
-    void setObj(std::shared_ptr<ObjectData> x) { p_ = std::move(x); pk_ = p_ ? PK::Obj : PK::None; }
-    void setPairVal(std::shared_ptr<Value> x) {
+    void setCode(const PRef<Callable>& x) { p_ = x.slot(); pk_ = p_ ? PK::Code : PK::None; }
+    void setObj(const PRef<ObjectData>& x) { p_ = x.slot(); pk_ = p_ ? PK::Obj : PK::None; }
+    void setPairVal(PRef<Value> x) {
         if (pk_ == PK::Match) { mdW().made = std::move(x); return; }
-        p_ = std::move(x); pk_ = p_ ? PK::PairV : PK::None;
+        p_ = x.slot(); pk_ = p_ ? PK::PairV : PK::None;
     }
-    void setMatch(std::shared_ptr<MatchData> x) { p_ = std::move(x); pk_ = p_ ? PK::Match : PK::None; }
+    void setMatch(const PRef<MatchData>& x) { p_ = x.slot(); pk_ = p_ ? PK::Match : PK::None; }
     void clearPayload() { p_.reset(); pk_ = PK::None; }
     // A shared container (PK::Cell above). The holder itself is inert: the
     // Value every bound name reads and writes is the one it points to.
@@ -748,20 +829,20 @@ struct Value {
     // somewhere. `b` is otherwise unused on a Pair; this is its only meaning.
     bool pairLive() const { return t == VT::Pair && b; }
     void setPairLive() { b = true; }
-    std::shared_ptr<Value> cellS() const {
-        return pk_ == PK::Cell ? std::static_pointer_cast<Value>(p_) : nullptr;
+    PRef<Value> cellS() const {
+        return pk_ == PK::Cell ? PRef<Value>::fromSlot(p_) : nullptr;
     }
-    static Value cellHolder(std::shared_ptr<Value> c) {
-        Value v; v.p_ = std::move(c); v.pk_ = PK::Cell; return v;
+    static Value cellHolder(const PRef<Value>& c) {
+        Value v; v.p_ = c.slot(); v.pk_ = PK::Cell; return v;
     }
     // The container a storage slot stands for: the cell's Value, or the slot.
-    Value* deref() { return pk_ == PK::Cell ? static_cast<Value*>(p_.get()) : this; }
-    const Value* deref() const { return pk_ == PK::Cell ? static_cast<const Value*>(p_.get()) : this; }
+    Value* deref() { return pk_ == PK::Cell ? pv<Value>() : this; }
+    const Value* deref() const { return pk_ == PK::Cell ? pv<Value>() : this; }
     // Promote this storage slot to a cell (a no-op when it already is one) and
     // hand back the shared pointer, for a second name to hold.
-    std::shared_ptr<Value> promoteToCell() {
-        if (pk_ == PK::Cell) return std::static_pointer_cast<Value>(p_);
-        auto c = std::make_shared<Value>(std::move(*this));
+    PRef<Value> promoteToCell() {
+        if (pk_ == PK::Cell) return PRef<Value>::fromSlot(p_);
+        auto c = makePayload<Value>(std::move(*this));
         *this = cellHolder(c);
         return c;
     }
@@ -777,8 +858,8 @@ struct Value {
     // census says is rare.
     const ValueExt& xr() const { return x_ ? *x_ : emptyValueExt; }
     ValueExt& xw() {
-        if (!x_) x_ = makePayload<ValueExt>();
-        else if (x_.use_count() > 1) x_ = makePayload<ValueExt>(*x_);
+        if (!x_) x_ = makeRef<ValueExt>();
+        else if (x_.use_count() > 1) x_ = makeRef<ValueExt>(*x_);
         return *x_;
     }
     double im() const { return xr().im; }
@@ -914,7 +995,7 @@ struct Value {
     // Wrap a C++ callable as a Raku Code value (used by native codegen for closures / WhateverCode).
     static Value closure(std::function<Value(ValueList&)> fn) {
         Value v; v.t = VT::Code;
-        auto c = std::make_shared<Callable>();
+        auto c = makePayload<Callable>();
         c->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
         v.setCode(std::move(c));
         return v;
@@ -922,7 +1003,7 @@ struct Value {
     static Value makeHash(); // defined below ValueHash.h's include — the payload type must be complete
     static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
-    static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
+    static Value object(PRef<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
     static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
     // …and the same member carrying its enum's TYPE name, which is what makes
     // `.WHAT.^name` answer `Color` rather than `Int` and what the MAIN
@@ -953,7 +1034,7 @@ struct Value {
     ValueMap& hashRef(); // defined below ValueHash.h's include
     static Value pair(std::string key, Value val) {
         Value v; v.t = VT::Pair; v.s = std::move(key);
-        v.setPairVal(std::make_shared<Value>(std::move(val))); return v;
+        v.setPairVal(makePayload<Value>(std::move(val))); return v;
     }
     static Value range(long long from, long long to, bool exFrom, bool exTo) {
         Value v; v.t = VT::Range;
@@ -1011,6 +1092,41 @@ struct Value {
         return 0;
     }
 };
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS)
+// 80 bytes (VALUE32-PLAN design A, batches 1-4; it was 128). The size is a
+// measured decision, not a packing accident: while the batches ran, every
+// freed byte was held so that each one was judged on its own — 120 bytes cost
+// ~1% against 128, and shifted field offsets alone cost `fib` 7% — and the
+// drop to 80 then measured −2.6% mean on perf-guard and a third less memory
+// (a million-element array 258 → 164 MB). Moving it is a deliberate step:
+// measure the kernels and the field order with it.
+static_assert(sizeof(Value) == 80, "sizeof(Value) moved: see VALUE32-PLAN design A before changing it");
+#endif
+
+// A Value payload's two bodies (Ref.h's ValueBodyBase): one that OWNS its
+// Value — a Pair's value, a container cell — and one that ALIASES a Value
+// another owner keeps alive (a hash entry's live Pair, ValueHash::aliasOf).
+template <> struct Body<Value> final : ValueBodyBase {
+    Value v;
+    template <class... A>
+    explicit Body(std::in_place_t, A&&... a) : v(std::forward<A>(a)...) { target = &v; }
+    void destroySelf() noexcept override {
+        this->~Body();
+        SlabPool::dealloc(static_cast<void*>(this), sizeof(Body));
+    }
+};
+struct ValueAliasBody final : ValueBodyBase {
+    std::shared_ptr<void> owner;   // keeps `target` alive (a hash's entry generation)
+    ValueAliasBody(std::shared_ptr<void> o, Value* t) : owner(std::move(o)) { target = t; }
+    void destroySelf() noexcept override {
+        this->~ValueAliasBody();
+        SlabPool::dealloc(static_cast<void*>(this), sizeof(ValueAliasBody));
+    }
+};
+inline PRef<Value> makeValueAlias(std::shared_ptr<void> owner, Value* target) {
+    void* mem = SlabPool::alloc(sizeof(ValueAliasBody));
+    return PRef<Value>::adoptNew(::new (mem) ValueAliasBody(std::move(owner), target));
+}
 
 // The hash payload needs the complete Value; Value's own hash-touching
 // factories in turn need the complete payload, so the namespace closes for
@@ -1051,7 +1167,7 @@ inline Value hashEntryPair(const Value& h, const std::string& key, Value& entry)
         p.setPairLive();
     }
     else {
-        p.setPairVal(std::make_shared<Value>(entry));
+        p.setPairVal(makePayload<Value>(entry));
         // a Map's and an immutable QuantHash's pairs refuse a write (Rakudo);
         // the mutable QuantHashes keep the old copy-and-allow
         if (h.hashKind == "Map" || h.hashKind == "Set" || h.hashKind == "Bag" || h.hashKind == "Mix")

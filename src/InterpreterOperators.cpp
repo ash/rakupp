@@ -169,7 +169,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
         return base;
     }
 
-    std::shared_ptr<ObjectData> obj;
+    PRef<ObjectData> obj;
     bool baseWasType = false; // `C but R` on a KNOWN class stays a TYPE OBJECT (C+{R})
     if (base.t == VT::Object && base.obj()) {
         obj = base.objS();
@@ -231,7 +231,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             if (have != nc->methods.end() && have->second.t == VT::Code && kv.second.t == VT::Code &&
                 have->second.code() && kv.second.code() &&
                 have->second.code()->isMultiDispatcher && kv.second.code()->isMultiDispatcher) {
-                auto merged = std::make_shared<Callable>(*have->second.code());
+                auto merged = makePayload<Callable>(*have->second.code());
                 for (auto& cand : kv.second.code()->candidates) merged->candidates.push_back(cand);
                 Value mv = have->second; mv.setCode(merged);
                 have->second = mv;
@@ -1103,7 +1103,7 @@ struct GatherCoro {
     const Stmt* endCurTopStmt = nullptr;
     // What the block has taken since the last hand-over: the collector of the
     // gather frame the block runs under. Emptied into the Seq at each pull.
-    std::shared_ptr<ValueList> buf = makePayload<ValueList>();
+    PRef<ValueList> buf = makePayload<ValueList>();
     size_t want = 1;              // hand back once buf holds this many
     bool cancel = false;          // resumed only to unwind (see above)
     std::exception_ptr err;       // what ended the block, raised at the pull
@@ -1153,8 +1153,8 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
-#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION)
-static_assert(sizeof(ExecContext) == 1472,
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
+static_assert(sizeof(ExecContext) == 1272,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1416,7 +1416,7 @@ static Value gatherSeqOver(Interpreter& I, Value block, Unary* gu, bool declared
     Interpreter* self = &I;
     st->appendNext = [self, g, stp](ValueList& out) -> bool { return gatherPull(*self, g.get(), stp, out); };
     arr.extM() = st;
-    arr.setSeqTok(makePayload<SeqToken>());   // read once (SeqToken)
+    arr.setSeqTok(makeSlabShared<SeqToken>());   // read once (SeqToken)
     return arr;
 }
 
@@ -1699,7 +1699,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
             if (ab != v.obj()->attrs.end() && ab->second.ext()) {
                 auto rec = std::static_pointer_cast<BtRecord>(ab->second.ext());
                 Value inner = v;
-                auto od = std::make_shared<ObjectData>(*v.obj());
+                auto od = makePayload<ObjectData>(*v.obj());
                 od->attrs.erase("__awaitbt");
                 inner.setObj(od);
                 BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;

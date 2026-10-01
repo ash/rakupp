@@ -331,7 +331,7 @@ void scanSupplyPhasers(const Value& blk, ValueList* lastP,
 // (possibly from an I/O worker thread holding the GIL).
 static inline Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
                          std::function<Value(Interpreter&, ValueList&)> fn) {
-    Value v; v.t = VT::Code; v.setCode(std::make_shared<Callable>());
+    Value v; v.t = VT::Code; v.setCode(makePayload<Callable>());
     v.code()->builtin = [ctx, fn](Interpreter& I, ValueList& a) -> Value {
         I.tctx_.tapStack.push_back(ctx);
         struct G { std::vector<std::shared_ptr<SupplyTapCtx>>& s; ~G() { s.pop_back(); } } g{I.tctx_.tapStack};

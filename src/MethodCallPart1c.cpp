@@ -462,7 +462,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         // all one bug. Blocking waits happen OUTSIDE the stripe, or no producer
         // could ever get in to send.
         std::recursive_mutex& chm = atomicStripe(inv.hash());
-        std::shared_ptr<ValueList> qp;
+        PRef<ValueList> qp;
         { std::lock_guard<std::recursive_mutex> lk(chm); qp = (*inv.hash())["queue"].arrS(); }
         auto& q = *qp;
         auto isClosed = [&]() { return (*inv.hash())["closed"].b; };
@@ -1158,7 +1158,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             Value closing;
             for (auto& a : args)
                 if (a.t == VT::Pair && a.pairVal() && a.s == "closing") closing = *a.pairVal();
-            Value blk; blk.t = VT::Code; blk.setCode(std::make_shared<Callable>());
+            Value blk; blk.t = VT::Code; blk.setCode(makePayload<Callable>());
             blk.code()->builtin = [producer, closing](Interpreter& I, ValueList&) -> Value {
                 auto ctx = I.tctx_.tapStack.empty() ? nullptr : I.tctx_.tapStack.back();
                 // :closing belongs to the TAP: it runs once when this activation
@@ -1175,7 +1175,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 // routed at THIS activation, not at whatever the emitting thread
                 // happens to have on its stack: the producer may hand the
                 // Supplier to a `start` block and emit from there.
-                Value e; e.t = VT::Code; e.setCode(std::make_shared<Callable>());
+                Value e; e.t = VT::Code; e.setCode(makePayload<Callable>());
                 e.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
                     if (!ctx || ctx->done) return Value::boolean(true);
                     Value v = a.empty() ? Value::any() : a[0];
@@ -1190,7 +1190,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 };
                 // `$p.done` ends the SUPPLY, not the producer: the block runs on
                 // to its last statement, and its later emits go nowhere.
-                Value d; d.t = VT::Code; d.setCode(std::make_shared<Callable>());
+                Value d; d.t = VT::Code; d.setCode(makePayload<Callable>());
                 d.code()->builtin = [ctx](Interpreter& I2, ValueList&) -> Value {
                     if (ctx && !ctx->doneFired) {
                         ctx->done = true; ctx->doneFired = true;
@@ -1201,7 +1201,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     }
                     return Value::boolean(true);
                 };
-                Value q; q.t = VT::Code; q.setCode(std::make_shared<Callable>());
+                Value q; q.t = VT::Code; q.setCode(makePayload<Callable>());
                 q.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
                     Value ex = a.empty() ? Value::any() : a[0];
                     if (ctx && !ctx->doneFired) {

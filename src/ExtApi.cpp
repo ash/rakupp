@@ -419,7 +419,7 @@ Value extLoadModule(const std::string& path, std::string& errOut,
         // needs to get back INTO Raku.
         Value code;
         code.t = VT::Code;
-        code.setCode(std::make_shared<Callable>());
+        code.setCode(makePayload<Callable>());
         code.code()->name = nm;
         code.code()->builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
             ExtCtx ctx;

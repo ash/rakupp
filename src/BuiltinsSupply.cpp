@@ -15,7 +15,7 @@ namespace rakupp {
 // A phaser block inside a supply/whenever body, as a callable closing over the
 // body's definition scope (the phaser may run when the body never has).
 static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
-    Value v; v.t = VT::Code; v.setCode(std::make_shared<Callable>());
+    Value v; v.t = VT::Code; v.setCode(makePayload<Callable>());
     v.code()->body = &b->stmts; v.code()->isBlock = true; v.code()->closure = std::move(closure);
     return v;
 }
@@ -184,7 +184,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     // delivery reports it through quitCb, which records it here
     auto lateQuit = std::make_shared<std::pair<bool, Value>>(false, Value());
     {
-        Value qcb; qcb.t = VT::Code; qcb.setCode(std::make_shared<Callable>());
+        Value qcb; qcb.t = VT::Code; qcb.setCode(makePayload<Callable>());
         qcb.code()->builtin = [lateQuit](Interpreter&, ValueList& a) -> Value {
             if (!lateQuit->first) { lateQuit->first = true; lateQuit->second = a.empty() ? Value::any() : a[0]; }
             return Value::any();
@@ -542,7 +542,7 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
     (*rec->hash())["chain"] = chain;
     ValueList quitP;
     scanSupplyPhasers(consumer, nullptr, &quitP, nullptr);
-    Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+    Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
     w.code()->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
         Value in = a.empty() ? Value::any() : a[0];
         bool complete = false;
@@ -1243,7 +1243,7 @@ Value watchFilter(const Value& sup, const Value& blk) {
         return std::pair<long long, long long>((long long)st.st_size, mt);
     };
     auto last = std::make_shared<std::pair<long long, long long>>(sig(path));
-    Value cb; cb.t = VT::Code; cb.setCode(std::make_shared<Callable>());
+    Value cb; cb.t = VT::Code; cb.setCode(makePayload<Callable>());
     cb.code()->builtin = [last, blk, path, sig](Interpreter& I2, ValueList&) -> Value {
         auto now = sig(path);
         if (now == *last || blk.t != VT::Code) return Value::any();
@@ -1408,7 +1408,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 self->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
             else { (*t.hash())["closed"] = Value::boolean(true); (*t.hash())["ended"] = Value::boolean(true); }
         };
-        Value outerEmit; outerEmit.t = VT::Code; outerEmit.setCode(std::make_shared<Callable>());
+        Value outerEmit; outerEmit.t = VT::Code; outerEmit.setCode(makePayload<Callable>());
         outerEmit.code()->builtin =
             [self, st, emitCb, fail, maybeFinish, closeInner, migrate](Interpreter& I, ValueList& a) -> Value {
             if (st->finished) return Value::any();
@@ -1427,20 +1427,20 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             if (migrate && st->current.t == VT::Hash) { closeInner(st->current); st->current = Value(); if (st->pending > 0) st->pending--; }
             st->pending++;
-            Value ie; ie.t = VT::Code; ie.setCode(std::make_shared<Callable>());
+            Value ie; ie.t = VT::Code; ie.setCode(makePayload<Callable>());
             ie.code()->builtin = [st, emitCb](Interpreter& I2, ValueList& b) -> Value {
                 if (st->finished || emitCb.t != VT::Code) return Value::any();
                 ValueList one{b.empty() ? Value::any() : b[0]};
                 try { I2.callCallable(emitCb, one); } catch (...) {}
                 return Value::any();
             };
-            Value id; id.t = VT::Code; id.setCode(std::make_shared<Callable>());
+            Value id; id.t = VT::Code; id.setCode(makePayload<Callable>());
             id.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
                 if (st->pending > 0) st->pending--;
                 maybeFinish();
                 return Value::any();
             };
-            Value iq; iq.t = VT::Code; iq.setCode(std::make_shared<Callable>());
+            Value iq; iq.t = VT::Code; iq.setCode(makePayload<Callable>());
             iq.code()->builtin = [fail](Interpreter&, ValueList& b) -> Value {
                 fail(b.empty() ? Value::any() : b[0]); return Value::any();
             };
@@ -1448,11 +1448,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (migrate) st->current = it;
             return Value::any();
         };
-        Value outerDone; outerDone.t = VT::Code; outerDone.setCode(std::make_shared<Callable>());
+        Value outerDone; outerDone.t = VT::Code; outerDone.setCode(makePayload<Callable>());
         outerDone.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
             st->outerDone = true; maybeFinish(); return Value::any();
         };
-        Value outerQuit; outerQuit.t = VT::Code; outerQuit.setCode(std::make_shared<Callable>());
+        Value outerQuit; outerQuit.t = VT::Code; outerQuit.setCode(makePayload<Callable>());
         outerQuit.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
             fail(a.empty() ? Value::any() : a[0]); return Value::any();
         };
@@ -1557,7 +1557,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             return tup;
         };
         for (size_t i = 0; i < n; i++) {
-            Value e; e.t = VT::Code; e.setCode(std::make_shared<Callable>());
+            Value e; e.t = VT::Code; e.setCode(makePayload<Callable>());
             e.code()->builtin = [i, n, op, st, push, row, finish, mx](Interpreter&, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
                 if (op == "merge") {
@@ -1597,7 +1597,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (end) finish();
                 return Value::any();
             };
-            Value d; d.t = VT::Code; d.setCode(std::make_shared<Callable>());
+            Value d; d.t = VT::Code; d.setCode(makePayload<Callable>());
             d.code()->builtin = [i, op, st, finish, mx](Interpreter&, ValueList&) -> Value {
                 bool fin = false;
                 {
@@ -1610,7 +1610,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (fin) finish();
                 return Value::any();
             };
-            Value q; q.t = VT::Code; q.setCode(std::make_shared<Callable>());
+            Value q; q.t = VT::Code; q.setCode(makePayload<Callable>());
             q.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
                 fail(a.empty() ? Value::any() : a[0]); return Value::any();
             };
@@ -1733,7 +1733,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                     st->emitted++;
                     ticket = st->nextTicket++;
                 }
-                Value body; body.t = VT::Code; body.setCode(std::make_shared<Callable>());
+                Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
                 Value pv = v, pf = process;
                 body.code()->builtin = [pv, pf, st, ticket](Interpreter& I2, ValueList&) -> Value {
                     {   // bounded: a slow or stalled predecessor holds nobody long
@@ -1771,7 +1771,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         if (h.count("control")) {
             Value ctl = h.at("control");
             if (ctl.t == VT::Hash && ctl.hashKind == "Supplier") { ValueList na; ctl = methodCall(ctl, "Supply", na); }
-            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(std::make_shared<Callable>());
+            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(makePayload<Callable>());
             ctlEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 const std::string cmd = a[0].toStr();
@@ -1790,13 +1790,13 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             };
             tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
         }
-        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(std::make_shared<Callable>());
+        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(makePayload<Callable>());
         inEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
             { std::lock_guard<std::mutex> lk(st->m); st->pending.push_back(a.empty() ? Value::any() : a[0]); }
             (*pump)();
             return Value::any();
         };
-        Value inDone; inDone.t = VT::Code; inDone.setCode(std::make_shared<Callable>());
+        Value inDone; inDone.t = VT::Code; inDone.setCode(makePayload<Callable>());
         inDone.code()->builtin = [st, finish](Interpreter&, ValueList&) -> Value {
             bool last;
             { std::lock_guard<std::mutex> lk(st->m);
@@ -1805,7 +1805,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (last) finish();
             return Value::any();
         };
-        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(std::make_shared<Callable>());
+        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(makePayload<Callable>());
         Value qc = quitCb;
         inQuit.code()->builtin = [self, st, qc, handle](Interpreter&, ValueList& a) -> Value {
             { std::lock_guard<std::mutex> lk(st->m); if (st->finished) return Value::any(); st->finished = true; }
@@ -1832,7 +1832,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         double delay = h.count("delay") ? h.at("delay").toNum() : 0;
         if (secs < 0.001) secs = 0.001;
         if (h.count("control")) {
-            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(std::make_shared<Callable>());
+            Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(makePayload<Callable>());
             ctlEmit.code()->builtin = [elemsP](Interpreter&, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 const std::string cmd = a[0].toStr();
@@ -1859,7 +1859,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // finds a token left goes through AT ONCE — waiting for the tick
         // boundary would delay the first values for no reason. The rest queue.
         auto spent = std::make_shared<std::atomic<long long>>(0);
-        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(std::make_shared<Callable>());
+        Value inEmit; inEmit.t = VT::Code; inEmit.setCode(makePayload<Callable>());
         Value emitOut = emitCb;
         inEmit.code()->builtin = [buf, spent, elemsP, emitOut](Interpreter& I, ValueList& a) -> Value {
             Value v = a.empty() ? Value::any() : a[0];
@@ -1872,11 +1872,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             buf->push_back(v);
             return Value::any();
         };
-        Value inDone; inDone.t = VT::Code; inDone.setCode(std::make_shared<Callable>());
+        Value inDone; inDone.t = VT::Code; inDone.setCode(makePayload<Callable>());
         inDone.code()->builtin = [srcDone](Interpreter&, ValueList&) -> Value {
             srcDone->store(true); return Value::any();
         };
-        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(std::make_shared<Callable>());
+        Value inQuit; inQuit.t = VT::Code; inQuit.setCode(makePayload<Callable>());
         inQuit.code()->builtin = [srcDone, quitEx, quitSet](Interpreter&, ValueList& a) -> Value {
             *quitEx = a.empty() ? Value::any() : a[0]; quitSet->store(true); srcDone->store(true);
             return Value::any();
@@ -1950,7 +1950,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // the ticks happen. Each call of the cued code is one tick.
         if (h.count("scheduler") && h.at("scheduler").t == VT::Object) {
             auto tick = std::make_shared<long long>(0);
-            Value cb; cb.t = VT::Code; cb.setCode(std::make_shared<Callable>());
+            Value cb; cb.t = VT::Code; cb.setCode(makePayload<Callable>());
             Value em = emitCb;
             cb.code()->builtin = [tick, em](Interpreter& I2, ValueList&) -> Value {
                 if (em.t != VT::Code) return Value::any();

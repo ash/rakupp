@@ -1000,7 +1000,7 @@ void Interpreter::registerBuiltinsPart5() {
                     // object, and several threads may await one broken promise at once
                     if (err.payload.t == VT::Object && err.payload.obj()) {
                         Value own = err.payload;
-                        own.setObj(std::make_shared<ObjectData>(*err.payload.obj()));
+                        own.setObj(makePayload<ObjectData>(*err.payload.obj()));
                         err.payload = own;
                     }
                     Value ex = I.exceptionFor(err);

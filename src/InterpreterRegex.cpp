@@ -2711,13 +2711,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
         }
         auto pm = pendingMakes->find({pn.from, pn.to});
-        if (pm != pendingMakes->end() && !mv.pairVal()) mv.setPairVal(std::make_shared<Value>(pm->second));
+        if (pm != pendingMakes->end() && !mv.pairVal()) mv.setPairVal(makePayload<Value>(pm->second));
         // a made value the success replay recorded for THIS rule at THIS span
         // (its own name — never a same-span sibling's): applied when the parent's
         // replay rebuilds this child with its action suppressed
         if (!mv.pairVal()) {
             auto pmn = pendingMakesNamed->find({pn.name, pn.from, pn.to});
-            if (pmn != pendingMakesNamed->end()) mv.setPairVal(std::make_shared<Value>(pmn->second));
+            if (pmn != pendingMakesNamed->end()) mv.setPairVal(makePayload<Value>(pmn->second));
         }
         // an action-class method (if any) can still override; a proto node
         // dispatches to the winning candidate's method (`x:sym<y>`), falling
@@ -3158,7 +3158,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
             Value* base = nullptr;
             try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
             if (base && !ix->isHash && base->t == VT::Array && base->arr() && !base->shape()) {
-                if (std::shared_ptr<ValueList> arr = base->arrS()) {
+                if (PRef<ValueList> arr = base->arrS()) {
                     Value kv = eval(ix->index.get());
                     if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});

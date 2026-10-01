@@ -347,7 +347,7 @@ const Value* Interpreter::builtinRef(const std::string& name) {
     if (rit != builtinRefs_.end()) return &rit->second;
     auto bit = builtins_.find(name);
     if (bit == builtins_.end()) return nullptr;
-    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
     // A tag primitive answers to its EXPORTED name, whichever spelling reached
     // it first. `rakupp-` is the adoption hook another engine would register
     // under; `md5` is what the routine is called in the program that imported
@@ -2461,7 +2461,7 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
     Value outerMatch = Value::nil();
     if (loopScope) if (Value* m = loopScope->find("$/")) outerMatch = *m;
     const bool flat = flatLoopBody(body);   // (asked here: it caches on the node)
-    Value work; work.t = VT::Code; work.setCode(std::make_shared<Callable>());
+    Value work; work.t = VT::Code; work.setCode(makePayload<Callable>());
     // (bind/writeBack are the caller's, alive until every worker has finished)
     work.code()->builtin = [run, lower, loopScope, outerMatch, body, label, keep, flat, n, nb, &bind, &writeBack]
                            (Interpreter& I, ValueList&) -> Value {
@@ -3196,7 +3196,7 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
             for (auto& b : conc->roleParamBindings)
                 if (!b.first.empty() && !scope->local(b.first)) scope->define(b.first, b.second);
         }
-        auto copy = std::make_shared<Callable>(*c);
+        auto copy = makePayload<Callable>(*c);
         copy->closure = scope;
         copy->roleConcrete = true;
         m.setCode(std::move(copy));
@@ -3205,7 +3205,7 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
         Value& m = kv.second;
         if (m.t != VT::Code || !m.code()) continue;
         if (m.code()->isMultiDispatcher) {
-            auto disp = std::make_shared<Callable>(*m.code());
+            auto disp = makePayload<Callable>(*m.code());
             for (auto& cand : disp->candidates)
                 if (cand.t == VT::Code && cand.code()) reclose(cand);
             m.setCode(std::move(disp));
@@ -3353,7 +3353,7 @@ void Interpreter::seqMintList(Value& r, const Value& inv) {
     if (!(r.s == "Seq")) return;
     SeqToken* have = r.seqTok();
     if (have && have != inv.seqTok()) return;   // a Seq handed back as it is keeps its state
-    r.setSeqTok(makePayload<SeqToken>());
+    r.setSeqTok(makeSlabShared<SeqToken>());
 }
 bool mayHaveStateDecl(const Expr* e) {
     if (!e) return false;
@@ -3533,15 +3533,18 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // (unanchored), so `'port = 443' ~~ &pair` and &pair($str) work
             std::string pat = nr->pattern;
             std::string kind = nr->kind;          // regex / token / rule — decides the flags
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->name = nr->name;
             code.code()->isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             // (the regex's own code blocks see it as `&?ROUTINE`: it is handed in)
-            std::weak_ptr<Callable> selfW = code.codeS();
+            Callable* selfW = code.code();   // not owned: see PRef::fromObject
             code.code()->builtin = [pat, kind, selfW](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::nil();
                 Value selfV;
-                if (auto sp = selfW.lock()) { selfV.t = VT::Code; selfV.setCode(sp); }
+                // the routine is running, so its caller holds it alive: take a
+                // count for `&?ROUTINE` from the object (owning it in the
+                // closure would be a cycle that never frees)
+                if (selfW) { selfV.t = VT::Code; selfV.setCode(PRef<Callable>::fromObject(selfW)); }
                 return I.regexMatch(I.rxSubject(a[0]), pat, selfV.t == VT::Code ? &selfV : nullptr, kind);
             };
             regexRoutineSrc_[code.code()] = {pat, kind};  // recoverable from `&name`
@@ -3831,7 +3834,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 kv.second.t == VT::Code && kv.second.code() &&
                                 kv.second.code()->isMultiDispatcher && have->code() != kv.second.code()) {
                                 if (tctx_.cur->local(bare) != have) {
-                                    Value fresh; fresh.t = VT::Code; fresh.setCode(std::make_shared<Callable>());
+                                    Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                                     fresh.code()->name = have->code()->name;
                                     fresh.code()->isMultiDispatcher = true;
                                     fresh.code()->candidates = have->code()->candidates;
@@ -3892,7 +3895,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
                     libPaths_.erase(libPaths_.begin());
                     auto& stash = pkgStashes_[u->module];
-                    if (!stash) stash = std::make_shared<ValueMap>();
+                    if (!stash) stash = makePayload<ValueMap>();
                     for (auto& kv : classes_)
                         if (!before.count(kv.first) && kv.first.find("::") == std::string::npos)
                             (*stash)[kv.first] = Value::typeObj(kv.first);
@@ -3947,7 +3950,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 dynSubName = eval(sd->nameExpr.get()).toStr();
             const std::string& sname = dynSubName.empty() ? sd->name : dynSubName;
             auto makeCand = [&](const std::vector<Param>* prms) {
-                Value c; c.t = VT::Code; c.setCode(std::make_shared<Callable>());
+                Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
                 c.code()->name = sname;
                 c.code()->pkg = tctx_.pkgPrefix.empty() ? "GLOBAL"
                             : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
@@ -4194,7 +4197,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // block, and a proto could not isolate them at all.
                     if (existing && existing->t == VT::Code && existing->code() &&
                         existing->code()->isMultiDispatcher && tctx_.cur->local(key) != existing) {
-                        Value fresh; fresh.t = VT::Code; fresh.setCode(std::make_shared<Callable>());
+                        Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                         fresh.code()->name = sname;
                         fresh.code()->isMultiDispatcher = true;
                         if (!sd->isProto) fresh.code()->candidates = existing->code()->candidates;
@@ -4204,7 +4207,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (existing && existing->t == VT::Code && existing->code() && existing->code()->isMultiDispatcher) {
                         disp = existing->code(); dispVal = *existing;
                     } else {
-                        dispVal.t = VT::Code; dispVal.setCode(std::make_shared<Callable>());
+                        dispVal.t = VT::Code; dispVal.setCode(makePayload<Callable>());
                         dispVal.code()->name = sname;
                         dispVal.code()->isMultiDispatcher = true;
                         disp = dispVal.code();
@@ -4368,7 +4371,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 else ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : counter++);
                 // a NON-Int enum value (`enum Blerp (One => "Eins")`) keeps its real
                 // value beside the ordinal; `.value` and `.pair` answer with it
-                if (val.t != VT::Int) ev.setPairVal(std::make_shared<Value>(val));
+                if (val.t != VT::Int) ev.setPairVal(makePayload<Value>(val));
                 ev.enumType = ed->name; // carry the enum's type identity (for .^name, ~~, .WHAT)
                 // a short name ANOTHER enum of this scope already claimed is
                 // poisoned: neither can have it (`S1::b` / `S2::b` still work)
@@ -4529,7 +4532,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // Callable Value (same shape as the main registration path).
                 auto buildMethod = [&](SubDecl* md) {
                     Value code; code.t = VT::Code;
-                    code.setCode(std::make_shared<Callable>());
+                    code.setCode(makePayload<Callable>());
                     code.code()->name = md->name;
                     code.code()->params = &md->params;
                     code.code()->retType = qualifyDeclType(md->retType);
@@ -4555,7 +4558,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             it->second.code()->candidates.push_back(code);
                             return;
                         }
-                        Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+                        Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
                         disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
                         // the group of a METHOD is itself a Method: `^lookup` hands
                         // this back, and code that dispatches on it (a
@@ -5164,7 +5167,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // sharing, which is what makes composition cheap.
             auto cloneDispatcher = [](const Value& v) {
                 Value nv = v;
-                auto fresh = std::make_shared<Callable>();
+                auto fresh = makePayload<Callable>();
                 fresh->pkg = v.code()->pkg; fresh->name = v.code()->name;
                 fresh->isMultiDispatcher = true; fresh->isProto = v.code()->isProto;
                 fresh->isMethod = v.code()->isMethod;
@@ -5825,7 +5828,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     mdDyn = eval(md->nameExpr.get()).toStr();
                 const std::string& mdName = mdDyn.empty() ? md->name : mdDyn;
                 Value code; code.t = VT::Code;
-                code.setCode(std::make_shared<Callable>());
+                code.setCode(makePayload<Callable>());
                 code.code()->name = mdName;
                 // `.package` is the DECLARING type, not the enclosing package —
                 // Method::Protected's trait reads `$method.package.HOW` to refuse
@@ -5931,7 +5934,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                    sigKeyParams(c.code()->params, c.code()) == sk; }), cands.end());
                         cands.push_back(code);
                     } else {
-                        Value disp; disp.t = VT::Code; disp.setCode(std::make_shared<Callable>());
+                        Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
                         disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
                         // the group of a METHOD is itself a Method: `^lookup` hands
                         // this back, and code that dispatches on it (a

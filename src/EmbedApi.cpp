@@ -340,7 +340,7 @@ int rk_register(RkInterp rk, const char* name, RkHostFn fn, void* userdata) {
     // extension sub, and both are ordinary Code values from Raku's side.
     Value code;
     code.t = VT::Code;
-    code.setCode(std::make_shared<Callable>());
+    code.setCode(makePayload<Callable>());
     code.code()->name = name;
     std::string nm = name;
     code.code()->builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {

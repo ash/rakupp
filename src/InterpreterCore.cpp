@@ -2444,7 +2444,7 @@ struct LoopStateFrame {
 struct TopicAliasFrame {
     std::vector<ExecContext::TopicAlias>* v = nullptr;
     TopicAliasFrame(ExecContext& tc, bool enable, const std::string& var,
-                    const std::shared_ptr<ValueList>& arr) {
+                    const PRef<ValueList>& arr) {
         if (!enable) return;
         v = &tc.topicAliases;
         v->push_back({nullptr, &var, arr, 0});
@@ -3546,7 +3546,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // An unfinished GATHER is live for the same reason: nothing
             // knows where it ends, and draining it to find out is the
             // work this avoids (see drainIfFiniteLazy).
-            std::shared_ptr<ValueList> liveArr;
+            PRef<ValueList> liveArr;
             std::shared_ptr<LazySeqState> liveSt;
             if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
                 auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
@@ -4127,7 +4127,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // were drained above and keep the snapshot path; an unfinished
     // GATHER is live too, since nothing knows where it ends and finding
     // out costs a run of its generator (see drainIfFiniteLazy).
-    std::shared_ptr<ValueList> liveArr;
+    PRef<ValueList> liveArr;
     std::shared_ptr<LazySeqState> liveSt;
     if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
         auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
@@ -6103,7 +6103,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // signature: score the remaining args (positionals it would slurp + all
     // nameds) against it recursively
     if (slurpyParam && slurpyParam->sigil == '\\' && slurpyParam->subSig) {
-        auto tmp = std::make_shared<Callable>();
+        auto tmp = makePayload<Callable>();
         tmp->params = slurpyParam->subSig.get();
         Value tv; tv.t = VT::Code; tv.setCode(tmp);
         ValueList rest;
@@ -6567,7 +6567,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     if (sval.hashKind != "Capture")
                         for (auto& e : inner) if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
                 }
-                auto tmp = std::make_shared<Callable>();
+                auto tmp = makePayload<Callable>();
                 tmp->params = p.subSig.get();
                 Value tv; tv.t = VT::Code; tv.setCode(tmp);
                 if (scoreCandidate(tv, inner) < 0) return -1;
@@ -12016,7 +12016,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                 if (en->local(sv->name)) { owner = en; break; }
             if (owner) {
-                std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
+                PRef<Value> cell = varCell(owner.get(), sv->name);
                 Value* blv = nullptr;
                 try { blv = lvalue(a->target.get()); } catch (RakuError&) { blv = nullptr; }
                 if (blv) {
@@ -12065,12 +12065,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         tctx_.rwMirror.clear();
                         tctx_.rwMirrorSigil = 0;
                         if (srcSlot) {
-                            std::shared_ptr<Value> cell;
+                            PRef<Value> cell;
                             if (!through) cell = varCell(owner.get(), sv->name);
                             else {
                                 cell = cellOfProxy(srcSlot);
                                 if (!cell && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                                    cell = std::make_shared<Value>(*srcSlot);
+                                    cell = makePayload<Value>(*srcSlot);
                                     *srcSlot = makeSharedCellProxy(cell);
                                 }
                             }
@@ -12199,8 +12199,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         const VT bt = ctSlot->t;
         const bool plainNum = (bt == VT::Int || bt == VT::Num) && !ctSlot->p_ && !ctSlot->x_ &&
                               ctSlot->hashKind.empty() && ctSlot->enumType.empty();
-        const long long bi = ctSlot->i;
-        const double bn = ctSlot->n;
+        const long long bi = bt == VT::Int ? (long long)ctSlot->i : 0;   // only the live one:
+        const double bn = bt == VT::Num ? (double)ctSlot->n : 0;          // they share a word
         Value before;
         if (!plainNum) before = *ctSlot;
         r = evalAssignInner(a, sink);
@@ -12598,7 +12598,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // iteration. Keeping the expression means keeping the scope it reads,
         // so capture the environment the curry was written in.
         auto scope = tctx_.cur;
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->isWhateverCode = true;
         code.code()->whateverArity = 1;
         code.code()->builtin = [op, rhsE, scope](Interpreter& I, ValueList& as) -> Value {
@@ -13676,7 +13676,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         std::shared_ptr<Env> owner;
                         for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                             if (en->local(sv->name)) { owner = en; break; }
-                        std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
+                        PRef<Value> cell = varCell(owner.get(), sv->name);
                         if (!cell) return false;
                         out = makeSharedCellProxy(cell);
                         return true;
@@ -13732,9 +13732,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (simple(tix) && simple(six) &&
                 plainBase(eval(tix->base.get()), tix->isHash) && plainBase(eval(six->base.get()), six->isHash)) {
                 Value* src = lvalue(six);
-                std::shared_ptr<Value> cell = src ? cellOfProxy(src) : nullptr;
+                PRef<Value> cell = src ? cellOfProxy(src) : nullptr;
                 if (src && !cell && !(src->t == VT::Hash && src->hashKind == "Proxy")) {
-                    cell = std::make_shared<Value>(*src);
+                    cell = makePayload<Value>(*src);
                     *src = makeSharedCellProxy(cell);
                 }
                 if (cell) {
@@ -13757,7 +13757,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
-                std::shared_ptr<Value> cell = varCell(owner.get(), sv->name);
+                PRef<Value> cell = varCell(owner.get(), sv->name);
                 if (cell) {
                     Value prox = makeSharedCellProxy(cell);
                     Value base = ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm
@@ -14262,7 +14262,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         (srcRaw->isCell() || !(srcRaw->t == VT::Hash && srcRaw->hashKind == "Proxy"))) {
                         tctx_.rwMirror.clear();
                         tctx_.rwMirrorSigil = 0;
-                        std::shared_ptr<Value> cell = srcRaw->promoteToCell();
+                        PRef<Value> cell = srcRaw->promoteToCell();
                         Value* blv = lvalue(a->target.get());
                         Value* traw = tv->name != "$_" && tv->name[1] != '!' ? tctx_.cur->findRaw(tv->name) : nullptr;
                         if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
@@ -14294,15 +14294,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // becomes a proxy to it, so assignment through either name
                     // is seen by both — while a later `:=` on the source
                     // replaces that slot outright and detaches it from the cell.
-                    std::shared_ptr<Value> cell = cellOfProxy(srcSlot);
+                    PRef<Value> cell = cellOfProxy(srcSlot);
                     if (!cell && srcSlot &&
                         !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
-                        cell = std::make_shared<Value>(*srcSlot);
+                        cell = makePayload<Value>(*srcSlot);
                         *srcSlot = makeSharedCellProxy(cell);
                     }
                     Value* blv = lvalue(a->target.get());
                     *blv = cell ? makeSharedCellProxy(cell)
-                                : (throughRw ? makeSharedCellProxy(std::make_shared<Value>(*srcSlot))
+                                : (throughRw ? makeSharedCellProxy(makePayload<Value>(*srcSlot))
                                              : makeEnvSlotProxy(owner, sv->name));
                     return sink ? Value::any() : eval(a->value.get());
                 }
@@ -14353,7 +14353,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             auto scope = tctx_.cur;
                             Index* path = ix;
                             Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-                            Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+                            Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                             fetch.code()->builtin = [scope, path](Interpreter& I, ValueList&) -> Value {
                                 auto saved = I.tctx_.cur; I.tctx_.cur = scope;
                                 Value r;
@@ -14361,7 +14361,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 I.tctx_.cur = saved;
                                 return r;
                             };
-                            Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+                            Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
                             store.code()->builtin = [scope, path](Interpreter& I, ValueList& sa) -> Value {
                                 Value nv = sa.empty() ? Value::any() : sa[0];
                                 auto saved = I.tctx_.cur; I.tctx_.cur = scope;
@@ -14383,7 +14383,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // ordinary bind rather than letting "not assignable" escape.
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
-                std::shared_ptr<ValueMap> h;
+                PRef<ValueMap> h;
                 if (base) {
                     Value* real = base;
                     // the base may itself be a bound slot: reach the container it holds
@@ -14425,12 +14425,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     std::string key = hashSubKey(eval(ix->index.get()));
                     h->emplace(key, Value::any());           // the slot exists from now on
                     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-                    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+                    Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                     fetch.code()->builtin = [h, key](Interpreter&, ValueList&) -> Value {
                         auto it = h->find(key);
                         return it == h->end() ? Value::any() : it->second;
                     };
-                    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+                    Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
                     store.code()->builtin = [h, key](Interpreter&, ValueList& sa) -> Value {
                         Value nv = sa.empty() ? Value::any() : sa[0];
                         (*h)[key] = nv;
@@ -14458,7 +14458,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!ix->isHash && ix->index && !ix->multiDim && slotTarget) {
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
-                std::shared_ptr<ValueList> arr;
+                PRef<ValueList> arr;
                 // a shaped array indexes through its own protocol, and an immutable
                 // List has no slot to write — both fall through to the plain bind
                 if (base && base->t == VT::Array && base->arr() && !base->shape() &&
@@ -14502,7 +14502,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 try { base = lvalue(mc->inv.get(), /*asInvocant=*/true); }
                 catch (RakuError&) { base = nullptr; }
                 if (base && base->t == VT::Pair && base->pairValS()) {
-                    std::shared_ptr<Value> cell = base->pairValS();  // shared by every copy of the pair
+                    PRef<Value> cell = base->pairValS();  // shared by every copy of the pair
                     Value proxy = makePairCellProxy(cell);
                     Value* blv = lvalue(a->target.get());
                     *blv = proxy;
@@ -14518,7 +14518,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper && !mc->methodExpr) {
                 Value pv = eval(mc->inv.get());
                 if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
-                    std::shared_ptr<Value> cell = pv.pairValS();
+                    PRef<Value> cell = pv.pairValS();
                     if (Value* el = lvalue(a->target.get())) {
                         *el = makeSharedCellProxy(cell);
                         if (sink) return Value::any();
@@ -16308,7 +16308,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             return Value::boolean(!g_cbInterp->applyBinOpPublic(op.substr(1), l, r).truthy());
         Value base = applyArith(op.substr(1), l, r);
         if (base.t == VT::Code && base.code() && base.code()->isWhateverCode) {
-            Value wrap; wrap.t = VT::Code; wrap.setCode(std::make_shared<Callable>());
+            Value wrap; wrap.t = VT::Code; wrap.setCode(makePayload<Callable>());
             wrap.code()->isWhateverCode = true;
             wrap.code()->whateverArity = base.code()->whateverArity;
             Value inner = base;
@@ -16604,7 +16604,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // curried WhateverCode was truthy and took the arm (Mathematica::Serializer's
     // encoder dispatches a bare `*` through exactly such a chain).
     if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) {
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->isWhateverCode = true;
         // each `*` consumes one argument left-to-right, so `* + *` has arity 2
         auto arityOf = [](const Value& v) -> long long {
@@ -18892,7 +18892,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         }
         return v;
     };
-    std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
+    PRef<Value> inlineMade; // `{ make … }` inside a plain regex
     GrammarHooks rmHooks;
     bool wantHooks = false;
     // A code assertion sees the CURSOR as `$/`: `<?{ $/.chars == 2 }>` and
@@ -19706,8 +19706,7 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
                      : rakupp::mul_ovf(lp->i, rp->i, &z))
         return false;
     ParStripe ws(*this, slot);   // torn-copy contract, as the lane's store
-    slot->i = z;
-    slot->n = 0;
+    slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
     return true;
 }
 
@@ -20148,7 +20147,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // g, `* o *` for both
             if (l.t == VT::Whatever || r.t == VT::Whatever) {
                 Value lw = l, rw = r;
-                Value cur; cur.t = VT::Code; cur.setCode(std::make_shared<Callable>());
+                Value cur; cur.t = VT::Code; cur.setCode(makePayload<Callable>());
                 cur.code()->builtin = [lw, rw, op](Interpreter& I, ValueList& a) -> Value {
                     size_t k = 0;
                     Value f = lw.t == VT::Whatever ? (k < a.size() ? a[k++] : Value::any()) : lw;
@@ -20182,7 +20181,7 @@ Value Interpreter::evalBinary(Binary* b) {
             auto whr = [](const Value& v) { return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode); };
             if (whr(l) || whr(r)) {
                 Value lc = l, rc = r; std::string opc = op;
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true;
                 code.code()->whateverArity = (whr(l) ? 1 : 0) + (whr(r) ? 1 : 0);
                 code.code()->builtin = [lc, rc, opc](Interpreter& I, ValueList& a) -> Value {
@@ -20290,7 +20289,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // `1 X+ * X+ 3` curries as ONE list infix: a WhateverCode taking
                 // one argument per star, folding the whole tuple when called
                 if (!stars.empty()) {
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                     code.code()->isWhateverCode = true;
                     code.code()->whateverArity = (int)stars.size();
                     std::string opc = op;
@@ -20308,7 +20307,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 (b->rhs->kind == NK::Whatever && r.t == VT::Whatever)) {
                 const bool sl = b->lhs->kind == NK::Whatever && l.t == VT::Whatever;
                 const bool sr = b->rhs->kind == NK::Whatever && r.t == VT::Whatever;
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true;
                 code.code()->whateverArity = (sl ? 1 : 0) + (sr ? 1 : 0);
                 std::string opc = op; Value lv = l, rv = r;
@@ -20870,7 +20869,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // the sequence operator makes a Seq, and a Seq is read once
             // (SeqToken): `my \s = 1,2,4...16; s».abs; s».abs` dies as Rakudo's does
             if (out.t == VT::Array && out.isList && out.s == "Seq" && !out.seqTok())
-                out.setSeqTok(makePayload<SeqToken>());
+                out.setSeqTok(makeSlabShared<SeqToken>());
             return out;
         }
         // group i>0 comes from spine[i-1]->rhs; group 0 is the innermost lhs
@@ -20915,7 +20914,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // `.grep: * !~~ /1/` idiom) instead of matching the Whatever eagerly.
             if (l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)) {
                 bool neg = (opEq(op, "!~~"));
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true; code.code()->whateverArity = 1;
                 code.code()->builtin = [pat, neg](Interpreter& I, ValueList& a) -> Value {
                     Value m = I.regexMatch(I.rxSubject(a.empty() ? Value::any() : a[0]), pat);
@@ -21141,7 +21140,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 (lTopic.t == VT::Code && lTopic.code() && lTopic.code()->isWhateverCode &&
                  b->lhs->kind == NK::Whatever)) {
                 Value rc = r; std::string opc = op;
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true; code.code()->whateverArity = 1;
                 code.code()->builtin = [rc, opc](Interpreter& I, ValueList& a) -> Value {
                     Value topic = a.empty() ? Value::any() : a[0];
@@ -22006,7 +22005,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     p.sigil = '$';
                     lf->params->push_back(std::move(p));
                 }
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->params = lf->params.get();
                 code.code()->body = &fs->body->stmts;
                 code.code()->closure = env;
@@ -22422,8 +22421,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     if (u->postfix) old = *slot;
                     {
                         ParStripe ws(*this, slot);   // torn-copy contract, as the full store
-                        slot->i = z;
-                        slot->n = 0;
+                        slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
                     }
                     return u->postfix ? old : *slot;
                 }
@@ -22434,7 +22432,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // builtinTopicWB_ carries map/grep/deepmap's element slot to us).
         if (u->operand->kind == NK::Whatever) {
             std::string op = u->op; bool post = u->postfix;
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->isWhateverCode = true;
             code.code()->builtin = [op, post](Interpreter& I, ValueList& a) -> Value {
                 Value cur = a.empty() ? Value::any() : a[0];
@@ -22701,7 +22699,7 @@ Value Interpreter::evalUnary(Unary* u) {
         (opEq(u->op, "~") || opEq(u->op, "-") || opEq(u->op, "+") || opEq(u->op, "?") || opEq(u->op, "!") ||
          opEq(u->op, "so") || opEq(u->op, "not") || opEq(u->op, "+^") || opEq(u->op, "^") || opEq(u->op, "|"))) {
         Value inner = v; std::string op = u->op;
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->isWhateverCode = true;
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
             Value arg = a.empty() ? Value::any() : a[0];
             Value b = arg;
@@ -23276,7 +23274,7 @@ Value Interpreter::evalCall(Call* c) {
                         return v.code()->whateverArity > 0 ? v.code()->whateverArity : 1;
                     return 0;
                 };
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true;
                 code.code()->whateverArity = wArity(a0) + wArity(a1);
                 code.code()->builtin = [f, a0, a1](Interpreter& I, ValueList& as) -> Value {
@@ -23350,7 +23348,7 @@ Value Interpreter::evalCall(Call* c) {
         if (f.t == VT::Code && f.code() && f.code()->isWhateverCode &&
             args.size() == 1 && args[0].t == VT::Code && args[0].code() && args[0].code()->isWhateverCode) {
             Value inner = args[0], outer = f;
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->isWhateverCode = true;
             code.code()->whateverArity = inner.code()->whateverArity > 0 ? inner.code()->whateverArity : 1;
             code.code()->builtin = [inner, outer](Interpreter& I, ValueList& as) -> Value {
@@ -24809,7 +24807,7 @@ Value Interpreter::evalIndex(Index* idx) {
         bool isHash = idx->isHash;
         Value keyv = eval(idx->index.get());
         Value inner = base;
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, isHash, keyv](Interpreter& I, ValueList& a) -> Value {
             Value arg = a.empty() ? Value::any() : a[0];
@@ -26808,7 +26806,7 @@ struct RatLitParts {
                 if (isWC(from) || isWC(to)) {
                     Value f2 = from, t2 = to;
                     bool exF = r->exFrom, exT = r->exTo;
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                     code.code()->isWhateverCode = true;
                     long long ar = (isWC(from) ? std::max(1LL, from.code()->whateverArity) : 0)
                                  + (isWC(to)   ? std::max(1LL, to.code()->whateverArity)   : 0);
@@ -26965,7 +26963,7 @@ struct RatLitParts {
                 if ((curries(kv) && !fromVar(p->keyExpr.get())) ||
                     (curries(vv0) && !fromVar(p->value.get()))) {
                     Value kc = kv, vc = vv0;
-                    Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                     code.code()->isWhateverCode = true;
                     auto arityOf = [&](const Value& x) -> long long {
                         if (x.t == VT::Whatever) return 1;
@@ -27474,7 +27472,7 @@ Value Interpreter::eval(Expr* e) {
             if (anyWhatever) {
                 ValueList ops;
                 for (auto& o : ch->operands) ops.push_back(eval(o.get()));
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true;
                 // each operand takes as many arguments as it has stars:
                 // `(22 + *.flip < *² + *.flip² < *)` is a FOUR-argument closure
@@ -28235,7 +28233,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             static Value proto = [] {
                 static std::deque<std::vector<Param>> sigStore;
                 auto cand = [](const char* ptype, const char* pname, const char* named) {
-                    Value c; c.t = VT::Code; c.setCode(std::make_shared<Callable>());
+                    Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
                     c.code()->name = "trait_mod:<is>";
                     c.code()->isMultiCandidate = true;
                     sigStore.emplace_back();
@@ -28249,7 +28247,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                     };
                     return c;
                 };
-                Value p; p.t = VT::Code; p.setCode(std::make_shared<Callable>());
+                Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
                 p.code()->name = "trait_mod:<is>";
                 p.code()->isMultiDispatcher = true; p.code()->isProto = true;
                 p.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
@@ -28276,7 +28274,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
                 op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
             op = normHyperMarkers(op); // &infix:<»+«> — hyper spelling
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->name = bare;
             code.code()->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
             code.code()->builtin = [op](Interpreter& I, ValueList& a) -> Value {
                 if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
@@ -28310,7 +28308,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             std::string op = normHyperMarkers(bare.substr(8, bare.size() - 9));
             if (op.size() > 2 && op.compare(op.size() - 2, 2, "<<") == 0) {
                 std::string hop = op.substr(0, op.size() - 2);
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->name = bare;
                 code.code()->builtin = [hop](Interpreter& I, ValueList& a) -> Value {
                     return a.empty() ? Value::any() : I.hyperUnary(hop, a[0]);
                 };
@@ -28321,7 +28319,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             std::string op = normHyperMarkers(bare.substr(9, bare.size() - 10));
             if (op.size() > 2 && op.compare(0, 2, ">>") == 0) {
                 std::string hop = op.substr(2);
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->name = bare;
                 code.code()->builtin = [hop](Interpreter& I, ValueList& a) -> Value {
                     return a.empty() ? Value::any() : I.hyperPostfixApply(hop, a[0]);
                 };
@@ -28335,7 +28333,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 "!", "-", "+", "~", "?", "so", "not", "+^", "~^", "?^"};
             std::string op = bare.substr(8, bare.size() - 9);
             if (kPrefix.count(op)) {
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->name = bare;
                 code.code()->params = nullptr;
                 code.code()->builtin = [op](Interpreter& I, ValueList& a) -> Value {
                     if (a.empty()) throw RakuError{Value::typeObj("X::AdHoc"),
@@ -28356,7 +28354,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             bare.compare(bare.size() - 2, 2, "]>") == 0) {
             // &prefix:<[+]> — the reduce metaop as a Callable
             std::string op = bare.substr(9, bare.size() - 11);
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>()); code.code()->name = bare;
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->name = bare;
             code.code()->builtin = [op](Interpreter& I, ValueList& a) -> Value {
                 ValueList items;
                 for (auto& v : a) {
@@ -28754,7 +28752,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 !mc->hyper && exprHasWhateverLit(mc->inv.get())) {
                 ValueList margs = evalArgs(mc->args);
                 Value self = inv, fn = mv;
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->isWhateverCode = true;
                 code.code()->builtin = [self, fn, margs](Interpreter& I, ValueList& a) -> Value {
                     Value arg = a.empty() ? Value::any() : a[0];
@@ -28959,7 +28957,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     if (inv.t == VT::Match && !mc->meta && opEq(mc->method, "make")) {
         ValueList margs = evalArgs(mc->args);
         Value v = margs.empty() ? Value::any() : margs[0];
-        if (Value* lv = lvalue(mc->inv.get())) lv->setPairVal(std::make_shared<Value>(v));
+        if (Value* lv = lvalue(mc->inv.get())) lv->setPairVal(makePayload<Value>(v));
         // inside an action method $/ is a COPY of the tree node being
         // built — write through to the real node (the active make
         // target) so the parent action's $<child>.made sees it; the
@@ -28968,7 +28966,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             Value* t = tctx_.makeTargets.back();
             if (t && t->t == VT::Match && t->rFrom() == inv.rFrom() &&
                 t->rTo() == inv.rTo() && t->s == inv.s)
-                t->setPairVal(std::make_shared<Value>(v));
+                t->setPairVal(makePayload<Value>(v));
         }
         return v;
     }
@@ -28984,7 +28982,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             // identifies by its payload, which the copy replaces, so its
             // WHICH is kept in the (otherwise unused) `i` (01-misc.t)
             if (p.pairLive() && !p.i) p.i = (long long)(intptr_t)p.pairVal();
-            p.setPairVal(std::make_shared<Value>(v));
+            p.setPairVal(makePayload<Value>(v));
             p.pairValRO = true;
             p.b = false;                       // no longer pairLive
             return v;
@@ -29306,7 +29304,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             if (a && a->kind != NK::IntLit && a->kind != NK::StrLit && a->kind != NK::NumLit &&
                 a->kind != NK::RegexLit) { plain = false; break; }
         if (!plain) {
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->isWhateverCode = true;
             Value self = inv; auto env = tctx_.cur; const MethodCall* mcp = mc;
             std::string method = mc->meta ? "^" + mc->method : mc->method;
@@ -29393,7 +29391,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
          (inv.t == VT::Code && inv.code() && inv.code()->isWhateverCode)) &&
         (mc->meta || !kMetaMacros.count(mc->method)) &&
         exprHasWhateverLit(mc->inv.get())) {
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->isWhateverCode = true;
         Value self = inv; ValueList margs = args;
         std::string method = mc->meta ? "^" + mc->method : mc->method; // *.^name keeps its meta form

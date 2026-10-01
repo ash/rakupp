@@ -817,7 +817,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 (args.empty() || (args.size() == 1 && args[0].t == VT::Int && !args[0].big()))) {
                 ValueList none;
                 long long cnt = invokeMethod(*co, lst->iterObj, none).toInt();
-                long long want = args.empty() ? 1 : std::max(0LL, args[0].i);
+                long long want = args.empty() ? 1 : std::max<long long>(0LL, args[0].i);
                 Value* so = ic->findMethod("skip-one");
                 for (long long k = cnt - want; k > 0; k--) {
                     Value r = invokeMethod(so ? *so : *po, lst->iterObj, none);
@@ -3874,7 +3874,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // eager loop below: only a `return` tells the two apart, and the loop
             // is the fast path.
             if (m == "map" && !args.empty() && mapBlockReturnsOut(args[0])) {
-                auto src = std::make_shared<ValueList>(items);
+                auto src = makePayload<ValueList>(items);
                 const Value fn = args[0];
                 const size_t ar = std::max<size_t>(1, codeArity(fn));
                 Value lz = Value::array(); lz.isList = true; lz.s = "Seq";

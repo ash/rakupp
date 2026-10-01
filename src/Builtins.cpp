@@ -4268,7 +4268,7 @@ Value makeSignature(const Callable* c) {
         // parameter has none
         if (p.defaultVal) {
             const Expr* de = p.defaultVal.get();
-            Value dc; dc.t = VT::Code; dc.setCode(std::make_shared<Callable>());
+            Value dc; dc.t = VT::Code; dc.setCode(makePayload<Callable>());
             dc.code()->builtin = [de](Interpreter& I, ValueList&) -> Value {
                 return I.eval(const_cast<Expr*>(de));
             };
@@ -4303,7 +4303,7 @@ Value makeSignature(const Callable* c) {
             // smartmatches the candidate against it.
             if (p.whereExpr) {
                 const Expr* we = p.whereExpr.get();
-                Value wc; wc.t = VT::Code; wc.setCode(std::make_shared<Callable>());
+                Value wc; wc.t = VT::Code; wc.setCode(makePayload<Callable>());
                 wc.code()->builtin = [we](Interpreter& I, ValueList& a) -> Value {
                     return Value::boolean(I.attrWhereOk(we, a.empty() ? Value::any() : a[0]));
                 };
@@ -4498,7 +4498,7 @@ static bool fhWritesToFile(const ValueMap& m) {
     return mode == "w" || mode == "a" || mode == "rw" || mode == "update";
 }
 
-void Interpreter::fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::string& s) {
+void Interpreter::fhAppendToFile(const PRef<ValueMap>& h, const std::string& s) {
     if (!fhWritesToFile(*h)) return;
     std::string mode = (*h)["mode"].toStr();
     // A read-write handle (`:update`, `:rw`) writes IN PLACE at its write
@@ -5211,7 +5211,7 @@ void Interpreter::wrapJsonFastExports(Env& moduleEnv) {
         if (!slot && !(gslot && gslot->t == VT::Code)) return;
         Value orig = slot ? *slot : *gslot;
         if (orig.code() && orig.code()->builtin) return;   // already wrapped
-        Value w; w.t = VT::Code; w.setCode(std::make_shared<Callable>());
+        Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
         w.code()->name = name + 1;                          // drop the '&'
         w.code()->builtin = [orig, fn](Interpreter& I2, ValueList& args) -> Value {
             return fn(I2, args, orig);
@@ -5379,7 +5379,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 if (a.s == "as") asF = *a.pairVal(); else if (a.s == "with") withF = *a.pairVal();
             }
         auto st = std::make_shared<std::pair<bool, Value>>(true, Value());
-        Value filt; filt.t = VT::Code; filt.setCode(std::make_shared<Callable>());
+        Value filt; filt.t = VT::Code; filt.setCode(makePayload<Callable>());
         filt.code()->builtin = [st, asF, withF](Interpreter& I, ValueList& a) -> Value {
             Value v = a.empty() ? Value::any() : a[0];
             Value k = asF.t == VT::Code ? I.callCallable(asF, ValueList{v}) : v;
@@ -6187,7 +6187,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     auto safeName = [](const std::string& n) {
                         return !n.empty() && n[0] != '/' && n.find("..") == std::string::npos && n.find('\\') == std::string::npos;
                     };
-                    auto recHash = [](const Value& r, const char* k) -> std::shared_ptr<ValueMap> {
+                    auto recHash = [](const Value& r, const char* k) -> PRef<ValueMap> {
                         if (r.t != VT::Hash || !r.hash()) return nullptr;
                         auto it = r.hash()->find(k);
                         return it != r.hash()->end() && it->second.t == VT::Hash ? it->second.hashS() : nullptr;
@@ -7495,7 +7495,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
-            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->name = mn; code.code()->isMethod = true;
             code.code()->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
@@ -7590,7 +7590,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         for (const char* mn : tm->second) {
                             if (!seen.insert(mn).second) continue;
                             if (mm == "method_names") { o.arr()->push_back(Value::str(mn)); continue; }
-                            Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                             std::string mname = mn;
                             code.code()->name = mname; code.code()->isMethod = true;
                             code.code()->builtin = [mname](Interpreter& I, ValueList& av) -> Value {
@@ -7820,7 +7820,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     for (auto& kv : *cap.hash()) {
                         Value n = Value::pair(kv.first, kv.second); n.namedArg = true; callArgs.push_back(n);
                     }
-                auto tmp = std::make_shared<Callable>();
+                auto tmp = makePayload<Callable>();
                 tmp->params = S;
                 tmp->isMethod = isMeth;   // (and its implicit *%_)
                 tmp->closure = tctx_.cur;
@@ -8150,7 +8150,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long long ar = 0;
         for (size_t k = 0; k + 1 < fmt.size(); k++)
             if (fmt[k] == '%') { if (fmt[k + 1] == '%') k++; else ar++; }
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->name = "Format";
         code.code()->builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
             ValueList sa; sa.push_back(Value::str(fmt));
@@ -8282,7 +8282,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // method returns stays one value, so each result keeps its own place.
     if (inv.t == VT::Array && inv.s == "WalkList" && inv.arr()) {
         if (m == "invoke" || m == "CALL-ME") {
-            auto meths = std::make_shared<ValueList>(*inv.arr());
+            auto meths = makePayload<ValueList>(*inv.arr());
             Value self = inv.pairKey() ? *inv.pairKey() : Value::any();
             bool quiet = inv.xr().rExFrom;
             auto idx = std::make_shared<size_t>(0);

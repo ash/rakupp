@@ -27,8 +27,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <mutex>
 #include <ostream>
 #include <shared_mutex>
@@ -53,9 +53,10 @@ struct IStr {
         std::uint64_t pre = 0; // first 8 bytes packed, so short tags compare as one integer
     };
 
-    // Null IS the empty string — so a default-constructed IStr costs a zeroed
-    // pointer, where a std::string costs a constructor call.
-    const Entry* e = nullptr;
+    // A 32-bit INDEX into the intern table (VALUE32-PLAN design A, batch 2):
+    // half the pointer it replaced, and every Value carries three of them.
+    // Zero IS the empty string — a default-constructed IStr is a zeroed word.
+    std::uint32_t id = 0;
 
     IStr() = default;
     // EXPLICIT on purpose. Implicit converting constructors make `k == "Buf"`
@@ -77,13 +78,30 @@ struct IStr {
         return kEmpty;
     }
 
+    // The table: fixed-size chunks that never move once made, found through a
+    // fixed array of chunk pointers, so an entry's address is stable and a
+    // lookup is two dependent loads with no lock. An id is only ever handed
+    // out after its entry is written, under the intern lock; an IStr reaches
+    // another thread inside a Value, whose transfer already synchronizes.
+    static constexpr unsigned kChunkBits = 10;
+    static constexpr std::uint32_t kChunk = 1u << kChunkBits;
+    static constexpr std::uint32_t kMaxChunks = 1u << 12;   // 4M names: far past any vocabulary
+    static Entry** chunks() {
+        static Entry* tbl[kMaxChunks] = {};
+        return tbl;
+    }
+    RAKUPP_ALWAYS_INLINE static const Entry& entryOf(std::uint32_t i) {
+        return chunks()[i >> kChunkBits][i & (kChunk - 1)];
+    }
+    const Entry& ent() const { return entryOf(id); }
+
     // Interning takes a lock, but only on ASSIGNMENT from text — copies and
     // comparisons, which are the operations `Value` does millions of times,
     // never reach it. Readers share the lock; only a miss serializes.
-    static const Entry* intern(const char* p, std::size_t k) {
-        if (!k) return nullptr;
-        static std::deque<Entry> storage;  // stable addresses: the handle points into it
-        static std::unordered_map<std::string, const Entry*> index;
+    static std::uint32_t intern(const char* p, std::size_t k) {
+        if (!k) return 0;
+        static std::unordered_map<std::string, std::uint32_t> index;
+        static std::uint32_t next = 1;   // 0 is the empty string
         static std::shared_mutex mu;
         std::string key(p, k);
         {
@@ -94,13 +112,19 @@ struct IStr {
         std::unique_lock<std::shared_mutex> wr(mu);
         auto it = index.find(key);
         if (it != index.end()) return it->second;   // raced; someone else won
-        storage.push_back(Entry{key, k, pack(p, k)});
-        const Entry* ent = &storage.back();
-        index.emplace(std::move(key), ent);
-        return ent;
+        const std::uint32_t i = next;
+        Entry*& chunk = chunks()[i >> kChunkBits];
+        if (!chunk) {
+            if ((i >> kChunkBits) >= kMaxChunks) std::abort();
+            chunk = new Entry[kChunk];
+        }
+        chunk[i & (kChunk - 1)] = Entry{key, k, pack(p, k)};
+        next = i + 1;
+        index.emplace(std::move(key), i);
+        return i;
     }
 
-    void assign(const char* p, std::size_t k) { e = intern(p, k); }
+    void assign(const char* p, std::size_t k) { id = intern(p, k); }
 
     IStr& operator=(const char* v) { assign(v, std::strlen(v)); return *this; }
     IStr& operator=(const std::string& v) { assign(v.data(), v.size()); return *this; }
@@ -109,27 +133,28 @@ struct IStr {
     // more than the comparison it replaces.
     template <std::size_t N>
     RAKUPP_ALWAYS_INLINE bool operator==(const char (&lit)[N]) const {
-        if (!e) return N == 1;                       // empty == ""
-        if (e->n != N - 1) return false;
-        if (N - 1 <= 8) return e->pre == pack(lit, N - 1);
-        return std::memcmp(e->s.data(), lit, N - 1) == 0;
+        if (!id) return N == 1;                      // empty == ""
+        const Entry& e = ent();
+        if (e.n != N - 1) return false;
+        if (N - 1 <= 8) return e.pre == pack(lit, N - 1);
+        return std::memcmp(e.s.data(), lit, N - 1) == 0;
     }
     template <std::size_t N>
     RAKUPP_ALWAYS_INLINE bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
 
     // Interned, so identity IS equality — no comparison at all.
-    bool operator==(const IStr& o) const { return e == o.e; }
-    bool operator!=(const IStr& o) const { return e != o.e; }
+    bool operator==(const IStr& o) const { return id == o.id; }
+    bool operator!=(const IStr& o) const { return id != o.id; }
 
     bool operator==(const std::string& o) const { return str() == o; }
     bool operator!=(const std::string& o) const { return str() != o; }
 
-    const std::string& str() const { return e ? e->s : empties(); }
+    const std::string& str() const { return id ? ent().s : empties(); }
     operator const std::string&() const { return str(); }
 
-    bool empty() const { return !e; }
-    void clear() { e = nullptr; }
-    std::size_t size() const { return e ? e->n : 0; }
+    bool empty() const { return !id; }
+    void clear() { id = 0; }
+    std::size_t size() const { return id ? ent().n : 0; }
     const char* c_str() const { return str().c_str(); }
     const char* data() const { return str().data(); }
     char operator[](std::size_t i) const { return str()[i]; }

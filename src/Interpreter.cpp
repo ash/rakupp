@@ -1194,7 +1194,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
         // (a group of this scope's own, so the body's candidates — closed over
         // the role body — are not what the calls here find)
         for (auto& nm : groups) {
-            Value fresh; fresh.t = VT::Code; fresh.setCode(std::make_shared<Callable>());
+            Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
             fresh.code()->name = nm;
             fresh.code()->isMultiDispatcher = true;
             env->define("&" + nm, fresh);
@@ -3277,7 +3277,7 @@ void Interpreter::maybeRegisterDestroy(const Value& self) {
 // object: the entry leaves the registry before its destructor is called, and
 // resurrection does not re-register.
 void Interpreter::runPendingDestroys() {
-    std::vector<std::shared_ptr<ObjectData>> dead;
+    std::vector<PRef<ObjectData>> dead;
     {
         std::lock_guard<std::mutex> lk(destroyMu_);
         if (inDestroySweep_) return; // a DESTROY that requests GC must not recurse
@@ -3957,7 +3957,7 @@ Interpreter::Interpreter() {
             auto ps = std::make_shared<ClassInfo>();
             ps->name = "PseudoStash";
             for (const char* mn : {"AT-KEY", "EXISTS-KEY", "BIND-KEY", "ASSIGN-KEY", "DELETE-KEY", "WHO"}) {
-                Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+                Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                 code.code()->name = mn; code.code()->isMethod = true; code.code()->subAsMethod = true;
                 code.code()->pkg = "PseudoStash";
                 std::string m = mn;

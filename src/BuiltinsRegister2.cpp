@@ -217,7 +217,7 @@ void Interpreter::registerBuiltinsPart3() {
             auto own = std::make_shared<Env>();
             own->parent = code.code()->closure;
             own->define("$*CWD", cwdv);
-            auto cc = std::make_shared<Callable>(*code.code());
+            auto cc = makePayload<Callable>(*code.code());
             cc->closure = own;
             Value blk; blk.t = VT::Code; blk.setCode(cc);
             ValueList none;
@@ -404,7 +404,7 @@ void Interpreter::registerBuiltinsPart3() {
     // seen where the `not *…` was WRITTEN — the curried closure runs somewhere
     // else, and Red's `grep(not *.name in <b c>)` must build a NotIn AST there)
     auto boolCurry = [](bool negate, const Value& w, Value userOp = Value::any()) -> Value {
-        Value code; code.t = VT::Code; code.setCode(std::make_shared<Callable>());
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->isWhateverCode = true;
         code.code()->whateverArity = (w.t == VT::Code && w.code() && w.code()->whateverArity > 0) ? w.code()->whateverArity : 1;
         Value inner = w;
@@ -1334,7 +1334,7 @@ void Interpreter::registerBuiltinsPart4() {
                     ctx = I.reactStack_.back();
                     std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++;
                 }
-                Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
+                Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                 Value blkCopy = blk;
                 emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                     ValueList one = args;
@@ -1371,7 +1371,7 @@ void Interpreter::registerBuiltinsPart4() {
                     Value doneW;
                     if (ctx) {
                         std::weak_ptr<ReactCtx> wctx = ctx;
-                        doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                        doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
                         doneW.code()->builtin = [wctx](Interpreter&, ValueList&) -> Value {
                             if (auto c = wctx.lock()) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
                             return Value::any();
@@ -1475,7 +1475,7 @@ void Interpreter::registerBuiltinsPart4() {
                             }
                         }
                     };
-                    Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
+                    Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                     emitW.code()->builtin = [gate, onEmit](Interpreter& I2, ValueList& args) -> Value {
                         ValueList a = args;
                         Interpreter* ip = &I2;
@@ -1484,7 +1484,7 @@ void Interpreter::registerBuiltinsPart4() {
                     };
                     // the block's LAST and QUIT phasers are this subscription's
                     // done and quit (`LAST { done }` ends the react)
-                    Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                    Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
                     doneW.code()->builtin = [gate, lastP, release, wctx, endSub](Interpreter& I2, ValueList&) -> Value {
                         Interpreter* ip = &I2;
                         gate([ip, lastP, release, wctx, endSub] {
@@ -1492,7 +1492,7 @@ void Interpreter::registerBuiltinsPart4() {
                         });
                         return Value::any();
                     };
-                    Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                    Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
                     quitW.code()->builtin = [gate, wctx, quitP, release, endSub](Interpreter& I2, ValueList& a) -> Value {
                         Interpreter* ip = &I2;
                         ValueList args = a;
@@ -1555,7 +1555,7 @@ void Interpreter::registerBuiltinsPart4() {
                     std::vector<std::string> pnames;
                     if (blk.code() && blk.code()->params)
                         for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
-                    Value blkInner = blk, shim; shim.t = VT::Code; shim.setCode(std::make_shared<Callable>());
+                    Value blkInner = blk, shim; shim.t = VT::Code; shim.setCode(makePayload<Callable>());
                     shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
@@ -1587,7 +1587,7 @@ void Interpreter::registerBuiltinsPart4() {
                         { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
                     }
                     if (!lastP.empty()) {
-                        Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                        Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
                         doneW.code()->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
                             I2.runLastPhasers(lastP, nullptr);
                             return Value::any();
@@ -1599,7 +1599,7 @@ void Interpreter::registerBuiltinsPart4() {
                         // exception is fatal to the whole react, as in Rakudo.
                         std::weak_ptr<ReactCtx> wctx = rctx;
                         auto th = tapRec.hashS(); // shared: the quit lambda can fire after tapRec's last Value copy dies
-                        Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                        Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
                         quitW.code()->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
                             (*th)["closed"] = Value::boolean(true);
                             auto c = wctx.lock();
@@ -1639,7 +1639,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // `on-close` hooks run, and the source stops feeding it.
                     if (rctx) {
                         auto rec = tapRec.hashS();
-                        Value closeCb; closeCb.t = VT::Code; closeCb.setCode(std::make_shared<Callable>());
+                        Value closeCb; closeCb.t = VT::Code; closeCb.setCode(makePayload<Callable>());
                         closeCb.code()->builtin = [rec](Interpreter& I2, ValueList&) -> Value {
                             // its own flag: `done` inside the whenever marks the
                             // tap `closed` from the emit fan-out, and the hooks
@@ -1681,7 +1681,7 @@ void Interpreter::registerBuiltinsPart4() {
                     std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
-                    Value emitW; emitW.t = VT::Code; emitW.setCode(std::make_shared<Callable>());
+                    Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                     Value blkCopy = blk;
                     emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                         ValueList one = args;
@@ -1704,7 +1704,7 @@ void Interpreter::registerBuiltinsPart4() {
                             c->cv.notify_all();
                         }
                     };
-                    Value quitW; quitW.t = VT::Code; quitW.setCode(std::make_shared<Callable>());
+                    Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
                     quitW.code()->builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
                         auto c = wctx.lock();
                         if (c) I2.reactStack_.push_back(c); // `done` in a QUIT block finds its react
@@ -1718,7 +1718,7 @@ void Interpreter::registerBuiltinsPart4() {
                         release();
                         return Value::any();
                     };
-                    Value doneW; doneW.t = VT::Code; doneW.setCode(std::make_shared<Callable>());
+                    Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
                     // rctx captured so a `done` inside a LAST phaser finds its
                     // react: this runs on the source's worker, where nothing has
                     // pushed it. (Log::Timeline's client waits on `LAST done`
@@ -1746,7 +1746,7 @@ void Interpreter::registerBuiltinsPart4() {
                     if (blk.code() && blk.code()->params)
                         for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
                     Value blkInner = blk;
-                    Value shim; shim.t = VT::Code; shim.setCode(std::make_shared<Callable>());
+                    Value shim; shim.t = VT::Code; shim.setCode(makePayload<Callable>());
                     shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
@@ -1763,7 +1763,7 @@ void Interpreter::registerBuiltinsPart4() {
                         // phasers are for — hand them the tap's quit rather than
                         // letting it unwind the react (Roast syntax.t's
                         // `whenever Supply.from-list(gather { die })`).
-                        Value quitCb; quitCb.t = VT::Code; quitCb.setCode(std::make_shared<Callable>());
+                        Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
                         quitCb.code()->builtin = [quitP, rctx](Interpreter& I2, ValueList& a) -> Value {
                             Value ex = a.empty() ? Value::any() : a[0];
                             Value repl;

@@ -3875,7 +3875,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 for (auto& a : wa) if (!(a.t == VT::Pair && a.namedArg) && a.isNumeric()) wLimit = true;
                 if (wClose && wLimit) { methodCall(inv, "close", ValueList{}); return ws; }
                 if (wClose) {
-                    auto items = std::make_shared<ValueList>(toList(ws));
+                    auto items = makePayload<ValueList>(toList(ws));
                     auto idx = std::make_shared<size_t>(0);
                     auto st = std::make_shared<LazySeqState>();
                     st->streaming = true;

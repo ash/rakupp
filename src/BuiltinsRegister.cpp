@@ -1857,7 +1857,7 @@ void Interpreter::registerBuiltinsPart2() {
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
-        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->setPairVal(std::make_shared<Value>(v));
+        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->setPairVal(makePayload<Value>(v));
         return v;
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {

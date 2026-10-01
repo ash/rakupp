@@ -166,10 +166,10 @@ struct SlabAlloc {
     template <class U> bool operator!=(const SlabAlloc<U>&) const noexcept { return false; }
 };
 
-// The one spelling every payload site uses, so the swap is a rename and the
-// whole experiment can be reverted by changing this function alone.
+// A slab-allocated std::shared_ptr, for the shared objects that are NOT Value
+// payloads (a Seq token). Payloads are made by makePayload (Ref.h).
 template <class T, class... A>
-inline std::shared_ptr<T> makePayload(A&&... a) {
+inline std::shared_ptr<T> makeSlabShared(A&&... a) {
     return std::allocate_shared<T>(SlabAlloc<T>{}, static_cast<A&&>(a)...);
 }
 

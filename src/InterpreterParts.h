@@ -1221,9 +1221,9 @@ static inline bool boxedIteration(const Value& v) {
 // reaches the same slot — which is exactly what lets one escape a gather.
 static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueList&)> f,
                           std::function<Value(Interpreter&, ValueList&)> s) {
-    Value fetch; fetch.t = VT::Code; fetch.setCode(std::make_shared<Callable>());
+    Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->builtin = std::move(f);
-    Value store; store.t = VT::Code; store.setCode(std::make_shared<Callable>());
+    Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
     store.code()->builtin = std::move(s);
     (*proxy.hash())["FETCH"] = fetch;
     (*proxy.hash())["STORE"] = store;
@@ -1245,9 +1245,10 @@ static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&,
 // both names then proxy. A later `$b := …` overwrites $b's slot outright,
 // dropping its proxy and leaving the cell — and $a — exactly as they were.
 extern const char* kCellKey;
-static inline Value makeSharedCellProxy(std::shared_ptr<Value> cell) {
+static inline Value makeSharedCellProxy(PRef<Value> cell) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    Value handle = Value::any(); handle.extM() = std::static_pointer_cast<void>(cell);
+    // the opaque `ext` handle is a shared_ptr<void>: the cell rides in it boxed
+    Value handle = Value::any(); handle.extM() = std::make_shared<PRef<Value>>(cell);
     (*proxy.hash())[kCellKey] = handle;
     slotProxyPair(proxy,
         [cell](Interpreter&, ValueList&) -> Value { return *cell; },
@@ -1262,11 +1263,11 @@ static inline Value makeSharedCellProxy(std::shared_ptr<Value> cell) {
 // `my $a := $b; my $c := $b` must reach one container, not two, so the cell is
 // parked on the proxy itself under a hidden key — in the opaque `ext` handle,
 // which is what that field is for.
-static inline std::shared_ptr<Value> cellOfProxy(const Value* slot) {
+static inline PRef<Value> cellOfProxy(const Value* slot) {
     if (!slot || slot->t != VT::Hash || slot->hashKind != "Proxy" || !slot->hash()) return nullptr;
     auto c = slot->hash()->find(kCellKey);
-    if (c == slot->hash()->end()) return nullptr;
-    return std::static_pointer_cast<Value>(c->second.ext());
+    if (c == slot->hash()->end() || !c->second.ext()) return nullptr;
+    return *std::static_pointer_cast<PRef<Value>>(c->second.ext());
 }
 bool forTailVarsExpr(const Expr* e, std::vector<const void*>& out);
 

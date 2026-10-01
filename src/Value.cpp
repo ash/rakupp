@@ -6,6 +6,68 @@
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
 #include "BuiltinsShared.h" // g_deproxy — a container gists as what it holds
 
+#ifdef RAKUPP_IN_AUDIT
+#include <dlfcn.h>
+#include <atomic>
+#include <mutex>
+#include <map>
+#include <tuple>
+namespace rakupp {
+// Every caller that read `i` or `n` while the OTHER was written last and a
+// shared slot would have given different bits. Keyed by (return address,
+// which); dumped at exit to $RAKUPP_IN_AUDIT_OUT (append), symbolized later
+// with atos against the audit binary.
+static std::mutex g_inAuditMu;
+using InAuditKey = std::tuple<void*, void*, int>;   // (reader, last writer, which)
+static std::map<InAuditKey, unsigned long long>* g_inAudit = nullptr;
+void inAuditHit(void* caller, void* writer, int which) {
+    std::lock_guard<std::mutex> g(g_inAuditMu);
+    if (!g_inAudit) g_inAudit = new std::map<InAuditKey, unsigned long long>();
+    (*g_inAudit)[{caller, writer, which}]++;
+}
+// the writer's address rides on BOTH proxies, so the reader of either finds it
+void InAuditI::put(long long x) { v = x; last = 1; wr = __builtin_return_address(0); sib().last = 1; sib().wr = wr; }
+void InAuditN::put(double x) { v = x; last = 2; wr = __builtin_return_address(0); sib().last = 2; sib().wr = wr; }
+long long InAuditI::get() const {
+    if (last == 2) {
+        double nv = reinterpret_cast<const InAuditPair*>(this)->n.v;
+        long long bits; std::memcpy(&bits, &nv, sizeof bits);
+        if (bits != v) inAuditHit(__builtin_return_address(0), wr, 1);
+    }
+    return v;
+}
+double InAuditN::get() const {
+    if (last == 1) {
+        long long iv = reinterpret_cast<const InAuditPair*>(
+            reinterpret_cast<const char*>(this) - offsetof(InAuditPair, n))->i.v;
+        long long bits; std::memcpy(&bits, &v, sizeof bits);
+        if (bits != iv) inAuditHit(__builtin_return_address(0), wr, 2);
+    }
+    return v;
+}
+struct InAuditDump {
+    ~InAuditDump() {
+        std::lock_guard<std::mutex> g(g_inAuditMu);
+        if (!g_inAudit) return;
+        const char* path = getenv("RAKUPP_IN_AUDIT_OUT");
+        FILE* f = fopen(path ? path : "/dev/stderr", "a");
+        if (!f) return;
+        Dl_info di{};
+        // addresses relative to the image, so atos -l 0x100000000 works
+        auto rel = [&](void* a) {
+            uintptr_t off = (uintptr_t)a;
+            if (a && dladdr(a, &di) && di.dli_fbase) off = off - (uintptr_t)di.dli_fbase + 0x100000000ULL;
+            return (unsigned long long)off;
+        };
+        for (auto& [k, c] : *g_inAudit)
+            fprintf(f, "%s\t0x%llx\t0x%llx\t%llu\n", std::get<2>(k) == 1 ? "read-i" : "read-n",
+                    rel(std::get<0>(k)), rel(std::get<1>(k)), c);
+        fclose(f);
+    }
+};
+static InAuditDump g_inAuditDump;
+} // namespace rakupp
+#endif
 #ifdef RAKUPP_PTR_CENSUS
 #include <atomic>
 namespace rakupp {

@@ -82,7 +82,7 @@ const Registry* build() {
     // ladder arm. A builtin method receives `self` as its first argument.
     auto method = [](BuiltinFn fn) {
         Value v; v.t = VT::Code;
-        auto c = std::make_shared<Callable>();
+        auto c = makePayload<Callable>();
         c->builtin = std::move(fn);
         c->isMethod = true;
         v.setCode(std::move(c));

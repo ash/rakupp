@@ -821,7 +821,7 @@ struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching la
 // only kind the printed backtrace shows; 1 is a bare block inside the
 // activation after it, 2 and 3 the setting's `throw` and `die` (Rakudo lists
 // them with is-setting) — all three reach `.backtrace.list` only.
-struct BtFrame { std::shared_ptr<Callable> code; int line = 0; unsigned char kind = 0; };
+struct BtFrame { PRef<Callable> code; int line = 0; unsigned char kind = 0; };
 
 // A captured chain plus the file its routine-less frames belong to, in ONE
 // shared allocation. Failures are made in bulk — every failed coercion is one —
@@ -1078,7 +1078,7 @@ struct ExecContext {
     // no swap or park moves it (any frame in it is as good as any other).
     std::vector<std::shared_ptr<Env>> framePool;
     Env* curStateEnv = nullptr;
-    std::vector<std::shared_ptr<ValueList>> gatherStack;
+    std::vector<PRef<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx
     // …and a per-gather TIME budget for the first probe, as a steady_clock
     // microsecond stamp (0 = none). 64 takes is a count, not a cost: a generator
@@ -1091,7 +1091,7 @@ struct ExecContext {
     // copy-in/copy-out, severed the moment an iteration ends — `take-rw $_`
     // consults this to hand out a Proxy over the slot itself instead, so the
     // taken thing stays writable-through after the loop has moved on.
-    struct TopicAlias { Env* scope; const std::string* var; std::shared_ptr<ValueList> arr; size_t idx; };
+    struct TopicAlias { Env* scope; const std::string* var; PRef<ValueList> arr; size_t idx; };
     std::vector<TopicAlias> topicAliases;
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
@@ -1224,7 +1224,7 @@ struct ExecContext {
     Value* lvalueOut = nullptr;
     // …unless the local is a CELL (Value::isCell): then lvalueOut points into
     // the shared Value, which this keeps alive until the caller has written.
-    std::shared_ptr<Value> lvalueOutCell;
+    PRef<Value> lvalueOutCell;
     // A `for` in VALUE context whose body ENDS on a variable declared outside
     // it (`(for 1..3 { $s += $_ })`): each iteration's value is that variable's
     // CONTAINER, so the loop collects the container (Rakudo's (6 6 6)). Keyed
@@ -1961,8 +1961,8 @@ public:
     // whole existing Proxy plumbing (deproxy on read, proxyStore on assign)
     // applies unchanged. take-rw hands these out; := uses the Env one.
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
-    Value makeArraySlotProxy(std::shared_ptr<ValueList> arr, size_t idx);
-    Value makePairCellProxy(std::shared_ptr<Value> cell);   // a Pair's value container, as a Proxy
+    Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx);
+    Value makePairCellProxy(PRef<Value> cell);   // a Pair's value container, as a Proxy
     // `$s.substr-rw(from, len)` as a Proxy over the variable `vname` in `owner`:
     // reading reads the text there now, assigning splices into the variable
     // (len -1: to the end). substrRwProxyOf builds one for a `substr-rw` call
@@ -1974,7 +1974,7 @@ public:
     ValueList* slotProxyTarget(const Value& proxy, size_t& idxOut); // compact array slot, or null
     Value slotProxyRead(const Value& proxy);
     Value slotProxyWrite(const Value& proxy, const Value& nv);
-    Value makeHashSlotProxy(std::shared_ptr<ValueMap> h, const std::string& key);
+    Value makeHashSlotProxy(PRef<ValueMap> h, const std::string& key);
     Value makeCellProxy(const Value& init);
     // A Proxy over the ELEMENT a subscript path names in `scope`: FETCH reads
     // the path without vivifying, STORE assigns through lvalue(path), which
@@ -1997,16 +1997,16 @@ public:
     Value evalTakeRw(Call* c); // `take-rw EXPR` — take the STORAGE, not a copy
     Value takeRwSlotProxy(Expr* arg); // its arg → slot Proxy (or non-Proxy Any)
     // The hash behind `for values %h` — see the definition in InterpreterCalls.cpp.
-    std::shared_ptr<ValueMap> valuesAliasSource(Expr* listExpr);
+    PRef<ValueMap> valuesAliasSource(Expr* listExpr);
     Value* pairsAliasSource(Expr* listExpr);   // `%h.pairs` over a plain hash variable: the hash
     // The array behind `for @$x` — likewise; the topic aliases its elements.
-    std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
-    std::shared_ptr<ValueList> reverseArrayAlias(Expr* listExpr); // `for @a.reverse`'s storage
+    PRef<ValueList> derefArrayAlias(Expr* listExpr);
+    PRef<ValueList> reverseArrayAlias(Expr* listExpr); // `for @a.reverse`'s storage
     // `@a.grep(PRED)`: @a's storage and the positions grep keeps (its containers)
-    std::shared_ptr<std::pair<std::shared_ptr<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
+    std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
-    std::shared_ptr<ValueList> valuesArrayAlias(Expr* listExpr);
+    PRef<ValueList> valuesArrayAlias(Expr* listExpr);
     // True when the loop source yields bare values, so a write to the topic has
     // nowhere to land and Rakudo refuses it — see the definition.
     static bool immutableLoopSource(const Expr* listExpr);
@@ -2044,13 +2044,13 @@ public:
                               const std::vector<ExprPtr>* rwArgs, size_t from); // `*@l is raw`
     // The shared cell behind a variable owned by `owner`, promoting it on first
     // use; null for a slot that holds some other Proxy.
-    std::shared_ptr<Value> varCell(Env* owner, const std::string& name);
+    PRef<Value> varCell(Env* owner, const std::string& name);
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
     Value decontList(const Value& v);        // a container-holding list's values, fresh
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
     bool isContainerElem(const Value& v);    // …is this element one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
-    std::shared_ptr<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
+    PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
     const void* containerId(const Value* slot); // what `=:=` compares (see InterpreterCalls.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
@@ -2533,7 +2533,7 @@ public:
     // how `EXPORTHOW.WHO.<grammar> = SomeHOW` used to die "Target is not
     // assignable" (WHO built a fresh empty Hash each time). Reads re-sync the
     // package's qualified globals in, so `our`-scoped symbols show up too.
-    std::map<std::string, std::shared_ptr<ValueMap>> pkgStashes_;
+    std::map<std::string, PRef<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
     // …the ones the PROGRAM's own declarations made (not a module's): those
@@ -3034,7 +3034,7 @@ public:
     void gatherProbeCheck();  // out-of-line: read the clock, and stop the probe if it is spent
     // One gather activation — collector, take cap, probe deadline — pushed and
     // popped as a unit so t_poll.gatherDeadline stays in step with the stack.
-    inline void pushGatherFrame(std::shared_ptr<ValueList> coll, size_t limit, long long deadline) {
+    inline void pushGatherFrame(PRef<ValueList> coll, size_t limit, long long deadline) {
         tctx_.gatherStack.push_back(std::move(coll));
         tctx_.gatherLimits.push_back(limit);
         tctx_.gatherDeadlines.push_back(deadline);
@@ -3130,15 +3130,15 @@ public:
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
-    void registerWriteHandle(const std::shared_ptr<ValueMap>& h) { openWriteHandles_.push_back(h); }
+    void registerWriteHandle(const PRef<ValueMap>& h) { openWriteHandles_.push_back(h); }
     void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
-    std::vector<std::shared_ptr<ValueMap>> openWriteHandles_;
+    std::vector<PRef<ValueMap>> openWriteHandles_;
     // ---- IO::Handle output buffering (out-buffer) --------------------------
     // The one place bytes written through a file handle reach the file: append
     // `s`, honouring the handle's mode and whether earlier bytes already went
     // out (so a second write appends instead of truncating what the first one
     // wrote). Caller holds rtOutMutex.
-    void fhAppendToFile(const std::shared_ptr<ValueMap>& h, const std::string& s);
+    void fhAppendToFile(const PRef<ValueMap>& h, const std::string& s);
     // Hand `s` to a write handle: buffer it, or push it (and whatever was
     // pending) to the file when out-buffer says it no longer fits.
     void fhWrite(const Value& h, const std::string& s);
@@ -3517,7 +3517,7 @@ public:
     void runPendingDestroys();
 
 private:
-    std::vector<std::shared_ptr<ObjectData>> destroyReg_;
+    std::vector<PRef<ObjectData>> destroyReg_;
     std::mutex destroyMu_;
     bool inDestroySweep_ = false; // a DESTROY that itself requests GC must not recurse
     // Allocation pressure: registration past this mark triggers a sweep, so a
@@ -3636,7 +3636,7 @@ public:
     // defaults in the declaring scope with `self` bound, sigil twins, native
     // seeds, container traits, the trailing public/`is built` binding. ONE
     // walk; the boxed-builtin constructors used stripped copies.
-    void runAttrDefaults(const std::shared_ptr<ObjectData>& od,
+    void runAttrDefaults(const PRef<ObjectData>& od,
                          const std::shared_ptr<ClassInfo>& ci, ValueList& args);
     // $*TOLERANCE (dynamic, then lexical), default 1e-15 — Complex→Real coercions
     static double toleranceDyn();

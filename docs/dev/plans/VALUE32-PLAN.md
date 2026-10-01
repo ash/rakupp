@@ -556,6 +556,75 @@ the string surface. 56 bytes is also the number where the remaining question is
 clean: everything left in the struct is either 8 bytes of immediate, 8 of
 pointer, 8 of tags — or 40 bytes of `CowStr`.
 
+### Design A, in batches
+
+Started 2026-10-01, in the order the struct gives back bytes. Each batch is
+gated on Roast, the corpus diff, the module battery (base and branch per test
+file) and an interleaved perf-guard A/B against the commit before it.
+
+1. **`i` and `n` share one word.** *Done.* Proved first with an audit build
+   ([tools/in-audit.md](../../../tools/in-audit.md)): with
+   `-DRAKUPP_IN_AUDIT` the two become proxy fields that keep separate storage,
+   remember which was written last, and log every read of the other one that
+   a shared slot would change, with its reader and its last writer. Over Roast,
+   the corpus, `t/regression/` and the battery it found exactly two writers,
+   both "clearing" `n` after storing an Int's `i` (the in-place `$n++` and the
+   fused `$x = $a op $b` store), which in one word would have zeroed the
+   result; and one harmless snapshot that read both. All three are fixed.
+   **Measured:** at 120 bytes the union costs +0.9% mean and +3% on `objnew`
+   against 128, the stride and not the union: padded back to 128 it measures
+   −0.0% mean. So the freed word is held as `Value::reserved_`, with a
+   `static_assert` at 128, and the size drops in one step when a later batch
+   reaches an aligned size (64 is the natural one after A).
+2. **`IStr` is a 32-bit index.** *Done.* Not the one-word `aux` this plan
+   first proposed: the three names are not disjoint in practice (`enumName`
+   also carries a Junction's kind), and the 64-byte budget does not need the
+   merge — 8 (`i`/`n`) + 32 (`CowStr` with an intrusive count) + 12 (three
+   names) + 8 (payload) + 4 (tag word) is exactly 64. So `IStr` became an
+   index into a chunked table whose entries never move, with the same API,
+   and no site changed. **Measured:** with the fields SHIFTED by the smaller
+   names, `fib` +7% and `strscan` +6%; with every live field kept at its old
+   offset (the freed bytes held as `reserved_`/`reserved2_`), mean +0.0%.
+   Field offsets alone move kernels by several percent, so the final 64-byte
+   order has to be measured, not just packed.
+3. **The tag block.** *Done.* `t` and `pk_` stay whole bytes; the ten flags
+   and `natBits` are bit-fields: 5 bytes where they took 16. `pk_` as a 3-bit
+   field cost the method kernels 3-4% (every payload accessor tests it); as a
+   byte the batch measured −1.5% mean. That is 34 bits, and the 64-byte layout
+   has 32, so the last step also recodes `natBits` (only ever 0/8/16/32/64,
+   104 uses, 25 writes) as a 3-bit code.
+4. **Intrusive counts.** *Done*, in three steps, each measured.
+   [src/Ref.h](../../../src/Ref.h) holds `Ref<T>` (count in the object,
+   slab-allocated) and, for the payload, `Payload`/`Body<T>`/`PayRef`/`PRef<T>`:
+   the payload classes are untouched and wrapped in a body (a `ValueList` is
+   still the plain vector every `ValueList args` local is), so `p_` is one
+   untyped 8-byte `PayRef` and `pk_` says which body it is.
+   - 4a: `x_` (the cold block) → `Ref<ValueExt>`. First +1.0% mean and asg
+     +2.5%: an inlined release put `~ValueExt`'s seven `shared_ptr`s into
+     every Value destructor. Out of line, as `shared_ptr` keeps it: level.
+   - 4b: `CowStr`'s body → `Ref<const StrBody>`; `CowStr` 40 → 32. −1.2% mean.
+   - 4c: `p_` → `PayRef`. 161 `make_shared<Callable>` and the other payload
+     `make_shared`/`shared_ptr` spellings became `makePayload`/`PRef`
+     mechanically; what needed thought: a hash entry's live Pair (the
+     `shared_ptr` aliasing constructor) became a `ValueAliasBody`, so a Value
+     payload's body is a base holding the target (one extra load, for pair
+     values and cells only); the regex routine's weak self-reference became
+     `PRef::fromObject` (it runs only while its caller holds it); the HyperSeq
+     "iterator taken" map of `weak_ptr`s became a flag on the shared body.
+     +0.5% mean; `multimeth` +3% is time inside the SYSTEM allocator's `free`
+     (it reads the clock there), on `scoreCandidate`'s own vectors, not on any
+     payload — left to look at with the field order.
+5. *Not yet:* `x_` folds into kind-specific bodies (one allocation per Rat).
+
+**Landed at 80 bytes (2026-10-01).** With batches 1–4 the live fields are 73
+bytes: `i`/`n` 8 + `CowStr` 32 + three names 12 + tag block 5 + `p_` 8 + `x_`
+8. Dropping the held bytes gives 80, and 80 is not the 120 that cost ~1%: it
+measured **−2.6% mean** on perf-guard (every kernel level or faster, `objnew`
+−6.3%) and a third less memory — a million-element array 258 → 164 MB, a
+200k-key hash 118 → 82 MB, 200k small arrays 199 → 130 MB, `hashfill` 100 →
+69 MB. `sizeof(Value) == 80` is asserted. 64 needs batch 5 (`x_` out of the
+struct) and the 3-bit `natBits` code, and its field order measured.
+
 **B versus C is one measurement, not a preference.** They differ by 7x on
 section D and by ~1,500 sites of blast radius, in opposite directions. Decide
 it with a real workload after A lands, when the rest of the struct is no longer

@@ -164,7 +164,7 @@ static void* dlopenLib(const std::string& lib) {
 // ----------------- expressions -----------------
 Value Interpreter::makeClosure(BlockExpr* be) {
     Value code; code.t = VT::Code;
-    code.setCode(std::make_shared<Callable>());
+    code.setCode(makePayload<Callable>());
     code.code()->params = &be->params;
     code.code()->body = &be->body;
     code.code()->langRev = langRev_;
@@ -2637,7 +2637,7 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
         else if (c == "DYNAMIC") mode = 'D';
         else if (c == "CLIENT") mode = 'C';
     }
-    auto od = std::make_shared<ObjectData>();
+    auto od = makePayload<ObjectData>();
     auto cit = classes_.find("PseudoStash");
     if (cit != classes_.end()) od->cls = cit->second;
     od->attrs["chain"] = Value::str(chain);
@@ -3125,7 +3125,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             Value v = a.pairVal() ? *a.pairVal() : Value::boolean(true);
             if (v.t == VT::Array || v.t == VT::Range) continue;
             Value lst = Value::array({v}); lst.isList = true;
-            a.setPairVal(std::make_shared<Value>(std::move(lst)));
+            a.setPairVal(makePayload<Value>(std::move(lst)));
         }
     };
     if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
@@ -3804,7 +3804,7 @@ static Value btStandInCode(int which) {
     static const std::vector<Value> codes = [] {
         auto mk = [](const char* name, bool block, bool method) {
             Value cv; cv.t = VT::Code;
-            auto c = std::make_shared<Callable>();
+            auto c = makePayload<Callable>();
             c->name = name; c->isBlock = block; c->isMethod = method;
             cv.setCode(c);
             return cv;
@@ -4781,7 +4781,7 @@ long long Interpreter::ncRawAddr(const Value& v) {
         const_cast<Value&>(v).s.promote();
         if (auto body = v.s.bodyPtr()) {
             static std::mutex m;
-            static std::deque<std::shared_ptr<const StrBody>> retained;
+            static std::deque<Ref<const StrBody>> retained;
             std::lock_guard<std::mutex> lk(m);
             retained.push_back(body);
             if (retained.size() > 256) retained.pop_front();

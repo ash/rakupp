@@ -359,7 +359,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // caller's buffer, so C sees the same bytes), an inline small is
         // copied into it. 256 live buffers is far beyond any driver's
         // in-flight set; the ring exists so the process never leaks unboundedly.
-        static std::deque<std::shared_ptr<const StrBody>> retained;
+        static std::deque<Ref<const StrBody>> retained;
         static std::deque<std::string> smalls;
         if (m == "addr") {
             if (args.empty()) return Value::integer(0);
