@@ -61,8 +61,12 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    `tools/bench/`, 20 have no loop it counts at all, and since 2026-09-29 a
    kernel may index and call, so reach is now the limit.
 6. *In part:* arrays grow by realloc (59a6daf6: 1M Ints 165 → 83 bytes an
-   element) and `ObjectData::boxed` is behind a pointer (56fd5291: an object
-   796 → 666). Still open: the 83 `make_shared<Value>` sites onto the slab
+   element), `ObjectData::boxed` is behind a pointer (56fd5291: an object
+   796 → 666), the cold block's container fields have a block of their own
+   (69babe9f: a Rat 485 → 421, an Int-keyed Pair 582 → 517), and a closure
+   records its file interned (54ed48d5: one allocation fewer per closure).
+   Still open, each a refactor of direct field access across many files for
+   less than what landed: the 83 `make_shared<Value>` sites onto the slab
    and Pairs with an inline key (a 1M Int-keyed Pair list is 582 bytes an
    element: the element, its cold block, a shared key Value and the value's
    body), `VarExpr`'s declaration-only fields behind a pointer (400 bytes a
