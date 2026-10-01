@@ -371,7 +371,7 @@ struct Callable {
     // or a sub body was registered nowhere and its warnings went to stderr.
     PublishedOnce<signed char> controlScan{-1};    // 1 = body holds an inline CONTROL block
     DecidedOnce<Stmt*> controlBlkCache{nullptr};   // …which one (valid when controlScan == 1)
-    std::string declFile;                          // source file the routine was declared in (backtrace .file)
+    IStr declFile;                                 // source file the routine was declared in (backtrace .file); interned: a closure copies 4 bytes, not the path
     int declLine = 0;                              // …and the line, for `&foo.line`
     // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),
     // or -1 for callables the runtime makes up (WhateverCode, wrappers,

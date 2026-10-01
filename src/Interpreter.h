@@ -3436,10 +3436,12 @@ public:
     // the file whose top level is executing — the program, or a module/EVALFILE
     // that switched it underneath. NOT what a routine declared at RUNTIME should
     // record: see declFileNow().
-    std::string curDeclFile() const {
+    std::string curDeclFile() const { return curDeclFileRef(); }
+    const std::string& curDeclFileRef() const {
         return !curDeclFile_.empty() ? curDeclFile_
              : (srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
     }
+    IStr declFileNowI();              // declFileNow(), interned: what a new routine records
     Value captureBacktrace();         // innermost-first BacktraceFrame list (Exception.throw)
     // --- backtrace rendering (issue #67) -----------------------------------
     // How much of a captured chain to show. The uncaught-error printer asks for

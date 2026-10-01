@@ -1968,6 +1968,22 @@ std::string Interpreter::declFileNow() {
     return curDeclFile();
 }
 
+// declFileNow() for a routine being declared: the calling routine's own
+// (already interned) file, or the top level's, interned once per change of it
+// — so a closure made in a loop copies four bytes, where it copied the path.
+IStr Interpreter::declFileNowI() {
+    auto& fr = tctx_.callFrames;
+    if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
+        if (const Value* cv = fr.back().code)
+            if (auto c = cv->codeS())
+                if (!c->declFile.empty()) return c->declFile;
+    thread_local std::string lastS;
+    thread_local IStr lastI;
+    const std::string& cur = curDeclFileRef();
+    if (lastI.empty() || cur != lastS) { lastS = cur; lastI = IStr(cur); }
+    return lastI;
+}
+
 std::string Interpreter::fileConstNow() {
     std::string f;
     auto& fr = tctx_.callFrames;
@@ -4128,7 +4144,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->assocChain = sd->assocChain;
                 c.code()->retType = qualifyDeclType(sd->retType);
                 c.code()->retRw = sd->retRw;
-                c.code()->declFile = declFileNow();
+                c.code()->declFile = declFileNowI();
                 c.code()->declLine = sd->line;
                 c.code()->pod = sd->pod; c.code()->podTrail = sd->podTrail;
                 if (sd->deprecated) c.code()->deprecated = deprecationFor(sd);
@@ -4671,7 +4687,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     code.code()->rakuAst = rakuAstPragma_;
                     code.code()->closure = tctx_.cur;
                     code.code()->isMethod = true;
-                    code.code()->declFile = declFileNow();
+                    code.code()->declFile = declFileNowI();
                     code.code()->declLine = md->line;
                     if (md->params.empty()) code.code()->placeholders = computePlaceholders(md->body);
                     return code;
@@ -5973,7 +5989,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
                 code.code()->pod = md->pod; code.code()->podTrail = md->podTrail;
                 if (md->deprecated) code.code()->deprecated = deprecationFor(md.get());
-                code.code()->declFile = declFileNow();
+                code.code()->declFile = declFileNowI();
                 code.code()->declLine = md->line;
                 code.code()->isStub = stmtIsStub(md->body);
                 for (auto& st : md->traits) if (st.name == "default") code.code()->isDefaultCand = true;

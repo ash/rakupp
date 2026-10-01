@@ -186,7 +186,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
             if (!ci->second->methods.count(be->termName)) ci->second->methods[be->termName] = code;
         }
     }
-    code.code()->declFile = declFileNow();
+    code.code()->declFile = declFileNowI();
     code.code()->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
     // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
     // `()` and only a bare `{;}` gets the implicit `$_`
