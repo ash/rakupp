@@ -8533,15 +8533,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // …and `.VAR` of a mixin is the mixin itself: `(5 but R).VAR` is an Int+{R}
             "VAR"};
         if (!keepOnObj.count(m)) {
-            Value r = methodCall(inv.obj()->boxed, m, args, rwArgs);
+            Value r = methodCall(inv.obj()->boxed(), m, args, rwArgs);
             // …and a subclassed Promise's `.then` is one of the subclass too
             // (S17-promise/basic.t: `class Meows is Promise`)
             if (m == "then" && r.t == VT::Hash && r.hashKind == "Promise" &&
-                inv.obj()->boxed.t == VT::Hash && inv.obj()->boxed.hashKind == "Promise") {
+                inv.obj()->boxed().t == VT::Hash && inv.obj()->boxed().hashKind == "Promise") {
                 auto od = makePayload<ObjectData>();
                 od->cls = inv.obj()->cls;
                 od->hasBoxed = true;
-                od->boxed = r;
+                od->boxed() = r;
                 return Value::object(od);
             }
             return r;

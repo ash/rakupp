@@ -371,7 +371,7 @@ long long Value::toInt() const {
         // done this, and a numeric context has the same answer to give. Without
         // it BSON::Simple's `$buf.write-int64($pos, $_)` on an Int64 wrote 0.
         case VT::Object:
-            return obj() && obj()->hasBoxed ? obj()->boxed.toInt() : 0;
+            return obj() && obj()->hasBoxed ? obj()->boxed().toInt() : 0;
         default: return 0;
     }
 }
@@ -462,7 +462,7 @@ double Value::toNum() const {
             if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateNumeric(*this);
             return (double)toInt();
         case VT::Object:   // as in toInt: a boxed built-in numifies as its box
-            return obj() && obj()->hasBoxed ? obj()->boxed.toNum() : 0.0;
+            return obj() && obj()->hasBoxed ? obj()->boxed().toNum() : 0.0;
         default: return (double)toInt();
     }
 }
@@ -769,7 +769,7 @@ std::string Value::toStr() const {
                             : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
-            if (obj() && obj()->hasBoxed) return obj()->boxed.toStr(); // but/does mixin over a value
+            if (obj() && obj()->hasBoxed) return obj()->boxed().toStr(); // but/does mixin over a value
             if (obj() && obj()->cls && obj()->cls->name.rfind("X::", 0) == 0) { // exceptions stringify to their message
                 auto it = obj()->attrs.find("message");
                 if (it != obj()->attrs.end() && it->second.t == VT::Str) return it->second.s;
@@ -1617,7 +1617,7 @@ bool objectStructEqv(const Value& a, const Value& b,
     ++g_objEqDepth;
     bool ok = true;
     if (a.obj()->hasBoxed != b.obj()->hasBoxed) ok = false;
-    else if (a.obj()->hasBoxed && !eq(a.obj()->boxed, b.obj()->boxed)) ok = false;
+    else if (a.obj()->hasBoxed && !eq(a.obj()->boxed(), b.obj()->boxed())) ok = false;
     else if (a.obj()->attrs.size() != b.obj()->attrs.size()) ok = false;
     else for (auto& kv : a.obj()->attrs) {
         auto it = b.obj()->attrs.find(kv.first);

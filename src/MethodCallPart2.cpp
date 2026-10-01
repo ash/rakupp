@@ -685,7 +685,7 @@ int Interpreter::probeMethodExists(const Value& inv, const std::string& mn, cons
 // nameds. The boxed-builtin constructors (`class D is DateTime`, SubDate.now)
 // used stripped copies of this walk with NONE of that — `has $.b = $!a * 2`
 // died "no self available" and providedArgs-order was never honoured
-// (REVIEW-3.7 finding 6). Box od->boxed BEFORE calling: parents construct
+// (REVIEW-3.7 finding 6). Box od->boxed() BEFORE calling: parents construct
 // first, so a default may read the boxed parent through self.
 // Assigning Nil RESETS a container to its default — that is what Nil is for,
 // and it holds for an attribute initialised by name as much as for `$x = Nil`
@@ -1198,7 +1198,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                     auto mixed = makePayload<ObjectData>();
                     mixed->cls = at.containerProto.obj()->cls;
                     mixed->attrs = at.containerProto.obj()->attrs;
-                    mixed->boxed = dv;
+                    mixed->boxed() = dv;
                     mixed->hasBoxed = true;
                     dv = Value(); dv.t = VT::Object; dv.setObj(mixed);
                 }
@@ -1327,7 +1327,7 @@ static Value containerPlaceholder(ValueMap& h) {
     bc->nativeParent = kind;
     auto od = makePayload<ObjectData>();
     od->cls = bc;
-    if (kind[0] != 'S') { od->boxed = kind[0] == 'A' ? Value::array() : Value::makeHash(); od->hasBoxed = true; }
+    if (kind[0] != 'S') { od->boxed() = kind[0] == 'A' ? Value::array() : Value::makeHash(); od->hasBoxed = true; }
     Value c; c.t = VT::Object; c.setObj(od);
     h[ATTR_CONTAINER_KEY] = c;
     return c;
@@ -5923,7 +5923,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             // The storage is shared, so a write through the
                             // stripped view still lands in the object.
                             if (in2.t == VT::Object && in2.obj() && in2.obj()->hasBoxed)
-                                { Value unboxed = in2.obj()->boxed; in2 = std::move(unboxed); }
+                                { Value unboxed = in2.obj()->boxed(); in2 = std::move(unboxed); }
                             if (in2.t == VT::Hash || in2.t == VT::Array) {
                                 Value plain = in2;
                                 plain.hashKind = nativeBase;   // "" = the plain built-in
@@ -6866,7 +6866,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return self;
                 }
                 // A class subclassing a native container (`class A is Array`): the
-                // instance is an object backed by a native Array/Hash (via ObjectData.boxed),
+                // instance is an object backed by a native Array/Hash (via ObjectData.boxed()),
                 // so it indexes/pushes natively while .WHAT answers the user type.
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
@@ -6892,7 +6892,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         od->cls = ci; od->hasBoxed = true;
                         ValueList na{pos.size() > 0 ? pos[0] : Value::integer(0),
                                      pos.size() > 1 ? pos[1] : Value::integer(1)};
-                        od->boxed = methodCall(Value::typeObj("Rat"), "new", na);
+                        od->boxed() = methodCall(Value::typeObj("Rat"), "new", na);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
@@ -6934,7 +6934,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // built from the args, so .elems/.keys/{k} dispatch to it
                         auto od = makePayload<ObjectData>();
                         od->cls = ci; od->hasBoxed = true;
-                        od->boxed = methodCall(Value::typeObj(nb), "new", args);
+                        od->boxed() = methodCall(Value::typeObj(nb), "new", args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
                         maybeRegisterDestroy(self);
@@ -6964,7 +6964,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (auto& arg : args)
                             if (arg.t == VT::Pair && !ci->findAttr(arg.s))
                                 (*meta.hash())[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::boolean(true);
-                        od->boxed = std::move(meta);
+                        od->boxed() = std::move(meta);
                         // …and the attributes are bound from the args, the way every
                         // other built-in-backed construction does it (see the
                         // IO::Path and DateTime arms below).
@@ -6988,14 +6988,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
                         if (builtinArgs.empty()) {
-                            if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
-                            else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
+                            if (nb == "Hash" || nb == "Map") od->boxed() = Value::makeHash();
+                            else { od->boxed() = Value::array(); od->boxed().isList = (nb == "List"); }
                         }
                         else {
-                            od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
-                            od->boxed.itemized = false;
+                            od->boxed() = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                            od->boxed().itemized = false;
                         }
-                        od->boxed.ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
+                        od->boxed().ofTypeM() = inv.ofType(); // A[Int] -> element type on the box
                         // …and a class that FIXED its element type (`class A is
                         // Array[Int]`) puts that on the box, and the elements it
                         // is built from are stores into it: `A.new("x")` is
@@ -7003,16 +7003,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (inv.ofType().empty() && (nb == "Array" || nb == "Hash")) {
                             for (ClassInfo* c = ci.get(); c; c = c->parent.get())
                                 if (!c->nativeParent.empty()) {
-                                    if (!c->nativeOf.empty()) od->boxed.ofTypeM() = c->nativeOf;
+                                    if (!c->nativeOf.empty()) od->boxed().ofTypeM() = c->nativeOf;
                                     break;
                                 }
-                            if (!od->boxed.ofType().empty()) {
-                                const std::string want = elemTypeOf(od->boxed);
+                            if (!od->boxed().ofType().empty()) {
+                                const std::string want = elemTypeOf(od->boxed());
                                 if (!want.empty()) {
-                                    if (od->boxed.t == VT::Array && od->boxed.arr())
-                                        for (auto& el : *od->boxed.arr()) checkElemType(want, el, "");
-                                    else if (od->boxed.t == VT::Hash && od->boxed.hash())
-                                        for (auto& kv : *od->boxed.hash()) checkElemType(want, kv.second, "");
+                                    if (od->boxed().t == VT::Array && od->boxed().arr())
+                                        for (auto& el : *od->boxed().arr()) checkElemType(want, el, "");
+                                    else if (od->boxed().t == VT::Hash && od->boxed().hash())
+                                        for (auto& kv : *od->boxed().hash()) checkElemType(want, kv.second, "");
                                 }
                             }
                         }
@@ -7058,7 +7058,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         ValueList builtinArgs;
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
-                        od->boxed = methodCall(Value::typeObj("Promise"), "new", builtinArgs);
+                        od->boxed() = methodCall(Value::typeObj("Promise"), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
@@ -7070,7 +7070,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         ValueList builtinArgs;
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s))) builtinArgs.push_back(a);
-                        od->boxed = methodCall(Value::typeObj("IO::Path"), "new", builtinArgs);
+                        od->boxed() = methodCall(Value::typeObj("IO::Path"), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
@@ -7089,7 +7089,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // as in Rakudo's BUILDPLAN), then the ONE attribute walk —
                         // the stripped copy here had no `self` in scope and no
                         // provided-args-during-walk, so `has $.b = $!a * 2` died
-                        od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                        od->boxed() = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
@@ -7108,7 +7108,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && a.namedArg && ci->findAttr(a.s)))
                                 builtinArgs.push_back(a);
-                        od->boxed = methodCall(Value::typeObj("Pair"), "new", builtinArgs);
+                        od->boxed() = methodCall(Value::typeObj("Pair"), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
@@ -7139,7 +7139,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         ValueList builtinArgs;   // attribute pairs stay with the object
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
-                        od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                        od->boxed() = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
                         runBuildChain(ci.get(), self, args);
@@ -7202,7 +7202,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& a : args)
                         if (a.t == VT::Pair && a.s == "value" && a.pairVal()) {
                             od->hasBoxed = true;
-                            od->boxed = *a.pairVal();
+                            od->boxed() = *a.pairVal();
                             break;
                         }
                 // the checks below walk it too — on the stack, since it is one or
@@ -7388,7 +7388,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
                     if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date" ||
                                             r.hashKind == "Promise")) {
-                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
+                        auto od = makePayload<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed() = r;
                         // the ONE attribute walk (the stripped copy here had no
                         // `self` in scope); `.now`'s args are the built-in's, so
                         // none feed attributes
@@ -9040,8 +9040,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // is used exactly this way (`Date.new(…) does Date::Calendar::Strftime`),
         // gates %u and %V on `.can('day-of-week')`, and emitted the specifier.
         if (out.arr()->empty() && inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed &&
-            inv.obj()->boxed.t != VT::Object)
-            return methodCall(inv.obj()->boxed, "can", ValueList{args});
+            inv.obj()->boxed().t != VT::Object)
+            return methodCall(inv.obj()->boxed(), "can", ValueList{args});
         return out;
     }
     if (inv.t == VT::Type && m == "raku") { // Int.raku -> "Int" (no parens)
@@ -9531,8 +9531,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // native-container subclass instance parameterized as A[Int]
         if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
-            !inv.obj()->boxed.ofType().empty()) {
-            Value ty = Value::typeObj(inv.obj()->cls->name); ty.ofTypeM() = inv.obj()->boxed.ofType(); return ty;
+            !inv.obj()->boxed().ofType().empty()) {
+            Value ty = Value::typeObj(inv.obj()->cls->name); ty.ofTypeM() = inv.obj()->boxed().ofType(); return ty;
         }
         return Value::typeObj(inv.typeName());
     }

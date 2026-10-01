@@ -1645,8 +1645,8 @@ Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname,
         }
         if (allElems) {
             // …then the built-ins': List's for a class built on one, and Any's
-            const bool onList = inv.obj()->hasBoxed && listBuiltIn(inv.obj()->boxed);
-            if (onList) l.arr()->push_back(methodCall(inv.obj()->boxed, "elems", ValueList{}));
+            const bool onList = inv.obj()->hasBoxed && listBuiltIn(inv.obj()->boxed());
+            if (onList) l.arr()->push_back(methodCall(inv.obj()->boxed(), "elems", ValueList{}));
             if (any || onList) {
                 l.arr()->push_back(anyElems(inv, onList));
                 return l;
@@ -2278,7 +2278,7 @@ void Interpreter::drainIfFiniteLazy(const Value& v) {
 Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
     // a `but`/`does` mixin over a Hash/Array delegates subscripting to the box
     if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed)
-        return idxW(base.obj()->boxed, std::move(key), isHash);
+        return idxW(base.obj()->boxed(), std::move(key), isHash);
     // @a[*-1] / @a[*] against an infinite lazy array can't know the end
     if (base.t == VT::Array && base.ext() && std::static_pointer_cast<LazySeqState>(base.ext())->infinite
         && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode)))
@@ -5387,10 +5387,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // object's own address as the pointer — libz dereferenced that and the
         // process died inside `inflate`.
         if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
-            v.obj()->boxed.t == VT::Str &&
-            (v.obj()->boxed.hashKind == "Buf" || v.obj()->boxed.hashKind == "Blob" ||
-             v.obj()->boxed.hashKind == "utf8"))
-            { Value unboxed = v.obj()->boxed; v = std::move(unboxed); }
+            v.obj()->boxed().t == VT::Str &&
+            (v.obj()->boxed().hashKind == "Buf" || v.obj()->boxed().hashKind == "Blob" ||
+             v.obj()->boxed().hashKind == "utf8"))
+            { Value unboxed = v.obj()->boxed(); v = std::move(unboxed); }
         NcSlot& s = slots[i];
         const Param* p = (prm && i >= pOff && i - pOff < prm->size()) ? &(*prm)[i - pOff] : nullptr;
         std::string pt = p ? p->type : "";

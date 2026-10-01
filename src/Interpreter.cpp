@@ -4893,7 +4893,7 @@ Value Interpreter::applyVarTrait(const std::string& var, const std::string& trai
     auto mixed = makePayload<ObjectData>();
     mixed->cls = ci->second.obj()->cls;
     mixed->attrs = ci->second.obj()->attrs;
-    mixed->boxed = *slot;
+    mixed->boxed() = *slot;
     mixed->hasBoxed = true;
     Value nv; nv.t = VT::Object; nv.setObj(mixed);
     *slot = nv;

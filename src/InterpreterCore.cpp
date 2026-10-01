@@ -5483,7 +5483,7 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                 for (ClassInfo* ci = arg.obj() ? arg.obj()->cls.get() : nullptr; ci; ci = ci->parent.get())
                     if (ci->name == q || ci->doneRoles.count(q)) return true;
             // a subclass of a built-in (`class F is DateTime`) matches the built-in
-            if (arg.obj() && arg.obj()->hasBoxed) return typeMatchesArg(arg.obj()->boxed, type);
+            if (arg.obj() && arg.obj()->hasBoxed) return typeMatchesArg(arg.obj()->boxed(), type);
             // every X::* is an Exception — the rule `~~` already applies. A
             // built-in exception the engine instantiated (X::Method::NotFound
             // from a failed call) may carry no parent chain, so `Exception
@@ -6999,8 +6999,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // a `but`-mixin over a Code stays callable — the mixin adds methods,
             // the boxed code is still what gets invoked (Log::Async wraps its
             // formatter `but role { method is-hidden-from-backtrace {…} }`)
-            if (codeVal.obj()->hasBoxed && codeVal.obj()->boxed.t == VT::Code)
-                return callCallable(codeVal.obj()->boxed, std::move(args), rwArgs);
+            if (codeVal.obj()->hasBoxed && codeVal.obj()->boxed().t == VT::Code)
+                return callCallable(codeVal.obj()->boxed(), std::move(args), rwArgs);
         }
         // an ENUM VALUE is callable like its type: `WARNING(TRACE)` coerces via
         // Loglevels(…) — a same-type arg passes through, else match by value or
@@ -8867,7 +8867,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
             else if (name == "new" || name == "bless" || name == "CREATE")
                 binv = Value::typeObj(nb);
             else if (binv.t == VT::Object && binv.obj() && binv.obj()->hasBoxed)
-                { Value unboxed = binv.obj()->boxed; binv = std::move(unboxed); }                        // instance → its builtin box
+                { Value unboxed = binv.obj()->boxed(); binv = std::move(unboxed); }                        // instance → its builtin box
             // A user object with no builtin box is redispatched ON ITSELF, so the
             // invocant's OWN methods have to be stepped over or the redispatch
             // lands back on the method that asked for it. `class E is Exception {
@@ -8890,7 +8890,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
                 auto od = makePayload<ObjectData>();
                 od->cls = classes_[clsName];
                 od->hasBoxed = true;
-                od->boxed = r;
+                od->boxed() = r;
                 Value wrapped = Value::object(od);
                 runAttrDefaults(od, od->cls, na);
                 return wrapped;
@@ -10275,8 +10275,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // …and so is an instance of a class built on one (`class R is Set`),
             // whose quanthash is boxed: `self{$k} = True` in its method dies too
             if (base->t == VT::Object && base->obj() && base->obj()->hasBoxed &&
-                base->obj()->boxed.t == VT::Hash) {
-                const Value& bx = base->obj()->boxed;
+                base->obj()->boxed().t == VT::Hash) {
+                const Value& bx = base->obj()->boxed();
                 if (bx.hashKind == "Set" || bx.hashKind == "Bag" || bx.hashKind == "Mix")
                     throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable " + std::string(base->obj()->cls ? base->obj()->cls->name : bx.hashKind.str()) +
@@ -10324,9 +10324,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // which is where `callsame` just found it. (A Proxy still routes
                 // through the held copy, as the comment above says.)
                 if (!(atKeyHold.t == VT::Hash && atKeyHold.hashKind == "Proxy") &&
-                    base->obj()->hasBoxed && base->obj()->boxed.t == VT::Hash &&
-                    base->obj()->boxed.hash())
-                    return &(*base->obj()->boxed.hash())[hashSubKey(k, &base->obj()->boxed)];
+                    base->obj()->hasBoxed && base->obj()->boxed().t == VT::Hash &&
+                    base->obj()->boxed().hash())
+                    return &(*base->obj()->boxed().hash())[hashSubKey(k, &base->obj()->boxed())];
                 return &atKeyHold;
             }
             // …or a DELEGATED one: `has Callable %!Conversions{Mu:U} handles
@@ -10446,10 +10446,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `class Vector is Array` with no AT-POS of its own: the element IS
             // a slot of the Array it boxes (`method z() is rw { self[2] }`)
             if (base->t == VT::Object && base->obj() && base->obj()->cls &&
-                base->obj()->hasBoxed && base->obj()->boxed.t == VT::Array &&
-                base->obj()->boxed.arr() && !base->obj()->cls->findMethod("AT-POS") &&
+                base->obj()->hasBoxed && base->obj()->boxed().t == VT::Array &&
+                base->obj()->boxed().arr() && !base->obj()->cls->findMethod("AT-POS") &&
                 idx->index && idx->adverb.empty() && !idx->multiDim) {
-                auto arr = base->obj()->boxed.arrS();
+                auto arr = base->obj()->boxed().arrS();
                 Value kv = eval(idx->index.get());
                 if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
                     kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
@@ -10500,9 +10500,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // one of its classes stored into a temporary and the tied
                 // accessor beside it then read past the end.
                 if (!(atPosHold.t == VT::Hash && atPosHold.hashKind == "Proxy") &&
-                    base->obj()->hasBoxed && base->obj()->boxed.t == VT::Array &&
-                    base->obj()->boxed.arr()) {
-                    auto arr = base->obj()->boxed.arrS();
+                    base->obj()->hasBoxed && base->obj()->boxed().t == VT::Array &&
+                    base->obj()->boxed().arr()) {
+                    auto arr = base->obj()->boxed().arrS();
                     Value kv = k;
                     if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
@@ -13041,8 +13041,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // mixin, as in Rakudo (see spliceStr)
             Value* mixinSlot = nullptr; Value mixinText;
             if (bp && bp->t == VT::Object && bp->obj() && bp->obj()->hasBoxed && !bp->readonly &&
-                bp->obj()->boxed.t == VT::Str && bp->obj()->boxed.hashKind.empty()) {
-                mixinSlot = bp; mixinText = bp->obj()->boxed; bp = &mixinText;
+                bp->obj()->boxed().t == VT::Str && bp->obj()->boxed().hashKind.empty()) {
+                mixinSlot = bp; mixinText = bp->obj()->boxed(); bp = &mixinText;
             }
             if (bp && bp->t == VT::Str && bp->hashKind.empty()) {
                 // GRAPHEME index -> byte offset. Counting codepoints here spliced
@@ -14810,8 +14810,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // initialiser — AccountableBagHash's first assertion, with EERPG
             // waiting behind it. (A class WITH a STORE is handled further up.)
             if (opEq(a->op, "=") && lv->t == VT::Object && lv->obj() && lv->obj()->hasBoxed &&
-                lv->obj()->boxed.t == VT::Hash) {
-                Value& box = lv->obj()->boxed;
+                lv->obj()->boxed().t == VT::Hash) {
+                Value& box = lv->obj()->boxed();
                 Value nv = coerceHash(rhs, /*store=*/true, box.objKeyed);
                 if (nv.hash() && box.hash()) *box.hash() = *nv.hash();
                 else if (nv.hash()) { auto kind = box.hashKind; box = nv; box.hashKind = kind; }
@@ -15984,8 +15984,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // value — but identity/smartmatch/type ops must still see the object itself.
     if (!opEq(op, "~~") && !opEq(op, "!~~") && !opEq(op, "===") && !opEq(op, "!==") && !opEq(op, "!===") && !opEq(op, "=:=") &&
         ((l.t == VT::Object && l.obj() && l.obj()->hasBoxed) || (r.t == VT::Object && r.obj() && r.obj()->hasBoxed))) {
-        Value lu = (l.t == VT::Object && l.obj() && l.obj()->hasBoxed) ? l.obj()->boxed : l;
-        Value ru = (r.t == VT::Object && r.obj() && r.obj()->hasBoxed) ? r.obj()->boxed : r;
+        Value lu = (l.t == VT::Object && l.obj() && l.obj()->hasBoxed) ? l.obj()->boxed() : l;
+        Value ru = (r.t == VT::Object && r.obj() && r.obj()->hasBoxed) ? r.obj()->boxed() : r;
         Value res = applyArith(op, lu, ru);
         // a LEFT operand of a class built on a quanthash (`class Foo is Bag`)
         // keeps its class when a set op answers the kind it boxes: Foo (+) Foo
@@ -15994,7 +15994,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             lu.t == VT::Hash && !lu.hashKind.empty() && res.t == VT::Hash && lu.hashKind == res.hashKind) {
             auto od = makePayload<ObjectData>();
             od->cls = l.obj()->cls; od->hasBoxed = true;
-            od->boxed = std::move(res);
+            od->boxed() = std::move(res);
             return Value::object(od);
         }
         return res;
@@ -20878,7 +20878,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // `AA does role { method m { … } }; AA.m` (Rakudo mixes into the constant)
             else if (k == NK::NameTerm && tctx_.cur) {
                 const std::string nm = static_cast<NameTerm*>(b->lhs.get())->name;
-                const Value& boxed = res.obj()->boxed;
+                const Value& boxed = res.obj()->boxed();
                 if (Value* slot = tctx_.cur->find(nm)) *slot = res;
                 if (!boxed.enumType.empty())
                     if (Value* q = tctx_.cur->find(std::string(boxed.enumType.str()) + "::" + nm)) *q = res;
@@ -21993,10 +21993,10 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; return a; } // @<undefined> = ()
             // an object that IS an array (`class Vector is Array`): its elements,
             // unless its class says how it lists
-            if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed.t == VT::Array &&
-                v.obj()->boxed.arr() && v.obj()->cls && !v.obj()->cls->findMethod("list") &&
+            if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed().t == VT::Array &&
+                v.obj()->boxed().arr() && v.obj()->cls && !v.obj()->cls->findMethod("list") &&
                 !v.obj()->cls->findMethod("iterator")) {
-                Value a = Value::array(*v.obj()->boxed.arr());
+                Value a = Value::array(*v.obj()->boxed().arr());
                 return a;
             }
             // one-level list context: an array yields its top-level elements (nested
@@ -23102,9 +23102,9 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // it. (A hash-backed BUILT-IN — DateTime, Proxy, Set — is a VT::Hash
             // with a hashKind and is still left alone, for the reason above.)
             else if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
-                     v.obj()->boxed.t == VT::Hash && v.obj()->boxed.hash() &&
-                     v.obj()->boxed.hashKind.empty()) {
-                for (auto& kv : *v.obj()->boxed.hash()) {
+                     v.obj()->boxed().t == VT::Hash && v.obj()->boxed().hash() &&
+                     v.obj()->boxed().hashKind.empty()) {
+                for (auto& kv : *v.obj()->boxed().hash()) {
                     Value p = Value::pair(kv.first, kv.second); p.namedArg = true;
                     args.push_back(std::move(p));
                 }
@@ -24883,7 +24883,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // and skipped the class's own AT-KEY: `class Tied is Hash { method AT-KEY …}`
     // answered from the empty box, and PDF's dictionaries — which resolve
     // indirect references in AT-KEY — read nothing at all through `self<Key>`.
-    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) { Value unboxed = base.obj()->boxed; base = std::move(unboxed); }
+    if (base.t == VT::Object && base.obj() && base.obj()->hasBoxed) { Value unboxed = base.obj()->boxed(); base = std::move(unboxed); }
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
     //

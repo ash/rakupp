@@ -663,9 +663,9 @@ Value Interpreter::iterationSourceOf(Value v) {
     // a class built on an Array or a Hash (`class A is Array`) iterates the
     // container it boxes: `for self { … }` in its method walks the elements
     if (!itm && v.obj()->hasBoxed && !v.itemized &&
-        ((v.obj()->boxed.t == VT::Array && v.obj()->boxed.arr() && v.obj()->boxed.enumType.empty()) ||
-         (v.obj()->boxed.t == VT::Hash && v.obj()->boxed.hash() && v.obj()->boxed.hashKind.empty())))
-        return v.obj()->boxed;
+        ((v.obj()->boxed().t == VT::Array && v.obj()->boxed().arr() && v.obj()->boxed().enumType.empty()) ||
+         (v.obj()->boxed().t == VT::Hash && v.obj()->boxed().hash() && v.obj()->boxed().hashKind.empty())))
+        return v.obj()->boxed();
     if (!itm) return v;
     ValueList none;
     Value it = invokeMethod(*itm, v, none);
@@ -1538,8 +1538,8 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
 // `$t.substr-rw(1, 1) = "c"` leaves a Str+{R} holding "acd". A fresh object,
 // though — another holder of the old value keeps the old text.
 Value Interpreter::spliceStr(const Value& s, long long from, long long len, const Value& repl) {
-    const bool mixin = s.t == VT::Object && s.obj() && s.obj()->hasBoxed && s.obj()->boxed.t == VT::Str;
-    Value text = mixin ? s.obj()->boxed : s;
+    const bool mixin = s.t == VT::Object && s.obj() && s.obj()->hasBoxed && s.obj()->boxed().t == VT::Str;
+    Value text = mixin ? s.obj()->boxed() : s;
     long long n = methodCall(text, "chars", ValueList{}).toInt();
     long long f = std::min(from, n), e = len < 0 ? n : std::min(n, from + len);
     std::string out = methodCall(text, "substr", ValueList{Value::integer(0), Value::integer(f)}).toStr()
@@ -1549,7 +1549,7 @@ Value Interpreter::spliceStr(const Value& s, long long from, long long len, cons
     auto od = makePayload<ObjectData>();
     od->cls = s.obj()->cls;
     od->attrs = s.obj()->attrs;
-    od->boxed = Value::str(out);
+    od->boxed() = Value::str(out);
     od->hasBoxed = true;
     Value nv = s;
     nv.setObj(od);
@@ -1570,7 +1570,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
         Value s = cur(I);
-        if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed;
+        if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed();
         ValueList sa{Value::integer(from)};
         if (len >= 0) sa.push_back(Value::integer(len));
         return I.methodCall(s, "substr", sa);

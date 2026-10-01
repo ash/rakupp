@@ -1717,8 +1717,26 @@ struct ObjectData {
     ValueMap attrs;
     // For a `but`/`does` mixin over a non-object base (`5 but Role`, `{} does R`):
     // the original value is kept here and the object delegates coercions,
-    // operators, and unfound methods to it.
-    Value boxed;
+    // operators, and unfound methods to it — and for a class deriving a
+    // built-in (`class D is Int`). Behind a pointer, allocated on first use,
+    // so the objects that box nothing (nearly all of them) carry 8 bytes where
+    // they carried an 80-byte Value. Copying an ObjectData copies the value.
+    struct BoxedSlot {
+        std::unique_ptr<Value> p;
+        BoxedSlot() = default;
+        BoxedSlot(const BoxedSlot& o) : p(o.p ? std::make_unique<Value>(*o.p) : nullptr) {}
+        BoxedSlot& operator=(const BoxedSlot& o) {
+            if (this != &o) p = o.p ? std::make_unique<Value>(*o.p) : nullptr;
+            return *this;
+        }
+        BoxedSlot(BoxedSlot&&) noexcept = default;
+        BoxedSlot& operator=(BoxedSlot&&) noexcept = default;
+    } boxedSlot;
+    Value& boxed() { if (!boxedSlot.p) boxedSlot.p = std::make_unique<Value>(); return *boxedSlot.p; }
+    const Value& boxed() const {
+        static const Value kNone;
+        return boxedSlot.p ? *boxedSlot.p : kNone;
+    }
     bool hasBoxed = false;
     // `monitor` instances: one reentrant lock per object, held around every
     // method call (created lazily by invokeMethod's guard). Reentrant, so a

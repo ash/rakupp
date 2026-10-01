@@ -4425,7 +4425,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // tagged needle) is a Str with a role on it: its box is the string
                 bool ok = bt == "str" ? (v.t == VT::Str || v.isAllomorph() || // an allomorph's Str side
                                          (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
-                                          v.obj()->boxed.t == VT::Str))
+                                          v.obj()->boxed().t == VT::Str))
                         : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
                         : (v.t == VT::Int || v.t == VT::Bool);
                 // X::TypeCheck with the offending value, as Rakudo's native

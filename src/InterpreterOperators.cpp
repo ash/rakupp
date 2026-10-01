@@ -177,7 +177,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             auto nd = makePayload<ObjectData>();
             nd->cls = obj->cls;
             nd->attrs = obj->attrs;
-            nd->boxed = obj->boxed;
+            nd->boxed() = obj->boxed();
             nd->hasBoxed = obj->hasBoxed;
             obj = nd;
         }
@@ -185,7 +185,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
         // non-object base (`5 but Role`, `{} does R`): box the value so the mixed
         // object still coerces / dispatches to it. `does`/`but` are both copies here.
         obj = makePayload<ObjectData>();
-        obj->boxed = base;
+        obj->boxed() = base;
         obj->hasBoxed = true;
         // `True but False`: the mixed-in Bool is what the value now IS in every
         // coercion — Rakudo answers 0, "False" and False for +, ~ and ? (only
@@ -193,7 +193,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
         // box underneath kept stringifying as "True" (integration/advent2010-day19.t).
         if (base.t == VT::Bool)
             for (auto& vm : valueMixins)
-                if (vm.t == VT::Bool) obj->boxed = Value::boolean(vm.b);
+                if (vm.t == VT::Bool) obj->boxed() = Value::boolean(vm.b);
         // A TYPE OBJECT of a class we know derives from THAT class, so its own
         // methods and grammar rules survive the mixin (`Base but GR` has to keep
         // parsing with Base's rules). Only an unknown/builtin type gets the bare
@@ -574,7 +574,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         // …and a class deriving a built-in numifies as the value it BOXES:
         // `+Int64.new(-42)` is -42, not the object's address.
         if (v.obj()->hasBoxed) {
-            Value b = v.obj()->boxed;
+            Value b = v.obj()->boxed();
             ValueList none;
             Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
             if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
@@ -1773,9 +1773,9 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     // string itself, so `say ("v" but R)` is "v" and the role's Str is only
     // reached by asking for it. The two differ upstream and were one branch here.
     if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->cls &&
-        v.obj()->boxed.t != VT::Str)
+        v.obj()->boxed().t != VT::Str)
         if (Value* m = v.obj()->cls->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
-    if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed) return gistOf(v.obj()->boxed);
+    if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed) return gistOf(v.obj()->boxed());
     // Rakudo's default gist for a hookless object IS its .raku — the same string,
     // byte for byte. Ours were two hand-written renderers that disagreed four ways:
     // .raku walked no parents (so it silently DROPPED every inherited attribute and
@@ -1792,7 +1792,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
 // number) is not one and must keep going through `.Str`.
 bool Interpreter::strishValue(const Value& v, std::string& out) {
     if (v.t != VT::Object || !v.obj() || !v.obj()->hasBoxed) return false;
-    const Value& b = v.obj()->boxed;
+    const Value& b = v.obj()->boxed();
     if (b.t != VT::Str) return false;
     out = b.s;
     return true;
@@ -1911,7 +1911,7 @@ std::string Interpreter::strOf(const Value& v) {
         if (Value* m = v.obj()->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         auto mit = v.obj()->attrs.find("message");
         if (mit != v.obj()->attrs.end()) return strOf(mit->second);
-        if (v.obj()->hasBoxed) return strOf(v.obj()->boxed);
+        if (v.obj()->hasBoxed) return strOf(v.obj()->boxed());
         // A class that does the built-in SEQUENCE role stringifies as its
         // elements do (Sequence's `Str` is `self.cache.Str`): Red's ResultSeq
         // is one, and `is $rs.map(*.col), (10, 20, 30)` compares that string.

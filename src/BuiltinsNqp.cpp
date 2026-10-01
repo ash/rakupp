@@ -526,7 +526,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             auto od = makePayload<ObjectData>();
             od->cls = it->second;
             od->hasBoxed = true;
-            od->boxed = n->op == O::BoxI ? Value::integer(v[0].toInt())
+            od->boxed() = n->op == O::BoxI ? Value::integer(v[0].toInt())
                       : n->op == O::BoxN ? Value::number(v[0].toNum())
                                          : Value::str(v[0].toStr());
             return Value::object(od);

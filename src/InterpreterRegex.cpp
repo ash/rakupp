@@ -3030,8 +3030,8 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     // an object that IS an array (`class Vector is Array`) hypers over the
     // elements it boxes
     auto unboxList = [](Value& v) {
-        if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed.t == VT::Array)
-            { Value unboxed = v.obj()->boxed; v = std::move(unboxed); }
+        if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed().t == VT::Array)
+            { Value unboxed = v.obj()->boxed(); v = std::move(unboxed); }
     };
     unboxList(l); unboxList(r);
     forceLazy(l); forceLazy(r);   // a gather operand: its elements

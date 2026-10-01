@@ -270,6 +270,8 @@ In order of evidence per cost:
    `makePayload`. There are 83 `make_shared<Value>` sites that bypass the slab.
 5. **`ObjectData::boxed` behind a pointer.** It is 128 of the 280 bytes and is
    used only for mixins over non-objects.
+   *Done 2026-10-01:* a lazily allocated slot behind `ObjectData::boxed()`;
+   200k two-attribute objects 796 → 666 bytes each, perf-guard level.
 6. **Packed native arrays:** a payload of contiguous `int64`/`double` that boxes
    on read. It resolves the 26× row and SPEC-DIVERGENCES #14.
 7. **Split `Callable`** (664 bytes, plus a per-closure copy of the `declFile`

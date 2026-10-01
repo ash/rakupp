@@ -932,8 +932,8 @@ void Interpreter::registerBuiltinsPart5() {
             // a subclassed Promise (`class Meows is Promise`) is awaited through
             // the Promise it boxes
             if (p.t == VT::Object && p.obj() && p.obj()->hasBoxed &&
-                p.obj()->boxed.t == VT::Hash && p.obj()->boxed.hashKind == "Promise") {
-                Value inner = p.obj()->boxed;
+                p.obj()->boxed().t == VT::Hash && p.obj()->boxed().hashKind == "Promise") {
+                Value inner = p.obj()->boxed();
                 return resolve(inner);
             }
             // a NESTED list of awaitables is awaited all the way down
