@@ -70,6 +70,12 @@ P3 land.
 
 ### Memory (bytes per element; empty-program RSS is 7 MB for rakupp, 147 MB for Rakudo)
 
+*Re-measured 2026-10-01* (peak RSS above an empty program, after the 80-byte
+`Value`, the small ValueHash chunk and realloc growth): 200k objects 796,
+200k two-key hashes 886, 1M `my int @a` 83, 1M Ints 83, 1M Rats 485, 1M short
+Strs 163, 1M Int-keyed Pairs 582, 1M Str-keyed Pairs 276, 1M `[$_, $_+1]` 373,
+a 1M Int → Str hash 340. The table below is the 2026-09-26 survey.
+
 | workload | rakupp | Rakudo | ratio |
 |---|---:|---:|---:|
 | 200k two-attribute objects | 4,780 | 312–526 | **11×** |
@@ -191,7 +197,10 @@ Each item is gated alone, so its effect has a number:
     of snapshotting through `toList`
 - **Grow arrays by `realloc`** when `bitwiseRelocOk()` holds (ValueVec.h
   ~172–197; `growAndBuild` builds the new element first). A C probe halves
-  large arrays on macOS. Linux is not measured.
+  large arrays on macOS. Linux is not measured. *Done 2026-10-01:* blocks past
+  the pooled sizes come from malloc and grow by realloc; peak RSS per element
+  1M Ints 165 → 83, 1M short Strs 246 → 163, 1M Rats 568 → 485, 200k objects
+  894 → 796, 1M `[$_, $_+1]` 455 → 373; perf-guard level.
 - **Cache the "does it do Rational" answer** as a tri-state on `ClassInfo`
   (MethodCallPart2.cpp ~6174).
 - **Cache a class name's resolution** on its node, keyed by the symbol

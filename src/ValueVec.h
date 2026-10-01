@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
@@ -180,7 +181,12 @@ class RVec {
                 return reinterpret_cast<T*>(b);
             }
         }
-        return static_cast<T*>(::operator new(k * sizeof(T)));
+        if (k <= kPooled) return static_cast<T*>(::operator new(k * sizeof(T)));
+        // A block past the pooled sizes comes from malloc, so a grow can
+        // realloc it (canRealloc): see reseat.
+        void* m = std::malloc(k * sizeof(T));
+        if (!m) throw std::bad_alloc();
+        return static_cast<T*>(m);
     }
     static void dealloc(T* p, std::size_t cap) {
         if (!p) return;
@@ -193,8 +199,19 @@ class RVec {
                 bp.n[cap - 1]++;
                 return;
             }
+            ::operator delete(static_cast<void*>(p));
+            return;
         }
-        ::operator delete(static_cast<void*>(p));
+        std::free(static_cast<void*>(p));
+    }
+    // Whether the buffer can be grown in place by realloc: a malloc'd block
+    // (past the pooled sizes), not offset by a front removal, holding values
+    // that may move by memcpy. A large array then grows without a second
+    // block beside the first — the allocator extends or remaps it — where the
+    // copy-and-free left every superseded block resident on macOS, about 85
+    // bytes an element on a million-element array (V6-PLAN P1).
+    bool canRealloc(std::size_t k) const {
+        return d_ && off_ == 0 && c_ > kPooled && k > kPooled && bitwiseRelocOk();
     }
 
     // Move `k` elements from `src` to uninitialised `dst`, leaving `src`'s
@@ -218,6 +235,13 @@ class RVec {
 
     // Re-seat into a buffer of exactly `k` slots (k >= n_).
     RAKUPP_NOINLINE void reseat(std::size_t k) {
+        if (canRealloc(k)) {
+            void* m = std::realloc(static_cast<void*>(d_), k * sizeof(T));
+            if (!m) throw std::bad_alloc();
+            d_ = static_cast<T*>(m);
+            c_ = k;
+            return;
+        }
         T* nd = k ? alloc(k) : nullptr;
         relocate(nd, d_, n_);
         freeBuf();
@@ -528,6 +552,19 @@ private:
     template <class... A>
     RAKUPP_NOINLINE void growAndBuild(A&&... a) {
         std::size_t nc = nextCap(n_ + 1);
+        if (canRealloc(nc)) {
+            // built BEFORE the realloc, in raw storage: an argument may be a
+            // reference into this very buffer, which the realloc can move
+            alignas(T) unsigned char raw[sizeof(T)];
+            T* t = ::new (static_cast<void*>(raw)) T(std::forward<A>(a)...);
+            void* m = std::realloc(static_cast<void*>(d_), nc * sizeof(T));
+            if (!m) { t->~T(); throw std::bad_alloc(); }
+            d_ = static_cast<T*>(m);
+            c_ = nc;
+            std::memcpy(static_cast<void*>(d_ + n_), static_cast<const void*>(t), sizeof(T));   // relocated, not destroyed
+            n_++;
+            return;
+        }
         T* nd = alloc(nc);
         try {
             ::new (static_cast<void*>(nd + n_)) T(std::forward<A>(a)...);
