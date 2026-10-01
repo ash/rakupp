@@ -1091,544 +1091,6 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     return any;
 }
 
-int Interpreter::run(Program& prog) {
-    int code = 0;
-    bool crashed = false;
-    // The unit's revision is known from its text, so adopt it before a single
-    // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute
-    // was too late for anything hoisted — every sub in the unit is created
-    // before the mainline starts, and was being stamped 6.d.
-    langRev_ = prog.langRev;
-    // `$*RAKU` is ONE object for the process, and its version is the MAIN unit's
-    // — Rakudo answers the same revision inside a module whatever that module's
-    // own `use v6.…` says. langRev_ itself stays per-unit, because that is what
-    // gates the features; only the reported LANGUAGE version is pinned here.
-    // App::ModuleSnap defaults a parameter to `$*RAKU.version` inside a module
-    // written `use v6.*`, and the value it stored came back 6.e where its own
-    // suite expects the 6.d the test file is written in.
-    if (!mainLangRevSet_) { mainLangRev_ = prog.langRev; mainLangRevSet_ = true; }
-    // …and the pragma the parser recorded, BEFORE the subs below are hoisted:
-    // each one is stamped with it, and a routine declared under the pragma
-    // keeps the namespace open in its own body wherever it is called from.
-    if (prog.usesRakuAst) { rakuAstPragma_ = true; anyRevSwitch_ = true; rakuAstMaterialize(); }
-    if (prog.langRev != 1) anyRevSwitch_ = true;
-    unitPush(&prog);
-    struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
-    { // mainline sink warnings, printed before execution (Rakudo compile-time style)
-        bool noWorries = false;
-        for (auto& s : prog.stmts)
-            if (s->kind == NK::UseStmt) {
-                auto* us = static_cast<UseStmt*>(s.get());
-                if (us->isNo && (us->module == "worries" || us->module == "warnings")) noWorries = true;
-            }
-        if (!noWorries) {
-            std::vector<std::string> ws;
-            for (auto& s : prog.stmts) sinkWarnStmt(s.get(), false, ws);
-            for (auto& w : ws) std::cerr << w << "\n";
-        }
-    }
-    tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
-    {
-        Value args = Value::array();
-        for (auto& s : argv_) args.arr()->push_back(Value::str(s));
-        tctx_.cur->define("@*ARGS", args);
-    }
-    // Partition top-level phasers (BEGIN/CHECK/INIT run before the mainline).
-    // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
-    // are deferred here too rather than executed at their textual position. END
-    // is not partitioned at all: it is registered by the whole-unit walk below,
-    // wherever in the program it sits.
-    std::vector<Block*> beginP, checkP, initP, leaveP, enterP;
-    std::vector<Stmt*> mainline;
-    Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
-    Block* topControl = nullptr; // …and a mainline CONTROL is the outermost warn handler
-    for (auto& s : prog.stmts) {
-        if (s->kind == NK::Block) {
-            auto* b = static_cast<Block*>(s.get());
-            if (b->isCatch) {
-                // CATCH and CONTROL share the flag; the phaser tells them
-                // apart, and a CONTROL must not swallow real exceptions
-                if (b->phaser == "CONTROL") topControl = b;
-                else topCatch = b;
-                continue;
-            }
-            if (b->phaser == "BEGIN") { beginP.push_back(b); continue; }
-            if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
-            if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
-            // END: left in the mainline. The walk below registers it like any
-            // other, and reaching it only captures the mainline scope.
-            if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
-            if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
-                                      { leaveP.push_back(b); continue; }
-        }
-        mainline.push_back(s.get());
-    }
-    // Every INIT in the program, at any depth, in source order — including the
-    // top-level ones just skipped. See collectPhasersStmt: they run before the
-    // mainline, and their textual positions are then skipped.
-    for (auto& s : prog.stmts) collectPhasersStmt(s.get(), "INIT", initP, /*topLevel=*/true);
-    // …and every END, at any depth, in source order: they run at exit, in
-    // reverse. A nested run() (an installed `bin/` script) registers on top of
-    // its caller's, and takes only its own back off at the end.
-    const size_t endMark = endPhasers_.size();
-    EndUnitScope endUnit{*this};   // a nested run() (an installed `bin/` script) is a unit of its own
-    registerEnds(prog);
-    auto runPhaser = [&](Block* b) {
-        if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
-    };
-    // END phasers run in REVERSE SOURCE order, on any exit path — one order for
-    // the whole compilation, so a nested END takes its place among the
-    // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
-    // takes its place at the `use` that loaded it.
-    auto runEnds = [&]() {
-        // Dropped objects get their DESTROY before the ENDs, so an END block
-        // observes destructor effects; objects an END itself releases wait for
-        // a real process exit, like Rakudo's unguaranteed finalization.
-        try { runPendingDestroys(); } catch (...) {}
-        // Snapshot before running: ENDs run with the workers still alive (below),
-        // and both an EVAL on a worker and an END that EVALs an END of its own
-        // register into endPhasers_ while this runs — a reference into it would
-        // not survive the reallocation. The lock is never held across a phaser
-        // body, which would deadlock on the capture the body's own blocks make.
-        auto snapshotFrom = [&](size_t from) {
-            std::lock_guard<std::mutex> g(endPhaserMut_);
-            if (from >= endPhasers_.size()) return std::vector<EndPhaser>{};
-            return std::vector<EndPhaser>(endPhasers_.begin() + from, endPhasers_.end());
-        };
-        // What an END THREW is reported rather than lost. Rakudo runs every END
-        // whatever the ones before it did — a dying phaser does not stop the
-        // chain — and prints the exceptions together at the end, in the order
-        // they were thrown. Measured against Rakudo 2026.07, and three things
-        // about that report are deliberate: it goes to STDERR only, so nothing
-        // reading stdout moves; it does NOT touch the exit status, which stays
-        // whatever the mainline (or an `exit` in a phaser) made it, 0 included;
-        // and the banner is plural even for one exception.
-        std::vector<std::string> endErrors;
-        auto runOne = [&](const EndPhaser& e) {
-            try { runEndBody(e); }
-            catch (ExitEx& ex) {
-                code = ex.code;      // `exit` in an END block sets the exit status
-                // …and DISCARDS what the ENDs before it threw. Measured, not
-                // assumed: `END exit 3; END die "C"` runs C first and Rakudo
-                // reports nothing, while `END die "A"; END exit 3` runs the exit
-                // first and still reports A. This is the one place where copying
-                // Rakudo LOSES a diagnostic rather than gaining one; it is copied
-                // anyway, because a report that appears on one engine and not the
-                // other is worse than one that is consistently absent.
-                endErrors.clear();
-            }
-            catch (RakuError& err) { endErrors.push_back(renderEndError(err)); }
-            // Control flow (a `return`/`last` with nothing to leave) is still
-            // swallowed: it is not an exception a program can catch, and
-            // reporting it as one would invent a diagnostic Rakudo never gives.
-            catch (...) {}
-        };
-        // Deferred ENDs (modules, EVAL) first, newest registration first — then
-        // this unit's own, reverse source order. A later-loaded module's
-        // cleanup precedes the mainline END that inspects its results.
-        auto bySource = [](std::vector<EndPhaser>& v) {
-            std::stable_sort(v.begin(), v.end(),
-                             [](const EndPhaser& a, const EndPhaser& b) { return a.key < b.key; });
-        };
-        auto batch = snapshotFrom(endMark);
-        size_t seen = endMark + batch.size();
-        bySource(batch);
-        for (size_t i = batch.size(); i-- > 0; ) runOne(batch[i]);
-        // `END { EVAL q[END …] }` registers while the loop above runs: those are
-        // ends of the program too, newest first, until no more appear.
-        for (auto more = snapshotFrom(seen); !more.empty(); more = snapshotFrom(seen)) {
-            seen += more.size();
-            bySource(more);
-            for (size_t i = more.size(); i-- > 0; ) runOne(more[i]);
-        }
-        if (!endErrors.empty()) {
-            std::cerr << "Some exceptions were thrown in END blocks:\n";
-            for (auto& s2 : endErrors) std::cerr << s2;
-        }
-        // …and code marked `is DEPRECATED` that ran is reported as the program
-        // ends, on STDERR, as Rakudo's own END does (`Deprecation.report` drains
-        // the record earlier when a program asks for it; precompilation.t)
-        {
-            Value rep = deprecationReport();
-            if (rep.t == VT::Str && !rep.s.empty()) std::cerr << rep.s.str() << "\n";
-        }
-        // A nested run() (an installed `bin/` script) hands the process back to
-        // its caller: take this unit's registrations off so the outer run does
-        // not fire them a second time, and let its blocks register again.
-        std::lock_guard<std::mutex> g(endPhaserMut_);
-        for (size_t i = endMark; i < endPhasers_.size(); i++) endPhasers_[i].blk->endSlot = -1;
-        endPhasers_.resize(endMark);
-    };
-    // Extract a single top-level lexical declaration (name + whether it has an initializer).
-    auto topDecl = [](Stmt* s, bool& hasInit) -> std::string {
-        hasInit = true;
-        if (s->kind == NK::VarDecl) { auto* vd = static_cast<VarDecl*>(s); hasInit = (bool)vd->init; return vd->names.size() == 1 ? vd->names[0] : ""; }
-        if (s->kind == NK::ExprStmt) {
-            Expr* e = static_cast<ExprStmt*>(s)->e.get();
-            if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { hasInit = false; return static_cast<VarExpr*>(e)->name; }
-            if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e);
-                if (a->target && a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->declare)
-                    return static_cast<VarExpr*>(a->target.get())->name; }
-        }
-        return "";
-    };
-    uint64_t topCatchSerial = 0;
-    try {
-        hoistSubs(prog.stmts);
-        preinstallNestedOurSubs(prog.stmts);
-        // the main program's calls are checked before it runs, as an EVAL's
-        // are — when it is plain statements the walker sees whole
-        if (unitIsOutermost(&prog) && declCheckEnabled()) {
-            bool plain = !prog.stmts.empty();
-            for (auto& st : prog.stmts) if (!st || st->kind != NK::ExprStmt) { plain = false; break; }
-            if (plain) checkUndeclaredCalls(prog.stmts);
-        }
-        // Remember what the program declared for itself, before any `use` runs:
-        // a module's publish must not overwrite these (see mainlineSubNames_).
-        if (mainlineSubNames_.empty())
-            for (auto& kv : global_->vars)
-                if (kv.first.size() > 1 && kv.first[0] == '&') mainlineSubNames_.insert(kv.first);
-        // Pads (PADS-PLAN.md): the mainline is a pad owner. Installed only on
-        // the FIRST program this interpreter runs (EVAL and module mainlines
-        // re-enter here; their annotations would point at a layout no frame
-        // carries, so they are skipped and stay on the map path). The layout
-        // goes in BEFORE the pre-declare loop below, so the top-level `my`s it
-        // defines land in the pad — pre-declared-and-live from the start,
-        // which is exactly the visibility the map gave them.
-        if (!global_->layout && unitIsOutermost(&prog)) {
-            if (auto L = resolvePads(prog.stmts, nullptr)) {
-                global_->layout = L;
-                global_->pad.resize(L->names.size());
-            }
-        }
-        // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
-        bool hasInit;
-        auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`
-            auto one = [this](Expr* x) {
-                if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
-                    auto* ve = static_cast<VarExpr*>(x);
-                    if (!ve->name.empty() && !global_->find(ve->name)) {
-                        // A CONTAINER TRAIT decides what the variable IS (`my %h is
-                        // Set`, `my %h is MyHash`), and the type it names may not be
-                        // registered yet at pre-declaration time. Leave those to the
-                        // declaration itself rather than pre-defining a plain Hash
-                        // that the trait can no longer replace — which is why a
-                        // mainline `my %h is Set;` stayed a Hash while the same line
-                        // inside a block did not.
-                        if (!ve->containerIs.empty() &&
-                            (ve->name[0] == '%' || ve->name[0] == '@')) { /* declaration handles it */ }
-                        // Same reasoning for a PARAMETERIZED declared type
-                        // (`my BinaryHeap::MinHeap[{ … }] $h`): the base type
-                        // comes from a module, so at pre-declaration time — before
-                        // any `use` has run — the parameterization cannot be
-                        // evaluated, and pre-defining the textual fallback would
-                        // leave the variable holding a type object that names no
-                        // class. Leave it to the declaration, which runs after.
-                        else if (ve->declTypeExpr) { /* declaration handles it */ }
-                        else if (ve->declShape && ve->name[0] == '@')
-                            global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
-                        else
-                            global_->define(ve->name, declInitial(ve, ve->name[0]));
-                    }
-                }
-            };
-            if (!e) return;
-            if (e->kind == NK::ListExpr) { for (auto& it : static_cast<ListExpr*>(e)->items) one(it.get()); }
-            else one(e);
-        };
-        for (auto* s : mainline) {
-            std::string nm = topDecl(s, hasInit);
-            if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
-                if (e && e->kind == NK::Assign) predeclare(static_cast<Assign*>(e)->target.get());
-                else predeclare(e); }
-            if (nm.empty() || global_->find(nm)) continue;
-            std::string dtype; // honor the declared type so `my num $n` pre-declares 0, not Any
-            const VarExpr* dve = nullptr;
-            if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
-                if (e && e->kind == NK::VarExpr) dve = static_cast<VarExpr*>(e);
-                else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dve = static_cast<VarExpr*>(a->target.get()); } }
-            if (dve) dtype = dve->declType;
-            // …and the same deferral the predeclare walk makes: a container trait
-            // decides what the variable IS, and pre-defining a plain Hash here
-            // left the trait nothing to act on.
-            if (dve && !dve->containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
-            // …and for a parameterized declared type, whose base comes from a
-            // module that has not been `use`d yet at this point
-            if (dve && dve->declTypeExpr) continue;
-            global_->define(nm, typedDefault(dtype, nm[0])); }
-        // the same modifier/ternary-buried declarations the block path hoists
-        // (`my $x = E if COND` at file scope must declare $x even when COND is
-        // false) — the loop above only sees plain top-level ExprStmts
-        hoistExprDecls(prog.stmts, global_.get(), nullptr);
-        // A `require Name` the unit writes installs a STUB package of that name at
-        // compile time, before the load happens at run time — so a BEGIN already
-        // sees the name (`BEGIN try EVAL '$staticname = Test'`, S11-modules/require.t).
-        {
-            std::function<void(const Expr*)> seeReq = [&](const Expr* e) {
-                if (!e) return;
-                if (e->kind == NK::Assign) { seeReq(static_cast<const Assign*>(e)->value.get()); return; }
-                if (e->kind == NK::ListExpr) {
-                    for (auto& it : static_cast<const ListExpr*>(e)->items) seeReq(it.get());
-                    return;
-                }
-                if (e->kind != NK::Unary) return;
-                auto* u = static_cast<const Unary*>(e);
-                if (!opEq(u->op, "require")) { seeReq(u->operand.get()); return; }
-                if (!u->operand || u->operand->kind != NK::StrLit) return;
-                const std::string& nm = static_cast<const StrLit*>(u->operand.get())->v;
-                if (!nm.empty() && ascii::isalpha((unsigned char)nm[0]) && !classes_.count(nm) &&
-                    !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
-                    global_->define(nm, Value::typeObj(nm));
-            };
-            for (auto& st : prog.stmts) {
-                if (!st) continue;
-                if (st->kind == NK::ExprStmt) seeReq(static_cast<const ExprStmt*>(st.get())->e.get());
-                else if (st->kind == NK::UseStmt) {
-                    auto* us = static_cast<const UseStmt*>(st.get());
-                    const std::string& nm = us->module;
-                    if (us->isRequire && !us->fileExpr && !nm.empty() && ascii::isalpha((unsigned char)nm[0]) &&
-                        !classes_.count(nm) && !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
-                        global_->define(nm, Value::typeObj(nm));
-                }
-            }
-        }
-        // nested BEGIN/CHECK/INIT (in blocks and closures) — see runStaticPhasers
-        runStaticPhasers(prog.stmts, tctx_.cur, /*unitIsLive=*/false);
-        // BEGIN: source order. What dies in one is a compile-time failure,
-        // X::Comp::BeginTime wrapping the original as `.exception`
-        for (auto* b : beginP) {
-            try { runPhaser(b); }
-            catch (RakuError& e) {
-                // a routine not declared YET is a compile-time refusal of its own
-                if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-                Value inner = exceptionFor(e);
-                std::string im = e.message;
-                throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                            "An exception occurred while evaluating a BEGIN: " + im);
-            }
-        }
-        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
-        for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
-        for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
-        // a mainline CONTROL {} is the outermost warn handler for the run
-        if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
-        // …and its CATCH the outermost handler (see dispatchBeforeUnwind)
-        CatchReg topCatchReg{tctx_, topCatch, &prog.stmts, tctx_.cur};
-        topCatchSerial = topCatchReg.serial;
-        for (auto* s : mainline) {
-            tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
-            if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
-                !static_cast<SubDecl*>(s)->isMethod) {
-                auto* sd = static_cast<SubDecl*>(s);
-                applySubTraits(sd);
-                // A leading `unit module Foo;` has now set pkgPrefix, but this
-                // `our sub` was already defined by hoistSubs (bare) — publish it
-                // under its qualified name so `Foo::name()` resolves. The
-                // module-LOADING loop has always done this; the mainline did
-                // not, so a program headed `unit module Quux;` could reach its
-                // own `$Quux::v` but not its own `Quux::deep()`.
-                if (sd->isOur && !tctx_.pkgPrefix.empty())
-                    if (Value* c = tctx_.cur->find("&" + sd->name))
-                        global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
-                continue; // hoisted
-            }
-            // a bare `my $x;` (no init) must not clobber a value a phaser already set
-            std::string nm = topDecl(s, hasInit);
-            // …nor does `my $x ~= 'o'`: an OP-assigning declaration applies to
-            // what an INIT left there (S04-phasers/init.t), so it runs as the
-            // plain `$x ~= 'o'` it amounts to once the variable exists
-            if (!nm.empty() && hasInit && !staticPhaserVal_.empty() && s->kind == NK::ExprStmt &&
-                global_->local(nm)) {
-                auto* a = static_cast<Assign*>(static_cast<ExprStmt*>(s)->e.get());
-                if (a->kind == NK::Assign && !opEq(a->op, "=") && !opEq(a->op, ":=") && a->op.size() > 1 &&
-                    a->op.back() == '=' && static_cast<VarExpr*>(a->target.get())->declScope == "my" &&
-                    static_cast<VarExpr*>(a->target.get())->declType.empty()) {
-                    auto* ve = static_cast<VarExpr*>(a->target.get());
-                    ve->declare = false;
-                    struct Re { VarExpr* v; ~Re() { v->declare = true; } } re{ve};
-                    exec(s);
-                    continue;
-                }
-            }
-            if (!nm.empty() && !hasInit && global_->local(nm)) {
-                // the skipped declaration still owns its container metadata:
-                // `my $port is default(8080);` initializes AND registers the default
-                if (s->kind == NK::ExprStmt) {
-                    Expr* e0 = static_cast<ExprStmt*>(s)->e.get();
-                    if (e0 && e0->kind == NK::VarExpr) {
-                        auto* ve0 = static_cast<VarExpr*>(e0);
-                        if (e0->line > 0) curLine_ = e0->line;
-                        checkBareSubsetDecl(ve0, ve0->name[0]);
-                        if (ve0->declSmiley) global_->x().varSmiley[ve0->name] = ve0->declSmiley; // `my Int:D @a …;`
-                        if (ve0->declWhereExpr && ve0->name[0] == '$')
-                            global_->x().varWhere[ve0->name] = ve0->declWhereExpr;   // `my $x where Int;`
-                        // the SHAPE is evaluated when the declaration runs — the
-                        // hoist saw `my int @m[$size; $size]` before $size was set
-                        if (ve0->declShape && ve0->name[0] == '@' && !ve0->declDefault)
-                            global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->declShape.get()), ve0->declType));
-                        if (ve0->declDefault) {
-                            Value dv = eval(ve0->declDefault.get());
-                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
-                            if (ve0->name[0] == '@' || ve0->name[0] == '%') {
-                                // container stays empty; v is the ELEMENT default —
-                                // but the DECLARED type still applies, so build the
-                                // container declInitial would have built (`my Int @a
-                                // is default(0)` is an Array[Int]; a bare one here
-                                // left `.of` at Mu and `.raku` without its type)
-                                Value c = declInitial(ve0, ve0->name[0]);
-                                if (c.t != VT::Array && c.t != VT::Hash)
-                                    c = ve0->name[0] == '@' ? Value::array() : Value::makeHash();
-                                c.elemDefaultM() = std::make_shared<Value>(dv);
-                                global_->vars[ve0->name] = c;
-                            } else {
-                                global_->x().varDefault[ve0->name] = dv;
-                                global_->vars[ve0->name] = dv;
-                            }
-                        }
-                        else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
-                                 ascii::isupper((unsigned char)ve0->declType[0]))
-                            global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
-                        // …its coercion type, for the same reason: a hoisted
-                        // `my Int() $x;` never reaches the declaration path that
-                        // would have recorded it, and the later `$x = "7"` would
-                        // then be refused rather than converted.
-                        if (!ve0->declCoerce.empty())
-                            global_->x().varCoerce[ve0->name] = ve0->declCoerce;
-                            if (!ve0->declCoerceFrom.empty()) global_->x().varCoerce[ve0->name + "\x01from"] = ve0->declCoerceFrom;
-                        // …and its `is dynamic`, which the skipped declaration would
-                        // otherwise never record (a mainline `my $x is dynamic;` with
-                        // no initializer is hoisted here and never evaluated)
-                        if (ve0->declDynamic) global_->x().varDynamic.insert(ve0->name);
-                    }
-                }
-                continue;
-            }
-            exec(s, /*sink=*/true); // every top-level statement is in sink context (Rakudo)
-        }
-        // auto-invoke MAIN with command-line arguments, if defined
-        // (a mainline CONTROL, registered below, is already live here)
-        Value* mainSub = tctx_.cur->find("&MAIN");
-        // never the run-script CALLER's MAIN — a wrapper's own dispatch would
-        // recurse into run-script forever (see inheritedMainBarrier_)
-        if (mainSub && mainSub != inheritedMainBarrier_) {
-            ValueList margs;
-            int rc = mainProtocol(*mainSub, margs);
-            // From 6.d MAIN has taken the command line for itself, so inside it
-            // `$*ARGFILES` is `$*IN`: a bare `lines` reads standard input, not
-            // the files the arguments name (MISC/misc.t)
-            if (rc < 0 && langRev_ >= 1) {
-                VarExpr in("$*IN");
-                tctx_.cur->define("$*ARGFILES", eval(&in));
-            }
-            // MAIN's own value is sunk (Rakudo): a Failure it returns detonates
-            // and a Proc that exited unsuccessfully throws, which is how a
-            // program whose last act is `run @cmd` still exits non-zero (#73).
-            if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
-            else code = rc;
-        }
-        if (docMode_) std::cout << docModeText(); // --doc: print the rendered POD after the program runs
-    } catch (ExitEx& e) {
-        code = e.code;
-    } catch (RakuError& e) {
-        const CatchSeen seen = topCatch ? catchSeen(topCatchSerial, e) : CatchSeen::Passed;
-        if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
-            try { replayCatchOutcome(e); }
-            catch (ExitEx& ex) { code = ex.code; } catch (...) {}
-        } else if (seen == CatchSeen::Fresh) { // mainline CATCH: bind $_/$! to the exception and run its when/default
-            tctx_.cur->define("$_", exceptionFor(e));
-            tctx_.cur->define("$!", exceptionFor(e));
-            try { for (auto& s : topCatch->stmts) exec(s.get()); }
-            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
-        } else {
-            // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
-            // — whatever the payload was thrown as: an undeclared routine is
-            // thrown as its TYPE and exceptionFor makes the X::Undeclared::Symbols
-            Value jsonEx = envStr("RAKU_EXCEPTIONS_HANDLER") == "JSON" ? exceptionFor(e) : Value();
-            if (jsonEx.t == VT::Object && jsonEx.obj())
-                std::cerr << exceptionToJson(jsonEx); // exceptionFor attaches the frames
-            else {
-                // a compile-time (X::Comp-style) exception carries filename+line
-                // attrs — print it with Rakudo's ===SORRY!=== banner and location
-                std::string cf, cl;
-                if (e.payload.t == VT::Object && e.payload.obj()) {
-                    auto& at = e.payload.obj()->attrs;
-                    auto fi = at.find("filename"), li = at.find("line");
-                    if (fi != at.end() && li != at.end()) { cf = fi->second.toStr(); cl = li->second.toStr(); }
-                }
-                if (!cf.empty())
-                    std::cerr << "===SORRY!=== Error while compiling " << cf << "\n"
-                              << e.message << "\nat " << cf << ":" << cl << "\n";
-                // A RUNTIME error: the message, then where it happened and how
-                // the program got there (issue #67). The message stays line 1
-                // byte for byte — every golden and grep that reads the first
-                // line keeps working.
-                else std::cerr << renderError(e, btStyleForStderr());
-            }
-            code = 1;
-            crashed = true;
-        }
-    } catch (ReturnEx&) { // `return` outside any routine: the spec'd error (evalString already says so)
-        if (topCatch) { // …which a mainline CATCH sees as X::ControlFlow::Return
-            RakuError e{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
-            tctx_.cur->define("$_", exceptionFor(e));
-            tctx_.cur->define("$!", exceptionFor(e));
-            try { for (auto& s : topCatch->stmts) exec(s.get()); }
-            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
-        }
-        else { std::cerr << "Attempt to return outside of any Routine\n"; code = 1; crashed = true; }
-    } catch (LastEx&) { // `last` outside any loop is a compile/run error, like Rakudo's
-        std::cerr << "last without loop construct\n"; code = 1; crashed = true;
-    } catch (NextEx&) {
-        std::cerr << "next without loop construct\n"; code = 1; crashed = true;
-    } catch (RedoEx&) {
-        std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
-    } catch (BreakGivenEx&) { // `succeed` with no `given`/`when` around it (it used to abort the process)
-        std::cerr << "succeed without when clause\n"; code = 1; crashed = true;
-    } catch (ProceedEx&) {
-        std::cerr << "proceed without when clause\n"; code = 1; crashed = true;
-    } catch (ControlHandledEx&) {
-        // the mainline's own CONTROL handled a warning without .resume: the
-        // mainline is left, and the program ends normally
-    }
-    // the mainline CONTROL's registration ends with the mainline — an rk_run
-    // session may run several programs in one process, and a stale handler
-    // would point into a dead scope
-    if (topControl && !tctx_.controlHandlers.empty()) tctx_.controlHandlers.pop_back();
-    flushOpenWriteHandles(); // write out any file handle the program forgot to .close
-    // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
-    // way out — after the mainline, before END.
-    for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {
-        try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
-    }
-    // END phasers run with the WORKERS STILL ALIVE, as Rakudo's do (its thread
-    // pool outlives the mainline and dies with the process). Log::Async's END
-    // is `logger.done`, which starts a worker to close its Supply and then
-    // waits on that Supply — drained first, the worker never ran and the wait
-    // never returned, so every program that used the logger hung at exit.
-    runEnds(); // END phasers (reverse source order), after the mainline
-    drainWorkers(); // join any outstanding async workers before we tear down
-    // Rakudo's Test module never fabricates a trailing plan (and does not warn):
-    // a file that ran tests without `plan`/`done-testing` just ends its TAP.
-    // Rakudo's end-of-run summary when some tests failed.
-    if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
-        std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
-                  << " of " << testNum_ << "\n";
-    }
-    // Rakudo test exit status: 255 ("dubious") if the ran count != the plan,
-    // else the number of failed tests (capped at 254).
-    if (usedTest_ && code == 0 && !crashed && !bailedOut_) {
-        if (planned_ >= 0 && testNum_ != planned_) code = 255;
-        else if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
-    }
-    else if (failCount_ > 0 && code == 0) code = 1;
-    // A daemon `start {…}` (e.g. a server accept loop) was left running. We've
-    // emitted all output; flush and hard-exit so the detached thread can't wedge
-    // teardown (and isn't waited on), matching Rakudo abandoning thread-pool work.
-    if (abandonedWorkers_) { std::cout.flush(); std::cerr.flush(); std::_Exit(code); }
-    return code;
-}
-
 // ----------------- statements -----------------
 // A block-scoped phaser we run at entry/exit rather than in-place.
 // Is the body's LAST statement, in source order, a CATCH or CONTROL block?
@@ -11817,7 +11279,10 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         if (sv != 0) {
             if (sv < 0) {
                 signed char cls = 0;
-                if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
+                if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
+                    plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
+                    cls = 6;
+                else if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
                     if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
                         tv->name[0] == '$' && tv->declCoerce.empty() && tv->name != "$*USAGE") {
@@ -11831,7 +11296,10 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 a->simpleSlot = cls;
                 sv = cls;
             }
-            if (sv >= 1) {
+            if (sv == 6) {
+                if (Value* slot = declLane(a)) return sink ? Value::any() : *slot;
+            }
+            else if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 Env* const cur = tctx_.cur.get();   // one thread_local read for the slot and its frame
                 Value* slot = padPtrIn(tv, cur);
@@ -11871,7 +11339,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
                             if ((!nb || (nb == 64 && nsg && !nfl)) && a->value->kind == NK::Binary &&
-                                fusedIntAssign(static_cast<Binary*>(a->value.get()), slot)) {
+                                (fusedIntAssign(static_cast<Binary*>(a->value.get()), slot) ||
+                                 (!nb && fusedTypedAssign(static_cast<Binary*>(a->value.get()), slot)))) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
                                 return sink ? Value::any() : *slot;
                             }
@@ -19668,7 +19137,7 @@ int Interpreter::tryCondBool(Expr* e) {
                                    opEq(op, "gt") || opEq(op, "le") || opEq(op, "ge"));
     if (!isCmp && !strCmp) return -1;
     if (b->fastShape < 0) return -1;  // let evalBinary decide the shape first
-    if (b->fastShape == 0) return -1;
+    if (b->fastShape == 0) return isCmp && b->typedTree > 0 ? typedTreeBool(b) : -1;
     if (strCmp) {
         // what applyArith answers for two Strs with no tag (a Version is the
         // only Str arm ahead of it, and it needs a tag): a byte compare of
@@ -19814,6 +19283,32 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     return true;
 }
 
+// `+ - * /` and the six comparisons on a Num and a Num or machine Int (no
+// native width, no tag): what applyArithGeneral's double arm answers, without
+// the page of tests in front of it. False for anything else.
+static bool numFastArith(const std::string& op, const Value& l, const Value& r, Value& out) {
+    if (op.empty() || op.size() > 2 || l.natBits || r.natBits) return false;
+    auto num = [](const Value& v, double& d) {
+        if (v.t == VT::Num) { d = v.n; return true; }
+        if (v.t == VT::Int && !v.big()) { d = (double)v.i; return true; }
+        return false;
+    };
+    double a, b;
+    if (!num(l, a) || !num(r, b)) return false;
+    const char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
+    switch (c0) {
+        case '+': if (c1) return false; out = Value::number(a + b); return true;
+        case '-': if (c1) return false; out = Value::number(a - b); return true;
+        case '*': if (c1) return false; out = Value::number(a * b); return true;
+        case '/': if (c1 || b == 0.0) return false; out = Value::number(a / b); return true;
+        case '<': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a <= b : a < b); return true;
+        case '>': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a >= b : a > b); return true;
+        case '=': if (c1 != '=') return false; out = Value::boolean(a == b); return true;
+        case '!': if (c1 != '=') return false; out = Value::boolean(a != b); return true;
+        default: return false;
+    }
+}
+
 // The handler a Binary node is compiled to (Expr::handler) once evalBinary
 // has seen it reach its fast shape — `$n < 2`, `$n - 1`, `$a + $b` — which
 // every evaluation of that node then does: nothing evalBinary tests ahead of
@@ -19850,10 +19345,354 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
                     tagNativeNum(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv);
                     return nv;
                 }
+                // a Num on either side: applyArith's Int arm cannot answer, and
+                // its general path walks a page of tests before its double arm
+                if (lp->t == VT::Num || rp->t == VT::Num) {
+                    Value nv;
+                    if (numFastArith(op, *lp, *rp, nv)) return nv;
+                }
                 return applyArith(op, *lp, *rp);
             }
         }
     }
+    return I.evalBinary(b);
+}
+
+// --- typed subtrees (INTERP-SPEED-PLAN, tier 1 item 1) ----------------------
+// `$zr * $zr - $zi * $zi + $cr` is a Binary whose operands are Binaries, so it
+// has no fast shape: each node evaluated both operands into Values and ran the
+// general path (its Proxy, Whatever, DateTime, Pointer and temporal tests)
+// before applyArith. A subtree made only of `+ - * / %`, prefix `-`, plain `$`
+// lexicals and Int/Num literals, under at most one comparison at its root, is
+// evaluated here as machine numbers instead, with one Value built at the end.
+//
+// The SHAPE is decided once (Binary::typedTree); the leaves are read and their
+// types checked on every evaluation. Anything the typed rules do not answer
+// exactly as applyArith would — a leaf that is not a plain Int or Num, an Int
+// overflow, Int `/` Int (a Rat), a zero divisor, a native, a shadowing
+// operator — makes the whole subtree decline, and since the leaves have no
+// side effects the general path then evaluates it from scratch.
+namespace {
+struct TNum { bool isNum; long long i; double n; };
+
+inline bool typedOpArith(const std::string& op) {
+    return op.size() == 1 && (op[0] == '+' || op[0] == '-' || op[0] == '*' || op[0] == '/' || op[0] == '%');
+}
+inline bool typedOpCmp(const std::string& op) {
+    if (op.size() == 1) return op[0] == '<' || op[0] == '>';
+    return op.size() == 2 && op[1] == '=' && (op[0] == '<' || op[0] == '>' || op[0] == '=' || op[0] == '!');
+}
+
+// The shape test: an operand of a typed subtree.
+bool typedOperandShape(const Expr* e, int depth) {
+    if (!e || depth > 24) return false;
+    switch (e->kind) {
+        case NK::VarExpr:
+            return plainLexVar(e) && static_cast<const VarExpr*>(e)->name[0] == '$';
+        case NK::IntLit: return static_cast<const IntLit*>(e)->big.empty();
+        case NK::NumLit: { auto* n = static_cast<const NumLit*>(e);
+                           return !n->isRat && !n->imaginary; }
+        case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+                          return !u->postfix && opEq(u->op, "-") && typedOperandShape(u->operand.get(), depth + 1); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+                           return typedOpArith(b->op) && typedOperandShape(b->lhs.get(), depth + 1) &&
+                                  typedOperandShape(b->rhs.get(), depth + 1); }
+        default: return false;
+    }
+}
+
+// What applyArith answers for two plain machine numbers, or false where it
+// would answer something else (a bignum, a Rat, a Failure).
+inline bool typedArith(char c, const TNum& l, const TNum& r, TNum& o) {
+    if (!l.isNum && !r.isNum) {
+        long long z;
+        switch (c) {
+            case '+': if (rakupp::add_ovf(l.i, r.i, &z)) return false; break;
+            case '-': if (rakupp::sub_ovf(l.i, r.i, &z)) return false; break;
+            case '*': if (rakupp::mul_ovf(l.i, r.i, &z)) return false; break;
+            case '%':
+                if (r.i == 0) return false;
+                if (r.i == -1) z = 0;
+                else { z = l.i % r.i; if (z && ((z < 0) != (r.i < 0))) z += r.i; }
+                break;
+            default: return false;   // Int / Int is a Rat
+        }
+        o.isNum = false; o.i = z;
+        return true;
+    }
+    const double a = l.isNum ? l.n : (double)l.i, b = r.isNum ? r.n : (double)r.i;
+    switch (c) {
+        case '+': o.n = a + b; break;
+        case '-': o.n = a - b; break;
+        case '*': o.n = a * b; break;
+        case '/': if (b == 0.0) return false; o.n = a / b; break;   // an inexact divide by zero is a Failure
+        default: return false;   // Num % … keeps the full path
+    }
+    o.isNum = true;
+    return true;
+}
+
+inline bool typedCompare(const std::string& op, const TNum& l, const TNum& r) {
+    const char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
+    if (!l.isNum && !r.isNum) {
+        const long long a = l.i, b = r.i;
+        switch (c0) {
+            case '<': return c1 ? a <= b : a < b;
+            case '>': return c1 ? a >= b : a > b;
+            case '=': return a == b;
+            default:  return a != b;
+        }
+    }
+    const double a = l.isNum ? l.n : (double)l.i, b = r.isNum ? r.n : (double)r.i;
+    switch (c0) {
+        case '<': return c1 ? a <= b : a < b;
+        case '>': return c1 ? a >= b : a > b;
+        case '=': return a == b;
+        default:  return a != b;
+    }
+}
+}  // namespace
+
+// One operand of a typed subtree, as a machine number; false if this
+// evaluation cannot be typed. Reads only variables and literals.
+static bool typedOperand(Expr* e, Env* cur, TNum& o) {
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* ve = static_cast<VarExpr*>(e);
+            const Value* p = Interpreter::padPtrIn(ve, cur);
+            if (!p) p = cur->find(ve->name);
+            if (!p || p->natBits || !p->hashKind.empty()) return false;
+            if (p->t == VT::Int) { if (p->big()) return false; o.isNum = false; o.i = p->i; return true; }
+            if (p->t == VT::Num) { o.isNum = true; o.n = p->n; return true; }
+            return false;
+        }
+        case NK::IntLit: o.isNum = false; o.i = static_cast<IntLit*>(e)->v; return true;
+        case NK::NumLit: o.isNum = true; o.n = static_cast<NumLit*>(e)->v; return true;
+        case NK::Unary: {
+            // a plain `sub prefix:<->` replaces the built-in for every operand
+            if (g_userPrefixShadow.load(std::memory_order_relaxed)) return false;
+            TNum a;
+            if (!typedOperand(static_cast<Unary*>(e)->operand.get(), cur, a)) return false;
+            if (a.isNum) { o.isNum = true; o.n = -a.n; return true; }
+            if (a.i == LLONG_MIN) return false;
+            o.isNum = false; o.i = -a.i;
+            return true;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<Binary*>(e);
+            if (binaryShadowMaybe(b->op)) return false;
+            TNum l, r;
+            return typedOperand(b->lhs.get(), cur, l) && typedOperand(b->rhs.get(), cur, r) &&
+                   typedArith(b->op[0], l, r, o);
+        }
+        default: return false;
+    }
+}
+
+// Whether a Binary is the root of a typed subtree: an arithmetic operator or
+// one of the six comparisons over typed operands, at least one of which is
+// itself an operator (two leaves are the fast shape's).
+static bool typedTreeRoot(const Binary* b) {
+    if (!typedOpArith(b->op) && !typedOpCmp(b->op)) return false;
+    const Expr* l = b->lhs.get(); const Expr* r = b->rhs.get();
+    if (!l || !r) return false;
+    const bool inner = l->kind == NK::Binary || l->kind == NK::Unary ||
+                       r->kind == NK::Binary || r->kind == NK::Unary;
+    return inner && typedOperandShape(l, 0) && typedOperandShape(r, 0);
+}
+
+// Decide once whether a Binary is a typed-subtree root, and compile it to
+// typedTreeHandler if it is (true).
+[[gnu::noinline]] bool Interpreter::typedTreeDecide(Binary* b) {
+    const bool typed = typedTreeRoot(b);
+    b->typedTree = typed ? 1 : 0;
+    if (typed && !(Expr::EvalFn)b->handler) b->handler = &Interpreter::typedTreeHandler;
+    return typed && (Expr::EvalFn)b->handler == &Interpreter::typedTreeHandler;
+}
+
+bool Interpreter::typedTreeValue(Binary* b, Value& out) {
+    const std::string& op = b->op;
+    if (binaryShadowMaybe(op)) return false;
+    Env* const cur = tctx_.cur.get();
+    TNum l, r;
+    if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return false;
+    if (typedOpArith(op)) {
+        TNum o;
+        if (!typedArith(op[0], l, r, o)) return false;
+        out = o.isNum ? Value::number(o.n) : Value::integer(o.i);
+        return true;
+    }
+    out = Value::boolean(typedCompare(op, l, r));
+    return true;
+}
+
+// A slot a plain Int or Num may be written into by its number alone: it holds
+// one now, with every other flag at its default and no native width, so the
+// Value the lane would store differs from it in `t` and the `i`/`n` word only.
+static inline bool plainNumberSlotValue(const Value& v) {
+    return (v.t == VT::Int || v.t == VT::Num) && !v.x_ && v.pk_ == PK::None && !v.natBits &&
+           !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b && !v.isList &&
+           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName.empty() &&
+           v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+}
+
+// `$x = <typed arithmetic subtree>`: the number written into the slot, where
+// the lane would build a Value, move it in and destroy the temporary. Only for
+// a node compiled to typedTreeHandler. False, with nothing evaluated and the
+// slot untouched, when the subtree declines or the slot is not plain.
+bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
+    if (!pendingSubscripts_.empty() || (Expr::EvalFn)b->handler != &Interpreter::typedTreeHandler)
+        return false;
+    const std::string& op = b->op;
+    if (!typedOpArith(op) || binaryShadowMaybe(op) || !plainNumberSlotValue(*slot)) return false;
+    Env* const cur = tctx_.cur.get();
+    TNum l, r, o;
+    if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r) ||
+        !typedArith(op[0], l, r, o))
+        return false;
+    ParStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+    if (o.isNum) { slot->t = VT::Num; slot->n = o.n; }
+    else { slot->t = VT::Int; slot->i = o.i; }
+    return true;
+}
+
+// `my $x = EXPR` on the declaration lane (Assign::simpleSlot 6): what
+// lvalue's declaration arm and the full path's store come to for an untyped,
+// untraited `$` and a plain scalar value — the new slot, or null. The right
+// side is evaluated by declLaneRhs, which has no side effects, so a value it
+// cannot give (or a name already bound to a container) leaves the full path
+// to evaluate it again from the start.
+[[gnu::noinline]] Value* Interpreter::declLane(Assign* a) {
+    // A Binary right side answers only once compiled to one of the two shapes
+    // declLaneRhs reads. Decided as neither (`0.01 * $n`: a Rat literal), it
+    // never will be, and the node leaves the lane for good.
+    if (a->value->kind == NK::Binary) {
+        auto* b = static_cast<Binary*>(a->value.get());
+        const Expr::EvalFn h = b->handler;
+        if (h != &Interpreter::typedTreeHandler && h != &Interpreter::binaryFastHandler) {
+            if (b->fastShape == 0 && b->typedTree == 0) a->simpleSlot = 0;
+            return nullptr;
+        }
+    }
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    Env* de = tctx_.cur.get();
+    while (de->loopFrame && de->parent) de = de->parent.get();
+    Value* have = de->localRaw(tv->name);
+    if (have && (have->isCell() || (have->t == VT::Hash && have->hashKind == "Proxy"))) return nullptr;
+    Value rv;
+    if (!declLaneRhs(a->value.get(), rv)) return nullptr;
+    rv.readonly = rv.immutableBind = false;
+    return &de->define(tv->name, std::move(rv));
+}
+
+// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
+// nothing on it that lvalue's declaration arm or the full path's store would
+// act on — no type, coercion, default, `where`, smiley, trait, shape or
+// container type — and a right side declLaneRhs can evaluate.
+bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
+    // (`$` and a letter or underscore: no twigil, no special variable)
+    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->stateInParens ||
+        !v->declStubType.empty() || !v->declType.empty() || !v->declCoerce.empty() ||
+        v->declDefault || v->declDynamic || v->declExport || v->declSmiley || v->declWhereExpr ||
+        v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
+        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped ||
+        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
+        return false;
+    if (!rhs) return false;
+    switch (rhs->kind) {
+        case NK::IntLit: return static_cast<const IntLit*>(rhs)->big.empty();
+        case NK::NumLit: { auto* n = static_cast<const NumLit*>(rhs);
+                           return !n->isRat && !n->imaginary; }
+        case NK::StrLit: return true;
+        case NK::VarExpr: { auto* ve = static_cast<const VarExpr*>(rhs);
+                            return plainLexVar(ve) && ve->name[0] == '$' && !ve->nativeStrRead &&
+                                   !ve->nativeIntRead && !ve->nativeNumRead; }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(rhs);
+                           return typedOpArith(b->op) || typedOpCmp(b->op); }
+        default: return false;
+    }
+}
+
+// The right side of a declaration-lane node, as a plain Int, Num, Str or
+// Bool — computed only from literals and plain variables, so false means
+// nothing ran. A Binary answers once its own evaluation has decided its shape: a
+// typed subtree, or the fast shape over two machine numbers.
+bool Interpreter::declLaneRhs(Expr* e, Value& out) {
+    switch (e->kind) {
+        case NK::IntLit: out = Value::integer(static_cast<IntLit*>(e)->v); return true;
+        case NK::NumLit: out = Value::number(static_cast<NumLit*>(e)->v); return true;
+        case NK::StrLit: out = Value::str(static_cast<StrLit*>(e)->v); return true;
+        case NK::VarExpr: {
+            // the slot itself, looked at before anything reads through it: a
+            // bound cell or a Proxy (whose FETCH may run code) declines
+            auto* ve = static_cast<VarExpr*>(e);
+            Env* const cur = tctx_.cur.get();
+            const Value* p = padPtrIn(ve, cur);
+            if (!p) p = cur->find(ve->name);
+            if (!p || p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
+                !p->enumName.empty() || !p->enumType.empty() || p->isList || p->itemized)
+                return false;
+            if (p->t != VT::Int && p->t != VT::Num && p->t != VT::Str && p->t != VT::Bool) return false;
+            out = *p;
+            return true;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<Binary*>(e);
+            const Expr::EvalFn h = b->handler;
+            if (h == &Interpreter::typedTreeHandler) return typedTreeValue(b, out);
+            if (h != &Interpreter::binaryFastHandler || binaryShadowMaybe(b->op)) return false;
+            Env* const cur = tctx_.cur.get();
+            auto leaf = [&](Expr* x, bool isLit, TNum& o) -> bool {
+                const Value* p;
+                if (isLit) p = static_cast<const Value*>(b->litVal.get());
+                else {
+                    auto* ve = static_cast<VarExpr*>(x);
+                    p = padPtrIn(ve, cur);
+                    if (!p) p = cur->find(ve->name);
+                }
+                if (!p || p->natBits || !p->hashKind.empty()) return false;
+                if (p->t == VT::Int) { if (p->big()) return false; o.isNum = false; o.i = p->i; return true; }
+                if (p->t == VT::Num) { o.isNum = true; o.n = p->n; return true; }
+                return false;
+            };
+            TNum l, r;
+            if (!leaf(b->lhs.get(), b->fastShape == 2, l) || !leaf(b->rhs.get(), b->fastShape == 1, r))
+                return false;
+            if (typedOpArith(b->op)) {
+                TNum o;
+                if (!typedArith(b->op[0], l, r, o)) return false;
+                out = o.isNum ? Value::number(o.n) : Value::integer(o.i);
+                return true;
+            }
+            out = Value::boolean(typedCompare(b->op, l, r));
+            return true;
+        }
+        default: return false;
+    }
+}
+
+int Interpreter::typedTreeBool(Binary* b) {
+    if (b->typedTree <= 0 || !typedOpCmp(b->op) || binaryShadowMaybe(b->op)) return -1;
+    Env* const cur = tctx_.cur.get();
+    TNum l, r;
+    if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return -1;
+    return typedCompare(b->op, l, r) ? 1 : 0;
+}
+
+// The handler a typed-subtree root is compiled to. A subtree whose leaves keep
+// declining (a loop over Rats, say) stops paying for the attempt: after 64
+// misses in a row the node goes back to eval's switch for good.
+Value Interpreter::typedTreeHandler(Interpreter& I, Expr* e) {
+    auto* b = static_cast<Binary*>(e);
+    Value out;
+    if (I.typedTreeValue(b, out)) {
+        if (b->typedMiss) b->typedMiss = 0;
+        return out;
+    }
+    const unsigned char m = b->typedMiss;
+    if (m >= 63) { b->handler = nullptr; b->typedTree = 0; }
+    else b->typedMiss = (unsigned char)(m + 1);
     return I.evalBinary(b);
 }
 
@@ -20094,6 +19933,11 @@ Value Interpreter::evalBinary(Binary* b) {
             // falling through re-reads only variables and cached literals —
             // neither has side effects, so nothing is evaluated twice
         }
+        // A numeric subtree (typedTreeValue): decided on the first evaluation,
+        // which then goes through the handler like every later one (out of
+        // line, so this frame carries no Value for it).
+        if (!shadowMaybe && b->fastShape == 0 && b->typedTree < 0 && typedTreeDecide(b))
+            return typedTreeHandler(*this, b);
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
         if (shadowMaybe)

@@ -24,6 +24,9 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    arithmetic whose result is read (not only a condition), with a tag check at
    each leaf, and `++`/`op=` on element and attribute targets (`@a[$i]++`,
    `$!n++`). TYPES N0 measured typed evaluation at 4.8× on the arithmetic.
+   *In part (task 9 below):* typed subtrees, Num in the fast shape, and the
+   `my $x = EXPR` declaration lane — `types/mandel-plain` −63%. Element and
+   attribute targets are still open.
 2. **`--cnp` on x86-64** (CNP-PLAN P1). The one hard blocker for tier-up
    (task 10), for `--cnp` as the default, and for retiring `--jit`.
 3. **Inline slots for `Env::vars`, `Env` on the slab, and pads for
@@ -405,8 +408,32 @@ UNBOX / `--cnp` idea applied per node rather than per loop.
   - `$n++`/`$n--` on an untyped pad variable holding a plain Int steps `.i`
     (`plainIntStepSlot`). `streq` another −37% (216 → 106 ms over the two),
     `regexloop` −13%.
-  - *Not done:* comparisons and arithmetic in value position, which still
-    build a Value; element and attribute targets (`@a[$i]++`, `$!n++`).
+  - Typed subtrees (`Binary::typedTree`, `typedTreeValue`): a Binary whose
+    operands are themselves `+ - * / %` and prefix `-` over plain `$`
+    lexicals and Int/Num literals, under at most one comparison, is evaluated
+    as machine numbers with one Value built at the end. The shape is decided
+    once; each leaf's type is checked on every evaluation, and anything the
+    typed rules would answer differently from applyArith (an Int overflow,
+    Int `/` Int, a zero divisor, a native, a shadowing operator) declines and
+    takes the full path, which is safe because the leaves have no side
+    effects. A condition takes it through tryCondBool; `$x = <subtree>` writes
+    the slot in place (`fusedTypedAssign`); a node whose leaves keep declining
+    retires after 64 misses.
+  - A Num in the fast shape answers in binaryFastHandler (`numFastArith`)
+    instead of walking applyArithGeneral to its double arm.
+  - The declaration lane (`Assign::simpleSlot` 6, `declLane`): `my $x = EXPR`
+    with no type, trait or constraint, and an EXPR that is a literal, a plain
+    `$` read, a typed subtree or a fast-shape Binary over two machine numbers,
+    declares and stores without lvalue's declaration arm and the full store.
+    The EXPR is evaluated without side effects, so a value the lane cannot take
+    leaves the full path to start over.
+  - Measured against 10a4b97a, best of 3: `types/mandel-plain` 0.71 → 0.26 s
+    (−63%), `types/numloop-plain` −33%, `types/intloop-plain` −34%, a Num
+    compare-and-declare loop −41%. `examples/mandel.raku` is level: its
+    decimal literals are Rats. perf-guard level (retired instructions within
+    ±0.4% on 15 of 19 kernels).
+  - *Not done:* element and attribute targets (`@a[$i]++`, `$!n++`); typed
+    Rat leaves.
 
 *Done when:* `loopsum` and `streq` have closed half their gap.
 

@@ -7160,4 +7160,545 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
     return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
 }
 
+// The program's mainline: everything from adopting the unit's revision to the
+// END phasers and the exit code. Runs once per program, so it lives here and
+// not with the evaluator's hot paths in InterpreterCore.cpp.
+int Interpreter::run(Program& prog) {
+    int code = 0;
+    bool crashed = false;
+    // The unit's revision is known from its text, so adopt it before a single
+    // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute
+    // was too late for anything hoisted — every sub in the unit is created
+    // before the mainline starts, and was being stamped 6.d.
+    langRev_ = prog.langRev;
+    // `$*RAKU` is ONE object for the process, and its version is the MAIN unit's
+    // — Rakudo answers the same revision inside a module whatever that module's
+    // own `use v6.…` says. langRev_ itself stays per-unit, because that is what
+    // gates the features; only the reported LANGUAGE version is pinned here.
+    // App::ModuleSnap defaults a parameter to `$*RAKU.version` inside a module
+    // written `use v6.*`, and the value it stored came back 6.e where its own
+    // suite expects the 6.d the test file is written in.
+    if (!mainLangRevSet_) { mainLangRev_ = prog.langRev; mainLangRevSet_ = true; }
+    // …and the pragma the parser recorded, BEFORE the subs below are hoisted:
+    // each one is stamped with it, and a routine declared under the pragma
+    // keeps the namespace open in its own body wherever it is called from.
+    if (prog.usesRakuAst) { rakuAstPragma_ = true; anyRevSwitch_ = true; rakuAstMaterialize(); }
+    if (prog.langRev != 1) anyRevSwitch_ = true;
+    unitPush(&prog);
+    struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
+    { // mainline sink warnings, printed before execution (Rakudo compile-time style)
+        bool noWorries = false;
+        for (auto& s : prog.stmts)
+            if (s->kind == NK::UseStmt) {
+                auto* us = static_cast<UseStmt*>(s.get());
+                if (us->isNo && (us->module == "worries" || us->module == "warnings")) noWorries = true;
+            }
+        if (!noWorries) {
+            std::vector<std::string> ws;
+            for (auto& s : prog.stmts) sinkWarnStmt(s.get(), false, ws);
+            for (auto& w : ws) std::cerr << w << "\n";
+        }
+    }
+    tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
+    {
+        Value args = Value::array();
+        for (auto& s : argv_) args.arr()->push_back(Value::str(s));
+        tctx_.cur->define("@*ARGS", args);
+    }
+    // Partition top-level phasers (BEGIN/CHECK/INIT run before the mainline).
+    // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
+    // are deferred here too rather than executed at their textual position. END
+    // is not partitioned at all: it is registered by the whole-unit walk below,
+    // wherever in the program it sits.
+    std::vector<Block*> beginP, checkP, initP, leaveP, enterP;
+    std::vector<Stmt*> mainline;
+    Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
+    Block* topControl = nullptr; // …and a mainline CONTROL is the outermost warn handler
+    for (auto& s : prog.stmts) {
+        if (s->kind == NK::Block) {
+            auto* b = static_cast<Block*>(s.get());
+            if (b->isCatch) {
+                // CATCH and CONTROL share the flag; the phaser tells them
+                // apart, and a CONTROL must not swallow real exceptions
+                if (b->phaser == "CONTROL") topControl = b;
+                else topCatch = b;
+                continue;
+            }
+            if (b->phaser == "BEGIN") { beginP.push_back(b); continue; }
+            if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
+            if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
+            // END: left in the mainline. The walk below registers it like any
+            // other, and reaching it only captures the mainline scope.
+            if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
+            if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
+                                      { leaveP.push_back(b); continue; }
+        }
+        mainline.push_back(s.get());
+    }
+    // Every INIT in the program, at any depth, in source order — including the
+    // top-level ones just skipped. See collectPhasersStmt: they run before the
+    // mainline, and their textual positions are then skipped.
+    for (auto& s : prog.stmts) collectPhasersStmt(s.get(), "INIT", initP, /*topLevel=*/true);
+    // …and every END, at any depth, in source order: they run at exit, in
+    // reverse. A nested run() (an installed `bin/` script) registers on top of
+    // its caller's, and takes only its own back off at the end.
+    const size_t endMark = endPhasers_.size();
+    EndUnitScope endUnit{*this};   // a nested run() (an installed `bin/` script) is a unit of its own
+    registerEnds(prog);
+    auto runPhaser = [&](Block* b) {
+        if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
+        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
+    };
+    // END phasers run in REVERSE SOURCE order, on any exit path — one order for
+    // the whole compilation, so a nested END takes its place among the
+    // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
+    // takes its place at the `use` that loaded it.
+    auto runEnds = [&]() {
+        // Dropped objects get their DESTROY before the ENDs, so an END block
+        // observes destructor effects; objects an END itself releases wait for
+        // a real process exit, like Rakudo's unguaranteed finalization.
+        try { runPendingDestroys(); } catch (...) {}
+        // Snapshot before running: ENDs run with the workers still alive (below),
+        // and both an EVAL on a worker and an END that EVALs an END of its own
+        // register into endPhasers_ while this runs — a reference into it would
+        // not survive the reallocation. The lock is never held across a phaser
+        // body, which would deadlock on the capture the body's own blocks make.
+        auto snapshotFrom = [&](size_t from) {
+            std::lock_guard<std::mutex> g(endPhaserMut_);
+            if (from >= endPhasers_.size()) return std::vector<EndPhaser>{};
+            return std::vector<EndPhaser>(endPhasers_.begin() + from, endPhasers_.end());
+        };
+        // What an END THREW is reported rather than lost. Rakudo runs every END
+        // whatever the ones before it did — a dying phaser does not stop the
+        // chain — and prints the exceptions together at the end, in the order
+        // they were thrown. Measured against Rakudo 2026.07, and three things
+        // about that report are deliberate: it goes to STDERR only, so nothing
+        // reading stdout moves; it does NOT touch the exit status, which stays
+        // whatever the mainline (or an `exit` in a phaser) made it, 0 included;
+        // and the banner is plural even for one exception.
+        std::vector<std::string> endErrors;
+        auto runOne = [&](const EndPhaser& e) {
+            try { runEndBody(e); }
+            catch (ExitEx& ex) {
+                code = ex.code;      // `exit` in an END block sets the exit status
+                // …and DISCARDS what the ENDs before it threw. Measured, not
+                // assumed: `END exit 3; END die "C"` runs C first and Rakudo
+                // reports nothing, while `END die "A"; END exit 3` runs the exit
+                // first and still reports A. This is the one place where copying
+                // Rakudo LOSES a diagnostic rather than gaining one; it is copied
+                // anyway, because a report that appears on one engine and not the
+                // other is worse than one that is consistently absent.
+                endErrors.clear();
+            }
+            catch (RakuError& err) { endErrors.push_back(renderEndError(err)); }
+            // Control flow (a `return`/`last` with nothing to leave) is still
+            // swallowed: it is not an exception a program can catch, and
+            // reporting it as one would invent a diagnostic Rakudo never gives.
+            catch (...) {}
+        };
+        // Deferred ENDs (modules, EVAL) first, newest registration first — then
+        // this unit's own, reverse source order. A later-loaded module's
+        // cleanup precedes the mainline END that inspects its results.
+        auto bySource = [](std::vector<EndPhaser>& v) {
+            std::stable_sort(v.begin(), v.end(),
+                             [](const EndPhaser& a, const EndPhaser& b) { return a.key < b.key; });
+        };
+        auto batch = snapshotFrom(endMark);
+        size_t seen = endMark + batch.size();
+        bySource(batch);
+        for (size_t i = batch.size(); i-- > 0; ) runOne(batch[i]);
+        // `END { EVAL q[END …] }` registers while the loop above runs: those are
+        // ends of the program too, newest first, until no more appear.
+        for (auto more = snapshotFrom(seen); !more.empty(); more = snapshotFrom(seen)) {
+            seen += more.size();
+            bySource(more);
+            for (size_t i = more.size(); i-- > 0; ) runOne(more[i]);
+        }
+        if (!endErrors.empty()) {
+            std::cerr << "Some exceptions were thrown in END blocks:\n";
+            for (auto& s2 : endErrors) std::cerr << s2;
+        }
+        // …and code marked `is DEPRECATED` that ran is reported as the program
+        // ends, on STDERR, as Rakudo's own END does (`Deprecation.report` drains
+        // the record earlier when a program asks for it; precompilation.t)
+        {
+            Value rep = deprecationReport();
+            if (rep.t == VT::Str && !rep.s.empty()) std::cerr << rep.s.str() << "\n";
+        }
+        // A nested run() (an installed `bin/` script) hands the process back to
+        // its caller: take this unit's registrations off so the outer run does
+        // not fire them a second time, and let its blocks register again.
+        std::lock_guard<std::mutex> g(endPhaserMut_);
+        for (size_t i = endMark; i < endPhasers_.size(); i++) endPhasers_[i].blk->endSlot = -1;
+        endPhasers_.resize(endMark);
+    };
+    // Extract a single top-level lexical declaration (name + whether it has an initializer).
+    auto topDecl = [](Stmt* s, bool& hasInit) -> std::string {
+        hasInit = true;
+        if (s->kind == NK::VarDecl) { auto* vd = static_cast<VarDecl*>(s); hasInit = (bool)vd->init; return vd->names.size() == 1 ? vd->names[0] : ""; }
+        if (s->kind == NK::ExprStmt) {
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { hasInit = false; return static_cast<VarExpr*>(e)->name; }
+            if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e);
+                if (a->target && a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->declare)
+                    return static_cast<VarExpr*>(a->target.get())->name; }
+        }
+        return "";
+    };
+    uint64_t topCatchSerial = 0;
+    try {
+        hoistSubs(prog.stmts);
+        preinstallNestedOurSubs(prog.stmts);
+        // the main program's calls are checked before it runs, as an EVAL's
+        // are — when it is plain statements the walker sees whole
+        if (unitIsOutermost(&prog) && declCheckEnabled()) {
+            bool plain = !prog.stmts.empty();
+            for (auto& st : prog.stmts) if (!st || st->kind != NK::ExprStmt) { plain = false; break; }
+            if (plain) checkUndeclaredCalls(prog.stmts);
+        }
+        // Remember what the program declared for itself, before any `use` runs:
+        // a module's publish must not overwrite these (see mainlineSubNames_).
+        if (mainlineSubNames_.empty())
+            for (auto& kv : global_->vars)
+                if (kv.first.size() > 1 && kv.first[0] == '&') mainlineSubNames_.insert(kv.first);
+        // Pads (PADS-PLAN.md): the mainline is a pad owner. Installed only on
+        // the FIRST program this interpreter runs (EVAL and module mainlines
+        // re-enter here; their annotations would point at a layout no frame
+        // carries, so they are skipped and stay on the map path). The layout
+        // goes in BEFORE the pre-declare loop below, so the top-level `my`s it
+        // defines land in the pad — pre-declared-and-live from the start,
+        // which is exactly the visibility the map gave them.
+        if (!global_->layout && unitIsOutermost(&prog)) {
+            if (auto L = resolvePads(prog.stmts, nullptr)) {
+                global_->layout = L;
+                global_->pad.resize(L->names.size());
+            }
+        }
+        // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
+        bool hasInit;
+        auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`
+            auto one = [this](Expr* x) {
+                if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
+                    auto* ve = static_cast<VarExpr*>(x);
+                    if (!ve->name.empty() && !global_->find(ve->name)) {
+                        // A CONTAINER TRAIT decides what the variable IS (`my %h is
+                        // Set`, `my %h is MyHash`), and the type it names may not be
+                        // registered yet at pre-declaration time. Leave those to the
+                        // declaration itself rather than pre-defining a plain Hash
+                        // that the trait can no longer replace — which is why a
+                        // mainline `my %h is Set;` stayed a Hash while the same line
+                        // inside a block did not.
+                        if (!ve->containerIs.empty() &&
+                            (ve->name[0] == '%' || ve->name[0] == '@')) { /* declaration handles it */ }
+                        // Same reasoning for a PARAMETERIZED declared type
+                        // (`my BinaryHeap::MinHeap[{ … }] $h`): the base type
+                        // comes from a module, so at pre-declaration time — before
+                        // any `use` has run — the parameterization cannot be
+                        // evaluated, and pre-defining the textual fallback would
+                        // leave the variable holding a type object that names no
+                        // class. Leave it to the declaration, which runs after.
+                        else if (ve->declTypeExpr) { /* declaration handles it */ }
+                        else if (ve->declShape && ve->name[0] == '@')
+                            global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
+                        else
+                            global_->define(ve->name, declInitial(ve, ve->name[0]));
+                    }
+                }
+            };
+            if (!e) return;
+            if (e->kind == NK::ListExpr) { for (auto& it : static_cast<ListExpr*>(e)->items) one(it.get()); }
+            else one(e);
+        };
+        for (auto* s : mainline) {
+            std::string nm = topDecl(s, hasInit);
+            if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                if (e && e->kind == NK::Assign) predeclare(static_cast<Assign*>(e)->target.get());
+                else predeclare(e); }
+            if (nm.empty() || global_->find(nm)) continue;
+            std::string dtype; // honor the declared type so `my num $n` pre-declares 0, not Any
+            const VarExpr* dve = nullptr;
+            if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                if (e && e->kind == NK::VarExpr) dve = static_cast<VarExpr*>(e);
+                else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dve = static_cast<VarExpr*>(a->target.get()); } }
+            if (dve) dtype = dve->declType;
+            // …and the same deferral the predeclare walk makes: a container trait
+            // decides what the variable IS, and pre-defining a plain Hash here
+            // left the trait nothing to act on.
+            if (dve && !dve->containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
+            // …and for a parameterized declared type, whose base comes from a
+            // module that has not been `use`d yet at this point
+            if (dve && dve->declTypeExpr) continue;
+            global_->define(nm, typedDefault(dtype, nm[0])); }
+        // the same modifier/ternary-buried declarations the block path hoists
+        // (`my $x = E if COND` at file scope must declare $x even when COND is
+        // false) — the loop above only sees plain top-level ExprStmts
+        hoistExprDecls(prog.stmts, global_.get(), nullptr);
+        // A `require Name` the unit writes installs a STUB package of that name at
+        // compile time, before the load happens at run time — so a BEGIN already
+        // sees the name (`BEGIN try EVAL '$staticname = Test'`, S11-modules/require.t).
+        {
+            std::function<void(const Expr*)> seeReq = [&](const Expr* e) {
+                if (!e) return;
+                if (e->kind == NK::Assign) { seeReq(static_cast<const Assign*>(e)->value.get()); return; }
+                if (e->kind == NK::ListExpr) {
+                    for (auto& it : static_cast<const ListExpr*>(e)->items) seeReq(it.get());
+                    return;
+                }
+                if (e->kind != NK::Unary) return;
+                auto* u = static_cast<const Unary*>(e);
+                if (!opEq(u->op, "require")) { seeReq(u->operand.get()); return; }
+                if (!u->operand || u->operand->kind != NK::StrLit) return;
+                const std::string& nm = static_cast<const StrLit*>(u->operand.get())->v;
+                if (!nm.empty() && ascii::isalpha((unsigned char)nm[0]) && !classes_.count(nm) &&
+                    !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
+                    global_->define(nm, Value::typeObj(nm));
+            };
+            for (auto& st : prog.stmts) {
+                if (!st) continue;
+                if (st->kind == NK::ExprStmt) seeReq(static_cast<const ExprStmt*>(st.get())->e.get());
+                else if (st->kind == NK::UseStmt) {
+                    auto* us = static_cast<const UseStmt*>(st.get());
+                    const std::string& nm = us->module;
+                    if (us->isRequire && !us->fileExpr && !nm.empty() && ascii::isalpha((unsigned char)nm[0]) &&
+                        !classes_.count(nm) && !pkgKind_.count(nm) && !isKnownTypeName(nm) && !global_->find(nm))
+                        global_->define(nm, Value::typeObj(nm));
+                }
+            }
+        }
+        // nested BEGIN/CHECK/INIT (in blocks and closures) — see runStaticPhasers
+        runStaticPhasers(prog.stmts, tctx_.cur, /*unitIsLive=*/false);
+        // BEGIN: source order. What dies in one is a compile-time failure,
+        // X::Comp::BeginTime wrapping the original as `.exception`
+        for (auto* b : beginP) {
+            try { runPhaser(b); }
+            catch (RakuError& e) {
+                // a routine not declared YET is a compile-time refusal of its own
+                if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
+                Value inner = exceptionFor(e);
+                std::string im = e.message;
+                throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
+                            "An exception occurred while evaluating a BEGIN: " + im);
+            }
+        }
+        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
+        for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
+        for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
+        // a mainline CONTROL {} is the outermost warn handler for the run
+        if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
+        // …and its CATCH the outermost handler (see dispatchBeforeUnwind)
+        CatchReg topCatchReg{tctx_, topCatch, &prog.stmts, tctx_.cur};
+        topCatchSerial = topCatchReg.serial;
+        for (auto* s : mainline) {
+            tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
+            if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
+                !static_cast<SubDecl*>(s)->isMethod) {
+                auto* sd = static_cast<SubDecl*>(s);
+                applySubTraits(sd);
+                // A leading `unit module Foo;` has now set pkgPrefix, but this
+                // `our sub` was already defined by hoistSubs (bare) — publish it
+                // under its qualified name so `Foo::name()` resolves. The
+                // module-LOADING loop has always done this; the mainline did
+                // not, so a program headed `unit module Quux;` could reach its
+                // own `$Quux::v` but not its own `Quux::deep()`.
+                if (sd->isOur && !tctx_.pkgPrefix.empty())
+                    if (Value* c = tctx_.cur->find("&" + sd->name))
+                        global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
+                continue; // hoisted
+            }
+            // a bare `my $x;` (no init) must not clobber a value a phaser already set
+            std::string nm = topDecl(s, hasInit);
+            // …nor does `my $x ~= 'o'`: an OP-assigning declaration applies to
+            // what an INIT left there (S04-phasers/init.t), so it runs as the
+            // plain `$x ~= 'o'` it amounts to once the variable exists
+            if (!nm.empty() && hasInit && !staticPhaserVal_.empty() && s->kind == NK::ExprStmt &&
+                global_->local(nm)) {
+                auto* a = static_cast<Assign*>(static_cast<ExprStmt*>(s)->e.get());
+                if (a->kind == NK::Assign && !opEq(a->op, "=") && !opEq(a->op, ":=") && a->op.size() > 1 &&
+                    a->op.back() == '=' && static_cast<VarExpr*>(a->target.get())->declScope == "my" &&
+                    static_cast<VarExpr*>(a->target.get())->declType.empty()) {
+                    auto* ve = static_cast<VarExpr*>(a->target.get());
+                    ve->declare = false;
+                    struct Re { VarExpr* v; ~Re() { v->declare = true; } } re{ve};
+                    exec(s);
+                    continue;
+                }
+            }
+            if (!nm.empty() && !hasInit && global_->local(nm)) {
+                // the skipped declaration still owns its container metadata:
+                // `my $port is default(8080);` initializes AND registers the default
+                if (s->kind == NK::ExprStmt) {
+                    Expr* e0 = static_cast<ExprStmt*>(s)->e.get();
+                    if (e0 && e0->kind == NK::VarExpr) {
+                        auto* ve0 = static_cast<VarExpr*>(e0);
+                        if (e0->line > 0) curLine_ = e0->line;
+                        checkBareSubsetDecl(ve0, ve0->name[0]);
+                        if (ve0->declSmiley) global_->x().varSmiley[ve0->name] = ve0->declSmiley; // `my Int:D @a …;`
+                        if (ve0->declWhereExpr && ve0->name[0] == '$')
+                            global_->x().varWhere[ve0->name] = ve0->declWhereExpr;   // `my $x where Int;`
+                        // the SHAPE is evaluated when the declaration runs — the
+                        // hoist saw `my int @m[$size; $size]` before $size was set
+                        if (ve0->declShape && ve0->name[0] == '@' && !ve0->declDefault)
+                            global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->declShape.get()), ve0->declType));
+                        if (ve0->declDefault) {
+                            Value dv = eval(ve0->declDefault.get());
+                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
+                            if (ve0->name[0] == '@' || ve0->name[0] == '%') {
+                                // container stays empty; v is the ELEMENT default —
+                                // but the DECLARED type still applies, so build the
+                                // container declInitial would have built (`my Int @a
+                                // is default(0)` is an Array[Int]; a bare one here
+                                // left `.of` at Mu and `.raku` without its type)
+                                Value c = declInitial(ve0, ve0->name[0]);
+                                if (c.t != VT::Array && c.t != VT::Hash)
+                                    c = ve0->name[0] == '@' ? Value::array() : Value::makeHash();
+                                c.elemDefaultM() = std::make_shared<Value>(dv);
+                                global_->vars[ve0->name] = c;
+                            } else {
+                                global_->x().varDefault[ve0->name] = dv;
+                                global_->vars[ve0->name] = dv;
+                            }
+                        }
+                        else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
+                                 ascii::isupper((unsigned char)ve0->declType[0]))
+                            global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                        // …its coercion type, for the same reason: a hoisted
+                        // `my Int() $x;` never reaches the declaration path that
+                        // would have recorded it, and the later `$x = "7"` would
+                        // then be refused rather than converted.
+                        if (!ve0->declCoerce.empty())
+                            global_->x().varCoerce[ve0->name] = ve0->declCoerce;
+                            if (!ve0->declCoerceFrom.empty()) global_->x().varCoerce[ve0->name + "\x01from"] = ve0->declCoerceFrom;
+                        // …and its `is dynamic`, which the skipped declaration would
+                        // otherwise never record (a mainline `my $x is dynamic;` with
+                        // no initializer is hoisted here and never evaluated)
+                        if (ve0->declDynamic) global_->x().varDynamic.insert(ve0->name);
+                    }
+                }
+                continue;
+            }
+            exec(s, /*sink=*/true); // every top-level statement is in sink context (Rakudo)
+        }
+        // auto-invoke MAIN with command-line arguments, if defined
+        // (a mainline CONTROL, registered below, is already live here)
+        Value* mainSub = tctx_.cur->find("&MAIN");
+        // never the run-script CALLER's MAIN — a wrapper's own dispatch would
+        // recurse into run-script forever (see inheritedMainBarrier_)
+        if (mainSub && mainSub != inheritedMainBarrier_) {
+            ValueList margs;
+            int rc = mainProtocol(*mainSub, margs);
+            // From 6.d MAIN has taken the command line for itself, so inside it
+            // `$*ARGFILES` is `$*IN`: a bare `lines` reads standard input, not
+            // the files the arguments name (MISC/misc.t)
+            if (rc < 0 && langRev_ >= 1) {
+                VarExpr in("$*IN");
+                tctx_.cur->define("$*ARGFILES", eval(&in));
+            }
+            // MAIN's own value is sunk (Rakudo): a Failure it returns detonates
+            // and a Proc that exited unsuccessfully throws, which is how a
+            // program whose last act is `run @cmd` still exits non-zero (#73).
+            if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
+            else code = rc;
+        }
+        if (docMode_) std::cout << docModeText(); // --doc: print the rendered POD after the program runs
+    } catch (ExitEx& e) {
+        code = e.code;
+    } catch (RakuError& e) {
+        const CatchSeen seen = topCatch ? catchSeen(topCatchSerial, e) : CatchSeen::Passed;
+        if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
+            try { replayCatchOutcome(e); }
+            catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+        } else if (seen == CatchSeen::Fresh) { // mainline CATCH: bind $_/$! to the exception and run its when/default
+            tctx_.cur->define("$_", exceptionFor(e));
+            tctx_.cur->define("$!", exceptionFor(e));
+            try { for (auto& s : topCatch->stmts) exec(s.get()); }
+            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+        } else {
+            // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
+            // — whatever the payload was thrown as: an undeclared routine is
+            // thrown as its TYPE and exceptionFor makes the X::Undeclared::Symbols
+            Value jsonEx = envStr("RAKU_EXCEPTIONS_HANDLER") == "JSON" ? exceptionFor(e) : Value();
+            if (jsonEx.t == VT::Object && jsonEx.obj())
+                std::cerr << exceptionToJson(jsonEx); // exceptionFor attaches the frames
+            else {
+                // a compile-time (X::Comp-style) exception carries filename+line
+                // attrs — print it with Rakudo's ===SORRY!=== banner and location
+                std::string cf, cl;
+                if (e.payload.t == VT::Object && e.payload.obj()) {
+                    auto& at = e.payload.obj()->attrs;
+                    auto fi = at.find("filename"), li = at.find("line");
+                    if (fi != at.end() && li != at.end()) { cf = fi->second.toStr(); cl = li->second.toStr(); }
+                }
+                if (!cf.empty())
+                    std::cerr << "===SORRY!=== Error while compiling " << cf << "\n"
+                              << e.message << "\nat " << cf << ":" << cl << "\n";
+                // A RUNTIME error: the message, then where it happened and how
+                // the program got there (issue #67). The message stays line 1
+                // byte for byte — every golden and grep that reads the first
+                // line keeps working.
+                else std::cerr << renderError(e, btStyleForStderr());
+            }
+            code = 1;
+            crashed = true;
+        }
+    } catch (ReturnEx&) { // `return` outside any routine: the spec'd error (evalString already says so)
+        if (topCatch) { // …which a mainline CATCH sees as X::ControlFlow::Return
+            RakuError e{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
+            tctx_.cur->define("$_", exceptionFor(e));
+            tctx_.cur->define("$!", exceptionFor(e));
+            try { for (auto& s : topCatch->stmts) exec(s.get()); }
+            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+        }
+        else { std::cerr << "Attempt to return outside of any Routine\n"; code = 1; crashed = true; }
+    } catch (LastEx&) { // `last` outside any loop is a compile/run error, like Rakudo's
+        std::cerr << "last without loop construct\n"; code = 1; crashed = true;
+    } catch (NextEx&) {
+        std::cerr << "next without loop construct\n"; code = 1; crashed = true;
+    } catch (RedoEx&) {
+        std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
+    } catch (BreakGivenEx&) { // `succeed` with no `given`/`when` around it (it used to abort the process)
+        std::cerr << "succeed without when clause\n"; code = 1; crashed = true;
+    } catch (ProceedEx&) {
+        std::cerr << "proceed without when clause\n"; code = 1; crashed = true;
+    } catch (ControlHandledEx&) {
+        // the mainline's own CONTROL handled a warning without .resume: the
+        // mainline is left, and the program ends normally
+    }
+    // the mainline CONTROL's registration ends with the mainline — an rk_run
+    // session may run several programs in one process, and a stale handler
+    // would point into a dead scope
+    if (topControl && !tctx_.controlHandlers.empty()) tctx_.controlHandlers.pop_back();
+    flushOpenWriteHandles(); // write out any file handle the program forgot to .close
+    // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
+    // way out — after the mainline, before END.
+    for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {
+        try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
+    }
+    // END phasers run with the WORKERS STILL ALIVE, as Rakudo's do (its thread
+    // pool outlives the mainline and dies with the process). Log::Async's END
+    // is `logger.done`, which starts a worker to close its Supply and then
+    // waits on that Supply — drained first, the worker never ran and the wait
+    // never returned, so every program that used the logger hung at exit.
+    runEnds(); // END phasers (reverse source order), after the mainline
+    drainWorkers(); // join any outstanding async workers before we tear down
+    // Rakudo's Test module never fabricates a trailing plan (and does not warn):
+    // a file that ran tests without `plan`/`done-testing` just ends its TAP.
+    // Rakudo's end-of-run summary when some tests failed.
+    if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
+        std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
+                  << " of " << testNum_ << "\n";
+    }
+    // Rakudo test exit status: 255 ("dubious") if the ran count != the plan,
+    // else the number of failed tests (capped at 254).
+    if (usedTest_ && code == 0 && !crashed && !bailedOut_) {
+        if (planned_ >= 0 && testNum_ != planned_) code = 255;
+        else if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
+    }
+    else if (failCount_ > 0 && code == 0) code = 1;
+    // A daemon `start {…}` (e.g. a server accept loop) was left running. We've
+    // emitted all output; flush and hard-exit so the detached thread can't wedge
+    // teardown (and isn't waited on), matching Rakudo abandoning thread-pool work.
+    if (abandonedWorkers_) { std::cout.flush(); std::cerr.flush(); std::_Exit(code); }
+    return code;
+}
+
 } // namespace rakupp

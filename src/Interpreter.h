@@ -3657,6 +3657,14 @@ private:
     Value evalBinary(Binary* b);
     static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
     bool fusedIntAssign(Binary* b, Value* slot);   // `$x = $a op $b` on Ints, into the slot
+    static Value typedTreeHandler(Interpreter& I, Expr* e);    // a Binary's numeric subtree, typed
+    bool typedTreeValue(Binary* b, Value& out);    // that subtree's value, or false (nothing evaluated)
+    int typedTreeBool(Binary* b);                  // a comparison subtree as a condition: 1/0, or -1
+    bool fusedTypedAssign(Binary* b, Value* slot); // `$x = <typed subtree>`, into the slot
+    static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
+    bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
+    Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
+    bool typedTreeDecide(Binary* b);               // is it a typed-subtree root (and compiled to one)?
     Value* plainIntStepSlot(VarExpr* ve);           // the slot `$n++` steps in place, or null
     // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the
     // two operands arrive as AST nodes; `Rxx` hands them over the other way round.

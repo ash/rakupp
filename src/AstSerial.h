@@ -8,7 +8,7 @@ namespace rakupp {
 // module cache. The tree that comes back is the tree the parser built: every
 // field round-trips, including `line` and `label`, which diagnostics depend on.
 //
-// The mutable per-node CACHES (Binary::simpleOp/specialArm/fastShape/litVal,
+// The mutable per-node CACHES (Binary::simpleOp/specialArm/fastShape/litVal/typedTree,
 // Unary::evalPath, Index::fastShape/litIdx, NumLit::cacheN/cacheD, Block::hoistNeed,
 // StrLit::nfcDone) are deliberately not stored. Each has an "undecided"
 // sentinel and is rebuilt lazily on first evaluation, so a loaded tree behaves

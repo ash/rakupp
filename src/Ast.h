@@ -352,6 +352,8 @@ struct Assign : Expr {
     // TARG lever A: 1 = this node is `$padvar = EXPR` with a plain scalar
     // target (non-declare, no coercion) — eligible for the simple-assign
     // lane, subject to the per-activation slot checks. Decided once.
+    // 6 = `my $x = EXPR` with no type, trait or constraint on the
+    // declaration and an EXPR that has no side effects (declLaneRhs).
     DecidedOnce<signed char> simpleSlot{-1};
     // a compound assignment to a CONSTRAINED `$` variable is type-checked
     // (Interpreter::compoundCheckSlot): -1 undecided, 0 no, 1 nominal type,
@@ -400,6 +402,14 @@ struct Binary : Expr {
     // — with relaxed ordering this raced on arm64, and a racing double-build now
     // frees the loser instead of leaking it.
     mutable DecidedOnce<signed char> fastShape{-1};
+    // A numeric SUBTREE the interpreter evaluates without building a Value at
+    // each node (Interpreter::typedTreeValue): -1 not yet looked at, 0 no,
+    // 1 yes. Only the shape is decided once; every leaf is read and its type
+    // checked on every evaluation. typedMiss counts evaluations in a row the
+    // leaves did not allow it, and retires the handler past a limit. (In the
+    // padding before litVal: sizeof(Binary) is unchanged.)
+    mutable DecidedOnce<signed char> typedTree{-1};
+    mutable DecidedOnce<unsigned char> typedMiss{0};
     mutable PublishedOnce<const void*> litVal{nullptr};
     Binary(): Expr(NK::Binary) {}
 };
