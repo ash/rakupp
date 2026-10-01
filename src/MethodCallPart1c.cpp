@@ -521,7 +521,13 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     // (a WORKER waits regardless: the main thread may still send —
                     // `start { await $c }` then `$c.send(…)` from the mainline)
                     if (!t_poll.isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
-                    if (gilHeld_) yieldToWorkerFor(0.02);
+                    // gilHeld_ alone does not mean "cooperative": engageGil sets it
+                    // in parallel mode too, where yieldToWorkerFor returns at once.
+                    // Gating on it alone made this a hot spin on the stripe, and
+                    // macOS mutexes are unfair — the spinning receiver re-took the
+                    // lock every time and starved the senders (S17-channel/stress.t
+                    // hung after `ok 1`, about 1 run in 13 of its bogosort alone).
+                    if (gilHeld_ && !parallelMode_) yieldToWorkerFor(0.02);
                     else std::this_thread::sleep_for(std::chrono::milliseconds(2)); // parallel mode: real wait
                 }
             }
@@ -553,7 +559,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             if (!t_poll.isWorker && readers() > 0) {
                 auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
                 while (readers() > 0 && std::chrono::steady_clock::now() < until) {
-                    if (gilHeld_) yieldToWorkerFor(0.02);
+                    if (gilHeld_ && !parallelMode_) yieldToWorkerFor(0.02);
                     else std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 }
             }
@@ -614,7 +620,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     q.clear();
                     break;
                 }
-                if (gilHeld_) yieldToWorkerFor(0.02);
+                if (gilHeld_ && !parallelMode_) yieldToWorkerFor(0.02);
                 else std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             std::lock_guard<std::recursive_mutex> lk(chm);
