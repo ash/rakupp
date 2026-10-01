@@ -846,6 +846,7 @@ Value rakuppNewFailure();
 // the cost of one refcount increment per frame and NOTHING on the path that
 // does not throw. The frames reach user code as `$!.backtrace` and the
 // uncaught-error printer (Interpreter::exceptionFor attaches them).
+struct CatchOutcome;
 struct RakuError {
     Value payload; std::string message;
     std::shared_ptr<BtRecord> bt;                 // innermost first; null = not captured
@@ -855,6 +856,14 @@ struct RakuError {
     // always where the error came FROM; alt is the other end.
     std::shared_ptr<BtRecord> altBt;
     std::string altLabel;
+    // Where the error stands with the CATCH handlers of the context `dispCtx`
+    // (ExecContext::ctxId; another context's marks mean nothing here): every
+    // handler whose serial is `seenTo` or above has run for it, and `takenBy`
+    // is the one that handled it — run before the blocks in between were left,
+    // which is when Rakudo runs a handler (see dispatchBeforeUnwind).
+    // `outcome` is how that handler left, for its own block to act on.
+    uint64_t dispCtx = 0, seenTo = ~uint64_t(0), takenBy = 0;
+    std::shared_ptr<CatchOutcome> outcome;
     RakuError() = default;
     RakuError(Value p, std::string m);            // captures (defined in InterpreterBinding.cpp)
     // …and the form that does NOT: a RakuError built only to be converted
@@ -893,6 +902,18 @@ struct FeatureNotBuilt : RakuError {};
 struct HandedError {
     RakuError err;
     std::exception_ptr raised;
+};
+// How a CATCH that ran ahead of the unwinding (dispatchBeforeUnwind) left: its
+// block, reached later, finishes what the handler started as though it had
+// run there. `resume` is a `.resume` nobody nearer could carry on from; `ctl`
+// a control exception the handler raised (`next` behind a call, `return`…);
+// `loopCtl`/`returning` the cooperative ones it set.
+struct CatchOutcome {
+    bool resume = false;
+    std::exception_ptr ctl;
+    int loopCtl = 0;
+    bool returning = false;
+    Value returnV;
 };
 // Thrown at an interpreter safe point to unwind a background worker thread whose
 // result is no longer wanted (the mainline has finished). NOT a Raku-visible
@@ -1102,6 +1123,30 @@ struct ExecContext {
     // runner; a handler is popped WHILE it runs so its own warns escape
     // outward instead of recursing.
     std::vector<std::pair<Block*, std::shared_ptr<Env>>> controlHandlers;
+    // Dynamically-enclosing CATCH handlers, innermost last: what an error
+    // leaving a block with exit work (LEAVE, UNDO, a `temp`) runs FIRST, as
+    // Rakudo does — see dispatchBeforeUnwind. A frame records where its
+    // handler stands (the callable depth, how many of those frames were plain
+    // Raku calls, the routine/loop it belongs to); a `fence` is pushed while a
+    // handler runs, and an error raised inside it skips down past the handler
+    // at index `fenceTo`.
+    struct CatchFrame {
+        Block* catchBlk = nullptr;            // null: a `try`, which takes everything
+        const std::vector<StmtPtr>* stmts = nullptr;
+        std::shared_ptr<Env> env;
+        uint64_t serial = 0, frameTop = 0, transp = 0, routineFrame = 0, loopFrame = 0;
+        Env* routineEnv = nullptr;
+        bool fence = false;
+        size_t fenceTo = 0;
+    };
+    std::vector<CatchFrame> catchFrames;
+    // How many of the callable frames now live were entered by a plain Raku
+    // call (a sub or method called by name), which hands an error straight
+    // back to its caller. Any other frame — a builtin's callback, a `try`
+    // block — may keep the error to itself, so a handler beyond one is not run
+    // ahead of time.
+    uint64_t transpFrames = 0;
+    uint64_t ctxId = 0;   // this context's identity for RakuError::dispCtx (0: not yet drawn)
     std::string pkgPrefix;
     // Cooperative `return`: when a return executes with NO callable boundary
     // between it and its enclosing routine (frameTop == curRoutineFrame), it
@@ -1408,6 +1453,17 @@ public:
     [[gnu::noinline]] Value execStmtHanding(Stmt* s, bool sink, std::unique_ptr<HandedError>& err);
     // A block's CATCH, run for one error (see the definition).
     [[gnu::noinline]] int runBlockCatch(Block* b, Block* catchBlk, RakuError& e);
+    [[gnu::noinline]] int runBlockCatch(const std::vector<StmtPtr>& stmts, Block* catchBlk, RakuError& e);
+    // Handlers run ahead of the unwinding (see the definitions).
+    struct CatchReg;
+    struct CatchFence;
+    enum class CatchSeen { Fresh, Taken, Passed };
+    CatchSeen catchSeen(uint64_t serial, RakuError& e);
+    [[gnu::noinline]] int dispatchBeforeUnwind(RakuError& e, bool canResume);
+    void markHandlerError(RakuError& e, uint64_t serial);
+    [[gnu::noinline]] Value dieDispatching(ValueList& a);
+    [[gnu::noinline]] int replayCatchOutcome(RakuError& e);
+    [[noreturn]] static void raiseHanded(HandedError& h);
     // What the built-in `die` throws for these arguments.
     RakuError dieError(ValueList& a);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",

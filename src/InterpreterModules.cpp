@@ -2295,8 +2295,12 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
 // error goes on). Out of line — execBlock's frame is paid at every level of a
 // Raku recursion, and this one's temporaries are needed only when a CATCH runs.
 [[gnu::noinline]] int Interpreter::runBlockCatch(Block* b, Block* catchBlk, RakuError& e) {
+    return runBlockCatch(b->stmts, catchBlk, e);
+}
+
+[[gnu::noinline]] int Interpreter::runBlockCatch(const std::vector<StmtPtr>& stmts, Block* catchBlk, RakuError& e) {
     ExecContext& tcx = tctx_;
-    declareSkippedLexicals(b->stmts, tcx.cur.get());
+    declareSkippedLexicals(stmts, tcx.cur.get());
     tcx.cur->define("$_", exceptionFor(e));
     tcx.cur->define("$!", exceptionFor(e));
     bool matched = false;
@@ -2353,6 +2357,128 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
     // these flags rather than throwing)
     if (!matched && (tcx.loopCtl || tcx.returning)) return 0;
     return matched ? 0 : 2;
+}
+
+std::atomic<uint64_t> g_catchSerial{0};
+
+// What the handler registered as `serial` makes of an error reaching its
+// block: one it has not seen, one it handled ahead of the unwinding (its
+// block now finishes the job), or one it has run for and passed on.
+Interpreter::CatchSeen Interpreter::catchSeen(uint64_t serial, RakuError& e) {
+    if (!e.dispCtx || e.dispCtx != ctxIdOf(tctx_)) return CatchSeen::Fresh;
+    if (e.takenBy == serial) return CatchSeen::Taken;
+    if (serial >= e.seenTo) return CatchSeen::Passed;
+    return CatchSeen::Fresh;
+}
+
+// The handler `serial` has run for `e` and not taken it — or raised `e`
+// itself, which no handler from it inward may take.
+void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
+    const uint64_t id = ctxIdOf(tctx_);
+    if (e.dispCtx != id) { e.dispCtx = id; e.seenTo = serial; e.takenBy = 0; e.outcome.reset(); }
+    else if (e.seenTo > serial) e.seenTo = serial;
+}
+
+// The error `e` is about to leave a block that has exit work — LEAVE, UNDO, a
+// `temp` to restore. Rakudo runs the handler that takes an error BEFORE the
+// blocks between it and the `die` are left (that is what makes `.resume`
+// possible), so their LEAVEs come after the CATCH. Here the handlers are run
+// now, innermost first, each in its own block's scope and routine; the first
+// that takes the error is recorded on it (takenBy) with how it left, and its
+// block, once the unwinding reaches it, acts as though the handler had run
+// there (catchSeen, replayCatchOutcome). A handler that matches nothing is
+// recorded as passed. The walk stops at a frame a plain call did not enter —
+// a builtin's callback, a `try` block — since what lies past one may keep the
+// error to itself; past it the handlers run as the error reaches them.
+// 0: done (the error goes on); 1: `.resume`d and `canResume` (the caller
+// carries on after the statement); 2: a handler died, and `e` is now that
+// error, already offered to the handlers further out.
+[[gnu::noinline]] int Interpreter::dispatchBeforeUnwind(RakuError& e, bool canResume) {
+    ExecContext& tcx = tctx_;
+    if (tcx.catchFrames.empty()) return 0;
+    const uint64_t id = ctxIdOf(tcx);
+    if (e.dispCtx != id) { e.dispCtx = id; e.seenTo = ~uint64_t(0); e.takenBy = 0; e.outcome.reset(); }
+    if (e.takenBy) return 0;
+    int result = 0;
+    for (size_t i = tcx.catchFrames.size(); i-- > 0; ) {
+        if (tcx.catchFrames[i].fence) { i = tcx.catchFrames[i].fenceTo; continue; }
+        if (tcx.catchFrames[i].serial >= e.seenTo) continue;
+        // a copy: the handler's run pushes registrations of its own
+        const ExecContext::CatchFrame h = tcx.catchFrames[i];
+        if (tcx.frameTop < h.frameTop || tcx.frameTop - h.frameTop != tcx.transpFrames - h.transp) break;
+        if (!h.catchBlk) { e.seenTo = e.takenBy = h.serial; return result; }   // a `try`
+        int r = 2;
+        bool died = false;
+        RakuError raisedInHandler;
+        std::exception_ptr ctl;
+        {
+            struct Ctx {
+                ExecContext& t; std::shared_ptr<Env> cur; uint64_t ft, tr, rf, lf; Env* re;
+                ~Ctx() { t.dynStack.pop_back(); t.cur = std::move(cur); t.frameTop = ft; t.transpFrames = tr; t.curRoutineFrame = rf; t.curLoopFrame = lf; t.curRoutineEnv = re; }
+            } ctx{tcx, tcx.cur, tcx.frameTop, tcx.transpFrames, tcx.curRoutineFrame, tcx.curLoopFrame, tcx.curRoutineEnv};
+            // the handler is called from where the error stands: a `$*x`
+            // declared there is the one it sees
+            tcx.dynStack.push_back(tcx.cur.get());
+            tcx.cur = h.env; tcx.frameTop = h.frameTop; tcx.transpFrames = h.transp;
+            tcx.curRoutineFrame = h.routineFrame; tcx.curLoopFrame = h.loopFrame; tcx.curRoutineEnv = h.routineEnv;
+            CatchFence fence(tcx, h.serial);
+            try { r = runBlockCatch(*h.stmts, h.catchBlk, e); }
+            catch (RakuError& e2) { raisedInHandler = e2; died = true; }
+            catch (...) { ctl = std::current_exception(); }
+        }
+        if (died) {   // the handler's own error goes on from here, in place of `e`
+            markHandlerError(raisedInHandler, h.serial);
+            e = std::move(raisedInHandler);
+            result = 2;
+            if (e.takenBy) return result;
+            continue;
+        }
+        e.seenTo = h.serial;
+        if (r == 2 && !ctl) continue;
+        if (r == 1 && canResume) return 1;
+        e.takenBy = h.serial;
+        if (ctl || r == 1 || tcx.loopCtl || tcx.returning) {
+            auto o = std::make_shared<CatchOutcome>();
+            o->ctl = ctl;
+            o->resume = r == 1;
+            o->loopCtl = tcx.loopCtl; tcx.loopCtl = 0;
+            if (tcx.returning) { o->returning = true; o->returnV = std::move(tcx.returnV); tcx.returning = false; }
+            e.outcome = std::move(o);
+        }
+        return result;
+    }
+    return result;
+}
+
+// The built-in `die` with a CATCH that may take its error: the handlers run
+// where the `die` stands, and a `.resume` makes the call answer Nil.
+[[gnu::noinline]] Value Interpreter::dieDispatching(ValueList& a) {
+    RakuError e = dieError(a);
+    if (dispatchBeforeUnwind(e, /*canResume=*/true) == 1) return Value::nil();
+    throw std::move(e);
+}
+
+// A handler's block, reached by an error the handler took ahead of the
+// unwinding: what the handler's run returned (0 handled, 1 `.resume`), with
+// the control it left by set again or raised again.
+[[gnu::noinline]] int Interpreter::replayCatchOutcome(RakuError& e) {
+    std::shared_ptr<CatchOutcome> o = std::move(e.outcome);
+    if (!o) return 0;
+    if (o->ctl) std::rethrow_exception(o->ctl);
+    if (o->resume) return 1;
+    ExecContext& tcx = tctx_;
+    if (o->loopCtl) tcx.loopCtl = o->loopCtl;
+    if (o->returning) { tcx.returning = true; tcx.returnV = std::move(o->returnV); }
+    return 0;
+}
+
+// A handed error that arrived as a C++ exception is raised again as that very
+// object (a FeatureNotBuilt stays one) — with the marks the copy picked up.
+[[noreturn]] void Interpreter::raiseHanded(HandedError& h) {
+    if (!h.raised) throw std::move(h.err);   // a `die` taken by hand, never raised
+    if (!h.err.dispCtx) std::rethrow_exception(h.raised);
+    try { std::rethrow_exception(h.raised); }
+    catch (RakuError& r) { r.dispCtx = h.err.dispCtx; r.seenTo = h.err.seenTo; r.takenBy = h.err.takenBy; r.outcome = h.err.outcome; throw; }
 }
 
 // A statement of a block that takes its errors by hand (execBlock's statement

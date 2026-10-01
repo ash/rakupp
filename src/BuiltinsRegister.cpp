@@ -382,7 +382,16 @@ void Interpreter::registerBuiltins() {
         // go look at, not the whole chain. RAKUPP_BACKTRACE=full gives the rest.
         return I.ioEmit(msg + "\n" + I.warnFrame(), "$*ERR", true);
     };
-    B["die"] = [](Interpreter& I, ValueList& a) -> Value { throw I.dieError(a); };
+    // The handlers run where the `die` stands (dispatchBeforeUnwind), as in
+    // Rakudo: a `.resume` makes this call answer Nil, and the rest of the
+    // expression goes on — `my $r = (die "x")` declares $r.
+    // (Only when a CATCH could be the one: under a bare `try` — or no handler
+    // at all — the error is thrown straight away, as it always was.)
+    B["die"] = [](Interpreter& I, ValueList& a) -> Value {
+        const auto& cf = I.tctx_.catchFrames;
+        if (cf.empty() || (!cf.back().catchBlk && !cf.back().fence)) throw I.dieError(a);
+        return I.dieDispatching(a);
+    };
     // Re-dispatch to the next candidate (currently: a built-in shadowed by a user method).
     // callsame/callwith return its result; nextsame/nextwith return it FROM the current routine.
     // `lastcall` marks the current candidate as the final one: a subsequent

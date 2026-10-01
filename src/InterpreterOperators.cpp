@@ -1140,7 +1140,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.givenCtl, b.givenCtl); swap(a.givenV, b.givenV); swap(a.curGivenFrame, b.curGivenFrame); swap(a.curBlockVal, b.curBlockVal);
     swap(a.curRoutineVal, b.curRoutineVal); swap(a.callFrames, b.callFrames); swap(a.leaveResult, b.leaveResult); swap(a.leaveReturned, b.leaveReturned);
     swap(a.leaveReturnV, b.leaveReturnV); swap(a.leaveError, b.leaveError); swap(a.arityCallName, b.arityCallName); swap(a.wantLvalue, b.wantLvalue);
-    swap(a.wantTailContainer, b.wantTailContainer);
+    swap(a.wantTailContainer, b.wantTailContainer); swap(a.catchFrames, b.catchFrames); swap(a.transpFrames, b.transpFrames); swap(a.ctxId, b.ctxId);
     swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
     swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
     swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
@@ -1154,7 +1154,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
-static_assert(sizeof(ExecContext) == 1272,
+static_assert(sizeof(ExecContext) == 1312,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

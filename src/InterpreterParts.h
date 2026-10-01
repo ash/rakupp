@@ -1526,4 +1526,67 @@ static inline bool endlessHigh(const Value& v) { return v.rNum() ? std::isinf(v.
 // a Range or `^N` of those, a list of them — evaluating it twice is harmless.
 bool pureSubscriptBase(const Expr* b);
 
+// CATCH registrations' serials and the contexts' ids, drawn from one counter
+// for the whole process, so two contexts (threads, gather coroutines) never
+// share one and a mark made in one context reads as fresh in another.
+extern std::atomic<uint64_t> g_catchSerial;
+inline uint64_t ctxIdOf(ExecContext& t) {
+    if (!t.ctxId) t.ctxId = g_catchSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+    return t.ctxId;
+}
+
+// A block's (or routine's) CATCH, registered for the run of its body — or a
+// `try`, which takes whatever reaches it (catchBlk null).
+struct Interpreter::CatchReg {
+    ExecContext& t;
+    bool on;
+    uint64_t serial = 0;
+    CatchReg(ExecContext& tc, Block* catchBlk, const std::vector<StmtPtr>* stmts,
+             const std::shared_ptr<Env>& env, bool isTry = false)
+        : t(tc), on(catchBlk != nullptr || isTry) {
+        if (!on) return;
+        ExecContext::CatchFrame f;
+        f.catchBlk = catchBlk; f.stmts = stmts; f.env = env;
+        f.serial = serial = g_catchSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+        f.frameTop = t.frameTop; f.transp = t.transpFrames;
+        f.routineFrame = t.curRoutineFrame; f.routineEnv = t.curRoutineEnv; f.loopFrame = t.curLoopFrame;
+        t.catchFrames.push_back(std::move(f));
+    }
+    ~CatchReg() { if (on) t.catchFrames.pop_back(); }
+};
+
+// A plain Raku call of a routine the program wrote (`f(…)`, `$f(…)`, a method
+// call): the frame it makes hands an error straight back to the caller, so a
+// handler beyond it may run ahead of the unwinding (ExecContext::transpFrames).
+// A builtin's routine is not counted — it may call back into Raku and keep
+// what dies there (`dies-ok`).
+struct TranspCall {
+    ExecContext* t = nullptr;
+    TranspCall(ExecContext& tc, const Value& f) {
+        // with no handler registered there is none a count could matter to
+        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->builtin && !f.code()->isNative) {
+            t = &tc; ++t->transpFrames;
+        }
+    }
+    ~TranspCall() { if (t) --t->transpFrames; }
+};
+
+// While a handler runs: an error raised inside it is not its own handler's to
+// take, nor any handler's between it and where the error it handles was
+// raised (all of those have had that error already).
+struct Interpreter::CatchFence {
+    ExecContext& t;
+    bool on;
+    CatchFence(ExecContext& tc, uint64_t serial) : t(tc), on(false) {
+        for (size_t i = t.catchFrames.size(); i-- > 0; )
+            if (!t.catchFrames[i].fence && t.catchFrames[i].serial == serial) {
+                ExecContext::CatchFrame f; f.fence = true; f.fenceTo = i;
+                t.catchFrames.push_back(std::move(f));
+                on = true;
+                break;
+            }
+    }
+    ~CatchFence() { if (on) t.catchFrames.pop_back(); }
+};
+
 } // namespace rakupp

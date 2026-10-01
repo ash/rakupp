@@ -1273,6 +1273,7 @@ int Interpreter::run(Program& prog) {
         }
         return "";
     };
+    uint64_t topCatchSerial = 0;
     try {
         hoistSubs(prog.stmts);
         preinstallNestedOurSubs(prog.stmts);
@@ -1412,6 +1413,9 @@ int Interpreter::run(Program& prog) {
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
+        // …and its CATCH the outermost handler (see dispatchBeforeUnwind)
+        CatchReg topCatchReg{tctx_, topCatch, &prog.stmts, tctx_.cur};
+        topCatchSerial = topCatchReg.serial;
         for (auto* s : mainline) {
             tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
@@ -1527,7 +1531,11 @@ int Interpreter::run(Program& prog) {
     } catch (ExitEx& e) {
         code = e.code;
     } catch (RakuError& e) {
-        if (topCatch) { // mainline CATCH: bind $_/$! to the exception and run its when/default
+        const CatchSeen seen = topCatch ? catchSeen(topCatchSerial, e) : CatchSeen::Passed;
+        if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
+            try { replayCatchOutcome(e); }
+            catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+        } else if (seen == CatchSeen::Fresh) { // mainline CATCH: bind $_/$! to the exception and run its when/default
             tctx_.cur->define("$_", exceptionFor(e));
             tctx_.cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
@@ -1852,6 +1860,10 @@ Value Interpreter::execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sin
             if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break;
         }
     } catch (RakuError& e) {
+        // a `temp`/`let` to undo is exit work: the handlers further out first
+        if (!tcx.catchFrames.empty() && !sharesScope && blockEnv->ex &&
+            (blockEnv->ex->tempRestores.size() > tempMark || !blockEnv->ex->letRestores.empty()))
+            dispatchBeforeUnwind(e, /*canResume=*/false);
         leaveByError(&e);
         throw;
     } catch (...) {
@@ -1952,6 +1964,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
             : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, env}); }
         ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
     } controlReg{tcx, controlBlk, tcx.cur}; // tctx_.cur IS the block env here
+    CatchReg catchReg{tcx, catchBlk, catchBlk ? &b->stmts : nullptr, tcx.cur};
     hasNestedSub = (entryWork & 8) && hoistSubs(b->stmts);
     // …and the containers those subs close over, which are lexicals of THIS
     // block and so exist from here on. Only for a block that has such a sub —
@@ -2037,7 +2050,17 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
                 catch (RakuError& e) { err.reset(new HandedError{e, std::current_exception()}); }
                 if (err) {
                     if (catchBlk) {
-                        int r = runBlockCatch(b, catchBlk, err->err);
+                        int r = 2;
+                        switch (catchSeen(catchReg.serial, err->err)) {
+                        case CatchSeen::Taken:  r = replayCatchOutcome(err->err); break;   // it ran ahead
+                        case CatchSeen::Passed: break;
+                        case CatchSeen::Fresh: {
+                            CatchFence fence(tcx, catchReg.serial);
+                            try { r = runBlockCatch(b, catchBlk, err->err); }
+                            catch (RakuError& e2) { markHandlerError(e2, catchReg.serial); throw; }
+                            if (r == 2) markHandlerError(err->err, catchReg.serial);
+                        }
+                        }
                         if (r == 1) continue;            // .resume → next statement
                         if (r == 0) {                    // handled
                             exiting = true;
@@ -2052,7 +2075,13 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
                         }
                     }
                     // R1: a CATCH that matched nothing, or none here — the
-                    // error leaves the block
+                    // error leaves the block, once the handlers further out
+                    // have had it (a `.resume` there carries on here)
+                    if (!tcx.catchFrames.empty()) {
+                        int d = dispatchBeforeUnwind(err->err, /*canResume=*/true);
+                        if (d == 1) continue;
+                        if (d == 2) err->raised = nullptr;
+                    }
                     exiting = true;
                     if (leaveByError(err->err)) return Value::nil();
                     if (handOff) { *handOff = std::move(err); return Value::nil(); }
@@ -2064,6 +2093,13 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
         }
     } catch (RakuError& e) {
         if (exiting) throw;
+        // the handlers further out run before this block is left (the error
+        // object itself carries what they did, or becomes a handler's own)
+        if (!tcx.catchFrames.empty() &&
+            (catchBlk || handOff || (entryWork & 4) ||
+             (!sharesScope && blockEnv->ex && (blockEnv->ex->tempRestores.size() > tempMark ||
+                                               !blockEnv->ex->letRestores.empty()))))
+            dispatchBeforeUnwind(e, /*canResume=*/false);
         if (leaveByError(e)) return Value::nil();
         if (handOff) { handOff->reset(new HandedError{e, std::current_exception()}); return Value::nil(); }
         throw;
@@ -2124,10 +2160,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
         tcx.cur = std::move(saved);
         throw;
     }
-    if (leaving) {   // (the exit is done: see `exiting`)
-        if (leaving->raised) std::rethrow_exception(leaving->raised);
-        throw std::move(leaving->err);   // a `die` taken by hand, never raised
-    }
+    if (leaving) raiseHanded(*leaving);   // (the exit is done: see `exiting`)
     // KEEP runs on a SUCCESSFUL exit, UNDO otherwise — and success is the
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
@@ -8285,6 +8318,13 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // (Stmt*) first: catchBlkCache is an atomic cache slot, so the load has to
     // happen before the downcast rather than through it.
     Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>((Stmt*)c.catchBlkCache) : nullptr;
+    CatchReg catchReg{tcx, catchBlk, c.body, env};
+    // whether an error leaving the body has exit work to do here (see
+    // dispatchBeforeUnwind: the handlers further out run before it)
+    auto exitWork = [&]() {
+        return !tcx.catchFrames.empty() &&
+               ((bodyWork & 4) || (env->ex && (!env->ex->tempRestores.empty() || !env->ex->letRestores.empty())));
+    };
     const bool fatalHere = t_fatalTry;
     t_fatalTry = false;
     // A CONTROL block in the body is registered for the whole call, as
@@ -8465,14 +8505,23 @@ resumeBody:
         if (isRoutine && tcx.returning) { tcx.returning = false; return checkRetType(c, std::move(tcx.returnV)); }
         return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
-        if (catchBlk) {
-            if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
-            tcx.cur->define("$_", exceptionFor(e));
-            tcx.cur->define("$!", exceptionFor(e));
+        const CatchSeen seen = catchBlk ? catchSeen(catchReg.serial, e) : CatchSeen::Passed;
+        if (seen != CatchSeen::Passed) {
+            if (seen == CatchSeen::Fresh) {
+                if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
+                tcx.cur->define("$_", exceptionFor(e));
+                tcx.cur->define("$!", exceptionFor(e));
+            }
             bool matched = false, resumed = false;
             try {
                 struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
-                for (auto& s : catchBlk->stmts) exec(s.get());
+                if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
+                    if (replayCatchOutcome(e) == 1) resumed = true;
+                    else matched = true;
+                } else {
+                    CatchFence fence(tcx, catchReg.serial);
+                    for (auto& s : catchBlk->stmts) exec(s.get());
+                }
             } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
             catch (ResumeEx&) { resumed = true; }
             catch (ReturnEx& r) {
@@ -8487,11 +8536,20 @@ resumeBody:
                 copyOutRw(c.params, env, rwArgs);
                 return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
             }
+            catch (RakuError& e2) {   // die/rethrow from CATCH: the handlers further out first
+                markHandlerError(e2, catchReg.serial);
+                if (exitWork()) dispatchBeforeUnwind(e2, /*canResume=*/false);
+                if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
+                restore();
+                throw;
+            }
             catch (...) { if (c.body) runLeavePhasers(*c.body, /*ok=*/false); restore(); throw; } // die/rethrow from CATCH
             if (resumed) { resumeAt = runningStmt + 1; goto resumeBody; }   // carry on after it
             // Only a matching when/default handles the exception (R1): a CATCH
             // whose clauses matched none — or with no clauses at all — rethrows.
             if (!matched) {
+                markHandlerError(e, catchReg.serial);
+                if (exitWork()) dispatchBeforeUnwind(e, /*canResume=*/false);
                 if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
                 runLetRestoresOf(tcx.cur);
                 tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
@@ -8505,6 +8563,7 @@ resumeBody:
             if (isRoutine && tcx.returning) { tcx.returning = false; return checkRetType(c, std::move(tcx.returnV)); }
             return Value::nil();
         }
+        if (exitWork()) dispatchBeforeUnwind(e, /*canResume=*/false);
         if (c.body) {
             // a block left by an exception shows it to its LEAVEs as `$!`
             struct LE { ExecContext& t; const RakuError* p; ~LE() { t.leaveError = p; } } lerr{tcx, tcx.leaveError};
@@ -9871,6 +9930,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         runLeavePhasers(*c.body, ok, tempMark0);
     };
     size_t resumeAt = 0, runningStmt = 0;   // `.resume` in the CATCH: see callCallable
+    CatchReg catchReg{tcx, catchBlk, c.body, tcx.cur};
+    auto exitWork = [&]() {   // as in callCallable
+        return !tcx.catchFrames.empty() && !phasersDone && c.body &&
+               (hasPhasers || (tcx.cur && tcx.cur->ex && (tcx.cur->ex->tempRestores.size() > tempMark0 ||
+                                                          !tcx.cur->ex->letRestores.empty())));
+    };
 resumeMethodBody:
     try {
         if (c.body) {
@@ -9965,14 +10030,26 @@ resumeMethodBody:
         // `let` restores on the unsuccessful exits, exactly as callCallableRaw
         // does for subs — the method path missed all three arms, so a `let`
         // inside a method kept its new value straight through a die.
-        if (!catchBlk) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
-        if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
-        tcx.cur->define("$_", exceptionFor(e));
-        tcx.cur->define("$!", exceptionFor(e));
+        const CatchSeen seen = catchBlk ? catchSeen(catchReg.serial, e) : CatchSeen::Passed;
+        if (seen == CatchSeen::Passed) {
+            if (exitWork()) dispatchBeforeUnwind(e, /*canResume=*/false);
+            runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw;
+        }
+        if (seen == CatchSeen::Fresh) {
+            if (c.body) declareSkippedLexicals(*c.body, tcx.cur.get());
+            tcx.cur->define("$_", exceptionFor(e));
+            tcx.cur->define("$!", exceptionFor(e));
+        }
         bool matched = false, resumed = false;
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
-            for (auto& st : catchBlk->stmts) exec(st.get());
+            if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
+                if (replayCatchOutcome(e) == 1) resumed = true;
+                else matched = true;
+            } else {
+                CatchFence fence(tcx, catchReg.serial);
+                for (auto& st : catchBlk->stmts) exec(st.get());
+            }
         }
         catch (BreakGivenEx&) { matched = true; }   // a when/default matched
         catch (ResumeEx&)     { resumed = true; }   // `.resume`: carry on after the statement
@@ -9982,10 +10059,19 @@ resumeMethodBody:
             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
             return checkRetType(c, std::move(r.v)); // `--> T` holds on this exit too
         }
+        catch (RakuError& e2) {   // die/rethrow from the CATCH: the handlers further out first
+            markHandlerError(e2, catchReg.serial);
+            if (exitWork()) dispatchBeforeUnwind(e2, /*canResume=*/false);
+            runLeaves(false); tcx.cur = saved; throw;
+        }
         catch (...) { runLeaves(false); tcx.cur = saved; throw; }   // die/rethrow from the CATCH
         if (resumed) { resumeAt = runningStmt + 1; goto resumeMethodBody; }
         // Only a matching when/default handles it; an unmatched CATCH rethrows.
-        if (!matched) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
+        if (!matched) {
+            markHandlerError(e, catchReg.serial);
+            if (exitWork()) dispatchBeforeUnwind(e, /*canResume=*/false);
+            runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw;
+        }
         runLeaves(true);
         tcx.cur = saved;
         copyOutRw(c.params, env, rwArgs);
@@ -22111,6 +22197,9 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
                     static_cast<Block*>(s.get())->phaser != "CONTROL")
                     { explicitCatch = true; break; }
+        // registered as a handler that takes everything, so an error the
+        // handlers further out would see first stops here (dispatchBeforeUnwind)
+        CatchReg tryReg{tctx_, nullptr, nullptr, nullptr, /*isTry=*/!explicitCatch};
         try {
             Value r;
             if (u->operand->kind == NK::BlockExpr) {
@@ -23386,6 +23475,7 @@ Value Interpreter::evalCall(Call* c) {
         // move, not copy: `args` is a local about to die and ValueList is taken BY
         // VALUE — passing it as an lvalue copied the vector and every Value in it on
         // every sub call, which is what made evalCall the top allocation site.
+        TranspCall transp{tctx_, f};   // (counts only while a CATCH is active)
         return callCallable(f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
     }
     if (!c->name.empty()) {
@@ -23535,6 +23625,7 @@ Value Interpreter::evalCall(Call* c) {
             // and so never gets here. See declaredTypeOutranksRoutine.
             if (!(c->parenned && !c->callee && declaredTypeOutranksRoutine(c))) {
                 tctx_.arityCallName = &c->name;
+                TranspCall transp{tctx_, *f};
                 return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
             }
         }
@@ -29536,6 +29627,15 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             throw;
         }
     }
+    // a method the program wrote, called plainly, is a call an error comes
+    // straight back out of (TranspCall) — asked only while a CATCH is active
+    const Value* userMeth = nullptr;
+    if (!tctx_.catchFrames.empty()) {
+        ClassInfo* ci = inv.t == VT::Object && inv.obj() ? inv.obj()->cls.get() : nullptr;
+        if (!ci && inv.t == VT::Type) { auto it = classes_.find(inv.s.str()); if (it != classes_.end()) ci = it->second.get(); }
+        if (ci) userMeth = ci->findMethod(mname);
+    }
+    TranspCall transp{tctx_, userMeth ? *userMeth : Value()};
     Value res = methodCall(inv, mname, std::move(args), &mc->args);
     // …and a Seq it answers with is a Seq of its own (SeqToken)
     seqMint(res, inv);
