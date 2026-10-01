@@ -553,11 +553,12 @@ struct SeqToken { std::atomic<unsigned char> state{kSeqUnread}; };
 // The block is COPY-ON-WRITE: copying a Value shares it (one shared_ptr copy,
 // where these fields used to cost ~148 inline bytes), and every write goes
 // through xw(), which clones a shared block first. Reads never allocate.
-struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
-    double im = 0; // imaginary part for VT::Complex (real part is Value::n)
-    std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
-    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
-    std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
+// The cold block's CONTAINER fields: what an @/% container, a Seq, a typed
+// container or a concurrency handle carries, and a Rat, a Range, a bignum or
+// a Pair with a non-Str key never does. Its own block, shared copy-on-write
+// as ValueExt itself is, so those values carry 16 bytes where they carried
+// ~90 (a 1M-element list of Int-keyed Pairs, or of Rats, ~90 bytes an element).
+struct ValueContExt {
     // `is default(v)` on an @/% container: the ELEMENT default. It used to ride
     // in pairVal, which the one-payload-slot design (batch 4) made impossible —
     // a container with a default carries arr/hash AND the default at once, the
@@ -567,8 +568,6 @@ struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     std::shared_ptr<void> ext;       // opaque runtime handle: Promise/Channel/Lock/Supplier state (concurrency)
     // shaped array `my @a[2;3]`: fixed dimensions (row-major). Empty/null = unshaped.
     std::shared_ptr<std::vector<long long>> shape;
-    // range
-    long long rFrom = 0, rTo = 0;
     // NOT interned, unlike the tag fields that stayed inline, and it must stay
     // that way until one site moves: `IO::Path`'s `:CWD` rides in `ofType`
     // because a path value has no other use for it (Builtins.cpp), so this
@@ -577,6 +576,17 @@ struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     // directories would add an entry per directory and never release it.
     std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`
                           // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
+    std::shared_ptr<SeqToken> seqTok;   // a Seq's read-once state (see SeqToken); null = not tracked
+};
+inline const ValueContExt emptyValueContExt{};
+
+struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
+    double im = 0; // imaginary part for VT::Complex (real part is Value::n)
+    std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
+    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
+    std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
+    // range
+    long long rFrom = 0, rTo = 0;
     bool rExFrom = false, rExTo = false;
     // A fractional numeric range (`1.1 .. 3.1`, `-1.5 ..^ 3`) keeps its real
     // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
@@ -588,7 +598,13 @@ struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     // readers that walk elements raw — every built-in method and operator —
     // see a decontainerized copy instead (Interpreter::decontList).
     bool holdsCells = false;
-    std::shared_ptr<SeqToken> seqTok;   // a Seq's read-once state (see SeqToken); null = not tracked
+    std::shared_ptr<ValueContExt> cont;   // the container fields (ValueContExt), null until one is set
+    const ValueContExt& cr() const { return cont ? *cont : emptyValueContExt; }
+    ValueContExt& cw() {   // copy-on-write, as Value::xw() does for this block
+        if (!cont) cont = std::make_shared<ValueContExt>();
+        else if (cont.use_count() > 1) cont = std::make_shared<ValueContExt>(*cont);
+        return *cont;
+    }
 };
 // The read path for a Value with no block: namespace scope, so access carries
 // no function-local-static guard (that guard, run 256× per byteset build, was
@@ -893,12 +909,12 @@ struct Value {
         static const std::shared_ptr<Value> none;
         return t == VT::Pair ? none : xr().pairKey;
     }
-    const std::shared_ptr<Value>& elemDefault() const { return xr().elemDefault; }
-    const std::shared_ptr<void>& ext() const { return xr().ext; }
-    const std::shared_ptr<std::vector<long long>>& shape() const { return xr().shape; }
+    const std::shared_ptr<Value>& elemDefault() const { return xr().cr().elemDefault; }
+    const std::shared_ptr<void>& ext() const { return xr().cr().ext; }
+    const std::shared_ptr<std::vector<long long>>& shape() const { return xr().cr().shape; }
     long long rFrom() const { return xr().rFrom; }
     long long rTo() const { return xr().rTo; }
-    const std::string& ofType() const { return xr().ofType; }
+    const std::string& ofType() const { return xr().cr().ofType; }
     bool rExFrom() const { return xr().rExFrom; }
     bool rExTo() const { return xr().rExTo; }
     bool rNum() const { return xr().rNum; }
@@ -909,22 +925,22 @@ struct Value {
     std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
     std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
     std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
-    std::shared_ptr<Value>& elemDefaultM() { return xw().elemDefault; }
-    std::shared_ptr<void>& extM() { return xw().ext; }
+    std::shared_ptr<Value>& elemDefaultM() { return xw().cw().elemDefault; }
+    std::shared_ptr<void>& extM() { return xw().cw().ext; }
     // A Seq's read-once token (SeqToken), when it has one
-    SeqToken* seqTok() const { return x_ ? x_->seqTok.get() : nullptr; }
-    void setSeqTok(std::shared_ptr<SeqToken> t) { xw().seqTok = std::move(t); }
+    SeqToken* seqTok() const { return x_ && x_->cont ? x_->cont->seqTok.get() : nullptr; }
+    void setSeqTok(std::shared_ptr<SeqToken> t) { xw().cw().seqTok = std::move(t); }
     // A value helper READ this Seq (its truth, its string, its size): an unread
     // one is cached from here on, as Rakudo's `.Bool`/`.Str`/`.elems` cache it
     void seqTouch() const {
-        if (!x_ || !x_->seqTok) return;
+        if (!x_ || !x_->cont || !x_->cont->seqTok) return;
         unsigned char u = kSeqUnread;
-        x_->seqTok->state.compare_exchange_strong(u, kSeqCached);
+        x_->cont->seqTok->state.compare_exchange_strong(u, kSeqCached);
     }
-    std::shared_ptr<std::vector<long long>>& shapeM() { return xw().shape; }
+    std::shared_ptr<std::vector<long long>>& shapeM() { return xw().cw().shape; }
     long long& rFromM() { return xw().rFrom; }
     long long& rToM() { return xw().rTo; }
-    std::string& ofTypeM() { return xw().ofType; }
+    std::string& ofTypeM() { return xw().cw().ofType; }
     bool& rExFromM() { return xw().rExFrom; }
     bool& rExToM() { return xw().rExTo; }
     bool& rNumM() { return xw().rNum; }

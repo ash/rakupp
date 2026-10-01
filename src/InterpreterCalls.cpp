@@ -2877,7 +2877,7 @@ bool rtMulAssignBig(Value& dst, const Value& r) {
         dst.itemized || dst.readonly || dst.natBits || dst.p_ || dst.isList ||
         dst.objKeyed || dst.namedArg)
         return false;
-    if (x.ratN || x.ratD || x.pairKey || x.elemDefault || x.ext || x.shape || !x.ofType.empty())
+    if (x.ratN || x.ratD || x.pairKey || (x.cont && (x.cont->elemDefault || x.cont->ext || x.cont->shape || !x.cont->ofType.empty())))
         return false;
     const long long m = r.i;
     if (m == 0) { dst = Value::integer(0); return true; }
