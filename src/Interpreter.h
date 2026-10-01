@@ -512,6 +512,11 @@ struct PadLayout {
     // without the typed-container ceremony. Parallel to `names`.
     std::vector<uint8_t> simple;
     std::unordered_map<std::string, int, VarNameHash, VarNameEq> byName;
+    // An inline block's own pad (an `if`/`given`/loop/bare block body that
+    // declares plain `my`s), not a routine's or the mainline's. It sits on that
+    // block's scope, between a reference and its owner's frame, so the frame
+    // lookup steps past it (see padPtrIn); a routine layout ends the walk.
+    bool inlineBlock = false;
     int add(const std::string& n, bool simpleSlot = false) {
         auto it = byName.find(n);
         if (it != byName.end()) {
@@ -629,6 +634,16 @@ struct Env {
     // is free; under parallel it is the contract.
     std::atomic<uint64_t> padLive{0};
 
+    // A loop's iteration scope, reused for the next iteration (only when
+    // nothing else holds it): drop every binding, keep the buckets and the
+    // pad's storage. A block pad's slots go dark again until their `my` runs.
+    void clearBindings() {
+        vars.clear();
+        if (layout) {
+            padLive.store(0, std::memory_order_relaxed);
+            for (auto& v : pad) v = Value();
+        }
+    }
     Value* padFind(const std::string& name) {
         auto it = layout->byName.find(name);
         if (it != layout->byName.end() &&
@@ -2189,14 +2204,21 @@ public:
     static Value* padPtrIn(const VarExpr* ve, Env* cur) {
         int ps = ve->padSlot;
         if (ps < 0) return nullptr;
+        const void* owner = ve->padOwner;
         for (Env* pf = cur; pf; pf = pf->parent.get()) {
             if (!pf->layout) continue;
-            if ((const void*)pf->layout.get() == ve->padOwner &&
-                ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1))
-                return pf->pad[ps].deref();
-            break; // nearest layout frame decides — never skip past it
+            if ((const void*)pf->layout.get() == owner)
+                return ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1) ? pf->pad[ps].deref() : nullptr;
+            // An inline block's pad between here and the owner: step past it.
+            // A routine's or the mainline's decides — never skip past one.
+            if (!pf->layout->inlineBlock) break;
         }
         return nullptr;
+    }
+    // The layout a pad-annotated reference was resolved against: what its
+    // declaration said about the slot (PadLayout::simple), lexically.
+    static const PadLayout* padOwnerLayout(const VarExpr* ve) {
+        return static_cast<const PadLayout*>((const void*)ve->padOwner);
     }
     void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:

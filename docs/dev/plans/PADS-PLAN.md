@@ -115,6 +115,19 @@ result slots (item 4 — next batch, one more pad region per owner), binder
 direct-slot writes (params go through the `define` redirect this batch; the
 per-param hash can come out later if the profile still shows it).
 
+**Inner-block `my`s since 2026-10-01.** A loop whose variables were declared
+in an `if`, loop, `given`/`when` or bare block body ran 4-5x slower than the
+same loop over a sub's top-level `my`s. Such a block now gets a pad of its own,
+not slots in the owner's: resolvePads builds a layout per inline block that
+declares plain `my`s (`Block::padLayout`, `PadLayout::inlineBlock`), and
+execBlock attaches it to the scope at each ENTRY. Per-entry is what keeps
+closure freshness. A reused iteration scope is cleared slot by slot
+(`Env::clearBindings`), and only when nothing else holds it. The frame
+lookup now steps past an inline block's pad to reach the owner's frame. It
+still never steps past a routine's or the mainline's, so the self-validating
+compare stands. Statement-modifier bodies and CATCH run in the scope around
+them, and get no pad.
+
 ## Gates and measurement
 
 The standing batch gates: `t/run.raku` 499/499 including the `--exe` goldens

@@ -1817,6 +1817,18 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     if (leaveDied) throw *leaveDied;
 }
 
+// An inline block's own pad (Block::padLayout) goes on the scope the block
+// has just entered — a fresh one, or the same block's from the previous
+// iteration, whose slots clearBindings already took dark. A scope carrying
+// any other layout is someone else's frame: the block's `my`s go in its map
+// there, and references to them find no frame with this layout and take the
+// map path, which is where those declarations are.
+static inline void attachBlockPad(Block* b, Env* env) {
+    if (!b->padLayout || env->layout) return;
+    env->layout = b->padLayout;
+    env->pad.resize(b->padLayout->names.size());
+}
+
 Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink, std::unique_ptr<HandedError>* handOff) {
     // hoistNeed is -1 until the full path's first run has looked, so a block's
     // first entry always goes the full way
@@ -1836,7 +1848,10 @@ Value Interpreter::execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sin
     tcx.cur = std::move(scope);
     Env* blockEnv = tcx.cur.get();
     const bool sharesScope = blockEnv == saved.get();
-    if (!sharesScope) blockEnv->declStmts = &b->stmts;
+    if (!sharesScope) {
+        blockEnv->declStmts = &b->stmts;
+        attachBlockPad(b, blockEnv);
+    }
     const size_t tempMark = sharesScope ? SIZE_MAX
                           : blockEnv->ex ? blockEnv->ex->tempRestores.size() : 0;
     // what the unsuccessful exit does, with no LEAVE, UNDO or CATCH to run
@@ -1896,7 +1911,10 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     ExecContext& tcx = tctx_;
     auto saved = std::move(tcx.cur);   // moved, not copied: two refcount writes fewer per block
     tcx.cur = std::move(scope);
-    if (b && tcx.cur.get() != saved.get()) tcx.cur->declStmts = &b->stmts;   // (see Env::declStmts)
+    if (b && tcx.cur.get() != saved.get()) {
+        tcx.cur->declStmts = &b->stmts;   // (see Env::declStmts)
+        attachBlockPad(b, tcx.cur.get()); // before anything below defines into it
+    }
     if (!staticEnvs_.empty() && b && tcx.cur.get() != saved.get()) seedStaticScope(&b->stmts, tcx.cur.get());
     // A named sub hoisted into this block leaks the block env via a closure cycle
     // (see breakSelfClosures). Break it just before restoring tctx_.cur, while the
@@ -2863,7 +2881,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (ws->modifier) scope = tctx_.cur;
                 else if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else if (!(ws->params.empty() && ws->var.empty() && flatLoopBody(ws->body.get())))
-                    scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                    scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 // (a flat, binder-less while body never puts anything in the
                 // scope — nothing to clear, per iteration, at all)
                 if (!ws->params.empty()) {
@@ -2981,7 +2999,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                     }
                     if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
-                    else if (!flatB) scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                    else if (!flatB) scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                     // LAST is not positional in a condition loop; see WhileStmt
                     if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, false, col)) break;
                     firstIter = false;
@@ -3001,7 +3019,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value lastCond = Value::any();   // what `-> $x` binds: the previous condition
             for (;;) {
                 if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
-                else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                else scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 if (!r->var.empty()) scope->define(r->var, lastCond);
                 // LAST is not positional in a condition loop; see WhileStmt
                 if (!runLoopBody(r->body.get(), scope, r->label, firstIter, false)) break;
@@ -3830,7 +3848,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 scope = std::make_shared<Env>();
                 scope->parent = tctx_.cur;
             } else {
-                scope->vars.clear(); // reuse buckets, drop last iteration's bindings
+                scope->clearBindings(); // reuse buckets, drop last iteration's bindings
             }
         };
         if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
@@ -11823,9 +11841,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // are assignment-enforced), plain in every dimension the
                     // ceremony exists for. Native width is allowed: the wrap
                     // is applied below exactly as the full path does.
-                    Env* pf = nullptr;
-                    for (Env* e2 = cur; e2; e2 = e2->parent.get())
-                        if (e2->layout) { pf = e2; break; }
+                    // (the slot's own layout — the frame padPtrIn matched,
+                    // which an inline block's pad may stand in front of)
+                    const PadLayout* pl = padOwnerLayout(tv);
                     // An Int past a machine word keeps its magnitude in the cold
                     // block, so `!slot->x_` sent EVERY bignum accumulator down the
                     // long path — and `$f *= $_` is the shape that wants the short
@@ -11847,7 +11865,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                   (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
                                    slot->natBits == 0 && !slot->ext() && !slot->shape() &&
                                    slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey());
-                    if (pf->layout->simple[tv->padSlot] &&
+                    if (pl->simple[tv->padSlot] &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
@@ -19753,9 +19771,7 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
     Env* const cur = tctx_.cur.get();
     Value* slot = padPtrIn(ve, cur);
     if (!slot || !plainIntSlotValue(*slot)) return nullptr;
-    for (Env* e = cur; e; e = e->parent.get())
-        if (e->layout) return e->layout->simple[ve->padSlot] ? slot : nullptr;
-    return nullptr;
+    return padOwnerLayout(ve)->simple[ve->padSlot] ? slot : nullptr;
 }
 
 // `$x = $a op $b` with `+`, `-` or `*` on two machine Ints (task 9, the fused
@@ -23147,12 +23163,12 @@ Value* Interpreter::compoundCheckSlot(Assign* a, bool& sameTypeOk) {
         bool eligible = tv && op.size() >= 2 && op.back() == '=' && op[0] != ':' && op[0] != 'R' && !a->userOp &&
                         !tv->declare && nmp->size() >= 2 && (*nmp)[0] == '$' &&
                         (ascii::isalpha((unsigned char)(*nmp)[1]) || (*nmp)[1] == '_' || (unsigned char)(*nmp)[1] >= 0x80);
-        if (eligible && tv->padSlot >= 0)
-            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
-                if (e->layout) {
-                    if (e->layout->simple[tv->padSlot]) eligible = false;
-                    break;
-                }
+        // a pad slot declared untyped and unconstrained needs no check — what
+        // its layout says, the one the annotation names (an inline block's
+        // pad can stand nearer than the slot's own frame)
+        if (eligible && tv->padSlot >= 0 && padPtrIn(tv, tctx_.cur.get()) &&
+            padOwnerLayout(tv)->simple[tv->padSlot])
+            eligible = false;
         if (eligible) {
             const std::string& nm = *nmp;
             bool typed = false, deep = false;

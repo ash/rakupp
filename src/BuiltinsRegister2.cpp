@@ -638,12 +638,20 @@ void Interpreter::registerBuiltinsPart3() {
         Value h = Value::makeHash();
         Env* e = symEnv(I, a, 0);
         const std::string pk = a.size() > 1 ? a[1].toStr() : std::string("MY");
-        if (pk == "LEXICAL") {
-            for (Env* x = e; x; x = x->parent.get())
-                for (auto& kv : x->vars)
-                    if (!h.hash()->count(kv.first)) (*h.hash())[kv.first] = kv.second;
-        }
-        else if (e) for (auto& kv : e->vars) (*h.hash())[kv.first] = kv.second;
+        // a frame's names: its map, then its live pad slots (a routine's, the
+        // mainline's or an inline block's own `my`s live there)
+        auto addFrame = [&h](Env* x) {
+            for (auto& kv : x->vars)
+                if (!h.hash()->count(kv.first)) (*h.hash())[kv.first] = kv.second;
+            if (x->layout) {
+                uint64_t live = x->padLive.load(std::memory_order_acquire);
+                for (size_t i = 0; i < x->pad.size(); i++)
+                    if (((live >> i) & 1) && !h.hash()->count(x->layout->names[i]))
+                        (*h.hash())[x->layout->names[i]] = x->pad[i];
+            }
+        };
+        if (pk == "LEXICAL") for (Env* x = e; x; x = x->parent.get()) addFrame(x);
+        else if (e) addFrame(e);
         return h;
     };
     // `MY::`, `CALLER::OUTER::`, … as a term: the live stash (makePseudoStash)

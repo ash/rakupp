@@ -4056,8 +4056,9 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
 }
 
 // Pads (PADS-PLAN.md). Build the slot layout for one owner body — params plus
-// top-level plain `my` statements — and annotate the owner's DOMINATED
-// variable references with (slot, layout address). Everything here is
+// top-level plain `my` statements — and one for each inline statement block in
+// it that declares plain `my`s of its own (Block::padLayout), and annotate the
+// owner's DOMINATED variable references with (slot, layout address). Everything here is
 // conservative by construction: a reference this pass cannot prove safe is
 // simply not annotated and keeps today's map lookup; a construct it does not
 // recognise is not descended into. The one rule that is load-bearing for
@@ -4128,41 +4129,66 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // A method's `self`: a slot no site is annotated with (reads go through
     // Env::selfSlot), so the per-call define lands in the pad, not the map.
     if (withSelf) layout->add("self");
-    for (auto& s : stmts) {
-        std::vector<const VarExpr*> ds;
-        declaredVars(s.get(), ds);
-        for (auto* v : ds)
-            layout->add(v->name, /*simple=*/v->declType.empty() ||
-                (!ascii::isupper((unsigned char)v->declType[0]) && v->declType != "atomicint"));
-        if (s->kind == NK::VarDecl) {
-            auto* vd = static_cast<const VarDecl*>(s.get());
-            if (vd->scope == "my")
-                for (auto& n : vd->names) if (slottable(n)) layout->add(n, /*simple=*/true);
+    // The plain `my`s a statement list declares at its own level: the owner's
+    // body, or an inline block's.
+    auto collectDecls = [&](PadLayout& L, const std::vector<StmtPtr>& ss) {
+        for (auto& s : ss) {
+            std::vector<const VarExpr*> ds;
+            declaredVars(s.get(), ds);
+            for (auto* v : ds)
+                L.add(v->name, /*simple=*/v->declType.empty() ||
+                    (!ascii::isupper((unsigned char)v->declType[0]) && v->declType != "atomicint"));
+            if (s->kind == NK::VarDecl) {
+                auto* vd = static_cast<const VarDecl*>(s.get());
+                if (vd->scope == "my")
+                    for (auto& n : vd->names) if (slottable(n)) L.add(n, /*simple=*/true);
+            }
         }
-    }
-    if (layout->names.empty() || layout->names.size() > 64) return nullptr; // cacheSlot stays null
+    };
+    collectDecls(*layout, stmts);
+    if (layout->names.size() > 64) return nullptr; // cacheSlot stays null
+    // An owner with no slots of its own still has its inline blocks', so the
+    // pass runs; only the owner's frame goes without a layout.
+    const bool ownerSlots = !layout->names.empty();
+
+    // An inline statement block that declares plain `my`s gets a pad of its
+    // own (Block::padLayout), which execBlock puts on the block's scope: per
+    // ENTRY, so a closure made in one loop iteration keeps that iteration's
+    // variable, as with the map. A block whose `my`s overflow the mask keeps
+    // the map.
+    auto blockLayout = [&](Block* b) -> const PadLayout* {
+        if (!b) return nullptr;
+        auto L = std::make_shared<PadLayout>();
+        L->inlineBlock = true;
+        collectDecls(*L, b->stmts);
+        if (L->names.empty() || L->names.size() > 64) return nullptr;
+        b->padLayout = L;
+        return L.get();
+    };
 
     // ---- annotation: references dominated by their declaration ----
-    // `active` maps a name to its slot from the declaration point onward;
-    // entering an inline block snapshots the modification log so a shadowing
-    // inner declaration deactivates the name for that subtree only.
-    std::unordered_map<std::string, int> active;
-    std::vector<std::pair<std::string, int>> undo; // (name, previous slot or -1)
+    // `active` maps a name to its slot, and the layout that slot is in, from
+    // the declaration point onward; entering an inline block snapshots the
+    // modification log so a shadowing inner declaration deactivates the name
+    // for that subtree only.
+    struct Act { int slot = -1; const PadLayout* L = nullptr; };
+    std::unordered_map<std::string, Act> active;
+    std::vector<std::pair<std::string, Act>> undo; // (name, previous binding; slot -1 = none)
     auto deactivate = [&](const std::string& n) {
         auto it = active.find(n);
         if (it == active.end()) return;
         undo.emplace_back(n, it->second);
         active.erase(it);
     };
-    auto activate = [&](const std::string& n, int slot) {
+    auto activate = [&](const std::string& n, int slot, const PadLayout* L) {
         auto it = active.find(n);
-        undo.emplace_back(n, it == active.end() ? -1 : it->second);
-        active[n] = slot;
+        undo.emplace_back(n, it == active.end() ? Act{} : it->second);
+        active[n] = Act{slot, L};
     };
     auto popTo = [&](size_t mark) {
         while (undo.size() > mark) {
             auto& [n, old] = undo.back();
-            if (old < 0) active.erase(n);
+            if (old.slot < 0) active.erase(n);
             else active[n] = old;
             undo.pop_back();
         }
@@ -4170,7 +4196,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     if (params)
         for (auto& p : *params) {
             auto it = layout->byName.find(p.name);
-            if (it != layout->byName.end()) active[p.name] = it->second;
+            if (it != layout->byName.end()) active[p.name] = Act{it->second, layout.get()};
         }
 
     // Unary operators whose operand runs immediately, in this frame. Anything
@@ -4187,8 +4213,8 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                 if (!v->declare && !v->viaPseudoPkg && !v->pkgSymbol && !v->processScoped) {
                     auto it = active.find(v->name);
                     if (it != active.end()) {
-                        v->padSlot = it->second;
-                        v->padOwner = (const void*)layout.get();
+                        v->padSlot = it->second.slot;
+                        v->padOwner = (const void*)it->second.L;
                     }
                 }
                 else if (v->declare) {
@@ -4220,34 +4246,40 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
         }
     };
 
-    auto annStmts = [&](auto&& self, const std::vector<StmtPtr>& ss, bool topLevel) -> void {
+    // `lvl` is the layout this statement list's own `my`s go into: the owner's
+    // at the top, an inline block's own further in, or none (a block with no
+    // pad, or one that runs in the scope around it — a statement modifier's
+    // body, a CATCH — whose `my`s stay on the map, unannotated).
+    auto annStmts = [&](auto&& self, const std::vector<StmtPtr>& ss, const PadLayout* lvl) -> void {
+        // an inline body that enters a scope of its own, with its own pad
+        auto body = [&](Block* b) { self(self, b->stmts, blockLayout(b)); };
         for (auto& sp : ss) {
             Stmt* s = sp.get();
             if (!s) continue;
             switch (s->kind) {
                 case NK::ExprStmt: {
                     std::vector<const VarExpr*> ds;
-                    if (topLevel) declaredVars(s, ds);
+                    if (lvl) declaredVars(s, ds);
                     // RHS first — `my $x = $x + 1` reads the OUTER $x
                     annE(annE, static_cast<const ExprStmt*>(s)->e.get());
                     for (auto* dv : ds) {
-                        auto it = layout->byName.find(dv->name);
-                        if (it == layout->byName.end()) continue;
-                        activate(dv->name, it->second);
+                        auto it = lvl->byName.find(dv->name);
+                        if (it == lvl->byName.end()) continue;
+                        activate(dv->name, it->second, lvl);
                         // the declaration site itself runs slot-direct
                         auto* v = const_cast<VarExpr*>(dv);
                         v->padSlot = it->second;
-                        v->padOwner = (const void*)layout.get();
+                        v->padOwner = (const void*)lvl;
                     }
                     break;
                 }
                 case NK::VarDecl: {
                     auto* vd = static_cast<const VarDecl*>(s);
                     annE(annE, vd->init.get());
-                    if (topLevel && vd->scope == "my")
+                    if (lvl && vd->scope == "my")
                         for (auto& n : vd->names) {
-                            auto it = layout->byName.find(n);
-                            if (it != layout->byName.end()) activate(n, it->second);
+                            auto it = lvl->byName.find(n);
+                            if (it != lvl->byName.end()) activate(n, it->second, lvl);
                         }
                     else
                         for (auto& n : vd->names) deactivate(n);
@@ -4256,7 +4288,9 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                 case NK::Block: {
                     auto* b = static_cast<Block*>(s);
                     size_t mark = undo.size();
-                    self(self, b->stmts, false);
+                    // a CATCH/CONTROL body runs in the scope that threw
+                    if (b->isCatch) self(self, b->stmts, nullptr);
+                    else body(b);
                     popTo(mark);
                     break;
                 }
@@ -4270,14 +4304,16 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                                           : (i < is->branchVars.size() ? is->branchVars[i] : std::string()));
                         if (i < is->branchParams.size())
                             for (auto& p : is->branchParams[i]) deactivate(p.name);
-                        self(self, is->branches[i].second->stmts, false);
+                        if (is->modifier) self(self, is->branches[i].second->stmts, nullptr);
+                        else body(is->branches[i].second.get());
                         popTo(mark);
                     }
                     if (is->elseBlock) {
                         size_t mark = undo.size();
                         deactivate(is->elseVar);
                         for (auto& p : is->elseParams) deactivate(p.name);
-                        self(self, is->elseBlock->stmts, false);
+                        if (is->modifier) self(self, is->elseBlock->stmts, nullptr);
+                        else body(is->elseBlock.get());
                         popTo(mark);
                     }
                     break;
@@ -4289,7 +4325,8 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                         size_t mark = undo.size();
                         deactivate(w->var);
                         for (auto& p : w->params) deactivate(p.name);
-                        self(self, w->body->stmts, false);
+                        if (w->modifier) self(self, w->body->stmts, nullptr);
+                        else body(w->body.get());
                         popTo(mark);
                     }
                     break;
@@ -4301,7 +4338,8 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                         size_t mark = undo.size();
                         for (auto& n : f->vars) deactivate(n);
                         for (auto& p : f->params) deactivate(p.name);
-                        self(self, f->body->stmts, false);
+                        if (f->modifier) self(self, f->body->stmts, nullptr);
+                        else body(f->body.get());
                         popTo(mark);
                     }
                     break;
@@ -4314,7 +4352,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                     annE(annE, l->init.get());
                     annE(annE, l->cond.get());
                     annE(annE, l->incr.get());
-                    if (l->body) self(self, l->body->stmts, false);
+                    if (l->body) body(l->body.get());
                     popTo(mark);
                     break;
                 }
@@ -4325,14 +4363,16 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                         size_t mark = undo.size();
                         deactivate(g->var);
                         for (auto& p : g->params) deactivate(p.name);
-                        self(self, g->body->stmts, false);
+                        if (g->modifier) self(self, g->body->stmts, nullptr);
+                        else body(g->body.get());
                         popTo(mark);
                     }
                     if (g->elseBody) {
                         size_t mark = undo.size();
                         deactivate(g->elseVar);
                         for (auto& p : g->elseParams) deactivate(p.name);
-                        self(self, g->elseBody->stmts, false);
+                        if (g->modifier) self(self, g->elseBody->stmts, nullptr);
+                        else body(g->elseBody.get());
                         popTo(mark);
                     }
                     break;
@@ -4342,7 +4382,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                     annE(annE, w->cond.get());
                     if (w->body) {
                         size_t mark = undo.size();
-                        self(self, w->body->stmts, false);
+                        body(w->body.get());
                         popTo(mark);
                     }
                     break;
@@ -4351,7 +4391,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                     auto* r = static_cast<RepeatStmt*>(s);
                     if (r->body) {
                         size_t mark = undo.size();
-                        self(self, r->body->stmts, false);
+                        body(r->body.get());
                         popTo(mark);
                     }
                     annE(annE, r->cond.get());
@@ -4364,8 +4404,9 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
             }
         }
     };
-    annStmts(annStmts, stmts, true);
+    annStmts(annStmts, stmts, ownerSlots ? layout.get() : nullptr);
 
+    if (!ownerSlots) return nullptr; // cacheSlot stays null: the frame carries no layout
     cacheSlot = layout;
     return layout;
 }

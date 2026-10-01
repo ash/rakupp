@@ -73,6 +73,8 @@ struct PublishedOnce {
 
 namespace rakupp {
 
+struct PadLayout; // Interpreter.h — a pad owner's slot table
+
 enum class NK {
     // expressions
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
@@ -256,11 +258,14 @@ struct VarExpr : Expr {
     bool processScoped = false;  // written `PROCESS::<$x>` / `$PROCESS::x` — assignment
                                  // installs into the PROCESS scope, not the current one
     // Pad resolution (PADS-PLAN.md): filled once by resolvePads when this
-    // reference is dominated by an owner-level declaration. padOwner is the
-    // owning PadLayout's ADDRESS, used only for an identity compare against
-    // the current frame's layout — never dereferenced through this field, so
-    // DecidedOnce's relaxed ordering is enough: a reader seeing a stale pair
-    // fails the compare and takes the map path.
+    // reference is dominated by a declaration of its owner or of an inline
+    // block inside it. padOwner is that PadLayout's ADDRESS: compared against
+    // the frames' layouts, and read through (Interpreter::padOwnerLayout) only
+    // once a frame carrying it has matched, or by a thread that came through
+    // resolvePads for this owner — so DecidedOnce's relaxed ordering is
+    // enough: a reader seeing a stale pair fails the compare and takes the
+    // map path. A layout outlives every frame carrying it (frames own a
+    // shared_ptr; an owner's is cached, a block's held by its Block).
     DecidedOnce<int> padSlot{-1};
     DecidedOnce<const void*> padOwner{nullptr};
     // Derived from `name`, filled at construction so it is read-only at run time
@@ -998,6 +1003,13 @@ struct Block : Stmt {
     // the scans and the phaser runners at every entry — for a loop body, at
     // every iteration. See blockEntryWork in InterpreterCore.cpp.
     DecidedOnce<signed char> entryWork{-1};
+    // This block's own pad, when it is an inline statement block (an `if`,
+    // loop, `given`/`when` or bare block body) that declares plain `my`s and
+    // its owner's resolvePads gave them slots; null otherwise. execBlock puts
+    // it on the scope it enters, so those `my`s are slots, not map entries.
+    // Set once, inside the owner's resolvePads, before any of the owner's code
+    // runs with the annotations that name it. Not serialized.
+    std::shared_ptr<const PadLayout> padLayout;
     // -1 = not yet decided, 0 = nothing to do, 1 = this block declares a `my`
     // that a named sub hoisted into it closes over, so the container has to
     // exist from block ENTRY rather than from the declaration statement. See
