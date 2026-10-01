@@ -4075,9 +4075,13 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     if (hit != padLayouts_.end()) return hit->second;
     auto& cacheSlot = padLayouts_[&stmts]; // null until proven useful
 
+    // (`$_`, `@_` and `%_` themselves are NOT: the topic is rebound implicitly
+    // by `for`, `given`, `with`, `andthen` and the statement modifiers, which
+    // this pass does not see, so a slotted `$_` parameter answered for the
+    // loop's topic inside `for 16, 8 ... 0 { … $_ … }`. `$_x` is an ordinary name.)
     auto slottable = [](const std::string& n) {
         return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
-               (ascii::isalpha((unsigned char)n[1]) || n[1] == '_');
+               (ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2));
     };
     // A declaration this pass may own: a plain lexical `my` with none of the
     // machinery that keys per-scope side tables by name in OTHER structures
